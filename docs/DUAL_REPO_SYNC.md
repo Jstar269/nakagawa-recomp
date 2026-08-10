@@ -9,7 +9,7 @@ it does not change any publication gate in
 | | Repository | Visibility |
 | --- | --- | --- |
 | Public source | `Jstar269/nakagawa-recomp` | **public** |
-| Historical archive / development | `Jstar269/nakagawa-recomp-history-private` | **private** |
+| Historical archive / development | development archive | **private** |
 
 The public repository was created on 2026-08-10 from an approved `public-safe-v1`
 export as a brand-new single-root history. It shares **no commit ancestry** with the
