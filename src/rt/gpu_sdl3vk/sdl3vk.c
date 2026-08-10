@@ -785,10 +785,18 @@ typedef enum PresentDisposition {
     PRESENT_OK,
     PRESENT_ENQUEUED_REBUILD,
     PRESENT_OUT_OF_DATE,
+    PRESENT_SURFACE_LOST,
     PRESENT_NOT_ENQUEUED,
     PRESENT_TERMINAL,
     PRESENT_UNCLASSIFIED
 } PresentDisposition;
+
+static int is_enqueued_present(PresentDisposition disp) {
+    return (disp == PRESENT_OK ||
+            disp == PRESENT_ENQUEUED_REBUILD ||
+            disp == PRESENT_OUT_OF_DATE ||
+            disp == PRESENT_SURFACE_LOST);
+}
 
 static PresentDisposition classify_present(VkResult pr, int *out_presented, const char **out_why) {
     switch (pr) {
@@ -807,6 +815,11 @@ static PresentDisposition classify_present(VkResult pr, int *out_presented, cons
         *out_why = "swapchain out of date";
         return PRESENT_OUT_OF_DATE;
 
+    case VK_ERROR_SURFACE_LOST_KHR:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with VK_ERROR_SURFACE_LOST_KHR";
+        return PRESENT_SURFACE_LOST;
+
     case VK_ERROR_OUT_OF_HOST_MEMORY:
         *out_presented = 0;
         *out_why = "vkQueuePresentKHR failed with VK_ERROR_OUT_OF_HOST_MEMORY";
@@ -815,11 +828,6 @@ static PresentDisposition classify_present(VkResult pr, int *out_presented, cons
     case VK_ERROR_OUT_OF_DEVICE_MEMORY:
         *out_presented = 0;
         *out_why = "vkQueuePresentKHR failed with VK_ERROR_OUT_OF_DEVICE_MEMORY";
-        return PRESENT_NOT_ENQUEUED;
-
-    case VK_ERROR_SURFACE_LOST_KHR:
-        *out_presented = 0;
-        *out_why = "vkQueuePresentKHR failed with VK_ERROR_SURFACE_LOST_KHR";
         return PRESENT_NOT_ENQUEUED;
 
     case VK_ERROR_DEVICE_LOST:
@@ -984,7 +992,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             int fake_presented = 0;
             const char *fake_why = NULL;
             PresentDisposition fd = classify_present(pr, &fake_presented, &fake_why);
-            if (fd == PRESENT_OK || fd == PRESENT_ENQUEUED_REBUILD) {
+            if (is_enqueued_present(fd)) {
                 VkPipelineStageFlags wstage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
                 VkSubmitInfo esi = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
                 esi.waitSemaphoreCount = 1;
@@ -1026,6 +1034,14 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             why = disp_why;
             goto fail;
 
+        case PRESENT_SURFACE_LOST:
+            presented = 0;
+            s_renderer_terminal = 1;
+            /* Surface is lost: present request was enqueued (semaphore waited), but surface is gone.
+             * Do NOT call recover_unenqueued_present because f->sem_done WAS consumed. */
+            why = disp_why;
+            goto fail;
+
         case PRESENT_NOT_ENQUEUED:
         case PRESENT_UNCLASSIFIED:
             presented = 0;
@@ -1036,7 +1052,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         case PRESENT_TERMINAL:
             presented = 0;
             s_renderer_terminal = 1;
-            recover_unenqueued_present(f);
+            /* Device lost: do NOT call recover_unenqueued_present (no Vulkan calls on lost device). */
             why = disp_why;
             goto fail;
         }
@@ -1444,8 +1460,9 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "present fault SUBOPTIMAL: expected swapchain rebuild\n"); ok = 0;
         }
 
-        /* Test 2: VK_ERROR_OUT_OF_DATE_KHR (unenqueued present / stale swapchain) */
+        /* Test 2: VK_ERROR_OUT_OF_DATE_KHR (enqueued present / stale swapchain) */
         sc0 = sdl3vk_swapchain_generation();
+        uint64_t sem0 = sdl3vk_frame_semaphore_generation();
         if (!sdl3vk_capture_arm("selftest_ood.ppm")) {
             fprintf(stderr, "present fault OOD: arm failed\n"); ok = 0;
         }
@@ -1459,9 +1476,12 @@ int sdl3vk_capture_selftest(void) {
         if (sdl3vk_swapchain_generation() <= sc0) {
             fprintf(stderr, "present fault OOD: expected swapchain rebuild\n"); ok = 0;
         }
+        if (sdl3vk_frame_semaphore_generation() != sem0) {
+            fprintf(stderr, "present fault OOD: enqueued present must NOT recreate semaphore\n"); ok = 0;
+        }
 
         /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery) */
-        uint64_t sem0 = sdl3vk_frame_semaphore_generation();
+        sem0 = sdl3vk_frame_semaphore_generation();
         if (!sdl3vk_capture_arm("selftest_oom.ppm")) {
             fprintf(stderr, "present fault OOM: arm failed\n"); ok = 0;
         }
@@ -1481,7 +1501,30 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
         }
 
-        /* Test 4: VK_ERROR_DEVICE_LOST (terminal error) */
+        /* Test 4: VK_ERROR_SURFACE_LOST_KHR (enqueued present / surface lost terminal state) */
+        sem0 = sdl3vk_frame_semaphore_generation();
+        if (!sdl3vk_capture_arm("selftest_surflost.ppm")) {
+            fprintf(stderr, "present fault SURFLOST: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_ERROR_SURFACE_LOST_KHR);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault SURFLOST: expected present failure (-1)\n"); ok = 0;
+        }
+        if (sdl3vk_capture_result() != -1) {
+            fprintf(stderr, "present fault SURFLOST: capture result must fail (-1)\n"); ok = 0;
+        }
+        if (!sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault SURFLOST: expected renderer terminal state\n"); ok = 0;
+        }
+        if (sdl3vk_frame_semaphore_generation() != sem0) {
+            fprintf(stderr, "present fault SURFLOST: enqueued present must NOT recreate semaphore\n"); ok = 0;
+        }
+
+        /* Test 5: VK_ERROR_DEVICE_LOST (terminal error, no Vulkan calls on lost device) */
+        sem0 = sdl3vk_frame_semaphore_generation();
+        /* Reset terminal state and recreate swapchain so next acquire succeeds */
+        s_renderer_terminal = 0;
+        create_swapchain();
         if (!sdl3vk_capture_arm("selftest_devlost.ppm")) {
             fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
         }
@@ -1491,6 +1534,9 @@ int sdl3vk_capture_selftest(void) {
         }
         if (!sdl3vk_renderer_terminal()) {
             fprintf(stderr, "present fault DEVLOST: expected renderer terminal state\n"); ok = 0;
+        }
+        if (sdl3vk_frame_semaphore_generation() != sem0) {
+            fprintf(stderr, "present fault DEVLOST: lost device must NOT recreate semaphore\n"); ok = 0;
         }
         if (sdl3vk_capture_arm("selftest_terminal_refused.ppm")) {
             fprintf(stderr, "terminal state: capture arm must be refused when terminal\n"); ok = 0;
