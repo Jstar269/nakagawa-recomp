@@ -69,6 +69,18 @@ int  sdl3vk_capture_result(void);
 void sdl3vk_capture_cancel(void);
 const char *sdl3vk_capture_source_label(void);
 
+/* 1 once the renderer has latched a terminal state: the device was lost, or a presentation
+ * recovery sequence itself failed. Presentation and capture arming are refused from then
+ * on, and any capture outstanding at that moment resolves as failed. */
+int  sdl3vk_renderer_terminal(void);
+
+/* Test-only present fault injection seam for selftests. Takes an int so this header
+ * stays vulkan.h-free (pass VkResult value). */
+void     sdl3vk_present_fault_inject(int vk_result);
+void     sdl3vk_present_fault_clear(void);
+uint64_t sdl3vk_swapchain_generation(void);
+uint64_t sdl3vk_frame_semaphore_generation(void);
+
 /* Validation-layer diagnostics (issue #57): when SR_VULKAN_VALIDATION=1 the renderer
  * enables VK_LAYER_KHRONOS_validation and a debug messenger that prints ERROR/WARNING
  * messages to stderr with a [VulkanValidation] prefix. Init fails closed if the layer was

@@ -216,6 +216,7 @@ void ge_set_frame(uint32_t frame) { (void)frame; }
 uint32_t ge_framebuffer(void) { return 0u; }
 int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
 int sdl3vk_capture_result(void) { return 0; }
+int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sdl3vk_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
 unsigned long g_ge_pixels;
