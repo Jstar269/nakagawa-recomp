@@ -59,6 +59,7 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | --- | --- |
 | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) | Source-publication and binary-release thresholds/checklists |
 | [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | `public-safe-v1` candidate profile and excluded components |
+| [`DUAL_REPO_SYNC.md`](DUAL_REPO_SYNC.md) | Private archive ↔ public source sync contract, backport rules, and the drift check |
 | [`OSPS_BASELINE.md`](OSPS_BASELINE.md) | OpenSSF control matrix; separates tree evidence from owner/settings checks |
 | [`LEGAL_REWRITE_ASSESSMENT.md`](LEGAL_REWRITE_ASSESSMENT.md) | Engineering risk assessment, not legal advice |
 | [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) | Classification vocabulary, evidence tiers, and the five-phase replacement process |
