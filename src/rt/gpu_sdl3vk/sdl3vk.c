@@ -1043,16 +1043,24 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             goto fail;
 
         case PRESENT_NOT_ENQUEUED:
-        case PRESENT_UNCLASSIFIED:
             presented = 0;
             recover_unenqueued_present(f);
+            why = disp_why;
+            goto fail;
+
+        case PRESENT_UNCLASSIFIED:
+            presented = 0;
+            s_renderer_terminal = 1;
+            /* Unclassified result: queue and wait-semaphore state are unknown.
+             * Latch terminal state and do NOT perform per-frame semaphore recovery. */
             why = disp_why;
             goto fail;
 
         case PRESENT_TERMINAL:
             presented = 0;
             s_renderer_terminal = 1;
-            /* Device lost: do NOT call recover_unenqueued_present (no Vulkan calls on lost device). */
+            /* Device lost: leaves affected execution state unreliable.
+             * Latch terminal state and do NOT attempt normal per-frame renderer recovery. */
             why = disp_why;
             goto fail;
         }
@@ -1520,7 +1528,7 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "present fault SURFLOST: enqueued present must NOT recreate semaphore\n"); ok = 0;
         }
 
-        /* Test 5: VK_ERROR_DEVICE_LOST (terminal error, no Vulkan calls on lost device) */
+        /* Test 5: VK_ERROR_DEVICE_LOST (terminal error, no normal recovery) */
         sem0 = sdl3vk_frame_semaphore_generation();
         /* Reset terminal state and recreate swapchain so next acquire succeeds */
         s_renderer_terminal = 0;
@@ -1537,6 +1545,24 @@ int sdl3vk_capture_selftest(void) {
         }
         if (sdl3vk_frame_semaphore_generation() != sem0) {
             fprintf(stderr, "present fault DEVLOST: lost device must NOT recreate semaphore\n"); ok = 0;
+        }
+
+        /* Test 6: VK_ERROR_UNKNOWN / unclassified error (unknown enqueue state -> terminal fail-closed) */
+        sem0 = sdl3vk_frame_semaphore_generation();
+        s_renderer_terminal = 0;
+        create_swapchain();
+        if (!sdl3vk_capture_arm("selftest_unknown.ppm")) {
+            fprintf(stderr, "present fault UNKNOWN: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject((VkResult)-9999);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault UNKNOWN: expected present failure (-1)\n"); ok = 0;
+        }
+        if (!sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault UNKNOWN: expected renderer terminal state\n"); ok = 0;
+        }
+        if (sdl3vk_frame_semaphore_generation() != sem0) {
+            fprintf(stderr, "present fault UNKNOWN: unclassified error must NOT recreate semaphore\n"); ok = 0;
         }
         if (sdl3vk_capture_arm("selftest_terminal_refused.ppm")) {
             fprintf(stderr, "terminal state: capture arm must be refused when terminal\n"); ok = 0;
