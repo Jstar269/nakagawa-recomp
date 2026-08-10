@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "probe_id": "VFPU-ADDR-001",
+  "question": "HQ-1",
+  "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/296",
+  "summary": "Real-PSP measurement of VFPU vector-register addressing. Confirms the vreg_indices / vreg_idx decode for every scalar encoding and for fourteen selected wide encodings.",
+  "provenance": {
+    "model": "PSP-3001",
+    "firmware": "6.61-ARK",
+    "toolchain": "psp-gcc (GCC 15.2.0)",
+    "transport": "usbhostfs_pc / pspsh, durable host0: capture",
+    "source_commit": "fae96f4aa03245bc52b6c8fe595865b44c004eab",
+    "prx_sha256": "563d414d98d0361e9226eaffad73b519c6e0b9aaed8172bfd702e24b82bde08b",
+    "runs": 2,
+    "runs_byte_identical": true,
+    "records_per_run": 15,
+    "acceptance_eligible": true,
+    "raw_captures": "Retained only in the gitignored private area (oracle/hardware-results/). Deliberately NOT committed; this file carries the published results and their provenance, not the raw capture."
+  },
+  "measurement_boundary": {
+    "scalar_encodings_measured": 128,
+    "scalar_encodings_possible": 128,
+    "wide_encodings_measured": 14,
+    "wide_encodings_possible": 512,
+    "covers": [
+      "vreg_indices (tools/codegen.py) and its C twin vreg_idx (src/rt/vfpu_interp.c), for the encodings listed here"
+    ],
+    "does_not_cover": [
+      "mreg_index / mreg_idx -- matrix addressing was not probed",
+      "vreg_names -- the separate GetVectorRegs naming space used for the VROT overlap quirk was not probed",
+      "the packed-size destination choice oz_n at tools/codegen.py:464 -- it calls the measured function, but which size it passes was not probed",
+      "the 498 wide encodings outside the fourteen listed here"
+    ],
+    "explicit_non_claim": "This does NOT establish that all vector addressing is proven on silicon. 14 of 512 wide encodings were observed."
+  },
+  "scalar_rule": {
+    "measured": "all 128 encodings agree with this closed form",
+    "formula": "phys = ((E >> 2) & 7) * 16 + (E & 3) * 4 + ((E >> 5) & 3)",
+    "note": "Width 1 forces transpose to 0, so the row selector is the full two-bit field.",
+    "published_spot_values": {
+      "0x00": 0,
+      "0x01": 4,
+      "0x04": 16,
+      "0x10": 64,
+      "0x20": 1,
+      "0x40": 2,
+      "0x7f": 127
+    }
+  },
+  "wide_cases": [
+    {"width": 1, "encoding": "0x00", "physical": [0]},
+    {"width": 1, "encoding": "0x20", "physical": [1]},
+    {"width": 1, "encoding": "0x40", "physical": [2]},
+    {"width": 2, "encoding": "0x00", "physical": [0, 1]},
+    {"width": 2, "encoding": "0x20", "physical": [0, 4]},
+    {"width": 2, "encoding": "0x60", "physical": [8, 12]},
+    {"width": 3, "encoding": "0x00", "physical": [0, 1, 2]},
+    {"width": 3, "encoding": "0x20", "physical": [0, 4, 8]},
+    {"width": 3, "encoding": "0x40", "physical": [1, 2, 3]},
+    {"width": 3, "encoding": "0x60", "physical": [4, 8, 12]},
+    {"width": 4, "encoding": "0x00", "physical": [0, 1, 2, 3]},
+    {"width": 4, "encoding": "0x20", "physical": [0, 4, 8, 12]},
+    {"width": 4, "encoding": "0x40", "physical": [2, 3, 0, 1]},
+    {"width": 4, "encoding": "0x60", "physical": [8, 12, 0, 4]}
+  ],
+  "discriminating_answers": {
+    "triple_row_selector": {
+      "answer": "bit 6 alone",
+      "evidence": "width 3 E=0x20 -> [0,4,8] (row 0) and E=0x40 -> [1,2,3] (row 1). These are the two cases where a bit-5 selector would give a different answer; E=0x00 and E=0x60 are controls and agree under either rule."
+    },
+    "transpose_wraparound": {
+      "answer": "wraps as (row + lane) & 3",
+      "evidence": "width 4 E=0x60 -> [8,12,0,4]: lanes 2 and 3 wrap to rows 0 and 1. E=0x40 -> [2,3,0,1] is the same rotation. No saturation, error, or aliasing was observed."
+    }
+  }
+}

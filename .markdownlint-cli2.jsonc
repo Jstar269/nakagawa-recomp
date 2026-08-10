@@ -1,0 +1,27 @@
+{
+  "globs": [
+    "**/*.md"
+  ],
+  "ignores": [
+    "**/node_modules/**",
+    "interface/.next/**",
+    "build/**",
+    // Vendored upstream reference checkouts. Gitignored (/third_party/) and not
+    // ours to reformat; linting them made the gate depend on whether a developer
+    // happened to have the PPSSPP checkout present.
+    "third_party/**",
+    // Private, gitignored run evidence (/logs/). Game-derived and scratch
+    // material that must never be reformatted or treated as project source.
+    "logs/**",
+    ".claude/worktrees/**",
+    ".gemini/**",
+    "**/.gemini/**",
+    "docs/archive/**",
+    "docs/STATUS_HISTORY.md",
+    ".github/**"
+  ],
+  "config": {
+    "default": true,
+    "MD013": false
+  }
+}

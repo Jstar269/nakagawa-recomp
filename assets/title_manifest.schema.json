@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/title_manifest.schema.json",
+  "title": "Nakagawa Recomp Public Title Manifest v1",
+  "description": "Source-owned title configuration. Private paths, hashes, keys, analysis products, and game-derived evidence are intentionally out of scope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "display_name",
+    "kind",
+    "executable",
+    "modules",
+    "filesystem",
+    "hle_profile",
+    "feature_requirements",
+    "verification_profile"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "kind": {
+      "enum": ["retail", "homebrew", "synthetic"]
+    },
+    "disc": {
+      "$ref": "#/$defs/disc"
+    },
+    "executable": {
+      "$ref": "#/$defs/executable"
+    },
+    "modules": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/module"}
+    },
+    "filesystem": {
+      "$ref": "#/$defs/filesystem"
+    },
+    "hle_profile": {
+      "$ref": "#/$defs/identifier"
+    },
+    "codegen_profile": {
+      "enum": ["none", "hst"]
+    },
+    "feature_requirements": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "compatibility_manifest": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "verification_profile": {
+      "$ref": "#/$defs/identifier"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2048
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "retail"}}, "required": ["kind"]},
+      "then": {"required": ["disc"]},
+      "else": {"not": {"required": ["disc"]}}
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "uint32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*:)[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "disc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "region", "revision_policy"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z]{4}[0-9]{5}$"
+        },
+        "region": {
+          "enum": ["JP", "NA", "EU", "KR", "ASIA", "OTHER"]
+        },
+        "revision_policy": {
+          "enum": ["exact-disc-id", "explicit-compatible-revisions"]
+        },
+        "compatible_revisions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{4}[0-9]{5}$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"revision_policy": {"const": "exact-disc-id"}},
+            "required": ["revision_policy"]
+          },
+          "then": {"not": {"required": ["compatible_revisions"]}},
+          "else": {"required": ["compatible_revisions"]}
+        }
+      ]
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"$ref": "#/$defs/uint32"},
+        "end": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967296
+        }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "entry", "bss_metadata_source", "extra_executable_spans"],
+      "properties": {
+        "base": {"$ref": "#/$defs/uint32"},
+        "entry": {"$ref": "#/$defs/uint32"},
+        "bss_metadata_source": {
+          "enum": ["elf", "psp-header", "none"]
+        },
+        "extra_executable_spans": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/span"}
+        }
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "load_address", "required", "role"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "load_address": {"$ref": "#/$defs/uint32"},
+        "required": {"type": "boolean"},
+        "role": {
+          "enum": ["guest-prx", "hle-capability", "optional-guest-prx"]
+        }
+      }
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_root", "memory_stick_root", "device_prefixes"],
+      "properties": {
+        "data_root": {"$ref": "#/$defs/relativePath"},
+        "memory_stick_root": {"$ref": "#/$defs/relativePath"},
+        "device_prefixes": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{0,15}:$"
+          }
+        }
+      }
+    }
+  }
+}

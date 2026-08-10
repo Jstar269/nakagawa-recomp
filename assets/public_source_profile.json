@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "public-safe-v1",
+  "description": "Initial source candidate excluding unresolved PGF/font and PGD/amctrl components pending qualified review.",
+  "issues": [98, 99, 104],
+  "build_mode": "PUBLIC_SAFE=1",
+  "exclude_prefixes": [],
+  "exclude_globs": [
+    "font/*.pgf"
+  ],
+  "exclude_paths": [
+    "src/rt/pgd.c",
+    "src/rt/pgd.h",
+    "src/rt/pgf.c",
+    "src/rt/pgf.h",
+    "tools/pgd_decrypt.py",
+    "tools/pgd_e2e_harness.c",
+    "tools/pgd_test_keys.py",
+    "tools/test_pgd_c.py",
+    "tools/test_pgd_decrypt.py",
+    "tools/test_pgd_hardening.py",
+    "tools/test_pgd_malformed.py"
+  ]
+}

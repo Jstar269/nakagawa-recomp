@@ -1,0 +1,6700 @@
+{
+  "schema_version": 1,
+  "description": "Input corpus for tools/gen_nidnames.py. Entries in a derivable class carry no stored NID: it is recomputed from the name as sha1(name)[0:4] little-endian at generation time.",
+  "derivation_rule": "nid == int.from_bytes(sha1(name)[0:4], 'little')",
+  "derivable_classes": [
+    "hash-verified",
+    "pspsdk-sourced"
+  ],
+  "provenance": {
+    "names": "Seeded from the previously generated src/rt/nid_names.h, whose name list was scraped from PPSSPP's Core/HLE tables at f0c28c67446fd9a08b124ea2bfb0e997fe909de5. The names remain PPSSPP-suggested and this corpus makes no independence claim about them. What it removes is the copied numeric constant for every entry whose NID is reproducible from its name.",
+    "pspsdk-sourced": "Names additionally present in the pinned PSPSDK headers (assets/upstream/pspdev.lock.json) and hash-verified, so they are reproducible with no PPSSPP input at all.",
+    "dropped": "Sentinel-shaped entries are excluded; see finding PROV-F5 in docs/provenance/IMPLEMENTATION_PROVENANCE.json.",
+    "regeneration": "python tools/nid_name_proof.py --emit-corpus tools/nid_corpus.json --pspsdk-names <names.txt>, where <names.txt> is the sorted unique identifier set of the pinned PSPSDK headers, obtained with: grep -rhoE '[A-Za-z_][A-Za-z0-9_]{3,}' $PSPDEV/psp/sdk/include | sort -u. Corpus -> header -> corpus is a verified fixed point. Omitting --pspsdk-names reclassifies the 840 pspsdk-sourced entries as hash-verified; it changes no NID and drops no entry."
+  },
+  "counts": {
+    "pspsdk-sourced": 840,
+    "hash-verified": 623,
+    "library-attributed": 54,
+    "editorial-alias": 10,
+    "unresolved": 88
+  },
+  "entries": [
+    {
+      "class": "pspsdk-sourced",
+      "name": "Kprintf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "QueryIntrHandlerInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasConcatenateATRAC3"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasCore"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasCoreWithMix"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetAllEnvelopeHeights"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetEndFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetEnvelopeHeight"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetGrain"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetOutputmode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasGetPauseFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasRevEVOL"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasRevParam"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasRevType"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasRevVON"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetADSR"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetADSRmode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetGrain"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetKeyOff"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetKeyOn"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetNoise"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetOutputmode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetPause"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetPitch"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetSL"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetSimpleADSR"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetSteepWave"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetTrianglarWave"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetVoice"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetVoiceATRAC3"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetVoicePCM"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasSetVolume"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "__sceSasUnsetATRAC3"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "_sceKernelExitThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "_sceKernelReturnFromCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "_sceKernelReturnFromTimerHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "fdprintf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "kuKernelGetModel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "kuKernelLoadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "memcpy"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "printf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracAddStreamData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracDecodeData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetAtracID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetBitrate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetBufferInfoForReseting"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetChannel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetInternalErrorInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetLoopStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetMaxSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetNextDecodePosition"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetNextSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetRemainFrame"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetSecondBufferInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetSoundSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracGetStreamDataInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracReleaseAtracID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracResetPlayPosition"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetDataAndGetID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetHalfwayBuffer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetHalfwayBufferAndGetID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetLoopNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAtracSetSecondBuffer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioChRelease"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioChReserve"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioChangeChannelConfig"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioChangeChannelVolume"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioGetChannelRestLen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioGetChannelRestLength"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioGetInputLength"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioInput"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioInputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioInputInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioInputInitEx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOneshotOutput"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput2ChangeLength"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput2GetRestSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput2OutputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput2Release"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutput2Reserve"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutputPanned"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioOutputPannedBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioPollInputEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioRoutingGetMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioRoutingGetVolumeMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioRoutingSetMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioRoutingSetVolumeMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioSRCChRelease"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioSRCChReserve"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioSRCOutputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioSetChannelDataLen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioSetFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudioWaitInputEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudiocodecCheckNeedMem"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudiocodecDecode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudiocodecGetEDRAM"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudiocodecInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceAudiocodecReleaseEDRAM"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlGetIdleCancelThreshold"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlGetSamplingCycle"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlGetSamplingMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlPeekBufferNegative"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlPeekBufferPositive"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlPeekLatch"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlReadBufferNegative"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlReadBufferPositive"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlReadLatch"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlSetIdleCancelThreshold"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlSetSamplingCycle"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceCtrlSetSamplingMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetAccumulatedHcount"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetBrightness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetCurrentHcount"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetFrameBuf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetFramePerSec"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayGetVcount"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayIsForeground"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayIsVblank"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplaySetBrightness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplaySetFrameBuf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplaySetMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayWaitVblank"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayWaitVblankCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayWaitVblankStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDisplayWaitVblankStartCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDmacMemcpy"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceDmacTryMemcpy"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeBreak"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeContinue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeDrawSync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeEdramGetAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeEdramGetSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeEdramSetAddrTranslation"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeGetCmd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeGetMtx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeGetStack"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeListDeQueue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeListEnQueue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeListEnQueueHead"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeListSync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeListUpdateStallAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeRestoreContext"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeSaveContext"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeSetCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceGeUnsetCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmIsHeadphoneExist"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmIsMicrophoneExist"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmIsRemoteExist"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmPeekCurrentKey"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmPeekLatch"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHprmReadLatch"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpAbortRequest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpAddExtraHeader"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpCreateConnection"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpCreateConnectionWithURL"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpCreateRequest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpCreateRequestWithURL"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpCreateTemplate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDeleteConnection"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDeleteHeader"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDeleteRequest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDeleteTemplate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDisableAuth"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDisableCache"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDisableCookie"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDisableKeepAlive"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpDisableRedirect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnableAuth"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnableCache"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnableCookie"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnableKeepAlive"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnableRedirect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpEndCache"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpGetAllHeader"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpGetContentLength"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpGetNetworkErrno"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpGetProxy"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpGetStatusCode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpInitCache"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpLoadSystemCookie"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpReadData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSaveSystemCookie"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSendRequest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetAuthInfoCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetConnectTimeOut"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetMallocFunction"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetProxy"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetRecvTimeOut"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetResolveRetry"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetResolveTimeOut"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpSetSendTimeOut"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpsEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpsInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceHttpsLoadDefaultCert"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeGetBacklightOffTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeGetHomePopup"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeGetLanguageMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeGetUMDPopup"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeSetBacklightOffTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeSetHomePopup"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeSetLanguageMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceImposeSetUMDPopup"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoAddDrv"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoAssign"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoCancel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoChangeAsyncPriority"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoChangeThreadCwd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoChdir"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoChstat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoClose"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoCloseAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoDclose"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoDelDrv"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoDevctl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoDopen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoDread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoGetAsyncStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoGetDevType"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoGetThreadCwd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoGetstat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoIoctl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoIoctlAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoLseek"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoLseek32"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoLseek32Async"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoLseekAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoMkdir"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoOpen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoOpenAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoPollAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoRead"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoReadAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoRemove"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoRename"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoReopen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoRmdir"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoSetAsyncCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoSync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoUnassign"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoWaitAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoWaitAsyncCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoWrite"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceIoWriteAsync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegCreateMJpeg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegCsc"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegDecodeMJpeg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegDecodeMJpegYCbCr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegDeleteMJpeg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegFinishMJpeg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegGetOutputInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceJpegInitMJpeg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocHeapMemory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocPartitionMemory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocateFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocateFplCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocateVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelAllocateVplCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelAlarm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelReceiveMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelVTimerHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCancelWakeupThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelChangeCurrentThreadAttr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelChangeThreadPriority"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCheckCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCheckExecFile"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCheckPspConfig"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCheckThreadStack"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelClearEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCpuResumeIntr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCpuResumeIntrWithSync"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCpuSuspendIntr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateHeap"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateLwMutex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateSema"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateVTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelCreateVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheInvalidateRange"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheProbe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheWritebackAll"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheWritebackInvalidateAll"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheWritebackInvalidateRange"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDcacheWritebackRange"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeflateDecompress"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDelaySysClockThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDelaySysClockThreadCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDelayThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDelayThreadCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteHeap"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteLwMutex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteSema"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteVTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDeleteVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDevkitVersion"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelDisableSubIntr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelEnableSubIntr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExitDeleteThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExitGame"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExitThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExitVSHKernel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExitVSHVSH"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelExtendKernelStack"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFindModuleByAddress"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFindModuleByName"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFindModuleByUID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFreeFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFreeHeapMemory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFreePartitionMemory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelFreeVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetBlockHeadAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetCallbackCount"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetCompiledSdkVersion"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetDebugPutchar"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetModel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetModuleIdByAddress"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetModuleIdList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetModuleList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetSystemTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetSystemTimeLow"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetSystemTimeWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadCurrentPriority"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadExitStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadId"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadStackFreeSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadmanIdList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetThreadmanIdType"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetVTimerBase"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetVTimerBaseWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetVTimerTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGetVTimerTimeWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelGzipDecompress"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIcacheClearAll"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIcacheInvalidateAll"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIcacheInvalidateRange"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIcacheProbe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIsCpuIntrEnable"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelIsCpuIntrSuspended"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLibcClock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLibcGettimeofday"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLibcTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadExec"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadExecVSHMs2"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadModuleBufferUsbWlan"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadModuleByID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLoadModuleMs"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelLockLwMutex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelMaxFreeMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelModuleCount"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelNotifyCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPartitionMaxFreeMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPartitionTotalFreeMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPollEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPollMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPollSema"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelPrintf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelProbeExecutableObject"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelQueryModuleInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReceiveMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReceiveMbxCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReceiveMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReceiveMsgPipeCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferAlarmStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferCallbackStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferEventFlagStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferFplStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferGlobalProfiler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferMbxStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferMsgPipeStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferSemaStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferSystemStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferThreadEventHandlerStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferThreadProfiler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferThreadRunStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferThreadStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferVTimerStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReferVplStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterDebugPutchar"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterDefaultExceptionHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterExceptionHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterExitCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterPriorityExceptionHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterSubIntrHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRegisterThreadEventHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReleaseSubIntrHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReleaseThreadEventHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelReleaseWaitThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelResumeDispatchThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelResumeThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelRotateThreadReadyQueue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSelfStopUnloadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSendMbx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSendMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSendMsgPipeCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetAlarm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetSysClockAlarm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetVTimerHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetVTimerHandlerWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetVTimerTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSetVTimerTimeWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSignalSema"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSleepThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSleepThreadCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStartModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStartThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStartVTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStderr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStderrReopen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStdin"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStdout"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStdoutReopen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStopModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStopUnloadSelfModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelStopVTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSuspendDispatchThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSuspendThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSysClock2USec"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelSysClock2USecWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTerminateDeleteThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTerminateThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTotalFreeMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTryAllocateFpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTryAllocateVpl"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTryLockLwMutex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTryReceiveMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelTrySendMsgPipe"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUSec2SysClock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUSec2SysClockWide"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUnloadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUnlockLwMutex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMd5BlockInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMd5BlockResult"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMd5BlockUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMd5Digest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMt19937Init"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsMt19937UInt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsSha1BlockInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsSha1BlockResult"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsSha1BlockUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelUtilsSha1Digest"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelVolatileMemLock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelVolatileMemTryLock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelVolatileMemUnlock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitEventFlag"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitEventFlagCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitSema"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitSemaCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitThreadEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWaitThreadEndCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceKernelWakeupThread"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3CheckStreamDataNeeded"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3Decode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetBitRate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetFrameNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetInfoToAddStreamData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetLoopNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetMPEGVersion"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetMaxOutputSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetMp3ChannelNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetSamplingRate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3GetSumDecodedSample"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3Init"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3InitResource"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3LowLevelDecode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3LowLevelInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3NotifyAddStreamData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3ReleaseMp3Handle"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3ReserveMp3Handle"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3ResetPlayPosition"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3ResetPlayPositionByFrame"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3SetLoopNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMp3TermResource"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegAtracDecode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegAvcDecode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegAvcDecodeMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegAvcDecodeStop"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegBaseCscInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegCreate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegDelete"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegFinish"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegFlushAllStream"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegFreeAvcEsBuf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegGetAtracAu"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegGetAvcAu"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegInitAu"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegMallocAvcEsBuf"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegQueryAtracEsSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegQueryMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegQueryStreamOffset"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegQueryStreamSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRegistStream"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRingbufferAvailableSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRingbufferConstruct"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRingbufferDestruct"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRingbufferPut"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegRingbufferQueryMemSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceMpegUnRegistStream"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeCreateMaster"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeCreateReplica"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeDeleteMaster"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeDeleteReplica"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeUpdateMaster"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGameModeUpdateReplica"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGetPdpStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocGetPtpStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingAbortSendData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingCancelTarget"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingCancelTargetWithOpt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingCreate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingDelete"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingGetHelloOpt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingGetMembers"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingGetPoolMaxAlloc"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingGetPoolStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingSelectTarget"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingSendData"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingSetHelloOpt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingStop"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocMatchingTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPdpCreate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPdpDelete"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPdpRecv"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPdpSend"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpAccept"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpClose"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpConnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpFlush"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpListen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpOpen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpRecv"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocPtpSend"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlAddHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlConnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlCreate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlCreateEnterGameMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlDelHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlDisconnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlExitGameMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetAddrByName"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetAdhocId"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetGameModeInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetNameByAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetParameter"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetPeerInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetPeerList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetScanInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlGetState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlJoin"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlJoinEnterGameMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlScan"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetAdhocctlTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlAddHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlConnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlDelHandler"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlDisconnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlGetInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlGetState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetApctlTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetEtherNtostr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetEtherStrton"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetFreeThreadinfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetGetLocalEtherAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetGetMallocStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetAccept"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetBind"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetClose"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetConnect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetGetErrno"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetGetpeername"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetGetsockname"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetGetsockopt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetInetAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetInetAton"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetInetNtop"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetInetPton"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetListen"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetRecv"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetRecvfrom"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetRecvmsg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSelect"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSend"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSendmsg"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSendto"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSetsockopt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetShutdown"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetSocket"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInetTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverCreate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverDelete"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverStartAtoN"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverStartNtoA"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverStop"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetResolverTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetTerm"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceNetThreadAbort"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceOpenPSIDGetOpenPSID"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryChargingStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryElec"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryFullCapacity"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryLifePercent"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryLifeTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryRemainCapacity"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryTemp"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBatteryVolt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBusClockFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBusClockFrequencyFloat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetBusClockFrequencyInt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetCpuClockFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetCpuClockFrequencyFloat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetCpuClockFrequencyInt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerGetIdleTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIdleTimerDisable"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIdleTimerEnable"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIsBatteryCharging"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIsBatteryExist"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIsLowBattery"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIsPowerOnline"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerIsSuspendRequired"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerLock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerRegisterCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerRequestColdReset"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerRequestStandby"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerRequestSuspend"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerSetBusClockFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerSetClockFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerSetCpuClockFrequency"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerTick"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerUnlock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "scePowerUnregisterCallback"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegCloseCategory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegCloseRegistry"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegCreateKey"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegFlushCategory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegFlushRegistry"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeyInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeyInfoByName"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeyValue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeyValueByName"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeys"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegGetKeysNum"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegOpenCategory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegOpenRegistry"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegRemoveCategory"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegRemoveRegistry"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRegSetKeyValue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcCheckValid"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcCompareTick"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcConvertLocalTimeToUTC"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcConvertUtcToLocalTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcFormatRFC2822"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcFormatRFC2822LocalTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcFormatRFC3339"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcFormatRFC3339LocalTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetCurrentClock"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetCurrentClockLocalTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetCurrentTick"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetDayOfWeek"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetDaysInMonth"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetDosTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetTick"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetTickResolution"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetTime_t"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcGetWin32FileTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcIsLeapYear"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcParseDateTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcParseRFC3339"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcSetDosTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcSetTick"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcSetTime_t"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcSetWin32FileTime"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddDays"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddHours"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddMicroseconds"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddMinutes"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddMonths"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddSeconds"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddTicks"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddWeeks"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceRtcTickAddYears"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdCleanList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdCreateList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdGetLastIndex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdRemoveValue"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdSetIndex"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSdSetMember"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSircsSend"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSslEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSslGetUsedMemoryCurrent"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSslGetUsedMemoryMax"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceSslInit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdActivate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdCancelWaitDriveStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdCheckMedium"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdDeactivate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdGetDiscInfo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdGetDriveStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdGetErrorStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdRegisterUMDCallBack"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdReplacePermit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdReplaceProhibit"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdUnRegisterUMDCallBack"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdWaitDriveStat"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdWaitDriveStatCB"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUmdWaitDriveStatWithTimer"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbActivate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamAutoImageReverseSW"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetAutoImageReverseState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetBrightness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetContrast"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetEvLevel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetImageEffectMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetLensDirection"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetReadVideoFrameSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetReverseMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetSaturation"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetSharpness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamGetZoom"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamPollReadVideoFrameEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamReadVideoFrame"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamReadVideoFrameBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetBrightness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetContrast"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetEvLevel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetImageEffectMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetReverseMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetSaturation"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetSharpness"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetZoom"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetupMic"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetupStill"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetupStillEx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetupVideo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamSetupVideoEx"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStartVideo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillCancelInput"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillGetInputLength"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillInput"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillInputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillPollInputEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStillWaitInputEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamStopVideo"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbCamWaitReadVideoFrameEnd"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbDeactivate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbGetDrvList"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbGetDrvState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbGetState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbStop"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbWaitCancel"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbWaitState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootGetDataSize"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootRegisterNotify"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootSetCapacity"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootSetLoadAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootSetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorBootUnregisterNotify"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUsbstorGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityCheckNetParam"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGameSharingGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGameSharingInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGameSharingShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGameSharingUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGetNetParam"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGetSystemParamInt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityGetSystemParamString"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityHtmlViewerGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityHtmlViewerInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityHtmlViewerShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityHtmlViewerUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityLoadAvModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityLoadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityLoadNetModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityLoadUsbModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityMsgDialogAbort"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityMsgDialogGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityMsgDialogInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityMsgDialogShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityMsgDialogUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityNetconfGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityNetconfInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityNetconfShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityNetconfUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityOskGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityOskInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityOskShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityOskUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySavedataGetStatus"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySavedataInitStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySavedataShutdownStart"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySavedataUpdate"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySetSystemParamInt"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilitySetSystemParamString"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityUnloadAvModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityUnloadModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityUnloadNetModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilityUnloadUsbModule"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceUtilsBufferCopyWithRange"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceVaudioChRelease"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceVaudioChReserve"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceVaudioOutputBlocking"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceVaudioSetAlcMode"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceVaudioSetEffectType"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceWlanDevIsPowerOn"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceWlanGetEtherAddr"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "sceWlanGetSwitchState"
+    },
+    {
+      "class": "pspsdk-sourced",
+      "name": "strcmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "__PsmfPlayerFinish"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceAtracGetContextAddress"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceKernelAllocateTlspl"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceKernelLockLwMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceKernelLockLwMutexCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceKernelTryLockLwMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "_sceKernelUnlockLwMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "memcmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "memmove"
+    },
+    {
+      "class": "hash-verified",
+      "name": "memset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "puts"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacCheckStreamDataNeeded"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacDecode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacGetInfoToAddStreamData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacGetLoopNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacGetMaxOutputSample"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacGetSumDecodedSample"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacInitResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacNotifyAddStreamData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacResetPlayPosition"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacSetLoopNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAacTermResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAdler32"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracGetBufferInfoForResetting"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracGetOutputChannel"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracIsSecondBufferNeeded"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracLowLevelDecode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracLowLevelInitDecoder"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracReinit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetAA3DataAndGetID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetAA3HalfwayBufferAndGetID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetMOutData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetMOutDataAndGetID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetMOutHalfwayBuffer"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracSetMOutHalfwayBufferAndGetID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAtracStartEntry"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAudioEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAudioInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAudioLoopbackTest"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAudioSetVolumeOffset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceAudiocodecGetInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccDecodeSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccDecodeUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccDecodeUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccEncodeSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccEncodeUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccEncodeUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidUCS2"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidUCS4"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccIsValidUnicode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccJIStoUCS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSJIStoUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSJIStoUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSetErrorCharSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSetErrorCharUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSetErrorCharUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccSetTable"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccStrlenSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccStrlenUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccStrlenUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccUCStoJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccUTF16toSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccUTF16toUTF8"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccUTF8toSJIS"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCccUTF8toUTF16"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCtrlClearRapidFire"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCtrlGetSuspendingExtraSamples"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCtrlInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCtrlSetRapidFire"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceCtrlSetSuspendingExtraSamples"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDeflateDecompress"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplayAdjustAccumulatedHcount"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplayGetResumeMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplayIsVsync"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplaySetHoldMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplaySetResumeMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplayWaitVblankStartMulti"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceDisplayWaitVblankStartMultiCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontCalcMemorySize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontClose"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontDoneLib"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontFindFont"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontFindOptimumFont"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontFlush"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetCharGlyphImage"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetCharGlyphImage_Clip"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetCharImageRect"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetCharInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetFontInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetFontInfoByIndexNumber"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetFontList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetNumFontList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetShadowGlyphImage"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetShadowGlyphImage_Clip"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetShadowImageRect"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontGetShadowInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontNewLib"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontOpen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontOpenUserFile"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontOpenUserMemory"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontPixelToPointH"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontPixelToPointV"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontPointToPixelH"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontPointToPixelV"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontSetAltCharacterCode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceFontSetResolution"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeCore"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeInitResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeReset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729DecodeTermResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeCore"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeInitResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeReset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceG729EncodeTermResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGameUpdateAbort"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGameUpdateInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGameUpdateRun"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGameUpdateTerm"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipDecompress"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipGetComment"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipGetCompressedData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipGetInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipGetName"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceGzipIsValid"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapAllocHeapMemory"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapAllocHeapMemoryWithOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapCreateHeap"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapDeleteHeap"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapFreeHeapMemory"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapGetMallinfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapGetTotalFreeSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapIsAllocatedHeapMemory"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapReallocHeapMemory"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHeapReallocHeapMemoryWithOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHprmRegisterCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHprmUnregitserCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpAddCookie"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpGetNetworkPspError"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpSetAuthInfoCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpSetRedirectCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpsDisableOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpsEnableOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpsGetSslError"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpsInitWithPath"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceHttpsSetSslCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceImposeGetBatteryIconStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceImposeHomeButton"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceIoCloseAll"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceIoGetFdList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceIoGetIobUserLevel"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceJpegDecodeMJpegSuccessively"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceJpegDecodeMJpegYCbCrSuccessively"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceJpegDecompressAllImage"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceJpegMJpegCsc"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceJpegMJpegCscWithColorOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelAcceptMbogoSig"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelAllocHeapMemoryWithOption"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelAllocModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelApplyElfRelSection"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelApplyPspRelSection"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelAssert"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCanReleaseLibrary"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCancelEventFlag"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCancelMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCancelSema"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCreateModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCreateMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelCreateTlspl"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDcacheReadTag"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDcacheWBinvAll"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDebugEcho"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDebugEchoSet"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDebugRead"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDebugWrite"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDeleteModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDeleteMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDeleteTlspl"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDipsw"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDipswCpTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDipswSet"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelDonateWakeupThread"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelExitGameWithStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelExtendThreadStack"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelFreeModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelFreeTlspl"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetActiveDefaultExceptionHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetGPI"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetModuleId"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetPTRIG"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetTlsAddr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelGetUidmanCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelIcacheReadTag"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelIsSubInterruptOccurred"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLinkLibraryEntries"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLinkLibraryEntriesForUser"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLoadExecutableObject"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLoadModuleForLoadExecVSHDisc"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLockLwMutexCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLockMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelLockMutexCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelMemcpy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelMemset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelModuleAssign"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelModuleFromUID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelPowerLock"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelPowerTick"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelPowerUnlock"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelQueryLoadCoreCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelQueryMemoryInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReferLwMutexStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReferLwMutexStatusByID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReferMutexStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReferTlsplStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterAssertHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterDebugRead"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterDebugWrite"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterKprintfHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterLibrary"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterLibraryForUser"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterNmiHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterStderrPipe"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterStdoutPipe"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRegisterUserSpaceIntrStack"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReleaseDefaultExceptionHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReleaseExceptionHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReleaseLibrary"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReleaseModule"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelReleaseNmiHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelRemoveByDebugSection"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelResumeSubIntr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSetBootCallbackLevel"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSetCompilerVersion"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSetGPO"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSetPTRIG"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSetUsersystemLibWork"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSm1ReferOperations"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSm1RegisterOperations"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioClose"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioLseek"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioOpen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioRead"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioSendChar"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelStdioWrite"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelSuspendSubIntr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelTryLockLwMutex_600"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelTryLockMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelUnLinkLibraryEntries"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceKernelUnlockMutex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMd5BlockInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMd5BlockResult"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMd5BlockUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMd5Digest"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp3EndEntry"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp3StartEntry"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4AacDecode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4AacDecodeExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4AacDecodeInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4AacDecodeInitResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4AacDecodeTermResource"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4Create"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4Delete"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4Finish"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAacAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAacAuWithoutSampleBuf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAacTrackInfoData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAvcAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAvcAuWithoutSampleBuf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAvcParamSet"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetAvcTrackInfoData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetMetaData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetMetaDataInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetMovieInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetNumberOfMetaData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetNumberOfSpecificTrack"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetSampleInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetSampleNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetSampleNumWithTimeStamp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetTrackEditList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4GetTrackNumOfEditList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4Init"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4InitAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4PutSampleNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4RegistTrack"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4SearchSyncSampleNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufAvailableSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufConstruct"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufDestruct"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufFlush"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufPut"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4TrackSampleBufQueryMemSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMp4UnregistTrack"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcConvertToYuv420"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcCopyYCbCr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcCsc"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcCscInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcCscMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeDetail"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeDetail2"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeDetailIndex"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeFlush"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeStopYCbCr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcDecodeYCbCr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcInitYCbCr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcQueryYCbCrSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcResourceFinish"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcResourceGetAvcDecTopAddr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcResourceGetAvcEsBuf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegAvcResourceInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegBaseCscAvc"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegBaseCscAvcRange"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegBasePESpacketCopy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegBaseYCrCbCopy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegChangeGetAuMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegChangeGetAvcAuMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegFlushAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegFlushStream"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegGetAvcEsAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegGetAvcNalAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegGetPcmAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegGetUserdataAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegNextAvcRpAu"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegQueryPcmEsSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegQueryUserdataEsSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMpegRingbufferQueryPackNum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMt19937Init"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceMt19937UInt"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverRequestSuspend"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverStop"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverTerm"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocDiscoverUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocGetSocketAlert"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocPollSocket"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocSetSocketAlert"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetAdhocctlCreateEnterGameModeMin"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlAddInternalHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlDelInternalHandler"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescEntry"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescEntry2"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescEntryUser"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescIDList"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescIDList2"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlGetBSSDescIDListUser"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlScan"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlScanSSID2"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetApctlScanUser"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetGetDropRate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetCloseWithRST"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetGetPspError"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetGetTcpcbstat"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetGetUdpcbstat"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetPoll"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetInetSocketAbort"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetMemcmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetMemmove"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetRand"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetResolverPollAsync"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetResolverStartAtoNAsync"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetResolverStartNtoAAsync"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetResolverWaitAsync"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetSetDropRate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetSprintf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrcasecmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrchr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrcmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrcpy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrlen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrncmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrncpy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetStrtoul"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetplayDialogGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetplayDialogInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetplayDialogShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNetplayDialogUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmClearLicenseeKey"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmEdataGetDataSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmEdataSetupKey"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmOpen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmRenameCheck"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceNpDrmSetLicenseeKey"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceOpenPSIDGetPSID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceOpenPSIDGetProductCode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceP3daBridgeCore"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceP3daBridgeExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceP3daBridgeInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceParseHttpResponseHeader"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceParseHttpStatusLine"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerBatteryUpdateInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerCancelRequest"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetBacklightMaximum"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetBatteryChargeCycle"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetCallbackMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetForceSuspendCapacity"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetInnerTemp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetLowBatteryCapacity"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetPllClockFrequencyFloat"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetPllClockFrequencyInt"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetPowerSwMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerGetResumeCount"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerIsRequest"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerSetCallbackMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerSetPowerSwMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerUnregitserCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerVolatileMemLock"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerVolatileMemTryLock"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerVolatileMemUnlock"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePowerWaitRequestCompletion"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfCheckEPmap"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetAudioInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetCurrentStreamNumber"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetCurrentStreamType"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetEPWithId"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetEPWithTimestamp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetEPidWithTimestamp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetHeaderSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetNumberOfEPentries"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetNumberOfPsmfMarks"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetNumberOfSpecificStreams"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetNumberOfStreams"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetPresentationEndTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetPresentationStartTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetPsmfMark"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetPsmfVersion"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetStreamSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfGetVideoInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerBreak"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerChangePlayMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerConfigPlayer"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerCreate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerDelete"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetAudioData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetAudioOutSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetCurrentAudioStream"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetCurrentPlayMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetCurrentPts"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetCurrentStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetCurrentVideoStream"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetPsmfInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerGetVideoData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerReleasePsmf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSelectAudio"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSelectSpecificAudio"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSelectSpecificVideo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSelectVideo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSetPsmf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSetPsmfCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSetPsmfOffset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSetPsmfOffsetCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerSetTempBuf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerStop"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfPlayerUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfQueryStreamOffset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfQueryStreamSize"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfSetPsmf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfSpecifyStream"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfSpecifyStreamWithStreamType"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfSpecifyStreamWithStreamTypeNumber"
+    },
+    {
+      "class": "hash-verified",
+      "name": "scePsmfVerifyPsmf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRegExit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRegGetCategoryListAtRoot"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRegGetCategoryNumAtRoot"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRegRemoveKey"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetAccumlativeTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetAccumulativeTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetAlarmTick"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetCurrentNetworkTick"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetLastAdjustedTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetLastReincarnatedTime"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcGetTime64_t"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcIsAlarmed"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcRegisterCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcSetAlarmTick"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcSetTime64_t"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceRtcUnregisterCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937FillArray32"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937FillArray64"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937GenRand32"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937GenRand64"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937InitByArray"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSfmt19937InitGenRand"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSha256Digest"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSircsEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSircsInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSircsReceive"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetIssuerName"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetKeyUsage"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetNameEntryCount"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetNameEntryInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetNotAfter"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetNotBefore"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetSerialNumber"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceSslGetSubjectName"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUmdUnuseUMDInMsUsbWlan"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUmdUseUMDInMsUsbWlan"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUriBuild"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUriEscape"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUriParse"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUriUnescape"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbAccGetAuthStat"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbAccGetInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamGetAntiFlicker"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamGetMicDataLength"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamPollReadMicEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamReadMic"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamReadMicBlocking"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamRegisterLensRotationCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamSetAntiFlicker"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamSetMicGain"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamSetupMicEx"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamStartMic"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamStopMic"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamUnregisterLensRotationCallback"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbCamWaitReadMicEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsClose"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsGetData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsGetInitDataLocation"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsGetPowerSaveMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsGetState"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsGetStaticNavMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsOpen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsReset"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsResetInitialPosition"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsSaveInitData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsSetInitDataLocation"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsSetPowerSaveMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbGpsSetStaticNavMode"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicGetInputLength"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicInput"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicInputBlocking"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicInputInit"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicInputInitEx"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicPollInputEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbMicWaitInputEnd"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUsbWaitStateCB"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAuthDialogGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAuthDialogInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAuthDialogShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAuthDialogUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAutoConnectAbort"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAutoConnectGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAutoConnectInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAutoConnectShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityAutoConnectUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityDNASGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityDNASInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityDNASShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityDNASUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGamedataInstallAbort"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGamedataInstallGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGamedataInstallInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGamedataInstallShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGamedataInstallUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityGetNetParamLatestID"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityInstallGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityInstallInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityInstallShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityInstallUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityNpSigninGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityNpSigninInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityNpSigninShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityNpSigninUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPS3ScanGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPS3ScanInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPS3ScanShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPS3ScanUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPsnGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPsnInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPsnShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityPsnUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssReaderContStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssReaderGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssReaderInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssReaderShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssReaderUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssSubscriberGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssSubscriberInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssSubscriberShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityRssSubscriberUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilitySavedataErrGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilitySavedataErrInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilitySavedataErrShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilitySavedataErrUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityScreenshotContStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityScreenshotGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityScreenshotInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityScreenshotShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityScreenshotUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityStoreCheckoutGetStatus"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityStoreCheckoutInitStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityStoreCheckoutShutdownStart"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilityStoreCheckoutUpdate"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceUtilsBufferCopyByPollingWithRange"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceVaudioChReserveBuffering"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceZlibAdler32"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceZlibDecompress"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceZlibGetCompressedData"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceZlibGetInfo"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sceZlibIsValid"
+    },
+    {
+      "class": "hash-verified",
+      "name": "snprintf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "sprintf"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strcat"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strchr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strcpy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strlen"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strncmp"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strncpy"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strrchr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strstr"
+    },
+    {
+      "class": "hash-verified",
+      "name": "strtol"
+    },
+    {
+      "class": "hash-verified",
+      "name": "toupper"
+    },
+    {
+      "class": "library-attributed",
+      "name": "IoFileMgrForKernel_76DA16E3",
+      "nid": "0x76da16e3",
+      "library": "IoFileMgrForKernel"
+    },
+    {
+      "class": "library-attributed",
+      "name": "KDebugForKernel_A126F497",
+      "nid": "0xa126f497",
+      "library": "KDebugForKernel"
+    },
+    {
+      "class": "library-attributed",
+      "name": "LoadCoreForKernel_B95FA50D",
+      "nid": "0xb95fa50d",
+      "library": "LoadCoreForKernel"
+    },
+    {
+      "class": "library-attributed",
+      "name": "LoadExecForUser_362A956B",
+      "nid": "0x362a956b",
+      "library": "LoadExecForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "LoadExecForUser_8ADA38D3",
+      "nid": "0x8ada38d3",
+      "library": "LoadExecForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "ModuleMgrForUser_E4C4211C",
+      "nid": "0xe4c4211c",
+      "library": "ModuleMgrForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "ModuleMgrForUser_FBE27467",
+      "nid": "0xfbe27467",
+      "library": "ModuleMgrForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "SysMemUserForUser_945E45DA",
+      "nid": "0x945e45da",
+      "library": "SysMemUserForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "SysMemUserForUser_ACBD88CA",
+      "nid": "0xacbd88ca",
+      "library": "SysMemUserForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "SysMemUserForUser_D8DE5C1E",
+      "nid": "0xd8de5c1e",
+      "library": "SysMemUserForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "ThreadManForUser_28BFD974",
+      "nid": "0x28bfd974",
+      "library": "ThreadManForUser"
+    },
+    {
+      "class": "library-attributed",
+      "name": "UtilsForKernel_6C6887EE",
+      "nid": "0x6c6887ee",
+      "library": "UtilsForKernel"
+    },
+    {
+      "class": "library-attributed",
+      "name": "mp4msv_3C2183C7",
+      "nid": "0x3c2183c7",
+      "library": "mp4msv"
+    },
+    {
+      "class": "library-attributed",
+      "name": "mp4msv_9CA13D1A",
+      "nid": "0x9ca13d1a",
+      "library": "mp4msv"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceDdrdb_F013F8BF",
+      "nid": "0xf013f8bf",
+      "library": "sceDdrdb"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceHprm_089fdfa4",
+      "nid": "0x089fdfa4",
+      "library": "sceHprm"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceImpose_9BA61B49",
+      "nid": "0x9ba61b49",
+      "library": "sceImpose"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceImpose_A9884B00",
+      "nid": "0xa9884b00",
+      "library": "sceImpose"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceImpose_BB3F5DEC",
+      "nid": "0xbb3f5dec",
+      "library": "sceImpose"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceImpose_FCD44963",
+      "nid": "0xfcd44963",
+      "library": "sceImpose"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceImpose_FF1A2F07",
+      "nid": "0xff1a2f07",
+      "library": "sceImpose"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceJpeg_9B36444C",
+      "nid": "0x9b36444c",
+      "library": "sceJpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpeg_11CAB459",
+      "nid": "0x11cab459",
+      "library": "sceMpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpeg_988E9E12",
+      "nid": "0x988e9e12",
+      "library": "sceMpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpeg_B27711A8",
+      "nid": "0xb27711a8",
+      "library": "sceMpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpeg_C345DED2",
+      "nid": "0xc345ded2",
+      "library": "sceMpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpeg_D4DD6E75",
+      "nid": "0xd4dd6e75",
+      "library": "sceMpeg"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceMpegbase_0530BE4E",
+      "nid": "0x0530be4e",
+      "library": "sceMpegbase"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceNetApctl_6F5D2981",
+      "nid": "0x6f5d2981",
+      "library": "sceNetApctl"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceNetApctl_A7BB73DF",
+      "nid": "0xa7bb73df",
+      "library": "sceNetApctl"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceNetApctl_lib2_4C19731F",
+      "nid": "0x4c19731f",
+      "library": "sceNetApctl_lib2"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceNetApctl_lib2_69745F0A",
+      "nid": "0x69745f0a",
+      "library": "sceNetApctl_lib2"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceNetApctl_lib2_C20A144C",
+      "nid": "0xc20a144c",
+      "library": "sceNetApctl_lib2"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePauth_98B83B5D",
+      "nid": "0x98b83b5d",
+      "library": "scePauth"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePauth_F7AA47F6",
+      "nid": "0xf7aa47f6",
+      "library": "scePauth"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePower_2875994B",
+      "nid": "0x2875994b",
+      "library": "scePower"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePower_2B51FE2F",
+      "nid": "0x2b51fe2f",
+      "library": "scePower"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePower_469989ad",
+      "nid": "0x469989ad",
+      "library": "scePower"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePower_545A7F3C",
+      "nid": "0x545a7f3c",
+      "library": "scePower"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePower_A4E93389",
+      "nid": "0xa4e93389",
+      "library": "scePower"
+    },
+    {
+      "class": "library-attributed",
+      "name": "scePsmfPlayer_340C12CB",
+      "nid": "0x340c12cb",
+      "library": "scePsmfPlayer"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_043ebe3e",
+      "nid": "0x043ebe3e",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_05e242a1",
+      "nid": "0x05e242a1",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_28D35634",
+      "nid": "0x28d35634",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_43E521B7",
+      "nid": "0x43e521b7",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_644b513b",
+      "nid": "0x644b513b",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_70267ADF",
+      "nid": "0x70267adf",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_CFE7C460",
+      "nid": "0xcfe7c460",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_DB4149EE",
+      "nid": "0xdb4149ee",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_E1BC175E",
+      "nid": "0xe1bc175e",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_ECE1D3E5",
+      "nid": "0xece1d3e5",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceUtility_EF3582B2",
+      "nid": "0xef3582b2",
+      "library": "sceUtility"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceVaudio_504E4745",
+      "nid": "0x504e4745",
+      "library": "sceVaudio"
+    },
+    {
+      "class": "library-attributed",
+      "name": "sceVaudio_E8E78DC8",
+      "nid": "0xe8e78dc8",
+      "library": "sceVaudio"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion370",
+      "nid": "0x342061e5",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion380_390",
+      "nid": "0x315ad3a0",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion395",
+      "nid": "0xebd5c3e6",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion401_402",
+      "nid": "0x057e7380",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion500_505",
+      "nid": "0x91de343c",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion507",
+      "nid": "0x7893f79a",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion600_602",
+      "nid": "0x35669d4c",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion603_605",
+      "nid": "0x1b4217bc",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "sceKernelSetCompiledSdkVersion606",
+      "nid": "0x358ca1bb",
+      "alias_of": "sceKernelSetCompiledSdkVersion"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "scePowerSetClockFrequency350",
+      "nid": "0xebd177d6",
+      "alias_of": "scePowerSetClockFrequency"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceAtracReleaseResources",
+      "nid": "0xd5c28cc0"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceAudiocodecGetOutputBytes",
+      "nid": "0x59176a0f"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceAudiocodecInitMono",
+      "nid": "0x3dd7ee1a"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceHprmUnregisterCallback",
+      "nid": "0xfd7de6cd"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelAllocMemoryBlock",
+      "nid": "0xfe707fdf"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelFreeMemoryBlock",
+      "nid": "0x50f61d8a"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelGetMemoryBlockAddr",
+      "nid": "0xdb83a952"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelLoadModuleDNAS",
+      "nid": "0xfef27dc1"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelLoadModuleNpDrm",
+      "nid": "0xf2d8d1b4"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceKernelStopUnloadSelfModuleWithStatus",
+      "nid": "0x8f2df740"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetAdhocMatchingStart2",
+      "nid": "0xe8454c65"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetUpnpGetNatInfo",
+      "nid": "0x27045362"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetUpnpInit",
+      "nid": "0xe24220b5"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetUpnpStart",
+      "nid": "0x3432b2e5"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetUpnpStop",
+      "nid": "0x3e32ed9e"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNetUpnpTerm",
+      "nid": "0x540491ef"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthAbortRequest",
+      "nid": "0xd99455dd"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthCreateStartRequest",
+      "nid": "0xcd86a656"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthDestroyRequest",
+      "nid": "0x72bb0467"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthGetEntitlementById",
+      "nid": "0x6900f084"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthGetEntitlementIdList",
+      "nid": "0x75fb0ae3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthGetMemoryStat",
+      "nid": "0xf4531adc"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthGetTicket",
+      "nid": "0x3f1c1f70"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthGetTicketParam",
+      "nid": "0x5a3cb57a"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthInit",
+      "nid": "0xa1de86f8"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpAuthTerm",
+      "nid": "0x4ec1f667"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2AbortReq",
+      "nid": "0xc7f32242"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2CreateCtx",
+      "nid": "0x6f1fe37f"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2CreateSessionCreateReq",
+      "nid": "0x4ecd4503"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2CreateSessionGetResult",
+      "nid": "0xbc61ffc8"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2CreateSessionStart",
+      "nid": "0x2b25f6e9"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2DestroyCtx",
+      "nid": "0xf297ab9c"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2DestroyReq",
+      "nid": "0x1888a9fe"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetGameProductInfo",
+      "nid": "0x1c952dcb"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetGameSkuInfoFromGameProductInfo",
+      "nid": "0xf2278b90"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetProductInfoCreateReq",
+      "nid": "0x3371d5f1"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetProductInfoGetResult",
+      "nid": "0xaa4a1e3d"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetProductInfoStart",
+      "nid": "0x005b5f20"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2GetSessionInfo",
+      "nid": "0x590a3229"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2Init",
+      "nid": "0x0e9956e3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2InitGetProductInfoResult",
+      "nid": "0xfc30c19e"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpCommerce2Term",
+      "nid": "0xa5a34ea4"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetAccountRegion",
+      "nid": "0xa0be3c4b"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetChatRestrictionFlag",
+      "nid": "0x1d60ae4b"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetContentRatingFlag",
+      "nid": "0xbb069a87"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetMyLanguages",
+      "nid": "0xcdcc21d3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetNpId",
+      "nid": "0x633b5f71"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetOnlineId",
+      "nid": "0x4b5c71c8"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpGetUserProfile",
+      "nid": "0x7e0864df"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpInit",
+      "nid": "0x857b47d3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpLookupAbortTransaction ",
+      "nid": "0x4b4e4e71"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpLookupCreateTransactionCtx",
+      "nid": "0x5494274b"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpLookupDestroyTransactionCtx",
+      "nid": "0xa670d3a3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpLookupTitleSmallStorage",
+      "nid": "0xc76f55ed"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2AbortRequest",
+      "nid": "0xfadba9db"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2ContextStart",
+      "nid": "0x190ff903"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2ContextStop",
+      "nid": "0x2b3892fc"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2CreateContext",
+      "nid": "0x5030cc53"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2CreateJoinRoom",
+      "nid": "0xaad0946a"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2DestroyContext",
+      "nid": "0x3de70241"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2GetMemoryStat",
+      "nid": "0x22f38daf"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2GetRoomDataExternalList",
+      "nid": "0x12c5a111"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2GetServerIdListLocal",
+      "nid": "0xf47342fc"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2GetServerInfo",
+      "nid": "0x4ee3a8ec"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2GetWorldInfoList",
+      "nid": "0xa53e7c69"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2Init",
+      "nid": "0x2e61f6e1"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2JoinRoom",
+      "nid": "0x7bbfc427"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2KickoutRoomMember",
+      "nid": "0x97529ecc"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2LeaveRoom",
+      "nid": "0xc870535a"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2RegisterSignalingCallback",
+      "nid": "0xa3c298d1"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2SearchRoom",
+      "nid": "0x81c13e6d"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2SendRoomChatMessage",
+      "nid": "0x55f7837f"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2SetRoomDataInternal",
+      "nid": "0xe6c93dbd"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2SignalingGetConnectionStatus",
+      "nid": "0x6d6d0c75"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpMatching2Term",
+      "nid": "0x8bf37d8c"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterAbort",
+      "nid": "0x5f5e32af"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterAddFriendListEntry",
+      "nid": "0x788f2b5e"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterCreateRequest",
+      "nid": "0xbe22eea3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterDeleteRequest",
+      "nid": "0x66c64821"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterGetBlockListEntry",
+      "nid": "0x506c318d"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterGetBlockListEntryCount",
+      "nid": "0xa01443aa"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterGetFriendListEntry",
+      "nid": "0x4e851b10"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpRosterGetFriendListEntryCount",
+      "nid": "0x58251346"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpServiceGetMemoryStat",
+      "nid": "0x250488f9"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpServiceInit",
+      "nid": "0x0f8f5821"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpServiceTerm",
+      "nid": "0x00acfac3"
+    },
+    {
+      "class": "unresolved",
+      "name": "sceNpTerm",
+      "nid": "0x37e1e274"
+    },
+    {
+      "class": "unresolved",
+      "name": "scePowerCheckWlanCoexistenceClock",
+      "nid": "0xa85880d0"
+    }
+  ]
+}

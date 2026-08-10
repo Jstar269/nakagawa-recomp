@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "nakagawa-recomp",
+  "description": "Reproducible release and asset provenance manifest for Nakagawa Recomp public releases",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. This declaration does not resolve component-specific provenance or redistribution questions tracked in #98/#99/#104; see NOTICE.md.",
+  "reference_environment": {
+    "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
+    "make": "GNU Make >= 4.4",
+    "python": "Python 3.14.x",
+    "vulkan_sdk": "Vulkan SDK 1.3.x",
+    "glslc": "glslc from Vulkan SDK",
+    "sdl": "SDL3 >= 3.0.0"
+  },
+  "lockfiles": {
+    "npm": "interface/package-lock.json",
+    "python": "tools/requirements-lock.txt"
+  },
+  "toolchain_locks": {
+    "compiler": "gcc-14.2.0-ucrt64",
+    "make": "make-4.4.1",
+    "python": "python-3.14.0",
+    "sdl3": "sdl3-3.2.0",
+    "vulkan_sdk": "vulkan-sdk-1.3.296.0"
+  },
+  "release_locks": {
+    "status": "REPRODUCIBLE_MANIFEST_VERIFIED",
+    "comment": "Reproducible release SBOM and dependency locks verified via tools/generate_sbom.py and tools/verify_sbom.py."
+  },
+  "components": [
+    {
+      "id": "sdl3-runtime",
+      "name": "SDL3 Runtime",
+      "type": "library",
+      "relationship": "DEPENDS_ON",
+      "presence": "optional_local_or_external",
+      "source_path": "SDL3.dll",
+      "upstream_origin": "https://github.com/libsdl-org/SDL",
+      "license": "Zlib",
+      "notice_path": "NOTICE.md",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": true,
+      "comment": "External/optional local runtime library. Reference SDL >= 3.0.0. Staged dist package lock remains unasserted."
+    },
+    {
+      "id": "pgf-font-jpn0",
+      "name": "PSP PGF Font jpn0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/jpn0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "e4aa9e517",
+      "conversion_script": "ttf2pgfJ",
+      "source_font_candidate": "ume-pgs5.ttf (Ume Font)",
+      "license": "Unresolved",
+      "notice_path": "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "17304b24f6175f7a221f167425b307e761ccb6bb",
+      "hashes": {
+        "sha256": "d363cec75fecfafd1511e370e48c748c30199c694b83a4026be34d799b192917"
+      }
+    },
+    {
+      "id": "pgf-font-kr0",
+      "name": "PSP PGF Font kr0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/kr0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "dc34bea8d",
+      "license": "Unresolved",
+      "notice_path": "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "9f8cce0390c827fa2195a5dc3e9885a997db6488",
+      "hashes": {
+        "sha256": "6b0b3a8be9e709d6af02223d077675e1530f9879f42656377a9d8d42e2614333"
+      }
+    },
+    {
+      "id": "pgf-font-ltn0",
+      "name": "PSP PGF Font ltn0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/ltn0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "a384b6224",
+      "license": "Unresolved",
+      "notice_path": "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "1f3d907ac717270a005c2e8a00e05c385d718d22",
+      "hashes": {
+        "sha256": "1184f16bc89bad1fea49093806784470281af54f279b57ef0378ce33e6603870"
+      }
+    },
+    {
+      "id": "pgf-font-ltn8",
+      "name": "PSP PGF Font ltn8.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/ltn8.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "da40ed6e8",
+      "license": "Unresolved",
+      "notice_path": "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "a58450c7675c6f1b4e0840cef5f2dd9787eed68c",
+      "hashes": {
+        "sha256": "c8620bdd244585bbf993a82903168f6ec8464d4cbcad238d4e0ca5623c1ba3c1"
+      }
+    },
+    {
+      "id": "pgf-runtime-private-backend",
+      "name": "Lineage-sensitive PGF parser and rasterizer",
+      "type": "library",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "src/rt/pgf.c",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "license": "NOASSERTION",
+      "notice_path": "docs/PGF_LICENSE_REVIEW_PACKET.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "0049fefc0278ace82b43f803f45e50e14b69041d6ec123cce78e00d5030205b6"
+      },
+      "comment": "Private development backend. The public-safe profile uses pgf_unavailable.c and does not redistribute this file."
+    },
+    {
+      "id": "pgd-amctrl-private-backend",
+      "name": "PGD/amctrl interoperability implementation",
+      "type": "library",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "src/rt/pgd.c",
+      "license": "NOASSERTION",
+      "notice_path": "docs/PGD_AMCTRL_REVIEW_PACKET.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "95d61eeaa69ffbf2690eafafc369a68036c01b58f4c072e42e94b855caa4270a"
+      },
+      "comment": "Private development backend. The public-safe profile uses pgd_unavailable.c and does not redistribute this file."
+    },
+    {
+      "id": "vfpu-lut-tables",
+      "name": "VFPU LUT Data Tables Collection",
+      "type": "data_collection",
+      "relationship": "DEPENDS_ON",
+      "presence": "tracked_collection",
+      "provenance_path": "assets/vfpu/PROVENANCE.json",
+      "provenance_directory": "assets/vfpu",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "license": "GPL-2.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Collection of 15 runtime VFPU lookup tables tracked under assets/vfpu/. Individual file blob IDs recorded in PROVENANCE.json."
+    },
+    {
+      "id": "pspsdk-headers",
+      "name": "PSPSDK Lineage",
+      "type": "source_lineage",
+      "relationship": "OTHER",
+      "presence": "notice_lineage",
+      "upstream_origin": "https://github.com/pspdev/pspsdk",
+      "license": "BSD-3-Clause",
+      "notice_path": "THIRD_PARTY_LICENSES/PSPSDK.txt",
+      "disposition": "SOURCE_LINEAGE",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Incorporated definitions and structure lineage from PSPSDK headers. No binary runtime or build dependency."
+    }
+  ]
+}

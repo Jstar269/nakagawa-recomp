@@ -1,0 +1,11 @@
+If:
+  PathMatch: 'build[\\/]hst[\\/].*'
+CompileFlags:
+  Add: [-ferror-limit=0]
+Index:
+  Background: Skip
+---
+CompileFlags:
+  Add: [-ferror-limit=0]
+Diagnostics:
+  UnusedIncludes: None

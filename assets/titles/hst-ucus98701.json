@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "hst-ucus98701-v1",
+  "display_name": "Hot Shots Tennis: Get a Grip (UCUS98701)",
+  "kind": "retail",
+  "disc": {
+    "id": "UCUS98701",
+    "region": "NA",
+    "revision_policy": "exact-disc-id"
+  },
+  "executable": {
+    "base": 0,
+    "entry": 0,
+    "bss_metadata_source": "psp-header",
+    "extra_executable_spans": [
+      {
+        "start": 3158420,
+        "end": 3173924
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "libfont.prx",
+      "load_address": 840957952,
+      "required": true,
+      "role": "guest-prx"
+    },
+    {
+      "name": "scePsmf_library.prx",
+      "load_address": 841482240,
+      "required": true,
+      "role": "guest-prx"
+    },
+    {
+      "name": "scePsmfP_library.prx",
+      "load_address": 841975912,
+      "required": true,
+      "role": "guest-prx"
+    }
+  ],
+  "filesystem": {
+    "data_root": "place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted",
+    "memory_stick_root": "memstick",
+    "device_prefixes": [
+      "fatms0:",
+      "host0:",
+      "ms0:"
+    ]
+  },
+  "hle_profile": "hst-current",
+  "codegen_profile": "hst",
+  "feature_requirements": [
+    "allegrex-core",
+    "host-filesystem",
+    "psp-hle",
+    "sdl3",
+    "vulkan",
+    "windows-runtime"
+  ],
+  "verification_profile": "hst-private-route",
+  "notes": "Opt-in declarative HST build configuration. Contains no retail bytes, hashes, keys, recovered source, or private evidence; the HST manager consumes it only when -TitleManifest is supplied."
+}

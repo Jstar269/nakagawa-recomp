@@ -1,0 +1,25 @@
+{
+  "tool": "tools/build_public_export.py",
+  "profile": "public-safe-v1",
+  "source_commit": "8dfb7544befc65ccbfa4b76d8352c4dfe3a2eecf",
+  "profile_sha256": "90b28206c084300c788182a31273bf66d50a07f97d7a6e08174626119522581d",
+  "exported_file_count": 624,
+  "excluded_file_count": 15,
+  "excluded_paths": [
+    "font/jpn0.pgf",
+    "font/kr0.pgf",
+    "font/ltn0.pgf",
+    "font/ltn8.pgf",
+    "src/rt/pgd.c",
+    "src/rt/pgd.h",
+    "src/rt/pgf.c",
+    "src/rt/pgf.h",
+    "tools/pgd_decrypt.py",
+    "tools/pgd_e2e_harness.c",
+    "tools/pgd_test_keys.py",
+    "tools/test_pgd_c.py",
+    "tools/test_pgd_decrypt.py",
+    "tools/test_pgd_hardening.py",
+    "tools/test_pgd_malformed.py"
+  ]
+}

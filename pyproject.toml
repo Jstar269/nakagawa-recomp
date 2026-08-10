@@ -1,0 +1,39 @@
+# pyproject.toml — Nakagawa Recomp Python tooling configuration
+# Covers tools/ (codegen pipeline, analysis, testing)
+
+[project]
+name = "nakagawa-recomp-tools"
+version = "0.1.0"
+requires-python = ">=3.14,<3.15"
+# Dev tooling: generated Clang compilation database for IDE/clangd (see hst_manager.ps1).
+# Version-bounded for reproducible developer environments (0.10.x is the current line).
+dependencies = [
+    "compiledb>=0.10.7,<1.0",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+fix = false
+
+# Lint only the hand-written Python; skip generated/third-party
+src = ["tools"]
+extend-exclude = ["build", "third_party", "interface", "__pycache__"]
+
+[tool.ruff.lint]
+# Baseline correctness gate for the legacy tooling. Broader style/modernization
+# families currently produce hundreds of pre-existing findings; expand this list
+# incrementally as touched files are cleaned instead of mass-rewriting codegen.
+select = [
+    "E9",   # syntax/runtime parser failures
+    "F63",  # invalid comparisons and assertions
+    "F7",   # invalid control flow and definitions
+    "F82",  # undefined names
+]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["build/", "third_party/", "interface/"]

@@ -1,0 +1,1540 @@
+{
+  "schema_version": 1,
+  "audit": {
+    "date": "2026-08-05",
+    "base_commit": "4fc11d7806abc149e6435aecfdf86ed7e0c5a7b5",
+    "method": "per-file header reading, upstream-citation grep, git-history archaeology, independent SHA-1 NID derivation, and a mechanical cross-check of every tracked src/ source header against this ledger and NOTICE.md",
+    "model": "docs/provenance/INDEPENDENCE_MODEL.md",
+    "pgd_reconciliation": {
+      "date": "2026-08-09",
+      "base_commit": "72fe8739b77f6dc2d255544651849476b463e55e",
+      "method": "full public-source history and expression comparison plus recovered pre-Git/private filesystem timestamps, exact blob identity, archived object databases, unreachable-object audit, and July 17 to 18 chronology reconciliation",
+      "report": "docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md",
+      "result": "Python-first to C-port is high-confidence; PSP-specific BBMac/BBCipher/PGD flow is derived-translated; AES and later defensive/runtime hardening are independently expressed; no substantial near-verbatim Nakagawa function body was found"
+    },
+    "measured": {
+      "tracked_src_files": 81,
+      "tracked_src_sources": 75,
+      "declaring_derived_from_ppsspp": 11,
+      "declaring_derived_from_sal063": 15,
+      "declaring_no_derivation": 49,
+      "spdx_gpl_2_0_or_later": 74,
+      "spdx_gpl_3_0_or_later": 1,
+      "spdx_missing": 0,
+      "notice_derived_module_table_paths": 9,
+      "remeasured_at": "29943f54cbcbc44b8bae428832cebef82ec9d909",
+      "remeasure_note": "Refreshed after #289 added src/rt/watchpoints_file.{c,h} and watchpoints_file_selftest.c. The PPSSPP (11) and sal063 (15) declaration counts are unchanged, so the PROV-F1 contradictions are unaffected; this was verified by remeasurement rather than assumed."
+    },
+    "limits": [
+      "UPDATED 2026-08-09: the repository-wide sal063 comparison remains recorded in docs/provenance/SAL063_RETENTION_2026-08-06.md. Separate full-history, function-level comparisons now exist for PGF and PGD/amctrl in docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md and docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md. Neither may be generalized to other PPSSPP-attributed units.",
+      "Retention percentages are close upper bounds, not exact figures: longest-common-subsequence over normalized lines credits short or repetitive lines wherever they appear. Textual retention is also not a legal conclusion about what is protectable.",
+      "UPDATED 2026-08-09: the repository's first commit 7ac90b2 (2026-07-19, 'Moving to GitHub') is a squashed import, but recovered private-archive timestamps and exact blobs narrow PGD specifically to Python-first then C-port at high confidence. This exception does not generalize to other runtime files; discarded drafts and the exact source-consultation mix remain unrecoverable.",
+      "A record's classification is a conservative judgment. Where a header declares derivation that the body does not visibly exhibit, the declared derivation is retained rather than downgraded."
+    ]
+  },
+  "vocabulary": [
+    "project-authored-independent",
+    "behavior-informed",
+    "derived-translated",
+    "derived-data",
+    "generated-project-owned",
+    "upstream-third-party",
+    "unresolved"
+  ],
+  "evidence_tiers": {
+    "H": "measured on real Allegrex hardware via PSPLINK with recorded model/firmware/digest",
+    "S": "public specification, PSP ABI fact, PSPSDK declaration, or recomputable mathematical identity",
+    "A": "PSPAutotests-derived expected result",
+    "R": "differential agreement with another implementation (never sufficient for independence)",
+    "N": "no independent evidence; behavior believed because upstream does it"
+  },
+  "upstreams": {
+    "ppsspp": {
+      "name": "PPSSPP",
+      "url": "https://github.com/hrydgard/ppsspp",
+      "license": "GPL-2.0-or-later",
+      "pinned_revisions": {
+        "assets_and_fonts": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+        "nid_name_scrape": "f0c28c67446fd9a08b124ea2bfb0e997fe909de5",
+        "pgd_amctrl_initial": "a4f65624c3771708716e1ff5dcb40b586341c182",
+        "pgd_amctrl_review": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f"
+      }
+    },
+    "sal063": {
+      "name": "PSP Recompilation Project",
+      "url": "https://github.com/sal063/PSP-recompilation-project",
+      "license": "GPL-2.0-or-later",
+      "pinned_revisions": {}
+    },
+    "jpcsp": {
+      "name": "JPCSP",
+      "url": "https://github.com/jpcsp/jpcsp",
+      "license": "GPL-3.0-or-later",
+      "pinned_revisions": {
+        "pgf_java_initial": "900dcea943579f35d65f4e4b336f4c7f78478652",
+        "sce_font_info_initial": "f82a15e3f50dd82c87acec2c05c5c12a8ef64d3f",
+        "pre_ppsspp_comparison": "e7c70edf49cad2e4663298e3d59d4b61938b7ab7",
+        "pgd_amctrl_initial": "5d41d35d900ae2d44355f17295d653c535d0ff16",
+        "pgd_module_split": "3858c680a607a659fd5d35a2fec906fd08897248"
+      }
+    },
+    "intrafont": {
+      "name": "intraFont",
+      "url": "https://github.com/tpimh/intraFont",
+      "license": "CC-BY-SA-3.0",
+      "pinned_revisions": {
+        "initial_0_1": "fe79dcf62e242c5a9e346c9745a15f77f951f166",
+        "latest_pre_jpcsp": "5164d99ccb14041e2837f79877c34b2a50b65021"
+      }
+    },
+    "pspsdk": {
+      "name": "PSPSDK / pspdev",
+      "url": "https://github.com/pspdev",
+      "license": "BSD-3-Clause and per-component; notice at THIRD_PARTY_LICENSES/PSPSDK.txt",
+      "pinned_revisions": {
+        "distribution": "assets/upstream/pspdev.lock.json"
+      }
+    },
+    "ffmpeg": {
+      "name": "FFmpeg",
+      "url": "https://ffmpeg.org/",
+      "license": "LGPL-2.1-or-later",
+      "pinned_revisions": {
+        "atrac3p_decoder": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)"
+      }
+    },
+    "fake_np": {
+      "name": "Fake_NP by tpu (archived source package)",
+      "url": "https://endlessparadigm.com/forum/showthread.php?tid=25799",
+      "license": "NOASSERTION - no project-level reusable-license grant found in the recovered January 2011 package",
+      "pinned_revisions": {
+        "source_archive_sha256": "b65a17da0a6353ef7723ddc50e8d6f24f9cb10ab66e33feeb603e2b589a83f5c"
+      }
+    },
+    "kirk_engine_original": {
+      "name": "Draan original KIRK engine (surviving hexxellor mirror)",
+      "url": "https://github.com/hexxellor/kirk-engine",
+      "license": "NOASSERTION for the initial pre-license commits; GPLv3 text added at 8cfe6217eb588fb2cdb5bf8ba541bcb23f6ed6ec",
+      "pinned_revisions": {
+        "initial": "d1fa7cd591cdfc46cf1b1c61044566d0076f7b68",
+        "license_added": "8cfe6217eb588fb2cdb5bf8ba541bcb23f6ed6ec",
+        "final_master": "7704109e6b76676743c4bf795f6b9ff424c73cfe"
+      }
+    },
+    "tpunix_kirk_engine": {
+      "name": "tpunix kirk_engine",
+      "url": "https://github.com/tpunix/kirk_engine",
+      "license": "NOASSERTION - no repository license or per-file grant found at the pinned revisions",
+      "pinned_revisions": {
+        "git_import_from_hg": "a29c3991b34a1f8f05c256b0fc3c8f56299268dd",
+        "current_master": "ee09e86b743d1c147579ff21f46dd0874303daf3"
+      }
+    },
+    "sign_np": {
+      "name": "sign_np",
+      "url": "https://github.com/swarzesherz/sign_np",
+      "license": "GPLv3 license text at repository root; file-level applicability remains part of qualified review",
+      "pinned_revisions": {
+        "amctrl_import": "478dd112b714b5007960619eb856ece86d535de2",
+        "pgd_current_master": "ac77d56e13b5c6c60564100699560d12ff3f425f"
+      }
+    },
+    "kirk_engine_full": {
+      "name": "ProximaV kirk-engine-full",
+      "url": "https://github.com/ProximaV/kirk-engine-full",
+      "license": "GPLv3 license text imported with the inherited KIRK engine; no high-level amctrl/PGD source present",
+      "pinned_revisions": {
+        "initial_readme": "5561812233f81e7c4b4fdc76c89a2b6c783d8c7a",
+        "initial_code_import": "883f992c02f12639d66be64c42f9771ab5f93691",
+        "current_master": "3eb9bf14108215612f12e47907f9bb6a0c16394a"
+      }
+    }
+  },
+  "records": [
+  {
+   "id": "mem-debug-tooling",
+   "subsystem": "Local live-process debugger tooling (mem_debug.py) with fail-closed attachment, span and identity checks (issue #180)",
+   "paths": [
+    "tools/test_mem_debug.py"
+   ],
+   "classification": "project-authored-independent",
+   "upstream": null,
+   "upstream_paths": [],
+   "upstream_revision": null,
+   "upstream_license": null,
+   "behavior_sources": [
+    "src/rt/recomp.h guest memory model (SR_PHYS/SR_HOST/sr_inrange_n) as the authoritative span boundary"
+   ],
+   "evidence_tier": "S",
+   "replacement_state": "not-applicable",
+   "replacement_commit": null,
+   "owner_lane": "freebuff",
+   "uncertainty": [
+    "The unit tests exercise pure helpers and the simulation path only; live Win32 process access (EnumProcesses/ReadProcessMemory/WriteProcessMemory) cannot be exercised in CI and remains validated by manual Windows use.",
+    "guest_span_validate enforces RAM/VRAM/scratchpad regions and overflow-safe spans; it cannot detect a dishonest or stale g_mem pointer inside a live process beyond the PE prefix identity check."
+   ]
+  },
+    {
+      "id": "ge-software-rasterizer",
+      "subsystem": "Graphics / GE command list and software rasterizer",
+      "paths": ["src/rt/ge.c", "src/rt/ge_shared.h"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": [
+        "GPU/Software/DrawPixel.cpp",
+        "GPU/Software/Sampler.cpp",
+        "GPU/Software/Lighting.cpp",
+        "GPU/Software/Clipper.cpp",
+        "GPU/Software/BinManager.cpp",
+        "GPU/Software/TransformUnit.cpp",
+        "GPU/Common/VertexDecoderCommon.cpp",
+        "GPU/Common/SplineCommon.cpp",
+        "GPU/ge_constants.h",
+        "Core/MIPS/... (GECommands numbering)"
+      ],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["ppsspp software renderer (R)"],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "derived_units": [
+        "depth-range test (DrawSinglePixel)",
+        "vertex decode fixed-point scaling (Step_PosS8ToFloat / Step_TcU8ToFloat / weight decode)",
+        "swizzled texture offset (GetPixelDataOffset)",
+        "DXT 1/3-2/3 mix integer formulas",
+        "back-face culling and submission-order model (BinManager::AddTriangle, TransformUnit::SendTriangle)",
+        "screen-space rounding (int)(x*16 + 0.375) (ClipToScreenInternal)",
+        "primitive acceptance flags and near-clip interpolation (Clipper::ProcessTriangle / ProcessLine / ProcessRect / clip_interpolate)",
+        "spline weight calculation (Spline3DWeight::CalcWeights)",
+        "vertex/index advance (GPUCommon::AdvanceVerts)",
+        "CLUT load semantics (TextureCacheCommon::LoadClut)"
+      ],
+      "uncertainty": [
+        "34 in-file citations name specific upstream functions. This is the largest single derived unit in the tree (3353 LOC) and is not a near-term replacement candidate.",
+        "ge_shared.h: RESOLVED 2026-08-06 as a CHAIN, not a contradiction. 100% of sal063's ge_shared.h is retained here (68 shared lines, 46.3% of the current file), so the sal063 header is correct; and sal063's GE state structures are themselves PPSSPP-derived, so NOTICE.md's Core/GE attribution is also correct. The defect was an under-specified chain. Record both links rather than choosing one. See docs/provenance/SAL063_RETENTION_2026-08-06.md.",
+        "ge.c measured retention from sal063: 93.2% of upstream retained, 1829 shared lines, 61.9% of the current file. The immediate upstream is sal063; PPSSPP is the ultimate one."
+      ]
+    },
+    {
+      "id": "ge-vulkan-backend",
+      "subsystem": "Graphics / SDL3 + Vulkan presentation and GPU rasterizer",
+      "paths": [
+        "src/rt/gpu_sdl3vk/README.md",
+        "src/rt/gpu_sdl3vk/ge_gpu.c",
+        "src/rt/gpu_sdl3vk/ge_gpu.h",
+        "src/rt/gpu_sdl3vk/sdl3vk.c",
+        "src/rt/gpu_sdl3vk/sdl3vk.h",
+        "src/rt/gpu_sdl3vk/shader_manifest.json",
+        "src/rt/gpu_sdl3vk/shaders/psp.frag",
+        "src/rt/gpu_sdl3vk/shaders/psp.vert"
+      ],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": ["src/rt/gpu_sdl3vk/"],
+      "upstream_revision": "da17b0e",
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "src/rt/ge.c pixel rules (R, and ge.c is itself derived-translated)",
+        "Vulkan and SDL3 public specifications (S)"
+      ],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "measured_retention": {
+        "source": "docs/provenance/SAL063_RETENTION_2026-08-06.md",
+        "src/rt/gpu_sdl3vk/ge_gpu.c": {"upstream_retained_pct": 80.3, "current_from_upstream_pct": 36.1, "shared_lines": 1008},
+        "src/rt/gpu_sdl3vk/sdl3vk.c": {"upstream_retained_pct": 78.5, "current_from_upstream_pct": 50.3, "shared_lines": 322},
+        "src/rt/gpu_sdl3vk/sdl3vk.h": {"upstream_retained_pct": 100.0, "current_from_upstream_pct": 81.5, "shared_lines": 22},
+        "src/rt/gpu_sdl3vk/ge_gpu.h": {"upstream_retained_pct": 100.0, "current_from_upstream_pct": 10.7, "shared_lines": 13},
+        "shaders/psp.vert": "25 upstream lines -> 27 here; essentially inherited",
+        "shaders/psp.frag": "92 upstream lines -> 175 here; extended"
+      },
+      "uncertainty": [
+        "CORRECTION. Previously classified behavior-informed with PPSSPP as the upstream. IND-4 measured the IMMEDIATE upstream as sal063, with 80.3% of ge_gpu.c and 78.5% of sdl3vk.c retained and both headers at 100%. The renderer is not a Nakagawa original; it is a substantially retained sal063 component.",
+        "Relative to PPSSPP the characterization still holds and comes from sal063's own CREDITS.md: the renderer is an original implementation that does not reuse PPSSPP's GPU, but reproduces PSP/GE pixel rules derived from PPSSPP's software renderer, and is therefore a derivative work for licensing purposes. Two upstreams, two different relationships.",
+        "AI assistance is disclosed in-file, and sal063 discloses the same assistance for the same files."
+      ]
+    },
+    {
+      "id": "ge-shader-embeds",
+      "subsystem": "Graphics / GLSL sources and embedded SPIR-V",
+      "paths": ["src/rt/gpu_sdl3vk/psp_frag.inc", "src/rt/gpu_sdl3vk/psp_vert.inc"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": ["src/rt/gpu_sdl3vk/shaders/"],
+      "upstream_revision": "da17b0e",
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["deterministic glslang compilation of the GLSL in shaders/ (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "CORRECTION. Previously classified generated-project-owned on the basis that the GLSL was project-authored. It is not: psp.vert and psp.frag both exist in sal063, psp.vert essentially unchanged at 25 -> 27 lines. A deterministic build product inherits the provenance of its source, so these embeds are derived rather than project-owned.",
+        "Reproducibility is still gated by make shader-verify / shader-repro-verify against shader_manifest.json; that gate is about determinism, not provenance."
+      ]
+    },
+    {
+      "id": "ge-capture-replay",
+      "subsystem": "Graphics / GE command-list capture and offline replay",
+      "paths": [
+        "src/rt/ge_capture.c",
+        "src/rt/ge_capture.h",
+        "src/rt/ge_capture_selftest.c",
+        "src/rt/ge_replay.c",
+        "src/rt/gpu_coherence_selftest.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["project-owned capture container format (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "hle-core",
+      "subsystem": "HLE / NID registry, kernel objects, most PSP service handlers",
+      "paths": ["src/rt/hle.c"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": [
+        "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
+        "Core/HLE/sceCtrl.cpp (sample ring)",
+        "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
+        "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
+        "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
+        "Core/HLE/sceMpeg.cpp (delay constants)",
+        "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
+        "GPU/GPU.h (GE_STATUS layout)",
+        "Core/HW/Display.cpp (hCountPerVblank)"
+      ],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "PSPLINK hardware oracle for thread lifecycle, callback notify, semaphore poll/signal, thread-delete exit normalization (H)",
+        "PPSSPP HLE tables for NID routing (R)"
+      ],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "mixed": true,
+      "uncertainty": [
+        "7575 LOC. This record is deliberately conservative: the majority of the file is project-authored PSP ABI implementation, but it contains identified units modelled directly on PPSSPP structures, so the whole file is classified by its most-derived content.",
+        "Sub-unit classification is required before any part of this file can be relabelled. A whole-file replacement is explicitly a BAD candidate.",
+        "The 19 routed kernel issues (#1, #2, #13, #14, #16, #40, #61, #64, #72, #74, #78, #79, #80, #83, #84, #86, #87, #88, #89, #90, #91, #92, #93, #94) are the natural sub-unit boundaries: each one that lands with hardware evidence carves an independently-evidenced unit out of this file."
+      ]
+    },
+    {
+      "id": "hle-nid-name-table",
+      "subsystem": "HLE / NID-to-name diagnostic table",
+      "paths": ["src/rt/nid_names.h", "tools/nid_corpus.json"],
+      "classification": "derived-data",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/HLE/*.cpp function tables"],
+      "upstream_revision": "f0c28c67446fd9a08b124ea2bfb0e997fe909de5",
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "PSP NID derivation rule NID = SHA-1(export_name)[0:4] little-endian, as implemented by pspdev psp-build-exports (S)",
+        "PSPSDK header identifier corpus (S)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "replaced",
+      "replacement_commit": "IND-1, this branch",
+      "owner_lane": null,
+      "measurements": {
+        "tool": "tools/nid_name_proof.py",
+        "entries_before": 1623,
+        "entries_after": 1615,
+        "verified": 1463,
+        "verified_and_regenerable_from_pspsdk_headers": 840,
+        "unverified": 152,
+        "unverified_breakdown": {
+          "library-attributed": 54,
+          "unresolved": 88,
+          "editorial-alias": 10,
+          "emulator-internal-sentinel": 0
+        },
+        "copied_numeric_constants_removed": 1463,
+        "numeric_constants_still_stored": 152,
+        "hst_imported_nids_among_the_unverified": 0
+      },
+      "ind1_outcome": {
+        "step_a": "Removed the 8 sentinel entries after proving consumer behavior: sr_nid_name() has exactly two consumers, both fprintf(stderr) diagnostics in hle.c reached only when no handler is registered, both NULL-tolerant, and both print the raw NID regardless. Import resolution never touches the table. import_audit_gate reports the same 371 registrations before and after, and none of the 8 appear in HST's import set.",
+        "step_b": "Every retained entry now carries an evidence class in tools/nid_corpus.json: pspsdk-sourced 840, hash-verified 623, library-attributed 54, editorial-alias 10, unresolved 88.",
+        "step_c": "The NID is recomputed from the name at generation time for all 1463 derivable entries, so their numeric constants are physically absent from the tracked corpus. Only the 152 NIDs that genuinely cannot be derived are stored, and they now stand as the explicit visible residue. A test asserts that a derivable entry storing a NID is an error.",
+        "step_d": "The 54 library-attributed, 10 alias and 88 unresolved entries were retained. Failing the derivation rule means unproven, not wrong.",
+        "phase_e": "tools/gen_nidnames.py no longer reads a PPSSPP checkout; the tracked corpus is its only input.",
+        "classification_unchanged": "Still derived-data. The name list remains PPSSPP-suggested and no independence is claimed for it. What changed is how much is copied, not where the names came from."
+      },
+      "uncertainty": [
+        "SCOPE OF THE VERIFICATION. For a verified entry the claim is exactly: given the name, the NID is independently reproducible factual data. It does NOT establish independent provenance of the NAME LIST, originality of the surrounding table structure, correctness of the unverified entries, or absence of PPSSPP influence. 623 of the 1463 verified names were suggested by PPSSPP's tables and have no second source; only 840 are also regenerable from PSPSDK headers.",
+        "AN UNVERIFIED ENTRY IS NOT A WRONG ENTRY. Ten alternative derivations were tested against all 160 (big-endian prefix, other digest windows, trailing NUL, case variants, MD5, and library-prefixed names). None explained a single entry. The negative result means these names are neither confirmed nor refuted, not that they are incorrect.",
+        "The 54 library-attributed entries have the shape <Library>_<own NID in hex>. An earlier draft of this audit called them zero-information; that was wrong. The export name is unknown, but the entry does record which library owns the NID (sceUtility 9, sceImpose 5, sceMpeg 5, scePower 5, and 16 further libraries), and the bare hex the diagnostic prints does not carry that. They are retained.",
+        "The 10 editorial aliases are firmware-range suffixes on a base name that is itself present and verifiable in the same table (sceKernelSetCompiledSdkVersion at 0x7591c7db, scePowerSetClockFrequency). They are almost certainly not export names, but the NIDs they label are real. Retained and flagged.",
+        "The 8 sentinel entries (0x13370001, 0xc0de0001-3, 0x756e6e6f, 0x756e6f00, 0x756e6f10, 0xdeadbeaf) carry reserved __ identifiers and/or NID values no digest realistically produces; 0xc0de0001-0003 are sequentially allocated across three related names, which a hash cannot do. High confidence these are emulator-internal identifiers rather than firmware exports. This is a structural inference from the numeric shape, not a proof about PSP firmware.",
+        "The 88 unresolved names cluster as 71 sceNp*, 6 sceNet*, 6 sceKernel*, and 5 stragglers. The sceNp concentration is consistent with those libraries using another derivation, but no tested hypothesis confirms it.",
+        "TRAP: any identifier hashes to some 32-bit value. The PSPSDK header corpus produced 617 sce*/psp* tokens absent from the table, overwhelmingly SDK-internal helpers that are not firmware exports. The corpus may only CONFIRM a pair already believed real; it must never mint new entries."
+      ]
+    },
+    {
+      "id": "hle-dispatch-table",
+      "subsystem": "HLE / guest code-address dispatch",
+      "paths": ["src/rt/dispatch_table.h", "src/rt/dispatch_selftest.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["project-owned data structure; issue #45 contract (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "hle-event-flag-semantics",
+      "subsystem": "HLE / sceKernelEventFlag pattern and mode helpers",
+      "paths": ["src/rt/evf.h", "src/rt/evf_selftest.c"],
+      "classification": "behavior-informed",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/HLE/sceKernelEventFlag.cpp"],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["PPSSPP cross-check (R)", "source-owned standalone regression (S)"],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "issue #93",
+      "uncertainty": [
+        "Pure header with no runtime dependency and a standalone selftest, so the contract is already isolated. Its only missing ingredient for an independence claim is a hardware capture of the wait/clear/mode precedence. Strong Phase-A candidate; #93 owns the behavior."
+      ]
+    },
+    {
+      "id": "hle-pure-state-helpers",
+      "subsystem": "HLE / host-neutral pure helpers (SDK version, asset index, VFS path)",
+      "paths": [
+        "src/rt/asset_index.h",
+        "src/rt/asset_index_selftest.c",
+        "src/rt/sdkver.h",
+        "src/rt/sdkver_selftest.c",
+        "src/rt/vfs_path.h",
+        "src/rt/vfs_selftest.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["issue #19, #71, #223 contracts and source-owned selftests (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "hle-executable-tests",
+      "subsystem": "HLE / executable production-HLE regressions",
+      "paths": ["src/rt/hle_thread_selftest.c", "src/rt/intr_conformance.h"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["PSPLINK hardware oracle records (H)"],
+      "evidence_tier": "H",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "This is the project's strongest independence asset: it drives production NIDs and emits the record shape the hardware probe emits."
+      ]
+    },
+    {
+      "id": "cpu-core-runtime",
+      "subsystem": "CPU / CpuState, guest memory, dispatch, VFPU kernels and prefixes",
+      "paths": ["src/rt/recomp.c", "src/rt/recomp.h"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": [
+        "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
+        "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
+        "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
+        "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
+      ],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "PSP-3001 6.61-ARK PSPLINK capture of all eight VFPU transcendentals, docs/VFPU_ORACLE_BASELINE_2026-08-05.md (H)",
+        "MIPS32 / Allegrex ISA definition (S)"
+      ],
+      "evidence_tier": "H",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "The in-file comment calls the transcendental kernels 'exact ports of PPSSPP's table-based kernels'. As of the 2026-08-05 hardware capture that is no longer accurate: the implementations diverge from PPSSPP on six of eight operations and hardware agrees with Nakagawa on all eight. The comment overstates current derivation. Correcting it is an accuracy fix, not attribution retirement, and must not be read as removing derivation. See finding PROV-F3.",
+        "The lookup tables the kernels index remain PPSSPP-derived data; see record vfpu-transcendental-tables."
+      ]
+    },
+    {
+      "id": "vfpu-interpreter",
+      "subsystem": "CPU / callable VFPU interpreter",
+      "paths": ["src/rt/vfpu_interp.c"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/MIPS/MIPSVFPUUtils.cpp", "Core/MIPS/MIPS.cpp (vcst constants)"],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "VFPU register addressing bit-field decode (S, but currently cited to PPSSPP rather than to a spec or measurement)",
+        "vcst literal float32 bit patterns (S: fixed constants, recomputable)"
+      ],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "hardware_evidence": {
+        "question": "HQ-1",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/296",
+        "fixture": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
+        "covers": "vreg_idx / vreg_indices only",
+        "scalar_encodings": "128 of 128 measured",
+        "wide_encodings": "14 of 512 measured",
+        "tier": "H for the measured encodings; the remaining 498 wide encodings are covered only by derived cross-implementation tests (tier S)"
+      },
+      "uncertainty": [
+        "PARTIALLY RESOLVED 2026-08-06 by IND-2. vreg_idx's correctness now rests on a PSP-3001 measurement rather than on agreement with PPSSPP, for 128/128 scalar and 14/512 wide encodings. Both discriminating questions were answered: triple width selects its row from bit 6 alone, and transpose wraps as (row + lane) & 3 rather than saturating.",
+        "The measurement did NOT touch mreg_idx (matrix addressing), which still rests on PPSSPP alone. The file-level classification stays derived-translated: an authority change for one function does not re-author the file, and the PPSSPP origin of this code is retained in full.",
+        "No production behavior changed. Hardware confirmed the existing decode, so IND-2 was an evidence and attribution-accuracy change rather than a rewrite."
+      ]
+    },
+{
+      "id": "vfpu-interp-executable-regression",
+      "subsystem": "CPU / executable VFPU interpreter regression suite (issue #184)",
+      "paths": [
+        "src/rt/vfpu_interp_selftest.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "issue #184 contract: all-or-nothing quad memory ops, reserved vcrs widths, active-lane vrot overlap"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "The test drives the real derived interpreter white-box; it asserts the #184 fail-closed contract, not PPSSPP numeric agreement."
+      ]
+    },
+    {
+      "id": "vfpu-transcendental-tables",
+      "subsystem": "CPU / VFPU transcendental lookup data",
+      "paths": ["assets/vfpu/vfpu_asin_lut65536.dat", "assets/vfpu/vfpu_asin_lut_deltas.dat", "assets/vfpu/vfpu_asin_lut_indices.dat", "assets/vfpu/vfpu_exp2_lut.dat", "assets/vfpu/vfpu_exp2_lut65536.dat", "assets/vfpu/vfpu_log2_lut.dat", "assets/vfpu/vfpu_log2_lut65536.dat", "assets/vfpu/vfpu_log2_lut65536_quadratic.dat", "assets/vfpu/vfpu_rcp_lut.dat", "assets/vfpu/vfpu_rsqrt_lut.dat", "assets/vfpu/vfpu_sin_lut8192.dat", "assets/vfpu/vfpu_sin_lut_delta.dat", "assets/vfpu/vfpu_sin_lut_exceptions.dat", "assets/vfpu/vfpu_sin_lut_interval_delta.dat", "assets/vfpu/vfpu_sqrt_lut.dat"],
+      "classification": "derived-data",
+      "upstream": "ppsspp",
+      "upstream_paths": ["assets/vfpu/"],
+      "upstream_revision": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "upstream_license": "GPL-2.0-or-later (program license; see NOTICE.md for the data caveat)",
+      "behavior_sources": ["byte-identity verification against upstream (S)", "PSP-3001 result agreement over the 46-input oracle vector (H)"],
+      "evidence_tier": "H",
+      "replacement_state": "blocked",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "#282 authenticates these tables (SHA-256, fail-closed loader). Authentication is supply-chain hygiene; it does not make the data independent.",
+        "These tables are correction/delta data over a bounded index space. Whether they can be independently REGENERATED from hardware probes is an open, answerable question and is backlog item IND-5. Bit-exactness is the requirement; do not modify them to remove provenance.",
+        "The 2026-08-05 hardware capture validates the kernels that INDEX these tables over 46 inputs. It does not validate every table entry."
+      ]
+    },
+    {
+      "id": "vfpu-table-loader",
+      "subsystem": "CPU / fail-closed VFPU table loader and validator",
+      "paths": ["src/rt/vfpu_tables.c", "src/rt/vfpu_tables.h", "src/rt/vfpu_tables_selftest.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["issue #187 contract; NIST SHA-256 known-answer vectors (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": ["The loader is independent; the data it loads is not. Keep the two records distinct."]
+    },
+    {
+      "id": "vfpu-addressing-evidence",
+      "subsystem": "CPU / VFPU addressing hardware fixture and cross-implementation gate",
+      "paths": ["fixtures/vfpu_addressing/hardware_vfpu_addr_001.json", "src/rt/vfpu_addr_selftest.c", "tools/test_vfpu_addressing.py"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "PSP-3001 6.61-ARK measurement of VFPU vector-register addressing, HQ-1 / issue #296 (H)",
+        "cross-implementation identity between tools/codegen.py and the production C vreg_idx over the full 512-entry domain (S, derived)"
+      ],
+      "evidence_tier": "H",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "The fixture carries the PUBLISHED results and their provenance only. Raw captures stay in the gitignored oracle/hardware-results/ area and are deliberately not committed; a test asserts no private capture path leaks into the tracked file.",
+        "The selftest includes vfpu_interp.c and calls the real vreg_idx rather than restating the algorithm, so a disagreement with codegen.py is a genuine two-implementation divergence rather than a test agreeing with itself. The stub block it carries is unreachable from vreg_idx and exists only so the translation unit links without the runtime.",
+        "The 498 unmeasured wide encodings are asserted only for consistency and in-range/bijection properties. Those tests are labelled derived in the test class names and must never be cited as hardware evidence."
+      ]
+    },
+    {
+      "id": "vfpu-oracle-host",
+      "subsystem": "CPU / Nakagawa-side VFPU oracle emitter",
+      "paths": ["src/rt/vfpu_oracle_host.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["docs/HARDWARE_ORACLE.md Loop A record shape (S)"],
+      "evidence_tier": "H",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "vfpu-differential-fuzz",
+      "subsystem": "CPU / VFPU differential fuzz harness",
+      "paths": ["src/rt/vfpu_fuzz.c"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["differential comparison against sr_vfpu_interp (R)"],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Declared sal063 lineage; retention unmeasured. See finding PROV-F2.",
+        "This harness compares generated code against the interpreter, and both route through the same tables and range reduction. It is a codegen test, not an accuracy test, and cannot surface an accuracy divergence."
+      ]
+    },
+    {
+      "id": "scheduler",
+      "subsystem": "Scheduler / cooperative PSP thread scheduling",
+      "paths": ["src/rt/sched.c"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "PSPLINK thread lifecycle and exit-normalization captures (H)",
+        "source-owned sched_selftest and hle_thread_selftest (S)"
+      ],
+      "evidence_tier": "H",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Declared sal063 lineage; retention unmeasured. The file contains zero PPSSPP citations and its architecture (sr_coro extraction, PSP priority semantics, SR_YIELD contract) is documented as project work, so the declared derivation may materially overstate what remains. Measuring it requires a source comparison against sal063, which this audit did not perform. See finding PROV-F2."
+      ]
+    },
+    {
+      "id": "coroutine-primitive",
+      "subsystem": "Scheduler / platform coroutine primitive",
+      "paths": ["src/rt/sr_coro.c", "src/rt/sr_coro.h", "src/rt/sr_coro_selftest.c", "src/rt/sched_selftest.c", "src/rt/heap_selftest.c", "src/rt/profiler_selftest.c", "src/rt/guestmem_selftest.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["Windows fiber and POSIX ucontext public APIs (S)", "source-owned selftests (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "savedata",
+      "subsystem": "Services / sceUtility savedata",
+      "paths": ["src/rt/savedata.c"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/Dialog/SavedataParam.h", "Core/Dialog/SavedataParam.cpp"],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["PPSSPP SavedataParam field offsets and result codes (R)"],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "issue #91",
+      "uncertainty": [
+        "18 in-file citations, several naming SavedataParam member functions and specific error constants. NOTICE.md's derived-module table does NOT list this file even though its header declares PPSSPP derivation. See finding PROV-F1.",
+        "The savedata parameter block layout is a PSP ABI fact that hardware or PSPAutotests could establish independently; the error-code precedence is the part that currently rests on PPSSPP alone."
+      ]
+    },
+    {
+      "id": "mpeg-psmf",
+      "subsystem": "Services / sceMpeg and PSMF demux",
+      "paths": ["src/rt/mpeg.c"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/HLE/sceMpeg.cpp"],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["PPSSPP sceMpeg control flow (R)"],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "OpenCode / issue #31, #32",
+      "uncertainty": [
+        "Self-describes as 'a faithful port of PPSSPP's sceMpeg control flow'. This is the least ambiguous derived-translated record in the tree.",
+        "Actively owned by another lane. Audit only; do not implement here."
+      ]
+    },
+    {
+      "id": "audio-mixer",
+      "subsystem": "Services / sceAudio channel mixing",
+      "paths": ["src/rt/audio.c"],
+      "classification": "unresolved",
+      "upstream": "ppsspp",
+      "upstream_paths": ["Core/HLE/sceSasCore.cpp", "Core/Audio/"],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [],
+      "evidence_tier": "N",
+      "replacement_state": "blocked",
+      "replacement_commit": null,
+      "owner_lane": "OpenCode / issue #32, #70, #75",
+      "measured_retention": {
+        "source": "docs/provenance/SAL063_RETENTION_2026-08-06.md",
+        "upstream_retained_pct": 39.0,
+        "current_from_upstream_pct": 35.5,
+        "shared_lines": 39
+      },
+      "uncertainty": [
+        "PARTIALLY RESOLVED 2026-08-06. The sal063 half of the contradiction is confirmed: 39.0% of sal063's audio.c is retained here, so the file header is correct.",
+        "The PPSSPP half is now weakly contra-indicated but NOT disproved. sal063's own CREDITS.md itemizes its PPSSPP translations file by file and does not list audio.c, and the file body cites PPSSPP nowhere, yet NOTICE.md attributes it to Core/HLE/sceSasCore.cpp and Core/Audio/. That attribution is uncorroborated by the immediate upstream's own itemization. Absence from an upstream list is evidence, not proof.",
+        "Stays unresolved pending a PPSSPP source comparison. Do not remove the NOTICE attribution on the strength of this measurement.",
+        "Actively owned by another lane. Audit only."
+      ]
+    },
+    {
+      "id": "pgf-font",
+      "subsystem": "Services / PGF font parser and glyph rasterizer",
+      "paths": ["src/rt/pgf.c", "src/rt/pgf.h"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": [
+        "Core/Font/PGF.cpp",
+        "Core/Font/PGF.h",
+        "Core/HLE/sceFont.cpp"
+      ],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later, with a JPCSP-copied-code chain that PPSSPP itself records as effectively GPL-3.0",
+      "behavior_sources": [
+        "Full-history PPSSPP/JPCSP/intraFont function comparison in docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md (R; provenance evidence, not independence)",
+        "2006-2007 ps2dev forum PGF findings and YAPSPD section 26.9 (S; format facts only)",
+        "PSPAutotests font declarations and char/shadow probes at 1dcefebeb0e9f3b3597ce1c97c0eac92088d8e6b (A; observable API behavior only)"
+      ],
+      "evidence_tier": "N",
+      "replacement_state": "blocked",
+      "replacement_commit": null,
+      "owner_lane": "issue #98",
+      "measured_retention": {
+        "source": "docs/provenance/SAL063_RETENTION_2026-08-06.md",
+        "sal063_revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "sal063_normalized_lines_retained": 277,
+        "sal063_normalized_lines_total": 298,
+        "upstream_retained_pct": 93.0,
+        "current_from_upstream_pct": 70.1
+      },
+      "revision_evidence": {
+        "exact_revision_proven": false,
+        "earliest_matching_content_revision": "ca4a0a848a1fc2896236a49f3e8f046eef73cff1",
+        "strongest_repository_snapshot_candidate": "4e109dd6ae34cbcb39751bb7647d345569700161",
+        "candidate_pgf_cpp_blob": "b3503a727f7e19bb3f2df7847c3315a2955c6b45",
+        "latest_public_master_before_sal063_root": "72fdcb25d96039cbda314ec08728ee8f782b10a6",
+        "basis": [
+          "sal063 pins its direct sceMpeg port to 4e109dd6 and records a full PPSSPP checkout",
+          "sal063's 1619-entry NID set exactly regenerates from PPSSPP Core/HLE at 4e109dd6 and remains unchanged through 72fdcb25",
+          "PGF content matches 4e109dd6 and sal063 omits the later five-line PPSSPP GPU flush",
+          "the sal063 PGF credit names no revision and the checkout is absent from public Git"
+        ]
+      },
+      "lineage_sources": [
+        {
+          "upstream": "sal063",
+          "initial_revision": "f3123f30fc422e9567fd7a538723a610d5c8f5f6",
+          "paths": ["src/rt/pgf.c", "src/rt/pgf.h"],
+          "ai_and_translation_disclosure_revision": "496b8856f500b4a24242ccfe2d00141383478b61"
+        },
+        {
+          "upstream": "jpcsp",
+          "comparison_revision": "e7c70edf49cad2e4663298e3d59d4b61938b7ab7",
+          "paths": [
+            "src/jpcsp/HLE/kernel/types/SceFontInfo.java",
+            "src/jpcsp/format/PGF.java",
+            "src/jpcsp/util/Debug.java",
+            "src/jpcsp/HLE/modules/sceFont.java"
+          ]
+        },
+        {
+          "upstream": "intrafont",
+          "initial_revision": "fe79dcf62e242c5a9e346c9745a15f77f951f166",
+          "latest_pre_jpcsp_revision": "5164d99ccb14041e2837f79877c34b2a50b65021",
+          "paths": ["intraFont.c", "README", "LICENSE"]
+        }
+      ],
+      "derived_units": [
+        "bit reader and consume helper",
+        "eager header/table/charmap/pointer/glyph construction flow",
+        "character glyph field and indexed-or-inline metric decoding",
+        "character lookup and alternate-character fallback ordering",
+        "font-info and char-info writer organization",
+        "pixel-format writer and nibble-RLE decoder",
+        "PPSSPP two-axis subpixel blend"
+      ],
+      "uncertainty": [
+        "sal063's pgf.c/pgf.h and CREDITS.md expressly identify a C port of PPSSPP Core/Font/PGF.cpp; sal063 separately discloses substantial Anthropic Claude assistance for PPSSPP C++-to-C translation and itemizes PGF in that translation list. No file-specific prompt or transcript is public.",
+        "The exact PPSSPP revision remains unproven. upstream_revision intentionally remains null: 4e109dd6 is the strongest candidate, ca4a0a8 is the inherited-content floor, and 72fdcb25 is the public-history upper endpoint before sal063's root.",
+        "Lineage chain: Nakagawa -> sal063 -> PPSSPP PGF/sceFont -> JPCSP SceFontInfo/PGF/Debug/sceFont -> intraFont. Public sources independently establish many PGF format facts; whether protectable intraFont expression flowed downstream is a qualified-review question, not decided by this ledger.",
+        "Nakagawa-first-visible and later work adds ownership/bounds hardening, memory/file wrappers, cleanup, HST style glue, by-ID drawing, precise VRAM invalidation, wide-path support, and the public-safe fail-closed seam. Individual authorship for work already present in squashed commit 7ac90b25 is unrecoverable.",
+        "EXPLICITLY OUT OF SCOPE for replacement while #98 is open. Do not write an 'independent' PGF parser as a way to close #98; that is a legal question, not an engineering one."
+      ]
+    },
+    {
+      "id": "pgf-public-safe-seam",
+      "subsystem": "Services / PGF fail-closed backend and API seam",
+      "paths": ["src/rt/pgf_api.h", "src/rt/pgf_unavailable.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["docs/PUBLIC_SOURCE_PROFILE.md public-safe-v1 contract (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": ["Deliberately does not fabricate fonts or glyph success."]
+    },
+    {
+      "id": "replacement-pgf-binaries",
+      "subsystem": "Assets / replacement PGF font binaries",
+      "paths": ["font/jpn0.pgf", "font/kr0.pgf", "font/ltn0.pgf", "font/ltn8.pgf", "font/README.md", "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt"],
+      "classification": "unresolved",
+      "upstream": "ppsspp",
+      "upstream_paths": ["assets/flash0/font/"],
+      "upstream_revision": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "upstream_license": "UNRESOLVED - byte identity to PPSSPP is proven, but a font binary shipped inside a GPL program does not inherit that program's license",
+      "behavior_sources": [],
+      "evidence_tier": "N",
+      "replacement_state": "blocked",
+      "replacement_commit": null,
+      "owner_lane": "issue #99",
+      "uncertainty": [
+        "Family-level lineage evidence exists (Source Han Sans for jpn0/kr0; Ume Hy Gothic for ltn0/ltn8) but the exact source release, all later PGF edits, and the required notices are unproven.",
+        "Excluded from the public-safe-v1 profile.",
+        "Do NOT generate similar-looking replacement fonts and call this solved."
+      ]
+    },
+    {
+      "id": "pgd-amctrl-python-reference",
+      "subsystem": "Tools / standalone PGD (amctrl) implementation and immediate source for the C port",
+      "paths": ["tools/pgd_decrypt.py"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": ["ext/libkirk/amctrl.c", "Core/HLE/sceIo.cpp PGD integration at the initial import"],
+      "upstream_revision": "a4f65624c3771708716e1ff5dcb40b586341c182 (initial PGD/amctrl import); f0baf3ade7bcb6c86f0835962b36eb4e51559d8f (original comparison pin)",
+      "upstream_license": "GPL-2.0-or-later in PPSSPP; earlier and lateral tpu/JPCSP/tpunix/sign_np lineage has mixed or unresolved declarations requiring qualified review",
+      "behavior_sources": [
+        "FIPS-197 AES field definition (S)",
+        "tpu Fake_NP January 2011 amctrl source package (R/provenance)",
+        "JPCSP CryptoEngine PGD/amctrl at 5d41d35d900ae2d44355f17295d653c535d0ff16 (R/provenance)",
+        "tpunix kirk_engine a29c3991b34a1f8f05c256b0fc3c8f56299268dd and sign_np ac77d56e13b5c6c60564100699560d12ff3f425f (R/provenance)",
+        "ProximaV kirk-engine-full 5561812233f81e7c4b4fdc76c89a2b6c783d8c7a..3eb9bf14108215612f12e47907f9bb6a0c16394a (KIRK-core evidence only; not high-level PGD ancestry)"
+      ],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "issue #104",
+      "uncertainty": [
+        "Recovered July 18 timestamps/blobs support Python-first to C-port at high confidence, but the exact source-by-source consultation mix during Python authoring is unrecoverable.",
+        "The PSP-specific BBMac/BBCipher/PGD flow is derived-translated. The table-free AES primitive and CLI/error organization are independently expressed standard/project code within this mixed file.",
+        "No substantial near-verbatim Nakagawa function body was found; that does not establish implementation independence.",
+        "Ships no title key or PSP platform data. The ordinary public-safe-v1 candidate excludes this tool."
+      ]
+    },
+    {
+      "id": "pgd-amctrl-runtime-core",
+      "subsystem": "Services / private-development PGD (amctrl) runtime core",
+      "paths": ["src/rt/pgd.c", "src/rt/pgd.h"],
+      "classification": "derived-translated",
+      "upstream": "ppsspp",
+      "upstream_paths": ["ext/libkirk/amctrl.c", "Core/HLE/sceIo.cpp PGD integration at the initial import"],
+      "upstream_revision": "a4f65624c3771708716e1ff5dcb40b586341c182 (initial PGD/amctrl import); f0baf3ade7bcb6c86f0835962b36eb4e51559d8f (original comparison pin)",
+      "upstream_license": "GPL-2.0-or-later in PPSSPP; earlier and lateral tpu/JPCSP/tpunix/sign_np lineage has mixed or unresolved declarations requiring qualified review",
+      "behavior_sources": [
+        "tools/pgd_decrypt.py immediate implementation source for the C port (repository chronology; not an independent specification)",
+        "FIPS-197 AES field definition (S)",
+        "tpu/JPCSP/PPSSPP/tpunix/sign_np public PGD/amctrl implementation family (R/provenance)",
+        "ProximaV kirk-engine-full KIRK-core history only (R/provenance; no amctrl/PGD layer)"
+      ],
+      "evidence_tier": "R",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "issue #104",
+      "uncertainty": [
+        "The PSP-specific BBMac/BBCipher/PGD flow is a direct Python-to-C port and remains derived-translated. The computed AES body and later size, overflow, allocation, streaming, cleanup, and key-externalization hardening are independently expressed within this mixed file.",
+        "No substantial near-verbatim Nakagawa function body was found. Exact upstream contribution at function-line granularity remains unrecoverable.",
+        "Issue #104 remains open for qualified licensing/legal/anti-circumvention review; this engineering classification is not clearance.",
+        "Ships no title key or PSP platform data and fails closed without local data. Excluded from public-safe-v1."
+      ]
+    },
+    {
+      "id": "pgd-public-safe-seam",
+      "subsystem": "Services / PGD API and fail-closed public-safe backend",
+      "paths": ["src/rt/pgd_api.h", "src/rt/pgd_unavailable.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["project-owned public-safe-v1 exclusion policy and API seam (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": "279370ef9982c10487407ec1a95008bbbcdbe9e0",
+      "owner_lane": "issue #104",
+      "uncertainty": [
+        "This record covers only the API and unavailable backend. It does not reclassify or clear the excluded PGD/amctrl implementation."
+      ]
+    },
+    {
+      "id": "media-decode-backends",
+      "subsystem": "Services / H.264 decode backends and seam",
+      "paths": ["src/rt/h264_null.c", "src/rt/sr_h264.h"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["project-owned backend seam (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "media-decode-mediafoundation",
+      "subsystem": "Services / Windows Media Foundation H.264 backend",
+      "paths": ["src/rt/h264_mf.c"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["Microsoft Media Foundation public API (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Declared sal063 lineage; retention unmeasured. The described work (program-stream demux to annex-B, Media Foundation transform) is Windows-specific and unlikely to exist in a PSP recompilation toolkit, so this header may be boilerplate. See finding PROV-F2."
+      ]
+    },
+    {
+      "id": "iso-vfs",
+      "subsystem": "Services / ISO9660 virtual filesystem",
+      "paths": ["src/rt/iso.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["ECMA-119 / ISO 9660, Joliet and Rock Ridge public specifications (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "iso-vfs-header",
+      "subsystem": "Services / ISO VFS interface header",
+      "paths": ["src/rt/iso.h"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Declared sal063 lineage while its implementation file iso.c declares none. A header/implementation attribution split within one component is itself a signal that the headers are unreliable. See finding PROV-F2."
+      ]
+    },
+    {
+      "id": "watchpoint-artifact-parser",
+      "subsystem": "Host / bounded parser for the derived watchpoints.json artifact",
+      "paths": ["src/rt/watchpoints_file.c", "src/rt/watchpoints_file.h", "src/rt/watchpoints_file_selftest.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "the hst-watchpoints v1 envelope, a format defined by this project's own dashboard writer interface/src/lib/recompiler/watchpoint-file.mjs (S)",
+        "source-owned round-trip corpus: the selftest's headline fixture is the exact byte output of that writer for a fixed watchpoint set and pinned timestamp (S)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "Freebuff A / issue #188",
+      "uncertainty": [
+        "Classified on evidence, not on who or what authored it. Four independent grounds: the file format is defined by this project's own writer and has no external specification or implementation to derive from; the three files declare no upstream and cite none; no third-party JSON parser is vendored or paraphrased (the reader is a hand-rolled recursive descent whose decomposition follows the format's own grammar); and the component implements no PSP guest-visible behavior at all, so no emulator has an analogue that could have served as a source.",
+        "The selftest is grouped with the production pair because it shares their provenance exactly. Its distinct role is evidentiary: it is the source-owned corpus that makes the tier-S claim checkable, not merely asserted.",
+        "src/rt/debug.c now consumes this parser, replacing an ad-hoc strstr line scanner. That is a bounding and correctness change within an already project-authored component and does not alter debug.c's classification."
+      ]
+    },
+    {
+      "id": "present-capture-policy",
+      "subsystem": "Host / present-truthful frame capture slot policy and selftest",
+      "paths": ["src/rt/fbcap_policy.c", "src/rt/fbcap_policy.h", "src/rt/gpu_capture_selftest.c"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "source-owned selftest corpus: gpu_capture_selftest.c drives the production present path with synthetic pixels and byte-checks the published P6 PPMs (S)",
+        "SR_FBDUMP exit-status contract defined in the project's own docs/DEBUGGING.md and fbcap_policy.h (S)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "issue #57",
+      "uncertainty": [
+        "These three files are original host-side engineering: the slot policy is a pure decision table with no external specification or implementation to derive from, and the selftest is a source-owned harness. The capture machinery itself (armed pre-present, recorded inside the presenting command buffer, atomic P6 publication) lives inside src/rt/gpu_sdl3vk/sdl3vk.c and remains covered by the ge-vulkan-backend record's derived-translated classification; this record covers only the policy and the selftest entry point that prove it.",
+        "gpu_capture_selftest.c is grouped with the production pair because it shares their provenance exactly; its distinct role is evidentiary — it is the source-owned corpus that makes the tier-S claim checkable."
+      ]
+    },
+    {
+      "id": "host-shell-and-io",
+      "subsystem": "Host / window, input, OSK, guest printf, debug, perf",
+      "paths": [
+        "src/rt/debug.c",
+        "src/rt/debug.h",
+        "src/rt/debug_selftest.c",
+        "src/rt/perf.c",
+        "src/rt/perf.h",
+        "src/rt/guest_printf.c",
+        "src/rt/guest_printf_selftest.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["PSP EABI calling convention (S)", "source-owned selftests (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": []
+    },
+    {
+      "id": "host-shell-inherited",
+      "subsystem": "Host / GUI shell, OSK dialog, ELF driver, function differ",
+      "paths": ["src/rt/gui.c", "src/rt/osk_win.c", "src/rt/driver.c", "src/rt/funcdiff.c"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": ["SDL3 and Win32 public APIs (S)"],
+      "evidence_tier": "N",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Declared sal063 lineage; retention unmeasured. See finding PROV-F2.",
+        "driver.c and funcdiff.c both consume the PPSSPP-captured oracle trace format. Consuming an oracle format is not derivation of the emulator; the trace format itself is documented in tools/TRACE_FORMAT.md."
+      ]
+    },
+    {
+      "id": "reference-interpreter",
+      "subsystem": "Reference / independent C++ MIPS interpreter",
+      "paths": ["src/ref/cpu.h", "src/ref/interp.cpp", "src/ref/interp.h", "src/ref/run_elf.cpp", "src/ref/selftest.cpp"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "MIPS32 / Allegrex ISA definition (S)",
+        "hand-computed expected values in selftest.cpp (S)",
+        "PPSSPP oracle trace comparison (R)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": "issue #36",
+      "uncertainty": [
+        "Declared sal063 lineage. LEGAL_REWRITE_ASSESSMENT.md tier 2 additionally flags that these files mirror a number of PPSSPP integer/FPU semantics; whether that is public ISA behavior or protectable PPSSPP expression is an open factual question requiring source comparison.",
+        "selftest.cpp states its expected values are hand-computed from MIPS semantics rather than captured from the interpreter's own output. That is a genuine independence asset and should be preserved and extended (#36).",
+        "cpu.h mirrors src/rt/recomp.h's CpuState ABI, which is itself derived-translated."
+      ]
+    },
+    {
+      "id": "recompiler-pipeline-inherited",
+      "subsystem": "Toolchain / static recompiler pipeline, inherited core",
+      "paths": ["tools/prxload.py", "tools/imports.py", "tools/analyze.py", "tools/codegen.py", "tools/codegen_gate.py", "tools/microtest_gate.py", "tools/gen_microtest.py", "tools/nidseq.py", "tools/tracediff.py", "tools/funcdiff_cmp.py", "tools/ppm2png.py", "tools/ppmdiff.py", "tools/vfpu_fuzz_gen.py"],
+      "classification": "derived-translated",
+      "upstream": "sal063",
+      "upstream_paths": ["tools/"],
+      "upstream_revision": "da17b0e",
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [
+        "MIPS32 and Allegrex ISA definitions (S)",
+        "PSP PRX/ELF relocation format (S)",
+        "PPSSPP MIPSTables.cpp used to confirm Allegrex MADD/MSUB live in SPECIAL rather than SPECIAL2 (R)",
+        "the private HST ELF as a decoding witness (R)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-started",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "measured_retention": {
+        "source": "docs/provenance/SAL063_RETENTION_2026-08-06.md",
+        "tools/codegen.py": {"upstream_retained_pct": 83.9, "current_from_upstream_pct": 37.5, "shared_lines": 617},
+        "tools/analyze.py": {"upstream_retained_pct": 86.2, "current_from_upstream_pct": 43.7, "shared_lines": 280},
+        "tools/prxload.py": {"upstream_retained_pct": 73.6, "current_from_upstream_pct": 23.4, "shared_lines": 81},
+        "tools/imports.py": {"upstream_retained_pct": 71.2, "current_from_upstream_pct": 19.8, "shared_lines": 47},
+        "tools/tracediff.py": {"upstream_retained_pct": 96.3, "current_from_upstream_pct": 96.3, "shared_lines": 78},
+        "tools/funcdiff_cmp.py": {"upstream_retained_pct": 100.0, "current_from_upstream_pct": 100.0, "shared_lines": 37}
+      },
+      "uncertainty": [
+        "CORRECTION. An earlier version of this record said the pipeline is 'overwhelmingly project-authored'. IND-4 measured that as false: these files came from sal063 and a large majority of sal063's pipeline code is still present. None of them declares any derivation, and NOTICE.md has no per-file sal063 inventory. See finding PROV-F7.",
+        "The pipeline is genuinely EXTENDED -- codegen more than doubled, and function discovery, chunking, continuation catalogs and the emitter are real additions -- but extension is not authorship of the base.",
+        "Five PPSSPP citations remain in codegen.py. IND-2 (2026-08-06) resolved ONE: vreg_indices is now backed by a real-PSP measurement (HQ-1, issue #296) rather than by emulator agreement, for all 128 scalar encodings and 14 of 512 wide encodings. Its PPSSPP origin is retained and unchanged; what moved is the behavioral authority, not the attribution.",
+        "The other four are NOT covered by HQ-1 and remain PPSSPP-only: vreg_names (a separate GetVectorRegs naming space used for the VROT overlap quirk), mreg_index (matrix addressing, never probed), the packed-size destination choice oz_n at codegen.py:464 (it calls the measured function, but which size it passes was not probed), and the MADD/MSUB SPECIAL-vs-SPECIAL2 confirmation. The vreg_indices measurement must not be read as covering these.",
+        "Absence of a citation is evidence of undocumented reasoning, not proof of independence.",
+        "codegen.py contains NULL_BASE_WORD_LOADS, an HST-specific compatibility surface tracked by #20 and relevant to Product-3 generalization (#197, #151)."
+      ]
+    },
+    {
+      "id": "recompiler-pipeline-original",
+      "subsystem": "Toolchain / static recompiler pipeline, Nakagawa additions",
+      "paths": ["tools/host_stubs.py", "tools/elf_bounds.py", "tools/discovery_contract.py", "tools/psp_import_table.py"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["PSP PRX/ELF format and import-table layout (S)", "source-owned tests under tools/test_*.py (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Verified absent from the sal063 upstream tree at da17b0e, so these are genuine Nakagawa additions rather than extensions of inherited files."
+      ]
+    },
+    {
+      "id": "nid-name-generator",
+      "subsystem": "Toolchain / NID name table generator",
+      "paths": ["tools/gen_nidnames.py", "tools/test_gen_nidnames.py"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "documented PSP NID derivation rule as implemented by pspdev psp-build-exports (S)",
+        "the tracked corpus tools/nid_corpus.json, which is a separate derived-data record (S)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "replaced",
+      "replacement_commit": "IND-1, this branch",
+      "owner_lane": null,
+      "uncertainty": [
+        "Before IND-1 this tool scraped PPSSPP's Core/HLE/*.cpp and was the only place where a PPSSPP SOURCE CHECKOUT was required to reproduce a tracked artifact. It now reads only the tracked corpus and recomputes each derivable NID from its name; the scrape logic is gone and a test asserts the source no longer references third_party/ppsspp.",
+        "The TOOL is project-authored. The DATA it consumes is not: the name list remains PPSSPP-suggested and is classified derived-data under record hle-nid-name-table. Keep the two records distinct."
+      ]
+    },
+    {
+      "id": "hardware-oracle-toolchain",
+      "subsystem": "Toolchain / PSP hardware oracle and PSPSDK comparison",
+      "paths": [
+        "tools/psp_oracle/__init__.py",
+        "tools/psp_oracle/build_nakagawa_smoke.py",
+        "tools/psp_oracle/manifest.json",
+        "tools/psp_oracle/protocol.py",
+        "tools/psp_oracle/run_nakagawa.py",
+        "tools/psp_oracle/run_nakagawa_vfpu.py",
+        "tools/psp_oracle/run_psplink.py",
+        "tools/psp_readiness.py",
+        "tools/psp_issue_matrix.py",
+        "tools/pspdev_lock.py",
+        "tools/pspdev_probe.py",
+        "tools/pspsdk_compare.py",
+        "tools/pspsdk_source.py",
+        "tools/pspsdk_sync.py"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["PSPLINK protocol and PSPSDK declarations (S)"],
+      "evidence_tier": "H",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "Freebuff B",
+      "uncertainty": [
+        "This is the machinery that makes independence claims possible. Its own role check correctly refuses PPSSPP output as hardware evidence."
+      ]
+    },
+    {
+      "id": "provenance-tooling",
+      "subsystem": "Toolchain / provenance ledger gate and independent NID verification",
+      "paths": ["tools/test_provenance_ledger.py", "tools/nid_name_proof.py", "tools/test_nid_name_proof.py"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["documented PSP NID derivation rule as implemented by pspdev psp-build-exports (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "nid_name_proof.py is read-only measurement. It classifies by observable structure and reports 'unresolved' rather than guessing; a failed derivation is never reported as a refutation, and the tests assert that behavior directly.",
+        "test_provenance_ledger.py enforces the ledger's completeness and internal consistency. It cannot detect a dishonest classification."
+      ]
+    },
+    {
+      "id": "tooling-general",
+      "subsystem": "Toolchain / everything else under tools/",
+      "paths": ["tools/*"],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": ["source-owned unit tests under tools/test_*.py (S)"],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "catch_all": true,
+      "uncertainty": [
+        "Catch-all for tools/ paths not named by a more specific record. Verification, audit, publication, dashboard-support and fixture tooling. tools/tracediff.py and tools/codegen_gate.py CONSUME PPSSPP oracle traces; consuming an oracle is not derivation."
+      ]
+    },
+    {
+      "id": "upstream-sal063-notice",
+      "subsystem": "Attribution / verbatim upstream notice",
+      "paths": ["THIRD_PARTY_LICENSES/SAL063_CREDITS.txt"],
+      "classification": "upstream-third-party",
+      "upstream": "sal063",
+      "upstream_paths": ["CREDITS.md"],
+      "upstream_revision": "da17b0e",
+      "upstream_license": "GPL-2.0-or-later",
+      "behavior_sources": [],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "Reproduced byte-for-byte from the upstream (7320 characters, line endings normalized by Git). It carries the .txt extension its three siblings in this directory already use, which keeps it outside markdownlint's **/*.md glob: reformatting a third-party notice to satisfy this project's lint would defeat the purpose of carrying it. The content is Markdown; only the extension differs.",
+        "Paths inside the file refer to the UPSTREAM tree, not this one. In particular it describes a third_party/ppsspp checkout that this repository does not vendor.",
+        "It records a since-removed src/rt/gpu_vk/ bridge that 'reused PPSSPP's GPU_Vulkan wholesale'. That artifact is not in this tree and, because Nakagawa's history begins at a squashed import (PROV-F4), nothing here would show whether it ever was. Routed to #102 via #304."
+      ]
+    },
+    {
+      "id": "dependency-shadcn-dashboard",
+      "subsystem": "Dependency / dashboard UI primitives",
+      "paths": ["THIRD_PARTY_LICENSES/SHADCN_UI.txt"],
+      "classification": "upstream-third-party",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "MIT",
+      "behavior_sources": [],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": [
+        "interface/ was scaffolded with shadcn/ui and contains adapted UI primitives; its MIT notice is preserved. The dashboard is not part of the native build and is deliberately out of this audit's src/ coverage requirement.",
+        "The dashboard's JavaScript dependency licenses are recorded by its lockfile and are reviewed under #149, not here."
+      ]
+    },
+    {
+      "id": "dependency-sdl3",
+      "subsystem": "Dependency / SDL3",
+      "paths": [],
+      "classification": "upstream-third-party",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "Zlib",
+      "behavior_sources": [],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": ["Linked, not vendored. Binary packaging must carry SDL's notice."]
+    },
+    {
+      "id": "dependency-vulkan",
+      "subsystem": "Dependency / Vulkan loader and headers",
+      "paths": [],
+      "classification": "upstream-third-party",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "Apache-2.0",
+      "behavior_sources": [],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": null,
+      "uncertainty": ["No version pinned; resolved at build time. Not vendored."]
+    },
+    {
+      "id": "dependency-pspsdk-notice",
+      "subsystem": "Dependency / PSPSDK defines, constants and headers",
+      "paths": ["THIRD_PARTY_LICENSES/PSPSDK.txt", "assets/upstream/pspdev.NOTICE.md", "assets/upstream/pspdev.evidence.json", "assets/upstream/pspdev.lock.json"],
+      "classification": "upstream-third-party",
+      "upstream": "pspsdk",
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": "BSD-3-Clause and per-component",
+      "behavior_sources": [],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "Antigravity / issue #197",
+      "uncertainty": [
+        "PSPSDK is the project's most under-used independence resource: it is a permissively licensed, publicly documented statement of the PSP ABI that can source facts currently taken from PPSSPP."
+      ]
+    },
+    {
+      "id": "atrac3p-decoder-import",
+      "subsystem": "CPU / ATRAC3+ decoder import (FFmpeg n4.4) + thin project wrapper",
+      "paths": [
+        "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
+        "src/rt/atrac3p/PROVENANCE.md",
+        "src/rt/atrac3p/atrac3p_api.c",
+        "src/rt/atrac3p/atrac3p_api.h",
+        "src/rt/atrac3p_selftest.c",
+        "src/rt/atrac3p/libavcodec/atrac.c",
+        "src/rt/atrac3p/libavcodec/atrac.h",
+        "src/rt/atrac3p/libavcodec/atrac3plus.c",
+        "src/rt/atrac3p/libavcodec/atrac3plus.h",
+        "src/rt/atrac3p/libavcodec/atrac3plus_data.h",
+        "src/rt/atrac3p/libavcodec/atrac3plusdec.c",
+        "src/rt/atrac3p/libavcodec/atrac3plusdsp.c",
+        "src/rt/atrac3p/libavcodec/avcodec.h",
+        "src/rt/atrac3p/libavcodec/avfft.h",
+        "src/rt/atrac3p/libavcodec/bitstream.c",
+        "src/rt/atrac3p/libavcodec/config.h",
+        "src/rt/atrac3p/libavcodec/fft-internal.h",
+        "src/rt/atrac3p/libavcodec/fft.h",
+        "src/rt/atrac3p/libavcodec/fft_float.c",
+        "src/rt/atrac3p/libavcodec/fft_init_table.c",
+        "src/rt/atrac3p/libavcodec/fft_table.h",
+        "src/rt/atrac3p/libavcodec/fft_template.c",
+        "src/rt/atrac3p/libavcodec/get_bits.h",
+        "src/rt/atrac3p/libavcodec/internal.h",
+        "src/rt/atrac3p/libavcodec/mathops.h",
+        "src/rt/atrac3p/libavcodec/mdct_float.c",
+        "src/rt/atrac3p/libavcodec/mdct_template.c",
+        "src/rt/atrac3p/libavcodec/put_bits.h",
+        "src/rt/atrac3p/libavcodec/sinewin.c",
+        "src/rt/atrac3p/libavcodec/sinewin.h",
+        "src/rt/atrac3p/libavcodec/sinewin_tablegen.h",
+        "src/rt/atrac3p/libavcodec/version.h",
+        "src/rt/atrac3p/libavcodec/vlc.h",
+        "src/rt/atrac3p/libavutil/attributes.h",
+        "src/rt/atrac3p/libavutil/avassert.h",
+        "src/rt/atrac3p/libavutil/avconfig.h",
+        "src/rt/atrac3p/libavutil/avutil.h",
+        "src/rt/atrac3p/libavutil/bswap.h",
+        "src/rt/atrac3p/libavutil/channel_layout.h",
+        "src/rt/atrac3p/libavutil/common.h",
+        "src/rt/atrac3p/libavutil/config.h",
+        "src/rt/atrac3p/libavutil/dynarray.h",
+        "src/rt/atrac3p/libavutil/error.h",
+        "src/rt/atrac3p/libavutil/float_dsp.c",
+        "src/rt/atrac3p/libavutil/float_dsp.h",
+        "src/rt/atrac3p/libavutil/intmath.c",
+        "src/rt/atrac3p/libavutil/intmath.h",
+        "src/rt/atrac3p/libavutil/intreadwrite.h",
+        "src/rt/atrac3p/libavutil/libm.h",
+        "src/rt/atrac3p/libavutil/log.h",
+        "src/rt/atrac3p/libavutil/log2_tab.c",
+        "src/rt/atrac3p/libavutil/macros.h",
+        "src/rt/atrac3p/libavutil/mathematics.h",
+        "src/rt/atrac3p/libavutil/mem.c",
+        "src/rt/atrac3p/libavutil/mem.h",
+        "src/rt/atrac3p/libavutil/mem_internal.h",
+        "src/rt/atrac3p/libavutil/qsort.h",
+        "src/rt/atrac3p/libavutil/reverse.c",
+        "src/rt/atrac3p/libavutil/reverse.h",
+        "src/rt/atrac3p/libavutil/thread.h",
+        "src/rt/atrac3p/libavutil/version.h"
+      ],
+      "classification": "upstream-third-party",
+      "upstream": "ffmpeg",
+      "upstream_paths": [
+        "libavcodec/atrac.c, atrac3plus*",
+        "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
+        "libavutil/*"
+      ],
+      "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+      "upstream_license": "LGPL-2.1-or-later",
+      "behavior_sources": [
+        "byte-exact FFmpeg n4.4 import verified against upstream tree SHAs (src/rt/atrac3p/PROVENANCE.md); thin project wrapper atrac3p_api.c/h"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "audio",
+      "uncertainty": [
+        "Imported FFmpeg files are upstream-third-party; the thin C API wrapper (atrac3p_api.c/h) is project-authored. Mixed licensing: wrapper GPL-2.0-or-later header, imported core LGPL-2.1-or-later."
+      ]
+    },
+    {
+      "id": "atrac3p-bridge-hle",
+      "subsystem": "CPU / PSP ATRAC3+ HLE decode bridge (host-side decoder lifecycle over the PR-A import)",
+      "paths": [
+        "src/rt/atrac3p_bridge.c",
+        "src/rt/atrac3p_bridge.h",
+        "src/rt/atrac3p_bridge_selftest.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "PSP ATRAC3+ documented frame contract (2048 samples/frame, blockAlign-sized frames); #283 transactional ring model; source-owned atrac3p_bridge_selftest.c regression suite (S)"
+      ],
+      "evidence_tier": "S",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "audio",
+      "uncertainty": [
+        "Bridge and hle.c integration are project-authored over the project's own FFmpeg n4.4 import; PPSSPP was consulted only as comparative/historical provenance for the #286 decision record, no PPSSPP code is translated."
+      ]
+    },
+    {
+      "id": "atrac3p-title-acceptance",
+      "subsystem": "Audio / bounded PRIVATE title acceptance for the ATRAC3+ lane (PR-C): decode the lawful title ATRAC3+ stream through the production decoder and assert valid, nonzero, deterministic PCM",
+      "paths": [
+        "src/rt/atrac3p_title_accept.c"
+      ],
+      "classification": "project-authored-independent",
+      "upstream": null,
+      "upstream_paths": [],
+      "upstream_revision": null,
+      "upstream_license": null,
+      "behavior_sources": [
+        "RIFF/WAVE ATRAC3+ container contract (fmt/fact/data chunk field offsets mirrored from src/rt/hle.c atrac_parse_track); PSP ATRAC3+ 2048-sample/frame decode contract; #286 acceptance plan; runs only on the user's lawful private title input and SKIPs (exit 77) when it is absent"
+      ],
+      "evidence_tier": "N",
+      "replacement_state": "not-applicable",
+      "replacement_commit": null,
+      "owner_lane": "audio",
+      "uncertainty": [
+        "Private-route evidence only: the standalone tool decodes the real title stream through the production PR-A/PR-B entry point, but the in-game SAS/audio link (game feeds DecodeData PCM into its mixer) still requires the private runtime/VisualOracle route."
+      ]
+    }
+
+  ],
+  "findings": [
+    {
+      "id": "PROV-F1",
+      "severity": "high",
+      "title": "NOTICE.md's per-file derivation inventory is incomplete and contradicts several file headers",
+      "detail": "Measured across tracked src/ C/C++ sources: 11 files declare 'Derived from PPSSPP' and 15 declare 'Derived from sal063/PSP-recompilation-project'. NOTICE.md's derived-module table names 9 paths in 6 rows, all attributed to PPSSPP. Three distinct defects follow. (1) UNDER-COVERAGE, PPSSPP: evf.h, gpu_sdl3vk/ge_gpu.c, recomp.c, recomp.h and savedata.c declare PPSSPP derivation in-file but are absent from the table. (2) NO PER-FILE sal063 INVENTORY AT ALL: NOTICE covers sal063 only as prose under 'Project lineage' ('began as a fork of this toolkit and retains substantially modified pipeline/runtime code'), so 15 files carrying a sal063 derivation notice have no per-file record anywhere, an asymmetry with how PPSSPP is treated. (3) DIRECT CONTRADICTIONS: ge_shared.h's header declares sal063 while NOTICE attributes it to PPSSPP Core/GE; audio.c's header declares sal063 while NOTICE attributes it to PPSSPP sceSasCore.cpp and Core/Audio, and the file body cites neither upstream anywhere. Issue #103 closed with an acceptance criterion requiring that NOTICE.md, file headers and THIRD_PARTY_LICENSES not contradict one another; that criterion is not currently met.",
+      "action": "ADDRESSED 2026-08-06 by IND-6, by ADDING to NOTICE.md and changing no file header. (1) evf.h, gpu_sdl3vk/ge_gpu.c, recomp.c, recomp.h and savedata.c are now in the PPSSPP table. (2) a per-file sal063 inventory now exists. (3) ge_shared.h is documented as a CHAIN -- both attributions correct at different levels -- and audio.c is explicitly marked unresolved in NOTICE.md itself, retaining its PPSSPP attribution while recording that sal063's own CREDITS.md does not list it. The remaining question needs a PPSSPP source comparison and stays open."
+    },
+    {
+      "id": "PROV-F2",
+      "severity": "high",
+      "title": "RESOLVED 2026-08-06: sal063 derivation headers are accurate and under-state the inheritance",
+      "detail": "The prior text speculated that the sal063 headers might be boilerplate, on the grounds that h264_mf.c drives Windows Media Foundation and so had 'no plausible counterpart in a PSP recompilation toolkit', and that sched.c's architecture implied low retention. IND-4 measured it against the public upstream at da17b0e and BOTH HYPOTHESES WERE WRONG. h264_mf.c retains 89.7% of an upstream file that already existed; sched.c retains 79.8%; osk_win.c, iso.h, ge_shared.h and interp.h are at 100%. Across 44 common source files, 11310 of sal063's 13482 normalized code lines are still present (83.9%), and 40.1% of the current code in those files is shared with sal063. Retaining the attribution was correct; the stated reason for doubting it was not.",
+      "action": "Superseded by docs/provenance/SAL063_RETENTION_2026-08-06.md. The remaining open question is narrower and needs a PPSSPP comparison: whether the retained portions carry PPSSPP expression directly or only sal063's re-expression of it."
+    },
+    {
+      "id": "PROV-F3",
+      "severity": "medium",
+      "title": "recomp.c overstates current derivation of the VFPU transcendental kernels",
+      "detail": "src/rt/recomp.c:949 calls the kernels 'exact ports of PPSSPP's table-based kernels'. The 2026-08-05 PSP-3001 capture shows they diverge from PPSSPP on six of eight transcendentals and that hardware agrees with Nakagawa on all eight. The comment is factually stale.",
+      "action": "Correct the comment to state the origin AND the divergence AND the hardware backing. Do not delete the derivation statement; the kernels' structure and the tables they index still originate upstream."
+    },
+    {
+      "id": "PROV-F4",
+      "severity": "high",
+      "title": "No development history exists for the period in which derivation occurred",
+      "detail": "The repository's first commit 7ac90b2 (2026-07-19, 'Moving to GitHub') is a squashed import in which every runtime file appears fully formed. There is no reachable pre-import history on any ref. Git therefore cannot corroborate or refute any file-level derivation claim about the original runtime, in either direction. This is a distinct problem from #102's 'history contains material it should not': here the relevant history is absent.",
+      "action": "Record this limitation wherever a provenance claim is made. It is also the strongest single reason the project must never assert clean-room status."
+    },
+    {
+      "id": "PROV-F6",
+      "severity": "high",
+      "title": "The upstream's own attribution file, sal063 CREDITS.md, is not present in Nakagawa",
+      "detail": "sal063 ships CREDITS.md, a detailed third-party attribution document. Nakagawa retains 83.9% of that upstream's code across 44 source files and does not carry the file. NOTICE.md independently covers much of the same substance, so this is not wholesale loss of attribution, but CREDITS.md records specifics NOTICE.md does not: a PINNED PPSSPP REVISION 4e109dd6 for the sceMpeg port; per-file upstream path detail; the claim that recomp.h's CpuState 'VFPU v[128] physical ordering, fpcond/fcr31 split, unaligned LWL/LWR/SWL/SWR, kernel object pool numbering all match PPSSPP'; a warning that the in-code 'faithfulness vs PPSSPP' comments are a language model's assertions rather than an audited fact; and a note that an earlier src/rt/gpu_vk/ bridge 'reused PPSSPP's GPU_Vulkan wholesale' before being removed. That last item is directly relevant to the #102 full-history audit.",
+      "action": "ADDRESSED 2026-08-06 by IND-6 (#304): the upstream CREDITS.md is now reproduced verbatim at THIRD_PARTY_LICENSES/SAL063_CREDITS.txt, and its specifics were folded into NOTICE.md with attribution to sal063 -- the pinned PPSSPP revision 4e109dd6 for the sceMpeg port, and a lineage statement recording that PPSSPP material reached this project through sal063. The gpu_vk/GPU_Vulkan history question is routed to #102 and remains open there. Qualified human review of the resulting notice presentation is still required before publication. This audit did not and does not assert a license violation."
+    },
+    {
+      "id": "PROV-F7",
+      "severity": "high",
+      "title": "The recompiler pipeline is substantially inherited from sal063 and declares no derivation",
+      "detail": "This corrects an overclaim in this ledger's own earlier text, which described the pipeline as 'overwhelmingly project-authored'. Measured retention of sal063: tools/codegen.py 83.9% of upstream retained (617 shared lines, 37.5% of the current file), analyze.py 86.2% (280), prxload.py 73.6% (81), imports.py 71.2% (47). None declares any derivation and NOTICE.md has no per-file sal063 inventory. Counting every file with at least 20 shared lines and no header, 3111 shared lines are undeclared at file level, 1481 of them outside nid_names.h. The pipeline is genuinely extended -- codegen more than doubled, and function discovery, chunking, continuation catalogs and the emitter are real additions -- but it began as sal063's and most of sal063's pipeline code is still present.",
+      "action": "ADDRESSED 2026-08-06 by IND-6: NOTICE.md now carries an 'Upstream source file inventory (sal063-derived modules)' table covering the pipeline and every other measurably inherited file, with the four verified-original tools named explicitly. The file headers were NOT changed; the omission was in NOTICE.md and was fixed by adding to it."
+    },
+    {
+      "id": "PROV-F8",
+      "severity": "medium",
+      "title": "Nakagawa standardized PPSSPP source headers, but some upstream attribution already existed in sal063",
+      "detail": "Of sal063's 44 tracked sources exactly one carries the standardized 'Derived from' header found in Nakagawa: ge_gpu.c. Nakagawa added that header form to ge.c, hle.c, recomp.c/.h, savedata.c, mpeg.c, pgf.c/.h, vfpu_interp.c and evf.h. The earlier wording overreached by calling all per-file PPSSPP attribution a Nakagawa addition: sal063's pgf.c and pgf.h bodies already expressly identify Core/Font/PGF.cpp and a C port, and sal063's CREDITS.md itemizes PGF and several other PPSSPP-derived files. The chain remains PPSSPP -> sal063 -> Nakagawa; source-header standardization and substantive attribution are separate facts.",
+      "action": "CORRECTED 2026-08-08 in NOTICE.md, this finding, and the independence backlog. Preserve the useful standardized Nakagawa headers without implying that PGF attribution originated in Nakagawa."
+    },
+    {
+      "id": "PROV-F5",
+      "severity": "medium",
+      "title": "src/rt/nid_names.h ships eight sentinel identifiers alongside real PSP NIDs",
+      "detail": "Entries 0x13370001 __IoAsyncFinish, 0xc0de0001-0xc0de0003 __Utility*, 0x756e6e6f / 0x756e6f00 / 0x756e6f10 __Net*Callbacks and 0xdeadbeaf pspeDebugWrite sit in the same lookup table as firmware exports. Their names use the reserved __ prefix and their NID values are sentinels rather than digests; 0xc0de0001-0003 are allocated sequentially across three related names, which a hash cannot produce. The inference that these are emulator-internal identifiers is structural and high-confidence, but it is an inference from numeric shape rather than a proof about PSP firmware. The consequence is a diagnostic-correctness defect: if guest code ever presented one of these NIDs the runtime would name it after emulator internals.",
+      "action": "Remove the eight, and make the generator incapable of reintroducing sentinel-shaped entries. Do NOT extend the removal to the library-attributed or alias entries, which label real NIDs. Backlog IND-1."
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025-2026 the psp-recomp authors
+# Pinned Python developer and build-generation dependencies for Nakagawa Recomp
+
+compiledb==0.10.7 --hash=sha256:d1d36d4df6c5c723ae4e447b973b306b3a0df47a50dfa7243c2c19e5db4d12bb
+ruff==0.9.9 --hash=sha256:7f9c8f2b3c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f

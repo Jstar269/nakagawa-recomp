@@ -1,0 +1,4089 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025-2026 the psp-recomp authors
+
+/*
+ * Executable production-HLE regression tests for ThreadMan behavior.
+ *
+ * Unlike the source-shape checks in tools/test_sched_invariants.py, this host
+ * executable links the real hle.c, includes the real scheduler implementation,
+ * and enters handlers through sr_syscall's registered-NID lookup. Only
+ * unrelated host services are stubbed; the registry, handler, scheduler, and
+ * coroutine transitions under test are production code.
+ *
+ * Coroutine lifecycle safety.
+ *
+ * This test used to be able to exhaust host RAM. A joiner body parked with
+ * `for (;;) sr_coro_switch(sr_coro_main());`, and sr_coro_main() is a one-shot
+ * initialisation operation: each call allocates a fresh wrapper and makes it the
+ * current coroutine, so the following switch degenerated into a self-switch no-op
+ * and the loop span forever, allocating every iteration. Two independent runs
+ * reached roughly 21 GB and 25 GB before the host died.
+ *
+ * That defect is now caught by sr_coro.c's SR_CORO_LIFECYCLE_TEST instrumentation,
+ * which counts adoptions, creates, destroys and switches inside the real
+ * implementation and hard-caps adoptions and suppressed self-switches. A
+ * reintroduced defect therefore aborts in milliseconds regardless of how the
+ * offending call is spelled -- line splicing, a macro alias, an indirect alias or
+ * a reordered guard all reach the same counted operation. The checks at the end of
+ * main() assert the exact expected counters.
+ *
+ * Building this test without the instrumentation would silently remove that
+ * protection, so it is a hard requirement rather than an option.
+ */
+
+#ifndef SR_CORO_LIFECYCLE_TEST
+#error "hle_thread_selftest requires -DSR_CORO_LIFECYCLE_TEST: the coroutine lifecycle \
+instrumentation is this test's protection against the historical RAM runaway."
+#endif
+
+#include "sched.c" /* white-box fixture setup and observable TCB state */
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
+
+extern void sr_vblank_tick(void);
+
+/* The selftest deliberately omits the renderer, so this stands in for the
+ * production invalidation callback. It records what it was told rather than
+ * discarding it: "a rejected DMA request must not dirty a GPU range" is a
+ * campaign requirement (#87), and the only way to assert a notification did
+ * NOT happen is to be able to observe that it did. */
+static unsigned long s_gpu_dirty_calls;
+static uint32_t s_gpu_dirty_addr;
+static uint32_t s_gpu_dirty_bytes;
+
+void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
+    s_gpu_dirty_calls++;
+    s_gpu_dirty_addr = addr;
+    s_gpu_dirty_bytes = bytes;
+}
+
+static void gpu_dirty_reset(void) {
+    s_gpu_dirty_calls = 0;
+    s_gpu_dirty_addr = 0;
+    s_gpu_dirty_bytes = 0;
+}
+
+/* Test-build-only production IoFileMgr entry points and descriptor identity
+ * probe exported by hle.c. */
+extern uint32_t sr_hle_test_io_open(CpuState *s);
+extern uint32_t sr_hle_test_io_read(CpuState *s);
+extern uint32_t sr_hle_test_io_write(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek32(CpuState *s);
+extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
+extern uint32_t sr_hle_test_io_close(CpuState *s);
+extern uint32_t sr_hle_test_io_open_async(CpuState *s);
+extern uint32_t sr_hle_test_io_close_async(CpuState *s);
+extern int sr_hle_test_fd_kind(uint32_t fd);
+extern int sr_callback_is_valid(uint32_t uid);
+
+/* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
+typedef struct {
+    uint32_t capacity, count, read_pos, write_pos;
+} SrMsgPipeState;
+extern int sr_hle_test_msgpipe_state(uint32_t uid, SrMsgPipeState *out);
+extern uint32_t sr_hle_test_msgpipe_max_capacity(void);
+
+#define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
+#define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
+#define NID_SCE_KERNEL_EXIT_DELETE_THREAD_ORACLE 0x809ce29bu
+#define NID_SCE_KERNEL_GET_THREAD_ID 0x293b45b8u
+#define NID_SCE_KERNEL_CREATE_MSG_PIPE 0x7c0dc2a0u
+#define NID_SCE_KERNEL_DELETE_MSG_PIPE 0xf0b7da1cu
+#define NID_SCE_KERNEL_TRY_SEND_MSG_PIPE 0x884c9f90u
+#define NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE 0xdf52098fu
+#define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
+#define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
+#define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
+#define NID_SCE_KERNEL_GET_SYSTEM_TIME 0xdb738f35u
+#define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
+#define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
+#define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
+#define NID_SCE_RTC_GET_TICK 0x6ff40accu
+#define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
+#define NID_SCE_KERNEL_LIBC_TIME 0x27cc57f0u
+#define NID_SCE_KERNEL_LIBC_GETTIMEOFDAY 0x71ec4271u
+#define NID_SCE_KERNEL_CPU_SUSPEND_INTR 0x092968f4u
+#define NID_SCE_KERNEL_CPU_RESUME_INTR 0x5f10d406u
+#define NID_SCE_KERNEL_CPU_RESUME_INTR_SYNC 0x3b84732du
+#define NID_SCE_KERNEL_IS_CPU_INTR_SUSPENDED 0x47a0b729u
+#define NID_SCE_KERNEL_IS_CPU_INTR_ENABLE 0xb55249d2u
+#define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
+#define NID_SCE_KERNEL_RESUME_DISPATCH_THREAD  0x27e22ec2u
+#define SCE_KERNEL_ERROR_MPP_FULL     0x800201b3u
+#define SCE_KERNEL_ERROR_MPP_EMPTY    0x800201b4u
+#define SCE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu
+#define SCE_KERNEL_ERROR_UNKNOWN_MPPID 0x8002019eu
+#define NID_SCE_ATRAC_RELEASE_ID 0x61eb33f5u
+#define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
+#define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
+#define NID_SCE_ATRAC_GET_ID 0x780f88d1u
+#define NID_SCE_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
+#define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
+#define NID_SCE_ATRAC_GET_REMAIN_FRAME 0x9ae849a7u
+
+#define ATRAC_CODEC_AT3PLUS 0x1000u
+#define ATRAC_CODEC_AT3 0x1001u
+#define ATRAC_ERROR_NO_ATRACID 0x80630003u
+#define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
+#define ATRAC_ERROR_BAD_ATRACID 0x80630005u
+#define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
+#define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
+#define NID_SCE_UTILITY_UNLOAD_MODULE 0xe49bfe92u
+#define NID_SCE_UTILITY_LOAD_AV_MODULE 0xc629af26u
+#define NID_SCE_UTILITY_UNLOAD_AV_MODULE 0xf7d8d092u
+#define SCE_ERROR_MODULE_BAD_ID 0x80111101u
+#define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
+#define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
+#define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
+#define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
+#define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
+#define SCE_ERROR_AV_LIBRARY_NOT_FOUND 0x8002013cu
+
+uint8_t *g_mem;
+static uint8_t *g_mem_base;
+
+uint32_t g_sr_debug;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count;
+int g_sr_heap_watch;
+int g_sr_metadata_watch;
+uint32_t g_sr_mem_watch_context_pc = 0;
+unsigned g_sr_mem_watch_context_limit = 0;
+unsigned g_sr_mem_watch_context_count = 0;
+int g_sr_mem_watch_context_fpr = -1;
+uint32_t g_sr_mem_watch_context_fpr_value = 0;
+uint32_t g_sr_store_context_pc = 0;
+unsigned g_sr_store_context_count = 0;
+unsigned g_sr_store_context_limit = 0;
+int g_sr_store_context_mem_gpr = -1;
+uint32_t g_sr_store_context_mem_offset = 0;
+unsigned g_sr_store_context_mem_words = 0;
+int g_sr_last_writer_enabled = 0;
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t val, uint32_t pc) {
+    (void)addr; (void)width; (void)val; (void)pc;
+}
+void sr_add_mem_watch(uint32_t start, uint32_t end, const char *label) {
+    (void)start; (void)end; (void)label;
+}
+void sr_add_value_watch(uint32_t value, const char *label) {
+    (void)value; (void)label;
+}
+void sr_debug_init_watches(void) {}
+void sr_last_writer_reset(void) {}
+int sr_find_last_writer(uint32_t addr, uint32_t width,
+                        uint32_t *write_addr, uint32_t *write_width,
+                        uint32_t *value, uint32_t *pc) {
+    (void)addr; (void)width; (void)write_addr; (void)write_width;
+    (void)value; (void)pc;
+    return 0;
+}
+void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) {
+    (void)addr; (void)width; (void)value; (void)pc;
+}
+void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
+    (void)addr; (void)width; (void)pc;
+}
+void sr_oor(uint32_t addr, uint32_t value, int store) {
+    (void)addr; (void)value; (void)store;
+}
+
+uint32_t g_frame_prims;
+int gui_on(void) { return 0; }
+void gui_pump(void) {}
+uint32_t gui_buttons(void) { return 0u; }
+void gui_consume_button_pulses(void) {}
+void gui_analog(uint8_t *lx, uint8_t *ly) {
+    if (lx) *lx = 128;
+    if (ly) *ly = 128;
+}
+int gui_pad_present(void) { return 0; }
+void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+    (void)fbaddr; (void)fmt; (void)stride;
+}
+void sr_profile_dump(void) {}
+#ifdef SR_PSP_ORACLE_SMOKE
+/* The smoke translation retains the production SR_YIELD instrumentation hook,
+ * but this focused executable does not link the full profiler object. */
+int g_prof_enabled;
+void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
+#endif
+void ge_set_frame(uint32_t frame) { (void)frame; }
+uint32_t ge_framebuffer(void) { return 0u; }
+int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
+int sdl3vk_capture_result(void) { return 0; }
+const char *sdl3vk_capture_source_label(void) { return ""; }
+int sdl3vk_validation_error_count(void) { return 0; }
+unsigned long g_ge_pixels;
+unsigned long g_tex_samples;
+unsigned long g_tex_nonzero;
+unsigned long g_mpeg_put;
+unsigned long g_mpeg_getavc;
+unsigned long g_mpeg_avcdec;
+unsigned long g_mpeg_nodata;
+uint64_t sr_perf_now_ns(void) { return 0; }
+void sr_perf_guest_begin(void) {}
+void sr_perf_guest_end(void) {}
+void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
+void sr_perf_vblank(void) {}
+
+/* The FD fixture deliberately exercises the writable host-backed branch.  Keep
+ * the ISO side absent and deterministic rather than making the selftest depend
+ * on a private game image. */
+int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    (void)guest_path; (void)out_lba; (void)out_size;
+    return -1;
+}
+int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    (void)lba; (void)offset; (void)dst; (void)bytes;
+    return -1;
+}
+
+/* recomp.c is not linked here. The #88 conformance matrix registers the pool
+ * APIs, which reach hle.c's user_partition_init(); its only external dependency
+ * is the loader's high-water mark for the module image.
+ *
+ * This synthetic world loads no module, so the value is a declared property of
+ * the fixture rather than a measurement: 4 MiB, which sits above every guest
+ * address this file fabricates (the 0x00200000 time block, the 0x00240000
+ * conformance block, and sched.c's 0x0031xxxx / 0x00331b80 counters) and below
+ * both the stack arena floor (0x05000000) and the default partition top
+ * (0x0A000000). Returning 0 is not an option -- user_partition_init() correctly
+ * fail-closes on it rather than placing the partition over the image. */
+uint32_t sr_loaded_end(void) { return 0x00400000u; }
+
+int g_hle_depth;
+jmp_buf g_hle_jmp;
+int sr_hit_hle;
+void sr_trace_close(void) {}
+static uint8_t s_heap_arena[1u << 20];
+static size_t s_heap_arena_off;
+uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
+    (void)guest_ra;
+    size = (size + 15u) & ~15u;
+    if (s_heap_arena_off + size > sizeof(s_heap_arena)) return 0u;
+    uint32_t p = 0x09000000u + (uint32_t)s_heap_arena_off;
+    s_heap_arena_off += size;
+    return p;
+}
+
+/* The generated dispatcher is replaced by deterministic synthetic guest entries. The worker
+ * still reaches the production handler exactly as a generated import stub does: through
+ * sr_syscall with the public NID. The callback entry is only a guest address selector; its
+ * arguments are captured from the CpuState that sr_callback_dispatch_one prepares. */
+#define ORACLE_CALLBACK_ENTRY 0x0800cafeu
+#define ORACLE_THREAD_ENTRY   0x0800db00u
+#define ORACLE_CALLBACK_NAME  0x08000100u
+
+static int32_t s_exit_argument;
+static int s_exit_dispatches;
+static uint32_t s_exit_nid = NID_SCE_KERNEL_EXIT_THREAD;
+enum { ORACLE_THREAD_ACTION_EXIT = 0, ORACLE_THREAD_ACTION_SLEEP = 1,
+       ORACLE_THREAD_ACTION_EXIT_DELETE = 2 };
+static int s_oracle_thread_action;
+static int s_oracle_mode;
+static int s_oracle_callback_calls;
+static uint32_t s_oracle_callback_arg1;
+static uint32_t s_oracle_callback_arg2;
+
+/* Defined in intr_conformance.h (included below, once the fixture helpers it
+ * builds on exist). Returns non-zero when `target` is the synthetic VBLANK
+ * sub-interrupt handler entry that the #88 conformance harness registered; in
+ * that case it has already run its probe, in real interrupt context. */
+static int ic_dispatch_intercept(uint32_t target);
+
+void dispatch(CpuState *cpu, uint32_t target) {
+    if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
+    if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
+        s_oracle_callback_calls++;
+        s_oracle_callback_arg1 = cpu->r[4];
+        s_oracle_callback_arg2 = cpu->r[5];
+        cpu->r[2] = 0;
+        return;
+    }
+    s_exit_dispatches++;
+    if (s_oracle_thread_action == ORACLE_THREAD_ACTION_SLEEP) {
+        (void)sr_syscall(cpu, NID_SCE_KERNEL_SLEEP_THREAD);
+        return;
+    }
+    if (s_oracle_thread_action == ORACLE_THREAD_ACTION_EXIT_DELETE) {
+        cpu->r[4] = (uint32_t)s_exit_argument;
+        (void)sr_syscall(cpu, NID_SCE_KERNEL_EXIT_DELETE_THREAD_ORACLE);
+        return;
+    }
+    cpu->r[4] = (uint32_t)s_exit_argument;
+    (void)sr_syscall(cpu, s_exit_nid);
+}
+
+static int s_checks;
+static int s_failures;
+static void expect(int condition, const char *description) {
+    s_checks++;
+    if (!condition) {
+        s_failures++;
+        fprintf(stderr, "FAIL: %s\n", description);
+    }
+}
+
+/* Test-only access to the real PRX parser.  The wrapper is compiled only for this executable;
+ * the fixture below still exercises register_prx_exports(), elf_vaddr_to_file(), module-info
+ * validation, and the production late-import registry rather than duplicating their logic. */
+unsigned sr_hle_test_register_prx_exports(const char *host_path, uint32_t base);
+
+static void fixture_wr16(uint8_t *p, uint16_t value) {
+    memcpy(p, &value, sizeof(value));
+}
+
+static void fixture_wr32(uint8_t *p, uint32_t value) {
+    memcpy(p, &value, sizeof(value));
+}
+
+static int write_synthetic_prx(const char *path, int malformed) {
+    enum { SIZE = 0x220, PHOFF = 0x34, MODOFF = 0x100, ENTOFF = 0x180, TABLEOFF = 0x1c0 };
+    uint8_t image[SIZE];
+    memset(image, 0, sizeof(image));
+
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 40, 52);       /* ELF header size */
+    fixture_wr32(image + 28, PHOFF);    /* program-header table */
+    fixture_wr16(image + 42, 32);       /* sizeof Elf32_Phdr */
+    fixture_wr16(image + 44, 1);        /* one PT_LOAD */
+
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);            /* PT_LOAD */
+    fixture_wr32(ph + 4, 0x80);         /* file offset */
+    fixture_wr32(ph + 8, 0x1000);       /* virtual address */
+    fixture_wr32(ph + 12, MODOFF);     /* stripped-PRX module-info file hint */
+    fixture_wr32(ph + 16, 0x1a0);      /* file size: 0x80..0x220 is file-backed */
+    fixture_wr32(ph + 20, 0x1a0);      /* memory size */
+    fixture_wr32(ph + 24, 5);           /* executable/readable */
+    fixture_wr32(ph + 28, 4);           /* alignment */
+
+    memcpy(image + MODOFF + 4, "synthetic", 9);
+    fixture_wr32(image + MODOFF + 36, 0x1100); /* export-table virtual start */
+    fixture_wr32(image + MODOFF + 40, malformed ? 0x21101 : 0x1110);
+
+    uint8_t *entry = image + ENTOFF;
+    entry[8] = 4;                       /* words per export entry */
+    entry[9] = 0;                       /* variable exports */
+    fixture_wr16(entry + 10, 3);        /* three function exports */
+    fixture_wr32(entry + 12, 0x1140);   /* NID/target pair table */
+
+    fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
+    fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
+    fixture_wr32(image + TABLEOFF + 8, 0x33333333); /* target that wraps below */
+    fixture_wr32(image + TABLEOFF + 12, 0x00000000);
+    fixture_wr32(image + TABLEOFF + 16, 0x00000020);
+    fixture_wr32(image + TABLEOFF + 20, 0xd0000000);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static void test_prx_export_relocation_behavior(void) {
+    const char *path = "hle_prx_export_fixture.bin";
+    const uint32_t base = 0x30000000u;
+    const uint32_t nid_zero = 0x11111111u;
+    const uint32_t nid_nonzero = 0x22222222u;
+    const uint32_t nid_wrap = 0x33333333u;
+
+    int valid_fixture = write_synthetic_prx(path, 0);
+    expect(valid_fixture, "synthetic PRX fixture was written");
+    if (valid_fixture) {
+        unsigned registered = sr_hle_test_register_prx_exports(path, base);
+        expect(registered == 2, "loader publishes zero and nonzero exports but rejects wrapping target");
+        expect(sr_hle_resolve_late_import(nid_zero) == base,
+               "zero-relative export resolves to the loaded base address");
+        expect(sr_hle_resolve_late_import(nid_nonzero) == base + 0x20u,
+               "nonzero-relative export resolves to base plus target");
+        expect(sr_hle_resolve_late_import(nid_wrap) == 0,
+               "overflowing export target remains unresolved");
+    }
+    remove(path);
+
+    int malformed_fixture = write_synthetic_prx(path, 1);
+    expect(malformed_fixture, "malformed synthetic PRX fixture was written");
+    if (malformed_fixture) {
+        expect(sr_hle_test_register_prx_exports(path, base) == 0,
+               "malformed module metadata publishes no exports");
+    }
+    remove(path);
+}
+
+static CpuState s_cpu_store;
+
+/* Production-dispatch regression for utility AV module identity and lifecycle.  The
+ * authoritative PPSSPP model uses 0x80111101/02/03 for bad, already-loaded, and not-loaded
+ * generic utility modules, and requires AVCODEC before ATRAC3+, MPEGBASE, or MP4. This fixture
+ * keeps the title's real AV IDs while proving state transitions through sr_syscall. */
+static uint32_t utility_module_call(CpuState *cpu, uint32_t nid, uint32_t module) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = module;
+    return sr_syscall(cpu, nid);
+}
+
+/* Production-helper coverage for the guest FD namespace.  The payload/path
+ * intentionally match fixtures/nakagawa_minimal_v4: the real PSP fixture's
+ * byte-level oracle is `NAKAGAWA_MINIMAL SUM=5050\n`.  This native harness
+ * exercises the same Open/Write/Close sequence against the production HLE
+ * handlers and asserts the host bytes, while keeping private PSP artifacts out
+ * of the repository. */
+static void fd_guest_copy(uint32_t address, const void *data, size_t size) {
+    const uint8_t *bytes = (const uint8_t *)data;
+    for (size_t i = 0; i < size; i++) MEM_W8(address + (uint32_t)i, bytes[i]);
+}
+
+static void fd_host_path(char *out, size_t capacity, const char *guest) {
+    const char root[] = "build/hle_fd_namespace_fs/";
+    size_t at = 0;
+    if (!out || capacity == 0) return;
+    for (size_t i = 0; root[i] && at + 1 < capacity; i++) out[at++] = root[i];
+    for (size_t i = 0; guest && guest[i] && at + 1 < capacity; i++) {
+        char c = guest[i];
+        out[at++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    }
+    out[at] = '\0';
+}
+
+static int fd_host_bytes_equal(const char *path, const uint8_t *expected, size_t size) {
+    FILE *host = fopen(path, "rb");
+    if (!host) return 0;
+    uint8_t actual[128];
+    size_t got = size <= sizeof(actual) ? fread(actual, 1, sizeof(actual), host) : 0;
+    int extra = fgetc(host) != EOF;
+    fclose(host);
+    return got == size && !extra && memcmp(actual, expected, size) == 0;
+}
+
+static void fd_set_path(CpuState *cpu, uint32_t path_address, const char *path) {
+    memset(cpu, 0, sizeof(*cpu));
+    fd_guest_copy(path_address, path, strlen(path) + 1u);
+    cpu->r[4] = path_address;
+    cpu->r[5] = 0x00000602u; /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu->r[6] = 0777u;
+}
+
+static void fd_set_write(CpuState *cpu, uint32_t fd, uint32_t source, uint32_t count) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = fd;
+    cpu->r[5] = source;
+    cpu->r[6] = count;
+}
+
+static void test_fd_namespace(void) {
+    enum { FD_KIND_STD = 1, FD_KIND_FILE = 2, FD_BAD = 0x80010009u };
+    const uint32_t path_addr = 0x09010000u;
+    const uint32_t payload_addr = 0x09011000u;
+    static const char result_guest[] = "ms0:/NAKAGAWA_MINIMAL_RESULT.TXT";
+    static const uint8_t payload[] = "NAKAGAWA_MINIMAL SUM=5050\n";
+    char result_host[256];
+    CpuState cpu;
+    const char *old_root_value = getenv("SR_FSDIR");
+    char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
+    if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
+
+    fd_host_path(result_host, sizeof(result_host), result_guest);
+    DeleteFileA(result_host);
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs");
+
+    /* sr_hle_init performs the real runtime descriptor-table initialization. */
+    sr_hle_init();
+    expect(sr_hle_test_fd_kind(0) == FD_KIND_STD &&
+           sr_hle_test_fd_kind(1) == FD_KIND_STD &&
+           sr_hle_test_fd_kind(2) == FD_KIND_STD,
+           "runtime initialization reserves fd 0/1/2 as standard descriptors");
+
+    fd_set_path(&cpu, path_addr, result_guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "first ordinary sceIoOpen-style allocation returns fd 3");
+    expect(sr_hle_test_fd_kind(fd) == FD_KIND_FILE,
+           "ordinary allocation records file identity independently of fd number");
+
+    fd_guest_copy(payload_addr, payload, sizeof(payload) - 1u);
+    fd_set_write(&cpu, fd, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "write through the first ordinary descriptor reports the full payload");
+    expect(fd_host_bytes_equal(result_host, payload, sizeof(payload) - 1u),
+           "Phase-5 payload is persisted byte-for-byte through the ordinary fd");
+
+    fd_set_write(&cpu, 1u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "write through stdout's reserved descriptor follows the console path");
+    expect(fd_host_bytes_equal(result_host, payload, sizeof(payload) - 1u),
+           "stdout write does not alter the ordinary host file");
+    fd_set_write(&cpu, 0u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "stdin's reserved descriptor remains a distinct standard object");
+    fd_set_write(&cpu, 2u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "stderr's reserved descriptor follows the standard-stream path");
+    expect(sr_hle_test_io_read(&(CpuState){.r = {0, 0, 0, 0, 1u, 0, 0}}) == FD_BAD,
+           "read on a standard descriptor is rejected as a non-file operation");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
+           "seek on a standard descriptor is rejected as a non-file operation");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    cpu.r[29] = 0x09012000u;
+    MEM_W32(cpu.r[29] + 16u, 0u);
+    MEM_W32(cpu.r[29] + 20u, 0u);
+    expect(sr_hle_test_io_ioctl(&cpu) == FD_BAD,
+           "ioctl on a standard descriptor is rejected as a non-file operation");
+
+    fd_set_write(&cpu, 0xffffffffu, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == FD_BAD,
+           "write on an out-of-range descriptor is rejected without table access");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_read(&cpu) == FD_BAD,
+           "read on an out-of-range descriptor is rejected without table access");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
+           "seek on an out-of-range descriptor is rejected without table access");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_close(&cpu) == FD_BAD,
+           "close on an out-of-range descriptor is rejected without table access");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "closing the ordinary descriptor succeeds");
+    fd_set_write(&cpu, fd, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == FD_BAD,
+           "write through a closed ordinary descriptor remains invalid");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
+           "seek through a closed ordinary descriptor remains invalid");
+    expect(sr_hle_test_io_close(&cpu) == FD_BAD,
+           "closing an already-closed descriptor reports bad fd");
+
+    fd_set_path(&cpu, path_addr, result_guest);
+    uint32_t reused = sr_hle_test_io_open(&cpu);
+    expect(reused == 3u, "closing an ordinary descriptor releases fd 3 for reuse");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = reused;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "reused ordinary descriptor closes cleanly");
+
+    fd_set_path(&cpu, path_addr, result_guest);
+    uint32_t async_fd = sr_hle_test_io_open_async(&cpu);
+    expect(async_fd == 3u, "async open also allocates from the ordinary fd namespace");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = async_fd;
+    expect(sr_hle_test_io_close_async(&cpu) == 0u,
+           "async close releases the ordinary descriptor through shared teardown");
+    fd_set_path(&cpu, path_addr, result_guest);
+    expect(sr_hle_test_io_open(&cpu) == 3u,
+           "a descriptor released by async close is available for reuse");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 3u;
+    expect(sr_hle_test_io_close(&cpu) == 0u,
+           "the descriptor reused after async close closes cleanly");
+
+    /* Fill every ordinary slot to cover the upper bound and prove std slots can
+     * never be reached by allocation, even when the table is exhausted. */
+    uint32_t open_fds[61];
+    char guest_path[96], host_path[256];
+    for (uint32_t i = 0; i < 61u; i++) {
+        snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_%02u.TXT", i);
+        fd_set_path(&cpu, path_addr, guest_path);
+        open_fds[i] = sr_hle_test_io_open(&cpu);
+        expect(open_fds[i] == 3u + i, "ordinary descriptor allocation stays within fd 3..63");
+    }
+    snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_OVERFLOW.TXT");
+    fd_set_path(&cpu, path_addr, guest_path);
+    expect(sr_hle_test_io_open(&cpu) == 0x80010018u,
+           "ordinary allocation fails closed when fd 3..63 are exhausted");
+    for (uint32_t i = 0; i < 61u; i++) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = open_fds[i];
+        expect(sr_hle_test_io_close(&cpu) == 0u, "each exhausted-table descriptor closes cleanly");
+        snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_%02u.TXT", i);
+        fd_host_path(host_path, sizeof(host_path), guest_path);
+        DeleteFileA(host_path);
+    }
+
+    /* Closing a standard descriptor makes it invalid for I/O but does not turn
+     * its reserved identity into an ordinary allocation slot. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "closing a standard descriptor succeeds");
+    expect(sr_hle_test_fd_kind(2u) == FD_KIND_STD,
+           "closed standard descriptor retains its reserved identity");
+    fd_set_path(&cpu, path_addr, result_guest);
+    uint32_t after_std_close = sr_hle_test_io_open(&cpu);
+    expect(after_std_close == 3u,
+           "ordinary allocation still starts at fd 3 after a standard close");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = after_std_close;
+    expect(sr_hle_test_io_close(&cpu) == 0u,
+           "ordinary descriptor opened after a standard close closes cleanly");
+
+    DeleteFileA(result_host);
+    RemoveDirectoryA("build/hle_fd_namespace_fs");
+    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
+    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    free(old_root);
+}
+
+static void test_utility_av_module_state(void) {
+    CpuState cpu;
+    sr_hle_init();
+
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+           "utility AV load rejects an invalid module ID below the AV range");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x309u) == SCE_ERROR_MODULE_BAD_ID,
+           "utility AV load rejects an invalid module ID above the AV range");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+           "utility AV unload rejects an invalid module ID");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x302u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "ATRAC3+ load requires AVCODEC to be loaded first");
+
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x300u) == 0,
+           "AVCODEC loads successfully");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x300u) == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "duplicate AVCODEC load reports already loaded");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x302u) == 0,
+           "ATRAC3+ loads after AVCODEC");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x308u) == 0,
+           "MP4 loads after AVCODEC");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x308u) == 0,
+           "MP4 unloads after use");
+
+    for (uint32_t module = 0x301u; module <= 0x307u; module++) {
+        if (module == 0x302u) continue; /* already loaded above */
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, module) == 0,
+               "each remaining AV module ID loads once");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, module) == 0,
+               "each remaining AV module ID unloads once");
+    }
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x302u) == 0,
+           "ATRAC3+ unloads after use");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x302u) == SCE_ERROR_MODULE_NOT_LOADED,
+           "duplicate ATRAC3+ unload reports not loaded");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x300u) == 0,
+           "AVCODEC unloads after dependent module shutdown");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x300u) == SCE_ERROR_MODULE_NOT_LOADED,
+           "duplicate AVCODEC unload reports not loaded");
+
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_AV_MODULE, 8u) == SCE_ERROR_AV_MODULE_BAD_ID,
+           "AV-specific load rejects an out-of-range index with its AV error");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_AV_MODULE, 8u) == SCE_ERROR_AV_MODULE_BAD_ID,
+           "AV-specific unload rejects an out-of-range index with its AV error");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_AV_MODULE, 0u) == SCE_ERROR_AV_MODULE_NOT_LOADED,
+           "AV-specific unload distinguishes an unloaded module");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_AV_MODULE, 0u) == 0,
+           "AV-specific load maps index zero to AVCODEC");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_AV_MODULE, 0u) == SCE_ERROR_AV_MODULE_ALREADY_LOADED,
+           "AV-specific duplicate load reports its AV error");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_AV_MODULE, 0u) == 0,
+           "AV-specific unload clears the shared AVCODEC state");
+}
+
+/* ---- coroutine park ------------------------------------------------------------------
+ *
+ * sched.c's coro_body never returns, so a test body must not either: it hands control back
+ * to the one scheduler coroutine established at startup and stays parked there.
+ *
+ * s_sched_coro is that identity, set once by sched_init() -> sr_coro_main(). Reading it is
+ * the whole operation; there is deliberately no call that could establish a *new* identity
+ * here. The guard below is defence in depth and its textual presence proves nothing -- what
+ * proves the invariant is that sr_coro.c counts every adoption and every suppressed
+ * self-switch, and check_coroutine_lifecycle() asserts the exact totals. */
+static unsigned long s_parks;
+static const void   *s_park_target_mismatch;
+
+static void selftest_park_on_scheduler(void) {
+    for (;;) {
+        SrCoro *target = s_sched_coro;
+        SrCoroLifecycle lc;
+        sr_coro_lifecycle_snapshot(&lc);
+        /* Record rather than merely trust: the park target must be the identity the
+         * implementation itself recorded at adoption time. */
+        if ((const void *)target != lc.main_coro) s_park_target_mismatch = (const void *)target;
+        if (!target || target == sr_coro_current()) {
+            fprintf(stderr, "FAIL: park target invalid (target=%p current=%p)\n",
+                    (void *)target, (void *)sr_coro_current());
+            fflush(stderr);
+            abort();
+        }
+        s_parks++;
+        sr_coro_switch(target);
+    }
+}
+
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+static void reset_fixture(void) {
+    memset(g_mem_base, 0, 0x0c000000u);
+    memset(s_tcb, 0, sizeof(s_tcb));
+    memset(s_libc_threads, 0, sizeof(s_libc_threads));
+    memset(&s_cpu_store, 0, sizeof(s_cpu_store));
+    s_ntcb = 0;
+    s_cur = -1;
+    s_last_pick = -1;
+    s_root_seen = 0;
+    g_root_uid = 0x110u;
+    g_launcher_uid = 0x111u;
+    g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
+    g_master_reent = 0x002cf338u;
+    s_stack_top = 0x09f00000u;
+    stack_ranges_reset();
+    s_vtime_us = 0;
+    s_tick = 0;
+    s_interrupts_enabled = 1;
+    s_dispatch_enabled = 1;
+    s_pending_interrupts = 0;
+    s_servicing_interrupts = 0;
+    s_vbl_event_period_rem = 0;
+    s_vbl_next_us = 0;
+    s_vbl_count = 0;
+    s_vblank_q_us = -1;
+    s_last_vblank_ns = 0;
+    s_heap_arena_off = 0;
+    s_exit_dispatches = 0;
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    s_cpu = &s_cpu_store;
+    s_pace_on = 0;
+}
+
+static uint64_t selftest_guest_u64(uint32_t addr) {
+    return (uint64_t)MEM_R32(addr) | ((uint64_t)MEM_R32(addr + 4u) << 32);
+}
+
+/* Production-dispatch clock regression.  The fixture sets the scheduler's
+ * deterministic timeline directly, then enters every API through sr_syscall;
+ * repeated observations must agree without changing that timeline. */
+static void test_time_domains_are_coherent(void) {
+    enum {
+        SYS_OUT = 0x00200000u,
+        TICK_OUT = 0x00200010u,
+        TV_OUT = 0x00200020u,
+        TZ_OUT = 0x00200030u,
+        DATE_EXPLICIT = 0x00200100u,
+        DATE_LOCAL = 0x00200120u,
+        DATE_TICK_EXPLICIT = 0x00200140u,
+        DATE_TICK_LOCAL = 0x00200150u,
+        BAD_U64 = 0x0bfffffcu,
+        BAD_DATE = 0x0bfffff4u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 1234567u;
+    uint64_t before = s_vtime_us;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = SYS_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME) == 0u,
+           "GetSystemTime dispatch writes the scheduler clock");
+    uint64_t system_tick = selftest_guest_u64(SYS_OUT);
+    expect(system_tick == before, "GetSystemTime maps directly to scheduler time");
+
+    uint32_t low1 = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW);
+    uint32_t low2 = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW);
+    expect(low1 == low2 && low1 == (uint32_t)before,
+           "repeated GetSystemTimeLow queries are stable");
+    uint32_t wide_lo = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE);
+    uint64_t wide = ((uint64_t)cpu.r[3] << 32) | wide_lo;
+    expect(wide == before, "GetSystemTimeWide shares the same timeline");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK) == (uint32_t)before,
+           "libc clock uses scheduler microseconds without a pseudo epoch");
+
+    cpu.r[4] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == 0u,
+           "RTC current tick dispatch succeeds");
+    uint64_t rtc1 = selftest_guest_u64(TICK_OUT);
+    cpu.r[4] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == 0u,
+           "repeated RTC current tick dispatch succeeds");
+    uint64_t rtc2 = selftest_guest_u64(TICK_OUT);
+    expect(rtc1 == rtc2, "repeated RTC queries do not advance the guest calendar");
+
+    cpu.r[4] = TV_OUT;
+    cpu.r[5] = TZ_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u,
+           "gettimeofday dispatch succeeds");
+    uint32_t tv_sec = MEM_R32(TV_OUT);
+    uint32_t tv_usec = MEM_R32(TV_OUT + 4u);
+    uint32_t libc_time_out = TV_OUT + 0x20u;
+    cpu.r[4] = libc_time_out;
+    uint32_t libc_time = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_TIME);
+    expect(libc_time == MEM_R32(libc_time_out) && libc_time == tv_sec,
+           "libc time and gettimeofday share the RTC/Unix epoch");
+    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u && MEM_R32(TZ_OUT + 4u) == 0u,
+           "gettimeofday emits a valid deterministic UTC timezone record");
+
+    cpu.r[4] = DATE_EXPLICIT;
+    cpu.r[5] = 60u; /* explicit PSP timezone offset in minutes */
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "explicit RTC current-clock NID is registered");
+    cpu.r[4] = DATE_LOCAL;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
+           "local RTC current-clock NID is registered");
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = DATE_TICK_EXPLICIT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "explicit current-clock output is a valid RTC datetime");
+    cpu.r[4] = DATE_LOCAL; cpu.r[5] = DATE_TICK_LOCAL;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "local current-clock output is a valid RTC datetime");
+    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) == 3600000000ull,
+           "explicit RTC offset is applied in checked microseconds");
+
+    expect(s_vtime_us == before,
+           "all repeated clock queries leave the scheduler timeline unchanged");
+
+    cpu.r[4] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "RTC current tick rejects a complete-span overflow");
+    cpu.r[4] = BAD_DATE;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "RTC current clock rejects a complete datetime-span overflow");
+
+    /* The host calendar is sampled once for the RTC epoch; changing the
+     * deterministic guest time remains the only way these values can move. */
+    s_vtime_us += 77u;
+    cpu.r[4] = SYS_OUT;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME);
+    expect(selftest_guest_u64(SYS_OUT) == before + 77u,
+           "clock values advance only after an explicit scheduler-time advance");
+    (void)rtc1; (void)rtc2;
+}
+
+static void test_interrupt_nid_semantics(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_vbl_next_us = UINT64_MAX; /* keep this NID-only probe independent of VBLANK delivery */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_IS_CPU_INTR_ENABLE) == 1u,
+           "IsCpuIntrEnable reports the initial enabled state");
+    uint32_t outer = sr_syscall(&cpu, NID_SCE_KERNEL_CPU_SUSPEND_INTR);
+    expect(outer == 1u, "CpuSuspendIntr returns the prior enabled token");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_IS_CPU_INTR_ENABLE) == 0u,
+           "IsCpuIntrEnable reports a suspended CPU");
+    uint32_t inner = sr_syscall(&cpu, NID_SCE_KERNEL_CPU_SUSPEND_INTR);
+    expect(inner == 0u, "nested CpuSuspendIntr returns token 0");
+    cpu.r[4] = inner;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR_SYNC);
+    expect(!sched_interrupts_enabled(), "ResumeIntrWithSync restores token 0");
+    cpu.r[4] = 0xDEADBEEFu;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR);
+    expect(!sched_interrupts_enabled(), "invalid ResumeIntr token cannot enable interrupts");
+    cpu.r[4] = outer;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR);
+    expect(sched_interrupts_enabled(), "ResumeIntr restores token 1");
+}
+
+/* sceKernelIsCpuIntrSuspended is a pure predicate on the saved-state token the
+ * caller supplies, not a query of the CPU's current interrupt-enable state.
+ *
+ * PSPAutotests tests/intr/suspended.expected prints the same four results twice --
+ * once with interrupts enabled, once with them suspended -- so the hardware answer
+ * provably cannot depend on the current state:
+ *
+ *     0: 00000001   1: 00000000   2: 00000000   0xDEADBEEF: 00000000
+ *
+ * The real-PSP capture recorded on issue #88 (PSP-3001 / 6.61-ARK) reports the same
+ * four values, and suspended.cpp's own flags(inner)/flags(outer) probes agree: a
+ * token of 0 means "was already suspended" (1) and a token of 1 means "was enabled" (0).
+ *
+ * The previous revision of this suite probed only argument 0 while suspended -- the
+ * single cell of the 2x4 matrix where a current-state query and the token predicate
+ * happen to agree -- so an implementation that ignored the argument stayed green.
+ * Probe the complete matrix through the production NID so that cannot recur. */
+static void test_is_cpu_intr_suspended_is_token_predicate(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_vbl_next_us = UINT64_MAX; /* NID-only probe: keep VBLANK delivery out of it */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    static const struct {
+        uint32_t arg;
+        uint32_t want;
+        const char *label;
+    } kCells[] = {
+        { 0u,          1u, "0" },
+        { 1u,          0u, "1" },
+        { 2u,          0u, "2" },
+        { 0xDEADBEEFu, 0u, "0xDEADBEEF" },
+    };
+
+    for (int suspended = 0; suspended <= 1; suspended++) {
+        if (suspended) (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_SUSPEND_INTR);
+        expect(sched_interrupts_enabled() == !suspended,
+               suspended ? "matrix fixture: CPU interrupts are suspended"
+                         : "matrix fixture: CPU interrupts are enabled");
+        for (size_t i = 0; i < sizeof kCells / sizeof kCells[0]; i++) {
+            char msg[128];
+            cpu.r[4] = kCells[i].arg;
+            uint32_t got = sr_syscall(&cpu, NID_SCE_KERNEL_IS_CPU_INTR_SUSPENDED);
+            snprintf(msg, sizeof msg,
+                     "IsCpuIntrSuspended(%s) == %u with interrupts %s",
+                     kCells[i].label, kCells[i].want,
+                     suspended ? "suspended" : "enabled");
+            expect(got == kCells[i].want, msg);
+        }
+    }
+
+    /* Leave the shared interrupt state as this suite found it. */
+    cpu.r[4] = 1u;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR);
+}
+
+static int s_worker_ran_prematurely = 0;
+
+static void yield_worker_coro_body(void *arg) {
+    (void)arg;
+    s_worker_ran_prematurely = 1;
+}
+
+static void yield_test_coro_body(void *arg) {
+    (void)arg;
+    CpuState ctl;
+    memset(&ctl, 0, sizeof ctl);
+    uint32_t token = sr_syscall(&ctl, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(token == 1u && !sched_dispatch_enabled(), "dispatch suspended in coroutine for yield preemption test");
+
+    uint64_t vtime_before = s_vtime_us;
+    sr_yield(&ctl);
+    expect(s_cur == 0, "sr_yield boundary preserves current thread execution while dispatch is suspended");
+    expect(s_worker_ran_prematurely == 0, "higher-priority worker did not run prematurely while dispatch was suspended");
+    expect(s_vtime_us >= vtime_before, "scheduler time/interrupts progress normally during sr_yield while dispatch is suspended");
+    expect(s_vtime_us < s_tcb[2].wake, "dispatch lock alone does not spuriously snap virtual time to sleeping waiter's deadline");
+
+    ctl.r[4] = token;
+    (void)sr_syscall(&ctl, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    expect(s_cur == 1, "ResumeDispatchThread(1) re-enables preemption and switches to higher-priority READY thread");
+    expect(s_worker_ran_prematurely == 1, "higher-priority worker ran after ResumeDispatchThread(1)");
+}
+
+static void test_dispatch_suspend_resume_nid_semantics(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+
+    /* 1. Initial state: dispatch enabled -> SuspendDispatchThread returns token 1 */
+    expect(sched_dispatch_enabled() == 1, "dispatch is enabled initially");
+    uint32_t token1 = sr_syscall(&cpu, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(token1 == 1u, "SuspendDispatchThread returns prior state 1 when enabled");
+    expect(sched_dispatch_enabled() == 0, "SuspendDispatchThread disables dispatch");
+
+    /* 2. Nested suspension: SuspendDispatchThread when already suspended returns token 0 */
+    uint32_t token2 = sr_syscall(&cpu, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(token2 == 0u, "SuspendDispatchThread returns prior state 0 when already suspended");
+    expect(sched_dispatch_enabled() == 0, "dispatch remains suspended");
+
+    /* 3. Resume with state=0 keeps dispatch suspended */
+    cpu.r[4] = 0u;
+    uint32_t res0 = sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    expect(res0 == 0u, "ResumeDispatchThread(0) returns 0");
+    expect(sched_dispatch_enabled() == 0, "ResumeDispatchThread(0) keeps dispatch suspended");
+
+    /* 4. Resume with state=1 restores dispatch */
+    cpu.r[4] = token1;
+    uint32_t res1 = sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    expect(res1 == 0u, "ResumeDispatchThread(1) returns 0");
+    expect(sched_dispatch_enabled() == 1, "ResumeDispatchThread(1) restores dispatch enabled");
+
+    /* 5. CPU Interrupt Error Precedence: when CPU interrupts are suspended,
+     * SuspendDispatchThread and ResumeDispatchThread return 0x80020066 (SCE_KERNEL_ERROR_CPUDI)
+     * without modifying dispatch-suspension state. */
+    uint32_t intr_token = sr_syscall(&cpu, NID_SCE_KERNEL_CPU_SUSPEND_INTR);
+    expect(!sched_interrupts_enabled(), "CPU interrupts suspended");
+
+    uint32_t err_suspend = sr_syscall(&cpu, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(err_suspend == 0x80020066u, "SuspendDispatchThread returns SCE_KERNEL_ERROR_CPUDI when interrupts disabled");
+
+    cpu.r[4] = 1u;
+    uint32_t err_resume = sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    expect(err_resume == 0x80020066u, "ResumeDispatchThread returns SCE_KERNEL_ERROR_CPUDI when interrupts disabled");
+
+    /* Restore CPU interrupts */
+    cpu.r[4] = intr_token;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR);
+    expect(sched_interrupts_enabled(), "CPU interrupts restored");
+    expect(sched_dispatch_enabled() == 1, "dispatch state unaffected by rejected CPUDI calls");
+
+    /* 6. sr_yield() boundary preemption suppression & virtual time preservation under dispatch suspension:
+     * Current thread (low priority, prio 40, uid 0x110, s_cur 0) vs READY worker thread (higher priority, prio 20, uid 0x111, s_cur 1)
+     * vs separate finite-deadline sleeping waiter (prio 30, uid 0x112, s_cur 2). */
+    reset_fixture();
+    sr_hle_init();
+    s_worker_ran_prematurely = 0;
+    TCB *cur_tcb = fixture_thread(0x110u, TH_RUNNING, 40);
+    TCB *high_tcb = fixture_thread(0x111u, TH_READY, 20);
+    TCB *sleep_tcb = fixture_thread(0x112u, TH_WAIT_DELAY, 30);
+    sleep_tcb->wake = s_vtime_us + 100000u;
+    s_cur = (int)(cur_tcb - s_tcb);
+    cur_tcb->started = 1;
+    cur_tcb->coro = sr_coro_create(yield_test_coro_body, NULL, (size_t)1 << 20);
+    high_tcb->started = 1;
+    high_tcb->coro = sr_coro_create(yield_worker_coro_body, NULL, (size_t)1 << 20);
+    expect(cur_tcb->coro != NULL && high_tcb->coro != NULL, "yield test coroutines created");
+    if (cur_tcb->coro) {
+        sr_coro_switch(cur_tcb->coro);
+        if (s_cur != 0 && cur_tcb->coro) {
+            sr_coro_switch(cur_tcb->coro);
+        }
+        sr_coro_destroy(cur_tcb->coro);
+        cur_tcb->coro = NULL;
+    }
+    if (high_tcb->coro) {
+        sr_coro_destroy(high_tcb->coro);
+        high_tcb->coro = NULL;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * SCE_KERNEL_ERROR_CAN_NOT_WAIT: what the conformance matrix cannot assert
+ * -------------------------------------------------------------------------
+ * The matrix in intr_conformance.h pins the RETURN VALUE of each cell against
+ * hardware. These checks cover the properties a return value cannot show:
+ *
+ *   - dispatch-disabled alone is sufficient, with CPU interrupts still enabled,
+ *     so the two states are being consulted independently rather than one being
+ *     read as a proxy for the other;
+ *   - a rejected call leaves the caller RUNNING -- no TH_WAIT_* transition and
+ *     no coroutine park behind the returned error;
+ *   - a rejected call performs no part of the operation: no wakeup consumed, no
+ *     wake deadline armed, no vblank latch taken, no semaphore count decremented,
+ *     no event pattern consumed, no join target set;
+ *   - validation that hardware puts AHEAD of the context error still runs first;
+ *   - an invocation that would NOT have blocked still succeeds while the context
+ *     is disabled, which is what keeps the check a wait gate rather than a
+ *     blanket syscall gate.
+ *
+ * Everything enters through sr_syscall's registered-NID lookup, so these are
+ * production-dispatch assertions on the real handlers.
+ * ------------------------------------------------------------------------- */
+#define NID_CNW_DELAY_THREAD        0xceadeb47u
+#define NID_CNW_DELAY_THREAD_CB     0x68da9e36u
+#define NID_CNW_SLEEP_THREAD_CB     0x82826f70u
+#define NID_CNW_WAIT_VBLANK         0x36cdfadeu
+#define NID_CNW_WAIT_VBLANK_START   0x984c27e7u
+#define NID_CNW_CREATE_SEMA         0xd6da4ba1u
+#define NID_CNW_WAIT_SEMA           0x4e3a1105u
+#define NID_CNW_WAIT_SEMA_CB        0x6d212bacu
+#define NID_CNW_CREATE_EVF          0x55c20a00u
+#define NID_CNW_WAIT_EVF            0x402fcf22u
+#define NID_CNW_WAIT_EVF_CB         0x328c546au
+#define NID_CNW_WAIT_THREAD_END     0x278c0df5u
+#define NID_CNW_WAIT_THREAD_END_CB  0x840e8133u
+
+#define CNW_ERR      0x800201a7u   /* SCE_KERNEL_ERROR_CAN_NOT_WAIT */
+#define CNW_NAMEBUF  0x00250000u
+
+/* Put the caller on a fixture thread and disable ONE of the two states. When
+ * intr_off is 0 the CPU stays interrupt-enabled and only dispatch is suspended,
+ * which is the leg that proves the states are independent. */
+static TCB *cnw_begin(int intr_off, uint32_t *token_out) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x1d0u, TH_RUNNING, 32);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+
+    CpuState ctl;
+    memset(&ctl, 0, sizeof ctl);
+    *token_out = sr_syscall(&ctl, intr_off ? NID_SCE_KERNEL_CPU_SUSPEND_INTR
+                                           : NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    return self;
+}
+
+static void cnw_end(int intr_off, uint32_t token) {
+    CpuState ctl;
+    memset(&ctl, 0, sizeof ctl);
+    ctl.r[4] = token;
+    (void)sr_syscall(&ctl, intr_off ? NID_SCE_KERNEL_CPU_RESUME_INTR
+                                    : NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    s_cur = -1;
+}
+
+static void test_can_not_wait_semantics(void) {
+    CpuState cpu;
+    uint32_t token;
+
+    /* ---- 1. dispatch-disabled alone rejects, with interrupts still enabled --- */
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_DELAY_THREAD_CB : NID_CNW_DELAY_THREAD;
+        const char *who = i ? "sceKernelDelayThreadCB" : "sceKernelDelayThread";
+        TCB *self = cnw_begin(0, &token);
+        expect(sched_interrupts_enabled(),
+               "dispatch-disabled leg leaves CPU interrupts ENABLED");
+        expect(!sched_dispatch_enabled(), "dispatch is suspended");
+
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 200u;
+        uint32_t rc = sr_syscall(&cpu, nid);
+
+        char msg[192];
+        snprintf(msg, sizeof msg,
+                 "%s returns CAN_NOT_WAIT with dispatch disabled and interrupts enabled "
+                 "(the two states are consulted independently)", who);
+        expect(rc == CNW_ERR, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call left the caller RUNNING, not TH_WAIT_DELAY", who);
+        expect(self->state == TH_RUNNING, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call armed no wake deadline", who);
+        expect(self->wake == (uint64_t)-1, msg);
+        cnw_end(0, token);
+    }
+
+    /* ---- 2. the same calls are rejected with interrupts disabled -------------- */
+    {
+        TCB *self = cnw_begin(1, &token);
+        expect(!sched_interrupts_enabled(), "CPU interrupts are suspended");
+        expect(sched_dispatch_enabled(),
+               "interrupts-disabled leg leaves dispatch state untouched");
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 200u;
+        expect(sr_syscall(&cpu, NID_CNW_DELAY_THREAD) == CNW_ERR,
+               "sceKernelDelayThread returns CAN_NOT_WAIT with interrupts disabled");
+        expect(self->state == TH_RUNNING, "interrupts-disabled rejection did not park the caller");
+        cnw_end(1, token);
+    }
+
+    /* ---- 3. sleep: a banked wakeup is neither consumed nor required ----------- */
+    {
+        TCB *self = cnw_begin(0, &token);
+        self->wakeups = 0;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_SLEEP_THREAD) == CNW_ERR,
+               "sceKernelSleepThread with no banked wakeup returns CAN_NOT_WAIT");
+        expect(self->wakeups == 0 && self->sleeping == 0 && self->state == TH_RUNNING,
+               "rejected sceKernelSleepThread consumed no wakeup and set no sleep marker");
+
+        /* A sleep that would be satisfied from the wakeup count is not a wait, so
+         * it must still succeed while dispatch is suspended -- this is the check
+         * that separates a wait gate from a blanket syscall gate. */
+        self->wakeups = 1;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_SLEEP_THREAD) == 0u,
+               "sceKernelSleepThread with a banked wakeup still succeeds with dispatch disabled");
+        expect(self->wakeups == 0, "the satisfied sleep consumed exactly one banked wakeup");
+
+        self->wakeups = 0;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, NID_CNW_SLEEP_THREAD_CB) == CNW_ERR,
+               "sceKernelSleepThreadCB with no banked wakeup returns CAN_NOT_WAIT");
+        expect(self->wakeups == 0 && self->sleeping == 0,
+               "rejected sceKernelSleepThreadCB mutated no sleep state");
+        cnw_end(0, token);
+    }
+
+    /* ---- 4. vblank: the latch is not consumed -------------------------------- */
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_WAIT_VBLANK_START : NID_CNW_WAIT_VBLANK;
+        const char *who = i ? "sceDisplayWaitVblankStart" : "sceDisplayWaitVblank";
+        TCB *self = cnw_begin(0, &token);
+        /* Arrange an UNSEEN vblank: without the gate, sched_wait_vblank() would
+         * take this latch and return 0 without blocking at all. */
+        s_vbl_count = 7;
+        self->vbl_seen = 3;
+        memset(&cpu, 0, sizeof cpu);
+        uint32_t rc = sr_syscall(&cpu, nid);
+
+        char msg[192];
+        snprintf(msg, sizeof msg, "%s returns CAN_NOT_WAIT with dispatch disabled", who);
+        expect(rc == CNW_ERR, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call did not consume the vblank latch", who);
+        expect(self->vbl_seen == 3, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call did not block on VBLANK_WAIT_OBJ", who);
+        expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
+        cnw_end(0, token);
+    }
+
+    /* ---- 5. semaphore: object error keeps precedence, count is untouched ------ */
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_WAIT_SEMA_CB : NID_CNW_WAIT_SEMA;
+        const char *who = i ? "sceKernelWaitSemaCB" : "sceKernelWaitSema";
+        char msg[192];
+
+        /* An unsatisfiable wait is rejected. */
+        TCB *self = cnw_begin(0, &token);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = CNW_NAMEBUF; cpu.r[5] = 0; cpu.r[6] = 0; cpu.r[7] = 1;   /* init 0, max 1 */
+        uint32_t sema = sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
+        snprintf(msg, sizeof msg, "%s on an unavailable count returns CAN_NOT_WAIT", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call did not enter a wait", who);
+        expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
+
+        /* The bad-object error still wins over the context error, exactly as it
+         * does on current main. Hardware answers CAN_NOT_WAIT here too, but that
+         * is a separate precedence correction and is deliberately NOT made here. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0u; cpu.r[5] = 1u; cpu.r[6] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s on a bad sema still returns its object error, not CAN_NOT_WAIT", who);
+        expect(sr_syscall(&cpu, nid) == 0x80020000u, msg);
+        cnw_end(0, token);
+
+        /* A count that IS available is not a wait: it succeeds and decrements. */
+        self = cnw_begin(0, &token);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = CNW_NAMEBUF; cpu.r[5] = 0; cpu.r[6] = 1u; cpu.r[7] = 1u;  /* init 1, max 1 */
+        sema = sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s with an available count still succeeds with dispatch disabled", who);
+        expect(sr_syscall(&cpu, nid) == 0u, msg);
+        cnw_end(0, token);
+    }
+
+    /* ---- 6. event flag: ILLEGAL_MODE and the satisfied case both win --------- */
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_WAIT_EVF_CB : NID_CNW_WAIT_EVF;
+        const char *who = i ? "sceKernelWaitEventFlagCB" : "sceKernelWaitEventFlag";
+        char msg[192];
+
+        TCB *self = cnw_begin(0, &token);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = CNW_NAMEBUF; cpu.r[5] = 0; cpu.r[6] = 0; cpu.r[7] = 0;   /* pattern 0 */
+        uint32_t evf = sr_syscall(&cpu, NID_CNW_CREATE_EVF);
+
+        /* Unmatched pattern -> genuine wait -> rejected, consuming nothing. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = evf; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
+        snprintf(msg, sizeof msg, "%s on an unmatched pattern returns CAN_NOT_WAIT", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
+        snprintf(msg, sizeof msg, "%s: rejected call did not enter a wait", who);
+        expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
+
+        /* Mode validation runs BEFORE the context decision (waits.expected L72/L73,
+         * L82/L83): ILLEGAL_MODE, not CAN_NOT_WAIT. This is the single cell that
+         * rules out a universal pre-handler gate, so it is asserted directly. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = evf; cpu.r[5] = 1u; cpu.r[6] = 0xFFu; cpu.r[7] = 0u; cpu.r[8] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s invalid mode returns ILLEGAL_MODE ahead of the context error", who);
+        expect(sr_syscall(&cpu, nid) == 0x80020195u, msg);
+
+        /* Bad object still answers in the object error space. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0u; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
+        snprintf(msg, sizeof msg, "%s bad flag still returns its object error", who);
+        expect(sr_syscall(&cpu, nid) == 0x80020000u, msg);
+        cnw_end(0, token);
+
+        /* An already-satisfied pattern is not a wait: it succeeds and is consumed. */
+        self = cnw_begin(0, &token);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = CNW_NAMEBUF; cpu.r[5] = 0; cpu.r[6] = 1u; cpu.r[7] = 0;  /* pattern 1 */
+        evf = sr_syscall(&cpu, NID_CNW_CREATE_EVF);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = evf; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s on an already-set pattern still succeeds with dispatch disabled", who);
+        expect(sr_syscall(&cpu, nid) == 0u, msg);
+        cnw_end(0, token);
+    }
+
+    /* ---- 7. thread join: ILLEGAL_THID and the immediate cases both win ------- */
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_WAIT_THREAD_END_CB : NID_CNW_WAIT_THREAD_END;
+        const char *who = i ? "sceKernelWaitThreadEndCB" : "sceKernelWaitThreadEnd";
+        char msg[192];
+
+        TCB *self = cnw_begin(0, &token);
+        TCB *running = fixture_thread(0x1d2u, TH_READY, 40);
+        running->started = 1;
+        TCB *dormant = fixture_thread(0x1d3u, TH_DORMANT, 40);
+        dormant->started = 0;
+
+        /* Object validation is ahead of the context error in EVERY context on
+         * hardware (waits.expected L204/L205/L383), so thid 0 keeps ILLEGAL_THID. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0u; cpu.r[5] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s(0) returns ILLEGAL_THID ahead of the context error", who);
+        expect(sr_syscall(&cpu, nid) == 0x80020197u, msg);
+
+        /* A target that is not running resolves immediately, so it is not a wait
+         * and its current answer is preserved. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = dormant->uid; cpu.r[5] = 0u;
+        snprintf(msg, sizeof msg,
+                 "%s on a never-started target still resolves immediately", who);
+        expect(sr_syscall(&cpu, nid) == 0x800201a2u, msg);
+
+        /* A running target is a genuine wait. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = running->uid; cpu.r[5] = 0u;
+        snprintf(msg, sizeof msg, "%s on a running target returns CAN_NOT_WAIT", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
+        snprintf(msg, sizeof msg,
+                 "%s: rejected join set no join target and did not park the caller", who);
+        expect(self->state == TH_RUNNING && self->join_target == 0 &&
+               self->join_waiting == 0, msg);
+        cnw_end(0, token);
+    }
+
+    /* ---- 8. control: with both states enabled nothing is rejected ------------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *self = fixture_thread(0x1d0u, TH_RUNNING, 32);
+        s_cur = (int)(self - s_tcb);
+        self->started = 1;
+        expect(sched_interrupts_enabled() && sched_dispatch_enabled(),
+               "control: both interrupts and dispatch are enabled");
+        expect(sched_wait_permitted(), "control: waiting is permitted in normal context");
+
+        self->wakeups = 1;
+        CpuState c;
+        memset(&c, 0, sizeof c);
+        expect(sr_syscall(&c, NID_SCE_KERNEL_SLEEP_THREAD) == 0u,
+               "control: a satisfiable sleep still returns 0 in normal context");
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * PR-C1: the blocking FPL allocate forms and the context rule
+ * -------------------------------------------------------------------------
+ * sceKernelAllocateFpl / ...CB used to BE sceKernelTryAllocateFpl -- one handler
+ * behind three NIDs. waits.expected puts the context decision ahead of the FPL
+ * object lookup for the blocking pair (bad id answers CAN_NOT_WAIT at L102/L103
+ * and L108/L109, not the bad-id error), so they had to be split off.
+ *
+ * The matrix pins the return values of those eight cells. What it cannot show is
+ * on this side of the split: that the rejection happens before ANY mutation, that
+ * normal context is untouched, and above all that sceKernelTryAllocateFpl did not
+ * come along for the ride. That last group is a regression pin on current
+ * behavior, not a hardware claim -- waits.cpp never probes a Try form, so there
+ * is no oracle cell for it.
+ * ------------------------------------------------------------------------- */
+#define NID_FPL_CREATE        0xc07bb470u
+#define NID_FPL_DELETE        0xed1410e0u
+#define NID_FPL_ALLOCATE      0xd979e9bfu
+#define NID_FPL_ALLOCATE_CB   0xe7282cb6u
+#define NID_FPL_TRY_ALLOCATE  0x623ae665u
+#define FPL_BAD_ID_ERR        0x800200d3u
+#define FPL_EXHAUSTED_ERR     0x800200d9u
+#define FPL_NAMEBUF           0x00240900u
+#define FPL_OUTPTR            0x00240940u
+#define FPL_SENTINEL          0xfeedfaceu
+#define FPL_BSIZE             0x100u
+#define FPL_NBLOCKS           0x10
+
+/* Fresh FPL_NBLOCKS x FPL_BSIZE pool. Returns 0 on arrangement failure. */
+static uint32_t fpl_make_pool(void) {
+    CpuState setup;
+    memset(&setup, 0, sizeof setup);
+    setup.r[4] = FPL_NAMEBUF; setup.r[5] = 0; setup.r[6] = 0; setup.r[7] = FPL_BSIZE;
+    setup.r[8] = (uint32_t)FPL_NBLOCKS;     /* numBlocks, read via stack_arg(0) */
+    return sr_syscall(&setup, NID_FPL_CREATE);
+}
+
+/* s_fpls[] has FPL_MAX=16 slots, reset_fixture() does not clear it, and the
+ * conformance matrix already uses all 16. Every pool this test creates must go
+ * back or the matrix starves. */
+static void fpl_free_pool(uint32_t uid) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = uid;
+    (void)sr_syscall(&c, NID_FPL_DELETE);
+}
+
+static uint32_t fpl_call(uint32_t nid, uint32_t uid, uint32_t outptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = outptr; cpu.r[6] = 0u;   /* NULL timeout */
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_allocate_fpl_context_precedence(void) {
+    char msg[160];
+
+    /* ---- 1+2. context beats the object lookup, on BOTH disabled states ------
+     * A bad uid would return FPL_BAD_ID_ERR if the lookup ran first. Asserting
+     * CAN_NOT_WAIT here is what proves the ordering, not merely that some error
+     * came back. Both legs run so dispatch-disabled is not inferred from the
+     * interrupt-disabled result. */
+    for (int intr_off = 0; intr_off < 2; intr_off++) {
+        for (int cb = 0; cb < 2; cb++) {
+            const uint32_t nid = cb ? NID_FPL_ALLOCATE_CB : NID_FPL_ALLOCATE;
+            const char *who = cb ? "sceKernelAllocateFplCB" : "sceKernelAllocateFpl";
+            const char *ctx = intr_off ? "interrupts disabled" : "dispatch disabled";
+            uint32_t token;
+
+            (void)cnw_begin(intr_off, &token);
+            MEM_W32(FPL_OUTPTR, FPL_SENTINEL);
+            uint32_t rc = fpl_call(nid, 0u /* bad uid */, FPL_OUTPTR);
+            snprintf(msg, sizeof msg,
+                     "%s with %s returns CAN_NOT_WAIT before the bad-uid lookup", who, ctx);
+            expect(rc == CNW_ERR, msg);
+            snprintf(msg, sizeof msg,
+                     "%s rejected with %s writes no output pointer", who, ctx);
+            expect(MEM_R32(FPL_OUTPTR) == FPL_SENTINEL, msg);
+            cnw_end(intr_off, token);
+        }
+    }
+
+    /* ---- 3. a VALID pool is rejected without consuming a block --------------
+     * Proved by capacity rather than by address: pool bases move between
+     * fixtures, but the block COUNT does not. The pool holds FPL_NBLOCKS blocks,
+     * so after a rejected allocate all of them must still be handed out and only
+     * the one after that may report exhaustion. Had the rejection consumed a
+     * block, the final allocation would fail early. */
+    for (int intr_off = 0; intr_off < 2; intr_off++) {
+        const char *ctx = intr_off ? "interrupts disabled" : "dispatch disabled";
+        uint32_t token;
+
+        (void)cnw_begin(intr_off, &token);
+        uint32_t uid = fpl_make_pool();
+        expect(uid != 0u, "control: FPL pool created for the rejection leg");
+        MEM_W32(FPL_OUTPTR, FPL_SENTINEL);
+        uint32_t rc = fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR);
+        snprintf(msg, sizeof msg, "AllocateFpl on a VALID pool with %s returns CAN_NOT_WAIT", ctx);
+        expect(rc == CNW_ERR, msg);
+        snprintf(msg, sizeof msg, "AllocateFpl rejected with %s writes no data pointer", ctx);
+        expect(MEM_R32(FPL_OUTPTR) == FPL_SENTINEL, msg);
+        cnw_end(intr_off, token);
+
+        int handed_out = 0;
+        uint32_t prev = 0u;
+        int contiguous = 1;
+        for (int i = 0; i < FPL_NBLOCKS; i++) {
+            if (fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) != 0u) break;
+            uint32_t got = MEM_R32(FPL_OUTPTR);
+            if (i > 0 && got != prev + FPL_BSIZE) contiguous = 0;
+            prev = got;
+            handed_out++;
+        }
+        snprintf(msg, sizeof msg,
+                 "AllocateFpl rejected with %s consumed no block: all %d remain", ctx, FPL_NBLOCKS);
+        expect(handed_out == FPL_NBLOCKS, msg);
+        snprintf(msg, sizeof msg,
+                 "AllocateFpl after a %s rejection still walks the pool one block at a time", ctx);
+        expect(contiguous, msg);
+        snprintf(msg, sizeof msg,
+                 "the pool really was exhausted at %d blocks, so the count is a real bound",
+                 FPL_NBLOCKS);
+        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == FPL_EXHAUSTED_ERR, msg);
+        fpl_free_pool(uid);
+    }
+
+    /* ---- 4. normal context is exactly what it was before the split ---------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *self = fixture_thread(0x1d2u, TH_RUNNING, 32);
+        s_cur = (int)(self - s_tcb); self->started = 1;
+        expect(sched_wait_permitted(), "control: waiting is permitted in normal context");
+
+        uint32_t uid = fpl_make_pool();
+        expect(uid != 0u, "control: FPL pool created in normal context");
+        MEM_W32(FPL_OUTPTR, FPL_SENTINEL);
+        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == 0u,
+               "normal-context AllocateFpl still returns 0");
+        uint32_t first = MEM_R32(FPL_OUTPTR);
+        expect(first != FPL_SENTINEL, "normal-context AllocateFpl still writes the data pointer");
+        expect(fpl_call(NID_FPL_ALLOCATE_CB, uid, FPL_OUTPTR) == 0u,
+               "normal-context AllocateFplCB still returns 0");
+        expect(MEM_R32(FPL_OUTPTR) == first + FPL_BSIZE,
+               "normal-context AllocateFplCB still advances the cursor by one block");
+        expect(fpl_call(NID_FPL_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+               "normal-context AllocateFpl still reports the bad-uid error");
+        fpl_free_pool(uid);
+        s_cur = -1;
+    }
+
+    /* ---- 5. sceKernelTryAllocateFpl did NOT change ---------------------------
+     * Regression pin on current behavior. The Try form does not block, so the
+     * context rule must not reach it: it keeps allocating while interrupts and
+     * dispatch are disabled, and keeps its own bad-uid error. No oracle cell
+     * covers this -- waits.cpp never probes a Try form. */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *self = fixture_thread(0x1d3u, TH_RUNNING, 32);
+        s_cur = (int)(self - s_tcb); self->started = 1;
+        uint32_t uid = fpl_make_pool();
+        expect(uid != 0u, "control: FPL pool created for the TryAllocate pin");
+        MEM_W32(FPL_OUTPTR, FPL_SENTINEL);
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, uid, FPL_OUTPTR) == 0u,
+               "normal-context TryAllocateFpl still returns 0");
+        uint32_t first = MEM_R32(FPL_OUTPTR);
+        expect(first != FPL_SENTINEL, "normal-context TryAllocateFpl still writes the data pointer");
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+               "normal-context TryAllocateFpl still reports the bad-uid error");
+        fpl_free_pool(uid);
+        s_cur = -1;
+    }
+    for (int intr_off = 0; intr_off < 2; intr_off++) {
+        const char *ctx = intr_off ? "interrupts disabled" : "dispatch disabled";
+        uint32_t token;
+        (void)cnw_begin(intr_off, &token);
+        uint32_t uid = fpl_make_pool();
+        expect(uid != 0u, "control: FPL pool created for the disabled-context Try pin");
+        uint32_t base_before;
+        MEM_W32(FPL_OUTPTR, FPL_SENTINEL);
+        uint32_t rc = fpl_call(NID_FPL_TRY_ALLOCATE, uid, FPL_OUTPTR);
+        base_before = MEM_R32(FPL_OUTPTR);
+        snprintf(msg, sizeof msg, "TryAllocateFpl still succeeds with %s (not a blocking form)", ctx);
+        expect(rc == 0u, msg);
+        snprintf(msg, sizeof msg, "TryAllocateFpl still writes its data pointer with %s", ctx);
+        expect(base_before != FPL_SENTINEL, msg);
+        rc = fpl_call(NID_FPL_TRY_ALLOCATE, uid, FPL_OUTPTR);
+        snprintf(msg, sizeof msg, "TryAllocateFpl still advances the cursor with %s", ctx);
+        expect(rc == 0u && MEM_R32(FPL_OUTPTR) == base_before + FPL_BSIZE, msg);
+        snprintf(msg, sizeof msg, "TryAllocateFpl still reports the bad-uid error with %s", ctx);
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR, msg);
+        fpl_free_pool(uid);
+        cnw_end(intr_off, token);
+    }
+}
+
+/* Production-dispatch regression for the low-level ATRAC context ABI.  The
+ * calls below enter the same NID registry and sr_syscall path as a generated
+ * import stub; the guest buffer is a tiny synthetic RIFF envelope, so no
+ * decoder or retail bytes are involved. */
+static void test_atrac_context_abi(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0x1234u;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID) == ATRAC_ERROR_INVALID_CODECTYPE,
+           "sceAtracGetAtracID rejects an unsupported codec type");
+
+    uint32_t ids[8];
+    for (unsigned i = 0; i < 8; i++) {
+        cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+        ids[i] = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+        expect(ids[i] == i, "sceAtracGetAtracID allocates the next tracked context");
+    }
+    cpu.r[4] = ATRAC_CODEC_AT3;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID) == ATRAC_ERROR_NO_ATRACID,
+           "sceAtracGetAtracID reports exhaustion instead of fabricating an ID");
+
+    cpu.r[4] = 0x7fu;
+    cpu.r[5] = 0;
+    cpu.r[6] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA) == ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracSetData rejects an unallocated context");
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracReleaseAtracID rejects an unallocated context");
+
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0;
+    cpu.r[6] = 0;
+    uint32_t short_ret = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA);
+    expect(short_ret == ATRAC_ERROR_SIZE_TOO_SMALL,
+           "sceAtracSetData rejects a null or short buffer");
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x0bfffffeu;
+    cpu.r[6] = 44;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA) == ATRAC_ERROR_SIZE_TOO_SMALL,
+           "sceAtracSetData rejects a guest span that crosses the arena boundary");
+
+    /* Minimal RIFF/WAVE/fact envelope: enough to exercise the production
+     * sample-count parser without embedding any game-derived bytes. */
+    g_mem[0] = 'R'; g_mem[1] = 'I'; g_mem[2] = 'F'; g_mem[3] = 'F';
+    /* Deliberately describe a larger track than this supplied prefix: streamed
+     * sceAtracSetData calls may provide only the first buffer-sized window. */
+    g_mem[4] = 0; g_mem[5] = 0x10; g_mem[6] = 0; g_mem[7] = 0;
+    g_mem[8] = 'W'; g_mem[9] = 'A'; g_mem[10] = 'V'; g_mem[11] = 'E';
+    g_mem[12] = 'f'; g_mem[13] = 'a'; g_mem[14] = 'c'; g_mem[15] = 't';
+    g_mem[16] = 4; g_mem[17] = 0; g_mem[18] = 0; g_mem[19] = 0;
+    g_mem[20] = 0; g_mem[21] = 0x10; g_mem[22] = 0; g_mem[23] = 0;
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000000u;
+    cpu.r[6] = 44;
+    uint32_t valid_ret = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA);
+    expect(valid_ret == 0,
+           "sceAtracSetData accepts the (id, buffer, size) ABI for a tracked context");
+
+    /* Malformed fact chunks must fail closed and leave a previously configured
+     * context untouched.  In particular, a zero-sized chunk must not consume the
+     * following sample word, and a wrapped chunk size must not stall the handler. */
+    g_mem[16] = 0; g_mem[17] = 0; g_mem[18] = 0; g_mem[19] = 0;
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000000u;
+    cpu.r[6] = 44;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA) == ATRAC_ERROR_UNKNOWN_FORMAT,
+           "sceAtracSetData rejects a fact chunk with no sample payload");
+    g_mem[16] = 0xf8; g_mem[17] = 0xff; g_mem[18] = 0xff; g_mem[19] = 0xff;
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000000u;
+    cpu.r[6] = 44;
+    uint32_t wrapped_ret = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA);
+    expect(wrapped_ret == ATRAC_ERROR_UNKNOWN_FORMAT,
+           "sceAtracSetData rejects a wrapping chunk size");
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000040u;
+    cpu.r[6] = 0x08000044u;
+    cpu.r[7] = 0x08000048u;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_SOUND_SAMPLE) == 0 &&
+           MEM_R32(0x08000040u) == 0x1000u,
+           "sceAtracSetData preserves the prior context after malformed input");
+
+    /* An accepted fact-only prefix is honest linear mode: no frame-size or
+     * ring metadata is invented, so the stream interface reports nothing
+     * writable and remaining frames keep the ALLDATA sentinel. */
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000100u;   /* *writePointer */
+    cpu.r[6] = 0x08000104u;   /* *writableBytes */
+    cpu.r[7] = 0x08000108u;   /* *readOffset */
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0 &&
+           MEM_R32(0x08000100u) == 0x08000000u &&
+           MEM_R32(0x08000104u) == 0u &&
+           MEM_R32(0x08000108u) == 0u,
+           "fact-only prefix: linear mode reports no invented ring contract");
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x0800010cu;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_REMAIN_FRAME) == 0 &&
+           MEM_R32(0x0800010cu) == 0xFFFFFFFFu,
+           "fact-only prefix: remaining frames stay ALLDATA_IS_ON_MEMORY");
+
+    /* A later SetData carrying a complete header (fmt blockAlign + data
+     * offset) must replace the linear mode with the real streaming contract. */
+    g_mem[0x100] = 'R'; g_mem[0x101] = 'I'; g_mem[0x102] = 'F'; g_mem[0x103] = 'F';
+    g_mem[0x104] = 0; g_mem[0x105] = 0; g_mem[0x106] = 2; g_mem[0x107] = 0;   /* RIFF size 0x20000 */
+    g_mem[0x108] = 'W'; g_mem[0x109] = 'A'; g_mem[0x10a] = 'V'; g_mem[0x10b] = 'E';
+    g_mem[0x10c] = 'f'; g_mem[0x10d] = 'm'; g_mem[0x10e] = 't'; g_mem[0x10f] = ' ';
+    g_mem[0x110] = 16; g_mem[0x111] = 0; g_mem[0x112] = 0; g_mem[0x113] = 0;
+    g_mem[0x114] = 1; g_mem[0x115] = 0;                 /* format PCM */
+    g_mem[0x116] = 2; g_mem[0x117] = 0;                 /* channels */
+    g_mem[0x118] = 0x44; g_mem[0x119] = 0xac; g_mem[0x11a] = 0; g_mem[0x11b] = 0;  /* 44100 */
+    g_mem[0x11c] = 0; g_mem[0x11d] = 0; g_mem[0x11e] = 0; g_mem[0x11f] = 0;
+    g_mem[0x120] = 0xe8; g_mem[0x121] = 0x02;           /* blockAlign 744 */
+    g_mem[0x122] = 16; g_mem[0x123] = 0;                /* bits */
+    g_mem[0x124] = 'f'; g_mem[0x125] = 'a'; g_mem[0x126] = 'c'; g_mem[0x127] = 't';
+    g_mem[0x128] = 4; g_mem[0x129] = 0; g_mem[0x12a] = 0; g_mem[0x12b] = 0;
+    g_mem[0x12c] = 0; g_mem[0x12d] = 0; g_mem[0x12e] = 0x10; g_mem[0x12f] = 0;  /* 0x100000 samples */
+    g_mem[0x130] = 'd'; g_mem[0x131] = 'a'; g_mem[0x132] = 't'; g_mem[0x133] = 'a';
+    g_mem[0x134] = 0; g_mem[0x135] = 0; g_mem[0x136] = 0x10; g_mem[0x137] = 0;  /* chunk size */
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000100u;
+    cpu.r[6] = 0x138u;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA) == 0,
+           "sceAtracSetData upgrades a linear prefix to a full streaming contract");
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x08000200u;
+    cpu.r[6] = 0x08000204u;
+    cpu.r[7] = 0x08000208u;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0 &&
+           MEM_R32(0x08000200u) == 0x08000100u &&
+           MEM_R32(0x08000204u) == 0x138u &&
+           MEM_R32(0x08000208u) == 0x138u,
+           "complete header: streaming interface reports writable ring bytes");
+    cpu.r[4] = ids[0];
+    cpu.r[5] = 0x0800020cu;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_REMAIN_FRAME) == 0 &&
+           MEM_R32(0x0800020cu) == 0u,
+           "complete header: remaining frames leave the ALLDATA sentinel");
+
+    /* SetDataAndGetID with a malformed track must not hand out a
+     * half-configured context: the slot stays available for reuse. */
+    cpu.r[4] = ids[7];
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
+           "sceAtracReleaseAtracID frees id 7 for the malformed-track check");
+    g_mem[0x200] = 'R'; g_mem[0x201] = 'I'; g_mem[0x202] = 'F'; g_mem[0x203] = 'F';
+    g_mem[0x204] = 0; g_mem[0x205] = 0; g_mem[0x206] = 0; g_mem[0x207] = 0;
+    g_mem[0x208] = 'W'; g_mem[0x209] = 'A'; g_mem[0x20a] = 'V'; g_mem[0x20b] = 'E';
+    g_mem[0x20c] = 'f'; g_mem[0x20d] = 'a'; g_mem[0x20e] = 'c'; g_mem[0x20f] = 't';
+    g_mem[0x210] = 0; g_mem[0x211] = 0; g_mem[0x212] = 0; g_mem[0x213] = 0;  /* sz = 0 */
+    cpu.r[4] = 0x08000200u;
+    cpu.r[5] = 0x18u;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID) == ATRAC_ERROR_UNKNOWN_FORMAT,
+           "sceAtracSetDataAndGetID rejects a malformed track");
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID) == 7,
+           "the rejected SetDataAndGetID slot is reusable, not half-configured");
+
+    /* A chunk whose declared payload runs past the fed bytes must be rejected
+     * too: the parser may not read beyond the validated guest span. */
+    cpu.r[4] = ids[7];
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
+           "sceAtracReleaseAtracID frees id 7 for the truncated-payload check");
+    g_mem[0x300] = 'R'; g_mem[0x301] = 'I'; g_mem[0x302] = 'F'; g_mem[0x303] = 'F';
+    g_mem[0x304] = 0; g_mem[0x305] = 0; g_mem[0x306] = 1; g_mem[0x307] = 0;   /* RIFF size 0x100 */
+    g_mem[0x308] = 'W'; g_mem[0x309] = 'A'; g_mem[0x30a] = 'V'; g_mem[0x30b] = 'E';
+    g_mem[0x30c] = 'f'; g_mem[0x30d] = 'm'; g_mem[0x30e] = 't'; g_mem[0x30f] = ' ';
+    g_mem[0x310] = 16; g_mem[0x311] = 0; g_mem[0x312] = 0; g_mem[0x313] = 0;  /* fmt size */
+    g_mem[0x314] = 1; g_mem[0x315] = 0;                 /* format PCM */
+    g_mem[0x316] = 2; g_mem[0x317] = 0;                 /* channels */
+    g_mem[0x318] = 0x44; g_mem[0x319] = 0xac; g_mem[0x31a] = 0; g_mem[0x31b] = 0;  /* 44100 */
+    g_mem[0x31c] = 0; g_mem[0x31d] = 0; g_mem[0x31e] = 0; g_mem[0x31f] = 0;
+    g_mem[0x320] = 0xe8; g_mem[0x321] = 0x02;           /* blockAlign 744 */
+    g_mem[0x322] = 16; g_mem[0x323] = 0;                /* bits */
+    g_mem[0x324] = 'f'; g_mem[0x325] = 'a'; g_mem[0x326] = 'c'; g_mem[0x327] = 't';
+    g_mem[0x328] = 4; g_mem[0x329] = 0; g_mem[0x32a] = 0; g_mem[0x32b] = 0;   /* sz = 4, payload cut off */
+    cpu.r[4] = 0x08000300u;
+    cpu.r[5] = 0x2eu;                                  /* 46 bytes: fact payload truncated */
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID) == ATRAC_ERROR_UNKNOWN_FORMAT,
+           "sceAtracSetDataAndGetID rejects a chunk payload past the fed bytes");
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID) == 7,
+           "the truncated-payload rejection also leaves the slot reusable");
+
+    for (unsigned i = 0; i < 8; i++) {
+        cpu.r[4] = ids[i];
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
+               "sceAtracReleaseAtracID releases a tracked context");
+    }
+}
+
+static TCB *fixture_thread(uint32_t uid, int state, int priority) {
+    TCB *thread = &s_tcb[s_ntcb++];
+    memset(thread, 0, sizeof(*thread));
+    thread->uid = uid;
+    thread->state = state;
+    thread->priority = priority;
+    thread->wake = (uint64_t)-1;
+    thread->exit_status = (int32_t)0x800201a4u;
+    return thread;
+}
+
+/* Issue #88 interrupt/dispatch-context conformance matrix. Included here rather
+ * than compiled separately so it reuses this target's production hle.c + sched.c
+ * link and its expect()/reset_fixture()/fixture_thread()/park helpers; it must
+ * come after those definitions. It adds no production code and changes no
+ * handler behavior. */
+#include "intr_conformance.h"
+
+static void run_worker(TCB *worker) {
+    s_cur = (int)(worker - s_tcb);
+    worker->state = TH_RUNNING;
+    worker->started = 1;
+    memcpy(s_cpu, &worker->saved, sizeof(*s_cpu));
+    worker->coro = sr_coro_create(coro_body, worker, (size_t)4 << 20);
+    expect(worker->coro != NULL, "resource worker coroutine was created");
+    if (worker->coro) sr_coro_switch(worker->coro);
+    s_cur = -1;
+}
+
+static void test_exit_thread_does_not_wake_launcher(int launcher_wakeups) {
+    reset_fixture();
+
+    TCB *launcher = fixture_thread(g_launcher_uid, TH_WAIT_OBJ, 32);
+    launcher->sleeping = 1;
+    launcher->wait_obj = launcher->uid;
+    launcher->wakeups = launcher_wakeups;
+
+    TCB *worker = fixture_thread(0x13au, TH_READY, 40);
+    TCB *joiner = fixture_thread(0x13bu, TH_WAIT_OBJ, 41);
+    joiner->wait_obj = worker->uid; /* sceKernelWaitThreadEnd(worker) */
+
+    s_exit_argument = -17;
+    run_worker(worker);
+
+    SrThreadRunStatus launcher_status;
+    SrThreadRunStatus worker_status;
+    SrThreadRunStatus joiner_status;
+    expect(s_exit_dispatches == 1,
+           "synthetic import stub dispatched the registered ExitThread NID once");
+    expect(sr_last_nid == NID_SCE_KERNEL_EXIT_THREAD,
+           "production dispatcher recorded sceKernelExitThread as the executed NID");
+    expect(sched_thread_run_status(worker->uid, &worker_status) == 0,
+           "worker status remains queryable after exit");
+    expect(worker_status.status == PSP_THREAD_STOPPED,
+           "ExitThread leaves the caller dormant/stopped");
+    expect(sched_thread_exit_status(worker->uid) == 0x800200d2u,
+           "ExitThread normalizes the measured signed-negative status");
+    expect(sched_thread_run_status(joiner->uid, &joiner_status) == 0,
+           "joiner status remains queryable");
+    expect(joiner_status.status == PSP_THREAD_READY,
+           "ExitThread releases a thread waiting for the caller to end");
+    expect(joiner_status.waitType == PSP_WAIT_NONE && joiner_status.waitId == 0,
+           "released joiner no longer reports a stale wait reason or object");
+    expect(sched_thread_run_status(launcher->uid, &launcher_status) == 0,
+           "launcher status remains queryable");
+    expect(launcher_status.status == PSP_THREAD_WAITING &&
+           launcher_status.waitType == PSP_WAIT_SLEEP &&
+           launcher_status.waitId == launcher->uid,
+           "unrelated sleeping launcher stays asleep on its own wait object");
+    expect(launcher_status.wakeupCount == (uint32_t)launcher_wakeups,
+           "ExitThread preserves the launcher's existing wakeup count exactly");
+
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected) {
+    reset_fixture();
+    TCB *worker = fixture_thread(0x13cu, TH_READY, 40);
+    s_exit_argument = supplied;
+    run_worker(worker);
+    expect(s_exit_dispatches == 1,
+           "exact-status control dispatches the production ExitThread NID once");
+    expect(sr_last_nid == NID_SCE_KERNEL_EXIT_THREAD,
+           "exact-status control reaches sceKernelExitThread through sr_syscall");
+    SrThreadRunStatus worker_status;
+    expect(sched_thread_run_status(worker->uid, &worker_status) == 0 &&
+           worker_status.status == PSP_THREAD_STOPPED &&
+           worker_status.waitType == PSP_WAIT_NONE && worker_status.waitId == 0,
+           "exact-status ExitThread leaves a stopped thread with no wait object");
+    expect(sched_thread_exit_status(worker->uid) == expected,
+           "exact-status ExitThread exposes the measured latched value");
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+#define NID_SCE_KERNEL_EXIT_DELETE_THREAD 0x809ce29bu
+#define NID_SCE_KERNEL_CREATE_THREAD     0x446d8de6u
+#define NID_SCE_KERNEL_START_THREAD      0xf475845du
+#define NID_SCE_KERNEL_DELETE_THREAD     0x9fa03cd3u
+#define NID_SCE_KERNEL_GET_EXIT_STATUS   0x3b183e26u
+#define NID_SCE_KERNEL_WAKEUP_THREAD     0xd59ead2fu
+#define NID_SCE_KERNEL_TERMINATE_DELETE  0x383f7bccu
+#define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
+#define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
+
+static int guest_hash_contains_uid(uint32_t uid) {
+    uint32_t bucket = uid % 32u;
+    for (uint32_t node = 0x0030aa88u; node != 0u; node = MEM_R32(node)) {
+        if (MEM_R32(node + 0x84u + bucket * 4u) == uid) return 1;
+    }
+    return 0;
+}
+
+static int host_libc_contains_uid(uint32_t uid) {
+    for (int i = 0; i < MAXTHREADS; i++)
+        if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
+    return 0;
+}
+
+static void test_thread_delete_lifecycle_and_cleanup(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *owner = fixture_thread(0x180u, TH_RUNNING, 20);
+    s_cur = (int)(owner - s_tcb);
+
+    /* Deleting the current/running object is rejected rather than silently
+     * tearing down the caller. */
+    s_cpu->r[4] = owner->uid;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_DELETE_THREAD) == 0x800201a4u,
+           "DeleteThread(current running) returns NOT_DORMANT");
+    expect(sched_terminate_thread(owner->uid) == 0x80020197u,
+           "TerminateDeleteThread(current) returns ILLEGAL_THID");
+
+    /* Create a real scheduler object so the target owns a stack, libc/reent
+     * record, and a callback registered through the production NID path. */
+    uint32_t target_uid = sched_create_thread(0x0800db00u, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target_uid != 0 && target != NULL, "lifecycle target object created");
+    uint32_t target_stack = target ? target->stack_base : 0u;
+    if (target) {
+        target->state = TH_READY;
+        target->started = 1;
+    }
+
+    static const char callback_name[] = "delete-owner";
+    for (size_t i = 0; i < sizeof(callback_name); i++)
+        MEM_W8(0x08001000u + (uint32_t)i, (uint8_t)callback_name[i]);
+    s_cur = target ? (int)(target - s_tcb) : -1;
+    s_cpu->r[4] = 0x08001000u;
+    s_cpu->r[5] = ORACLE_CALLBACK_ENTRY;
+    s_cpu->r[6] = 0x55u;
+    uint32_t callback_uid = sr_syscall(s_cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(callback_uid > 0 && sr_callback_is_valid(callback_uid),
+           "target callback is registered through CreateCallback");
+
+    TCB *joiner = fixture_thread(0x181u, TH_WAIT_OBJ, 41);
+    joiner->wait_obj = target_uid;
+    joiner->join_target = target_uid;
+    joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    s_cpu->r[4] = target_uid;
+    uint32_t terminate_delete = sr_syscall(s_cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+    expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
+    expect(target && target->deleted && target->stack_released && target->resources_released,
+           "TerminateDeleteThread marks the object deleted and releases resources once");
+    expect(!host_libc_contains_uid(target_uid) && !guest_hash_contains_uid(target_uid),
+           "TerminateDeleteThread removes host libc and guest reent ownership");
+    expect(!sr_callback_is_valid(callback_uid),
+           "TerminateDeleteThread removes callbacks owned by the target");
+    expect(joiner->state == TH_READY && joiner->join_result_valid &&
+           joiner->join_result == 0x800201acu,
+           "TerminateDeleteThread wakes a waiting joiner with THREAD_TERMINATED");
+
+    /* The removed UID is rejected by every public follow-up operation. */
+    s_cpu->r[4] = target_uid;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_GET_EXIT_STATUS) == 0x80020198u,
+           "GetThreadExitStatus rejects a deleted UID");
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0x80020198u,
+           "StartThread rejects a deleted UID");
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_WAKEUP_THREAD) == 0x80020198u,
+           "WakeupThread rejects a deleted UID");
+    expect(sched_is_dormant(target_uid) == 0,
+           "deleted UID is not reported as a dormant thread");
+
+    /* The exact freed range is reusable without overlapping the owner's live
+     * object.  This is the stack-lifetime side of #16's contract. */
+    uint32_t replacement_uid = sched_create_thread(0x0800db01u, 40, 0x2000u);
+    TCB *replacement = tcb_by_uid(replacement_uid);
+    expect(replacement_uid != 0 && replacement && replacement->stack_base == target_stack,
+           "a deleted thread's stack range is reclaimed and reused exactly");
+    if (replacement) expect(sched_delete_thread(replacement_uid) == 0,
+                            "reclaimed replacement object deletes cleanly");
+}
+
+static void test_start_thread_error_semantics(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x195u, TH_RUNNING, 40);
+    s_cur = (int)(cur - s_tcb);
+
+    /* 1. Null UID -> 0x80020197 (SCE_KERNEL_ERROR_ILLEGAL_THID) */
+    s_cpu->r[4] = 0;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0x80020197u,
+           "sceKernelStartThread rejects null UID with ILLEGAL_THID");
+
+    /* 2. Invalid/unknown UID -> 0x80020198 (SCE_KERNEL_ERROR_UNKNOWN_THID) */
+    s_cpu->r[4] = 0xDEADBEEFu;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0x80020198u,
+           "sceKernelStartThread rejects invalid UID with UNKNOWN_THID");
+
+    /* 3. Start current running thread -> 0x800201a4 (SCE_KERNEL_ERROR_NOT_DORMANT) */
+    s_cpu->r[4] = cur->uid;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0x800201a4u,
+           "sceKernelStartThread rejects current running thread with NOT_DORMANT");
+
+    /* 4. True start-twice sequence: start DORMANT target thread once (0), then start again (NOT_DORMANT) */
+    uint32_t target_uid = sched_create_thread(0x0800db10u, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target_uid != 0 && target != NULL, "start-twice target thread created");
+    s_cpu->r[4] = target_uid;
+    s_cpu->r[5] = 0;
+    s_cpu->r[6] = 0;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0,
+           "sceKernelStartThread starts dormant target thread cleanly");
+    s_cpu->r[4] = target_uid;
+    expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0x800201a4u,
+           "sceKernelStartThread second start is rejected with NOT_DORMANT");
+}
+
+static void test_exit_delete_lifecycle_and_join_result(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *worker = fixture_thread(0x190u, TH_READY, 40);
+    TCB *joiner = fixture_thread(0x191u, TH_WAIT_OBJ, 41);
+    joiner->wait_obj = worker->uid;
+    joiner->join_target = worker->uid;
+    joiner->join_waiting = 1;
+    s_exit_argument = 0x66;
+    s_exit_nid = NID_SCE_KERNEL_EXIT_DELETE_THREAD;
+    run_worker(worker);
+    s_exit_nid = NID_SCE_KERNEL_EXIT_THREAD;
+
+    expect(worker->deleted, "ExitDeleteThread removes the current thread object");
+    expect(sched_thread_exit_status(worker->uid) == 0x80020198u,
+           "ExitDeleteThread hides the UID from later status queries");
+    expect(joiner->state == TH_READY && joiner->join_result_valid &&
+           joiner->join_result == 0x66u,
+           "ExitDeleteThread preserves the exit result for an existing joiner");
+    expect(sched_start_thread(worker->uid, 0, 0) == 0x80020198u &&
+           sched_thread_wakeup(worker->uid) == 0x80020198u,
+           "ExitDeleteThread rejects later start and wakeup operations");
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+#define NID_SCE_KERNEL_WAIT_THREAD_END 0x278c0df5u
+#define NID_SCE_KERNEL_WAIT_THREAD_END_CB 0x840e8133u
+
+static void test_wait_thread_end_invalid_targets(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *self = fixture_thread(0x130u, TH_RUNNING, 32);
+    s_cur = 0;
+
+    /* Target UID == 0: ILLEGAL_THID */
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    uint32_t ret = sr_syscall(s_cpu, NID_SCE_KERNEL_WAIT_THREAD_END);
+    expect(ret == 0x80020197u, "WaitThreadEnd(0) returns SCE_KERNEL_ERROR_ILLEGAL_THID");
+
+    /* Target UID == self: ILLEGAL_THID */
+    s_cpu->r[4] = self->uid;
+    ret = sr_syscall(s_cpu, NID_SCE_KERNEL_WAIT_THREAD_END);
+    expect(ret == 0x80020197u, "WaitThreadEnd(self) returns SCE_KERNEL_ERROR_ILLEGAL_THID");
+
+    /* Target UID unknown: UNKNOWN_THID */
+    s_cpu->r[4] = 0x9999u;
+    ret = sr_syscall(s_cpu, NID_SCE_KERNEL_WAIT_THREAD_END);
+    expect(ret == 0x80020198u, "WaitThreadEnd(unknown) returns SCE_KERNEL_ERROR_UNKNOWN_THID");
+}
+
+static void test_wait_thread_end_already_ended(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *target = fixture_thread(0x140u, TH_DORMANT, 40);
+    target->started = 1;
+    target->exit_status = 0x42;
+
+    TCB *waiter = fixture_thread(0x141u, TH_RUNNING, 32);
+    s_cur = (int)(waiter - s_tcb);
+
+    /* Wait for already-ended target through production sr_syscall */
+    s_cpu->r[4] = target->uid;
+    s_cpu->r[5] = 0u; /* timeout NULL */
+    uint32_t ret = sr_syscall(s_cpu, NID_SCE_KERNEL_WAIT_THREAD_END);
+    expect(ret == 0x42u, "WaitThreadEnd on dormant started target returns its exit status (0x42)");
+}
+
+static int s_joiner_woken;
+static uint32_t s_joiner_ret;
+
+static void joiner_coro_body(void *arg) {
+    TCB *target = (TCB *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = target->uid;
+    cpu.r[5] = 0u;
+    s_joiner_ret = sr_syscall(&cpu, NID_SCE_KERNEL_WAIT_THREAD_END);
+    s_joiner_woken = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_wait_thread_end_blocking_and_resume(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *worker = fixture_thread(0x160u, TH_READY, 40);
+    TCB *joiner = fixture_thread(0x161u, TH_RUNNING, 32);
+
+    s_cur = (int)(joiner - s_tcb);
+    joiner->started = 1;
+    s_joiner_woken = 0;
+    s_joiner_ret = 0xFFFFFFFFu;
+
+    /* Create coroutine for joiner and enter WaitThreadEnd via sr_syscall */
+    joiner->coro = sr_coro_create(joiner_coro_body, worker, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "joiner coroutine created");
+    if (joiner->coro) sr_coro_switch(joiner->coro);
+
+    /* Verify joiner is now blocked waiting for worker */
+    expect(joiner->state == TH_WAIT_OBJ, "WaitThreadEnd via sr_syscall placed joiner into TH_WAIT_OBJ");
+    expect(joiner->wait_obj == worker->uid, "WaitThreadEnd recorded target UID as wait object");
+    expect(s_joiner_woken == 0, "joiner has not resumed yet while worker is running");
+
+    /* Now run worker to execute ExitThread */
+    s_exit_argument = 0x55;
+    run_worker(worker);
+
+    /* Switch to ready joiner coroutine to complete its resumed wait syscall */
+    if (joiner->state == TH_READY && joiner->coro) {
+        s_cur = (int)(joiner - s_tcb);
+        sr_coro_switch(joiner->coro);
+        s_cur = -1;
+    }
+
+    /* Verify ExitThread woke joiner and joiner resumed to complete sr_syscall */
+    expect(joiner->state == TH_READY || joiner->state == TH_RUNNING, "ExitThread woke joiner thread");
+    expect(s_joiner_woken == 1, "joiner resumed execution after target ExitThread");
+    expect(s_joiner_ret == 0x55u, "WaitThreadEnd returned target exit status after blocking resume");
+
+    if (joiner->coro) {
+        sr_coro_destroy(joiner->coro);
+        joiner->coro = NULL;
+    }
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+static void joiner_cb_coro_body(void *arg) {
+    TCB *target = (TCB *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = target->uid;
+    cpu.r[5] = 0u;
+    s_joiner_ret = sr_syscall(&cpu, NID_SCE_KERNEL_WAIT_THREAD_END_CB);
+    s_joiner_woken = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_wait_thread_end_cb_execution(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *worker = fixture_thread(0x170u, TH_READY, 40);
+    TCB *joiner = fixture_thread(0x171u, TH_RUNNING, 32);
+
+    s_cur = (int)(joiner - s_tcb);
+    joiner->started = 1;
+    s_joiner_woken = 0;
+    s_joiner_ret = 0xFFFFFFFFu;
+
+    /* Enter WaitThreadEndCB via production sr_syscall */
+    joiner->coro = sr_coro_create(joiner_cb_coro_body, worker, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "joiner CB coroutine created");
+    if (joiner->coro) sr_coro_switch(joiner->coro);
+
+    /* Verify joiner is in TH_WAIT_OBJ with callback wait flag set while blocked */
+    expect(joiner->state == TH_WAIT_OBJ, "WaitThreadEndCB placed joiner into TH_WAIT_OBJ");
+    expect(joiner->wait_obj == worker->uid, "WaitThreadEndCB recorded target UID as wait object");
+    expect(joiner->is_cb_wait == 1, "WaitThreadEndCB set is_cb_wait flag while blocked");
+    expect(sr_last_nid == NID_SCE_KERNEL_WAIT_THREAD_END_CB, "production dispatcher executed WaitThreadEndCB NID");
+
+    /* Run worker to ExitThread and wake joiner */
+    s_exit_argument = 0x77;
+    run_worker(worker);
+
+    /* Switch to ready joiner coroutine to complete its resumed CB wait syscall */
+    if (joiner->state == TH_READY && joiner->coro) {
+        s_cur = (int)(joiner - s_tcb);
+        sr_coro_switch(joiner->coro);
+        s_cur = -1;
+    }
+
+    expect(s_joiner_woken == 1, "WaitThreadEndCB resumed joiner after target exit");
+    expect(s_joiner_ret == 0x77u, "WaitThreadEndCB returned target exit status");
+
+    if (joiner->coro) {
+        sr_coro_destroy(joiner->coro);
+        joiner->coro = NULL;
+    }
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+/* The display handler is exercised through the production NID registry just
+ * like the generated import stub.  This is intentionally small: it protects
+ * the PSP current/pending latch split and the scalar/span validation at the
+ * HLE edge; host presentation timing is a separate layer. */
+#define NID_SCE_DISPLAY_SET_FRAMEBUF 0x289d82feu
+#define NID_SCE_DISPLAY_GET_FRAMEBUF 0xeeda2e54u
+#define NID_SCE_DMAC_MEMCPY 0x617f3fe6u
+#define NID_SCE_DMAC_TRY_MEMCPY 0xd97f94d8u
+#define NID_SCE_KERNEL_MEMSET 0xa089eca4u
+#define NID_SCE_KERNEL_MEMCPY 0x1839852au
+/* PSP DMAC error classes, measured on hardware (see test_dmac_semantics). */
+#define SCE_DMAC_ILLEGAL_ADDR 0x80000103u
+#define SCE_DMAC_ILLEGAL_SIZE 0x80000104u
+
+static uint32_t display_set(uint32_t addr, int32_t stride, int32_t fmt, uint32_t sync) {
+    s_cpu->r[4] = addr;
+    s_cpu->r[5] = (uint32_t)stride;
+    s_cpu->r[6] = (uint32_t)fmt;
+    s_cpu->r[7] = sync;
+    return sr_syscall(s_cpu, NID_SCE_DISPLAY_SET_FRAMEBUF);
+}
+
+static uint32_t display_get(uint32_t addr_out, uint32_t stride_out,
+                            uint32_t fmt_out, uint32_t latched) {
+    s_cpu->r[4] = addr_out;
+    s_cpu->r[5] = stride_out;
+    s_cpu->r[6] = fmt_out;
+    s_cpu->r[7] = latched;
+    return sr_syscall(s_cpu, NID_SCE_DISPLAY_GET_FRAMEBUF);
+}
+
+static uint32_t bulk_call(uint32_t nid, uint32_t dst, uint32_t src_or_value, uint32_t size) {
+    s_cpu->r[4] = dst;
+    s_cpu->r[5] = src_or_value;
+    s_cpu->r[6] = size;
+    return sr_syscall(s_cpu, nid);
+}
+
+static void test_bulk_guest_span_atomicity(void) {
+    reset_fixture();
+    sr_hle_init();
+    const uint32_t src = 0x0bffff80u;
+    const uint32_t dst = 0x0bffffc0u;
+    for (uint32_t i = 0; i < 64u; i++) {
+        MEM_W8(src + i, (uint8_t)(0x30u + i));
+        MEM_W8(dst + i, 0xa5u);
+    }
+    expect(bulk_call(NID_SCE_KERNEL_MEMCPY, dst, src, 64u) == dst,
+           "production memcpy returns the destination on a valid span");
+    expect(MEM_R8(dst) == 0x30u && MEM_R8(dst + 63u) == 0x6fu,
+           "production memcpy copies the complete valid span");
+    for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x5au);
+    expect(bulk_call(NID_SCE_KERNEL_MEMCPY, 0x0bfffff0u, src, 17u) == 0x0bfffff0u,
+           "production memcpy reports the destination for a rejected span");
+    expect(MEM_R8(0x0bfffff0u) == 0x5au && MEM_R8(0x0bfffff0u + 15u) == 0x5au,
+           "rejected memcpy performs no partial guest mutation");
+    expect(bulk_call(NID_SCE_KERNEL_MEMSET, dst, 0x7cu, 64u) == dst,
+           "production memset returns the destination on a valid span");
+    expect(MEM_R8(dst) == 0x7cu && MEM_R8(dst + 63u) == 0x7cu,
+           "production memset writes the complete valid span");
+    for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x3cu);
+    expect(bulk_call(NID_SCE_KERNEL_MEMSET, 0x0bfffff0u, 0x44u, 17u) == 0x0bfffff0u,
+           "production memset reports the destination for a rejected span");
+    expect(MEM_R8(0x0bfffff0u) == 0x3cu && MEM_R8(0x0bfffff0u + 15u) == 0x3cu,
+           "rejected memset performs no partial guest mutation");
+    for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x2au);
+    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "production DMA reports its PSP return value for a rejected span");
+    expect(MEM_R8(0x0bfffff0u) == 0x2au && MEM_R8(0x0bfffff0u + 15u) == 0x2au,
+           "rejected DMA performs no partial guest mutation");
+}
+
+/* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions (#87, #328) -------
+ *
+ * Production dispatch: every call below enters through sr_syscall with the real
+ * registered NID, so these assert the PSP-visible return value and the
+ * PSP-visible memory state of the shipped handlers.
+ *
+ * The expected values come from durable repeated captures on a retail PSP-3001
+ * / 6.61-ARK (probe `dma-semantics`, revisions v4 and v6, 2/2 runs each). Cases
+ * that hardware never measured are asserted as *this runtime's* documented
+ * behavior and labelled as such, so the distinction survives in the test names
+ * rather than only in prose. */
+extern unsigned long sr_hle_test_dmac_unverified_calls(void);
+extern uint32_t sr_hle_test_dmac_verified_full_max(void);
+extern void sr_hle_test_dmac_reset_unverified(void);
+
+/* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
+ * Reusing the exact fill makes the expected bytes below the same literals the
+ * hardware capture reported (0x10 at offset 0, 0x4F at offset 1023, ...). */
+static uint8_t dmac_pattern(uint32_t i) { return (uint8_t)(0x10u + (i & 0x3Fu)); }
+
+static void dmac_fill(uint32_t addr, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) MEM_W8(addr + i, dmac_pattern(i));
+}
+
+static void dmac_clear(uint32_t addr, uint32_t n, uint8_t value) {
+    for (uint32_t i = 0; i < n; i++) MEM_W8(addr + i, value);
+}
+
+/* Whole-span comparison, so "copies completely" is proven across every byte
+ * rather than at the two or three offsets the hardware probe could sample. */
+static int dmac_span_matches(uint32_t addr, uint32_t n, uint32_t pattern_origin) {
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R8(addr + i) != dmac_pattern(pattern_origin + i)) return 0;
+    return 1;
+}
+
+static int dmac_span_is(uint32_t addr, uint32_t n, uint8_t value) {
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R8(addr + i) != value) return 0;
+    return 1;
+}
+
+static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_dmac_reset_unverified();
+
+    const uint32_t src = 0x08200000u;
+    const uint32_t dst = 0x08400000u;
+
+    /* --- proven: illegal size, illegal address, and failure atomicity ------- */
+
+    /* Hardware: valid pointers, size 0 -> 0x80000104 (v4 and v6, 2/2 each). */
+    dmac_fill(src, 256u);
+    dmac_clear(dst, 256u, 0xa5u);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, dst, src, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: zero size returns the illegal-size error");
+    expect(dmac_span_is(dst, 256u, 0xa5u),
+           "PSP: a zero-size request modifies no destination byte");
+    expect(s_gpu_dirty_calls == 0u,
+           "a zero-size request issues no GPU dirty notification");
+
+    /* Hardware: NULL dst or NULL src with size 64 -> 0x80000103 (v4 and v6).
+     * Guest address 0 is inside this runtime's flat arena, so without an
+     * explicit check it would pass span validation and silently copy. */
+    expect(bulk_call(nid, 0u, src, 64u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP: a NULL destination returns the illegal-address error");
+    expect(bulk_call(nid, dst, 0u, 64u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP: a NULL source returns the illegal-address error");
+    expect(dmac_span_is(dst, 256u, 0xa5u),
+           "PSP: a NULL-pointer request modifies no destination byte");
+
+    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000, so
+     * these requests end exactly one byte past it or wrap uint32_t outright.
+     * A base-address-only check or an `addr + size` comparison would accept
+     * them; both must be rejected before any byte moves. */
+    dmac_clear(0x0bfffff0u, 16u, 0x3bu);
+    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP class: a destination span ending past the arena is rejected");
+    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP class: a source span ending past the arena is rejected");
+    expect(bulk_call(nid, 0x0bffff00u, src, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP class: a destination span that wraps uint32_t is rejected");
+    expect(bulk_call(nid, dst, 0x0bffff00u, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
+           "PSP class: a source span that wraps uint32_t is rejected");
+    expect(dmac_span_is(0x0bfffff0u, 16u, 0x3bu) && dmac_span_is(dst, 256u, 0xa5u),
+           "PSP: a rejected span leaves both buffers byte-for-byte unchanged");
+    /* Every rejection above ran with the counter still at zero. A GPU dirty
+     * notification for a transfer that never happened would invalidate a live
+     * texture or framebuffer cache entry for no reason. */
+    expect(s_gpu_dirty_calls == 0u,
+           "no rejected DMA request issues a GPU dirty notification");
+
+    /* Exactly-to-the-end must still be accepted: the bound is the real arena
+     * end, not a conservative margin that would reject legal transfers. */
+    dmac_fill(src, 16u);
+    expect(bulk_call(nid, 0x0bfffff0u, src, 16u) == 0u,
+           "a span ending exactly at the arena end is accepted");
+    expect(dmac_span_matches(0x0bfffff0u, 16u, 0u),
+           "a span ending exactly at the arena end copies completely");
+    /* ...and a successful transfer dirties exactly its own destination range. */
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x0bfffff0u &&
+               s_gpu_dirty_bytes == 16u,
+           "a successful DMA dirties exactly the destination range, once");
+
+    /* --- proven: sizes that hardware measured as complete copies ------------ */
+
+    /* 16385 and 32769 are the sizes that ruled out a 16 KiB / 32 KiB ceiling on
+     * hardware; every byte is checked here, not just the sampled endpoints. */
+    static const uint32_t full_sizes[] = { 1u, 1024u, 4096u, 16384u, 16385u, 32768u, 32769u };
+    for (unsigned i = 0; i < sizeof(full_sizes) / sizeof(full_sizes[0]); i++) {
+        const uint32_t n = full_sizes[i];
+        dmac_fill(src, n);
+        dmac_clear(dst, n + 1u, 0u);
+        expect(bulk_call(nid, dst, src, n) == 0u,
+               "PSP: a hardware-verified transfer size returns success");
+        expect(dmac_span_matches(dst, n, 0u),
+               "PSP: a hardware-verified transfer size copies every byte");
+        expect(MEM_R8(dst + n) == 0u,
+               "a transfer writes nothing past its requested size");
+    }
+
+    /* --- proven: same-pointer and overlap behave like memmove --------------- */
+
+    /* Hardware: dst == src, 16384 bytes -> 0, buffer intact (v4, 2/2). */
+    dmac_fill(src, 16384u);
+    expect(bulk_call(nid, src, src, 16384u) == 0u,
+           "PSP: a same-pointer self copy returns success");
+    expect(dmac_span_matches(src, 16384u, 0u),
+           "PSP: a same-pointer self copy leaves the buffer unchanged");
+
+    /* Hardware: forward overlap dst = src + 16, 16384 bytes, lands
+     * memmove-correct (v4 sampled offsets 16, 128 and 0x3FFF; checked here
+     * across the whole span). A naive forward byte loop would smear the first
+     * 16 bytes across the destination and fail this. */
+    dmac_fill(src, 32768u);
+    expect(bulk_call(nid, src + 16u, src, 16384u) == 0u,
+           "PSP: a forward-overlapping copy returns success");
+    expect(dmac_span_matches(src + 16u, 16384u, 0u),
+           "PSP: a forward-overlapping copy is memmove-correct across the span");
+
+    /* Hardware: backward overlap dst = src, source = src + 16 (v4, 2/2). */
+    dmac_fill(src, 32768u);
+    expect(bulk_call(nid, src, src + 16u, 16384u) == 0u,
+           "PSP: a backward-overlapping copy returns success");
+    expect(dmac_span_matches(src, 16384u, 16u),
+           "PSP: a backward-overlapping copy is memmove-correct across the span");
+
+    /* --- unresolved: the large-transfer truncation boundary (#328) ---------- */
+
+    /* Hardware proves a ceiling exists (65536 loses its final byte, v4 and v6)
+     * but never established where it is. This runtime therefore copies in full
+     * and reports the event. Asserting BOTH halves is the point: it fails if
+     * someone starts truncating at a guessed boundary, and it fails if the
+     * report is dropped and the unresolved gap goes silent. */
+    const uint32_t over = sr_hle_test_dmac_verified_full_max() + 1u;
+    const unsigned long before = sr_hle_test_dmac_unverified_calls();
+    dmac_fill(src, over);
+    dmac_clear(dst, over, 0u);
+    expect(bulk_call(nid, dst, src, over) == 0u,
+           "an unmeasured oversize transfer still returns success");
+    expect(dmac_span_matches(dst, over, 0u),
+           "an unmeasured oversize transfer is copied in full, not clamped to a guess");
+    expect(sr_hle_test_dmac_unverified_calls() == before + 1u,
+           "an unmeasured oversize transfer is reported, keeping #328 visible");
+
+    /* A size at the evidence boundary must not be reported: the notice marks
+     * where measurement stops, so an off-by-one would misreport proven sizes. */
+    const unsigned long at_boundary = sr_hle_test_dmac_unverified_calls();
+    dmac_fill(src, sr_hle_test_dmac_verified_full_max());
+    expect(bulk_call(nid, dst, src, sr_hle_test_dmac_verified_full_max()) == 0u,
+           "the largest hardware-verified size still succeeds");
+    expect(sr_hle_test_dmac_unverified_calls() == at_boundary,
+           "the largest hardware-verified size is not reported as unmeasured");
+
+    (void)who;
+}
+
+/* Hardware measured sceDmacTryMemcpy blocking for the full transfer and
+ * producing the same content as the blocking form at every size it tried, so
+ * the whole contract above is asserted against both NIDs. No BUSY result was
+ * ever observed in any session, so none is asserted or fabricated. */
+static void test_dmac_semantics(void) {
+    test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
+    test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");
+}
+
+static void test_display_framebuf_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t out_addr = 0x09000000u;
+    const uint32_t out_stride = out_addr + 4u;
+    const uint32_t out_fmt = out_addr + 8u;
+    expect(display_set(0x04000000u, 256, 1, 0) == 0x80000107u,
+           "SetFrameBuf immediate rejects a non-latched first-call stride/format");
+    uint32_t ret = display_set(0x04000000u, 512, 3, 0);
+    expect(ret == 0u, "SetFrameBuf immediate accepts a normal VRAM buffer");
+    ret = display_get(out_addr, out_stride, out_fmt, 0);
+    expect(ret == 0u && MEM_R32(out_addr) == 0x04000000u &&
+           MEM_R32(out_stride) == 512u && MEM_R32(out_fmt) == 3u,
+           "GetFrameBuf immediate returns all active fields");
+
+    expect(display_set(0x04000000u, 512, 1, 0) == 0x80000107u,
+           "SetFrameBuf immediate rejects a format change before latching");
+    expect(display_set(0x04000000u, 512, 1, 1) == 0u,
+           "SetFrameBuf latches a format change");
+    expect(display_set(0x04000000u, 512, 1, 0) == 0u,
+           "SetFrameBuf immediate accepts the latched format");
+    expect(display_set(0x04000000u, 512, 3, 1) == 0u &&
+           display_set(0x04000000u, 512, 3, 0) == 0u,
+           "SetFrameBuf restores the normal scanout format");
+
+    ret = display_set(0x04088000u, 256, 1, 1);
+    expect(ret == 0u, "SetFrameBuf next-frame accepts a valid pending buffer");
+    ret = display_get(out_addr, out_stride, out_fmt, 1);
+    expect(ret == 0u && MEM_R32(out_addr) == 0x04088000u &&
+           MEM_R32(out_stride) == 256u && MEM_R32(out_fmt) == 1u,
+           "GetFrameBuf latched returns the complete pending state");
+    ret = display_set(0x04100000u, 256, 1, 1);
+    expect(ret == 0u, "SetFrameBuf overwrites a pending next-frame request");
+    ret = display_get(out_addr, out_stride, out_fmt, 1);
+    expect(ret == 0u && MEM_R32(out_addr) == 0x04100000u &&
+           MEM_R32(out_stride) == 256u && MEM_R32(out_fmt) == 1u,
+           "GetFrameBuf latched returns the most recent pending request");
+    ret = display_get(out_addr, out_stride, out_fmt, 0);
+    expect(ret == 0u && MEM_R32(out_addr) == 0x04000000u &&
+           MEM_R32(out_stride) == 256u && MEM_R32(out_fmt) == 1u,
+           "GetFrameBuf immediate keeps the address active before VBLANK");
+
+    sr_vblank_tick();
+    ret = display_get(out_addr, out_stride, out_fmt, 0);
+    expect(ret == 0u && MEM_R32(out_addr) == 0x04100000u &&
+           MEM_R32(out_stride) == 256u && MEM_R32(out_fmt) == 1u,
+           "VBLANK applies the most recent pending address to active scanout");
+
+    expect(display_set(0x04088000u, -64, 0, 1) == 0u,
+           "SetFrameBuf accepts the PSP negative-stride contract");
+    ret = display_get(out_addr, out_stride, out_fmt, 1);
+    expect(ret == 0u && (int32_t)MEM_R32(out_stride) == -64 &&
+           MEM_R32(out_fmt) == 0u,
+           "GetFrameBuf preserves a latched negative stride");
+    expect(display_set(0x04088000u, -1, 0, 1) == 0x80000104u,
+           "SetFrameBuf rejects an unaligned negative stride");
+    expect(display_set(0, 0, 0, 1) == 0u &&
+           display_set(0, 0, 0, 0) == 0u,
+           "SetFrameBuf supports display-off with zero stride");
+    expect(display_set(0, 100, 3, 1) == 0x80000104u,
+           "SetFrameBuf rejects a nonzero stride when the display is off");
+    expect(display_set(0x44088000u, 512, 3, 1) == 0u &&
+           display_set(0x44088000u, 512, 3, 0) == 0u,
+           "SetFrameBuf accepts the uncached VRAM alias");
+
+    expect(display_set(0x04000000u, 512, 3, 2) == 0x80000107u,
+           "SetFrameBuf rejects an invalid sync mode");
+    expect(display_set(0x04000000u, 512, 4, 0) == 0x80000108u,
+           "SetFrameBuf rejects an invalid pixel format");
+    expect(display_set(0x00100000u, 512, 4, 0) == 0x80000103u,
+           "SetFrameBuf reports an invalid address before an invalid format");
+    expect(display_set(0x04000000u, 100, 4, 0) == 0x80000104u,
+           "SetFrameBuf reports an invalid stride before an invalid format");
+    expect(display_set(0x04000000u, 0, 3, 0) == 0x80000104u,
+           "SetFrameBuf rejects zero stride for an enabled display");
+    expect(display_set(0x04000004u, 512, 3, 0) == 0x80000103u,
+           "SetFrameBuf rejects a misaligned address");
+    expect(display_set(0x00100000u, 512, 3, 0) == 0x80000103u,
+           "SetFrameBuf rejects scratchpad addresses");
+    expect(display_get(0x0c000000u, 0, 0, 0) == 0x80000103u,
+           "GetFrameBuf rejects an output pointer outside guest memory");
+    expect(display_get(0, 0, 0, 2) == 0x80000107u,
+           "GetFrameBuf rejects an invalid latch selector");
+}
+
+/* ---- message-pipe safety (issue #178) --------------------------------------------------
+ *
+ * Executable proof of the message-pipe resource/safety contract against the
+ * production HLE handlers through the registered-NID sr_syscall path:
+ *   - a guest-controlled bufferSize outside the documented PSP-resource model
+ *     is rejected BEFORE any host allocation, UID hand-out, or slot use;
+ *   - TrySend/TryReceive preflight the complete guest source/destination span
+ *     and the resultSize span before mutating FIFO state, so an invalid
+ *     pointer can never partially perform a transfer;
+ *   - the explicit FIFO invariants (count <= capacity, read_pos < capacity,
+ *     write_pos < capacity) hold under send/receive churn.
+ * The white-box state probe below is compiled into this executable only. */
+static void msgpipe_setup(CpuState *cpu, uint32_t uid, uint32_t buf, uint32_t size,
+                          uint32_t wait_mode, uint32_t resultp) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = uid;
+    cpu->r[5] = buf;
+    cpu->r[6] = size;
+    cpu->r[7] = wait_mode;
+    cpu->r[8] = resultp; /* t0: resultSize */
+}
+
+/* ---- issue #32: streamed ATRAC3+ ring wrap keeps logical frame order ----
+ *
+ * The title BGM is a streamed ATRAC3+ track: the guest hands sceAtracSetData a
+ * ring smaller than the file, then repeatedly asks sceAtracGetStreamDataInfo
+ * where to write, copies the next file bytes there, and calls
+ * sceAtracAddStreamData, while sceAtracDecodeData consumes one frame per call.
+ *
+ * The first physical lap begins after the RIFF header, but that header is a
+ * one-time prefix. Once the read cursor reaches the frame-aligned end, the
+ * next lap uses the whole physical buffer (base zero). The title's frame 87
+ * is the important boundary: 580 bytes remain at the old physical tail and
+ * the next refill begins at offset 580, so one encoded frame is split across
+ * the old end and the new write span. A decoder that insists on a single
+ * guest-contiguous read either rereads the RIFF prefix or feeds malformed
+ * bytes to FFmpeg.
+ *
+ * This fixture is fully synthetic: the frames are zero-padded ATRAC3+
+ * terminator units (0x60), which the production decoder accepts at any
+ * blockAlign and decodes to 2048 silent samples. No game data is involved.
+ * dataByteOffset (56) is deliberately NOT a multiple of blockAlign (24), and
+ * the synthetic buffer leaves a 16-byte residual at the first-lap end. */
+extern int sr_hle_test_atrac_ring(uint32_t id, uint32_t *pos, uint32_t *base,
+                                  uint32_t *end, uint32_t *frame, uint32_t *valid);
+
+#define AT_ALIGN    24u                          /* blockAlign (bytes/frame) */
+#define AT_DATAOFF  56u                          /* 'data' payload offset    */
+#define AT_RINGFR   10u                          /* frames the ring holds    */
+#define AT_TAIL     16u                          /* residual before first wrap */
+#define AT_FILEFR   40u                          /* frames in the whole file */
+#define AT_BUFSIZE  (AT_DATAOFF + AT_RINGFR * AT_ALIGN + AT_TAIL)
+#define AT_FILESIZE (AT_DATAOFF + AT_FILEFR * AT_ALIGN)
+#define AT_RINGBASE 0x08001000u
+#define AT_PCMOUT   0x08010000u
+
+/* Byte at `off` of the synthetic file: a terminator unit at every frame start,
+ * zero padding elsewhere. */
+static uint8_t atring_file_byte(uint32_t off) {
+    if (off < AT_DATAOFF) return 0;
+    return ((off - AT_DATAOFF) % AT_ALIGN) == 0u ? 0x60u : 0x00u;
+}
+
+static void atring_build_header(void) {
+    uint8_t *h = &g_mem[AT_RINGBASE - 0x08000000u];
+    memset(h, 0, AT_BUFSIZE);
+    memcpy(h + 0, "RIFF", 4);
+    fixture_wr32(h + 4, AT_FILESIZE - 8u);
+    memcpy(h + 8, "WAVE", 4);
+    memcpy(h + 12, "fmt ", 4);
+    fixture_wr32(h + 16, 16u);
+    fixture_wr16(h + 20, 0xFFFEu);               /* WAVE_FORMAT_EXTENSIBLE   */
+    fixture_wr16(h + 22, 2u);                    /* channels                 */
+    fixture_wr32(h + 24, 44100u);
+    fixture_wr32(h + 28, 44100u * 4u);
+    fixture_wr16(h + 32, (uint16_t)AT_ALIGN);    /* blockAlign               */
+    fixture_wr16(h + 34, 16u);
+    memcpy(h + 36, "fact", 4);
+    fixture_wr32(h + 40, 4u);
+    fixture_wr32(h + 44, AT_FILEFR * 2048u);     /* total samples            */
+    memcpy(h + 48, "data", 4);
+    fixture_wr32(h + 52, AT_FILESIZE - AT_DATAOFF);
+    for (uint32_t off = AT_DATAOFF; off < AT_BUFSIZE; off++)
+        h[off] = atring_file_byte(off);         /* initial file prefix      */
+}
+
+static void test_atrac_stream_ring_wrap(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "streamed ATRAC3+ track accepted by sceAtracSetDataAndGetID");
+    if (id >= 8u) return;
+
+    uint32_t pos = 0, base = 0, end = 0, frame = 0, valid = 0;
+    expect(sr_hle_test_atrac_ring(id, &pos, &base, &end, &frame, &valid) == 1,
+           "ring geometry readable for the tracked context");
+    expect(frame == AT_ALIGN, "blockAlign parsed from the synthetic fmt chunk");
+    expect(base == AT_DATAOFF, "streamed ring starts at the 'data' payload, not at buffer offset 0");
+    /* The first lap is frame aligned after its one-time header prefix. */
+    expect(end > base && ((end - base) % AT_ALIGN) == 0u,
+           "streamed ring spans an exact number of frames");
+    expect(pos == AT_DATAOFF + AT_ALIGN,
+           "first decode starts after the state-loading frame");
+
+    /* Consume the initial nine complete frames. The sixteenth byte tail is
+     * deliberately left queued so the next frame straddles the first wrap. */
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    int wrapped = 0, split_refill = 0, decoded_frames = 0, decode_failures = 0;
+
+    for (int i = 0; i < 9; i++) {
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+
+    uint32_t after_initial_pos = 0, after_initial_base = 0, after_initial_valid = 0;
+    expect(sr_hle_test_atrac_ring(id, &after_initial_pos, &after_initial_base,
+                                   NULL, NULL, &after_initial_valid) == 1,
+           "ring readable after the initial complete frames");
+    wrapped = after_initial_base == 0u && after_initial_pos == 0u;
+    expect(wrapped, "first lap switches the physical base to zero");
+    expect(after_initial_valid == AT_TAIL,
+           "the residual tail remains queued across the physical wrap");
+
+    /* The next frame is split: 16 bytes remain at the old tail and eight new
+     * bytes are written at physical offset 16. This is production dispatch,
+     * not a direct helper call. */
+    cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0,
+           "sceAtracGetStreamDataInfo exposes the split-frame write span");
+    uint32_t wp = MEM_R32(WP), wb = MEM_R32(WB), ro = MEM_R32(RO);
+    expect(wp == AT_RINGBASE + AT_TAIL && ro == AT_BUFSIZE,
+           "split refill uses physical tail offset and logical file end");
+    expect(wb >= AT_ALIGN - AT_TAIL,
+           "split refill reports enough writable bytes for the next frame");
+    for (uint32_t b = 0; b < AT_ALIGN - AT_TAIL; b++)
+        MEM_W8(wp + b, atring_file_byte(ro + b));
+    cpu.r[4] = id; cpu.r[5] = AT_ALIGN - AT_TAIL; cpu.r[6] = 0;
+    expect(sr_syscall(&cpu, 0x7db31251u) == 0,
+           "sceAtracAddStreamData accepts the partial frame completion");
+    split_refill = 1;
+
+    cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+    cpu.r[8] = REM;
+    uint32_t split_ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+    if (split_ret != 0u) decode_failures++;
+    else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+
+    /* Continue through ordinary post-wrap refills so the queue is exercised
+     * after the boundary, not only for one special frame. */
+    for (int i = 0; i < 15; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0,
+               "sceAtracGetStreamDataInfo succeeds after the split frame");
+        wp = MEM_R32(WP); wb = MEM_R32(WB); ro = MEM_R32(RO);
+        expect(wb >= AT_ALIGN && ro < AT_FILESIZE,
+               "post-wrap refill exposes one complete frame of writable space");
+        for (uint32_t b = 0; b < AT_ALIGN; b++)
+            MEM_W8(wp + b, atring_file_byte(ro + b));
+        cpu.r[4] = id; cpu.r[5] = AT_ALIGN; cpu.r[6] = 0;
+        expect(sr_syscall(&cpu, 0x7db31251u) == 0,
+               "sceAtracAddStreamData accepts post-wrap frame data");
+
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+
+        uint32_t now = 0;
+        (void)sr_hle_test_atrac_ring(id, &now, NULL, NULL, NULL, NULL);
+    }
+
+    expect(split_refill == 1, "the fixture exercised a physical split-frame refill");
+    expect(decode_failures == 0,
+           "no streamed frame is rejected by the decoder across a ring wrap");
+    expect(decoded_frames == 25,
+           "every sceAtracDecodeData call across the wrap returns a full 2048-sample frame");
+
+    expect(sr_hle_test_atrac_ring(id, &pos, &base, NULL, NULL, NULL) == 1 &&
+           ((pos - base) % AT_ALIGN) == 0u,
+           "the physical cursor remains frame-aligned after the split boundary");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
+           "streamed context releases cleanly");
+}
+
+/* Production-dispatch regression for the BGM/SFX mix junction (#32, #75).
+ *
+ * The title routes music as: sceAtracDecodeData writes PCM, the game copies it
+ * into the SAS output buffer, then __sceSasCoreWithMix adds VAG sound effects on
+ * top, and the result goes to sceAudioOutput2OutputBlocking. The load-bearing
+ * property of that junction is that WithMix ADDS to whatever the caller already
+ * placed in the buffer while plain Core OVERWRITES it. If WithMix ever became an
+ * overwrite, every frame of title BGM would be silently erased at the last step
+ * before the audio device, with no error anywhere -- exactly the "overwritten"
+ * failure mode that is hardest to see in a running route.
+ *
+ * Everything here is synthetic: a generated PCM ramp stands in for decoded audio
+ * and a hand-built 4-block VAG stream stands in for a sound effect. No retail
+ * bytes, no decoder, no audio device -- so this runs anywhere the harness does.
+ */
+#define NID_SAS_INIT           0x42778a9fu
+#define NID_SAS_CORE           0xa3589d81u
+#define NID_SAS_CORE_WITH_MIX  0x50a14dfcu
+#define NID_SAS_SET_VOICE      0x99944089u
+#define NID_SAS_SET_VOLUME     0x440ca7d8u
+#define NID_SAS_SET_KEY_ON     0x76f01acau
+
+#define SAS_TEST_GRAIN 64u
+
+/* Interleaved stereo s16 helpers over the guest arena. */
+static void sas_write_pcm(uint32_t addr, const int16_t *lr, uint32_t frames) {
+    for (uint32_t i = 0; i < frames * 2u; i++)
+        MEM_W16(addr + i * 2u, (uint16_t)lr[i]);
+}
+static void sas_read_pcm(uint32_t addr, int16_t *lr, uint32_t frames) {
+    for (uint32_t i = 0; i < frames * 2u; i++)
+        lr[i] = (int16_t)MEM_R16(addr + i * 2u);
+}
+static int16_t sas_clamp16(int32_t v) {
+    return v < -32768 ? (int16_t)-32768 : v > 32767 ? (int16_t)32767 : (int16_t)v;
+}
+
+static void test_sas_core_mix_preserves_caller_pcm(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[29] = 0x09012000u;
+
+    const uint32_t SAS_OUT = 0x08010000u;   /* SAS output buffer */
+    const uint32_t SAS_VAG = 0x08020000u;   /* synthetic VAG stream */
+
+    /* __sceSasInit(core, grain, maxVoices, outMode, sampleRate) */
+    cpu.r[4] = 0; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0,
+           "__sceSasInit accepts the grain/voice configuration");
+
+    /* Stand-in for one grain of decoded BGM: a deterministic ramp with both
+     * signs, distinct per channel so an L/R swap would also be caught. */
+    int16_t bgm[SAS_TEST_GRAIN * 2], got[SAS_TEST_GRAIN * 2], voice_only[SAS_TEST_GRAIN * 2];
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        bgm[i * 2 + 0] = (int16_t)(1000 + (int)i * 7);
+        bgm[i * 2 + 1] = (int16_t)(-800 - (int)i * 5);
+    }
+
+    /* --- 1. WithMix with no voice keyed on must not disturb the caller's PCM. --- */
+    sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
+    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX) == 0, "__sceSasCoreWithMix returns success");
+    sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
+    expect(memcmp(got, bgm, sizeof(bgm)) == 0,
+           "__sceSasCoreWithMix with no active voice leaves caller PCM bit-identical");
+
+    /* --- 2. Plain Core is an overwrite: the same buffer must come back silent. --- */
+    sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
+    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "__sceSasCore returns success");
+    sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
+    int core_silent = 1;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++) if (got[i]) { core_silent = 0; break; }
+    expect(core_silent,
+           "__sceSasCore with no active voice overwrites the buffer with silence");
+
+    /* --- 3. A keyed-on voice must actually contribute samples. ---
+     * Four 16-byte SAS_VAG blocks (predictor 0, shift 0, no loop/end flags), which
+     * decode to nibble<<12 with no filter history, so the stream is bounded and
+     * deterministic without embedding anything game-derived. */
+    for (uint32_t b = 0; b < 4u; b++) {
+        uint32_t a = SAS_VAG + b * 16u;
+        MEM_W8(a, 0u);          /* predictor 0, shift 0 */
+        MEM_W8(a + 1u, 0u);     /* no loop-start / loop-end / end marker */
+        for (uint32_t k = 0; k < 14u; k++)
+            MEM_W8(a + 2u + k, (uint8_t)(0x11u * ((b + k) % 7u + 1u)));
+    }
+    /* __sceSasSetVoice(core, voice, vagAddr, size, loopmode) -- loopmode is the
+     * fifth argument, which stack_arg(0) reads from $t0. */
+    cpu.r[4] = 0; cpu.r[5] = 0; cpu.r[6] = SAS_VAG; cpu.r[7] = 64u; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "__sceSasSetVoice accepts the stream");
+    cpu.r[4] = 0; cpu.r[5] = 0; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "__sceSasSetVolume accepts full volume");
+    cpu.r[4] = 0; cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "__sceSasSetKeyOn keys the voice on");
+
+    /* Voice-only reference: Core over a silent buffer. */
+    memset(got, 0, sizeof(got));
+    sas_write_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
+    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    (void)sr_syscall(&cpu, NID_SAS_CORE);
+    sas_read_pcm(SAS_OUT, voice_only, SAS_TEST_GRAIN);
+    int voice_audible = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++) if (voice_only[i]) { voice_audible = 1; break; }
+    expect(voice_audible, "__sceSasCore mixes a keyed-on SAS_VAG voice to nonzero output");
+
+    /* --- 4. WithMix over BGM must equal the saturating sum of the two. ---
+     * KeyOn resets position, filter history, envelope and resample phase, so the
+     * voice replays identically and the expected buffer is exact. */
+    cpu.r[4] = 0; cpu.r[5] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
+    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    (void)sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX);
+    sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
+
+    int sum_exact = 1, differs_from_bgm = 0, differs_from_voice = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++) {
+        if (got[i] != sas_clamp16((int32_t)bgm[i] + (int32_t)voice_only[i])) sum_exact = 0;
+        if (got[i] != bgm[i]) differs_from_bgm = 1;
+        if (got[i] != voice_only[i]) differs_from_voice = 1;
+    }
+    expect(sum_exact,
+           "__sceSasCoreWithMix adds the voice to caller PCM sample-for-sample");
+    expect(differs_from_bgm && differs_from_voice,
+           "__sceSasCoreWithMix output is neither the caller PCM nor the voice alone");
+}
+
+static void test_msgpipe_safety(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    /* Guest buffers live inside the 0x0c000000 arena (g_mem maps 0x08000000). */
+    const uint32_t GUEST_BUF  = 0x08010000u;
+    const uint32_t GUEST_OUT  = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES  = 0x08040000u; /* distinct resultSize slot */
+    const uint32_t ARENA_END  = 0x0c000000u;
+    g_mem[0x010000] = 'p'; g_mem[0x010001] = '0'; g_mem[0x010002] = 0;   /* pipe name */
+
+    uint32_t max_cap = sr_hle_test_msgpipe_max_capacity();
+    expect(max_cap > 0u && max_cap <= 0x1000000u,
+           "message-pipe capacity ceiling is a sane bounded constant");
+
+    /* --- CreateMsgPipe: resource-model validation before any allocation --- */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GUEST_NAME;
+    cpu.r[7] = 0u; /* bufferSize 0 -> illegal */
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+           "CreateMsgPipe rejects bufferSize 0");
+
+    cpu.r[7] = max_cap + 1u; /* first size above the model ceiling */
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+           "CreateMsgPipe rejects bufferSize above the capacity ceiling (bounded time, no alloc)");
+
+    cpu.r[7] = 0xFFFFFFFFu; /* maximal hostile request */
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+           "CreateMsgPipe rejects a 4 GiB hostile request before allocation");
+
+    /* A rejected create must not consume a UID or slot: a follow-up valid
+     * create must succeed and be the FIRST pipe (state probe finds it). */
+    cpu.r[7] = 64u;
+    uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect(uid != 0u && uid < 0x80000000u, "valid CreateMsgPipe returns a kernel UID");
+    SrMsgPipeState st;
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1, "state probe finds the created pipe");
+    expect(st.capacity == 64u && st.count == 0u, "pipe starts empty at the requested capacity");
+
+    /* --- TrySend: full source-span preflight, no partial mutation --- */
+    for (uint32_t i = 0; i < 8; i++) g_mem[0x010000 + i] = (uint8_t)(0xA0u + i); /* 8-byte source */
+
+    /* Source span crossing the arena end: must be rejected with the FIFO untouched. */
+    msgpipe_setup(&cpu, uid, ARENA_END - 3u, 8u, 1u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TrySend rejects a source span crossing the arena boundary");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 0u && st.write_pos == 0u,
+           "rejected send leaves count/write_pos untouched");
+    expect(MEM_R32(GUEST_OUT) == 0u,
+           "rejected send leaves resultSize zero");
+
+    /* Source entirely outside the arena. */
+    msgpipe_setup(&cpu, uid, 0xDEAD0000u, 4u, 1u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TrySend rejects a fully out-of-range source");
+
+    /* Invalid resultSize span: must be rejected before any FIFO mutation. */
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 8u, 1u, ARENA_END - 1u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TrySend rejects an out-of-range resultSize span");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 0u,
+           "resultSize rejection leaves the FIFO untouched");
+
+    /* Valid send: exact byte transfer + resultSize + state. */
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 8u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u, "valid TrySend succeeds");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 8u,
+           "send advances count by the transferred amount");
+    expect(MEM_R32(GUEST_OUT) == 8u, "valid send reports transferred bytes in resultSize");
+
+    /* --- TryReceive: full destination-span preflight, no partial drain --- */
+    for (uint32_t i = 0; i < 8; i++) g_mem[0x020000 + i] = 0x55u; /* output buffer */
+    msgpipe_setup(&cpu, uid, ARENA_END - 5u, 8u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TryReceive rejects a destination span crossing the arena boundary");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 8u && st.read_pos == 0u,
+           "rejected receive leaves the pipe undrained");
+
+    msgpipe_setup(&cpu, uid, GUEST_OUT, 8u, 0u, ARENA_END - 1u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TryReceive rejects an out-of-range resultSize span");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 8u,
+           "resultSize rejection leaves the pipe undrained");
+
+    /* Valid receive: bytes come back in FIFO order.  resultSize uses a
+     * distinct slot so the amount write cannot clobber the received payload. */
+    msgpipe_setup(&cpu, uid, GUEST_OUT, 8u, 0u, GUEST_RES);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u, "valid TryReceive succeeds");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 0u,
+           "receive drains count to zero");
+    expect(MEM_R32(GUEST_RES) == 8u, "valid receive reports transferred bytes");
+    int bytes_match = 1;
+    for (uint32_t i = 0; i < 8; i++) if (MEM_R8(GUEST_OUT + i) != (uint8_t)(0xA0u + i)) bytes_match = 0;
+    expect(bytes_match, "received bytes match the sent FIFO content in order");
+
+    /* --- Boundary behavior: full / empty --- */
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 64u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "send that exactly fills the pipe succeeds");
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 1u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_MPP_FULL,
+           "send beyond a full pipe returns MPP_FULL");
+    msgpipe_setup(&cpu, uid, GUEST_OUT, 64u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u,
+           "receive draining the full pipe succeeds");
+    msgpipe_setup(&cpu, uid, GUEST_OUT, 1u, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_MPP_EMPTY,
+           "receive on an empty pipe returns MPP_EMPTY");
+
+    /* --- Churn: explicit invariants under mixed send/receive --- */
+    int invariants_ok = 1;
+    uint32_t cap = st.capacity; /* 64 */
+    for (uint32_t phase = 0; phase < 200u && invariants_ok; phase++) {
+        /* 1..cap: a 0-length request is ILLEGAL_SIZE by contract, so churn
+         * stays on legal request sizes to exercise the FULL/EMPTY boundary. */
+        uint32_t n = 1u + (phase * 7u + 3u) % cap;
+        msgpipe_setup(&cpu, uid, GUEST_BUF, n, 1u, GUEST_OUT);
+        uint32_t rc = sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE);
+        expect(rc == 0u || rc == SCE_KERNEL_ERROR_MPP_FULL,
+               "churn send returns success or MPP_FULL");
+        msgpipe_setup(&cpu, uid, GUEST_OUT, n, 1u, GUEST_OUT);
+        rc = sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE);
+        expect(rc == 0u || rc == SCE_KERNEL_ERROR_MPP_EMPTY,
+               "churn receive returns success or MPP_EMPTY");
+        if (!sr_hle_test_msgpipe_state(uid, &st) ||
+            st.count > st.capacity || st.read_pos >= st.capacity || st.write_pos >= st.capacity) {
+            invariants_ok = 0;
+        }
+    }
+    expect(invariants_ok, "count <= capacity and both positions < capacity under 200-op churn");
+
+    /* --- Delete: pipe no longer usable --- */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "DeleteMsgPipe succeeds");
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 4u, 1u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "send on a deleted pipe returns UNKNOWN_MPPID");
+    expect(sr_hle_test_msgpipe_state(uid, &st) == 0, "state probe reports the deleted pipe gone");
+
+    /* --- Exact ceiling boundary: cap itself is legal (probe-backed) --- */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GUEST_NAME;
+    cpu.r[7] = max_cap;
+    uint32_t big_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect(big_uid != 0u && big_uid < 0x80000000u, "capacity exactly at the ceiling is accepted");
+    expect(sr_hle_test_msgpipe_state(big_uid, &st) == 1 && st.capacity == max_cap,
+           "ceiling-capacity pipe is created with the exact requested size");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = big_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
+}
+
+/* ---- coroutine lifecycle invariants ---------------------------------------------------
+ *
+ * These read counters recorded by sr_coro.c itself as each operation happened, so they hold
+ * whatever the calling source looks like. This is the primary safety proof; the source-shape
+ * checks in tools/test_sched_invariants.py are a secondary diagnostic only. */
+static void check_coroutine_lifecycle(void) {
+    SrCoroLifecycle lc;
+    sr_coro_lifecycle_snapshot(&lc);
+
+    /* Adoption is a one-shot initialisation operation. */
+    expect(lc.adoptions == 1,
+           "exactly one main-coroutine adoption occurred for the whole run");
+    expect(lc.adopt_while_child == 0,
+           "no adoption occurred while a child coroutine was executing");
+    expect(lc.identity_changes == 0,
+           "the adopted scheduler identity never changed after it was established");
+    expect(lc.main_coro == (const void *)s_sched_coro,
+           "the scheduler coroutine is exactly the identity the implementation adopted");
+
+    /* Parking. */
+    expect(lc.self_switch_noops == 0,
+           "no switch ever targeted the coroutine that was already running");
+    expect(lc.null_switch_noops == 0,
+           "no switch was ever issued with a NULL target");
+    expect(lc.child_to_other == 0,
+           "every switch out of a child coroutine targeted the adopted scheduler");
+    /* Two joiner bodies, plus one park per conformance probe leg that returned.
+     * ic_expected_parks() derives its count from the recorded outcome table, not
+     * from the park hook, so this stays a genuine cross-check of the coroutine
+     * layer rather than a tautology. */
+    {
+        int expected_parks = 2 + ic_expected_parks();
+        char msg[160];
+        snprintf(msg, sizeof msg,
+                 "every parking body parked exactly once (2 joiners + %d returned "
+                 "conformance legs = %d, observed %lu)",
+                 ic_expected_parks(), expected_parks, s_parks);
+        expect(s_parks == (unsigned long)expected_parks, msg);
+    }
+    expect(s_park_target_mismatch == NULL,
+           "every park targeted the adopted scheduler identity, not a look-alike");
+    expect(lc.child_to_main >= s_parks,
+           "each park transferred control to the adopted scheduler coroutine");
+
+    /* Creation and destruction. */
+    expect(lc.creates > 0, "the run actually created coroutines to observe");
+    expect(lc.creates == lc.destroys, "every created coroutine was destroyed");
+    expect(lc.live == 0, "no coroutine outlived the run");
+    expect(lc.double_destroys == 0, "no coroutine was destroyed more than once");
+    expect(lc.destroy_while_running == 0, "no coroutine was destroyed while it was running");
+    expect(lc.destroy_of_main == 0, "the adopted main coroutine was never destroyed");
+    expect(lc.tracked_overflow == 0, "the lifecycle registry tracked every coroutine");
+    expect(lc.alias_live == 0, "sr_coro_create never returned a still-live coroutine address");
+    expect(lc.bad_incarnations == 0,
+           "every reused coroutine address had been destroyed exactly once first");
+    {
+        const char *why = NULL;
+        int ok = sr_coro_lifecycle_all_destroyed_once(&why);
+        expect(ok, why ? why : "each created coroutine was destroyed exactly once");
+    }
+
+    fprintf(stderr,
+            "hle_thread_selftest: lifecycle adoptions=%lu creates=%lu destroys=%lu live=%lu "
+            "switches=%lu child_to_main=%lu child_to_other=%lu self_switch=%lu null_switch=%lu "
+            "parks=%lu addr_reuse=%lu incarnations_retired=%lu\n",
+            lc.adoptions, lc.creates, lc.destroys, lc.live, lc.switches,
+            lc.child_to_main, lc.child_to_other, lc.self_switch_noops,
+            lc.null_switch_noops, s_parks, lc.address_reuses, lc.clean_incarnations);
+}
+
+/* ---- production-HLE PSP oracle mode -----------------------------------------------
+ *
+ * This mode deliberately lives in the existing production selftest executable.  It does
+ * not synthesize a second emitter or call private handlers directly: each case below sets up
+ * a small white-box scheduler fixture, then enters the registered NID through sr_syscall and
+ * derives every emitted scalar from the returned state.  The fixture setup is category-2
+ * production-helper evidence; the syscall/handler/callback dispatch path is production code.
+ */
+#define ORACLE_NID_CREATE_THREAD       0x446d8de6u
+#define ORACLE_NID_START_THREAD        0xf475845du
+#define ORACLE_NID_WAIT_THREAD_END     0x278c0df5u
+#define ORACLE_NID_GET_EXIT_STATUS     0x3b183e26u
+#define ORACLE_NID_DELETE_THREAD       0x9fa03cd3u
+#define ORACLE_NID_TERMINATE_DELETE    0x383f7bccu
+#define ORACLE_NID_WAKEUP_THREAD       0xd59ead2fu
+#define ORACLE_NID_GET_THREAD_ID       0x293b45b8u
+#define ORACLE_NID_CREATE_CALLBACK     0xe81caf8fu
+#define ORACLE_NID_DELETE_CALLBACK     0xedba5844u
+#define ORACLE_NID_NOTIFY_CALLBACK     0xc11ba8c4u
+#define ORACLE_NID_CHECK_CALLBACK      0x349d6d6cu
+#define ORACLE_NID_CANCEL_CALLBACK     0xba4051d6u
+#define ORACLE_NID_CALLBACK_COUNT      0x2a3d44ffu
+#define ORACLE_NID_CREATE_SEMA         0xd6da4ba1u
+#define ORACLE_NID_DELETE_SEMA         0x28b6489cu
+#define ORACLE_NID_SIGNAL_SEMA         0x3f53e640u
+#define ORACLE_NID_POLL_SEMA           0x58b1f937u
+
+enum { ORACLE_UNAVAILABLE = -1 };
+
+typedef struct {
+    const char *case_id;
+    /* Retained in the command-line contract for Make/runbook compatibility.
+     * The digest is taken from the running module below, never from this
+     * caller-provided path. */
+    const char *artifact;
+    const char *source_commit;
+    const char *model;
+    const char *firmware;
+} OracleArgs;
+
+#ifdef SR_PSP_ORACLE_SMOKE
+/* Generated from the source-owned PSP oracle ELF by
+ * tools/psp_oracle/build_nakagawa_smoke.py.  The adapter enters the translated
+ * guest body; it does not calculate or substitute the expected sum. */
+extern uint32_t sr_psp_oracle_smoke_sum(CpuState *s, uint32_t count);
+#endif
+
+static uint32_t oracle_rotr(uint32_t value, unsigned shift) {
+    return (value >> shift) | (value << (32u - shift));
+}
+
+static const uint32_t oracle_sha_k[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+    0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+    0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+    0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+    0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+    0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+    0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+    0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+    0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+};
+
+typedef struct {
+    uint32_t h[8];
+    uint64_t bits;
+    uint8_t block[64];
+    size_t used;
+} OracleSha256;
+
+static void oracle_sha_init(OracleSha256 *sha) {
+    static const uint32_t initial[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+    };
+    memcpy(sha->h, initial, sizeof(initial));
+    sha->bits = 0;
+    sha->used = 0;
+}
+
+static void oracle_sha_transform(OracleSha256 *sha, const uint8_t block[64]) {
+    uint32_t w[64];
+    for (unsigned i = 0; i < 16; i++) {
+        unsigned j = i * 4u;
+        w[i] = ((uint32_t)block[j] << 24) | ((uint32_t)block[j + 1u] << 16) |
+               ((uint32_t)block[j + 2u] << 8) | (uint32_t)block[j + 3u];
+    }
+    for (unsigned i = 16; i < 64; i++) {
+        uint32_t s0 = oracle_rotr(w[i - 15u], 7) ^ oracle_rotr(w[i - 15u], 18) ^
+                      (w[i - 15u] >> 3);
+        uint32_t s1 = oracle_rotr(w[i - 2u], 17) ^ oracle_rotr(w[i - 2u], 19) ^
+                      (w[i - 2u] >> 10);
+        w[i] = w[i - 16u] + s0 + w[i - 7u] + s1;
+    }
+
+    uint32_t a = sha->h[0], b = sha->h[1], c = sha->h[2], d = sha->h[3];
+    uint32_t e = sha->h[4], f = sha->h[5], g = sha->h[6], h = sha->h[7];
+    for (unsigned i = 0; i < 64; i++) {
+        uint32_t s1 = oracle_rotr(e, 6) ^ oracle_rotr(e, 11) ^ oracle_rotr(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + s1 + ch + oracle_sha_k[i] + w[i];
+        uint32_t s0 = oracle_rotr(a, 2) ^ oracle_rotr(a, 13) ^ oracle_rotr(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = s0 + maj;
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+    sha->h[0] += a; sha->h[1] += b; sha->h[2] += c; sha->h[3] += d;
+    sha->h[4] += e; sha->h[5] += f; sha->h[6] += g; sha->h[7] += h;
+}
+
+static void oracle_sha_update(OracleSha256 *sha, const uint8_t *data, size_t size) {
+    sha->bits += (uint64_t)size * 8u;
+    while (size) {
+        size_t take = sizeof(sha->block) - sha->used;
+        if (take > size) take = size;
+        memcpy(sha->block + sha->used, data, take);
+        sha->used += take;
+        data += take;
+        size -= take;
+        if (sha->used == sizeof(sha->block)) {
+            oracle_sha_transform(sha, sha->block);
+            sha->used = 0;
+        }
+    }
+}
+
+static void oracle_sha_final(OracleSha256 *sha, uint8_t digest[32]) {
+    size_t used = sha->used;
+    sha->block[used++] = 0x80u;
+    if (used > 56u) {
+        memset(sha->block + used, 0, 64u - used);
+        oracle_sha_transform(sha, sha->block);
+        used = 0;
+    }
+    memset(sha->block + used, 0, 56u - used);
+    for (unsigned i = 0; i < 8; i++)
+        sha->block[56u + i] = (uint8_t)(sha->bits >> (56u - 8u * i));
+    oracle_sha_transform(sha, sha->block);
+    for (unsigned i = 0; i < 8; i++) {
+        digest[i * 4u] = (uint8_t)(sha->h[i] >> 24);
+        digest[i * 4u + 1u] = (uint8_t)(sha->h[i] >> 16);
+        digest[i * 4u + 2u] = (uint8_t)(sha->h[i] >> 8);
+        digest[i * 4u + 3u] = (uint8_t)sha->h[i];
+    }
+}
+
+static int oracle_sha256_file(const char *path, char out[65]) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    OracleSha256 sha;
+    uint8_t buffer[4096];
+    uint8_t digest[32];
+    oracle_sha_init(&sha);
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), file);
+        if (got) oracle_sha_update(&sha, buffer, got);
+        if (got < sizeof(buffer)) {
+            if (ferror(file)) { fclose(file); return 0; }
+            break;
+        }
+    }
+    if (fclose(file) != 0) return 0;
+    oracle_sha_final(&sha, digest);
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned i = 0; i < sizeof(digest); i++) {
+        out[i * 2u] = hex[digest[i] >> 4];
+        out[i * 2u + 1u] = hex[digest[i] & 0x0fu];
+    }
+    out[64] = '\0';
+    return 1;
+}
+
+/* Provenance must identify the executable that actually emitted stdout.  Do
+ * not hash an arbitrary --artifact argument: a caller could otherwise pass a
+ * valid-looking PRX (or unrelated file) while this host selftest executed a
+ * different module. */
+static int oracle_running_executable(char *path, size_t capacity) {
+    if (!path || capacity == 0 || capacity > (size_t)UINT32_MAX) return 0;
+    const DWORD length = GetModuleFileNameA(NULL, path, (DWORD)capacity);
+    return length != 0 && length < (DWORD)capacity;
+}
+
+static int oracle_field_safe(const char *value) {
+    if (!value || !*value) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++)
+        if (*p <= 0x20u || *p == '=' || *p == '#') return 0;
+    return 1;
+}
+
+static const char *oracle_arg(const char *name, int argc, char **argv) {
+    for (int i = 2; i + 1 < argc; i++)
+        if (strcmp(argv[i], name) == 0) return argv[i + 1];
+    return NULL;
+}
+
+static int oracle_parse_args(int argc, char **argv, OracleArgs *out) {
+    if (argc < 3 || strcmp(argv[1], "--psp-oracle") != 0) return 0;
+    out->case_id = oracle_arg("--case", argc, argv);
+    out->artifact = oracle_arg("--artifact", argc, argv);
+    out->source_commit = oracle_arg("--source-commit", argc, argv);
+    out->model = oracle_arg("--model", argc, argv);
+    out->firmware = oracle_arg("--firmware", argc, argv);
+    return oracle_field_safe(out->case_id) && oracle_field_safe(out->artifact) &&
+           oracle_field_safe(out->source_commit) && oracle_field_safe(out->model) &&
+           oracle_field_safe(out->firmware);
+}
+
+static int oracle_runtime_init(void) {
+    g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
+    if (!g_mem_base) {
+        fprintf(stderr, "hle_thread_selftest: cannot allocate guest arena for PSP oracle\n");
+        return 0;
+    }
+    g_mem = g_mem_base + 0x08000000u;
+    s_cpu = &s_cpu_store;
+    sched_init(&s_cpu_store);
+    return 1;
+}
+
+static void oracle_runtime_fini(void) {
+    free(g_mem_base);
+    g_mem_base = NULL;
+    g_mem = NULL;
+}
+
+static uint32_t oracle_syscall4(CpuState *cpu, uint32_t nid,
+                                uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = a3;
+    return sr_syscall(cpu, nid);
+}
+
+static int oracle_setup_owner(TCB **out_owner) {
+    TCB *owner = fixture_thread(0x130u, TH_RUNNING, 20);
+    if (!owner) return 0;
+    s_cur = (int)(owner - s_tcb);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    *out_owner = owner;
+    return 1;
+}
+
+#ifdef SR_PSP_ORACLE_SMOKE
+static int oracle_smoke_case(uint32_t *out0, uint32_t *out1,
+                             uint32_t *out2, uint32_t *out3,
+                             uint32_t *raw_result) {
+    reset_fixture();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+    (void)owner;
+    /* The generated o32 body preserves the incoming guest stack pointer.  The
+     * arithmetic function does not dereference it, but a valid guest value
+     * keeps this invocation identical to an ordinary generated entry. */
+    s_cpu->r[29] = 0x09f00000u;
+    uint32_t sum = sr_psp_oracle_smoke_sum(s_cpu, 100u);
+    *raw_result = sum;
+    *out0 = (uint32_t)(sum == 5050u);
+    *out1 = 0;
+    *out2 = 0;
+    *out3 = 0;
+    return sum == 5050u;
+}
+#endif
+
+static int oracle_callback_case(uint32_t *out0, uint32_t *out1,
+                                uint32_t *out2, uint32_t *out3) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+    (void)owner;
+    memcpy(SR_HOST(ORACLE_CALLBACK_NAME), "oracle-callback", sizeof("oracle-callback"));
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_oracle_callback_arg1 = 0;
+    s_oracle_callback_arg2 = 0;
+
+    CpuState *cpu = s_cpu;
+    uint32_t cbid = oracle_syscall4(cpu, ORACLE_NID_CREATE_CALLBACK,
+                                    ORACLE_CALLBACK_NAME, ORACLE_CALLBACK_ENTRY, 0x55u, 0);
+    if (cbid & 0x80000000u) {
+        fprintf(stderr, "psp-oracle callback-notify-check unavailable: CreateCallback returned 0x%08x\n", cbid);
+        s_oracle_mode = 0;
+        return ORACLE_UNAVAILABLE;
+    }
+    uint32_t notify_first = oracle_syscall4(cpu, ORACLE_NID_NOTIFY_CALLBACK, cbid, 0x1234u, 0, 0);
+    uint32_t count_before = oracle_syscall4(cpu, ORACLE_NID_CALLBACK_COUNT, cbid, 0, 0, 0);
+    uint32_t check = oracle_syscall4(cpu, ORACLE_NID_CHECK_CALLBACK, 0, 0, 0, 0);
+    uint32_t count_after = oracle_syscall4(cpu, ORACLE_NID_CALLBACK_COUNT, cbid, 0, 0, 0);
+    uint32_t notify_second = oracle_syscall4(cpu, ORACLE_NID_NOTIFY_CALLBACK, cbid, 0x5678u, 0, 0);
+    uint32_t cancel = oracle_syscall4(cpu, ORACLE_NID_CANCEL_CALLBACK, cbid, 0, 0, 0);
+    uint32_t count_cancelled = oracle_syscall4(cpu, ORACLE_NID_CALLBACK_COUNT, cbid, 0, 0, 0);
+    uint32_t delete_result = oracle_syscall4(cpu, ORACLE_NID_DELETE_CALLBACK, cbid, 0, 0, 0);
+
+    *out0 = (uint32_t)(notify_first == 0) |
+            ((uint32_t)(count_before == 1) << 1) |
+            ((uint32_t)(check > 0) << 2) |
+            ((uint32_t)(count_after == 0) << 3) |
+            ((uint32_t)(notify_second == 0) << 4) |
+            ((uint32_t)(cancel == 0) << 5) |
+            ((uint32_t)(count_cancelled == 0) << 6) |
+            ((uint32_t)(delete_result == 0) << 7) |
+            ((uint32_t)(s_oracle_callback_calls == 1) << 8);
+    *out0 |= ((uint32_t)(count_cancelled & 0xffu) << 16);
+    *out1 = ((s_oracle_callback_arg1 & 0xffffu) << 16) |
+            (s_oracle_callback_arg2 & 0xffffu);
+    *out2 = cancel;
+    *out3 = delete_result;
+    s_oracle_mode = 0;
+    return notify_first == 0 && count_before == 1 && check > 0 && count_after == 0 &&
+           notify_second == 0 && cancel == 0 && count_cancelled == 0 &&
+           delete_result == 0 && s_oracle_callback_calls == 1;
+}
+
+static int oracle_wait_cancel_case(uint32_t *out0, uint32_t *out1,
+                                   uint32_t *out2, uint32_t *out3) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+    (void)owner;
+    CpuState *cpu = s_cpu;
+    uint32_t semaid = oracle_syscall4(cpu, ORACLE_NID_CREATE_SEMA, 0, 0, 0, 1);
+    if (semaid & 0x80000000u) {
+        fprintf(stderr, "psp-oracle wait-cancel unavailable: CreateSema returned 0x%08x\n", semaid);
+        return ORACLE_UNAVAILABLE;
+    }
+    uint32_t empty = oracle_syscall4(cpu, ORACLE_NID_POLL_SEMA, semaid, 1, 0, 0);
+    uint32_t signal = oracle_syscall4(cpu, ORACLE_NID_SIGNAL_SEMA, semaid, 1, 0, 0);
+    uint32_t ready = oracle_syscall4(cpu, ORACLE_NID_POLL_SEMA, semaid, 1, 0, 0);
+    uint32_t empty_again = oracle_syscall4(cpu, ORACLE_NID_POLL_SEMA, semaid, 1, 0, 0);
+    uint32_t delete_result = oracle_syscall4(cpu, ORACLE_NID_DELETE_SEMA, semaid, 0, 0, 0);
+    *out0 = (uint32_t)((int32_t)empty < 0) |
+            ((uint32_t)(signal == 0) << 1) |
+            ((uint32_t)(ready == 0) << 2) |
+            ((uint32_t)((int32_t)empty_again < 0) << 3) |
+            ((uint32_t)(delete_result == 0) << 4);
+    *out1 = 0;
+    *out2 = empty;
+    *out3 = empty_again;
+    return *out0 == 0x1fu;
+}
+
+static int oracle_thread_lifecycle_case(uint32_t *out0, uint32_t *out1,
+                                        uint32_t *out2, uint32_t *out3) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+    s_exit_argument = 0x42;
+    uint32_t thid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                    ORACLE_THREAD_ENTRY, 32, 0x4000u);
+    if (thid & 0x80000000u) {
+        fprintf(stderr, "psp-oracle thread-lifecycle unavailable: CreateThread returned 0x%08x\n", thid);
+        return ORACLE_UNAVAILABLE;
+    }
+    uint32_t start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD, thid, 0, 0, 0);
+    TCB *worker = tcb_by_uid(thid);
+    if (!worker || worker->state != TH_READY) {
+        fprintf(stderr, "psp-oracle thread-lifecycle unavailable: StartThread did not produce a READY target\n");
+        return ORACLE_UNAVAILABLE;
+    }
+    run_worker(worker);
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t wait = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END, thid, 0, 0, 0);
+    uint32_t exit_status = oracle_syscall4(s_cpu, ORACLE_NID_GET_EXIT_STATUS, thid, 0, 0, 0);
+    uint32_t delete_result = oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD, thid, 0, 0, 0);
+    uint32_t post_delete_status = oracle_syscall4(s_cpu, ORACLE_NID_GET_EXIT_STATUS, thid, 0, 0, 0);
+    *out0 = (uint32_t)(start == 0) |
+            ((uint32_t)(wait == 0x42u) << 1) |
+            ((uint32_t)(delete_result == 0) << 2) |
+            ((uint32_t)((int32_t)post_delete_status < 0) << 3);
+    *out1 = (exit_status & 0xffffu) | (wait << 16);
+    *out2 = post_delete_status;
+    *out3 = delete_result;
+    return start == 0 && (int32_t)wait >= 0 && delete_result == 0 &&
+           (int32_t)post_delete_status < 0 && exit_status == 0x42u;
+}
+
+static int oracle_thread_delete_case(uint32_t *out0, uint32_t *out1,
+                                     uint32_t *out2, uint32_t *out3,
+                                     uint32_t *out4, uint32_t *out5,
+                                     uint32_t *out6, uint32_t *out7,
+                                     uint32_t *out8) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+
+    uint32_t invalid_delete = oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD,
+                                              0x7fffffffu, 0, 0, 0);
+    uint32_t current_uid = oracle_syscall4(s_cpu, ORACLE_NID_GET_THREAD_ID, 0, 0, 0, 0);
+    uint32_t current_delete = oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD,
+                                              current_uid, 0, 0, 0);
+
+    uint32_t term_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                               ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *term_target = tcb_by_uid(term_target_uid);
+    if (!term_target) return ORACLE_UNAVAILABLE;
+    uint32_t term_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                          term_target_uid, 0, 0, 0);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
+    run_worker(term_target);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+
+    TCB *term_joiner = fixture_thread(0x1a0u, TH_WAIT_OBJ, 32);
+    term_joiner->wait_obj = term_target_uid;
+    term_joiner->join_target = term_target_uid;
+    term_joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t term_delete = oracle_syscall4(s_cpu, ORACLE_NID_TERMINATE_DELETE,
+                                           term_target_uid, 0, 0, 0);
+    uint32_t term_join_result = term_joiner->join_result;
+    uint32_t term_post_status = oracle_syscall4(s_cpu, ORACLE_NID_GET_EXIT_STATUS,
+                                                term_target_uid, 0, 0, 0);
+    uint32_t term_post_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                               term_target_uid, 0, 0, 0);
+    uint32_t term_post_wake = oracle_syscall4(s_cpu, ORACLE_NID_WAKEUP_THREAD,
+                                              term_target_uid, 0, 0, 0);
+
+    uint32_t exit_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                               ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *exit_target = tcb_by_uid(exit_target_uid);
+    if (!exit_target) return ORACLE_UNAVAILABLE;
+    TCB *exit_joiner = fixture_thread(0x1a1u, TH_WAIT_OBJ, 32);
+    exit_joiner->wait_obj = exit_target_uid;
+    exit_joiner->join_target = exit_target_uid;
+    exit_joiner->join_waiting = 1;
+    s_exit_argument = 0x66;
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT_DELETE;
+    uint32_t exit_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                          exit_target_uid, 0, 0, 0);
+    run_worker(exit_target);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t exit_join_result = exit_joiner->join_result;
+    exit_joiner->state = TH_DORMANT;
+    exit_joiner->started = 1;
+    exit_joiner->exit_status = (int32_t)exit_join_result;
+    uint32_t exit_join_wait = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
+                                              exit_joiner->uid, 0, 0, 0);
+    uint32_t exit_post_status = oracle_syscall4(s_cpu, ORACLE_NID_GET_EXIT_STATUS,
+                                                exit_target_uid, 0, 0, 0);
+
+    *out0 = (uint32_t)((int32_t)invalid_delete < 0) |
+            ((uint32_t)(current_delete == 0x800201a4u) << 1) |
+            ((uint32_t)(term_target_uid != 0 && term_start == 0) << 2) |
+            ((uint32_t)(term_delete == 0) << 3) |
+            ((uint32_t)(term_join_result == 0x800201acu) << 4) |
+            ((uint32_t)(term_joiner->state == TH_READY) << 5) |
+            ((uint32_t)(term_post_status == 0x80020198u) << 6) |
+            ((uint32_t)(term_post_start == 0x80020198u) << 7) |
+            ((uint32_t)(term_post_wake == 0x80020198u) << 8) |
+            ((uint32_t)(exit_target_uid != 0 && exit_start == 0) << 9) |
+            ((uint32_t)(exit_join_result == 0x66u) << 10) |
+            ((uint32_t)(exit_join_wait == 0x66u) << 11) |
+            ((uint32_t)(exit_post_status == 0x80020198u) << 12);
+    *out1 = invalid_delete;
+    *out2 = current_delete;
+    *out3 = term_delete;
+    *out4 = term_join_result;
+    *out5 = term_post_status;
+    *out6 = exit_join_result;
+    *out7 = exit_post_status;
+    *out8 = exit_join_wait;
+    return *out0 == 0x1fffu;
+}
+
+static int oracle_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
+                                              uint32_t *out2, uint32_t *out3,
+                                              uint32_t *out4, uint32_t *out5,
+                                              uint32_t *out6, uint32_t *out7,
+                                              uint32_t *out8, uint32_t *out9,
+                                              uint32_t *out10, uint32_t *out11,
+                                              uint32_t *out12, uint32_t *out13,
+                                              uint32_t *out14) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+
+    /* The host oracle uses the production scheduler's real target lifecycle,
+       while the joiner body is represented by the same observable state that
+       the guest entry has after returning from its inner WaitThreadEnd. */
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *error_target = tcb_by_uid(error_target_uid);
+    if (!error_target) return ORACLE_UNAVAILABLE;
+    uint32_t error_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                           error_target_uid, 0, 0, 0);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
+    run_worker(error_target);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    TCB *error_joiner = fixture_thread(0x1a2u, TH_WAIT_OBJ, 32);
+    error_joiner->wait_obj = error_target_uid;
+    error_joiner->join_target = error_target_uid;
+    error_joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t error_delete = oracle_syscall4(s_cpu, ORACLE_NID_TERMINATE_DELETE,
+                                            error_target_uid, 0, 0, 0);
+    uint32_t error_inner = error_joiner->join_result;
+    error_joiner->state = TH_DORMANT;
+    error_joiner->started = 1;
+    /* This control represents the implicit entry-return path.  The explicit
+       sibling below drives the production ExitThread NID separately; both
+       now converge on the measured signed-negative non-delete rule. */
+    error_joiner->exit_status = (int32_t)0x800200d2u;
+    error_joiner->join_waiting = 0;
+    error_joiner->join_result_valid = 0;
+    error_joiner->join_target = 0;
+    SrThreadRunStatus error_info;
+    memset(&error_info, 0, sizeof(error_info));
+    uint32_t error_ref = (uint32_t)sched_thread_run_status(error_joiner->uid, &error_info);
+    uint32_t error_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
+                                           error_joiner->uid, 0, 0, 0);
+
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                   ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *positive_target = tcb_by_uid(positive_target_uid);
+    if (!positive_target) return ORACLE_UNAVAILABLE;
+    uint32_t positive_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                              positive_target_uid, 0, 0, 0);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
+    run_worker(positive_target);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    TCB *positive_joiner = fixture_thread(0x1a3u, TH_WAIT_OBJ, 32);
+    positive_joiner->wait_obj = positive_target_uid;
+    positive_joiner->join_target = positive_target_uid;
+    positive_joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t positive_delete = oracle_syscall4(s_cpu, ORACLE_NID_TERMINATE_DELETE,
+                                               positive_target_uid, 0, 0, 0);
+    uint32_t positive_inner = positive_joiner->join_result;
+    positive_joiner->state = TH_DORMANT;
+    positive_joiner->started = 1;
+    positive_joiner->exit_status = 0x77;
+    positive_joiner->join_waiting = 0;
+    positive_joiner->join_result_valid = 0;
+    positive_joiner->join_target = 0;
+    SrThreadRunStatus positive_info;
+    memset(&positive_info, 0, sizeof(positive_info));
+    uint32_t positive_ref = (uint32_t)sched_thread_run_status(positive_joiner->uid, &positive_info);
+    uint32_t positive_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
+                                              positive_joiner->uid, 0, 0, 0);
+
+    /* As in the PSP fixture, PASS covers only setup, inner results, and
+       successful status queries. The state fields and two outer wait values
+       are emitted raw and remain unresolved observations. */
+    *out0 = (uint32_t)(error_target_uid != 0 && error_start == 0) |
+            ((uint32_t)(error_joiner->state == TH_DORMANT) << 1) |
+            ((uint32_t)(error_delete == 0) << 2) |
+            ((uint32_t)(error_inner == 0x800201acu) << 3) |
+            ((uint32_t)(error_ref == 0) << 4) |
+            ((uint32_t)(error_info.status == PSP_THREAD_STOPPED) << 5) |
+            ((uint32_t)(error_info.waitType == PSP_WAIT_NONE) << 6) |
+            ((uint32_t)(error_info.status == PSP_THREAD_STOPPED &&
+                        error_joiner->exit_status == (int32_t)0x800200d2u) << 7) |
+            ((uint32_t)(positive_target_uid != 0 && positive_start == 0) << 8) |
+            ((uint32_t)(positive_joiner->state == TH_DORMANT) << 9) |
+            ((uint32_t)(positive_delete == 0) << 10) |
+            ((uint32_t)(positive_inner == 0x800201acu) << 11) |
+            ((uint32_t)(positive_ref == 0) << 12) |
+            ((uint32_t)(positive_info.status == PSP_THREAD_STOPPED) << 13) |
+            ((uint32_t)(positive_info.waitType == PSP_WAIT_NONE) << 14) |
+            ((uint32_t)(positive_joiner->exit_status == 0x77) << 15) |
+            (1u << 16) |
+            (1u << 17) |
+            (1u << 18) |
+            (1u << 19);
+    *out1 = error_inner;
+    *out2 = error_outer;
+    *out3 = error_ref;
+    *out4 = error_info.status;
+    *out5 = error_info.waitType;
+    *out6 = error_info.waitId;
+    *out7 = (uint32_t)error_joiner->exit_status;
+    *out8 = positive_inner;
+    *out9 = positive_outer;
+    *out10 = positive_ref;
+    *out11 = positive_info.status;
+    *out12 = positive_info.waitType;
+    *out13 = positive_info.waitId;
+    *out14 = (uint32_t)positive_joiner->exit_status;
+    return error_target_uid != 0 && error_start == 0 &&
+           error_delete == 0 &&
+           error_inner == 0x800201acu && error_ref == 0 &&
+           error_outer == 0x800200d2u &&
+           error_info.status == PSP_THREAD_STOPPED && error_info.waitType == PSP_WAIT_NONE &&
+           error_joiner->exit_status == (int32_t)0x800200d2u &&
+           positive_target_uid != 0 && positive_start == 0 &&
+           positive_delete == 0 &&
+           positive_inner == 0x800201acu && positive_ref == 0 &&
+           positive_outer == 0x77u &&
+           positive_info.status == PSP_THREAD_STOPPED && positive_info.waitType == PSP_WAIT_NONE &&
+           positive_joiner->exit_status == 0x77;
+}
+
+/* The explicit sibling drives the production ExitThread NID for the
+ * intermediate joiner instead of fabricating its final TCB state.  The target
+ * lifecycle and inner THREAD_TERMINATED latch remain the same as the PSP
+ * fixture; ReferThreadStatus is represented by the scheduler's white-box
+ * status helper because this selftest does not expose a guest info buffer. */
+static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
+                                               uint32_t *out2, uint32_t *out3,
+                                               uint32_t *out4, uint32_t *out5,
+                                               uint32_t *out6, uint32_t *out7,
+                                               uint32_t *out8, uint32_t *out9,
+                                               uint32_t *out10, uint32_t *out11,
+                                               uint32_t *out12, uint32_t *out13,
+                                               uint32_t *out14, uint32_t *out15,
+                                               uint32_t *out16,
+                                               uint32_t explicit_error,
+                                               uint32_t expected_error,
+                                               uint32_t explicit_positive,
+                                               uint32_t expected_positive) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = NULL;
+    if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
+
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *error_target = tcb_by_uid(error_target_uid);
+    if (!error_target) return ORACLE_UNAVAILABLE;
+    uint32_t error_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                           error_target_uid, 0, 0, 0);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
+    run_worker(error_target);
+
+    uint32_t error_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                ORACLE_THREAD_ENTRY, 16, 0x4000u);
+    TCB *error_joiner = tcb_by_uid(error_joiner_uid);
+    if (!error_joiner) return ORACLE_UNAVAILABLE;
+    uint32_t error_join_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                                error_joiner_uid, 0, 0, 0);
+    error_joiner->state = TH_WAIT_OBJ;
+    error_joiner->wait_obj = error_target_uid;
+    error_joiner->join_target = error_target_uid;
+    error_joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t error_delete = oracle_syscall4(s_cpu, ORACLE_NID_TERMINATE_DELETE,
+                                            error_target_uid, 0, 0, 0);
+    uint32_t error_inner = error_joiner->join_result;
+    s_exit_argument = (int32_t)explicit_error;
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    run_worker(error_joiner);
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t error_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
+                                           error_joiner_uid, 0, 0, 0);
+    SrThreadRunStatus error_info;
+    memset(&error_info, 0, sizeof(error_info));
+    uint32_t error_ref = (uint32_t)sched_thread_run_status(error_joiner_uid, &error_info);
+    uint32_t error_exit_status = sched_thread_exit_status(error_joiner_uid);
+    if (error_joiner->coro) {
+        sr_coro_destroy(error_joiner->coro);
+        error_joiner->coro = NULL;
+    }
+    (void)oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD, error_joiner_uid, 0, 0, 0);
+
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                   ORACLE_THREAD_ENTRY, 48, 0x4000u);
+    TCB *positive_target = tcb_by_uid(positive_target_uid);
+    if (!positive_target) return ORACLE_UNAVAILABLE;
+    uint32_t positive_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                              positive_target_uid, 0, 0, 0);
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
+    run_worker(positive_target);
+
+    uint32_t positive_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+                                                   ORACLE_THREAD_ENTRY, 16, 0x4000u);
+    TCB *positive_joiner = tcb_by_uid(positive_joiner_uid);
+    if (!positive_joiner) return ORACLE_UNAVAILABLE;
+    uint32_t positive_join_start = oracle_syscall4(s_cpu, ORACLE_NID_START_THREAD,
+                                                   positive_joiner_uid, 0, 0, 0);
+    positive_joiner->state = TH_WAIT_OBJ;
+    positive_joiner->wait_obj = positive_target_uid;
+    positive_joiner->join_target = positive_target_uid;
+    positive_joiner->join_waiting = 1;
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t positive_delete = oracle_syscall4(s_cpu, ORACLE_NID_TERMINATE_DELETE,
+                                               positive_target_uid, 0, 0, 0);
+    uint32_t positive_inner = positive_joiner->join_result;
+    s_exit_argument = (int32_t)explicit_positive;
+    s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
+    run_worker(positive_joiner);
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+    uint32_t positive_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
+                                              positive_joiner_uid, 0, 0, 0);
+    SrThreadRunStatus positive_info;
+    memset(&positive_info, 0, sizeof(positive_info));
+    uint32_t positive_ref = (uint32_t)sched_thread_run_status(positive_joiner_uid, &positive_info);
+    uint32_t positive_exit_status = sched_thread_exit_status(positive_joiner_uid);
+    if (positive_joiner->coro) {
+        sr_coro_destroy(positive_joiner->coro);
+        positive_joiner->coro = NULL;
+    }
+    (void)oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD, positive_joiner_uid, 0, 0, 0);
+
+    /* Bits 16..19 mirror the PSP fixture's two semaphore handshakes.  The
+     * host model has already constructed the same ordered state, so those
+     * controls are deterministic here; bits 20..21 make the explicit outer
+     * results visible in the mask as well as in the raw fields. */
+    *out0 = (uint32_t)(error_target_uid != 0 && error_start == 0) |
+            ((uint32_t)(error_joiner_uid != 0 && error_join_start == 0) << 1) |
+            ((uint32_t)(error_delete == 0) << 2) |
+            ((uint32_t)(error_inner == 0x800201acu) << 3) |
+            ((uint32_t)(error_ref == 0) << 4) |
+            ((uint32_t)(error_info.status == PSP_THREAD_STOPPED) << 5) |
+            ((uint32_t)(error_info.waitType == PSP_WAIT_NONE) << 6) |
+            ((uint32_t)(error_exit_status == expected_error) << 7) |
+            ((uint32_t)(positive_target_uid != 0 && positive_start == 0) << 8) |
+            ((uint32_t)(positive_joiner_uid != 0 && positive_join_start == 0) << 9) |
+            ((uint32_t)(positive_delete == 0) << 10) |
+            ((uint32_t)(positive_inner == 0x800201acu) << 11) |
+            ((uint32_t)(positive_ref == 0) << 12) |
+            ((uint32_t)(positive_info.status == PSP_THREAD_STOPPED) << 13) |
+            ((uint32_t)(positive_info.waitType == PSP_WAIT_NONE) << 14) |
+            ((uint32_t)(positive_exit_status == expected_positive) << 15) |
+            (1u << 16) | (1u << 17) | (1u << 18) | (1u << 19) |
+            ((uint32_t)(error_outer == expected_error) << 20) |
+            ((uint32_t)(positive_outer == expected_positive) << 21);
+    *out1 = error_inner;
+    *out2 = error_outer;
+    *out3 = error_ref;
+    *out4 = error_info.status;
+    *out5 = error_info.waitType;
+    *out6 = error_info.waitId;
+    *out7 = error_exit_status;
+    *out8 = positive_inner;
+    *out9 = positive_outer;
+    *out10 = positive_ref;
+    *out11 = positive_info.status;
+    *out12 = positive_info.waitType;
+    *out13 = positive_info.waitId;
+    *out14 = positive_exit_status;
+    *out15 = explicit_error;
+    *out16 = explicit_positive;
+    return error_target_uid != 0 && error_start == 0 &&
+           error_joiner_uid != 0 && error_join_start == 0 && error_delete == 0 &&
+           error_inner == 0x800201acu && error_outer == expected_error && error_ref == 0 &&
+           error_info.status == PSP_THREAD_STOPPED && error_info.waitType == PSP_WAIT_NONE &&
+           error_info.waitId == 0 && error_exit_status == expected_error &&
+           positive_target_uid != 0 && positive_start == 0 &&
+           positive_joiner_uid != 0 && positive_join_start == 0 && positive_delete == 0 &&
+           positive_inner == 0x800201acu && positive_outer == expected_positive &&
+           positive_ref == 0 && positive_info.status == PSP_THREAD_STOPPED &&
+           positive_info.waitType == PSP_WAIT_NONE && positive_info.waitId == 0 &&
+           positive_exit_status == expected_positive;
+}
+
+static int oracle_thread_delete_explicit_case(uint32_t *out0, uint32_t *out1,
+                                              uint32_t *out2, uint32_t *out3,
+                                              uint32_t *out4, uint32_t *out5,
+                                              uint32_t *out6, uint32_t *out7,
+                                              uint32_t *out8, uint32_t *out9,
+                                              uint32_t *out10, uint32_t *out11,
+                                              uint32_t *out12, uint32_t *out13,
+                                              uint32_t *out14) {
+    uint32_t ignored_error = 0;
+    uint32_t ignored_positive = 0;
+    return oracle_thread_delete_exit_pair_case(
+        out0, out1, out2, out3, out4, out5, out6, out7, out8, out9,
+        out10, out11, out12, out13, out14, &ignored_error, &ignored_positive,
+        0x800201acu, 0x800200d2u, 0x78u, 0x78u);
+}
+
+static int oracle_thread_delete_boundary_case(uint32_t *out0, uint32_t *out1,
+                                              uint32_t *out2, uint32_t *out3,
+                                              uint32_t *out4, uint32_t *out5,
+                                              uint32_t *out6, uint32_t *out7,
+                                              uint32_t *out8, uint32_t *out9,
+                                              uint32_t *out10, uint32_t *out11,
+                                              uint32_t *out12, uint32_t *out13,
+                                              uint32_t *out14, uint32_t *out15,
+                                              uint32_t *out16) {
+    return oracle_thread_delete_exit_pair_case(
+        out0, out1, out2, out3, out4, out5, out6, out7, out8, out9,
+        out10, out11, out12, out13, out14, out15, out16,
+        0x800201a8u, 0x800200d2u, (uint32_t)-17, 0x800200d2u);
+}
+
+static int oracle_emit(const OracleArgs *args, int pass, uint32_t result_value,
+                       uint32_t out0, uint32_t out1, uint32_t out2, uint32_t out3,
+                       const uint32_t *extra, size_t extra_count) {
+    char artifact_path[32768];
+    char digest[65];
+    if (!oracle_running_executable(artifact_path, sizeof(artifact_path)) ||
+        !oracle_sha256_file(artifact_path, digest)) {
+        fprintf(stderr, "psp-oracle: cannot hash the running selftest executable\n");
+        return 0;
+    }
+    const int smoke = strcmp(args->case_id, "sum-1-to-100") == 0;
+    printf("NAKAGAWA_PSP_META schema=1 source=nakagawa model=%s firmware=%s "
+           "binary_sha256=%s source_commit=%s fixture=%s\n",
+           args->model, args->firmware, digest, args->source_commit,
+           smoke ? "nakagawa-generated-guest-production-runtime-direct-entry"
+                 : "nakagawa-hle-thread-selftest-production-dispatch");
+    if (smoke) {
+        printf("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SMOKE-001 case_id=%s "
+               "status=%s result=0x%08x out0=0x%08x\n",
+               args->case_id, pass ? "PASS" : "FAIL", result_value, out0);
+    } else if (extra && extra_count == 11u &&
+               (strcmp(args->case_id, "thread-delete-followup") == 0 ||
+                strcmp(args->case_id, "thread-delete-explicit") == 0)) {
+        printf("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-001 case_id=%s "
+               "status=%s result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x "
+               "out3=0x%08x out4=0x%08x out5=0x%08x out6=0x%08x out7=0x%08x "
+               "out8=0x%08x out9=0x%08x out10=0x%08x out11=0x%08x "
+               "out12=0x%08x out13=0x%08x out14=0x%08x\n",
+               args->case_id, pass ? "PASS" : "FAIL", result_value,
+               out0, out1, out2, out3, extra[0], extra[1], extra[2], extra[3],
+               extra[4], extra[5], extra[6], extra[7], extra[8], extra[9],
+               extra[10]);
+    } else if (extra && extra_count == 13u &&
+               strcmp(args->case_id, "thread-delete-boundary") == 0) {
+        printf("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-001 case_id=%s "
+               "status=%s result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x "
+               "out3=0x%08x out4=0x%08x out5=0x%08x out6=0x%08x out7=0x%08x "
+               "out8=0x%08x out9=0x%08x out10=0x%08x out11=0x%08x "
+               "out12=0x%08x out13=0x%08x out14=0x%08x out15=0x%08x "
+               "out16=0x%08x\n",
+               args->case_id, pass ? "PASS" : "FAIL", result_value,
+               out0, out1, out2, out3, extra[0], extra[1], extra[2], extra[3],
+               extra[4], extra[5], extra[6], extra[7], extra[8], extra[9],
+               extra[10], extra[11], extra[12]);
+    } else if (extra && extra_count == 5u &&
+               strcmp(args->case_id, "thread-delete-lifecycle") == 0) {
+        printf("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-001 case_id=%s "
+               "status=%s result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x "
+               "out3=0x%08x out4=0x%08x out5=0x%08x out6=0x%08x out7=0x%08x out8=0x%08x\n",
+               args->case_id, pass ? "PASS" : "FAIL", result_value,
+               out0, out1, out2, out3, extra[0], extra[1], extra[2], extra[3], extra[4]);
+    } else {
+        printf("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-001 case_id=%s "
+               "status=%s result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x out3=0x%08x\n",
+               args->case_id, pass ? "PASS" : "FAIL", result_value,
+               out0, out1, out2, out3);
+    }
+    return 1;
+}
+
+static int run_psp_oracle(int argc, char **argv) {
+    OracleArgs args;
+    if (!oracle_parse_args(argc, argv, &args)) {
+        fprintf(stderr, "usage: --psp-oracle --case CASE --artifact EXE --source-commit SHA "
+                        "--model MODEL --firmware FIRMWARE\n");
+        return 2;
+    }
+    const int smoke = strcmp(args.case_id, "sum-1-to-100") == 0;
+    if (!smoke && strcmp(args.case_id, "callback-notify-check") != 0 &&
+        strcmp(args.case_id, "wait-cancel") != 0 &&
+        strcmp(args.case_id, "thread-lifecycle") != 0 &&
+        strcmp(args.case_id, "thread-delete-lifecycle") != 0 &&
+        strcmp(args.case_id, "thread-delete-followup") != 0 &&
+        strcmp(args.case_id, "thread-delete-explicit") != 0 &&
+        strcmp(args.case_id, "thread-delete-boundary") != 0) {
+        fprintf(stderr, "psp-oracle: unsupported case %s\n", args.case_id);
+        return 2;
+    }
+#ifndef SR_PSP_ORACLE_SMOKE
+    if (smoke) {
+        fprintf(stderr, "psp-oracle: smoke case is unavailable in this build; no result record emitted\n");
+        return 2;
+    }
+#endif
+    if (!oracle_runtime_init()) return 2;
+    uint32_t out0 = 0, out1 = 0, out2 = 0, out3 = 0;
+    uint32_t extra[13] = {0};
+    uint32_t result_value = 0;
+    int result;
+    if (smoke) {
+#ifdef SR_PSP_ORACLE_SMOKE
+        result = oracle_smoke_case(&out0, &out1, &out2, &out3, &result_value);
+#else
+        result = ORACLE_UNAVAILABLE;
+#endif
+    } else if (strcmp(args.case_id, "callback-notify-check") == 0) {
+        result = oracle_callback_case(&out0, &out1, &out2, &out3);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else if (strcmp(args.case_id, "wait-cancel") == 0) {
+        result = oracle_wait_cancel_case(&out0, &out1, &out2, &out3);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else if (strcmp(args.case_id, "thread-delete-lifecycle") == 0) {
+        result = oracle_thread_delete_case(&out0, &out1, &out2, &out3,
+                                           &extra[0], &extra[1], &extra[2],
+                                           &extra[3], &extra[4]);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else if (strcmp(args.case_id, "thread-delete-followup") == 0) {
+        result = oracle_thread_delete_followup_case(
+            &out0, &out1, &out2, &out3, &extra[0], &extra[1], &extra[2],
+            &extra[3], &extra[4], &extra[5], &extra[6], &extra[7], &extra[8],
+            &extra[9], &extra[10]);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else if (strcmp(args.case_id, "thread-delete-explicit") == 0) {
+        result = oracle_thread_delete_explicit_case(
+            &out0, &out1, &out2, &out3, &extra[0], &extra[1], &extra[2],
+            &extra[3], &extra[4], &extra[5], &extra[6], &extra[7], &extra[8],
+            &extra[9], &extra[10]);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else if (strcmp(args.case_id, "thread-delete-boundary") == 0) {
+        result = oracle_thread_delete_boundary_case(
+            &out0, &out1, &out2, &out3, &extra[0], &extra[1], &extra[2],
+            &extra[3], &extra[4], &extra[5], &extra[6], &extra[7], &extra[8],
+            &extra[9], &extra[10], &extra[11], &extra[12]);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    } else {
+        result = oracle_thread_lifecycle_case(&out0, &out1, &out2, &out3);
+        result_value = result == ORACLE_UNAVAILABLE ? 0u : (result != 0 ? 1u : 0u);
+    }
+
+    int rc = 0;
+    if (result == ORACLE_UNAVAILABLE) {
+        fprintf(stderr, "psp-oracle: case %s could not be driven; no result record emitted\n",
+                args.case_id);
+        rc = 3;
+    } else if (!oracle_emit(&args, result != 0, result_value, out0, out1, out2, out3,
+                             (strcmp(args.case_id, "thread-delete-lifecycle") == 0 ||
+                             strcmp(args.case_id, "thread-delete-followup") == 0 ||
+                             strcmp(args.case_id, "thread-delete-explicit") == 0 ||
+                             strcmp(args.case_id, "thread-delete-boundary") == 0) ? extra : NULL,
+                            (strcmp(args.case_id, "thread-delete-followup") == 0 ||
+                             strcmp(args.case_id, "thread-delete-explicit") == 0) ? 11u :
+                            strcmp(args.case_id, "thread-delete-boundary") == 0 ? 13u :
+                            strcmp(args.case_id, "thread-delete-lifecycle") == 0 ? 5u : 0u)) {
+        rc = 2;
+    }
+    oracle_runtime_fini();
+    return rc;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
+        return run_psp_oracle(argc, argv);
+    g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
+    if (!g_mem_base) {
+        fprintf(stderr, "hle_thread_selftest: cannot allocate guest arena\n");
+        return 2;
+    }
+    g_mem = g_mem_base + 0x08000000u;
+    s_cpu = &s_cpu_store;
+
+    /* sched_init() performs the single sr_coro_main() adoption. There is deliberately no
+     * separate adoption here: a second call would allocate a second wrapper and redefine
+     * the current coroutine, which is the exact shape of the historical defect. */
+    sched_init(&s_cpu_store);
+    expect(s_sched_coro != NULL, "scheduler coroutine was adopted");
+    expect(sr_coro_current() == s_sched_coro,
+           "the adopted scheduler coroutine is the one currently running");
+
+    test_prx_export_relocation_behavior();
+    test_fd_namespace();
+    test_utility_av_module_state();
+    test_exit_thread_does_not_wake_launcher(0);
+    test_exit_thread_does_not_wake_launcher(2);
+    test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
+    test_explicit_exit_status_exact((int32_t)0x800201a8u, 0x800200d2u);
+    test_explicit_exit_status_exact((int32_t)-17, 0x800200d2u);
+    test_explicit_exit_status_exact(0x78, 0x78u);
+    test_thread_delete_lifecycle_and_cleanup();
+    test_start_thread_error_semantics();
+    test_exit_delete_lifecycle_and_join_result();
+    test_wait_thread_end_invalid_targets();
+    test_wait_thread_end_already_ended();
+    test_wait_thread_end_blocking_and_resume();
+    test_wait_thread_end_cb_execution();
+    test_bulk_guest_span_atomicity();
+    test_dmac_semantics();
+    test_display_framebuf_latch();
+    test_time_domains_are_coherent();
+    test_interrupt_nid_semantics();
+    test_is_cpu_intr_suspended_is_token_predicate();
+    test_dispatch_suspend_resume_nid_semantics();
+    test_can_not_wait_semantics();
+    test_allocate_fpl_context_precedence();
+    test_atrac_context_abi();
+    test_atrac_stream_ring_wrap();
+    test_sas_core_mix_preserves_caller_pcm();
+    test_msgpipe_safety();
+    test_intr_context_conformance();
+
+    check_coroutine_lifecycle();
+
+    fprintf(stderr, "hle_thread_selftest: %d checks, %d failures\n",
+            s_checks, s_failures);
+    free(g_mem_base);
+    return s_failures ? 1 : 0;
+}
