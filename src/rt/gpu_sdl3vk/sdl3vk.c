@@ -66,6 +66,35 @@ static uint32_t       s_swap_n;
 static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
+static int      s_renderer_terminal = 0;
+static uint64_t s_swapchain_gen = 0;
+static uint64_t s_frame_sem_gen = 0;
+
+static int     s_present_fault_armed = 0;
+static VkResult s_present_fault_result = VK_SUCCESS;
+
+int sdl3vk_renderer_terminal(void) {
+    return s_renderer_terminal;
+}
+
+void sdl3vk_present_fault_inject(int vk_result) {
+    s_present_fault_armed = 1;
+    s_present_fault_result = (VkResult)vk_result;
+}
+
+void sdl3vk_present_fault_clear(void) {
+    s_present_fault_armed = 0;
+    s_present_fault_result = VK_SUCCESS;
+}
+
+uint64_t sdl3vk_swapchain_generation(void) {
+    return s_swapchain_gen;
+}
+
+uint64_t sdl3vk_frame_semaphore_generation(void) {
+    return s_frame_sem_gen;
+}
+
 static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
 static int      s_pad_present;
@@ -185,6 +214,7 @@ static int create_swapchain(void) {
     VK_TRY(vkGetSwapchainImagesKHR(s_dev, s_swap, &n_img, s_swap_img));
     s_swap_n = n_img;
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
+    s_swapchain_gen++;
     return 1;
 }
 
@@ -719,6 +749,7 @@ static void cap_finish(int ok, const char *why) {
 }
 
 int sdl3vk_capture_arm(const char *path) {
+    if (s_renderer_terminal) return 0;
     if (!s_dev || !s_swap) return 0;
     if (s_cap_state != CAP_IDLE && s_cap_state != CAP_DONE && s_cap_state != CAP_FAILED)
         return 0;
@@ -750,7 +781,84 @@ const char *sdl3vk_capture_source_label(void) {
     }
 }
 
+typedef enum PresentDisposition {
+    PRESENT_OK,
+    PRESENT_ENQUEUED_REBUILD,
+    PRESENT_OUT_OF_DATE,
+    PRESENT_NOT_ENQUEUED,
+    PRESENT_TERMINAL,
+    PRESENT_UNCLASSIFIED
+} PresentDisposition;
+
+static PresentDisposition classify_present(VkResult pr, int *out_presented, const char **out_why) {
+    switch (pr) {
+    case VK_SUCCESS:
+        *out_presented = 1;
+        *out_why = "vkQueuePresentKHR succeeded";
+        return PRESENT_OK;
+
+    case VK_SUBOPTIMAL_KHR:
+        *out_presented = 1;
+        *out_why = "swapchain suboptimal; enqueued rebuild requested";
+        return PRESENT_ENQUEUED_REBUILD;
+
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        *out_presented = 0;
+        *out_why = "swapchain out of date";
+        return PRESENT_OUT_OF_DATE;
+
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with VK_ERROR_OUT_OF_HOST_MEMORY";
+        return PRESENT_NOT_ENQUEUED;
+
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        return PRESENT_NOT_ENQUEUED;
+
+    case VK_ERROR_SURFACE_LOST_KHR:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with VK_ERROR_SURFACE_LOST_KHR";
+        return PRESENT_NOT_ENQUEUED;
+
+    case VK_ERROR_DEVICE_LOST:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with VK_ERROR_DEVICE_LOST";
+        return PRESENT_TERMINAL;
+
+    default:
+        *out_presented = 0;
+        *out_why = "vkQueuePresentKHR failed with unclassified error";
+        return PRESENT_UNCLASSIFIED;
+    }
+}
+
+static int recover_unenqueued_present(PresentFrame *f) {
+    if (!s_dev) return 0;
+    if (f->submitted) {
+        if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+            s_renderer_terminal = 1;
+            return 0;
+        }
+        f->submitted = 0;
+        f->source = VK_NULL_HANDLE;
+    }
+    if (f->sem_done) {
+        vkDestroySemaphore(s_dev, f->sem_done, NULL);
+        f->sem_done = VK_NULL_HANDLE;
+    }
+    VkSemaphoreCreateInfo sci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    if (vkCreateSemaphore(s_dev, &sci, NULL, &f->sem_done) != VK_SUCCESS) {
+        s_renderer_terminal = 1;
+        return 0;
+    }
+    s_frame_sem_gen++;
+    return 1;
+}
+
 static int present_common(VkImage src, int srcw, int srch, const uint32_t *upload) {
+    if (s_renderer_terminal) return -1;
     const char *why = NULL;
     int quit = 0;
     int presented = 0;
@@ -800,10 +908,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         }
 
-        /* fb image -> swapchain, aspect-correct letterbox blit. The swapchain barrier
-         * must wait on the acquire semaphore in the same TRANSFER stage the submit uses;
-         * a TOP_OF_PIPE src stage leaves the acquire's write unordered with the clear
-         * below (a WRITE_AFTER_READ hazard under synchronization validation). */
+        /* fb image -> swapchain, aspect-correct letterbox blit. */
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -813,9 +918,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             vkCmdClearColorImage(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                  &black, 1, &rng);
         }
-        /* The clear (TRANSFER write) and the blit (TRANSFER write) are separate commands
-         * with no implicit ordering; without this same-layout barrier the blit could
-         * overtake the clear (WRITE_AFTER_WRITE under synchronization validation). */
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -839,10 +941,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        /* An armed capture is recorded in this same command buffer, from the presentation
-         * source while it is still TRANSFER_SRC_OPTIMAL -- exactly the pixels the blit
-         * hands to the presentation engine, with no extra acquire and no destructive
-         * layout transition. */
         if (s_cap_state == CAP_ARMED) {
             if (!cap_ensure((uint32_t)srcw, (uint32_t)srch)) {
                 why = "capture buffer allocation failed"; goto fail;
@@ -878,14 +976,73 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         pi.swapchainCount = 1;
         pi.pSwapchains = &s_swap;
         pi.pImageIndices = &idx;
-        VkResult pr = vkQueuePresentKHR(s_queue, &pi);
 
-        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue); /* swapchain lifetime, not a device-wide drain */
-            create_swapchain();
+        VkResult pr = VK_SUCCESS;
+        if (s_present_fault_armed) {
+            s_present_fault_armed = 0;
+            pr = s_present_fault_result;
+            int fake_presented = 0;
+            const char *fake_why = NULL;
+            PresentDisposition fd = classify_present(pr, &fake_presented, &fake_why);
+            if (fd == PRESENT_OK || fd == PRESENT_ENQUEUED_REBUILD) {
+                VkPipelineStageFlags wstage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+                VkSubmitInfo esi = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+                esi.waitSemaphoreCount = 1;
+                esi.pWaitSemaphores = &f->sem_done;
+                esi.pWaitDstStageMask = &wstage;
+                if (vkQueueSubmit(s_queue, 1, &esi, VK_NULL_HANDLE) != VK_SUCCESS) {
+                    fprintf(stderr, "sdl3vk: fault harness could not emulate semaphore wait\n");
+                }
+            }
+        } else {
+            pr = vkQueuePresentKHR(s_queue, &pi);
         }
-        presented = 1;   /* we issued vkQueuePresentKHR for this frame */
+
+        int did_present = 0;
+        const char *disp_why = NULL;
+        PresentDisposition disp = classify_present(pr, &did_present, &disp_why);
+
+        switch (disp) {
+        case PRESENT_OK:
+            presented = 1;
+            break;
+
+        case PRESENT_ENQUEUED_REBUILD:
+            presented = 1;
+            wait_all_present_frames();
+            vkQueueWaitIdle(s_queue);
+            if (!create_swapchain()) {
+                s_renderer_terminal = 1;
+                why = "swapchain rebuild after presentation failed";
+                goto fail;
+            }
+            break;
+
+        case PRESENT_OUT_OF_DATE:
+            presented = 0;
+            wait_all_present_frames();
+            vkQueueWaitIdle(s_queue);
+            create_swapchain();
+            why = disp_why;
+            goto fail;
+
+        case PRESENT_NOT_ENQUEUED:
+        case PRESENT_UNCLASSIFIED:
+            presented = 0;
+            recover_unenqueued_present(f);
+            why = disp_why;
+            goto fail;
+
+        case PRESENT_TERMINAL:
+            presented = 0;
+            s_renderer_terminal = 1;
+            recover_unenqueued_present(f);
+            why = disp_why;
+            goto fail;
+        }
+
+        if (!presented) { why = disp_why; goto fail; }
+
         s_frame_cursor = (s_frame_cursor + 1) % PRESENT_FRAMES;
         break;
     }
@@ -1273,6 +1430,71 @@ int sdl3vk_capture_selftest(void) {
         }
         remove("selftest_scaled.ppm");
         cap_test_image_destroy(&big);
+    }
+
+    /* ---- present error recovery and disposition tests ------------------------------- */
+    {
+        /* Test 1: VK_SUBOPTIMAL_KHR (enqueued rebuild) */
+        uint64_t sc0 = sdl3vk_swapchain_generation();
+        sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "present fault SUBOPTIMAL: expected present success (1)\n"); ok = 0;
+        }
+        if (sdl3vk_swapchain_generation() <= sc0) {
+            fprintf(stderr, "present fault SUBOPTIMAL: expected swapchain rebuild\n"); ok = 0;
+        }
+
+        /* Test 2: VK_ERROR_OUT_OF_DATE_KHR (unenqueued present / stale swapchain) */
+        sc0 = sdl3vk_swapchain_generation();
+        if (!sdl3vk_capture_arm("selftest_ood.ppm")) {
+            fprintf(stderr, "present fault OOD: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault OOD: expected present failure (-1)\n"); ok = 0;
+        }
+        if (sdl3vk_capture_result() != -1) {
+            fprintf(stderr, "present fault OOD: capture result must fail (-1)\n"); ok = 0;
+        }
+        if (sdl3vk_swapchain_generation() <= sc0) {
+            fprintf(stderr, "present fault OOD: expected swapchain rebuild\n"); ok = 0;
+        }
+
+        /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery) */
+        uint64_t sem0 = sdl3vk_frame_semaphore_generation();
+        if (!sdl3vk_capture_arm("selftest_oom.ppm")) {
+            fprintf(stderr, "present fault OOM: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_HOST_MEMORY);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault OOM: expected present failure (-1)\n"); ok = 0;
+        }
+        if (sdl3vk_capture_result() != -1) {
+            fprintf(stderr, "present fault OOM: capture result must fail (-1)\n"); ok = 0;
+        }
+        if (sdl3vk_frame_semaphore_generation() <= sem0) {
+            fprintf(stderr, "present fault OOM: expected frame semaphore recovery/recreation\n"); ok = 0;
+        }
+
+        /* Verify frame slot recovery: next normal present must succeed cleanly without validation errors */
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
+        }
+
+        /* Test 4: VK_ERROR_DEVICE_LOST (terminal error) */
+        if (!sdl3vk_capture_arm("selftest_devlost.ppm")) {
+            fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_ERROR_DEVICE_LOST);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault DEVLOST: expected present failure (-1)\n"); ok = 0;
+        }
+        if (!sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault DEVLOST: expected renderer terminal state\n"); ok = 0;
+        }
+        if (sdl3vk_capture_arm("selftest_terminal_refused.ppm")) {
+            fprintf(stderr, "terminal state: capture arm must be refused when terminal\n"); ok = 0;
+        }
     }
 
     int errors = sdl3vk_validation_error_count();
