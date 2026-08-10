@@ -3,7 +3,7 @@
 **Status: engineering assessment, not legal advice.** This is the operational counterpart to [`OSPS_BASELINE.md`](OSPS_BASELINE.md), [`LEGAL_REWRITE_ASSESSMENT.md`](LEGAL_REWRITE_ASSESSMENT.md), [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md), and [`NOTICE.md`](../NOTICE.md). Legal questions are gates for qualified review, not conclusions made by this file.
 
 > [!IMPORTANT]
-> The repository is **private**. Do not change its visibility and do not publish a binary release while the blockers below remain unresolved. Runtime correctness or green local tests are not evidence that publication is legally safe.
+> This repository is the **sanitized public-source repository** (`public-safe-v1`); the historical development repository remains **private**. Publishing this source does not authorize distributing HST game binaries, recompiled game-derived C, or extracted game assets. Do not publish a binary release while the blockers below remain unresolved. The PGF and PGD/amctrl implementations are **excluded** from `public-safe-v1` and build against fail-closed backends; the open component questions below are unchanged by this source release. Runtime correctness or green local tests are not evidence that publication is legally safe.
 
 ## Three distinct thresholds — do not collapse them
 
@@ -49,7 +49,7 @@ GitHub documents that a private→public visibility change exposes the code and 
 
 The conservative plan is:
 
-1. Keep this repository private as the historical development/archive repository.
+1. Keep the historical development repository private as the archive.
 2. Finish #98/#99/#102/#104 and governance review.
 3. Perform the one coordinated private-history rewrite required by #102/`KEY_HISTORY_SCRUB.md` if the archive itself is to be retained in sanitized form.
 4. Create a **new public repository from an explicitly approved sanitized tree/history**, not `git push --mirror`.
@@ -58,6 +58,8 @@ The conservative plan is:
 7. Configure rulesets/security settings on the new public repository before accepting contributions.
 
 This is a risk-minimization architecture, not a statement that publication is otherwise unlawful.
+
+As of 2026-08-10 this topology is in place: the repository you are reading is the fresh sanitized public repository built from an approved `public-safe-v1` tree, and the historical development repository remains private with its history unchanged. Step 6 (public issue curation) is still outstanding.
 
 ## History audit and rewrite — audit first, rewrite once
 
