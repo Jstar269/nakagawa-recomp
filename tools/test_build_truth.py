@@ -272,9 +272,9 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
             build_dir = Path(temp_dir) / "build_atrac3p"
             self.assertFalse(build_dir.exists())
 
-            # 1. Clean serial build for runtime-objects
+            # 1. Clean serial build for atrac3p-objects
             proc = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -283,7 +283,7 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
             self.assertEqual(
                 proc.returncode,
                 0,
-                f"make runtime-objects failed ({proc.returncode}):\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
+                f"make atrac3p-objects failed ({proc.returncode}):\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
             )
 
             # Verify nested directories were created
@@ -296,7 +296,7 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
 
             # 2. Idempotent second build
             proc_idem = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -311,7 +311,7 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
             # 3. Clean parallel build (-j4)
             shutil.rmtree(build_dir)
             proc_par = subprocess.run(
-                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
