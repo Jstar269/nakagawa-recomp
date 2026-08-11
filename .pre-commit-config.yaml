@@ -30,7 +30,7 @@ repos:
         # mass-format diff. The local staged-diff hook below still rejects any
         # *new* whitespace in every file.
         exclude: >-
-          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt)$
+          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt)$
       - id: end-of-file-fixer
         # Never mutate pinned binary LUT bytes.
         exclude: ^assets/vfpu/.*\.dat$
@@ -67,6 +67,13 @@ repos:
       - id: publication-audit
         name: publication safety audit
         entry: python tools/publish_audit.py --tracked-only --public-scope
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: modified-file-notice-audit
+        name: inherited modified-file notice audit
+        entry: python tools/modified_file_notice_audit.py --tracked-only
         language: system
         pass_filenames: false
         always_run: true

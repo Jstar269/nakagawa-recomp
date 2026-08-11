@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 
 import struct
 import sys

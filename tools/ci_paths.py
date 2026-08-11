@@ -88,7 +88,13 @@ def _is_security_publication(path: str) -> bool:
         or name in {"SECURITY.md", "SECURITY.txt", "NOTICE", "NOTICE.md", "LICENSE", "LICENSE.md"}
         or path.startswith("docs/PUBLICATION")
         or path.startswith("docs/LEGAL")
-        or path in {"tools/publish_audit.py", "tools/generate_sbom.py", "tools/verify_key_scrub.py"}
+        or path == "docs/provenance/MODIFIED_FILE_NOTICES.json"
+        or path in {
+            "tools/publish_audit.py",
+            "tools/generate_sbom.py",
+            "tools/verify_key_scrub.py",
+            "tools/modified_file_notice_audit.py",
+        }
     )
 
 

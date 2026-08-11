@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+// Modified by Nakagawa Recomp contributors, 2026-08-10.
+// See NOTICE.md for upstream lineage and modification provenance.
 
 // expected results and asserts the interpreter reproduces them. This is a real test: every
 // expected value below is computed by hand from the MIPS semantics, not copied from the
