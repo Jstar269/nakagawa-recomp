@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+# Modified by Nakagawa Recomp contributors, 2026-08-10.
+# See NOTICE.md for upstream lineage and modification provenance.
 
 # Compare two CPU-state traces (tools/TRACE_FORMAT.md) and report the first divergence.
 # Exit 0 when the two traces are identical step-for-step, 1 when they diverge, 2 on a

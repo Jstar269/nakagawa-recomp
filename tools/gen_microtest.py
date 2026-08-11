@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+# Modified by Nakagawa Recomp contributors, 2026-08-10.
+# See NOTICE.md for upstream lineage and modification provenance.
 
 # Generate a CRT-free Allegrex test module that exercises the integer, single-precision
 # FPU, and Allegrex-extension ISAs with edge-case and seeded-random operands. Each test

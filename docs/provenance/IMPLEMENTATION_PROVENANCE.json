@@ -966,17 +966,20 @@
       "id": "iso-vfs",
       "subsystem": "Services / ISO9660 virtual filesystem",
       "paths": ["src/rt/iso.c"],
-      "classification": "project-authored-independent",
-      "upstream": null,
-      "upstream_paths": [],
-      "upstream_revision": null,
-      "upstream_license": null,
+      "classification": "unresolved",
+      "upstream": "sal063",
+      "upstream_paths": ["src/rt/iso.c"],
+      "upstream_revision": "da17b0e1db209206a407d097d132201e516e3855",
+      "upstream_license": "GPL-2.0-or-later",
+      "upstream_url": "https://github.com/sal063/PSP-recompilation-project",
       "behavior_sources": ["ECMA-119 / ISO 9660, Joliet and Rock Ridge public specifications (S)"],
       "evidence_tier": "S",
       "replacement_state": "not-applicable",
       "replacement_commit": null,
       "owner_lane": null,
-      "uncertainty": []
+      "uncertainty": [
+        "The public-safe retention comparison and immediate-upstream notice establish a provenance lead, not a legal derivation conclusion; the ISO9660/Joliet/Rock Ridge behavior also follows public specifications."
+      ]
     },
     {
       "id": "iso-vfs-header",

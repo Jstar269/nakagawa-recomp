@@ -9,6 +9,12 @@ The repository-level project declaration is **GPL-3.0-or-later**, and the canoni
 
 Most PPSSPP-derived material reached this project **through sal063**, which is the immediate upstream for every file in both inventories below. Nakagawa added the standardized `Derived from` source-header form to most of these files; that is not the same as originating every attribution. In particular, sal063's `pgf.c`/`pgf.h` bodies and `CREDITS.md` already expressly identify those files as a C port of PPSSPP `Core/Font/PGF.cpp`.
 
+## Modified-file notice policy
+
+The public-safe notice inventory at [docs/provenance/MODIFIED_FILE_NOTICES.json](docs/provenance/MODIFIED_FILE_NOTICES.json) records 46 tracked paths with exact counterparts at sal063 commit `da17b0e`. It separates 43 textual source paths from two generated SPIR-V embeds and the generated `src/rt/nid_names.h` header; generated output is not hand-edited. Materially modified textual files carry an explicit `Modified by Nakagawa Recomp contributors, YYYY-MM-DD.` sentence and a pointer to this notice. Bounded unchanged files retain attribution without asserting a modification date. The reproducible check is [tools/modified_file_notice_audit.py](tools/modified_file_notice_audit.py), and its policy/evidence boundary is [docs/provenance/MODIFIED_FILE_NOTICES.md](docs/provenance/MODIFIED_FILE_NOTICES.md).
+
+This implements an explicit engineering notice contract informed by GPLv2 section 2(a), GPLv3 section 5(a), and FSF source-file guidance. It does not decide whether a file is independent or derivative and does not constitute legal clearance. Per-file `GPL-2.0-or-later` identifiers remain unchanged; the exact GPLv2 text is reproduced at [THIRD_PARTY_LICENSES/GPL-2.0.txt](THIRD_PARTY_LICENSES/GPL-2.0.txt). The unresolved `src/rt/audio.c` deeper-PPSSPP attribution and the PGF, PGD, font, full-history, and maintainer-review blockers remain open.
+
 ### Upstream source file inventory (PPSSPP-derived modules)
 
 The following C runtime files in `src/rt/` materially incorporate translated or adapted algorithms, state structures, tables, or HLE logic derived from PPSSPP:

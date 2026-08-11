@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 
 # Compare a funcdiff output trace (steps renumbered from 0) against the oracle slice that
 # starts at <entry-step>. Step numbers are ignored; pc/op and the set of register/memory

@@ -1,0 +1,1664 @@
+{
+  "schema_version": 1,
+  "title": "Inherited modified-file notice inventory",
+  "audit_date": "2026-08-11",
+  "public_base_commit": "40c67aa066f904427f4faccf988849be31dde332",
+  "private_reference_commit": "f664d8cae18453e9d6a29e719101d2b119cf3639",
+  "upstream": {
+    "project": "sal063/PSP-recompilation-project",
+    "url": "https://github.com/sal063/PSP-recompilation-project",
+    "revision": "da17b0e1db209206a407d097d132201e516e3855",
+    "license": "GPL-2.0-or-later"
+  },
+  "scope": {
+    "description": "Public-safe tracked paths with exact counterparts at the pinned sal063 revision. Private PGF/PGD, key, font, game-input, capture, and oracle paths are excluded. Generated outputs are recorded separately and are not hand-edited.",
+    "public_path_count": 46,
+    "textual_source_count": 43,
+    "generated_output_count": 3,
+    "history_date_policy": "Use the latest available public-history commit touching each path before this campaign; the sanitized public export is the first public-history boundary.",
+    "excluded_private_families": [
+      "src/rt/pgf.c",
+      "src/rt/pgf.h",
+      "src/rt/pgd.c",
+      "src/rt/pgd.h",
+      "tools/pgd_*",
+      "private game inputs",
+      "oracle traces",
+      "fonts and keys"
+    ]
+  },
+  "notice_policy": {
+    "immediate_upstream": "Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)",
+    "modified_notice": "Modified by Nakagawa Recomp contributors, <date>.",
+    "pointer": "See NOTICE.md for upstream lineage and modification provenance.",
+    "unchanged_files": "Retain SPDX and immediate-upstream attribution; no modification sentence is asserted for paths bounded as unchanged.",
+    "generated_files": "Do not insert text into generated arrays; retain provenance in the source/generator and this manifest.",
+    "shader_rule": "Keep #version as the first line."
+  },
+  "legal_basis": {
+    "gpl_v2_section": "GNU GPLv2 section 2(a) requires modified files to carry prominent notices stating the change and date.",
+    "gpl_v3_section": "GNU GPLv3 section 5(a) requires prominent notices that the work was modified and a relevant date.",
+    "fsf_guidance": "FSF guidance recommends a copying-permission pointer at the beginning of each source file; this inventory is an engineering provenance gate, not legal advice or legal clearance.",
+    "sources": [
+      "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html",
+      "https://www.gnu.org/licenses/gpl-3.0.html",
+      "https://www.gnu.org/licenses/gpl-faq.en.html",
+      "https://www.gnu.org/licenses/gpl-howto.en.html"
+    ]
+  },
+  "required_license_files": [
+    {
+      "path": "LICENSE",
+      "role": "repository-level GPL-3.0-or-later declaration"
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
+      "role": "verbatim GPLv2 license text for inherited GPL-2.0-or-later files"
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
+      "role": "immediate upstream and third-party attribution"
+    },
+    {
+      "path": "NOTICE.md",
+      "role": "durable lineage and scope notice"
+    }
+  ],
+  "verified_original_candidates": [
+    {
+      "path": "tools/host_stubs.py",
+      "basis": "absent from sal063 at the pinned revision and listed as a bounded candidate in NOTICE.md; no legal derivation conclusion"
+    },
+    {
+      "path": "tools/elf_bounds.py",
+      "basis": "absent from sal063 at the pinned revision and listed as a bounded candidate in NOTICE.md; no legal derivation conclusion"
+    },
+    {
+      "path": "tools/discovery_contract.py",
+      "basis": "absent from sal063 at the pinned revision and listed as a bounded candidate in NOTICE.md; no legal derivation conclusion"
+    },
+    {
+      "path": "tools/psp_import_table.py",
+      "basis": "absent from sal063 at the pinned revision and listed as a bounded candidate in NOTICE.md; no legal derivation conclusion"
+    }
+  ],
+  "baseline_summary": {
+    "textual_modified_paths": 39,
+    "textual_notice_only_paths": 4,
+    "generated_outputs": 3,
+    "modified_notice_missing_before_remediation": 39,
+    "deeper_provenance_unresolved_paths": [
+      "src/rt/audio.c"
+    ]
+  },
+  "audit_tool": "tools/modified_file_notice_audit.py",
+  "files": [
+    {
+      "path": "src/ref/cpu.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/ref/cpu.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/ref/interp.cpp",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/ref/interp.cpp",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/ref/interp.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/ref/interp.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/ref/run_elf.cpp",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/ref/run_elf.cpp",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/ref/selftest.cpp",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/ref/selftest.cpp",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/audio.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/audio.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "status": "unresolved",
+        "candidate_project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "possible deeper lineage via sal063; do not treat as resolved"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "UNRESOLVED_PROVENANCE"
+    },
+    {
+      "path": "src/rt/driver.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/driver.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/funcdiff.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/funcdiff.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/ge.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/ge.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/ge_shared.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/ge_shared.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/ge_gpu.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/ge_gpu.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "2b6638569501f0a65723c8160063d44c3d41354b",
+        "date": "2026-08-11",
+        "subject": "fix: model measured PSP DMA transfer semantics"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-11",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-11.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "1abb7b049626b08da06c6e893cf8b74f99539b6e",
+        "date": "2026-08-10",
+        "subject": "fix(gpu): synchronize guest framebuffer snapshots"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
+      "source_kind": "generated_output",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": null,
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": false,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "generated_from": "src/rt/gpu_sdl3vk/shaders/psp.frag",
+      "difference": "GENERATED_OUTPUT",
+      "expected_notice": {
+        "attribution_required": false,
+        "modification_required": false,
+        "notice_location": "source or generator provenance, not embedded output"
+      },
+      "disposition": "GENERATED_OUTPUT"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
+      "source_kind": "generated_output",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": null,
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": false,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "generated_from": "src/rt/gpu_sdl3vk/shaders/psp.vert",
+      "difference": "GENERATED_OUTPUT",
+      "expected_notice": {
+        "attribution_required": false,
+        "modification_required": false,
+        "notice_location": "source or generator provenance, not embedded output"
+      },
+      "disposition": "GENERATED_OUTPUT"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/sdl3vk.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/sdl3vk.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "de89f95bf170683a146501f9a1c71d65e93f6ef8",
+        "date": "2026-08-10",
+        "subject": "fix(gpu_sdl3vk): fail-close on unclassified present errors without assuming unenqueued state"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "ca4a042e383b25f13f6130ee6511fe1e60325aea",
+        "date": "2026-08-10",
+        "subject": "fix(gpu_sdl3vk): recover unenqueued present failures and handle terminal Vulkan errors (#12)"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/shaders/psp.vert",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gpu_sdl3vk/shaders/psp.vert",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "NOTICE_OR_DOCUMENTATION_ONLY",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": false,
+        "date": null,
+        "modified_notice": null,
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "NOTICE_ONLY_UNCHANGED"
+    },
+    {
+      "path": "src/rt/gui.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/gui.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/h264_mf.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/h264_mf.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/hle.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/hle.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "1dd8fb48aa23940de17f5cfb351f2234e3ea7280",
+        "date": "2026-08-11",
+        "subject": "docs: state DMA code-invalidation boundary"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-11",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-11.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/iso.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/iso.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/iso.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/iso.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/mpeg.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/mpeg.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/nid_names.h",
+      "source_kind": "generated_output",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/nid_names.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "generated_from": "tools/gen_nidnames.py",
+      "difference": "GENERATED_OUTPUT",
+      "expected_notice": {
+        "attribution_required": false,
+        "modification_required": false,
+        "notice_location": "source or generator provenance, not embedded output"
+      },
+      "disposition": "GENERATED_OUTPUT"
+    },
+    {
+      "path": "src/rt/osk_win.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/osk_win.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "NOTICE_OR_DOCUMENTATION_ONLY",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": false,
+        "date": null,
+        "modified_notice": null,
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "NOTICE_ONLY_UNCHANGED"
+    },
+    {
+      "path": "src/rt/recomp.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/recomp.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/recomp.h",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/recomp.h",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "4f5a2aa506c38ff7662655b3c50680a6737d1c67",
+        "date": "2026-08-11",
+        "subject": "fix(psp): derive display timing from scheduler clock"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-11",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-11.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/savedata.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/savedata.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/sched.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/sched.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "4f5a2aa506c38ff7662655b3c50680a6737d1c67",
+        "date": "2026-08-11",
+        "subject": "fix(psp): derive display timing from scheduler clock"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-11",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-11.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/vfpu_fuzz.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/vfpu_fuzz.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "src/rt/vfpu_interp.c",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/vfpu_interp.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/analyze.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/analyze.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/codegen.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/codegen.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/codegen_gate.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/codegen_gate.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/funcdiff_cmp.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/funcdiff_cmp.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "NOTICE_OR_DOCUMENTATION_ONLY",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": false,
+        "date": null,
+        "modified_notice": null,
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "NOTICE_ONLY_UNCHANGED"
+    },
+    {
+      "path": "tools/gen_microtest.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/gen_microtest.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/gen_nidnames.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/gen_nidnames.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/imports.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/imports.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/microtest_gate.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/microtest_gate.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/nidseq.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/nidseq.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/ppm2png.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/ppm2png.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "NOTICE_OR_DOCUMENTATION_ONLY",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": false,
+        "date": null,
+        "modified_notice": null,
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "NOTICE_ONLY_UNCHANGED"
+    },
+    {
+      "path": "tools/ppmdiff.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/ppmdiff.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/prxload.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/prxload.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/tracediff.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/tracediff.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    },
+    {
+      "path": "tools/vfpu_fuzz_gen.py",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "tools/vfpu_fuzz_gen.py",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "aa1eef4299c9b4d1413c0b7940cfd52cfcc61355",
+        "date": "2026-08-10",
+        "subject": "Initial sanitized public release export of Nakagawa Recomp"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": null,
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-08-10",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-08-10.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
+    }
+  ],
+  "limitations": [
+    "This manifest classifies source and notice evidence; it does not decide whether any file is legally independent or derivative.",
+    "PGF/JPCSP, PGD/amctrl, replacement-font, full-history, DCO, and maintainer-review questions remain outside this campaign.",
+    "The public patch must be accepted before any private backport is treated as complete."
+  ]
+}

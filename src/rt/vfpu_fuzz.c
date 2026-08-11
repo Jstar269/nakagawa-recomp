@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+// Modified by Nakagawa Recomp contributors, 2026-08-10.
+// See NOTICE.md for upstream lineage and modification provenance.
 
 /* * interpreter sr_vfpu_interp. For each VFPU compute word it runs many trials from identical
  * randomized CPU states (v[], prefixes, VFPU_CC) and compares the full v[] register file and

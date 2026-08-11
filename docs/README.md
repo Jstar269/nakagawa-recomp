@@ -67,6 +67,8 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | [`provenance/IMPLEMENTATION_PROVENANCE.json`](provenance/IMPLEMENTATION_PROVENANCE.json) | Machine-readable per-subsystem provenance ledger and audit findings |
 | [`provenance/INDEPENDENCE_BACKLOG.md`](provenance/INDEPENDENCE_BACKLOG.md) | Ranked independence candidates, hardware-oracle questions, and recorded non-goals |
 | [`provenance/SAL063_RETENTION_2026-08-06.md`](provenance/SAL063_RETENTION_2026-08-06.md) | Measured per-file retention of the sal063 upstream; resolves PROV-F2 |
+| [`provenance/MODIFIED_FILE_NOTICES.md`](provenance/MODIFIED_FILE_NOTICES.md) | Public-safe inherited-file notice policy, evidence boundary, and audit gate |
+| [`provenance/MODIFIED_FILE_NOTICES.json`](provenance/MODIFIED_FILE_NOTICES.json) | Machine-readable per-path notice and upstream inventory |
 | [`provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md`](provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md) | Function-level PGF lineage and bounded PPSSPP revision evidence for #98 |
 | [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Full-history PGD/amctrl lineage, private-archive chronology, and expression matrix for #104 |
 | [`COVERAGE_LEDGER.md`](COVERAGE_LEDGER.md) | Per-file audit record for #179; dated session entries must be re-verified by diff when reviewed content changes |
