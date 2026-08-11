@@ -139,6 +139,8 @@ The full `make verify` path additionally requires external oracle traces and a m
 
 Start at [`docs/README.md`](docs/README.md).
 
+- **GitHub Wiki:** [Nakagawa Recomp project manual](https://github.com/Jstar269/nakagawa-recomp/wiki).
+- **Broader PSP research/reference:** [recomp.jaycast.net](https://recomp.jaycast.net/) covers generalized PSP recompilation and hardware research.
 - **GitHub Issues:** canonical actionable work items and acceptance criteria.
 - [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md): current machine-capable handoff and evidence discipline.
 - [`ISSUES.md`](ISSUES.md): concise current-status dashboard.
@@ -149,7 +151,7 @@ Start at [`docs/README.md`](docs/README.md).
 
 The repository-level project declaration is **GPL-3.0-or-later**, as reflected by [LICENSE](LICENSE), `assets/release_manifest.json`, and the dashboard package metadata. Many source files and inherited components retain GPL-2.0-or-later or other upstream-specific terms; that does **not** establish that every possible combined public distribution is cleared. The PGF implementation's PPSSPP/JPCSP/intraFont chain is tracked in [#98](https://github.com/Jstar269/nakagawa-recomp/issues/98), replacement-font rights/notices in [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), full-history/privacy sanitation in [#102](https://github.com/Jstar269/nakagawa-recomp/issues/102), and PGD/amctrl distribution posture in [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104). See [NOTICE.md](NOTICE.md) and [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md).
 
-The conservative publication plan is to keep this historical development repository private and create a fresh sanitized public source repository only after those gates are resolved. Game content, recompiled game output, private keys, extracted proprietary assets, game-derived traces/frame dumps, and private oracle material are outside the initial public-source scope.
+This repository is the sanitized public source repository (`public-safe-v1`); private historical/development material remains outside it. Only public-safe source and content cross this publication boundary. Proprietary game content, generated retail output, private traces/captures, keys, saves, and private historical Git material remain excluded. [NOTICE.md](NOTICE.md), [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md), and [docs/PUBLIC_SOURCE_PROFILE.md](docs/PUBLIC_SOURCE_PROFILE.md) are the detailed authorities; unresolved PGF/PGD and other provenance or legal questions remain open.
 
 This is an independent compatibility/research project. Product and game names are used only to identify compatibility; no affiliation or endorsement is claimed.
 
