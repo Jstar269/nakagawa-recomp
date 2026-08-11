@@ -27,6 +27,7 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | [`PORTING.md`](PORTING.md) | Adapting the toolkit to another PSP title; current limits of generality |
 | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) | Staged Windows, Linux, Android, and console portability plan |
 | [`IMPORT_AUDIT.md`](IMPORT_AUDIT.md) | Import coverage, fake-success classification, public gate, private-EBOOT audit |
+| [`SAS_NID_SIGNATURES.md`](SAS_NID_SIGNATURES.md) | Complete sceSasCore NID/signature/handler disposition and supported-state boundary |
 | [`STATIC_VERIFY.md`](STATIC_VERIFY.md) | Oracle-free static verification and its evidence limits |
 | [`CI.md`](CI.md) | Actions topology, path classifier, aggregate status, caching, Dependabot |
 | [`AI_USAGE.md`](AI_USAGE.md) | AI information boundaries, review, provenance, DCO, evidence claims |

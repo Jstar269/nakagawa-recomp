@@ -10,6 +10,10 @@ This is **private-route evidence**. The runs below use the lawful private title 
 `place_game_here/`; no captured audio, no retail bytes, and no path-bearing output are
 committed. Only the aggregate counters quoted here left the run.
 
+The SAS handler-gap notes in this dated snapshot describe the pre-stateful
+implementation. For current NID routing, validation, and supported-state
+disposition, see [`SAS_NID_SIGNATURES.md`](SAS_NID_SIGNATURES.md).
+
 ## Instrument
 
 `SR_AUDIOSTAT=1` adds bounded aggregate counters at four stages. It exists because the
