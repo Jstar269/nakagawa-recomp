@@ -7,7 +7,7 @@ file is legally independent, derivative, or cleared for redistribution.
 ## Bounded inventory
 
 The inventory is rooted at public commit
-`920c1f8193531d9f9ecca8eab09b4629daee2bc3` and compares tracked public paths
+`40c67aa066f904427f4faccf988849be31dde332` and compares tracked public paths
 with sal063/PSP-recompilation-project commit
 `da17b0e1db209206a407d097d132201e516e3855`. It records 46 public paths:
 
