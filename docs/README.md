@@ -1,9 +1,10 @@
 # Documentation
 
 This index is the entry point for the repository's tracked documentation. Code, tests, and the
-Makefile remain authoritative for implementation behavior. GitHub Issues are canonical for
-actionable work, priorities, and acceptance criteria; [`ISSUES.md`](../ISSUES.md) is only a concise
-status map. Dated evidence is preserved separately and must be re-verified before reuse.
+Makefile remain authoritative for implementation behavior. Public GitHub Issues are canonical for
+actionable work, priorities, and acceptance criteria where a curated public issue exists;
+[`ISSUES.md`](../ISSUES.md) is the concise status map across issues, implementation evidence, and
+reference documents. Dated evidence is preserved separately and must be re-verified before reuse.
 
 ## Start here
 
@@ -16,20 +17,20 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | Windows toolchain and input setup | [`SETUP.md`](SETUP.md) | RUNBOOK / REFERENCE | Authoritative setup guide | Maintain with toolchain |
 | Historical investigation log | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | HISTORICAL / EVIDENCE | Chronological record | Immutable dates |
 
-## Documentation Authority by Topic
+## Documentation authority by topic
 
 Documentation surfaces serve specific roles. Authority depends on the domain:
 
 | Subject / Question | Authoritative Source | Scope & Expectation |
 | --- | --- | --- |
 | **Current implementation behavior** | Source code, tests, and Makefile | Verifiable behavior in code |
-| **Actionable defects & priorities** | Public GitHub Issues (`Jstar269/nakagawa-recomp`) | Live canonical issue tracking |
-| **Concise status dashboard** | [`ISSUES.md`](../ISSUES.md) | High-level status overview |
+| **Actionable defects & priorities** | Public GitHub Issues (`Jstar269/nakagawa-recomp`) | Canonical when a curated public issue exists |
+| **Concise status dashboard** | [`ISSUES.md`](../ISSUES.md) | Current map across issues and evidence owners |
 | **Current project manual** | GitHub Wiki (`https://github.com/Jstar269/nakagawa-recomp/wiki`) | Project manual & research sitemap |
 | **Project identity & scope** | [`README.md`](../README.md) | Slow-changing entry point |
 | **Build & setup instructions** | [`SETUP.md`](SETUP.md) | Tested toolchain & input layout |
 | **CI architecture & topology** | [`CI.md`](CI.md) & Actions workflows | Path classifier & aggregate gates |
-| **Publication policy & scope** | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) & [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | Export profile & checklists |
+| **Publication policy & scope** | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) & [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | Public profile & release checklists |
 | **Contribution & legal policy** | [`CONTRIBUTING.md`](../CONTRIBUTING.md) & [`DCO_POLICY.md`](DCO_POLICY.md) | DCO 1.1 attestation & PR process |
 | **Dated historical evidence** | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | Chronological log of past evidence |
 | **Operator session handoff** | [`NEXT_SESSION.md`](NEXT_SESSION.md) | Machine/operator handoff context |
@@ -57,7 +58,6 @@ Documentation surfaces serve specific roles. Authority depends on the domain:
 | [`TEST_SHAPE_CLASSIFICATION.md`](TEST_SHAPE_CLASSIFICATION.md) | Conservative source-shape evidence classification and deletion boundary |
 | [`TEST_MATRIX.json`](TEST_MATRIX.json) | Generated per-case evidence/matrix metadata; semantic fields require review |
 | [`PSP_HARDWARE_ORACLE.md`](PSP_HARDWARE_ORACLE.md) | Source-owned PSP probe protocol, PSPLINK runbook, and readiness gate |
-| [`PSP_HARDWARE_ORACLE.md`](PSP_HARDWARE_ORACLE.md) | Source-owned PSP probe protocol, PSPLINK runbook, and readiness gate |
 | [`PSP_INTR_WAITS_MATRIX.md`](PSP_INTR_WAITS_MATRIX.md) | Hardware wait/blocking context matrix, its executable harness, and per-cell current-`main` status |
 | [`RETAINED_BRANCH_AUDIT_2026-08-04.md`](RETAINED_BRANCH_AUDIT_2026-08-04.md) | Exact-base audit of the four retained remote branches |
 | [`GHIDRA.md`](GHIDRA.md) | Optional developer-only headless Ghidra cross-check |
@@ -78,7 +78,7 @@ Documentation surfaces serve specific roles. Authority depends on the domain:
 | Document | Scope |
 | --- | --- |
 | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) | Source-publication and binary-release thresholds/checklists |
-| [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | `public-safe-v1` candidate profile and excluded components |
+| [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | `public-safe-v1` public profile and excluded components |
 | [`DUAL_REPO_SYNC.md`](DUAL_REPO_SYNC.md) | Private archive ↔ public source sync contract, backport rules, and the drift check |
 | [`OSPS_BASELINE.md`](OSPS_BASELINE.md) | OpenSSF control matrix; separates tree evidence from owner/settings checks |
 | [`LEGAL_REWRITE_ASSESSMENT.md`](LEGAL_REWRITE_ASSESSMENT.md) | Engineering risk assessment, not legal advice |
@@ -95,7 +95,7 @@ Documentation surfaces serve specific roles. Authority depends on the domain:
 | [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) | Qualified review packet for PGF/JPCSP/intraFont provenance |
 | [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md) | Qualified review packet for PGD/amctrl distribution questions |
 | [`PGD_KEYS.md`](PGD_KEYS.md) | Local-only PSP KIRK/amctrl constants schema and safety boundary |
-| [`PUBLISH_VS_EXCLUDE_MATRIX.md`](PUBLISH_VS_EXCLUDE_MATRIX.md) | File/component publish-vs-exclude disposition matrix for the fresh public-repository candidate |
+| [`PUBLISH_VS_EXCLUDE_MATRIX.md`](PUBLISH_VS_EXCLUDE_MATRIX.md) | File/component publish-vs-exclude disposition matrix for the current public-source profile |
 | [`PUBLICATION_LANE_VERIFICATION_2026-08-06.md`](PUBLICATION_LANE_VERIFICATION_2026-08-06.md) | Verification of completed font/history work plus the sanitized-public-repository validation and tooling defect ledger |
 
 ## Proposed or dated evidence
@@ -111,9 +111,9 @@ Documentation surfaces serve specific roles. Authority depends on the domain:
 | [`NID_INTEGRITY_AUDIT_2026-08-06.md`](NID_INTEGRITY_AUDIT_2026-08-06.md) | Dated NID→name→signature→handler integrity audit; re-verified against the enforcement mechanism actually adopted on `main` (2026-08-10 note) |
 
 Historical and private evidence must not be promoted into current guidance merely by changing its
-heading or date. Update the maintained guide and canonical GitHub Issue when current behavior,
-acceptance criteria, or setup changes. Preserve private inputs, game-derived traces, screenshots,
-Ghidra databases, local paths, and legal advice outside Git history.
+heading or date. Update the maintained guide and canonical public GitHub Issue when a curated issue
+exists and current behavior, acceptance criteria, or setup changes. Preserve private inputs,
+game-derived traces, screenshots, Ghidra databases, local paths, and legal advice outside Git history.
 
 ## Related documentation outside `docs/`
 
