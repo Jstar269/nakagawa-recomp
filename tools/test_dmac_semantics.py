@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Source-shape gates for the PSP DMAC copy path (issues #87, #328).
+"""Source-shape gates for the measured PSP DMAC copy path.
 
 The PSP-visible behavior itself is proven executably by
 ``src/rt/hle_thread_selftest.c``, which enters both DMAC NIDs through the real
 ``sr_syscall`` registry and asserts return values and guest memory contents.
 These assertions guard the two properties a behavioral test cannot express:
 
-* the validation order in the source (nothing may touch guest memory or notify
-  the GPU before every check has passed), and
-* the #328 evidence rule -- the large-transfer truncation boundary is *not*
-  established by any durable capture, so no ceiling constant may be hard-coded
-  into the copy path.
+* validation of the complete requested spans before any guest or GPU side
+  effect, and
+* the measured effective-prefix ceiling, including the fact that the dirty
+  notification covers only bytes that were actually transferred.
+
+The concurrent BUSY result and invalid-truncated-tail precedence remain
+unknown; this module must not turn either into an invented hardware fact.
 """
 
 from pathlib import Path
@@ -41,37 +43,36 @@ class TestDmacValidationOrder(unittest.TestCase):
             "if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;", region
         )
 
-    def test_every_check_precedes_any_guest_or_gpu_side_effect(self) -> None:
-        """A failed request must not move a byte or dirty a GPU range.
-
-        Guest address 0 is inside this runtime's flat arena, so the explicit
-        null check is load-bearing: without it a NULL pointer passes span
-        validation and the copy silently proceeds.
-        """
+    def test_complete_requested_spans_precede_copy_and_dirty(self) -> None:
+        """A failed request must not move a byte or dirty a GPU range."""
         region = _dmac_region()
         size_check = region.index("if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;")
         null_check = region.index("if (dst == 0u || src == 0u)")
-        span_check = region.index("if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n))")
-        copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), n)")
-        dirty = region.index("sr_gpu_vram_dirty(dst, n)")
+        span_check = region.index(
+            "if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n))"
+        )
+        effective = region.index(
+            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;"
+        )
+        copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
+        dirty = region.index("sr_gpu_vram_dirty(dst, effective)")
 
         self.assertLess(size_check, null_check)
         self.assertLess(null_check, span_check)
-        self.assertLess(span_check, copy, "spans must be validated before any copy")
+        self.assertLess(span_check, effective, "requested spans must be validated before clamping")
+        self.assertLess(effective, copy, "the effective length must be selected before copying")
         self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
+        self.assertIn("sr_guest_span_readable(src, n)", region)
+        self.assertIn("sr_guest_span_writable(dst, n)", region)
 
     def test_overlap_safe_primitive(self) -> None:
-        """Hardware showed both overlap directions landing memmove-correct and a
-        same-pointer copy leaving the buffer intact, so a forward byte loop or a
-        plain memcpy would diverge."""
+        """Hardware showed both overlap directions landing memmove-correct."""
         region = _dmac_region()
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", region)
-        self.assertNotIn("memcpy(SR_HOST(dst), SR_HOST(src), n)", region)
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", region)
+        self.assertNotIn("memcpy(SR_HOST(dst), SR_HOST(src)", region)
 
     def test_both_copy_nids_register_in_the_shared_bulk_helper(self) -> None:
-        """Both NIDs must register in the helper that the executable regression
-        also initialises, so the test enters production registration rather
-        than a test-only mapping."""
+        """Both NIDs must route through production registration."""
         text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         start = text.index("static void hle_register_bulk_memory_handlers")
         registration = text[start : text.index("void sr_hle_init", start)]
@@ -79,90 +80,41 @@ class TestDmacValidationOrder(unittest.TestCase):
         self.assertIn(
             'sr_hle_register(0xd97f94d8, "sceDmacTryMemcpy", h_DmacTryMemcpy)', registration
         )
-        # Exactly one registration each: a duplicate elsewhere would silently
-        # win or lose depending on registry order.
         self.assertEqual(text.count('"sceDmacTryMemcpy"'), 1)
         self.assertEqual(text.count('"sceDmacMemcpy"'), 1)
 
 
-class TestDmacUnresolvedCeiling(unittest.TestCase):
-    """#328: the 0xC000 transfer ceiling is NOT an established hardware fact.
-
-    The durable captures prove a ceiling exists (65536-byte transfers do not
-    write their final byte) but localise it with a single positional sample at
-    a single size, in a probe whose own verdict is FAIL. Sizes 32770..49152
-    were never measured and the truncated region was never checked for
-    prefix-contiguity. Encoding a ceiling would corrupt the tail of a real
-    transfer if the true boundary differs.
-    """
-
-    CEILING_LITERALS = (
-        "0xC000",
-        "0xc000",
-        "49152",
-        "0xBFFF",
-        "0xbfff",
-        "49151",
-    )
-
-    def test_no_ceiling_constant_is_hard_coded_in_the_copy_path(self) -> None:
+class TestDmacMeasuredCeiling(unittest.TestCase):
+    def test_measured_effective_ceiling_is_encoded(self) -> None:
         region = _dmac_region()
-        # Strip comments: the prose deliberately explains the retracted claim,
-        # and must stay readable. Only executable source is under test.
-        code = re.sub(r"/\*.*?\*/", "", region, flags=re.S)
-        code = re.sub(r"//[^\n]*", "", code)
-        for literal in self.CEILING_LITERALS:
-            self.assertNotIn(
-                literal,
-                code,
-                f"{literal} is an unproven DMA ceiling constant (#328); the copy "
-                f"path must not encode a transfer limit that no durable capture "
-                f"establishes",
-            )
-
-    def test_transfers_are_never_clamped(self) -> None:
-        """The requested size is what gets copied.
-
-        Scoped to the handler body: the requested size must reach memmove
-        unmodified, so ``n`` may never be reassigned after it is read out of
-        a2. A clamp to any ceiling would have to write to ``n`` (or pass a
-        different expression to memmove) and is caught either way.
-        """
-        region = _dmac_region()
-        body = region[region.index("static uint32_t h_DmacMemcpy") :]
-        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
-
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", body)
-        # The sole assignment to n is the argument read itself.
-        assignments = re.findall(r"\bn\s*(?:=[^=]|[-+*/|&^]=|>>=|<<=)", body)
-        self.assertEqual(
-            len(assignments),
-            1,
-            f"the requested DMA size must reach memmove unmodified; found {assignments}",
-        )
-        self.assertIn("uint32_t dst = A0, src = A1, n = A2;", body)
-        self.assertNotIn("++n", body)
-        self.assertNotIn("--n", body)
-
-    def test_evidence_boundary_is_a_report_not_a_limit(self) -> None:
-        """The one size constant present marks where measurement stops, and it
-        may only drive a report -- never the transfer length."""
-        region = _dmac_region()
-        self.assertIn("#define SR_DMAC_VERIFIED_FULL_MAX 32769u", region)
+        self.assertIn("#define SCE_DMAC_EFFECTIVE_MAX 0xC000u", region)
         self.assertIn(
-            "if (n > SR_DMAC_VERIFIED_FULL_MAX) sr_dmac_note_unverified_size(n);", region
+            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;",
+            region,
         )
+        self.assertNotIn("SR_DMAC_VERIFIED_FULL_MAX", region)
+        self.assertNotIn("sr_dmac_note_unverified_size", region)
+        self.assertNotIn("s_dmac_unverified", region)
 
-    def test_no_busy_result_is_fabricated(self) -> None:
-        """No capture in any session observed 0x80000021; the probe is
-        single-threaded and cannot create a concurrent-DMA condition."""
+    def test_only_effective_prefix_has_side_effects(self) -> None:
         region = _dmac_region()
-        self.assertNotIn("0x80000021", re.sub(r"/\*.*?\*/", "", region, flags=re.S))
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", region)
+        self.assertIn("sr_gpu_vram_dirty(dst, effective)", region)
+        self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
 
-    def test_the_unresolved_gap_stays_linked_to_its_issue(self) -> None:
+    def test_no_fabricated_busy_result(self) -> None:
+        """No concurrent probe established a BUSY return code."""
+        code = re.sub(r"/\*.*?\*/", "", _dmac_region(), flags=re.S)
+        code = re.sub(r"//[^\n]*", "", code)
+        self.assertNotIn("0x80000021", code)
+        self.assertNotIn("SCE_DMAC_BUSY", code)
+
+    def test_conservative_invalid_tail_policy_is_explicit(self) -> None:
         region = _dmac_region()
-        self.assertIn("#328", region)
-        self.assertIn("#87", region)
+        self.assertIn("validating the requested range is the conservative memory-safety", region)
+        self.assertIn("Hardware has not yet settled whether an invalid truncated tail", region)
+        self.assertIn("sr_guest_span_readable(src, n)", region)
+        self.assertIn("sr_guest_span_writable(dst, n)", region)
 
 
 class TestDmacExecutableCoverage(unittest.TestCase):
@@ -172,7 +124,7 @@ class TestDmacExecutableCoverage(unittest.TestCase):
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY", text)
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY", text)
 
-    def test_regression_asserts_the_measured_hardware_cases(self) -> None:
+    def test_regression_asserts_measured_and_policy_cases(self) -> None:
         text = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         for needle in (
             "PSP: zero size returns the illegal-size error",
@@ -182,9 +134,26 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "PSP: a same-pointer self copy leaves the buffer unchanged",
             "PSP: a forward-overlapping copy is memmove-correct across the span",
             "PSP: a backward-overlapping copy is memmove-correct across the span",
-            "an unmeasured oversize transfer is copied in full, not clamped to a guess",
+            "a measured-ceiling request copies the complete effective prefix",
+            "a measured-ceiling request leaves the truncated tail untouched",
+            "the conservative policy rejects an invalid requested tail",
         ):
             self.assertIn(needle, text)
+
+
+class TestDmacGpuAliasBoundary(unittest.TestCase):
+    def test_renderer_canonicalizes_cpu_dirty_aliases(self) -> None:
+        """DMA dirty notifications must invalidate aliased texture ranges."""
+        text = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "ge_gpu.c").read_text(
+            encoding="utf-8"
+        )
+        start = text.index("static void hook_vram_dirty")
+        region = text[start : text.index("/* ---- GE block transfer", start)]
+        self.assertIn("SR_PHYS(addr)", region)
+        self.assertIn("SR_PHYS(e->addr)", region)
+        self.assertIn("vram_off(addr)", region)
+        self.assertIn('"alias-vram"', text)
+        self.assertIn("if (tc->dirty_alias)", text)
 
 
 if __name__ == "__main__":

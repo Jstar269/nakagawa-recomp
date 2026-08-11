@@ -31,7 +31,8 @@ class TestGuestSpanRouting(unittest.TestCase):
         dmac = text[dmac_start:dmac_end]
         self.assertIn("sr_guest_span_readable(src, n)", dmac)
         self.assertIn("sr_guest_span_writable(dst, n)", dmac)
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", dmac)
+        self.assertIn("uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;", dmac)
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", dmac)
         memcpy_start = text.find("static uint32_t h_Memcpy")
         memcpy_end = text.find("static uint32_t", memcpy_start + 1)
         memcpy = text[memcpy_start:memcpy_end]

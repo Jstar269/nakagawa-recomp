@@ -2576,10 +2576,15 @@ static int hook_point(const GeVtx *A, int persp) {
 
 static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (!s_ready || !bytes) return;
-    uint64_t dirty0 = addr, dirty1 = dirty0 + bytes;
+    /* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the
+     * mirrored 0x04xxxxxx VRAM aperture). Compare cache ranges in the same
+     * physical namespace before deciding whether a texture is stale. The
+     * target path below still uses vram_off(), because framebuffer targets are
+     * indexed by their 2 MiB-local VRAM offset. */
+    uint64_t dirty0 = (uint64_t)SR_PHYS(addr), dirty1 = dirty0 + bytes;
     for (int i = 0; i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
-        uint64_t tex0 = e->addr, tex1 = tex0 + e->bytes;
+        uint64_t tex0 = (uint64_t)SR_PHYS(e->addr), tex1 = tex0 + e->bytes;
         if (dirty0 < tex1 && tex0 < dirty1)
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
@@ -2869,6 +2874,7 @@ typedef struct CoherenceCase {
     uint32_t dirty_offset, dirty_bytes;
     int pending_batch;
     int pending_readback;
+    int dirty_alias;
 } CoherenceCase;
 
 static void coherence_fill_raw(uint8_t *dst, uint32_t pixels, uint32_t bpp, uint32_t raw) {
@@ -2982,7 +2988,9 @@ static int coherence_run_case(const CoherenceCase *tc) {
     for (uint32_t i = 0; i < tc->dirty_bytes; i++) payload[i] = (uint8_t)(0xd1u + i * 37u);
     memcpy(guest + tc->dirty_offset, payload, tc->dirty_bytes);
     memcpy(expected + tc->dirty_offset, payload, tc->dirty_bytes);
-    sr_gpu_vram_dirty(base + tc->dirty_offset, tc->dirty_bytes);
+    uint32_t dirty_addr = base + tc->dirty_offset;
+    if (tc->dirty_alias) dirty_addr += 0x40000000u;
+    sr_gpu_vram_dirty(dirty_addr, tc->dirty_bytes);
 
     if (tc->pending_batch && s_nbatch) {
         fprintf(stderr, "gpu coherence selftest [%s]: dirty hook left batch pending\n", tc->name);
@@ -3157,18 +3165,19 @@ static int coherence_run_overlap_case(void) {
 
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
-        { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0 },
-        { "5650-unaligned", 0, 512, (42u * 512u + 61u) * 2u + 1u, 3, 0, 0 },
-        { "5551-unaligned", 1, 512, (43u * 512u + 62u) * 2u + 1u, 3, 0, 0 },
-        { "4444-unaligned", 2, 512, (44u * 512u + 63u) * 2u + 1u, 3, 0, 0 },
-        { "8888-unaligned", 3, 512, (45u * 512u + 64u) * 4u + 1u, 5, 0, 0 },
-        { "row-start", 3, 512, 10u * 512u * 4u, 4, 0, 0 },
-        { "row-end", 3, 512, (11u * 512u + 511u) * 4u, 4, 0, 0 },
-        { "row-crossing", 3, 512, (12u * 512u + 511u) * 4u + 2u, 6, 0, 0 },
-        { "multi-row", 3, 512, (20u * 512u + 500u) * 4u, (12u + 512u + 17u) * 4u, 0, 0 },
-        { "stride-500", 3, 500, (30u * 500u + 499u) * 4u + 1u, 11, 0, 0 },
-        { "pending-batch", 3, 512, (70u * 512u + 90u) * 4u, 8, 1, 0 },
-        { "pending-async", 3, 512, (71u * 512u + 91u) * 4u, 8, 0, 1 },
+        { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
+        { "5650-unaligned", 0, 512, (42u * 512u + 61u) * 2u + 1u, 3, 0, 0, 0 },
+        { "5551-unaligned", 1, 512, (43u * 512u + 62u) * 2u + 1u, 3, 0, 0, 0 },
+        { "4444-unaligned", 2, 512, (44u * 512u + 63u) * 2u + 1u, 3, 0, 0, 0 },
+        { "8888-unaligned", 3, 512, (45u * 512u + 64u) * 4u + 1u, 5, 0, 0, 0 },
+        { "row-start", 3, 512, 10u * 512u * 4u, 4, 0, 0, 0 },
+        { "row-end", 3, 512, (11u * 512u + 511u) * 4u, 4, 0, 0, 0 },
+        { "row-crossing", 3, 512, (12u * 512u + 511u) * 4u + 2u, 6, 0, 0, 0 },
+        { "multi-row", 3, 512, (20u * 512u + 500u) * 4u, (12u + 512u + 17u) * 4u, 0, 0, 0 },
+        { "stride-500", 3, 500, (30u * 500u + 499u) * 4u + 1u, 11, 0, 0, 0 },
+        { "pending-batch", 3, 512, (70u * 512u + 90u) * 4u, 8, 1, 0, 0 },
+        { "pending-async", 3, 512, (71u * 512u + 91u) * 4u, 8, 0, 1, 0 },
+        { "alias-vram", 3, 512, (72u * 512u + 92u) * 4u, 8, 0, 0, 1 },
     };
     int ok = 1;
     for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
