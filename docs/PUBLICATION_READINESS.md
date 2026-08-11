@@ -23,9 +23,9 @@ The lowest-exposure public architecture is therefore a generic recompiler/runtim
 | Upstream copyright/notice inventory | [`NOTICE.md`](../NOTICE.md) | Closed 2026-07-23; evidence still belongs in final review |
 | Qualified PGD/amctrl distribution review | [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md), [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Open; technical provenance is complete to recoverable evidence and the implementation is excluded by the public-safe profile |
 | Reproducible release manifest & SBOM | [`assets/release_manifest.json`](../assets/release_manifest.json) | Closed 2026-08-06; SPDX 2.3, SPDX 3.0.1 JSON-LD, CycloneDX 1.5 SBOM generator (`tools/generate_sbom.py`), verifier (`tools/verify_sbom.py`), and python lock (`tools/requirements-lock.txt`) implemented |
-| Contributor rights-attestation policy (DCO 1.1) | [`docs/DCO_POLICY.md`](../docs/DCO_POLICY.md) | Open/Partial (DCO 1.1 policy document, `CONTRIBUTING.md`, PR template, bot policy, and sign-off correction runbooks implemented; final terms gated on PGF/PGD review) |
+| Contributor rights-attestation policy (DCO 1.1) | [`DCO_POLICY.md`](DCO_POLICY.md) | Open/Partial (DCO 1.1 policy document, `CONTRIBUTING.md`, PR template, bot policy, and sign-off correction runbooks implemented; final terms gated on PGF/PGD review) |
 | Complete public-tree manifest gate | [`tools/publish_audit.py`](../tools/publish_audit.py) | Closed 2026-08-06; exhaustive candidate-tree manifest gate implemented; passing output is engineering evidence for qualified review, not legal clearance |
-| Live GitHub/OSPS governance review | [PR #27](https://github.com/Jstar269/nakagawa-recomp/pull/27), [`docs/OSPS_BASELINE.md`](../docs/OSPS_BASELINE.md) | Closed 2026-08-06; OSPS Level 1 baseline re-audited against empirical live GitHub API evidence with 5-state control schema |
+| Live GitHub/OSPS governance review | [`OSPS_BASELINE.md`](OSPS_BASELINE.md) | Maintained separately from source-tree evidence; owner/settings claims require live verification |
 | KIRK/amctrl constants reachable in old Git history | [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) | Mandatory before any historical repository is exposed |
 
 ### Licensing posture
@@ -41,60 +41,64 @@ must not be read as a substitute for component-level provenance and license revi
 - The four PGFs and their parser/rasterizer are excluded by [`public-safe-v1`](PUBLIC_SOURCE_PROFILE.md). Its unavailable backend fails visibly; it does not revive the retired synthetic-font fallback.
 - PGD/amctrl is separately sensitive. The private development tree still compiles it, while `public-safe-v1` excludes the implementation/tools and builds a fail-closed unavailable backend. Qualified review remains required for any later source or binary configuration that retains PGD/amctrl.
 
-## Recommended publication topology: fresh sanitized public repository
+## Publication topology: sanitized public repository + private historical archive
 
-Do **not** make the current historical development repository public by merely changing its visibility.
+Do **not** expose the separate historical development repository by merely changing its visibility. It is not the public repository described by this document.
 
 GitHub documents that a private→public visibility change exposes the code and **Actions history/logs** and disables push rulesets. History rewrites/force-pushes also do not provide the same cleanliness guarantee as constructing a new repository; old SHA references, PR refs, forks/clones, cached views, and issue comments can preserve references to removed history.
 
-The conservative plan is:
+The operating model is:
 
 1. Keep the historical development repository private as the archive.
 2. Finish PGF and PGD provenance review (see [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) and [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md)) and governance review.
-3. Perform the one coordinated private-history rewrite required by [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) if the archive itself is to be retained in sanitized form.
-4. Maintain the **sanitized public repository (`public-safe-v1`)** as an explicitly approved public tree/history.
-5. Push only the approved public `main` and intentionally approved tags. Do not migrate archive refs, old PR refs, Actions history, private issue comments, private oracle material, game-derived artifacts, or orphan objects.
+3. Perform the one coordinated private-history rewrite required by [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) only if the archive itself is to be retained in sanitized form.
+4. Maintain this **sanitized public repository (`public-safe-v1`)** as the approved public tree/history.
+5. Push only approved public branches/tags. Do not migrate archive refs, old PR refs, Actions history, private issue comments, private oracle material, game-derived artifacts, or orphan objects.
 6. Curate/recreate only currently useful public issues with private/game-derived evidence summarized rather than copied.
-7. Configure rulesets/security settings on the public repository before accepting contributions.
+7. Periodically verify rulesets/security settings on the public repository rather than inferring them from source-tree files.
 
 This is a risk-minimization architecture, not a statement that publication is otherwise unlawful.
 
-As of 2026-08-10 this topology is in place: the repository you are reading is the fresh sanitized public repository built from an approved `public-safe-v1` tree, and the historical development repository remains private with its history unchanged. Step 6 (public issue curation) is still outstanding.
+This topology is in place: the repository you are reading is the sanitized public repository built from an approved `public-safe-v1` tree, and the historical development repository remains private with its history separate. Public issue curation remains ongoing.
 
 ## History audit and rewrite — audit first, rewrite once
 
-The known PSP KIRK/amctrl constants are absent from the current tree but remain in old history. Sequence the cleanup:
+The known PSP KIRK/amctrl constants are absent from the current public tree but remain in the separate historical archive's old history. If that archive is ever sanitized or exposed, sequence the cleanup:
 
-1. Freeze history-changing development work.
+1. Freeze history-changing archive work.
 2. Complete full-history audit across every reachable ref/object/metadata record.
 3. Decide whether personal author email, AI-session URLs, private paths and other metadata are acceptable; add every removal to one specification.
 4. Generate **one combined** `git filter-repo` specification (known constants + everything else found).
 5. Rewrite once; verify key scrub + generic secret/proprietary scans + intended tip-tree equality; fresh-clone the result.
 6. Repair SHA references in private documentation as needed.
 
-For the public repository, prefer creation from the approved sanitized result rather than relying on old-object deletion semantics.
+Do not use historical-archive rewrite semantics to reconstruct, replace, or reconnect the established public repository.
 
-## Public-source-ready checklist
+## Ongoing public-source and future-release checklist
+
+The public source repository already exists. Unchecked items below are continuing governance/release checks or gates for later retained-component/binary configurations; they are not a claim that the existing sanitized source repository must be taken offline.
 
 ### Legal / provenance
 
 - [x] Initial-source fallback implemented: affected PGF implementation/assets excluded and audited by `public-safe-v1`; substantive issues remain open for any retaining configuration.
 - [x] Initial-source fallback implemented: PGD/amctrl implementation excluded and audited by `public-safe-v1`; qualified review remains required for any retaining configuration.
 - [x] Upstream source-notice inventory completed; retain the evidence for final review.
-- [ ] Combined-work GPL presentation internally consistent; no file/binary is assigned rights the project cannot prove.
-- [ ] Every redistributed third-party artifact has exact origin, revision, terms, copyright/attribution and modification notice where required.
+- [ ] Combined-work GPL presentation internally consistent for the exact configuration being distributed; no file/binary is assigned rights the project cannot prove.
+- [ ] Every redistributed third-party artifact in a release has exact origin, revision, terms, copyright/attribution and modification notice where required.
 - [ ] Trademark/compatibility statements remain descriptive, non-affiliation is prominent, and no branding implies sponsorship.
-- [ ] A qualified reviewer sees the **actual intended public tree**, not only an abstract memo.
+- [ ] A qualified reviewer sees the **actual intended release tree/configuration**, not only an abstract memo.
 
 ### Copyright / game material
 
-- [ ] No EBOOT/ISO/CSO/PBP/PRX/firmware/game asset, recompiled game chunk, raw game disassembly, game-derived frame dump, oracle trace, save, title key, or proprietary extracted data in the public tree/history/issues/releases.
+- [ ] No EBOOT/ISO/CSO/PBP/PRX/firmware/game asset, recompiled game chunk, raw game disassembly, game-derived frame dump, oracle trace, save, title key, or proprietary extracted data in the intended public release tree/history/issues/releases.
 - [ ] Synthetic/homebrew fixtures replace proprietary examples wherever practical.
 - [ ] User documentation requires lawful user-supplied inputs and does not direct users to unauthorized copies, keys or bypass services.
 
 ### History / privacy
 
-- [ ] Full-history secret & privacy audit complete.
+These checks apply to any history/ref set proposed for release or to any future decision to expose a sanitized form of the historical archive.
+
+- [ ] Full-history secret & privacy audit complete for the history/ref set being proposed.
 - [ ] Known PSP constants absent from every intended public object/ref.
 - [ ] General secret scan and binary/proprietary-object scan clean.
 - [ ] Personal email / AI-session / private URL/path metadata deliberately accepted or removed.
@@ -102,17 +106,17 @@ For the public repository, prefer creation from the approved sanitized result ra
 
 ### Security / supply chain
 
-- [ ] Every tracked file classified (path, mode, size, SHA-256, MIME/magic, text/binary, SPDX/copyright/provenance, reason tracked, release inclusion).
+- [ ] Every tracked release file classified (path, mode, size, SHA-256, MIME/magic, text/binary, SPDX/copyright/provenance, reason tracked, release inclusion).
 - [ ] No unexplained binary blobs.
 - [ ] `.gitignore`, publication audit and packaging manifest agree.
 - [ ] `npm audit`/exact lockfile dependency review clean or consciously waived with evidence.
 - [ ] SBOM generated for release scope.
-- [ ] Parser/input boundaries suitable for public/untrusted inputs: #15 addressed to the release's stated threat model; synthetic ASan/UBSan/fuzz runs performed where supported.
+- [ ] Parser/input boundaries suitable for public/untrusted inputs: merged [PR #15](https://github.com/Jstar269/nakagawa-recomp/pull/15) is one landed hardening step; synthetic ASan/UBSan/fuzz runs should cover the exact release threat model where supported.
 - [ ] Optional local extractor dependencies are pinned/reproducible and extraction is path/size-contained rather than trusting archive member names.
 
 ### GitHub settings — owner verification
 
-The repository tree cannot prove these. For the **new public repository**, verify against current OSPS Baseline (v2026.02.19 as of 2026-07-25):
+The repository tree cannot prove these. For the **public repository**, verify against the current OSPS Baseline at review time; [`OSPS_BASELINE.md`](OSPS_BASELINE.md) preserves dated assessment evidence.
 
 - [ ] MFA for maintainer account; least-privilege collaborators.
 - [ ] `main` ruleset/branch protection, deletion/force-push policy, required review/status rules appropriate to a one-maintainer project.
@@ -151,13 +155,13 @@ A remote connector review cannot honestly certify every byte/object. `tools/publ
 > [!NOTE]
 > A green publication audit result (FAST or EXHAUSTIVE) is technical and engineering evidence for qualified review, **NOT legal advice or clearance**.
 
-At the intended publication commit, run a clean-clone local pass:
+At an intended release-candidate commit, run a clean-clone local pass:
 
 1. Enumerate `git ls-files -s`, submodules, LFS pointers and ignored state. Record each tracked path's mode, size, SHA-256, MIME/magic, text/binary classification, SPDX/copyright/provenance and public-release disposition.
 2. Check symlinks/submodules/LFS/executable scripts/unexpected Unicode/case collisions/data-bearing innocuous extensions.
 3. Classify every binary (PGFs, VFPU LUTs, embedded shader data, fixtures): exact source, upstream revision, license, transformation, whether redistribution is permitted.
 4. Map every source file to original/derived/generated status and required notice/modification history.
-5. Scan `git rev-list --objects --all` and commit/tag metadata for credentials, keys, PSP/game binary magic, large blobs, private paths/usernames/URLs, proprietary strings and oracle material.
+5. Scan the exact history/ref set intended for release for credentials, keys, PSP/game binary magic, large blobs, private paths/usernames/URLs, proprietary strings and oracle material.
 6. Fresh-build using only documented external inputs. Classify every consumed file as tracked, documented system dependency, pinned optional dependency, user-supplied private input, or generated output. Mystery local dependencies are failures.
 7. Audit runtime file opens from an unrelated working directory to prove packaging completeness.
 8. Run source/dependency/security gates and preserve machine-readable results with the publication candidate.
@@ -177,20 +181,21 @@ At the intended publication commit, run a clean-clone local pass:
 #### Repository Publication Architecture & GitHub Limitations
 
 - **Reachable History vs. GitHub Unreachable Objects**:
-  In-place history rewrites (such as `git filter-repo` or BFG) purge objects from local branch histories, but GitHub retains unreachable objects in internal cache layers for pull requests, commits, and refs. Anyone with a direct SHA link can still view cached historical objects on GitHub even after a force-push.
-- **Fresh Sanitized Export Recommendation**:
-  The recommended public repository release architecture is a **fresh sanitized public export repository** created from a clean snapshot (e.g. via `git checkout-index`), preserving the historical development graph in a separate private repository.
-- **Automated Verification & Export Tool (`tools/build_public_export.py`)**:
-  1. Run `python tools/build_public_export.py --verify-only` to verify all pre-publication gates (fails closed if PGF/PGD blockers remain).
-  2. Run `python tools/build_public_export.py --export-dir /path/to/public_export --public-safe-profile --dry-run` to validate export path.
-  3. Generate sanitized single-commit export: `python tools/build_public_export.py --export-dir /path/to/public_export --public-safe-profile`.
-  4. Confirm 0 findings, 100% reproducible lock verification, and 0 history secrets before pushing to public remote.
+  In-place history rewrites (such as `git filter-repo` or BFG) purge objects from local branch histories, but GitHub can retain unreachable objects in internal cache layers for pull requests, commits, and refs. Anyone with a direct SHA link may still be able to view cached historical objects even after a force-push.
+- **Current architecture**:
+  The established public repository is a separately created sanitized tree/history. The historical development graph remains private and is not connected to this repository's ancestry.
+- **Automated verification/export tool (`tools/build_public_export.py`)**:
+  This tool remains useful for reproducible candidate/export verification and for private-archive publication preparation. It is **not** an instruction to replace the existing public repository or connect histories.
+  1. Run `python tools/build_public_export.py --verify-only` when verifying its supported pre-publication gates.
+  2. Use `--dry-run` before materializing a candidate export.
+  3. Treat any materialized export as an isolated review artifact unless an explicit publication plan says otherwise.
+  4. Never push a generated single-commit export over established public `main`, mirror private refs, or merge unrelated histories.
 
 ## Additional engineering/security gates before accepting arbitrary public inputs
 
-- PR [#15](https://github.com/Jstar269/nakagawa-recomp/pull/15) remains the main malformed-input/guest-span hardening umbrella. Include ELF/PRX, SFO/savedata, MPEG/PSMF, PGD and archive-extraction boundaries in sanitizer/fuzz planning.
-- GPU/CPU framebuffer coherence tracks GPU/CPU framebuffer coherence; it is correctness rather than publication law, but public claims should not imply robust handling of arbitrary guest behavior until such invariants are tested.
-- Add or enable CodeQL/dependency review/sanitizer workflows only when they can actually run; Actions are currently account-blocked (#27), so repository YAML alone is not a control.
+- Malformed-input and guest-span hardening remains ongoing; merged [PR #15](https://github.com/Jstar269/nakagawa-recomp/pull/15) is one landed Vulkan-present classification/hardening step, not proof that every parser/input boundary is hardened.
+- GPU/CPU framebuffer coherence is a correctness concern rather than publication law, but public claims should not imply robust handling of arbitrary guest behavior until such invariants are tested.
+- Describe CodeQL, dependency review, sanitizer, or other hosted controls only when they actually run for the relevant revision. Exact-head GitHub checks, not repository YAML alone, are the evidence for a particular commit.
 - The earlier machine-wide process-kill concern is **resolved**: the manager now tracks workspace-launched build process trees/PIDs and scopes `hst.exe` termination to this workspace. Do not keep it listed as an active defect.
 
 ## Related
