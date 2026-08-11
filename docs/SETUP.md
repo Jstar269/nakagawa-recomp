@@ -274,8 +274,7 @@ pre-commit run --all-files
 
 These hooks install their own pinned Ruff and Gitleaks environments. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
-`pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is
-being corrected under GitHub issue #105. Do not describe a known-failing type check as a required
+`pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
 contributor hook. These tools are not core runtime dependencies.
 
 ### PSP analysis tools (optional, never runtime dependencies)

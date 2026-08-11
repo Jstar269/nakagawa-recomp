@@ -41,19 +41,33 @@ zero base/entry values and preserves the Makefile's two-phase build.
 - **`ppmdiff.py`, `ppm2png.py`** — A/B framebuffer diffs and PPM-to-PNG conversion.
   `SR_FBSNAP=<N>` writes rotating PPM snapshots every N vblanks.
 - **`nidseq.py`, `gen_nidnames.py`** — NID-table tooling.
-- **`import_audit_gate.py`** — public import-coverage/fake-success gate (issue #71):
+- **`import_audit_gate.py`** — public import-coverage/fake-success gate:
   fail-closed HLE manifest from `src/rt/hle.c` (`hle_manifest.py` +
   `hle_registry_meta.py`), classification baseline drift, and synthetic malformed-ELF
   fixtures (`import_fixtures.py`, `psp_import_table.py`). `import_audit.py` classifies a
-  developer-supplied private ELF locally — see `docs/IMPORT_AUDIT.md`.
+  developer-supplied private ELF locally — see [`docs/IMPORT_AUDIT.md`](../docs/IMPORT_AUDIT.md).
+- **`lint_docs.py`** — deterministic offline documentation-freshness gate. It scans tracked Markdown
+  and rejects current-facing stale-status patterns while preserving explicitly historical evidence.
+  The shared pre-commit/pre-push hooks run it automatically.
+- **`audit_public_issue_links.py`** — networked public Issue/PR reference audit for tracked Markdown.
+  It verifies URL type, current-facing shorthand references, and explicit current-tracker state labels.
+  Normal mode reports `SKIPPED` if GitHub is unavailable; use `--strict` as a live review/merge audit.
+  It is deliberately separate from the offline pre-commit hook so lack of network access cannot make
+  ordinary local commits nondeterministically fail.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
-  metadata/lookup prototype for issue #196. It uses synthetic tests in `test_xb_probe.py`,
+  metadata/lookup prototype (see [`docs/ISSUE196_DIRECT_XB.md`](../docs/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
 
 Run the generator regression suite without game inputs:
 
 ```powershell
 python -m unittest discover -s tools -p "test_*.py" -v
+```
+
+For a documentation change with network access, also run:
+
+```powershell
+python tools/audit_public_issue_links.py --strict
 ```
 
 ## Hard rules

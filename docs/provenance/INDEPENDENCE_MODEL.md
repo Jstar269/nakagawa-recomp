@@ -2,11 +2,7 @@
 
 **Status: engineering provenance framework, not legal advice.** This defines how Nakagawa
 classifies the origin of its own implementation, how a classification may change, and what evidence
-each change requires. It does not clear anything for publication; that remains
-[#98](https://github.com/Jstar269/nakagawa-recomp/issues/98),
-[#99](https://github.com/Jstar269/nakagawa-recomp/issues/99),
-[#102](https://github.com/Jstar269/nakagawa-recomp/issues/102),
-[#104](https://github.com/Jstar269/nakagawa-recomp/issues/104) plus qualified human review.
+each change requires. It does not clear anything for publication; that remains a qualified human review question (see [`docs/PGF_LICENSE_REVIEW_PACKET.md`](../PGF_LICENSE_REVIEW_PACKET.md) and [`docs/PGD_AMCTRL_REVIEW_PACKET.md`](../PGD_AMCTRL_REVIEW_PACKET.md)).
 
 Companions: [NOTICE.md](../../NOTICE.md) (what the project *tells the world*),
 [LEGAL_REWRITE_ASSESSMENT.md](../LEGAL_REWRITE_ASSESSMENT.md) (risk posture),

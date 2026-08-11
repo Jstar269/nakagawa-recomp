@@ -6,7 +6,7 @@ The private PGD (amctrl) development path currently requires seven fixed PSP pla
 
 These values are fixed inputs used by the PSP KIRK/amctrl algorithms. The project's position is intentionally narrow and factual: **they are not distributed here.** Their absence is a concrete risk-reducing/publication-scope choice, not a legal ruling that distributing the implementation or the values would necessarily be unlawful.
 
-Anti-circumvention and reverse-engineering rules vary by jurisdiction and facts. U.S. law includes an interoperability provision in 17 U.S.C. §1201(f), while other regimes have their own rules and conditions. The applicability of those provisions to this implementation/distribution is reserved for qualified review in [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104) and [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md).
+Anti-circumvention and reverse-engineering rules vary by jurisdiction and facts. U.S. law includes an interoperability provision in 17 U.S.C. §1201(f), while other regimes have their own rules and conditions. The applicability of those provisions to this implementation/distribution is reserved for qualified review in [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md).
 
 Nothing here tells a user where to obtain, derive, dump, extract, or download real values. This document describes only the private file schema expected by the current development code.
 
@@ -89,7 +89,7 @@ Absence is a supported development state.
 | Private PGD integration tests | Skip/report unavailable. |
 | Game route | Can run without using the optional installed `GAMEDATA.BDL` cache. |
 
-The conservative initial public-source plan may exclude PGD/amctrl entirely pending #104; therefore this private development schema must **not** be interpreted as a promise that the same interface/component will exist in a public release.
+The conservative initial public-source plan may exclude PGD/amctrl entirely pending PGD/amctrl review; therefore this private development schema must **not** be interpreted as a promise that the same interface/component will exist in a public release.
 
 ## Separate title version key
 

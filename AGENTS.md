@@ -7,14 +7,17 @@ the native runtime build.
 
 ## Sources of truth
 
-Use these in this order when project surfaces disagree:
+Use these domain-specific authorities when project surfaces disagree:
 
-1. **Source code, tests, and Makefile** for implementation behavior.
-2. **GitHub Issues** for actionable defects, priorities, acceptance criteria, and partial-resolution state.
-3. [`ISSUES.md`](ISSUES.md) as a concise status dashboard linked to those canonical issues.
-4. Maintained `docs/` pages — start with [`docs/README.md`](docs/README.md) (index) and
-   [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md) (current session handoff) before new engineering.
-5. Dated investigation/history documents only as historical evidence that must be re-verified before reuse.
+- **Implementation behavior:** Source code, tests, and Makefile.
+- **Actionable defects & acceptance criteria:** Public GitHub Issues (`Jstar269/nakagawa-recomp`).
+- **Project manual & research sitemap:** GitHub Wiki (`https://github.com/Jstar269/nakagawa-recomp/wiki`).
+- **Concise status dashboard:** [`ISSUES.md`](ISSUES.md).
+- **Project identity, scope, & navigation:** [`README.md`](README.md).
+- **Toolchain setup & build contract:** [`docs/SETUP.md`](docs/SETUP.md).
+- **Documentation role hierarchy:** [`docs/README.md`](docs/README.md).
+- **Dated historical evidence & resolved milestones:** [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md).
+- **Machine/operator handoff context:** [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md) (local context only).
 
 Do not rely on `opencode.json` or an auto-loaded Markdown tracker; `opencode.json` is local/ignored
 state and the former comment-triggered OpenCode workflow is intentionally disabled pending any
@@ -129,7 +132,7 @@ Address-specific/game-specific compatibility behavior is semantic debt. Any such
 - narrowly scoped to the proven contract;
 - assigned a retirement criterion.
 
-[#20](https://github.com/Jstar269/nakagawa-recomp/issues/20) tracks retirement/proof of this surface.
+[#20](https://github.com/Jstar269/nakagawa-recomp/pull/20) tracks retirement/proof of this surface.
 
 ## Correctness traps
 
@@ -184,7 +187,7 @@ Before saying an issue or acceptance criterion is complete:
 - `src/rt/sr_coro.c` — host coroutine abstraction (Windows fibers and supported POSIX path).
 - `src/rt/hle.c` — NID/HLE registry plus major PSP kernel/user HLE behavior.
 - `src/rt/atrac3p/` + `src/rt/atrac3p_bridge.c` — ATRAC3+ decoder (FFmpeg n4.4-derived,
-  LGPL-2.1-or-later) and the HLE decode bridge behind `sceAtracDecodeData` (#32). Any target that
+  LGPL-2.1-or-later) and the HLE decode bridge behind `sceAtracDecodeData` (see [`src/rt/atrac3p/PROVENANCE.md`](src/rt/atrac3p/PROVENANCE.md)). Any target that
   compiles `hle.c` needs the same `-Isrc/rt/atrac3p/...` include flags, or `avcodec.h` fails on
   `libavutil/attributes.h`.
 - `src/rt/ge.c` — software GE comparison rasterizer.
@@ -214,8 +217,8 @@ rather than a bare "publication audit: OK".
 
 For a broad or integration candidate, prefer `.\hst_manager.ps1 -Action Verify` as the canonical
 non-interactive local aggregate gate (Python unit suite, sched/profiler/heap/asset-index/HLE-thread
-selftests, the VFPU table-loader selftest (`vfpu-tables-selftest`, #187), the watchpoints-file
-parser selftest (`watchpoints-file-selftest`, #188), `vfpu-interp-selftest`, `src/ref` selftest,
+selftests, the VFPU table-loader selftest (`vfpu-tables-selftest`), the watchpoints-file
+parser selftest (`watchpoints-file-selftest`), `vfpu-interp-selftest`, `src/ref` selftest,
 `import_audit_gate.py`, `publish_audit.py` over both content sources
 (`--tracked-only` and `--tracked-only --worktree`), `gpu-coherence-selftest` and
 `gpu-capture-selftest`; exit 77 = Vulkan/validation layer unavailable → SKIP), then add the
@@ -281,11 +284,7 @@ For new or materially derived code/data:
 - disclose material translation/reimplementation lineage, including AI-assisted translation;
 - keep third-party and generated data clearly distinguishable from independently authored code.
 
-The PGF PPSSPP/JPCSP licensing chain is a current publication blocker tracked in
-[#98](https://github.com/Jstar269/nakagawa-recomp/issues/98), replacement-font licensing in
-[#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), the full-history secret/privacy audit
-in [#102](https://github.com/Jstar269/nakagawa-recomp/issues/102), and qualified PGD/amctrl
-distribution review in [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104). Do not
+The PGF PPSSPP/JPCSP licensing chain is documented in [docs/PGF_LICENSE_REVIEW_PACKET.md](docs/PGF_LICENSE_REVIEW_PACKET.md), replacement-font licensing in [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt), the full-history secret/privacy audit in [docs/KEY_HISTORY_SCRUB.md](docs/KEY_HISTORY_SCRUB.md), and qualified PGD/amctrl distribution review in [docs/PGD_AMCTRL_REVIEW_PACKET.md](docs/PGD_AMCTRL_REVIEW_PACKET.md). Do not
 "fix" any of these by changing SPDX text or generic NOTICE wording without resolving the underlying
 provenance evidence. Engineering review packets are evidence for qualified review, not legal
 clearance. The repository-level declaration is GPL-3.0-or-later ([LICENSE](LICENSE), `NOTICE.md`)
@@ -310,3 +309,10 @@ required attestation under the project's policy. Do not retroactively fabricate 
   checks do not replace a full Git-history scan.
 - Remote GitHub rulesets, security settings, MFA, and visibility controls require explicit owner/
   repository-settings verification; never infer them from source-tree configuration.
+
+## Documentation freshness guardrails
+
+- **Evergreen docs stay current:** `README.md`, `ARCHITECTURE.md`, `SETUP.md`, and top-level guides must remain evergreen. Do not embed ephemeral dates ("as of July 25"), exact CI run IDs, or temporary blocker lists in evergreen pages.
+- **Volatile status belongs in ISSUES:** Actionable defects and milestone state belong in GitHub Issues and [`ISSUES.md`](ISSUES.md), not `README.md`.
+- **Historical evidence retains dates:** Dated experiment logs, audit snapshots, hardware oracle runs, and [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) must retain exact dates and scope. Never retroactively alter past evidence dates.
+- **Run documentation linting:** Run `python tools/lint_docs.py` before submitting documentation PRs to detect staleness anti-patterns.

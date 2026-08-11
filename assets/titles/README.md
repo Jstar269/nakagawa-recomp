@@ -9,7 +9,7 @@ They must not contain:
 - keys, decrypted output, local absolute paths, or private workspace bindings;
 - decompiler output, recovered source, oracle traces, savedata, screenshots, or route evidence.
 
-Private bindings belong in a separate Git-ignored workspace manifest. The initial checked-in `synthetic.json` proves the schema and validator without claiming that the current runtime is general-purpose. HST migration into a public title manifest is a later behavior-preserving phase tracked by issue #197.
+Private bindings belong in a separate Git-ignored workspace manifest. The initial checked-in `synthetic.json` proves the schema and validator without claiming that the current runtime is general-purpose. HST migration into a public title manifest is a later behavior-preserving phase.
 
 The JSON Schema is a portable editor/review contract. `tools/title_manifest.py` is the normative validator and additionally enforces semantic invariants such as portable Windows names, non-overlapping executable spans, and case-insensitive uniqueness.
 

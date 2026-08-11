@@ -1,8 +1,7 @@
 # PGF implementation qualified-review packet
 
 **Status: engineering provenance evidence for qualified review, not legal
-advice or publication clearance.** This packet supports
-[issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98) and describes
+advice or publication clearance.** This packet supports qualified legal review for PGF implementation licensing and describes
 the implementation at Nakagawa commit
 [`77c3aba7a66be84a12ff507e35630644aaf89bd8`](https://github.com/Jstar269/nakagawa-recomp/commit/77c3aba7a66be84a12ff507e35630644aaf89bd8).
 
@@ -141,13 +140,12 @@ organization, pixel switch, and PPSSPP blend formula.
 - [`public-safe-v1`](PUBLIC_SOURCE_PROFILE.md) already excludes `pgf.c`,
   `pgf.h`, and all bundled PGF fonts and builds `pgf_unavailable.c`. The seam
   returns unavailable/failure rather than synthetic font or glyph success.
-- Replacement-font rights remain a separate issue under
-  [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99).
+- Replacement-font rights remain documented in [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt).
 
 ## Conservative engineering choices
 
 1. **Exclude PGF from the initial public source.** Keep `public-safe-v1` and its
-   fail-closed seam. This is already implemented and does not decide #98.
+   fail-closed seam. This is already implemented and does not decide final PGF posture.
 2. **Retain the current implementation.** Have a qualified reviewer specify the
    exact SPDX/copyright/notice/change and combined-distribution presentation.
 3. **Replace the lineage-sensitive core.** Preserve only independently written
@@ -170,7 +168,7 @@ output.
 
 The source archaeology, function-level comparison, factual-versus-expressive
 separation, and recoverable upstream-history tasks are substantially complete.
-Issue #98 remains open for exactly these gates:
+PGF license review remains open for exactly these gates:
 
 1. qualified determination of protectable expression and any intraFont
    downstream effect;
@@ -194,17 +192,17 @@ Current-head facts for the reviewer, verified at export commit `dd0bcaea` during
   `public-safe-v1` candidate** by `assets/public_source_profile.json`; the export build uses the
   fail-closed `pgf_unavailable.c` stub (`PUBLIC_SAFE=1`) and compiles cleanly. No SPDX expression was
   changed and no retaining configuration is proposed.
-- `NOTICE.md` (post-IND-6, merged via PR #306) records the PGF row in the PPSSPP-derived inventory
+- `NOTICE.md` (post-IND-6) records the PGF row in the PPSSPP-derived inventory
   as `GPL-2.0-or-later / GPL-3.0-or-later (PPSSPP / JPCSP contributors)` and states the PPSSPP
   `PGF.cpp` GPLv3 warning explicitly, without resolving it.
 - The four `font/*.pgf` binaries are outside this packet's source-code scope but remain excluded from
-  the candidate pending #99; a reviewer should not infer font redistribution rights from source
+  the candidate pending replacement font review; a reviewer should not infer font redistribution rights from source
   treatment.
 - The fresh public export materialized 608 audited files with 0 publication-audit findings; the
   candidate-tree manifest gate is the engineering artifact to review, not this packet alone.
 
 The packet's original decision request (retain vs replace, license expression, notices, clean-room
-record) remains open under #98. The engineering posture for the initial public release is exclusion,
+record) remains open under PGF license review. The engineering posture for the initial public release is exclusion,
 not retention.
 
 ### Supporting research-corpus context (PSPRecompWiki, sections 06/07)

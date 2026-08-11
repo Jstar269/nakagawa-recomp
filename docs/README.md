@@ -1,20 +1,39 @@
 # Documentation
 
 This index is the entry point for the repository's tracked documentation. Code, tests, and the
-Makefile remain authoritative for implementation behavior. GitHub Issues are canonical for
-actionable work, priorities, and acceptance criteria; [`ISSUES.md`](../ISSUES.md) is only a concise
-status map. Dated evidence is preserved separately and must be re-verified before reuse.
+Makefile remain authoritative for implementation behavior. Public GitHub Issues are canonical for
+actionable work, priorities, and acceptance criteria where a curated public issue exists;
+[`ISSUES.md`](../ISSUES.md) is the concise status map across issues, implementation evidence, and
+reference documents. Dated evidence is preserved separately and must be re-verified before reuse.
 
 ## Start here
 
-| Need | Read |
-| --- | --- |
-| Project overview, current capability, setup pointer | [`README.md`](../README.md) |
-| Current priorities and known limitations | [`ISSUES.md`](../ISSUES.md) |
-| Contributor workflow and verification | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
-| Repository/agent guardrails | [`AGENTS.md`](../AGENTS.md) |
-| Windows toolchain and private-input setup | [`SETUP.md`](SETUP.md) |
-| This PR's complete documentation review | [`DOCUMENTATION_AUDIT.md`](DOCUMENTATION_AUDIT.md) |
+| Need | Read | Role | Authority | Freshness Expectation |
+| --- | --- | --- | --- | --- |
+| Project overview, scope, entry points | [`README.md`](../README.md) | EVERGREEN / OVERVIEW | High-level summary | Slow-changing |
+| Current priorities and known limitations | [`ISSUES.md`](../ISSUES.md) | CURRENT-STATE | Concise status dashboard | Active bring-up |
+| Contributor workflow and verification | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | POLICY / RUNBOOK | Authoritative process | Active bring-up |
+| Repository/agent guardrails | [`AGENTS.md`](../AGENTS.md) | POLICY / RUNBOOK | Authoritative developer rules | Active bring-up |
+| Windows toolchain and input setup | [`SETUP.md`](SETUP.md) | RUNBOOK / REFERENCE | Authoritative setup guide | Maintain with toolchain |
+| Historical investigation log | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | HISTORICAL / EVIDENCE | Chronological record | Immutable dates |
+
+## Documentation authority by topic
+
+Documentation surfaces serve specific roles. Authority depends on the domain:
+
+| Subject / Question | Authoritative Source | Scope & Expectation |
+| --- | --- | --- |
+| **Current implementation behavior** | Source code, tests, and Makefile | Verifiable behavior in code |
+| **Actionable defects & priorities** | Public GitHub Issues (`Jstar269/nakagawa-recomp`) | Canonical when a curated public issue exists |
+| **Concise status dashboard** | [`ISSUES.md`](../ISSUES.md) | Current map across issues and evidence owners |
+| **Current project manual** | GitHub Wiki (`https://github.com/Jstar269/nakagawa-recomp/wiki`) | Project manual & research sitemap |
+| **Project identity & scope** | [`README.md`](../README.md) | Slow-changing entry point |
+| **Build & setup instructions** | [`SETUP.md`](SETUP.md) | Tested toolchain & input layout |
+| **CI architecture & topology** | [`CI.md`](CI.md) & Actions workflows | Path classifier & aggregate gates |
+| **Publication policy & scope** | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) & [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | Public profile & release checklists |
+| **Contribution & legal policy** | [`CONTRIBUTING.md`](../CONTRIBUTING.md) & [`DCO_POLICY.md`](DCO_POLICY.md) | DCO 1.1 attestation & PR process |
+| **Dated historical evidence** | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | Chronological log of past evidence |
+| **Operator session handoff** | [`NEXT_SESSION.md`](NEXT_SESSION.md) | Machine/operator handoff context |
 
 ## Maintained engineering guides
 
@@ -39,7 +58,7 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | [`TEST_SHAPE_CLASSIFICATION.md`](TEST_SHAPE_CLASSIFICATION.md) | Conservative source-shape evidence classification and deletion boundary |
 | [`TEST_MATRIX.json`](TEST_MATRIX.json) | Generated per-case evidence/matrix metadata; semantic fields require review |
 | [`PSP_HARDWARE_ORACLE.md`](PSP_HARDWARE_ORACLE.md) | Source-owned PSP probe protocol, PSPLINK runbook, and readiness gate |
-| [`PSP_INTR_WAITS_MATRIX.md`](PSP_INTR_WAITS_MATRIX.md) | Hardware wait/blocking context matrix (#88), its executable harness, and per-cell current-`main` status |
+| [`PSP_INTR_WAITS_MATRIX.md`](PSP_INTR_WAITS_MATRIX.md) | Hardware wait/blocking context matrix, its executable harness, and per-cell current-`main` status |
 | [`RETAINED_BRANCH_AUDIT_2026-08-04.md`](RETAINED_BRANCH_AUDIT_2026-08-04.md) | Exact-base audit of the four retained remote branches |
 | [`GHIDRA.md`](GHIDRA.md) | Optional developer-only headless Ghidra cross-check |
 | [`DECOMPME_INTEGRATION.md`](DECOMPME_INTEGRATION.md) | Private decomp.me integration plan and read-only exporter |
@@ -59,7 +78,7 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | Document | Scope |
 | --- | --- |
 | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) | Source-publication and binary-release thresholds/checklists |
-| [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | `public-safe-v1` candidate profile and excluded components |
+| [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | `public-safe-v1` public profile and excluded components |
 | [`DUAL_REPO_SYNC.md`](DUAL_REPO_SYNC.md) | Private archive ↔ public source sync contract, backport rules, and the drift check |
 | [`OSPS_BASELINE.md`](OSPS_BASELINE.md) | OpenSSF control matrix; separates tree evidence from owner/settings checks |
 | [`LEGAL_REWRITE_ASSESSMENT.md`](LEGAL_REWRITE_ASSESSMENT.md) | Engineering risk assessment, not legal advice |
@@ -69,15 +88,15 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | [`provenance/SAL063_RETENTION_2026-08-06.md`](provenance/SAL063_RETENTION_2026-08-06.md) | Measured per-file retention of the sal063 upstream; resolves PROV-F2 |
 | [`provenance/MODIFIED_FILE_NOTICES.md`](provenance/MODIFIED_FILE_NOTICES.md) | Public-safe inherited-file notice policy, evidence boundary, and audit gate |
 | [`provenance/MODIFIED_FILE_NOTICES.json`](provenance/MODIFIED_FILE_NOTICES.json) | Machine-readable per-path notice and upstream inventory |
-| [`provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md`](provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md) | Function-level PGF lineage and bounded PPSSPP revision evidence for #98 |
-| [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Full-history PGD/amctrl lineage, private-archive chronology, and expression matrix for #104 |
-| [`COVERAGE_LEDGER.md`](COVERAGE_LEDGER.md) | Per-file audit record for #179; dated session entries must be re-verified by diff when reviewed content changes |
+| [`provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md`](provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md) | Function-level PGF lineage and bounded PPSSPP revision evidence |
+| [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Full-history PGD/amctrl lineage, private-archive chronology, and expression matrix |
+| [`COVERAGE_LEDGER.md`](COVERAGE_LEDGER.md) | Per-file audit record; dated session entries must be re-verified by diff when reviewed content changes |
 | [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) | Coordinated private-history scrub runbook; do not run standalone |
 | [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) | Qualified review packet for PGF/JPCSP/intraFont provenance |
 | [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md) | Qualified review packet for PGD/amctrl distribution questions |
 | [`PGD_KEYS.md`](PGD_KEYS.md) | Local-only PSP KIRK/amctrl constants schema and safety boundary |
-| [`PUBLISH_VS_EXCLUDE_MATRIX.md`](PUBLISH_VS_EXCLUDE_MATRIX.md) | File/component publish-vs-exclude disposition matrix for the fresh public-repository candidate |
-| [`PUBLICATION_LANE_VERIFICATION_2026-08-06.md`](PUBLICATION_LANE_VERIFICATION_2026-08-06.md) | Verification of completed #99/#102 work plus the sanitized-public-repository validation and tooling defect ledger |
+| [`PUBLISH_VS_EXCLUDE_MATRIX.md`](PUBLISH_VS_EXCLUDE_MATRIX.md) | File/component publish-vs-exclude disposition matrix for the current public-source profile |
+| [`PUBLICATION_LANE_VERIFICATION_2026-08-06.md`](PUBLICATION_LANE_VERIFICATION_2026-08-06.md) | Verification of completed font/history work plus the sanitized-public-repository validation and tooling defect ledger |
 
 ## Proposed or dated evidence
 
@@ -87,14 +106,14 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 | [`PSP_ISSUE_MATRIX.json`](PSP_ISSUE_MATRIX.json) | Generated current-open-issue routing matrix; regenerate with `tools/psp_issue_matrix.py` |
 | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | Dated investigations, resolved blockers, and superseded hypotheses; not current status |
 | [`INVESTIGATION_CHECKPOINT_2026-07-18.md`](INVESTIGATION_CHECKPOINT_2026-07-18.md) | Dated checkpoint; re-verify against source and fresh routes before reuse |
-| [`issue-51-entry-semantics.md`](issue-51-entry-semantics.md) | Issue-specific implementation rationale/evidence; current acceptance remains in issue #51 |
-| [`issue-139-face-resource-semantics.md`](issue-139-face-resource-semantics.md) | Static scorecard face-resource semantics for #139/#196; mounted-slot hypothesis resolved negative, with proven/inference/hypothesis tags |
-| [`NID_INTEGRITY_AUDIT_2026-08-06.md`](NID_INTEGRITY_AUDIT_2026-08-06.md) | Dated NID→name→signature→handler integrity audit for #75/#78/#83/#86; re-verified against the enforcement mechanism actually adopted on `main` (2026-08-10 note) |
+| [`issue-51-entry-semantics.md`](issue-51-entry-semantics.md) | Issue-specific implementation rationale/evidence; see continuation-semantics documentation |
+| [`issue-139-face-resource-semantics.md`](issue-139-face-resource-semantics.md) | Static scorecard face-resource semantics; mounted-slot hypothesis resolved negative, with proven/inference/hypothesis tags |
+| [`NID_INTEGRITY_AUDIT_2026-08-06.md`](NID_INTEGRITY_AUDIT_2026-08-06.md) | Dated NID→name→signature→handler integrity audit; re-verified against the enforcement mechanism actually adopted on `main` (2026-08-10 note) |
 
 Historical and private evidence must not be promoted into current guidance merely by changing its
-heading or date. Update the maintained guide and canonical GitHub Issue when current behavior,
-acceptance criteria, or setup changes. Preserve private inputs, game-derived traces, screenshots,
-Ghidra databases, local paths, and legal advice outside Git history.
+heading or date. Update the maintained guide and canonical public GitHub Issue when a curated issue
+exists and current behavior, acceptance criteria, or setup changes. Preserve private inputs,
+game-derived traces, screenshots, Ghidra databases, local paths, and legal advice outside Git history.
 
 ## Related documentation outside `docs/`
 

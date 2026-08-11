@@ -101,7 +101,7 @@ letting "analysis" and "C generation" be the same operation.
 If a proposed change cannot answer "which tier owns this?", the design is probably
 wrong. This is the generalization of the existing "no band-aids" rule in
 [`AGENTS.md`](../AGENTS.md) and the compatibility-debt discipline of
-[#20](https://github.com/Jstar269/nakagawa-recomp/issues/20).
+[#20](https://github.com/Jstar269/nakagawa-recomp/pull/20).
 
 ### Current HST coupling to migrate (the concrete Tier-2 candidates)
 
@@ -114,7 +114,7 @@ a project-manifest/Tier-2-profile mechanism should absorb, not new debt to creat
 - `tools/codegen.py` / `tools/host_stubs.py` — `HST_SIMPLE_STUBS` and
   `NULL_BASE_WORD_LOADS`. Already inventoried in `tools/compat_overrides.py` and
   enforced by `tools/test_compat_manifest.py` under
-  [#20](https://github.com/Jstar269/nakagawa-recomp/issues/20).
+  [#20](https://github.com/Jstar269/nakagawa-recomp/pull/20).
 - `Makefile` / `hst_manager.ps1` — HST module bases, extra-PRX paths, and manager
   defaults (see [`PORTING.md`](PORTING.md)).
 

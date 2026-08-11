@@ -516,7 +516,7 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      ahead of the satisfaction test too.
    **Deferred out of #88 by the same audit** - the cells remain in the tables above, pinned and
    counted as known deviations, until the owning subsystem work lands:
-   * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **[#2](https://github.com/Jstar269/nakagawa-recomp/issues/2)**.
+   * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **[#2](https://github.com/Jstar269/nakagawa-recomp/pull/2)**.
      Both NIDs are registered to `h_ok` (`{ return 0; }`), so there is no object, no validation
      and no mutation; a context check there would be the only real thing in the handler and
      would turn 12 `intr-off`/`disp-off` cells plus 6 `intr-ctx` cells green on a stub. **18 cells.**

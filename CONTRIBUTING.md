@@ -149,7 +149,7 @@ DCO sign-off is a certification of contribution rights, not a copyright assignme
 - **Automated/Bot Submissions**: Automated dependency updates or bot commits must identify their generator and be reviewed/signed off by the merging maintainer.
 - **Historical Commits**: Historical commits prior to DCO adoption are retained as original author records; sign-off trailers will not be retroactively fabricated.
 - **Maintainer Standing Waiver**: maintainer and maintainer-directed AI/agent commits are covered by the standing waiver in [docs/DCO_POLICY.md §5.1](docs/DCO_POLICY.md), which persists past public launch until explicitly revoked. A missing trailer on such a commit is not a merge blocker and is not corrected by rewriting history. Agents must never add a sign-off on anyone's behalf. Outside contributors are unaffected by the waiver.
-- **Licensing Boundaries**: DCO sign-off certifies that the contributor has the authority to submit their work under the project's applicable terms. It does not settle combined-work license questions (such as #98) or grant rights beyond the project's terms.
+- **Licensing Boundaries**: DCO sign-off certifies that the contributor has the authority to submit their work under the project's applicable terms. It does not settle combined-work license questions (such as PGF license review) or grant rights beyond the project's terms.
 
 ## Pull requests
 

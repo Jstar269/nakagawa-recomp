@@ -7,9 +7,7 @@ font root is reported instead of hidden by a synthetic font.
 
 The exact byte and ancestry evidence is maintained in
 [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt).
-Issue [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99) remains open
-because byte identity and source-family evidence do not establish a complete
-redistribution notice for a transformed font binary.
+See [`THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt`](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt) and [`docs/PGF_LICENSE_REVIEW_PACKET.md`](../docs/PGF_LICENSE_REVIEW_PACKET.md) for font redistribution review details.
 
 ## Byte provenance
 

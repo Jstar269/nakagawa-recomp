@@ -3,7 +3,7 @@
 **Status: technical provenance record, not legal advice or publication
 clearance.** This record fixes the public-source findings for Nakagawa commit
 [`77c3aba7a66be84a12ff507e35630644aaf89bd8`](https://github.com/Jstar269/nakagawa-recomp/commit/77c3aba7a66be84a12ff507e35630644aaf89bd8)
-and supports [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98).
+and supports [`docs/PGF_LICENSE_REVIEW_PACKET.md`](../PGF_LICENSE_REVIEW_PACKET.md).
 It distinguishes source correspondence from any conclusion about protectable
 expression. The technical archaeology is complete to the limit of presently
 recoverable public evidence; the qualified determinations listed at the end

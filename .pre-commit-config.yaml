@@ -64,6 +64,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+      - id: documentation-freshness
+        name: documentation freshness audit
+        entry: python tools/lint_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
       - id: publication-audit
         name: publication safety audit
         entry: python tools/publish_audit.py --tracked-only --public-scope
