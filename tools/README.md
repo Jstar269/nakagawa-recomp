@@ -50,9 +50,10 @@ zero base/entry values and preserves the Makefile's two-phase build.
   and rejects current-facing stale-status patterns while preserving explicitly historical evidence.
   The shared pre-commit/pre-push hooks run it automatically.
 - **`audit_public_issue_links.py`** — networked public Issue/PR reference audit for tracked Markdown.
-  It verifies URL type, current-facing shorthand references, and explicit tracker-state labels.
-  Normal mode reports `SKIPPED` if GitHub is unavailable; use `--strict` before review/merge when
-  live-reference verification is required.
+  It verifies URL type, current-facing shorthand references, and explicit current-tracker state labels.
+  Normal mode reports `SKIPPED` if GitHub is unavailable; use `--strict` as a live review/merge audit.
+  It is deliberately separate from the offline pre-commit hook so lack of network access cannot make
+  ordinary local commits nondeterministically fail.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
   metadata/lookup prototype (see [`docs/ISSUE196_DIRECT_XB.md`](../docs/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
