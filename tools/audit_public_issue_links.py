@@ -69,6 +69,7 @@ HISTORICAL_EVIDENCE_DOCS = {
 FULL_URL_PAT = re.compile(
     r"https://github\.com/Jstar269/nakagawa-recomp/(issues|pull)/(\d+)\b"
 )
+# Shorthand references must look like tracker prose, not Markdown headings such as "# 1".
 SHORTHAND_PAT = re.compile(r"(?<![A-Fa-f0-9_#])#(\d+)\b")
 STATE_LABEL_PAT = re.compile(r"\[(OPEN ISSUE|CLOSED ISSUE|OPEN PR|CLOSED PR|MERGED PR)\]")
 TRACKER_SECTION = "## Current public tracker"
@@ -174,9 +175,14 @@ def audit_markdown_files(
         is_current_doc = rel in CURRENT_FACING_DOCS
         is_historical_doc = rel in HISTORICAL_EVIDENCE_DOCS
         in_tracker_section = False
+        in_fenced_code = False
 
         text = doc_path.read_text(encoding="utf-8")
         for idx, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fenced_code = not in_fenced_code
+
             if line.startswith("## "):
                 in_tracker_section = rel == "ISSUES.md" and line.strip() == TRACKER_SECTION
 
@@ -235,7 +241,8 @@ def audit_markdown_files(
                         )
                     )
 
-            if is_current_doc:
+            # Shorthand checks apply to current prose, not fenced examples or Markdown headings.
+            if is_current_doc and not in_fenced_code and not stripped.startswith("#"):
                 for match in SHORTHAND_PAT.finditer(line):
                     num = int(match.group(1))
                     if num in full_nums:
