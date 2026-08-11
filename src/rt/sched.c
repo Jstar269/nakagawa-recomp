@@ -2360,6 +2360,38 @@ void sched_vtime_refresh(void) {
     vtime_refresh();
 }
 
+/* The display controller has 286 horizontal sync positions per 59.94-Hz frame.
+ * Keep its phase in the scheduler's microsecond domain instead of incrementing a
+ * counter when sceDisplayGetCurrentHcount happens to be called.  Multiplication
+ * is widened before the rational conversion so a long-running guest cannot wrap
+ * the intermediate or make the display clock query-dependent. */
+#define SCHED_DISPLAY_HCOUNT_PER_FRAME 286u
+#define SCHED_DISPLAY_FRAME_NUMERATOR 1001000ull /* 1001/60000 s, expressed with denominator 60 */
+#define SCHED_DISPLAY_VBLANK_WINDOW_US 1500u
+
+static uint64_t scheduler_display_hcount_total(void) {
+    __uint128_t numerator = (__uint128_t)s_vtime_us * 60u *
+                            SCHED_DISPLAY_HCOUNT_PER_FRAME;
+    __uint128_t total = numerator / SCHED_DISPLAY_FRAME_NUMERATOR;
+    return total > UINT64_MAX ? UINT64_MAX : (uint64_t)total;
+}
+
+uint32_t sched_display_current_hcount(void) {
+    return (uint32_t)(scheduler_display_hcount_total() %
+                      SCHED_DISPLAY_HCOUNT_PER_FRAME);
+}
+
+uint32_t sched_display_accumulated_hcount(void) {
+    return (uint32_t)scheduler_display_hcount_total();
+}
+
+int sched_display_is_vblank(void) {
+    __uint128_t phase = ((__uint128_t)s_vtime_us * 60u) %
+                        SCHED_DISPLAY_FRAME_NUMERATOR;
+    const uint64_t window = (uint64_t)SCHED_DISPLAY_VBLANK_WINDOW_US * 60u;
+    return phase >= SCHED_DISPLAY_FRAME_NUMERATOR - window;
+}
+
 void sched_set_current_cb_wait(int cb_wait) {
     if (s_cur >= 0) {
         s_tcb[s_cur].is_cb_wait = cb_wait;
