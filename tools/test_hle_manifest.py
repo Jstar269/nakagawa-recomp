@@ -396,6 +396,35 @@ class FindingRuleTests(unittest.TestCase):
             ("controlled_unsupported", "controlled_unsupported"),
         )
 
+    def test_float_return_nid_rejects_integer_stub(self) -> None:
+        regs = [
+            {"nid": 0xDBA6C4C4, "name": "sceDisplayGetFramePerSec", "handler": "h_ok",
+             "origin": "static"},
+        ]
+        findings = compute_findings(regs)
+        self.assertEqual(
+            [(f["nid"], f["finding"], f["handler"]) for f in findings],
+            [(0xDBA6C4C4, "float_return_handler_mismatch", "h_ok")],
+        )
+
+    def test_float_return_nid_accepts_float_handler(self) -> None:
+        regs = [
+            {"nid": 0xDBA6C4C4, "name": "sceDisplayGetFramePerSec", "handler": "h_DisplayGetFramePerSec",
+             "origin": "static"},
+        ]
+        findings = compute_findings(regs)
+        self.assertEqual(findings, [])
+
+    def test_float_return_metadata_is_live_and_dedicated(self) -> None:
+        manifest = build_manifest()
+        regs = {r["nid"]: r for r in manifest["registrations"]}
+        entry = regs["0xdba6c4c4"]
+        self.assertEqual(entry["name"], "sceDisplayGetFramePerSec")
+        self.assertNotEqual(entry["handler"], "h_ok")
+        self.assertNotEqual(entry["classification"], "fake_success")
+        self.assertEqual(entry["status"], "complete")
+        self.assertIn(entry["handler"], meta.FLOAT_RETURN_HANDLERS)
+
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):
     def test_mpeg_avc_decode_dirty_notification_invariants(self) -> None:

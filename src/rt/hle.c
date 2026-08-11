@@ -4449,6 +4449,11 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
 
 enum {
     RTC_ILLEGAL_ADDR = 0x80000103u,
+    /* PSPAutotests tests/rtc/convert.expected: the RTC conversion family reports
+     * invalid dates AND invalid output pointers as 0x800001fe
+     * (SCE_KERNEL_ERROR_INVALID_VALUE): "Min year: 800001fe", "Year overflow:
+     * 800001fe", "Zeroed time: 0 (800001fe)", "NULL filetime: -1337 (800001fe)". */
+    RTC_INVALID_VALUE = 0x800001feu,
     RTC_UNIX_EPOCH_TICK = 62135596800000000ull,
     RTC_FILETIME_EPOCH_TICK = 50491123200000000ull,
 };
@@ -4456,13 +4461,29 @@ enum {
 /* The PSP timezone is a console setting, not the host process timezone.  The
  * current public configuration is UTC/standard time; keeping it explicit makes
  * every RTC/local and gettimeofday path deterministic and leaves the setting in
- * one place when a persisted PSP configuration is added. */
+ * one place.  The retained, settable system-profile owner for timezone/daylight
+ * is issue #77 and does not exist yet, so sceRtcGetCurrentClockLocalTime and
+ * the UTC/local conversions run on this fixed UTC constant until #77 lands;
+ * the explicit-offset sceRtcGetCurrentClock path is complete and independent.
+ * #80's LocalTime criterion is therefore BLOCKED BY #77, not complete. */
 static const int32_t s_psp_timezone_minutes = 0;
 static const int32_t s_psp_daylight = 0;
 
 static uint64_t s_rtc_epoch_tick;
 static uint64_t s_rtc_last_tick;
 static int s_rtc_epoch_initialized;
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* White-box fixture hook: forget the host-sampled RTC epoch so a test can
+ * re-anchor it at its own deterministic scheduler time. The monotonic clamp on
+ * rtc_now_tick() is correct for the production monotonic timeline; a fixture
+ * that rewinds s_vtime_us between tests needs the anchor refreshed with it. */
+void sr_hle_test_reset_rtc_epoch(void) {
+    s_rtc_epoch_tick = 0;
+    s_rtc_last_tick = 0;
+    s_rtc_epoch_initialized = 0;
+}
+#endif
 
 static uint64_t rtc_now_tick(void) {
     if (!s_rtc_epoch_initialized) {
@@ -4546,6 +4567,11 @@ static uint64_t rtc_datetime_to_tick(const RtcDateTime *value) {
     uint64_t seconds = ((days * 24u + value->hour) * 60u + value->minute) * 60u + value->second;
     return seconds * 1000000u + value->microsecond;
 }
+/* PSP tick->date conversion covers the FULL u64 tick range: PSPAutotests
+ * tests/rtc/arithmetic.expected prints years 60267, 38202, 10000 and 26003
+ * written through sceRtcSetTick for wrapped/extreme ticks, so there is no
+ * year>9999 rejection here -- the fields are written with natural truncation
+ * into the pspTime u16/u32 widths, exactly like the firmware. */
 static int rtc_tick_to_datetime(uint64_t tick, RtcDateTime *out) {
     if (!out) return -1;
     uint64_t total_seconds = tick / 1000000u;
@@ -4556,7 +4582,6 @@ static int rtc_tick_to_datetime(uint64_t tick, RtcDateTime *out) {
     uint64_t n4 = days / 1461u; days %= 1461u;
     uint64_t n1 = days / 365u; if (n1 > 3u) n1 = 3u; days -= n1 * 365u;
     uint64_t year = 1u + n400 * 400u + n100 * 100u + n4 * 4u + n1;
-    if (year > 9999u) return -1;
     uint32_t month = 1u;
     while (month <= 12u) {
         uint32_t dim = rtc_days_in_month((uint32_t)year, month);
@@ -4584,6 +4609,18 @@ static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
     }
     return 1;
 }
+/* sceRtcGetCurrentClock[LocalTime] accepts every int32 timezone offset and
+ * returns success (PSPAutotests tests/rtc/rtc.expected: 0, +13, +60, -60,
+ * -600000, INT_MAX and -INT_MAX all print 00000000).  The offset is applied in
+ * well-defined modulo-2^64 arithmetic -- the firmware's own u64 tick shape
+ * (arithmetic.expected wraps to years 60267/38202 on negative overrun) -- so
+ * an offset that crosses year 1 wraps instead of failing.  ConvertUtcToLocal
+ * keeps the checked rtc_add_offset above because its overflow contract is not
+ * autotest-verified; only the current-clock path uses the wrap form. */
+static void rtc_add_offset_wrap(uint64_t tick, int32_t minutes, uint64_t *out) {
+    int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
+    *out = tick + (uint64_t)delta;   /* defined modulo 2^64 for both signs */
+}
 static uint32_t h_GetSystemTime(CpuState *s) {
     (void)s;
     return rtc_write_u64(A0, now_usec()) ? 0u : RTC_ILLEGAL_ADDR;
@@ -4598,7 +4635,11 @@ static uint32_t h_RtcGetTick(CpuState *s) {
     if (!sr_guest_span_readable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     RtcDateTime value;
     int valid = rtc_read_datetime(A0, &value);
-    if (valid != 0) return (uint32_t)valid;
+    /* PSPAutotests tests/rtc/convert.expected: "Min year: 800001fe" and
+     * "Year overflow: 800001fe" -- an invalid date reports
+     * SCE_KERNEL_ERROR_INVALID_VALUE and leaves the output tick untouched
+     * (the tick printed after the failure is the previous success). */
+    if (valid != 0) return RTC_INVALID_VALUE;
     if (!sr_guest_span_writable(A1, 8u)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, rtc_datetime_to_tick(&value)) ? 0u : RTC_ILLEGAL_ADDR;
 }
@@ -4608,26 +4649,48 @@ static uint32_t h_RtcSetTick(CpuState *s) {
     uint64_t tick;
     if (!rtc_read_u64(A1, &tick)) return RTC_ILLEGAL_ADDR;
     RtcDateTime value;
-    int valid = rtc_tick_to_datetime(tick, &value);
-    if (valid != 0) return (uint32_t)valid;
+    /* Any u64 tick converts; extreme/wrapped values truncate into the pspTime
+     * field widths (PSPAutotests arithmetic.expected, checkSetTick). */
+    rtc_tick_to_datetime(tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
-/* sceRtcGetWin32FileTime(pspTime *in, u64 *out): convert from the PSP Gregorian epoch
- * to Windows' 1601 epoch and 100 ns units. */
+/* sceRtcGetWin32FileTime(pspTime *in, u64 *out): convert from the PSP Gregorian
+ * epoch to Windows' 1601 epoch and 100 ns units.
+ *
+ * PSPAutotests tests/rtc/convert.expected defines the failure contract:
+ *   - "NULL filetime: -1337 (800001fe)"    invalid out pointer -> 0x800001fe, no write
+ *   - "Zeroed time: 0 (800001fe)"          year 0             -> 0x800001fe, out := 0
+ *   - "1600 January 01: 0 (800001fe)"      pre-1601 tick      -> 0x800001fe, out := 0
+ *   - "Arbitrary date/time: 127779156600000010 (00000000)" -- 2005-11-31 is
+ *     ACCEPTED (day 31 in a 30-day month) and converts with carry arithmetic,
+ *     so this path does NOT run the strict days-in-month validator.  Only the
+ *     year bound (1..9999) is checked here; the epoch bound below rejects
+ *     everything before 1601-01-01.  On failure the output is written as 0. */
 static uint32_t h_RtcGetWin32FileTime(CpuState *s) {
     (void)s;
-    if (!A0 || !A1) return RTC_ILLEGAL_ADDR;
-    if (!sr_guest_span_readable(A0, 16u)) return RTC_ILLEGAL_ADDR;
+    if (!A0 || !A1) return RTC_INVALID_VALUE;
+    if (!sr_guest_span_readable(A0, 16u)) return RTC_INVALID_VALUE;
+    if (!sr_guest_span_writable(A1, 8u)) return RTC_INVALID_VALUE;
     RtcDateTime value;
-    int valid = rtc_read_datetime(A0, &value);
-    if (valid != 0) return (uint32_t)valid;
-    if (!sr_guest_span_writable(A1, 8u)) return RTC_ILLEGAL_ADDR;
+    value.year = MEM_R16(A0 + 0u); value.month = MEM_R16(A0 + 2u);
+    value.day = MEM_R16(A0 + 4u); value.hour = MEM_R16(A0 + 6u);
+    value.minute = MEM_R16(A0 + 8u); value.second = MEM_R16(A0 + 10u);
+    value.microsecond = MEM_R32(A0 + 12u);
+    if (value.year < 1u || value.year > 9999u) {
+        MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
+        return RTC_INVALID_VALUE;
+    }
     uint64_t tick = rtc_datetime_to_tick(&value);
-    if (tick < RTC_FILETIME_EPOCH_TICK) return (uint32_t)-1;
+    if (tick < RTC_FILETIME_EPOCH_TICK) {
+        MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
+        return RTC_INVALID_VALUE;
+    }
     uint64_t delta = tick - RTC_FILETIME_EPOCH_TICK;
-    if (delta > UINT64_MAX / 10u) return (uint32_t)-1;
-    uint64_t filetime = delta * 10u;
-    return rtc_write_u64(A1, filetime) ? 0u : RTC_ILLEGAL_ADDR;
+    if (delta > UINT64_MAX / 10u) {
+        MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
+        return RTC_INVALID_VALUE;
+    }
+    return rtc_write_u64(A1, delta * 10u) ? 0u : RTC_INVALID_VALUE;
 }
 static uint32_t h_LibcTime(CpuState *s) {
     (void)s;
@@ -4666,18 +4729,18 @@ static uint32_t h_RtcGetCurrentClock(CpuState *s) {
     (void)s;
     if (!sr_guest_span_writable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     uint64_t local_tick;
-    if (!rtc_add_offset(rtc_now_tick(), (int32_t)A1, &local_tick)) return (uint32_t)-1;
+    rtc_add_offset_wrap(rtc_now_tick(), (int32_t)A1, &local_tick);
     RtcDateTime value;
-    if (rtc_tick_to_datetime(local_tick, &value) != 0) return (uint32_t)-1;
+    rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     (void)s;
     if (!sr_guest_span_writable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     uint64_t local_tick;
-    if (!rtc_add_offset(rtc_now_tick(), s_psp_timezone_minutes, &local_tick)) return (uint32_t)-1;
+    rtc_add_offset_wrap(rtc_now_tick(), s_psp_timezone_minutes, &local_tick);
     RtcDateTime value;
-    if (rtc_tick_to_datetime(local_tick, &value) != 0) return (uint32_t)-1;
+    rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
@@ -6716,6 +6779,19 @@ uint32_t sr_get_ge_status(void) {
 static uint32_t h_DisplayIsVblank(CpuState *s) {
     (void)s;
     return (sr_get_ge_status() & 0x20) ? 1 : 0;
+}
+/* sceDisplayGetFramePerSec returns the PSP display refresh rate as a
+ * single-precision float through $f0 (the MIPS float-return convention); the
+ * integer $v0 status is what the handler returns.  The value is the same
+ * 60000/1001 rational the scheduler uses for its display phase, evaluated as
+ * float == 0x426fc29f bits (59.9400599f, PSP-3001/6.61-ARK measured anchor).
+ * The previous h_ok registration returned 0 in $v0 but left $f0 stale, so a
+ * guest reading the float received poisoned state (issue #80 display-clock
+ * campaign). */
+static uint32_t h_DisplayGetFramePerSec(CpuState *s) {
+    (void)s;
+    s->f[0] = 60000.0f / 1001.0f;
+    return 0;
 }
 
 /* Called once per delivered VBLANK... */
@@ -8763,7 +8839,7 @@ static void hle_register_display_handlers(void) {
     sr_hle_register(0x210eab3a, "sceDisplayGetAccumulatedHcount", h_DisplayGetAccumulatedHcount);
     sr_hle_register(0x4d4e10ec, "sceDisplayIsVblank", h_DisplayIsVblank);
     sr_hle_register(0xdea197d4, "sceDisplayGetMode", h_DisplayGetMode);
-    sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_ok);
+    sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_DisplayGetFramePerSec);
 }
 
 static void hle_register_atrac_handlers(void) {

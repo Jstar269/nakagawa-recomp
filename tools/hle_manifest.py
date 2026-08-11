@@ -263,6 +263,16 @@ def validate_meta(regs: list[dict]) -> None:
             raise ManifestError(f"waiver for 0x{w['nid']:08x} names an unregistered NID (stale)")
         if not w.get("issue"):
             raise ManifestError(f"waiver for 0x{w['nid']:08x} has no issue link")
+    for nid, info in meta.FLOAT_RETURN_NIDS.items():
+        if nid not in nids:
+            raise ManifestError(f"FLOAT_RETURN_NIDS lists 0x{nid:08x}, which hle.c does not register")
+        if not info.get("issue"):
+            raise ManifestError(f"FLOAT_RETURN_NIDS entry 0x{nid:08x} has no issue link")
+    stale_float_handlers = sorted(meta.FLOAT_RETURN_HANDLERS - handlers)
+    if stale_float_handlers:
+        raise ManifestError(
+            f"FLOAT_RETURN_HANDLERS names handlers hle.c no longer registers: {stale_float_handlers}"
+        )
 
 
 def compute_findings(regs: list[dict]) -> list[dict]:
@@ -291,6 +301,20 @@ def compute_findings(regs: list[dict]) -> list[dict]:
                     "handler": r["handler"],
                     "canonical_name": canonical,
                     "why": "registered label disagrees with the canonical NID name",
+                }
+            )
+        float_info = meta.FLOAT_RETURN_NIDS.get(r["nid"])
+        if float_info is not None and r["handler"] not in meta.FLOAT_RETURN_HANDLERS:
+            findings.append(
+                {
+                    "finding": "float_return_handler_mismatch",
+                    "nid": r["nid"],
+                    "name": r["name"],
+                    "handler": r["handler"],
+                    "why": (
+                        f"{float_info['name']} returns single-precision in $f0; "
+                        "an integer-return handler leaves $f0 stale for the guest"
+                    ),
                 }
             )
     return sorted(findings, key=lambda f: (f["nid"], f["finding"]))

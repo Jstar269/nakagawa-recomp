@@ -56,6 +56,10 @@ HANDLER_STATUS = {
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
     "h_SetCompiledSdkVersion": "complete",
+    # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
+    # rate (59.9400599f) into $f0 under the unified display clock. The API has
+    # no parameters; the full observable contract is the float bits.
+    "h_DisplayGetFramePerSec": "complete",
     # Documented controlled-error policy: PSMF video/audio getters return
     # PSMF_ERR_NO_DATA until the real demux is connected (AGENTS.md; the
     # attract movie stays black by design). Tracked by issue #31.
@@ -121,6 +125,28 @@ KNOWN_NID_NAMES = {
     0x87440F5E: "scePowerIsPowerOnline",
     0xFDB5BFE9: "scePowerGetCpuClockFrequencyInt",
     0x478FE6F5: "scePowerGetBusClockFrequency",
+}
+
+# NIDs whose PSP ABI returns a single-precision float through $f0 (the MIPS
+# float-return convention) while $v0 carries the integer status.  Routing one
+# of these to a generic integer-return stub (h_ok family) reports success in
+# $v0 but leaves $f0 stale/poisoned for the guest.  The gate rejects any
+# registration whose handler is not proven to write the float return.
+# Provenance: the #80 clock campaign (private history) recorded
+# sceDisplayGetFramePerSec (0xDBA6C4C4) returning the measured 59.9400599f
+# through $f0; the runtime implements it under the unified display clock.
+FLOAT_RETURN_NIDS = {
+    0xDBA6C4C4: {
+        "name": "sceDisplayGetFramePerSec",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp-history-private/issues/80",
+    },
+}
+
+# Handlers proven to write the float return into $f0 before returning.  A
+# float-return NID must route to one of these; anything else (including the
+# generic integer-return h_ok) is a float_return_handler_mismatch finding.
+FLOAT_RETURN_HANDLERS = {
+    "h_DisplayGetFramePerSec",
 }
 
 # Tracking issue for each canonical NID above, so a `mislabeled_nid` finding in
