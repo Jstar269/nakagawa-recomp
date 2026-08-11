@@ -1171,13 +1171,13 @@ static void test_rtc_conversion_errors_and_full_range(void) {
            "GetCurrentClock returns success for -600000 minutes (rtc.expected)");
 }
 
-/* #80 bulk-stability regression: 1000 reads of every guest-visible time API at
- * one unchanged emulated timestamp must be side-effect free -- identical values
- * and the scheduler timeline left exactly where it was.  Time moves only
- * through scheduler progression (sr_hle_advance_time, yield/idle boundaries,
- * explicit fixture advances), never through a clock query.  The RTC/Unix epoch
- * is anchored once; every read after that is guest-time arithmetic on the same
- * microsecond timeline. */
+/* #80 bulk-stability regression: 10000 reads of every guest-visible time API
+ * at one unchanged emulated timestamp must be side-effect free -- identical
+ * values and the scheduler timeline left exactly where it was.  Time moves
+ * only through scheduler progression (sr_hle_advance_time, yield/idle
+ * boundaries, explicit fixture advances), never through a clock query.  The
+ * RTC/Unix epoch is anchored once; every read after that is guest-time
+ * arithmetic on the same microsecond timeline. */
 static void test_bulk_clock_reads_are_side_effect_free(void) {
     enum {
         TICK_OUT = 0x00200300u,
@@ -1206,23 +1206,23 @@ static void test_bulk_clock_reads_are_side_effect_free(void) {
     uint32_t tv_sec0 = MEM_R32(TV_OUT);
     uint32_t tv_usec0 = MEM_R32(TV_OUT + 4u);
 
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 10000; i++) {
         cpu.r[4] = TICK_OUT;
         (void)sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK);
         expect(selftest_guest_u64(TICK_OUT) == rtc0,
-               "1000 RTC current-tick reads return the identical calendar value");
+               "10000 RTC current-tick reads return the identical calendar value");
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) == low0,
-               "1000 GetSystemTimeLow reads are stable");
+               "10000 GetSystemTimeLow reads are stable");
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK) == clock0,
-               "1000 libc clock reads are stable");
+               "10000 libc clock reads are stable");
         cpu.r[4] = TV_OUT;
         cpu.r[5] = TZ_OUT;
         (void)sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY);
         expect(MEM_R32(TV_OUT) == tv_sec0 && MEM_R32(TV_OUT + 4u) == tv_usec0,
-               "1000 gettimeofday reads return the identical Unix time");
+               "10000 gettimeofday reads return the identical Unix time");
     }
     expect(s_vtime_us == before,
-           "1000 reads of every clock leave the scheduler timeline untouched");
+           "10000 reads of every clock leave the scheduler timeline untouched");
 
     /* Relative coherence: one known scheduler advance moves system time and the
      * RTC tick by exactly the same microsecond delta (same domain, same rate). */
@@ -1306,6 +1306,57 @@ static void test_display_queries_do_not_progress_display(void) {
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
                "post-progression VCOUNT reads stay stable");
     }
+}
+
+/* #80/5 display-domain freeze during interrupt-disable: system time is the
+ * scheduler's microsecond timeline and keeps running while an interrupt-
+ * disabled period prevents VBLANK delivery -- the latched source stays pending
+ * and VCOUNT does not advance.  VCOUNT is therefore a delivered-event counter,
+ * never floor(system_time / frame_period).  The production service path
+ * (scheduler_latch_due_events / scheduler_service_pending) is exercised
+ * unchanged; no #88 interrupt/wait precedence rule is modified here. */
+static void test_vcount_freezes_during_interrupt_disable(void) {
+    enum {
+        NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = 16683u;        /* one rational 59.94-Hz frame away */
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 0;      /* interrupt-disabled period */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+    uint32_t sys0 = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW);
+
+    /* Cross the VBLANK source deadline while interrupts are disabled. */
+    s_vtime_us = 30000u;
+    scheduler_latch_due_events();
+    scheduler_service_pending();   /* no-op: delivery is interrupt-gated */
+
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) == 30000u,
+           "system time continued through the interrupt-disabled period");
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+           "VCOUNT is frozen while interrupt-disable defers delivery");
+    expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
+           "the VBLANK source stays latched/pending for the eligible phase");
+
+    /* Re-enabling interrupts delivers the pending source: VCOUNT advances by
+     * exactly one delivery, proving it is a delivered-event counter whose
+     * scheduling derives from the same monotonic timeline but whose observable
+     * state keeps interrupt semantics. */
+    s_interrupts_enabled = 1;
+    scheduler_service_pending();
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
+           "VCOUNT advances exactly once when the deferred vblank delivers");
+    (void)sys0;
 }
 
 static void test_interrupt_nid_semantics(void) {
@@ -4740,6 +4791,7 @@ int main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
+    test_vcount_freezes_during_interrupt_disable();
     test_interrupt_nid_semantics();
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();

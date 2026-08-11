@@ -286,7 +286,10 @@ Clock ownership:
   same vblank counter, matching the PSP's vblank-unit pad timestamps.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
   tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
-  timezone.
+  timezone. The retained, settable system-profile owner for timezone/daylight belongs to issue #77
+  and does not exist yet: `sceRtcGetCurrentClockLocalTime` and UTC/local conversion therefore run
+  on the fixed UTC constant until #77 lands, and that single #80 criterion stays BLOCKED BY #77.
+  The explicit-offset `sceRtcGetCurrentClock` path is complete and independent of #77.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
   domains and are not wall time.
 

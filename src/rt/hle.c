@@ -4461,7 +4461,11 @@ enum {
 /* The PSP timezone is a console setting, not the host process timezone.  The
  * current public configuration is UTC/standard time; keeping it explicit makes
  * every RTC/local and gettimeofday path deterministic and leaves the setting in
- * one place when a persisted PSP configuration is added. */
+ * one place.  The retained, settable system-profile owner for timezone/daylight
+ * is issue #77 and does not exist yet, so sceRtcGetCurrentClockLocalTime and
+ * the UTC/local conversions run on this fixed UTC constant until #77 lands;
+ * the explicit-offset sceRtcGetCurrentClock path is complete and independent.
+ * #80's LocalTime criterion is therefore BLOCKED BY #77, not complete. */
 static const int32_t s_psp_timezone_minutes = 0;
 static const int32_t s_psp_daylight = 0;
 
