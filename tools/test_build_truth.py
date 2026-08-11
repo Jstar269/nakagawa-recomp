@@ -247,5 +247,82 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+class Atrac3pBuildPortabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.make = shutil.which("mingw32-make") or shutil.which("make")
+
+    def test_makefile_does_not_contain_per_recipe_mkdir_in_atrac3p_rule(self) -> None:
+        lines = _logical_lines(self.makefile)
+        for number, text in lines:
+            if "atrac3p_%.o:" in text:
+                self.assertNotIn(
+                    "mkdir -p",
+                    text,
+                    f"Makefile:{number} contains per-recipe 'mkdir -p' in atrac3p rule which fails in cmd.exe when sh is absent",
+                )
+
+    def test_makefile_defines_atrac3p_obj_dirs_up_front(self) -> None:
+        self.assertIn("ATRAC3P_OBJ_DIRS :=", self.makefile)
+
+    def test_atrac3p_nested_object_directories_build_clean_and_parallel(self) -> None:
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        with tempfile.TemporaryDirectory(prefix="nakagawa-atrac3p-build-") as temp_dir:
+            build_dir = Path(temp_dir) / "build_atrac3p"
+            self.assertFalse(build_dir.exists())
+
+            # 1. Clean serial build for runtime-objects
+            proc = subprocess.run(
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"make runtime-objects failed ({proc.returncode}):\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
+            )
+
+            # Verify nested directories were created
+            codec_dir = build_dir / "atrac3p_libavcodec"
+            util_dir = build_dir / "atrac3p_libavutil"
+            self.assertTrue(codec_dir.is_dir(), f"{codec_dir} was not created")
+            self.assertTrue(util_dir.is_dir(), f"{util_dir} was not created")
+            self.assertTrue(any(codec_dir.glob("*.o")), f"No .o files in {codec_dir}")
+            self.assertTrue(any(util_dir.glob("*.o")), f"No .o files in {util_dir}")
+
+            # 2. Idempotent second build
+            proc_idem = subprocess.run(
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc_idem.returncode,
+                0,
+                f"idempotent make failed:\n{proc_idem.stdout}\n{proc_idem.stderr}",
+            )
+
+            # 3. Clean parallel build (-j4)
+            shutil.rmtree(build_dir)
+            proc_par = subprocess.run(
+                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "runtime-objects"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc_par.returncode,
+                0,
+                f"parallel make failed:\n{proc_par.stdout}\n{proc_par.stderr}",
+            )
+            self.assertTrue(codec_dir.is_dir())
+            self.assertTrue(util_dir.is_dir())
 if __name__ == "__main__":
     unittest.main()
