@@ -61,6 +61,10 @@ HANDLER_STATUS = {
     # attract movie stays black by design). Tracked by issue #31.
     "h_PsmfGetVideo": "controlled_unsupported",
     "h_PsmfGetAudio": "controlled_unsupported",
+    # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
+    # by this runtime. They validate the core/voice identity and return the
+    # documented invalid-state error instead of fabricating success.
+    "h_SasUnsupportedVoice": "controlled_unsupported",
     # sceDmacMemcpy / sceDmacTryMemcpy. The measured contract is implemented and
     # regression-tested through production dispatch: the illegal-size and
     # illegal-address classes, whole-span validation with overflow-safe
@@ -100,7 +104,7 @@ ALIAS_RULES = (
 # name cannot come from the generated table or to override it deliberately.
 KNOWN_NID_NAMES = {
     0x1B4217BC: "sceKernelSetCompiledSdkVersion603_605",
-    # --- issue #75 (sceSasCore routing) ---
+    # --- sceSasCore routing integrity ---
     0x9EC3676A: "__sceSasSetADSRmode",
     0x33D4AB37: "__sceSasRevType",
     # --- issue #78 (sceReg routing) ---
@@ -125,14 +129,10 @@ KNOWN_NID_NAMES = {
 # appear in KNOWN_NID_NAMES and must be registered in hle.c
 # (tools/hle_manifest.py enforces both).
 #
-# NOTE: a corrected *label* is machine-enforced, but the *handler* at a
-# relabeled NID may still implement the old argument shape (e.g. 0x9EC3676A /
-# 0x33D4AB37 keep h_SasSetSimpleADSR / h_SasSetNoise, and 0x478FE6F5 returns
-# an int under a float-returning canonical name). A corrected label is NOT a
-# corrected handler; the shape/state work stays tracked by the linked issue.
+# NOTE: a corrected label and a dedicated handler are separate checks. The SAS
+# NIDs above now route through handlers with their canonical signatures. The
+# remaining issue links cover the unrelated canonical-name audits below.
 KNOWN_NID_ISSUES = {
-    0x9EC3676A: "https://github.com/Jstar269/nakagawa-recomp/issues/75",
-    0x33D4AB37: "https://github.com/Jstar269/nakagawa-recomp/issues/75",
     0x0CAE832B: "https://github.com/Jstar269/nakagawa-recomp/issues/78",
     0x1D8A762E: "https://github.com/Jstar269/nakagawa-recomp/issues/78",
     0x28A8E98A: "https://github.com/Jstar269/nakagawa-recomp/issues/78",

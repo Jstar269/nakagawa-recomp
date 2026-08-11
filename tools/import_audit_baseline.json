@@ -42,10 +42,10 @@
     "status": "unreviewed"
   },
   "0x07f58c24": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasGetAllEnvelopeHeights",
     "name": "__sceSasGetAllEnvelopeHeights",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x090ccb3f": {
     "classification": "fake_success",
@@ -324,10 +324,10 @@
     "status": "unreviewed"
   },
   "0x267a6dd2": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasRevParam",
     "name": "__sceSasRevParam",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x278c0df5": {
     "classification": "dedicated",
@@ -408,10 +408,10 @@
     "status": "unreviewed"
   },
   "0x2c8e6ab3": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasGetPauseFlag",
     "name": "__sceSasGetPauseFlag",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x2d0e4e0a": {
     "classification": "dedicated",
@@ -475,7 +475,7 @@
   },
   "0x33d4ab37": {
     "classification": "dedicated",
-    "handler": "h_SasSetNoise",
+    "handler": "h_SasRevType",
     "name": "__sceSasRevType",
     "status": "unreviewed"
   },
@@ -708,10 +708,10 @@
     "status": "unreviewed"
   },
   "0x4aa9ead6": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_SasUnsupportedVoice",
     "name": "__sceSasSetVoiceATRAC3",
-    "status": "stub"
+    "status": "controlled_unsupported"
   },
   "0x4ac57943": {
     "classification": "dedicated",
@@ -870,10 +870,10 @@
     "status": "unreviewed"
   },
   "0x5f9529f6": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetSL",
     "name": "__sceSasSetSL",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x60107536": {
     "classification": "dedicated",
@@ -1098,10 +1098,10 @@
     "status": "unreviewed"
   },
   "0x7497ea85": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_SasUnsupportedVoice",
     "name": "__sceSasConcatenateATRAC3",
-    "status": "stub"
+    "status": "controlled_unsupported"
   },
   "0x74ae582a": {
     "classification": "dedicated",
@@ -1152,10 +1152,10 @@
     "status": "unreviewed"
   },
   "0x787d04d5": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetPause",
     "name": "__sceSasSetPause",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x79d1c3fa": {
     "classification": "fake_success",
@@ -1435,7 +1435,7 @@
   },
   "0x9ec3676a": {
     "classification": "dedicated",
-    "handler": "h_SasSetSimpleADSR",
+    "handler": "h_SasSetADSRmode",
     "name": "__sceSasSetADSRmode",
     "status": "unreviewed"
   },
@@ -1482,10 +1482,10 @@
     "status": "unreviewed"
   },
   "0xa232cbe6": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_SasUnsupportedVoice",
     "name": "__sceSasSetTrianglarWave",
-    "status": "stub"
+    "status": "controlled_unsupported"
   },
   "0xa291f107": {
     "classification": "dedicated",
@@ -1662,10 +1662,10 @@
     "status": "unreviewed"
   },
   "0xb7660a23": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetNoise",
     "name": "__sceSasSetNoise",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb7d098c6": {
     "classification": "dedicated",
@@ -1704,10 +1704,10 @@
     "status": "unreviewed"
   },
   "0xbd11b7c2": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasGetGrain",
     "name": "__sceSasGetGrain",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xbea46419": {
     "classification": "dedicated",
@@ -1794,10 +1794,10 @@
     "status": "unreviewed"
   },
   "0xcbcd4f79": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetSimpleADSR",
     "name": "__sceSasSetSimpleADSR",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xceadeb47": {
     "classification": "dedicated",
@@ -1818,10 +1818,10 @@
     "status": "unreviewed"
   },
   "0xd1e0a01e": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetGrain",
     "name": "__sceSasSetGrain",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd1f59fdb": {
     "classification": "fake_success",
@@ -1854,10 +1854,10 @@
     "status": "unreviewed"
   },
   "0xd5a229c9": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasRevEVOL",
     "name": "__sceSasRevEVOL",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd5c28cc0": {
     "classification": "fake_success",
@@ -1865,11 +1865,11 @@
     "name": "sceAtracReleaseResources",
     "status": "stub"
   },
-  "0xd5ebbcdc": {
-    "classification": "fake_success",
-    "handler": "h_ok",
-    "name": "__sceSas_ok",
-    "status": "stub"
+  "0xd5ebbbcd": {
+    "classification": "controlled_unsupported",
+    "handler": "h_SasUnsupportedVoice",
+    "name": "__sceSasSetSteepWave",
+    "status": "controlled_unsupported"
   },
   "0xd61e6961": {
     "classification": "fake_success",
@@ -1968,16 +1968,16 @@
     "status": "unreviewed"
   },
   "0xe175ef66": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasGetOutputmode",
     "name": "__sceSasGetOutputmode",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xe1cd9561": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetVoicePCM",
     "name": "__sceSasSetVoicePCM",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xe1ce83a7": {
     "classification": "dedicated",
@@ -2046,10 +2046,10 @@
     "status": "unreviewed"
   },
   "0xe855bf76": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasSetOutputmode",
     "name": "__sceSasSetOutputmode",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xe88f759b": {
     "classification": "fake_success",
@@ -2136,10 +2136,10 @@
     "status": "unreviewed"
   },
   "0xf6107f00": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_SasUnsupportedVoice",
     "name": "__sceSasUnsetATRAC3",
-    "status": "stub"
+    "status": "controlled_unsupported"
   },
   "0xf6269b82": {
     "classification": "dedicated",
@@ -2208,10 +2208,10 @@
     "status": "unreviewed"
   },
   "0xf983b186": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SasRevVON",
     "name": "__sceSasRevVON",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xfa8a5739": {
     "classification": "fake_success",

@@ -86,6 +86,7 @@ typedef struct {
 } SrMsgPipeState;
 extern int sr_hle_test_msgpipe_state(uint32_t uid, SrMsgPipeState *out);
 extern uint32_t sr_hle_test_msgpipe_max_capacity(void);
+extern void sr_hle_test_sas_reset(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -2755,6 +2756,16 @@ static void test_atrac_stream_ring_wrap(void) {
 #define NID_SAS_SET_VOICE      0x99944089u
 #define NID_SAS_SET_VOLUME     0x440ca7d8u
 #define NID_SAS_SET_KEY_ON     0x76f01acau
+#define NID_SAS_SET_KEY_OFF    0xa0cf2fa4u
+#define NID_SAS_GET_END        0x68a46b95u
+#define NID_SAS_SET_ADSR       0x019b25ebu
+#define NID_SAS_SET_ADSR_MODE  0x9ec3676au
+#define NID_SAS_SET_SIMPLE     0xcbcd4f79u
+#define NID_SAS_SET_NOISE      0xb7660a23u
+#define NID_SAS_REV_TYPE       0x33d4ab37u
+#define SAS_ERROR_ADDRESS      0x80420005u
+#define SAS_ERROR_VOICE_INDEX  0x80420010u
+#define SAS_ERROR_ADSR_MODE    0x80420013u
 
 #define SAS_TEST_GRAIN 64u
 
@@ -2781,9 +2792,11 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
 
     const uint32_t SAS_OUT = 0x08010000u;   /* SAS output buffer */
     const uint32_t SAS_VAG = 0x08020000u;   /* synthetic VAG stream */
+    const uint32_t SAS_CORE = 0x08030000u;   /* aligned SceSasCore span */
 
     /* __sceSasInit(core, grain, maxVoices, outMode, sampleRate) */
-    cpu.r[4] = 0; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0;
+    cpu.r[8] = 44100;
     expect(sr_syscall(&cpu, NID_SAS_INIT) == 0,
            "__sceSasInit accepts the grain/voice configuration");
 
@@ -2797,7 +2810,7 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
 
     /* --- 1. WithMix with no voice keyed on must not disturb the caller's PCM. --- */
     sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
-    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = SAS_OUT; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
     expect(sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX) == 0, "__sceSasCoreWithMix returns success");
     sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
     expect(memcmp(got, bgm, sizeof(bgm)) == 0,
@@ -2805,7 +2818,7 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
 
     /* --- 2. Plain Core is an overwrite: the same buffer must come back silent. --- */
     sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
-    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = SAS_OUT;
     expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "__sceSasCore returns success");
     sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
     int core_silent = 1;
@@ -2826,17 +2839,18 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
     }
     /* __sceSasSetVoice(core, voice, vagAddr, size, loopmode) -- loopmode is the
      * fifth argument, which stack_arg(0) reads from $t0. */
-    cpu.r[4] = 0; cpu.r[5] = 0; cpu.r[6] = SAS_VAG; cpu.r[7] = 64u; cpu.r[8] = 0;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = 0; cpu.r[6] = SAS_VAG; cpu.r[7] = 64u; cpu.r[8] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "__sceSasSetVoice accepts the stream");
-    cpu.r[4] = 0; cpu.r[5] = 0; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = 0; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000;
     expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "__sceSasSetVolume accepts full volume");
-    cpu.r[4] = 0; cpu.r[5] = 0;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "__sceSasSetKeyOn keys the voice on");
 
     /* Voice-only reference: Core over a silent buffer. */
     memset(got, 0, sizeof(got));
     sas_write_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
-    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = SAS_OUT;
     (void)sr_syscall(&cpu, NID_SAS_CORE);
     sas_read_pcm(SAS_OUT, voice_only, SAS_TEST_GRAIN);
     int voice_audible = 0;
@@ -2846,10 +2860,10 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
     /* --- 4. WithMix over BGM must equal the saturating sum of the two. ---
      * KeyOn resets position, filter history, envelope and resample phase, so the
      * voice replays identically and the expected buffer is exact. */
-    cpu.r[4] = 0; cpu.r[5] = 0;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = 0;
     (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
     sas_write_pcm(SAS_OUT, bgm, SAS_TEST_GRAIN);
-    cpu.r[4] = 0; cpu.r[5] = SAS_OUT;
+    cpu.r[4] = SAS_CORE; cpu.r[5] = SAS_OUT; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
     (void)sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX);
     sas_read_pcm(SAS_OUT, got, SAS_TEST_GRAIN);
 
@@ -2863,6 +2877,154 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
            "__sceSasCoreWithMix adds the voice to caller PCM sample-for-sample");
     expect(differs_from_bgm && differs_from_voice,
            "__sceSasCoreWithMix output is neither the caller PCM nor the voice alone");
+}
+
+/* Production-dispatch SAS state regressions.  Each case uses only synthetic
+ * guest data and starts from a fresh core so one voice cannot mask another. */
+static void sas_test_init(CpuState *cpu, uint32_t core, uint32_t output_mode) {
+    sr_hle_test_sas_reset();
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[29] = 0x09012000u;
+    cpu->r[4] = core; cpu->r[5] = SAS_TEST_GRAIN; cpu->r[6] = 32;
+    cpu->r[7] = output_mode; cpu->r[8] = 44100;
+    expect(sr_syscall(cpu, NID_SAS_INIT) == 0,
+           "__sceSasInit accepts the synthetic state fixture");
+}
+
+static void sas_test_vag(uint32_t addr, uint32_t blocks, uint8_t flags) {
+    for (uint32_t b = 0; b < blocks; b++) {
+        uint32_t a = addr + b * 16u;
+        MEM_W8(a, 0u); MEM_W8(a + 1u, b + 1u == blocks ? flags : 0u);
+        for (uint32_t k = 0; k < 14u; k++) MEM_W8(a + 2u + k, 0x11u);
+    }
+}
+
+static void test_sas_state_contracts(void) {
+    CpuState cpu;
+#ifdef CORE
+#undef CORE
+#endif
+#ifdef OUT
+#undef OUT
+#endif
+#ifdef VAG
+#undef VAG
+#endif
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    /* RevType has core/effect arguments, not SetNoise's voice/frequency pair.
+     * Configure the voice after the call: the old misroute left noise latched
+     * on that voice, so its first sample was no longer the VAG sample. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 4u, 0u);
+    cpu.r[4] = CORE; cpu.r[5] = 3; cpu.r[6] = VAG; cpu.r[7] = 64; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0,
+           "RevType fixture accepts the VAG voice");
+    cpu.r[4] = CORE; cpu.r[5] = 3; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+    cpu.r[4] = CORE; cpu.r[5] = 3; cpu.r[6] = 3; cpu.r[7] = 17;
+    expect(sr_syscall(&cpu, NID_SAS_REV_TYPE) == 0,
+           "__sceSasRevType updates effect state");
+    cpu.r[4] = CORE; cpu.r[5] = 3; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    expect((int16_t)MEM_R16(OUT) == 64,
+           "__sceSasRevType does not mutate the selected voice's source type");
+
+    /* SetNoise is independent of VAG/PCM source state and can be keyed on. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    cpu.r[4] = CORE; cpu.r[5] = 2; cpu.r[6] = 17;
+    expect(sr_syscall(&cpu, NID_SAS_SET_NOISE) == 0,
+           "__sceSasSetNoise accepts a noise-only voice");
+    cpu.r[4] = CORE; cpu.r[5] = 2; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+    cpu.r[4] = CORE; cpu.r[5] = 2;
+    expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0,
+           "noise voice keys on without a VAG source");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int noise_audible = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++)
+        if ((int16_t)MEM_R16(OUT + i * 2u) != 0) { noise_audible = 1; break; }
+    expect(noise_audible, "noise voice contributes samples through Core");
+
+    /* ADSR rates and curves use independent masks/argument positions.  A high
+     * attack rate makes the selected-mode regression directly observable in the
+     * first synthetic sample; the former handlers reduced both calls to small
+     * voice/envelope aliases and produced silence. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 1; cpu.r[7] = 0x10000000u;
+    cpu.r[8] = 0; cpu.r[9] = 0; cpu.r[10] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_ADSR) == 0,
+           "__sceSasSetADSR updates the selected attack rate");
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 1; cpu.r[7] = 5;
+    cpu.r[8] = 5; cpu.r[9] = 5; cpu.r[10] = 5;
+    expect(sr_syscall(&cpu, NID_SAS_SET_ADSR_MODE) == 0,
+           "__sceSasSetADSRmode updates the selected curve only");
+    sas_test_vag(VAG, 4u, 0u);
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = VAG; cpu.r[7] = 64; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+    cpu.r[4] = CORE; cpu.r[5] = 1; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    expect((int16_t)MEM_R16(OUT) != 0,
+           "ADSRmode does not overwrite the selected voice's rate state");
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0,
+           "__sceSasSetSimpleADSR accepts its envelope words");
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000u | (1u << 13);
+    expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == SAS_ERROR_ADSR_MODE,
+           "__sceSasSetSimpleADSR rejects an invalid envelope mode");
+
+    /* Invalid -1 must not alias voice 31.  Mutate the active voice only if the
+     * implementation still contains the historical A1 & 31 access. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 4u, 0u);
+    cpu.r[4] = CORE; cpu.r[5] = 31; cpu.r[6] = VAG; cpu.r[7] = 64; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 31; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+    cpu.r[4] = CORE; cpu.r[5] = 31; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    cpu.r[4] = CORE; cpu.r[5] = 0xffffffffu; cpu.r[6] = 0; cpu.r[7] = 0;
+    cpu.r[8] = 0; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == SAS_ERROR_VOICE_INDEX,
+           "negative voice index is rejected rather than wrapped");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    expect((int16_t)MEM_R16(OUT) != 0,
+           "rejecting an invalid voice leaves voice 31 audible");
+
+    /* A multichannel grain needs the complete 4-plane span.  The old stereo
+     * mixer wrote only the first 256 bytes and accepted this truncated target. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 1);
+    const uint32_t BAD_OUT = 0x0bffff00u;
+    MEM_W32(OUT, 0xdeadbeefu);
+    cpu.r[4] = CORE; cpu.r[5] = BAD_OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == SAS_ERROR_ADDRESS,
+           "Core rejects an output pointer without a complete grain span");
+    expect(MEM_R32(OUT) == 0xdeadbeefu,
+           "rejected output span leaves unrelated guest memory untouched");
+
+    /* Data loop markers cannot override a caller loop=0 request. */
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 3u, 7u);
+    MEM_W8(VAG + 1u, 6u); MEM_W8(VAG + 16u + 1u, 3u);
+    cpu.r[4] = CORE; cpu.r[5] = 5; cpu.r[6] = VAG; cpu.r[7] = 48; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 5; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+    cpu.r[4] = CORE; cpu.r[5] = 5; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) & (1u << 5),
+           "a non-looping VAG voice ends despite loop markers");
 }
 
 static void test_msgpipe_safety(void) {
@@ -4085,6 +4247,7 @@ int main(int argc, char **argv) {
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();
     test_sas_core_mix_preserves_caller_pcm();
+    test_sas_state_contracts();
     test_msgpipe_safety();
     test_intr_context_conformance();
 

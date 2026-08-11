@@ -258,6 +258,54 @@ class LiveManifestTests(unittest.TestCase):
         self.assertNotIn(0x31668BBA, self.regs)
         self.assertEqual(self.regs[0x31668BAA]["name"], "sceAtracGetChannel")
 
+    def test_sas_registry_routes_canonical_nids_to_distinct_handlers(self) -> None:
+        """The SAS NID table must preserve each public signature's handler shape."""
+        expected = {
+            0x019B25EB: "h_SasSetADSR",
+            0x07F58C24: "h_SasGetAllEnvelopeHeights",
+            0x267A6DD2: "h_SasRevParam",
+            0x2C8E6AB3: "h_SasGetPauseFlag",
+            0x33D4AB37: "h_SasRevType",
+            0x42778A9F: "h_SasInit",
+            0x440CA7D8: "h_SasSetVolume",
+            0x4AA9EAD6: "h_SasUnsupportedVoice",
+            0x50A14DFC: "h_SasCoreWithMix",
+            0x5F9529F6: "h_SasSetSL",
+            0x68A46B95: "h_SasGetEndFlag",
+            0x7497EA85: "h_SasUnsupportedVoice",
+            0x74AE582A: "h_SasGetEnvelopeHeight",
+            0x76F01ACA: "h_SasSetKeyOn",
+            0x787D04D5: "h_SasSetPause",
+            0x99944089: "h_SasSetVoice",
+            0x9EC3676A: "h_SasSetADSRmode",
+            0xA0CF2FA4: "h_SasSetKeyOff",
+            0xA232CBE6: "h_SasUnsupportedVoice",
+            0xA3589D81: "h_SasCore",
+            0xAD84D37F: "h_SasSetPitch",
+            0xB7660A23: "h_SasSetNoise",
+            0xBD11B7C2: "h_SasGetGrain",
+            0xCBCD4F79: "h_SasSetSimpleADSR",
+            0xD1E0A01E: "h_SasSetGrain",
+            0xD5A229C9: "h_SasRevEVOL",
+            0xD5EBBBCD: "h_SasUnsupportedVoice",
+            0xE175EF66: "h_SasGetOutputmode",
+            0xE1CD9561: "h_SasSetVoicePCM",
+            0xE855BF76: "h_SasSetOutputmode",
+            0xF6107F00: "h_SasUnsupportedVoice",
+            0xF983B186: "h_SasRevVON",
+        }
+        sas = {
+            nid: r for nid, r in self.regs.items() if r["name"].startswith("__sceSas")
+        }
+        self.assertEqual(set(sas), set(expected))
+        self.assertEqual({nid: r["handler"] for nid, r in sas.items()}, expected)
+        self.assertNotIn(0xD5EBBCDC, sas)
+        self.assertEqual(sas[0x33D4AB37]["name"], "__sceSasRevType")
+        self.assertEqual(sas[0x9EC3676A]["name"], "__sceSasSetADSRmode")
+        self.assertNotEqual(sas[0x33D4AB37]["handler"], sas[0xB7660A23]["handler"])
+        self.assertNotEqual(sas[0x9EC3676A]["handler"], sas[0xCBCD4F79]["handler"])
+        self.assertTrue(all(r["handler"] != "h_ok" for r in sas.values()))
+
     def test_all_classifications_present(self) -> None:
         classes = {r["classification"] for r in self.manifest["registrations"]}
         self.assertEqual(classes, {"dedicated", "fake_success", "controlled_unsupported"})
