@@ -94,7 +94,7 @@ A clean publication audit is technical evidence about the candidate tree; it is 
 - [Issue #23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) [OPEN ISSUE]
 - [PR #1 — Bump ruff-pre-commit from v0.16.0 to 0.16.2](https://github.com/Jstar269/nakagawa-recomp/pull/1) [OPEN PR]
 
-Recently merged/closed public work is preserved in the relevant implementation/reference documents and GitHub history rather than duplicated here. For example, inherited-file modification notices landed through merged PR #27 and closed issue #26.
+Recently merged/closed public work is preserved in the relevant implementation/reference documents and GitHub history rather than duplicated here.
 
 ## Updating this dashboard
 
