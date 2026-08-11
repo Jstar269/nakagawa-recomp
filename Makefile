@@ -530,7 +530,7 @@ coro-selftest:
 # adoption idempotent and `1d8d494` added lifecycle counters that fail fast if the runaway
 # pattern returns. The instrumentation macro is defined by this target alone; no production
 # target compiles it, and the test refuses to build without it. The normal target is a safe,
-# bounded runnable gate (1094 checks in the current measured run, of which 82 come from the
+# bounded runnable gate (9599 checks in the current measured run, of which 82 come from the
 # issue #88 interrupt-context conformance matrix in src/rt/intr_conformance.h); the --psp-oracle
 # sub-mode below
 # remains available when only one scalar production-HLE stream is needed.

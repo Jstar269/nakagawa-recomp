@@ -1932,10 +1932,10 @@
     "status": "unreviewed"
   },
   "0xdba6c4c4": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_DisplayGetFramePerSec",
     "name": "sceDisplayGetFramePerSec",
-    "status": "stub"
+    "status": "complete"
   },
   "0xdc692ee3": {
     "classification": "dedicated",

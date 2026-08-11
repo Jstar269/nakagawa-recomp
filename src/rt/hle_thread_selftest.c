@@ -104,7 +104,14 @@ extern void sr_hle_test_sas_reset(void);
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
 #define NID_SCE_RTC_GET_TICK 0x6ff40accu
+#define NID_SCE_RTC_SET_TICK 0x7ed29e40u
+#define NID_SCE_RTC_GET_WIN32_FILETIME 0xcf561893u
+#define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
+#define NID_DISPLAY_FRAME_PER_SEC 0xdba6c4c4u
 #define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
+
+/* White-box fixture hook defined in hle.c under SR_HLE_THREAD_SELFTEST. */
+extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_LIBC_TIME 0x27cc57f0u
 #define NID_SCE_KERNEL_LIBC_GETTIMEOFDAY 0x71ec4271u
 #define NID_SCE_KERNEL_CPU_SUSPEND_INTR 0x092968f4u
@@ -925,6 +932,380 @@ static void test_display_clock_reads_are_observational(void) {
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
            "display VBLANK clears at the next rational frame");
+}
+
+static int s_delay_done;      /* set when the delay guest body returned */
+static uint32_t s_delay_ret;  /* return code of sceKernelDelayThread */
+
+/* Guest body for the delay test: enters sceKernelDelayThread through the real
+ * NID inside its own coroutine (the production shape), then parks on the
+ * scheduler.  The delay's own switch_to_scheduler() is a genuine child->main
+ * switch here, so the coroutine-lifecycle invariant (no suppressed
+ * self-switches) stays intact. */
+static void delay_coro_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1000u;   /* 1 ms */
+    s_delay_ret = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    s_delay_done = 1;
+    selftest_park_on_scheduler();
+}
+
+/* Production-path clock regression: a controlled scheduler delay advances the
+ * unified microsecond timeline.  A RUNNING thread parks through the real
+ * sceKernelDelayThread NID, the scheduler charges exactly the delay through its
+ * public HLE time-charge API (sr_hle_advance_time, the turbo-mode wait path),
+ * and system time, the RTC tick, and the display scan each observe the result
+ * in their own domains -- mirroring the PSP-3001/6.61-ARK measurements on
+ * issue #80 (system time and RTC advance ~1 us/us over a 1 ms delay; the
+ * display counter does not move inside the window). */
+static void test_delay_advances_unified_timeline(void) {
+    enum { SYS_OUT = 0x00200000u, TICK_OUT = 0x00200010u };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_reset_rtc_epoch();   /* re-anchor the RTC epoch at our timeline */
+    s_pace_on = 0;   /* deterministic: no host-clock dependence */
+    TCB *self = fixture_thread(0x1d0u, TH_RUNNING, 32);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+    s_vtime_us = 5000u;
+    /* Next VBLANK far away: like the hardware window, a 1 ms delay must not
+     * move the display counter (59.94 Hz period ~16.7 ms). */
+    s_vbl_next_us = 100000u;
+    s_vbl_event_period_rem = 0;
+    s_delay_done = 0;
+    s_delay_ret = 0xFFFFFFFFu;
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint64_t before = s_vtime_us;
+
+    cpu.r[4] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == 0u,
+           "pre-delay RTC tick query succeeds");
+    uint64_t tick_before = selftest_guest_u64(TICK_OUT);
+    cpu.r[4] = 0;
+    uint32_t hc_before = sr_syscall(&cpu, 0x773dd3a3u);   /* sceDisplayGetCurrentHcount */
+    cpu.r[4] = 0;
+    uint32_t vc_before = sr_syscall(&cpu, 0x9c6eaad7u);   /* sceDisplayGetVcount */
+
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "delay thread coroutine created");
+    if (self->coro) sr_coro_switch(self->coro);
+
+    expect(s_delay_done == 0, "guest body is still parked inside the delay syscall");
+    expect(self->state == TH_WAIT_DELAY && self->wake == before + 1000u,
+           "delay arm uses the unified deadline = vtime + usec");
+
+    sr_hle_advance_time(1000u);   /* elapse exactly the controlled delay */
+    expect(sched_vtime_us() == before + 1000u,
+           "scheduler time advanced by exactly the controlled delay");
+
+    /* Clock observations while the guest is still parked. */
+    cpu.r[4] = SYS_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME) == 0u &&
+           selftest_guest_u64(SYS_OUT) == before + 1000u,
+           "GetSystemTime tracks the elapsing delay exactly");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) ==
+               (uint32_t)(before + 1000u),
+           "GetSystemTimeLow shares the microsecond timeline");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK) == (uint32_t)(before + 1000u),
+           "libc clock follows the same scheduler microseconds");
+    cpu.r[4] = TICK_OUT;
+    (void)sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK);
+    expect(selftest_guest_u64(TICK_OUT) - tick_before == 1000u,
+           "RTC tick advances 1 us per us of scheduler time (same domain)");
+
+    /* Display domain: same timeline, separate 59.94-Hz/286-line scan scale. */
+    cpu.r[4] = 0;
+    uint32_t hc_after = sr_syscall(&cpu, 0x773dd3a3u);
+    expect(hc_before == 85u && hc_after == 102u,
+           "display HCOUNT advances on its rational scan scale (85 -> 102 over 1 ms)");
+    cpu.r[4] = 0;
+    uint32_t vc_after = sr_syscall(&cpu, 0x9c6eaad7u);
+    expect(vc_after == vc_before,
+           "VCOUNT is frozen inside the sub-frame window");
+    expect(pick_next() == (int)(self - s_tcb),
+           "expired delay promotes the parked thread on the next scheduler pick");
+
+    /* Resume the parked guest: the syscall completes and returns 0. */
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done == 1 && s_delay_ret == 0u,
+           "sceKernelDelayThread returns 0 after the delay elapses");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+    s_cur = -1;
+}
+
+/* sceDisplayGetFramePerSec returns a single-precision float through $f0.  The
+ * integer return convention reports success in $v0, so a guest reading the
+ * float must see the measured 60000/1001 bits -- never stale/poisoned state
+ * (issue #80 display-clock campaign). */
+static void test_display_frame_per_sec_float_return(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.fi[0] = 0xDEADBEEFu;   /* poison the register the handler must overwrite */
+
+    expect(sr_syscall(&cpu, NID_DISPLAY_FRAME_PER_SEC) == 0u,
+           "FramePerSec dispatch reports success in $v0");
+    expect(cpu.fi[0] == 0x426fc29fu,
+           "FramePerSec writes the 60000/1001 float bits (59.9400599f) in $f0");
+    cpu.fi[0] = 0u;
+    expect(sr_syscall(&cpu, NID_DISPLAY_FRAME_PER_SEC) == 0u &&
+           cpu.fi[0] == 0x426fc29fu,
+           "repeated FramePerSec reads are stable");
+    /* The rate is a constant of the display domain: advancing guest time must
+     * not change it, and it must stay coherent with the scan model. */
+    s_vtime_us = 16670u;
+    cpu.fi[0] = 0u;
+    (void)sr_syscall(&cpu, NID_DISPLAY_FRAME_PER_SEC);
+    expect(cpu.fi[0] == 0x426fc29fu,
+           "FramePerSec stays coherent with the rational frame phase");
+}
+
+/* RTC conversion error codes, output-mutation behavior, and full-range tick
+ * conversion, all pinned to PSPAutotests tests/rtc (convert.expected,
+ * arithmetic.expected, rtc.expected). */
+static void test_rtc_conversion_errors_and_full_range(void) {
+    enum {
+        DATE = 0x00200200u,
+        TICK_OUT = 0x00200210u,
+        FT_OUT = 0x00200220u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    /* ---- sceRtcGetTick: invalid year -> 0x800001fe, output untouched ---- */
+    MEM_W16(DATE + 0u, 0u); MEM_W16(DATE + 2u, 1u); MEM_W16(DATE + 4u, 1u);
+    MEM_W16(DATE + 6u, 0u); MEM_W16(DATE + 8u, 0u); MEM_W16(DATE + 10u, 0u);
+    MEM_W32(DATE + 12u, 0u);
+    MEM_W32(TICK_OUT, 0xDEADBEEFu); MEM_W32(TICK_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE; cpu.r[5] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0x800001feu,
+           "GetTick year 0 reports INVALID_VALUE");
+    expect(selftest_guest_u64(TICK_OUT) == 0xDEADBEEFDEADBEEFull,
+           "GetTick failure leaves the output tick untouched");
+
+    MEM_W16(DATE + 0u, 10000u);
+    MEM_W32(TICK_OUT, 0xDEADBEEFu); MEM_W32(TICK_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE; cpu.r[5] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0x800001feu,
+           "GetTick year 10000 reports INVALID_VALUE");
+    expect(selftest_guest_u64(TICK_OUT) == 0xDEADBEEFDEADBEEFull,
+           "GetTick overflow failure leaves the output untouched");
+
+    /* ---- valid round trip: 2012-09-20 07:12:15.500 ---- */
+    MEM_W16(DATE + 0u, 2012u); MEM_W16(DATE + 2u, 9u); MEM_W16(DATE + 4u, 20u);
+    MEM_W16(DATE + 6u, 7u); MEM_W16(DATE + 8u, 12u); MEM_W16(DATE + 10u, 15u);
+    MEM_W32(DATE + 12u, 500u);
+    cpu.r[4] = DATE; cpu.r[5] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "GetTick accepts a valid date");
+    expect(selftest_guest_u64(TICK_OUT) == 63483721935000500ull,
+           "GetTick converts the valid date to the proleptic Gregorian tick");
+    cpu.r[4] = DATE; cpu.r[5] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == 0u,
+           "SetTick accepts the converted tick");
+    expect(MEM_R16(DATE + 0u) == 2012u && MEM_R16(DATE + 2u) == 9u &&
+           MEM_R16(DATE + 4u) == 20u && MEM_R16(DATE + 6u) == 7u &&
+           MEM_R16(DATE + 8u) == 12u && MEM_R16(DATE + 10u) == 15u &&
+           MEM_R32(DATE + 12u) == 500u,
+           "tick/date round trip is exact");
+
+    /* ---- sceRtcSetTick covers the full u64 range (arithmetic.expected) ---- */
+    uint64_t wrap_tick = 315537897698999999ull;   /* 9999-12-31 23:59:59.999998 + 1us */
+    MEM_W32(TICK_OUT, (uint32_t)wrap_tick); MEM_W32(TICK_OUT + 4u, (uint32_t)(wrap_tick >> 32));
+    cpu.r[4] = DATE; cpu.r[5] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == 0u,
+           "SetTick accepts a tick beyond year 9999");
+    expect(MEM_R16(DATE + 0u) == 10000u && MEM_R16(DATE + 2u) == 1u &&
+           MEM_R16(DATE + 4u) == 1u && MEM_R16(DATE + 6u) == 0u &&
+           MEM_R16(DATE + 8u) == 1u && MEM_R16(DATE + 10u) == 38u &&
+           MEM_R32(DATE + 12u) == 999999u,
+           "SetTick writes the wrapped date with natural field truncation");
+
+    /* ---- sceRtcGetWin32FileTime: 2005-11-31 accepted, 1600 rejected ---- */
+    MEM_W16(DATE + 0u, 2005u); MEM_W16(DATE + 2u, 11u); MEM_W16(DATE + 4u, 31u);
+    MEM_W16(DATE + 6u, 13u); MEM_W16(DATE + 8u, 1u); MEM_W16(DATE + 10u, 0u);
+    MEM_W32(DATE + 12u, 1u);
+    MEM_W32(FT_OUT, 0xFFFFFFFFu); MEM_W32(FT_OUT + 4u, 0xFFFFFFFFu);
+    cpu.r[4] = DATE; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0u,
+           "GetWin32FileTime accepts a carry date (2005-11-31)");
+    expect(selftest_guest_u64(FT_OUT) == 127779156600000010ull,
+           "GetWin32FileTime matches the measured 2005-11-31 conversion");
+
+    MEM_W16(DATE + 0u, 1600u); MEM_W16(DATE + 2u, 1u); MEM_W16(DATE + 4u, 1u);
+    MEM_W16(DATE + 6u, 0u); MEM_W16(DATE + 8u, 0u); MEM_W16(DATE + 10u, 0u);
+    MEM_W32(DATE + 12u, 0u);
+    MEM_W32(FT_OUT, 0xFFFFFFFFu); MEM_W32(FT_OUT + 4u, 0xFFFFFFFFu);
+    cpu.r[4] = DATE; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime pre-1601 reports INVALID_VALUE");
+    expect(selftest_guest_u64(FT_OUT) == 0ull,
+           "GetWin32FileTime writes 0 on failure (convert.expected)");
+
+    /* ---- GetCurrentClock accepts the full int32 offset range ---- */
+    cpu.r[4] = DATE;
+    cpu.r[5] = (uint32_t)(int32_t)-2147483647;   /* -INT_MAX minutes */
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "GetCurrentClock returns success for -INT_MAX minutes (rtc.expected)");
+    cpu.r[4] = DATE;
+    cpu.r[5] = 2147483647u;                       /* +INT_MAX minutes */
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "GetCurrentClock returns success for INT_MAX minutes (rtc.expected)");
+    cpu.r[4] = DATE;
+    cpu.r[5] = (uint32_t)(int32_t)-600000;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "GetCurrentClock returns success for -600000 minutes (rtc.expected)");
+}
+
+/* #80 bulk-stability regression: 1000 reads of every guest-visible time API at
+ * one unchanged emulated timestamp must be side-effect free -- identical values
+ * and the scheduler timeline left exactly where it was.  Time moves only
+ * through scheduler progression (sr_hle_advance_time, yield/idle boundaries,
+ * explicit fixture advances), never through a clock query.  The RTC/Unix epoch
+ * is anchored once; every read after that is guest-time arithmetic on the same
+ * microsecond timeline. */
+static void test_bulk_clock_reads_are_side_effect_free(void) {
+    enum {
+        TICK_OUT = 0x00200300u,
+        TV_OUT = 0x00200310u,
+        TZ_OUT = 0x00200320u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_reset_rtc_epoch();
+    s_pace_on = 0;
+    s_vtime_us = 424242u;
+    uint64_t before = s_vtime_us;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = TICK_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == 0u,
+           "RTC current tick anchors the fixture epoch");
+    uint64_t rtc0 = selftest_guest_u64(TICK_OUT);
+    uint32_t low0 = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW);
+    uint32_t clock0 = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK);
+    cpu.r[4] = TV_OUT;
+    cpu.r[5] = TZ_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u,
+           "gettimeofday baseline read succeeds");
+    uint32_t tv_sec0 = MEM_R32(TV_OUT);
+    uint32_t tv_usec0 = MEM_R32(TV_OUT + 4u);
+
+    for (int i = 0; i < 1000; i++) {
+        cpu.r[4] = TICK_OUT;
+        (void)sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK);
+        expect(selftest_guest_u64(TICK_OUT) == rtc0,
+               "1000 RTC current-tick reads return the identical calendar value");
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) == low0,
+               "1000 GetSystemTimeLow reads are stable");
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK) == clock0,
+               "1000 libc clock reads are stable");
+        cpu.r[4] = TV_OUT;
+        cpu.r[5] = TZ_OUT;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY);
+        expect(MEM_R32(TV_OUT) == tv_sec0 && MEM_R32(TV_OUT + 4u) == tv_usec0,
+               "1000 gettimeofday reads return the identical Unix time");
+    }
+    expect(s_vtime_us == before,
+           "1000 reads of every clock leave the scheduler timeline untouched");
+
+    /* Relative coherence: one known scheduler advance moves system time and the
+     * RTC tick by exactly the same microsecond delta (same domain, same rate). */
+    s_vtime_us += 5000u;
+    cpu.r[4] = TICK_OUT;
+    (void)sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK);
+    expect(selftest_guest_u64(TICK_OUT) - rtc0 == 5000u,
+           "RTC tick advances 1 us per us of scheduler time (same domain)");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) ==
+               (uint32_t)(before + 5000u),
+           "system time advances by the identical delta");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_CLOCK) == (uint32_t)(before + 5000u),
+           "libc clock advances by the identical delta");
+}
+
+/* #80 display-domain independence: display progression is owned by display
+ * state (the scheduler's rational scan phase plus delivered VBLANK source
+ * events), never by the number of queries.  1000 reads of every display clock
+ * at one unchanged emulated timestamp must return identical values, leave
+ * s_vtime_us untouched, and not deliver a vblank; VCOUNT advances exactly
+ * once per delivered vblank, and only then. */
+static void test_display_queries_do_not_progress_display(void) {
+    enum {
+        NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
+        NID_DISPLAY_IS_VBLANK = 0x4d4e10ecu,
+        NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 5000u;              /* mid-frame: outside the vblank window */
+    s_vbl_next_us = 1000000u;        /* next VBLANK source event far away */
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    uint64_t before = s_vtime_us;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    uint32_t hc0 = sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT);
+    cpu.r[4] = 0;
+    uint32_t vb0 = sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK);
+    cpu.r[4] = 0;
+    uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+    for (int i = 0; i < 1000; i++) {
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT) == hc0,
+               "1000 current-HCOUNT reads do not advance the scanline");
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == vb0,
+               "1000 vblank-phase reads are stable");
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+               "1000 VCOUNT reads do not deliver a vblank");
+        cpu.fi[0] = 0u;
+        expect(sr_syscall(&cpu, NID_DISPLAY_FRAME_PER_SEC) == 0u &&
+               cpu.fi[0] == 0x426fc29fu,
+               "1000 FramePerSec reads return the constant float rate");
+    }
+    expect(s_vtime_us == before,
+           "display queries never advance the scheduler timeline");
+    expect(s_vbl_count == 0u,
+           "no VBLANK source event was latched by the reads");
+
+    /* Display progression: one delivered vblank advances VCOUNT exactly once,
+     * and HCOUNT moves with the elapsed rational scan phase, not with reads. */
+    s_vtime_us += 8342u;             /* one half frame on the rational scale */
+    sr_vblank_tick();
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
+           "VCOUNT advances exactly once per delivered vblank");
+    cpu.r[4] = 0;
+    uint32_t hc1 = sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT);
+    expect(hc1 != hc0,
+           "HCOUNT follows the elapsed display phase, not the query count");
+
+    /* The new state is again read-only: further reads change nothing. */
+    for (int i = 0; i < 100; i++) {
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
+               "post-progression VCOUNT reads stay stable");
+    }
 }
 
 static void test_interrupt_nid_semantics(void) {
@@ -3320,16 +3701,18 @@ static void check_coroutine_lifecycle(void) {
            "no switch was ever issued with a NULL target");
     expect(lc.child_to_other == 0,
            "every switch out of a child coroutine targeted the adopted scheduler");
-    /* Two joiner bodies, plus one park per conformance probe leg that returned.
-     * ic_expected_parks() derives its count from the recorded outcome table, not
-     * from the park hook, so this stays a genuine cross-check of the coroutine
-     * layer rather than a tautology. */
+    /* Two joiner bodies, plus one park per conformance probe leg that returned,
+     * plus the delay-thread body from test_delay_advances_unified_timeline (its
+     * sceKernelDelayThread parks inside the syscall, and the body parks again
+     * when the syscall returns).  ic_expected_parks() derives its count from
+     * the recorded outcome table, not from the park hook, so this stays a
+     * genuine cross-check of the coroutine layer rather than a tautology. */
     {
-        int expected_parks = 2 + ic_expected_parks();
+        int expected_parks = 3 + ic_expected_parks();
         char msg[160];
         snprintf(msg, sizeof msg,
-                 "every parking body parked exactly once (2 joiners + %d returned "
-                 "conformance legs = %d, observed %lu)",
+                 "every parking body parked exactly once (2 joiners + 1 delay body "
+                 "+ %d returned conformance legs = %d, observed %lu)",
                  ic_expected_parks(), expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -4352,6 +4735,11 @@ int main(int argc, char **argv) {
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_display_clock_reads_are_observational();
+    test_delay_advances_unified_timeline();
+    test_display_frame_per_sec_float_return();
+    test_rtc_conversion_errors_and_full_range();
+    test_bulk_clock_reads_are_side_effect_free();
+    test_display_queries_do_not_progress_display();
     test_interrupt_nid_semantics();
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();

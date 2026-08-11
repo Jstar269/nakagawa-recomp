@@ -260,6 +260,44 @@ a POSIX/ucontext compile path for host-neutral verification/portability work.
 Scheduler correctness includes priority selection, lifecycle, waits/timeouts, callback-aware waits,
 and wakeup semantics—not only context switching.
 
+### Clocks
+
+`sched.c` owns one authoritative monotonic microsecond timeline (`s_vtime_us`). Every guest-visible
+time value derives from it; reading a time API never advances it. The clock advances only at
+scheduler/emulation progression boundaries (`sr_hle_advance_time`, yield/idle steps, vblank source
+delivery).
+
+Clock ownership:
+
+- **System time** — `sceKernelGetSystemTime[Low/Wide]` and `sceKernelLibcClock` read `s_vtime_us`
+  directly; the libc clock is elapsed guest time, not Unix time.
+- **RTC calendar** — `sceRtcGetCurrentTick`/current-clock map the same timeline through a one-time
+  epoch offset (`s_rtc_epoch_tick`), sampled from the host wall clock at first RTC use and anchored
+  at guest time zero. After that, RTC reads are pure guest-time arithmetic at the same 1 us/us rate
+  as system time. Host wall time never enters an ordinary read path.
+- **Scheduler waits** — delay deadlines, timeout deadlines, and remaining-time computations all use
+  `s_vtime_us` via the shared `sched_vtime_refresh`/`sched_vtime_deadline_after`/
+  `sched_block_on_timeout` plumbing. No wait object or interrupt/precedence semantics are duplicated
+  in the clock layer.
+- **Display domain** — VCOUNT/HCOUNT/VBLANK phase are a separate display timeline derived from
+  `s_vtime_us` through the rational 60000/1001 Hz model (286 scanlines/frame) plus delivered VBLANK
+  source events. Display reads never deliver vblanks or move the counters; VCOUNT advances only in
+  `sr_vblank_tick` when a vblank is delivered. Controller sample timestamps and audio pacing use the
+  same vblank counter, matching the PSP's vblank-unit pad timestamps.
+- **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
+  tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
+  timezone.
+- **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
+  domains and are not wall time.
+
+Host behavior: in paced mode (default) `s_vtime_us` tracks SDL's monotonic clock at scheduler
+boundaries — a host stall or sleep advances guest time by the stall, and slow frames are caught up by
+skipping missed vblank slots while preserving the rational phase carry. The update is forward-only
+(`t > s_vtime_us`), so host wall-clock corrections/rollback cannot move guest time backward or jump
+it. In turbo mode (`SR_NOVBPACE=1`) time advances deterministically at scheduler boundaries and is
+never host-dependent. SDL monotonic time is used for pacing/profiling only; the one host wall-clock
+read is the RTC epoch init.
+
 ## Environment Variables
 
 The runtime has many diagnostic and behavior switches. This table is intentionally a selected
