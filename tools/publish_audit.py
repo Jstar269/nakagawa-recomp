@@ -770,15 +770,17 @@ def _notice_link_findings(repo_root: Path = ROOT) -> list[Finding]:
     return findings
 
 
-def _action_pin_findings(repo_root: Path = ROOT) -> list[Finding]:
+def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None = None) -> list[Finding]:
     findings = []
     workflow_dir = repo_root / ".github" / "workflows"
     if workflow_dir.is_dir():
         for path in sorted(workflow_dir.glob("*.y*ml")):
-            text = _text(path) or ""
             rel = path.relative_to(repo_root).as_posix()
+            if audited_paths is not None and rel not in audited_paths:
+                continue
+            text = _text(path) or ""
             for match in ACTION_USE.finditer(text):
-                use = match.group(1)
+                use = match.group(1).strip("'\"")
                 if use.startswith(("./", "docker://")):
                     continue
                 if not FULL_SHA_ACTION.fullmatch(use):
@@ -1088,8 +1090,9 @@ def audit_entries_with_semantics(
             )
         )
 
+    audited_paths = {e.path for e in entries}
     findings.extend(_notice_link_findings(repo_root))
-    findings.extend(_action_pin_findings(repo_root))
+    findings.extend(_action_pin_findings(repo_root, audited_paths))
 
     sorted_findings = sorted(findings, key=lambda item: (item.path.lower(), item.code, item.detail))
     sorted_semantics = sorted(semantics_list, key=lambda s: s.path.lower())

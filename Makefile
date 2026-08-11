@@ -124,25 +124,6 @@ VERIFY_WORKDIR   ?= $(BUILD_DIR)/verify
 
 CXX        ?= g++
 
-# Ensure the build directory exists up front so no per-recipe mkdir is needed.
-# (mkdir -p under MSYS2 GNU make intermittently fails with "No such file or directory"
-#  when invoked from a non-MSYS2 PowerShell host — explicit creation here avoids that.)
-ifeq ($(OS),Windows_NT)
-ifdef MSYSTEM
-# MSYS2 shell (CI's msys2 {0} step): cmd may be absent from PATH, so the cmd
-# branch below silently no-ops and the first compile fails with "can't create
-# <obj>: No such file or directory". sh-style mkdir is reliable here.
-$(shell mkdir -p "$(BUILD_DIR)")
-$(shell mkdir -p "$(BUILD_DIR)/portable-core")
-else
-$(shell cmd /c if not exist "$(BUILD_DIR)" mkdir "$(subst /,\,$(BUILD_DIR))" 1>nul 2>nul)
-$(shell cmd /c if not exist "$(BUILD_DIR)\portable-core" mkdir "$(subst /,\,$(BUILD_DIR))\portable-core" 1>nul 2>nul)
-endif
-else
-$(shell mkdir -p "$(BUILD_DIR)")
-$(shell mkdir -p "$(BUILD_DIR)/portable-core")
-endif
-
 # ATRAC3+ decoder import sources (PR-A). Shared by the runtime link (PR-B
 # h_AtracDecodeData integration) and the standalone selftest targets.
 ATRAC3P_SRCS := src/rt/atrac3p/atrac3p_api.c \
@@ -160,6 +141,38 @@ ATRAC3P_SRCS := src/rt/atrac3p/atrac3p_api.c \
 	src/rt/atrac3p/libavutil/log2_tab.c \
 	src/rt/atrac3p/libavutil/mem.c \
 	src/rt/atrac3p/libavutil/reverse.c
+
+# PR-B: real ATRAC3+ decode in the HLE (h_AtracDecodeData). The decoder
+# bridge (src/rt/atrac3p_bridge.c) and the imported FFmpeg n4.4 decoder TUs
+# join the runtime link; the include paths are relative to src/rt/atrac3p/.
+# Objects are prefixed so nested import paths cannot collide with flat
+# runtime object names.
+ATRAC3P_OBJS := $(patsubst src/rt/atrac3p/%.c,$(BUILD_DIR)/atrac3p_%.o,$(ATRAC3P_SRCS))
+ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
+
+# Ensure the build directory and nested object directories exist up front so no
+# per-recipe mkdir is needed.
+# (mkdir -p under MSYS2 GNU make intermittently fails with "No such file or directory"
+#  when invoked from a non-MSYS2 PowerShell host — explicit creation here avoids that;
+#  and a per-recipe `mkdir -p` fails under cmd.exe when sh is absent from PATH.)
+ifeq ($(OS),Windows_NT)
+ifdef MSYSTEM
+# MSYS2 shell (CI's msys2 {0} step): cmd may be absent from PATH, so the cmd
+# branch below silently no-ops and the first compile fails with "can't create
+# <obj>: No such file or directory". sh-style mkdir is reliable here.
+$(shell mkdir -p "$(BUILD_DIR)")
+$(shell mkdir -p "$(BUILD_DIR)/portable-core")
+$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell mkdir -p "$(d)"))
+else
+$(shell cmd /c if not exist "$(BUILD_DIR)" mkdir "$(subst /,\,$(BUILD_DIR))" 1>nul 2>nul)
+$(shell cmd /c if not exist "$(BUILD_DIR)\portable-core" mkdir "$(subst /,\,$(BUILD_DIR))\portable-core" 1>nul 2>nul)
+$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell cmd /c if not exist "$(subst /,\,$(d))" mkdir "$(subst /,\,$(d))" 1>nul 2>nul))
+endif
+else
+$(shell mkdir -p "$(BUILD_DIR)")
+$(shell mkdir -p "$(BUILD_DIR)/portable-core")
+$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell mkdir -p "$(d)"))
+endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
@@ -210,15 +223,7 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
 SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c
 
-# PR-B: real ATRAC3+ decode in the HLE (h_AtracDecodeData). The decoder
-# bridge (src/rt/atrac3p_bridge.c) and the imported FFmpeg n4.4 decoder TUs
-# join the runtime link; the include paths are relative to src/rt/atrac3p/.
-# Objects are prefixed so nested import paths cannot collide with flat
-# runtime object names.
-ATRAC3P_OBJS := $(patsubst src/rt/atrac3p/%.c,$(BUILD_DIR)/atrac3p_%.o,$(ATRAC3P_SRCS))
-
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
-	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(DEPFLAGS) -c $< -o $@
 
@@ -247,7 +252,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -352,6 +357,8 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 portable-core-objects: $(PORTABLE_CORE_OBJS)
+
+atrac3p-objects: $(ATRAC3P_OBJS)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
