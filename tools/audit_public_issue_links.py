@@ -28,7 +28,6 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Current-facing documents where shorthand #N references must be verified live.
 CURRENT_FACING_DOCS = {
     "README.md",
     "AGENTS.md",
@@ -53,7 +52,6 @@ CURRENT_FACING_DOCS = {
     "tools/README.md",
 }
 
-# Role-aware historical evidence files that preserve dated tracker references.
 HISTORICAL_EVIDENCE_DOCS = {
     "docs/STATUS_HISTORY.md",
     "docs/ROADMAP.md",
@@ -73,7 +71,7 @@ FULL_URL_PAT = re.compile(
 )
 SHORTHAND_PAT = re.compile(r"(?<![A-Fa-f0-9_#])#(\d+)\b")
 STATE_LABEL_PAT = re.compile(r"\[(OPEN ISSUE|CLOSED ISSUE|OPEN PR|CLOSED PR|MERGED PR)\]")
-TRACKER_SECTION = "## Public tracker and implementation references"
+TRACKER_SECTION = "## Current public tracker"
 
 
 def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.Path]:
@@ -92,7 +90,6 @@ def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.P
     except (OSError, subprocess.SubprocessError):
         pass
 
-    # Test/standalone fallback when Git is unavailable. Production repository runs use git ls-files.
     return sorted(
         path
         for path in repo_root.rglob("*.md")
@@ -238,12 +235,10 @@ def audit_markdown_files(
                         )
                     )
 
-            # Shorthand references are only authoritative in explicitly current-facing documents.
             if is_current_doc:
                 for match in SHORTHAND_PAT.finditer(line):
                     num = int(match.group(1))
                     if num in full_nums:
-                        # Link text such as "Issue #23" is already validated by its full URL.
                         continue
                     raw = f"#{num}"
                     if num not in issues_map:
@@ -268,7 +263,6 @@ def audit_markdown_files(
                             )
                         )
 
-            # The current dashboard has explicit state labels; verify those labels, not just existence.
             if in_tracker_section and url_matches:
                 labels = STATE_LABEL_PAT.findall(line)
                 if len(labels) != len(url_matches):
