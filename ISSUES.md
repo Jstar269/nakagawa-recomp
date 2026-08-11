@@ -89,22 +89,16 @@ This repository (`Jstar269/nakagawa-recomp`) is established as the sanitized pub
 
 A clean publication audit is technical evidence about the candidate tree; it is never legal clearance.
 
-## Public tracker and implementation references
+## Current public tracker
 
 - [Issue #23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) [OPEN ISSUE]
-- [Issue #26 — Make inherited-file modification notices explicit](https://github.com/Jstar269/nakagawa-recomp/issues/26) [CLOSED ISSUE]
 - [PR #1 — Bump ruff-pre-commit from v0.16.0 to 0.16.2](https://github.com/Jstar269/nakagawa-recomp/pull/1) [OPEN PR]
-- [PR #27 — Make inherited-file modification notices explicit](https://github.com/Jstar269/nakagawa-recomp/pull/27) [MERGED PR]
-- [PR #13 — Recover unenqueued present failures and handle terminal Vulkan errors](https://github.com/Jstar269/nakagawa-recomp/pull/13) [MERGED PR]
-- [PR #14 — Update dual-repository sync contract to match sanitized export](https://github.com/Jstar269/nakagawa-recomp/pull/14) [MERGED PR]
-- [PR #15 — Align Vulkan present error classification with Khronos spec](https://github.com/Jstar269/nakagawa-recomp/pull/15) [MERGED PR]
-- [PR #20 — Fix sceSasCore routing and state validation](https://github.com/Jstar269/nakagawa-recomp/pull/20) [MERGED PR]
-- [PR #24 — Model measured PSP DMA transfer semantics](https://github.com/Jstar269/nakagawa-recomp/pull/24) [MERGED PR]
-- [PR #25 — Align README with public Wiki and research reference](https://github.com/Jstar269/nakagawa-recomp/pull/25) [MERGED PR]
+
+Recently merged/closed public work is preserved in the relevant implementation/reference documents and GitHub history rather than duplicated here. For example, inherited-file modification notices landed through merged PR #27 and closed issue #26.
 
 ## Updating this dashboard
 
-- Update/create the canonical public GitHub issue first.
+- Update/create the canonical public GitHub issue first when a curated issue is appropriate.
 - Prefer `unknown` or `open` over carrying forward a superseded claim.
 - Keep current state here; preserve detailed historical narratives in issue/PR discussions or `STATUS_HISTORY.md`.
 - Never call local-only checks CI-green.
