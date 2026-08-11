@@ -205,6 +205,13 @@ int gui_pad_present(void) { return 0; }
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)fbaddr; (void)fmt; (void)stride;
 }
+/* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
+ * a fully validated descriptor is correctly classified as guest-authoritative. */
+struct GeGpuFbDescriptor;
+int gegpu_sync_guest_fb(const struct GeGpuFbDescriptor *desc) {
+    (void)desc;
+    return 2; /* GEGPU_SYNC_NO_TARGET */
+}
 void sr_profile_dump(void) {}
 #ifdef SR_PSP_ORACLE_SMOKE
 /* The smoke translation retains the production SR_YIELD instrumentation hook,

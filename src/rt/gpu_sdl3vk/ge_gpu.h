@@ -4,6 +4,8 @@
 #ifndef GE_GPU_H
 #define GE_GPU_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +25,43 @@ void gegpu_flush(const char *reason);
 int  gegpu_present(unsigned int fbaddr, int fmt, unsigned int stride);
 int  gegpu_capture_materialize(void);
 int  gegpu_replay_reset(void);
+
+/* Complete guest-framebuffer geometry used by the explicit snapshot boundary. The
+ * visible extent is separate from stride because PSP display buffers commonly have
+ * padding columns that are not part of the published image. */
+typedef struct GeGpuFbDescriptor {
+    uint32_t addr;
+    uint32_t format;
+    uint32_t stride;
+    uint32_t width;
+    uint32_t height;
+} GeGpuFbDescriptor;
+
+typedef struct GeGpuFbSpan {
+    uint32_t base;
+    uint32_t bytes_per_pixel;
+    uint32_t row_pitch;
+    uint32_t total_bytes;
+    int in_vram;
+    uint32_t vram_offset;
+} GeGpuFbSpan;
+
+#define GEGPU_FB_MAX_STRIDE 1024u
+#define GEGPU_FB_MAX_HEIGHT 1024u
+#define GEGPU_VRAM_BYTES    0x00200000u
+
+int gegpu_validate_guest_fb_descriptor(const GeGpuFbDescriptor *desc,
+                                       GeGpuFbSpan *out_span, const char **why);
+
+typedef enum GeGpuSyncResult {
+    GEGPU_SYNC_FAILED = -1,
+    GEGPU_SYNC_OK = 1,
+    GEGPU_SYNC_NO_TARGET = 2,
+} GeGpuSyncResult;
+
+/* Materialize a live GPU target into guest memory, or prove that no target owns the
+ * validated span. This is target-scoped and does not make ordinary presentation wait. */
+int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc);
 
 typedef enum GeGpuReplayBoundaryKind {
     GEGPU_BOUNDARY_RENDER_SNAPSHOT = 0,
@@ -135,8 +174,9 @@ void gegpu_replay_stats_reset(void);
 void gegpu_replay_stats_get(GeGpuReplayStats *out);
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out);
 
-#ifdef SR_GPU_COHERENCE_SELFTEST
+#if defined(SR_GPU_COHERENCE_SELFTEST) || defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
 int gegpu_coherence_selftest(void);
+int gegpu_snapshot_sync_selftest(void);
 #endif
 
 void gegpu_shutdown(void);

@@ -74,11 +74,20 @@ int main(void) {
         return 77;
     }
 
-    int ok = gegpu_coherence_selftest();
+    int ok;
+#ifdef SR_GPU_SNAPSHOT_SYNC_SELFTEST
+    ok = gegpu_snapshot_sync_selftest();
+#else
+    ok = gegpu_coherence_selftest();
+#endif
     gegpu_shutdown();
     sdl3vk_shutdown();
     free(arena);
     if (!ok) return 1;
+#ifdef SR_GPU_SNAPSHOT_SYNC_SELFTEST
+    puts("gpu snapshot sync selftest: OK");
+#else
     puts("gpu coherence selftest: OK");
+#endif
     return 0;
 }
