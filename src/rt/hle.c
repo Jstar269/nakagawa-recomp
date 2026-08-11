@@ -35,6 +35,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
+#include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -6166,6 +6167,21 @@ static int s_display_latched_pending;
 static uint32_t s_framebuf = 0x04000000u, s_vcount = 0;
 static uint32_t s_last_flip_vcount = 0;   /* hang watchdog (see sr_vblank_tick) */
 
+/* A guest-VRAM dump is a publication boundary, not an ordinary present. The Vulkan
+ * presenter deliberately queues its readback, so materialize only this display target
+ * before exposing the legacy dump and refuse the artifact if the target cannot be made
+ * current. NO_TARGET is a validated answer: it means guest memory is authoritative. */
+static int snapshot_sync_ok(uint32_t fbaddr, uint32_t fmt, uint32_t stride, const char *what) {
+    GeGpuFbDescriptor d = { fbaddr, fmt, stride, 480u, 272u };
+    int rc = gegpu_sync_guest_fb(&d);
+    if (rc == GEGPU_SYNC_OK || rc == GEGPU_SYNC_NO_TARGET) return 1;
+    fprintf(stderr,
+            "%s: snapshot synchronisation FAILED (rc=%d) for addr=0x%08x fmt=%u stride=%u "
+            "480x272 -- refusing to publish stale or misread guest VRAM\n",
+            what, rc, fbaddr, fmt, stride);
+    return 0;
+}
+
 /* Bounded provenance trace for issue #143.  The missing post-match/menu panels
  * reproduce in both renderers, so the next useful split is whether the guest
  * submitted a display list at all.  Keep this separate from SR_GEDUMP: that
@@ -6576,9 +6592,14 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
      * to an ungated run. */
     if (s_fbcap_armed[0]) {
         if (s_fbcap_legacy[0]) {
-            dump_fb_fmt(s_fbcap_legacy, s_display_active.addr, s_display_active.fmt,
-                        (uint32_t)s_display_active.stride);
-            fprintf(stderr, "FBSNAP f=%u -> %s\n", s_vcount, s_fbcap_legacy);
+            if (snapshot_sync_ok(s_display_active.addr, (uint32_t)s_display_active.fmt,
+                                  (uint32_t)s_display_active.stride, "FBSNAP")) {
+                dump_fb_fmt(s_fbcap_legacy, s_display_active.addr, s_display_active.fmt,
+                            (uint32_t)s_display_active.stride);
+                fprintf(stderr, "FBSNAP f=%u -> %s\n", s_vcount, s_fbcap_legacy);
+            } else {
+                fprintf(stderr, "FBSNAP f=%u -> SKIPPED (synchronisation failed)\n", s_vcount);
+            }
         }
         extern int sdl3vk_capture_result(void);
         fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
@@ -6603,8 +6624,12 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             extern unsigned long g_tex_samples, g_tex_nonzero;
             extern int sdl3vk_capture_result(void);
             extern const char *sdl3vk_capture_source_label(void);
-            dump_fb_fmt("fb_present.ppm", s_display_active.addr, s_display_active.fmt,
-                        (uint32_t)s_display_active.stride);
+            int snap_ok = snapshot_sync_ok(s_display_active.addr,
+                                            (uint32_t)s_display_active.fmt,
+                                            (uint32_t)s_display_active.stride, "SR_FBDUMP");
+            if (snap_ok)
+                dump_fb_fmt("fb_present.ppm", s_display_active.addr, s_display_active.fmt,
+                            (uint32_t)s_display_active.stride);
             /* Also snapshot the whole 2MB eDRAM so any rendered region can be found regardless of which
              * buffer/stride/format the game settled on. */
             FILE *raw = fopen("edram.bin", "wb");
@@ -6621,6 +6646,10 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             int cres = sdl3vk_capture_result();
             fprintf(stderr, "present capture result=%d (source=%s)\n", cres,
                     sdl3vk_capture_source_label());
+            if (!snap_ok) {
+                fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
+                _Exit(1);
+            }
             _Exit(sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres));
         }
     }

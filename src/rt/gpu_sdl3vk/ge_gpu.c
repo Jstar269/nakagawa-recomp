@@ -226,6 +226,9 @@ static VkDeviceSize s_xfer_ring_bytes;
 static VkDeviceSize s_xfer_align;
 static ReadbackSlot s_readback[READBACK_FRAMES];
 static uint32_t s_readback_cursor;
+/* Background presentation readbacks have no synchronous caller to return an error to.
+ * Keep failures sticky so the explicit snapshot boundary can refuse stale guest VRAM. */
+static unsigned long long s_readback_commit_failures;
 
 static VkRenderPass s_rp;
 
@@ -682,16 +685,89 @@ static uint32_t fb_pack(uint32_t px, uint32_t fmt) {
     }
 }
 
+/* Validate a complete framebuffer descriptor before any row is touched. The old
+ * readback path checked only the first byte, so an apparently valid base near the
+ * end of guest VRAM could wrap row-by-row through the mirrored aperture. */
+int gegpu_validate_guest_fb_descriptor(const GeGpuFbDescriptor *desc,
+                                       GeGpuFbSpan *out_span, const char **why) {
+    const char *ignored = NULL;
+    if (!why) why = &ignored;
+    *why = NULL;
+    if (!desc) { *why = "null descriptor"; return 0; }
+    if (desc->format > 3u) { *why = "unsupported pixel format"; return 0; }
+    uint32_t bpp = desc->format == 3u ? 4u : 2u;
+    if (desc->width == 0u || desc->height == 0u) {
+        *why = "zero visible width or height"; return 0;
+    }
+    if (desc->width > GEGPU_FB_MAX_STRIDE || desc->height > GEGPU_FB_MAX_HEIGHT) {
+        *why = "visible extent above maximum"; return 0;
+    }
+    if (desc->stride == 0u || desc->stride > GEGPU_FB_MAX_STRIDE) {
+        *why = desc->stride == 0u ? "zero buffer width" : "buffer width above maximum";
+        return 0;
+    }
+    if (desc->stride < desc->width) {
+        *why = "buffer width narrower than visible width"; return 0;
+    }
+    uint32_t row_pitch, last_row, visible_row, total;
+    if (!sr_size_mul_ok(desc->stride, bpp, &row_pitch)) {
+        *why = "row pitch overflows"; return 0;
+    }
+    if (!sr_size_mul_ok(desc->height - 1u, row_pitch, &last_row)) {
+        *why = "final row offset overflows"; return 0;
+    }
+    if (!sr_size_mul_ok(desc->width, bpp, &visible_row) ||
+        !sr_size_add_ok(last_row, visible_row, &total) || total == 0u) {
+        *why = "visible span overflows"; return 0;
+    }
+
+    int in_vram = is_vram(desc->addr);
+    uint32_t voff = 0u, base = desc->addr;
+    if (in_vram) {
+        voff = vram_off(desc->addr);
+        if (voff >= GEGPU_VRAM_BYTES || total > GEGPU_VRAM_BYTES - voff) {
+            *why = "span crosses the end of the VRAM aperture"; return 0;
+        }
+        base = 0x04000000u | voff;
+    }
+    if (!sr_guest_span_readable(base, total)) {
+        *why = "span leaves guest memory"; return 0;
+    }
+    if (out_span) {
+        out_span->base = base;
+        out_span->bytes_per_pixel = bpp;
+        out_span->row_pitch = row_pitch;
+        out_span->total_bytes = total;
+        out_span->in_vram = in_vram;
+        out_span->vram_offset = voff;
+    }
+    return 1;
+}
+
+static GeGpuFbDescriptor target_descriptor(uint32_t fba, uint32_t stride, uint32_t fmt) {
+    GeGpuFbDescriptor d;
+    d.addr = 0x04000000u | fba;
+    d.format = fmt;
+    d.stride = stride;
+    d.width = stride < FB_W ? stride : FB_W;
+    d.height = FB_H;
+    return d;
+}
+
 /* `src` is the full SCALED readback (SCL_W x SCL_H); each guest pixel is written from
  * the top-left device subpixel of its scale x scale cell (identity at scale 1). */
 static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, uint32_t fmt) {
-    uint32_t wb = stride < FB_W ? stride : FB_W;   /* full stride: RTT targets use 480..511 */
-    uint32_t rba = 0x04000000u | fba;
     uint32_t srow = SCL_W;
-    if (!sr_inrange(rba)) {
-        fprintf(stderr, "gegpu: framebuffer 0x%08x is outside guest memory\n", fba);
+    GeGpuFbDescriptor desc = target_descriptor(fba, stride, fmt);
+    GeGpuFbSpan span;
+    const char *why = NULL;
+    if (!gegpu_validate_guest_fb_descriptor(&desc, &span, &why)) {
+        fprintf(stderr, "gegpu: refusing framebuffer write fba=0x%08x stride=%u fmt=%u: %s\n",
+                fba, stride, fmt, why ? why : "invalid descriptor");
         return 0;
     }
+    uint32_t wb = desc.width;
+    uint32_t rba = span.base;
     for (uint32_t y = 0; y < FB_H; y++) {
         const uint32_t *sl = src + (uint32_t)(y * s_scale) * srow;
         if ((fmt & 3) == 3) {
@@ -717,21 +793,26 @@ static int readback_finish(ReadbackSlot *r, int wait, int allow_commit) {
     if (vr == VK_NOT_READY) return 0;
     if (vr != VK_SUCCESS) {
         fprintf(stderr, "gegpu: readback fence failed: %d\n", (int)vr);
+        s_readback_commit_failures++;
         return -1;
     }
     Target *t = r->target;
+    int commit_failed = 0;
     if (allow_commit && r->commit && t && t->used && t->img == r->image &&
         t->gpu_valid && t->render_gen == r->gen) {
         if (write_guest_fb(r->map, r->fba, r->stride, r->fmt)) {
             t->clean_gen = r->gen;
             s_cnt_readback++;
+        } else {
+            commit_failed = 1;
+            s_readback_commit_failures++;
         }
     }
     r->pending = 0;
     r->commit = 0;
     r->target = NULL;
     r->image = VK_NULL_HANDLE;
-    return 1;
+    return commit_failed ? -1 : 1;
 }
 
 static void readback_poll(void) {
@@ -1059,7 +1140,12 @@ static void stats_tick(void) { stats_emit(0); }
 /* Write the target's GPU contents back to guest VRAM (eviction, CLUT-from-VRAM). */
 static int target_readback(Target *t) {
     if (!t->gpu_valid) return 1;
-    if (t == s_cur && s_nbatch) submit_pending();
+    /* The pending batch holds the pixels we are about to materialize. Treat a failed
+     * submit as a hard readback failure instead of blessing the previous generation. */
+    if (t == s_cur && s_nbatch && !submit_pending()) {
+        fprintf(stderr, "gegpu: target readback abandoned: pending batch did not submit\n");
+        return 0;
+    }
     readback_poll();
     if (t->clean_gen == t->render_gen) return 1;   /* VRAM already current */
     /* A presentation copy of this exact generation may already be in flight.  Waiting
@@ -2708,6 +2794,67 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     return pr;
 }
 
+/* Explicit snapshot boundary. Ordinary presentation remains asynchronous; callers that
+ * are about to publish a guest-VRAM dump use this target-scoped operation to settle only
+ * the framebuffer described by the display controller. */
+int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
+    GeGpuFbSpan span;
+    const char *why = NULL;
+    if (!gegpu_validate_guest_fb_descriptor(desc, &span, &why)) {
+        fprintf(stderr, "gegpu: snapshot sync refused: %s (addr=0x%08x fmt=%u stride=%u %ux%u)\n",
+                why ? why : "invalid descriptor",
+                desc ? desc->addr : 0u, desc ? desc->format : 0u,
+                desc ? desc->stride : 0u, desc ? desc->width : 0u,
+                desc ? desc->height : 0u);
+        return GEGPU_SYNC_FAILED;
+    }
+    if (!s_ready) return GEGPU_SYNC_NO_TARGET;
+    if (!span.in_vram) return GEGPU_SYNC_NO_TARGET;
+
+    Target *t = NULL;
+    for (int i = 0; i < MAX_TGT; i++) {
+        if (s_tgts[i].used && s_tgts[i].fba == span.vram_offset) {
+            t = &s_tgts[i];
+            break;
+        }
+    }
+    if (!t) return GEGPU_SYNC_NO_TARGET;
+    if (t->stride != desc->stride || t->fmt != desc->format) {
+        fprintf(stderr,
+                "gegpu: snapshot sync refused: target at 0x%08x has stride=%u fmt=%u "
+                "but caller described stride=%u fmt=%u\n",
+                desc->addr, t->stride, t->fmt, desc->stride, desc->format);
+        return GEGPU_SYNC_FAILED;
+    }
+
+    unsigned long long failures_before = s_readback_commit_failures;
+    readback_poll();
+    if (!t->gpu_valid) {
+        if (t->clean_gen == t->render_gen &&
+            s_readback_commit_failures == failures_before)
+            return GEGPU_SYNC_NO_TARGET;
+        fprintf(stderr,
+                "gegpu: snapshot sync refused: target at 0x%08x has uncommitted content "
+                "(clean_gen=%llu render_gen=%llu)\n",
+                desc->addr, (unsigned long long)t->clean_gen,
+                (unsigned long long)t->render_gen);
+        return GEGPU_SYNC_FAILED;
+    }
+
+    uint64_t want = t->render_gen;
+    if (!target_readback(t)) return GEGPU_SYNC_FAILED;
+    if (t->render_gen > want) want = t->render_gen;
+    if (t->clean_gen != want || s_readback_commit_failures != failures_before) {
+        fprintf(stderr,
+                "gegpu: snapshot sync incomplete for 0x%08x clean_gen=%llu want=%llu failures=%llu\n",
+                desc->addr, (unsigned long long)t->clean_gen,
+                (unsigned long long)want,
+                s_readback_commit_failures - failures_before);
+        return GEGPU_SYNC_FAILED;
+    }
+    return GEGPU_SYNC_OK;
+}
+
 /* ---- init ----------------------------------------------------------------------------------- */
 
 static const GeGpuHooks k_hooks = {
@@ -3033,6 +3180,112 @@ int gegpu_coherence_selftest(void) {
     coherence_reset_targets();
     return ok;
 }
+
+/* Source-owned regression for the explicit snapshot boundary. It first proves that
+ * ordinary presentation remains asynchronous (the pre-fix lag), then asks the same
+ * target through gegpu_sync_guest_fb() and verifies that guest VRAM is current before
+ * publication. Descriptor rejection and no-target answers are checked too. */
+int gegpu_snapshot_sync_selftest(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t stride = 512u, fmt = 3u;
+    const uint32_t bytes = stride * FB_H * 4u;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g1(fmt));
+    Target *t = target_color_acquire(fba, stride, fmt, 1);
+    if (!t || !t->gpu_valid) {
+        fprintf(stderr, "gpu snapshot sync selftest: could not establish GPU target\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    /* The image remains GPU G1, but guest VRAM is deliberately restored to stale G0. */
+    coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g0(fmt));
+    t->clean_gen = 0;
+    if (!target_prepare_present(t)) {
+        fprintf(stderr, "gpu snapshot sync selftest: present readback setup failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    ReadbackSlot *pending = NULL;
+    for (int i = 0; i < READBACK_FRAMES; i++) {
+        if (s_readback[i].pending && s_readback[i].image == t->img) {
+            pending = &s_readback[i];
+            break;
+        }
+    }
+    int stale = pending && pending->commit && t->clean_gen != t->render_gen &&
+                memcmp(guest, &(uint32_t){ coherence_g0(fmt) }, sizeof(uint32_t)) == 0;
+    if (!stale) {
+        fprintf(stderr, "gpu snapshot sync selftest: no stale pre-commit snapshot observed "
+                        "(render_gen=%llu clean_gen=%llu pending=%d)\n",
+                (unsigned long long)t->render_gen, (unsigned long long)t->clean_gen,
+                pending != NULL);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: ordinary_present_lag render_gen=%llu "
+           "clean_gen=%llu pending=1 bytes=%u\n",
+           (unsigned long long)t->render_gen, (unsigned long long)t->clean_gen, bytes);
+
+    GeGpuFbDescriptor d = { base, fmt, stride, 480u, FB_H };
+    int rc = gegpu_sync_guest_fb(&d);
+    if (rc != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
+        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        fprintf(stderr, "gpu snapshot sync selftest: explicit sync failed rc=%d "
+                        "clean_gen=%llu render_gen=%llu\n", rc,
+                (unsigned long long)t->clean_gen, (unsigned long long)t->render_gen);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: explicit_sync_ok render_gen=%llu\n",
+           (unsigned long long)t->render_gen);
+
+    GeGpuFbDescriptor bad = d;
+    bad.width = 0;
+    if (gegpu_sync_guest_fb(&bad) != GEGPU_SYNC_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: invalid descriptor was accepted\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    GeGpuFbDescriptor cross = d;
+    cross.addr = 0x041f0000u;
+    if (gegpu_sync_guest_fb(&cross) != GEGPU_SYNC_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: cross-aperture descriptor was accepted\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    GeGpuFbDescriptor no_target = d;
+    no_target.addr = 0x04010000u;
+    if (gegpu_sync_guest_fb(&no_target) != GEGPU_SYNC_NO_TARGET) {
+        fprintf(stderr, "gpu snapshot sync selftest: unmapped VRAM was not NO_TARGET\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    GeGpuFbDescriptor ram = d;
+    ram.addr = 0x08010000u;
+    if (gegpu_sync_guest_fb(&ram) != GEGPU_SYNC_NO_TARGET) {
+        fprintf(stderr, "gpu snapshot sync selftest: main RAM was not NO_TARGET\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
+        !target_prepare_present(t) || t->clean_gen == t->render_gen) {
+        fprintf(stderr, "gpu snapshot sync selftest: ordinary second present lost async lag\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen) {
+        fprintf(stderr, "gpu snapshot sync selftest: second explicit sync failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    coherence_reset_targets();
+    return 1;
+}
 #endif
 
 int gegpu_init(void) {
@@ -3213,6 +3466,7 @@ int gegpu_init(void) {
         if (!s_white_set) return 0;
     }
 
+    s_readback_commit_failures = 0;
     s_ready = 1;
     ge_set_gpu_hooks(&k_hooks);
     fprintf(stderr, "gegpu: full GPU GE active (persistent targets, %s, no software fallback)\n",

@@ -252,7 +252,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -346,7 +346,7 @@ $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_unavailable.o: src/rt/pgf_unavailable.c src/rt/pgf_api.h
@@ -613,6 +613,17 @@ gpu-coherence-selftest: shader-verify $(RT_GE_O)
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_coherence_selftest.exe
+
+# gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
+# snapshot boundary. It proves ordinary presentation remains async, then verifies
+# target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+gpu-snapsync-selftest: shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
+		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
