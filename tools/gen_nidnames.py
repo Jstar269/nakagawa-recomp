@@ -3,8 +3,6 @@
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
-# Modified by Nakagawa Recomp contributors, 2026-08-10.
-# See NOTICE.md for upstream lineage and modification provenance.
 
 """Generate src/rt/nid_names.h from the tracked corpus in tools/nid_corpus.json.
 
