@@ -226,6 +226,19 @@ class TitleManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "unsupported codegen profile"):
             title_manifest.validate_manifest(value)
 
+    def test_all_checked_in_manifests_validate_and_normalize_stably(self) -> None:
+        titles = sorted((ROOT / "assets" / "titles").glob("*.json"))
+        self.assertGreaterEqual(len(titles), 3)
+        for path in titles:
+            with self.subTest(manifest=path.name):
+                normalized = title_manifest.validate_manifest(
+                    title_manifest.load_manifest(path)
+                )
+                first = title_manifest.canonical_json(normalized)
+                second = title_manifest.canonical_json(json.loads(first))
+                self.assertEqual(first, second)
+                self.assertEqual(normalized["schema_version"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

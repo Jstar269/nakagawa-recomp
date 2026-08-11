@@ -28,13 +28,25 @@ python tools/title_manifest.py assets/titles/synthetic.json --print-normalized
 ## Checked-in manifests
 
 - `synthetic.json` is a source-owned public fixture for schema and tool testing.
+- `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live in
+  `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
+  deliberately exercises a *different* configuration from `synthetic.json` — a
+  canonical user-module load base (`0x08804000`), no optional guest PRX, and an
+  HLE-dependent feature set — so the manifest-driven planner is proven genuinely
+  multi-title rather than parameterized HST.
 - `hst-ucus98701.json` records the current source-owned HST configuration: supported
   disc identity, zero-based executable policy, PSP-header metadata source, extra
   executable span, PRX module names/load addresses, filesystem conventions, and
   public feature/profile identifiers.
 
-The HST manifest remains a declarative parity anchor, and is now consumed only
-through the opt-in `hst_manager.ps1 -TitleManifest` path. The no-manifest manager
-path and duplicated Makefile constants remain unchanged until a later reviewed
-equivalence slice retires them. The manifest does not make the runtime generic or
-prove portability/correctness for another title.
+The HST manager consumes the HST manifest through `hst_manager.ps1 -TitleManifest`:
+the manager builds every make argument from the validated plan (base, entry, profile,
+module list, analyzer span) instead of re-encoding HST values, and fails closed when
+the plan's protected-contract digest does not match the checked-in manifest. The
+no-manifest manager path and the direct-Make HST constants remain unchanged; both
+are equivalent by test, and neither proves the runtime generic for another title.
+
+The analyzer applies **no** title-specific executable span by default (issue #151).
+The HST span reaches `analyze`/`codegen` only through the explicit `HST_EXTRA_SPANS`
+override supplied by the manager (from the manifest) or by the direct-Make HST
+binding — a raw base-zero image never silently inherits it.

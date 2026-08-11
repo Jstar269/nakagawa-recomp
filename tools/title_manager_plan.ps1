@@ -5,9 +5,10 @@
 <#
     Strict PowerShell adapter for the versioned title_codegen_plan.py manager plan.
 
-    The Python validator owns public-manifest semantics. These helpers only validate the
-    bounded machine contract and bind its protected HST values to local private paths.
-    They never evaluate shell text or write a manifest.
+    The Python validator owns public-manifest semantics. These helpers validate the
+    bounded machine contract, check the protected-contract digest, and bind the plan's
+    title semantics to local private paths. They never evaluate shell text, write a
+    manifest, or silently fall back to HST defaults.
 #>
 
 $script:TitleManagerPlanVersion = 1
@@ -80,21 +81,21 @@ function Assert-TitleManagerPlan {
     param([Parameter(Mandatory = $true)][AllowNull()][object]$Plan)
 
     Assert-TitlePlanObject $Plan '$' @(
-        'plan_version', 'plan_kind', 'title_manifest_id', 'title_kind', 'game_name',
-        'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source', 'disc',
-        'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
+        'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
+        'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
+        'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
         'private_binding_requirements', 'environment', 'make'
     ) @(
-        'plan_version', 'plan_kind', 'title_manifest_id', 'title_kind', 'game_name',
-        'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source', 'disc',
-        'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
+        'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
+        'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
+        'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
         'private_binding_requirements', 'environment', 'make'
     ) | Out-Null
 
     if ((Assert-TitlePlanInteger $Plan.plan_version '$.plan_version') -ne $script:TitleManagerPlanVersion) {
         throw "unsupported manager-plan version: $($Plan.plan_version)"
     }
-    foreach ($field in @('plan_kind', 'title_manifest_id', 'title_kind', 'game_name', 'codegen_profile', 'bss_metadata_source')) {
+    foreach ($field in @('plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind', 'game_name', 'codegen_profile', 'bss_metadata_source')) {
         Assert-TitlePlanString $Plan.$field "`$.$field" | Out-Null
     }
     [void](Assert-TitlePlanInteger $Plan.game_base '$.game_base')
@@ -143,7 +144,28 @@ function Assert-TitleManagerPlan {
     return $Plan
 }
 
-function Get-HstManifestMakeArgs {
+# The protected-contract digest of the checked-in HST manifest
+# (assets/titles/hst-ucus98701.json), computed by
+# tools/title_codegen_plan.py::compute_protected_digest() over the canonical
+# validated manifest excluding the free-text notes field. It is the single
+# opaque constant the manager adapter compares against instead of re-encoding
+# every protected value (base/entry, spans, modules, profile, disc, ...).
+# Regenerate with:
+#   python tools/title_codegen_plan.py --print-protected-digest \
+#       assets/titles/hst-ucus98701.json
+$script:HstProtectedContractDigest = '286369bb6de64a21209c38579a27da22ff8eb87215cfd1a0e879264e0d6d446a'
+
+function Get-TitleManifestMakeArgs {
+    <#
+        Bind a validated manager plan to the HST manager's make invocation.
+
+        The title semantics (base/entry, profile, BSS policy, disc, spans, modules,
+        analyzer environment) are consumed from the plan, never re-encoded here. The
+        protected-contract digest plus the supported-identity checks fail closed when
+        the manifest is anything other than the checked-in HST contract; operational
+        inputs (build dir, funcs-per-chunk, private binding paths) are validated for
+        consistency with the plan. Legacy HST defaults are never silently selected.
+    #>
     param(
         [Parameter(Mandatory = $true)][object]$Plan,
         [Parameter(Mandatory = $true)][string]$GameElfForMake,
@@ -154,42 +176,22 @@ function Get-HstManifestMakeArgs {
         [Parameter(Mandatory = $true)][int]$FuncsPerChunk
     )
     Assert-TitleManagerPlan $Plan | Out-Null
-    if ($Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
+    # The manager is the HST orchestration layer; it supports exactly the checked-in
+    # HST retail manifest, identified by its plan kind, manifest id, and game name.
+    if ($Plan.plan_kind -ne 'title-manager-build' -or $Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
         throw 'the HST manager accepts only the checked-in HST retail manifest'
     }
-    if ($Plan.game_base -ne 0 -or $Plan.game_entry -ne 0 -or $Plan.codegen_profile -ne 'hst' -or $Plan.bss_metadata_source -ne 'psp-header') {
-        throw 'HST manifest protected executable semantics are incompatible'
-    }
-    $disc = $Plan.disc
-    if ($null -eq $disc -or $disc.id -ne 'UCUS98701' -or $disc.region -ne 'NA' -or $disc.revision_policy -ne 'exact-disc-id' -or ($disc.PSObject.Properties.Name -contains 'compatible_revisions')) {
-        throw 'HST manifest protected disc identity/revision policy is incompatible'
-    }
-    $expectedSpans = @(@{ start = 3158420; end = 3173924 })
-    $actualSpans = @($Plan.extra_executable_spans)
-    if ($actualSpans.Count -ne 1 -or $actualSpans[0].start -ne $expectedSpans[0].start -or $actualSpans[0].end -ne $expectedSpans[0].end) {
-        throw 'HST manifest protected extra executable span is incompatible'
-    }
-    $expectedModules = @(
-        @{ name = 'libfont.prx'; load_address = 840957952 },
-        @{ name = 'scePsmf_library.prx'; load_address = 841482240 },
-        @{ name = 'scePsmfP_library.prx'; load_address = 841975912 }
-    )
-    $modules = @($Plan.required_guest_modules)
-    if ($modules.Count -ne $expectedModules.Count) { throw 'HST manifest required guest modules are incomplete' }
-    for ($index = 0; $index -lt $expectedModules.Count; $index++) {
-        if ($modules[$index].name -ne $expectedModules[$index].name -or $modules[$index].load_address -ne $expectedModules[$index].load_address) {
-            throw 'HST manifest required guest module name/load address conflicts with the HST contract'
-        }
+    if ($Plan.protected_digest -ne $script:HstProtectedContractDigest) {
+        throw 'HST manager plan protected_digest does not match the checked-in HST title contract'
     }
     if (@($Plan.optional_guest_modules).Count -ne 0) { throw 'HST manager does not support optional guest modules in this slice' }
     if (-not $Plan.private_binding_requirements.game_elf -or -not $Plan.private_binding_requirements.module_dir -or -not $Plan.private_binding_requirements.psp_header) {
         throw 'HST manifest omitted a required private binding'
     }
-    if ($Plan.make.game_name -ne 'hst' -or $Plan.make.game_base -ne '0' -or $Plan.make.game_entry -ne '0' -or $Plan.make.codegen_profile_arg -ne '--profile=hst' -or $Plan.make.build_dir -ne ($BuildDir -replace '\\', '/') -or $Plan.make.funcs_per_chunk -ne $FuncsPerChunk) {
-        throw 'HST manager plan Make mapping conflicts with the protected manifest semantics'
-    }
-    if ($Plan.environment.GAME_BASE -ne '0x00000000' -or $Plan.environment.GAME_ENTRY -ne '0x00000000' -or $Plan.environment.HST_EXTRA_SPANS -ne '0x00303194,0x00306e24') {
-        throw 'HST manager plan analyzer environment conflicts with the protected manifest semantics'
+    # Operational consistency: the plan was built with the same build dir and chunk
+    # size the manager is about to use, and the manager's own identity matches.
+    if ($Plan.make.game_name -ne 'hst' -or $Plan.make.build_dir -ne ($BuildDir -replace '\\', '/') -or $Plan.make.funcs_per_chunk -ne $FuncsPerChunk) {
+        throw 'HST manager plan Make mapping conflicts with the operational inputs'
     }
     foreach ($binding in @($GameElfForMake, $ModuleDirForMake, $PspHeaderForMake, $VulkanSdkForMake)) {
         Assert-TitlePlanString $binding 'private binding' | Out-Null
@@ -198,6 +200,7 @@ function Get-HstManifestMakeArgs {
     $moduleDir = $ModuleDirForMake -replace '\\', '/'
     $pspHeader = $PspHeaderForMake -replace '\\', '/'
     if ($moduleDir.Contains('@')) { throw 'module directory must not contain @' }
+    $modules = @($Plan.required_guest_modules)
     $extra = @($modules | ForEach-Object { "$moduleDir/$($_.name)@0x$('{0:x8}' -f [uint64]$_.load_address)" }) -join ' '
     $args = @(
         "GAME_NAME=$($Plan.make.game_name)",

@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 
 # Import the local analyzer
-from analyze import analyze, Elf, in_ranges, exec_ranges
+from analyze import analyze, Elf, in_ranges, exec_ranges, analyzer_span_from_env
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
 
@@ -1784,7 +1784,10 @@ def main(argv):
                 sys.stderr.write(f"invalid --extra-elf format: {o}\n")
                 return 2
     elf = Elf(args[0], base=base)
-    analyzed, ranges = analyze(elf)
+    # The primary image may carry an explicit extra executable span (e.g. the HST
+    # manifest's span, supplied through HST_EXTRA_SPANS). Extra guest modules are
+    # rebased to their load addresses and never inherit it (issue #151).
+    analyzed, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     known = {addr for addr, info in catalog.items() if info.callable}
     resume_owners = {

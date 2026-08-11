@@ -12,6 +12,7 @@ written back to the manifest.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,21 @@ GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MIN_FUNCS_PER_CHUNK = 1
 MAX_FUNCS_PER_CHUNK = 100_000
 MANAGER_PLAN_VERSION = 1
+
+
+def compute_protected_digest(manifest: dict[str, Any]) -> str:
+    """Deterministic digest of the protected title semantics.
+
+    Covers the entire validated manifest except the free-text ``notes`` field.
+    A manager adapter can therefore fail closed against one opaque constant
+    (the digest of the checked-in manifest) instead of re-encoding every
+    protected value, so a mutation anywhere in the title contract changes the
+    digest and is rejected before Make runs.
+    """
+    normalized = title_manifest.validate_manifest(manifest)
+    protected = {key: value for key, value in normalized.items() if key != "notes"}
+    rendered = title_manifest.canonical_json(protected)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 class TitleCodegenPlanError(ValueError):
@@ -273,6 +289,7 @@ def build_manager_plan(
     return {
         "plan_version": MANAGER_PLAN_VERSION,
         "plan_kind": "title-manager-build",
+        "protected_digest": compute_protected_digest(normalized),
         "title_manifest_id": normalized["id"],
         "title_kind": normalized["kind"],
         "game_name": game_name,
@@ -316,9 +333,9 @@ def canonical_json(value: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("--game-name", required=True)
-    parser.add_argument("--game-elf", required=True, type=Path)
-    parser.add_argument("--build-dir", required=True, type=Path)
+    parser.add_argument("--game-name")
+    parser.add_argument("--game-elf", type=Path)
+    parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--module-dir", type=Path)
     parser.add_argument("--psp-header", type=Path)
     parser.add_argument(
@@ -331,12 +348,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="emit the bounded manager/build configuration instead of command vectors",
     )
+    parser.add_argument(
+        "--print-protected-digest",
+        action="store_true",
+        help="print the protected-contract digest and exit (no plan is emitted)",
+    )
     parser.add_argument("--include-optional-module", action="append", default=[])
     parser.add_argument("--funcs-per-chunk", type=int, default=2000)
     parser.add_argument("--python-command", default="python")
     args = parser.parse_args(argv)
     try:
         manifest = title_manifest.load_manifest(args.manifest)
+        if args.print_protected_digest:
+            print(compute_protected_digest(manifest))
+            return 0
+        if not args.game_name or not args.game_elf or not args.build_dir:
+            parser.error("--game-name, --game-elf and --build-dir are required")
         plan_builder = build_manager_plan if args.manager_plan else build_plan
         plan = plan_builder(
             manifest,

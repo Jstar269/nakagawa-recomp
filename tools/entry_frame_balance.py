@@ -40,6 +40,7 @@ from dataclasses import dataclass
 
 from analyze import (
     BRANCH_LINK,
+    analyzer_span_from_env,
     code_pointer_evidence,
     direct_branch_edges,
     direct_j_edges,
@@ -1089,7 +1090,7 @@ def main(argv):  # pragma: no cover - operator entry point
     args = parser.parse_args(argv[1:])
 
     elf = Elf(args.elf, base=args.base)
-    starts, ranges = analyze(elf)
+    starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
     print(f"analyzer starts: {len(starts)}")
 
     for addr in args.addr:

@@ -915,7 +915,9 @@ def axis_codegen_coverage() -> dict:
             import analyze as _analyze  # type: ignore
             # HST is a flat-rebased PRX image; GAME_BASE=0 per CLAUDE.md/README.
             elf_obj = _analyze.Elf(str(elf), base=0)
-            starts, ranges = _analyze.analyze(elf_obj)
+            starts, ranges = _analyze.analyze(
+                elf_obj, extra_spans=_analyze.analyzer_span_from_env()
+            )
             known = set(a for a in starts if _analyze.in_ranges(a, ranges))
             result["analyzable"] = len(known)
         except Exception as e:  # pragma: no cover - best effort only

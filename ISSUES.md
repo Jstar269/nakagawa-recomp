@@ -27,7 +27,7 @@ Public GitHub Issues are canonical for actionable work where a curated public is
 | P1 | Open | [#23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) | OPEN ISSUE |
 | P1 | Open | [Unified PSP clock domains & interrupt delivery](docs/PSP_INTR_WAITS_MATRIX.md) | REFERENCE DOCUMENT |
 | P1 | Open | [Versioned title manifest & general toolkit boundary](assets/titles/README.md) | REFERENCE DOCUMENT |
-| P2 | Open | [HST analyzer span leakage](docs/STATUS_HISTORY.md) | HISTORICAL EVIDENCE |
+| P2 | Fixed | [#151 — analyzer no longer inherits HST-only spans](docs/TITLE_CODEGEN_PLAN.md) | REFERENCE DOCUMENT |
 | P2 | Open | [Gameplay performance baselines](docs/PERFORMANCE.md) | REFERENCE DOCUMENT |
 | P1 | Open | [PGF/JPCSP/intraFont provenance review](docs/PGF_LICENSE_REVIEW_PACKET.md) | REVIEW PACKET |
 | P1 | In Progress | [PGF replacement campaign](docs/PUBLIC_SOURCE_PROFILE.md) | PROFILE DOCUMENT |
@@ -74,9 +74,9 @@ In-match scorecard portraits construct a face path under directory `00` while ch
 
 ## Generalization / toolkit boundary
 
-Toolkit generalization has landed a versioned bounded manifest schema, a source-owned synthetic fixture, an HST public manifest, and deterministic read-only codegen/manager planning ([`assets/titles/README.md`](assets/titles/README.md)). Remaining work is actual build/manager consumption with equivalence proof, a second PSPDEV/PSPSDK-built source-owned title fixture, and retirement of duplicated HST constants.
+Toolkit generalization has landed a versioned bounded manifest schema, two wholly source-owned synthetic fixtures (`synthetic.json` and the PSPDEV/PSPSDK-built `pspdev-phase5.json` with sources in `fixtures/pspdev_phase5`), the HST public manifest, and deterministic read-only codegen/manager planning ([`assets/titles/README.md`](assets/titles/README.md)). The HST manager now consumes the manifest plan end-to-end: every make argument is derived from the validated plan and the adapter fails closed on a protected-contract digest mismatch instead of re-encoding HST values. The direct-Make HST path and the legacy no-manifest manager path remain equivalent by test.
 
-`tools/analyze.py::exec_ranges()` still falls back to the HST-only span for an unrelated image unless the caller explicitly supplies/clears `HST_EXTRA_SPANS`.
+`tools/analyze.py::exec_ranges()` no longer applies any title-specific default (issue #151): a raw base-zero image never silently inherits the HST-only span. The span reaches the analyzer only through the explicit `HST_EXTRA_SPANS` override that the manager (from the manifest) or the direct-Make HST binding supplies.
 
 ## Publication / governance status
 

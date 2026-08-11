@@ -42,7 +42,7 @@ implementation matches PSP hardware".  See tools/vfpu_coverage_report.py.
 
 import sys
 
-from analyze import Elf, exec_ranges
+from analyze import Elf, exec_ranges, analyzer_span_from_env
 import codegen
 
 
@@ -169,7 +169,7 @@ def main(argv: list[str]) -> int:
                     words[w] = 0x08900000 + 4 * i
         else:
             elf = Elf(elf_path, base=base)
-            ranges = exec_ranges(elf)
+            ranges = exec_ranges(elf, extra_spans=analyzer_span_from_env())
             words = {}
             for lo, hi in ranges:
                 a = lo

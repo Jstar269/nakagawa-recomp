@@ -4,8 +4,8 @@
   "display_name": "PSPDEV Phase 5 Source-Owned Fixture",
   "kind": "synthetic",
   "executable": {
-    "base": 142606336,
-    "entry": 142606336,
+    "base": 142622720,
+    "entry": 142622720,
     "bss_metadata_source": "elf",
     "extra_executable_spans": []
   },
@@ -17,7 +17,7 @@
   },
   "hle_profile": "synthetic-minimal",
   "codegen_profile": "none",
-  "feature_requirements": ["allegrex-core", "host-filesystem"],
+  "feature_requirements": ["allegrex-core", "host-filesystem", "psp-hle"],
   "verification_profile": "synthetic-public",
-  "notes": "Source-owned PSPDEV/PSPSDK compiled fixture for #197 Phase 5; no retail bytes or derived metadata."
+  "notes": "Source-owned PSPDEV/PSPSDK compiled fixture (fixtures/pspdev_phase5) for #197 Phase 5. Exercises a meaningfully different configuration from synthetic-allegrex-v1: a canonical user-module load base (0x08804000) instead of the user-memory start, no optional guest PRX, and an HLE-dependent feature set. No retail bytes or derived metadata."
 }

@@ -44,11 +44,19 @@ For the privately route-validated HST title, the opt-in manager path is:
   -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
-The manager accepts only the checked-in HST manifest in this slice. Its protected
-title values come from the validated plan; `-VulkanSdk`, `-RuntimeOpt`,
-`-RecompOpt`, and `-FuncsPerChunk` remain operational overrides. An explicit
-override wins only where the contract permits it. Without `-TitleManifest`,
-the existing HST discovery/default path is preserved exactly.
+The manager accepts only the checked-in HST manifest in this slice: the adapter
+verifies the plan's identity and protected-contract digest (no HST value is
+re-encoded in the manager), so any mutation of the title contract fails before
+Make runs. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and `-FuncsPerChunk` remain
+operational overrides. An explicit override wins only where the contract permits
+it. Without `-TitleManifest`, the existing HST discovery/default path is preserved
+exactly.
+
+`assets/titles/pspdev-phase5.json` is a second, meaningfully different source-owned
+fixture (`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
+It proves the planner is genuinely multi-title: a different load base, no guest
+modules, and a different feature surface flow through the same manifest → plan →
+codegen path.
 
 ## Step 2: Obtain the decrypted ELF
 
@@ -103,11 +111,11 @@ mingw32-make GAME_NAME=mygame GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0x088
 ```
 
 The checked-in `hst_manager.ps1` is still an HST-specific orchestration layer,
-not a generic title runner. The manifest adapter is read-only and currently
-accepts only the checked-in HST manifest; it does not prove runtime portability
-or correctness for another title. Use Make directly with that title's validated
-manifest and explicit private bindings until a title-specific manager path has
-been deliberately added and verified.
+not a generic title runner. The manifest adapter is read-only and accepts only the
+checked-in HST manifest; it does not prove runtime portability or correctness for
+another title. Use Make directly with that title's validated manifest and explicit
+private bindings until a title-specific manager path has been deliberately added
+and verified.
 
 The first build can be substantially slower than a runtime-only rebuild because codegen must translate the title's MIPS functions and compile the generated translation units.
 

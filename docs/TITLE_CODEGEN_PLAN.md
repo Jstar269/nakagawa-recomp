@@ -8,8 +8,19 @@ inputs, or modify the manifest.
 With `--manager-plan`, the same validated configuration produces a bounded,
 versioned manager/build contract. `hst_manager.ps1` consumes that contract only
 when `-TitleManifest` is supplied; the legacy no-manifest path remains unchanged.
-The manager contract contains title semantics and private-binding requirements,
-not absolute private paths or command strings.
+The manager contract contains title semantics, a protected-contract digest, and
+private-binding requirements, not absolute private paths or command strings.
+
+The manager adapter builds every make argument from the plan (`plan.make.*`, the
+selected guest modules, and the analyzer environment) and validates the plan's
+`protected_digest` against the single constant for the checked-in HST manifest.
+It no longer re-encodes HST values (base/entry, spans, modules, profile, disc);
+any mutation of the protected title contract changes the digest and is rejected
+before Make runs. Regenerate the constant with:
+
+```powershell
+python tools/title_codegen_plan.py --print-protected-digest assets/titles/hst-ucus98701.json
+```
 
 Private workspace bindings remain explicit:
 
@@ -39,7 +50,12 @@ Current fail-closed limits are deliberate:
 - only the generator's current `hst` and `none` profile choices are accepted.
 
 The manager adapter is deliberately fail-closed: this slice accepts only the
-checked-in HST manifest for HST manager actions, and it rejects unsupported plan
-versions, conflicting protected values, missing required private bindings, and
-unsupported span/profile configurations before Make runs. This does not make the
-runtime general-purpose or prove a private HST build or route.
+checked-in HST manifest for HST manager actions (identity + protected-contract
+digest), and it rejects unsupported plan versions, digest mismatches, missing
+required private bindings, and unsupported span/profile configurations before Make
+runs. This does not make the runtime general-purpose or prove a private HST build
+or route.
+
+`assets/titles/pspdev-phase5.json` is a second, meaningfully different source-owned
+fixture (PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) exercised through the
+same planner; see `tools/test_title_pspdev_phase5.py`.

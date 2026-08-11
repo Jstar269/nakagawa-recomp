@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -127,7 +128,66 @@ class TitleManagerPlanTests(unittest.TestCase):
         self.assertEqual(first.stdout, second.stdout)
         parsed = json.loads(first.stdout)
         self.assertEqual(parsed["plan_version"], 1)
+        self.assertIn("protected_digest", parsed)
         self.assertNotIn("commands", parsed)
+
+    def test_ps_adapter_protected_digest_matches_the_checked_in_manifest(self) -> None:
+        # The HST manager adapter fails closed against a single protected-contract
+        # digest instead of re-encoding every protected value. This regression ties
+        # that constant to the planner's deterministic digest so drift is impossible.
+        adapter = (ROOT / "tools" / "title_manager_plan.ps1").read_text(encoding="utf-8")
+        match = re.search(
+            r"HstProtectedContractDigest\s*=\s*'([0-9a-f]{64})'",
+            adapter,
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        expected = title_codegen_plan.compute_protected_digest(
+            title_manifest.load_manifest(ROOT / "assets" / "titles" / "hst-ucus98701.json")
+        )
+        self.assertEqual(match.group(1), expected)
+
+    def test_protected_digest_changes_with_any_semantic_mutation_but_not_notes(self) -> None:
+        manifest = title_manifest.load_manifest(ROOT / "assets" / "titles" / "hst-ucus98701.json")
+        baseline = title_codegen_plan.compute_protected_digest(manifest)
+        for label, mutation in (
+            ("base", lambda value: value["executable"].update(base=1)),
+            ("entry", lambda value: value["executable"].update(entry=1)),
+            ("profile", lambda value: value.update(codegen_profile="none")),
+            ("span", lambda value: value["executable"].update(
+                extra_executable_spans=[{"start": 1, "end": 2}]
+            )),
+            ("disc", lambda value: value["disc"].update(id="UCUS98702")),
+            ("module", lambda value: value["modules"][0].update(name="other.prx")),
+            ("module-address", lambda value: value["modules"][0].update(load_address=1)),
+            ("feature", lambda value: value["feature_requirements"].append("custom-feature")),
+        ):
+            with self.subTest(label=label):
+                mutated = copy.deepcopy(manifest)
+                mutation(mutated)
+                self.assertNotEqual(
+                    title_codegen_plan.compute_protected_digest(mutated),
+                    baseline,
+                )
+        notes_only = copy.deepcopy(manifest)
+        notes_only["notes"] = "unrelated prose edit"
+        self.assertEqual(
+            title_codegen_plan.compute_protected_digest(notes_only),
+            baseline,
+        )
+
+    def test_print_protected_digest_cli_is_deterministic(self) -> None:
+        command = [
+            sys.executable,
+            str(ROOT / "tools" / "title_codegen_plan.py"),
+            "--print-protected-digest",
+            str(ROOT / "assets" / "titles" / "hst-ucus98701.json"),
+        ]
+        first = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+        second = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertRegex(first.stdout.strip(), r"^[0-9a-f]{64}$")
 
 
 if __name__ == "__main__":

@@ -222,7 +222,36 @@ def section_bytes(elf, s):
     return elf.data[s["off"]:s["off"] + s["size"]]
 
 
-def exec_ranges(elf):
+def analyzer_span_from_env(environ=None):
+    """Return explicit extra executable spans from the caller's environment.
+
+    Reads the ``HST_EXTRA_SPANS="lo,hi"`` override (hex or decimal). An unset or
+    empty value means *no* extra spans: the analyzer never applies a title-specific
+    default on its own (issue #151). Returns a list of ``(start, end)`` tuples or
+    ``None`` when no override is present.
+    """
+    if environ is None:
+        environ = os.environ
+    raw = environ.get("HST_EXTRA_SPANS")
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    parts = [part.strip() for part in text.split(",", 1)]
+    if len(parts) != 2:
+        raise RuntimeError(
+            "HST_EXTRA_SPANS must look like 'lo,hi' (got %r)" % text
+        )
+    try:
+        return [(int(parts[0], 0), int(parts[1], 0))]
+    except ValueError as exc:
+        raise RuntimeError(
+            "HST_EXTRA_SPANS must contain numeric addresses (got %r)" % text
+        ) from exc
+
+
+def exec_ranges(elf, extra_spans=None):
     # Build the executable address ranges from the section table, restricted to actual code
     # sections. PSP PRX ELFs declare almost every section with SHF_EXECINSTR (the loader
     # maps the whole module flat with WAX), so a naive flag check still treats .data/.rodata
@@ -250,24 +279,19 @@ def exec_ranges(elf):
         if s["addr"] is None or s["size"] is None or s["size"] <= 0:
             continue
         spans.append((s["addr"], s["addr"] + s["size"]))
-    # HST-specific extra code span outside the section table. The default is
-    # overrideable via HST_EXTRA_SPANS="lo,hi" (env) for non-default runs. This
-    # range is HST-specific and must NOT be applied when the game is rebased
-    # (GAME_BASE != 0) -- a rebased guest would live at different addresses.
-    DEFAULT_HST_EXTRA_SPANS = "0x00303194,0x00306e24"
-    game_base = elf.base if elf.base is not None else int(os.environ.get("GAME_BASE", "0"), 0)
-    if "HST_EXTRA_SPANS" in os.environ:
-        env_spans = os.environ["HST_EXTRA_SPANS"].strip()
-    else:
-        env_spans = DEFAULT_HST_EXTRA_SPANS if game_base == 0 else ""
-    if env_spans:
-        if game_base != 0:
+    # Explicit extra executable spans (title configuration supplied by the caller,
+    # e.g. the HST manifest's extra span). There is deliberately no implicit default:
+    # a generic base-zero image must not silently inherit another title's span (issue
+    # #151). A rebased guest lives at different addresses, so an explicit span can only
+    # be applied to an unrebased image and fails closed otherwise.
+    if extra_spans:
+        effective_base = 0 if elf.base is None else elf.base
+        if effective_base != 0:
             raise RuntimeError(
-                "HST_EXTRA_SPANS is HST-specific and cannot be applied when "
-                "GAME_BASE != 0 (got GAME_BASE=0x%x)" % game_base
+                "explicit extra executable spans cannot be applied when "
+                "GAME_BASE != 0 (got GAME_BASE=0x%x)" % effective_base
             )
-        lo_s, hi_s = (p.strip() for p in env_spans.split(",", 1))
-        spans.append((int(lo_s, 0), int(hi_s, 0)))
+        spans.extend((lo, hi) for lo, hi in extra_spans)
     if not spans:
         return [(0, 0)]
     spans.sort()
@@ -646,8 +670,8 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf):
-    ranges = exec_ranges(elf)
+def analyze(elf, extra_spans=None):
+    ranges = exec_ranges(elf, extra_spans=extra_spans)
     text = elf.sec(".text")
 
     def in_text(a):
@@ -1070,7 +1094,7 @@ def main(argv):
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
     elf = Elf(args[0], base=base)
-    starts, ranges = analyze(elf)
+    starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts

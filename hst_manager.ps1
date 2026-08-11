@@ -256,7 +256,7 @@ try {
             -ModuleDir $ModuleDirForMake `
             -PspHeader $PspHeaderForMake `
             -FuncsPerChunk $effectiveFuncsPerChunk
-        $boundPlan = Get-HstManifestMakeArgs `
+        $boundPlan = Get-TitleManifestMakeArgs `
             -Plan $script:TitleManagerPlan `
             -GameElfForMake $GameElfForMake `
             -ModuleDirForMake $ModuleDirForMake `

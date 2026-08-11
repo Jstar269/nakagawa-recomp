@@ -19,13 +19,22 @@ GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
                    place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000 \
                    place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868
 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
+# The analyzer applies no title-specific span by default (issue #151). The HST
+# extra executable span is therefore bound explicitly here for the pipeline stages
+# that analyze the primary image. hst_manager.ps1 -TitleManifest supplies the same
+# value from the manifest plan; an environment value always wins over this default.
+HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
 endif
 
 CODEGEN_PROFILE_ARG ?=
 GAME_EXTRA_ELFS ?=
 GAME_PSP_HEADER ?=
+HST_EXTRA_SPANS ?=
 EXTRA_ELF_ARGS  = $(foreach elf,$(GAME_EXTRA_ELFS),--extra-elf=$(elf))
 PSP_HEADER_ARG  = $(if $(strip $(GAME_PSP_HEADER)),--psp-header=$(GAME_PSP_HEADER),)
+# Per-recipe environment prefix so the explicit span reaches only the primary-image
+# analysis (codegen / VFPU fuzz), never the rebased extra guest modules.
+ANALYZER_SPAN_ENV := $(if $(strip $(HST_EXTRA_SPANS)),HST_EXTRA_SPANS=$(HST_EXTRA_SPANS),)
 
 # GNU Make defines a built-in CC=cc with origin "default". A normal `CC ?= gcc`
 # therefore never takes effect. Treat only that built-in/undefined state as unset,
@@ -291,7 +300,7 @@ $(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_ELF) tools/prxload.py $(GAME_PSP_HEA
 	$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE) $(PSP_HEADER_ARG) --out=$@
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_ELF) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) tools/codegen.py $(GAME_ELF) $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_ELF_ARGS) --funcs-per-chunk=$(FUNCS_PER_CHUNK)
+	$(ANALYZER_SPAN_ENV) $(PYTHON) tools/codegen.py $(GAME_ELF) $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_ELF_ARGS) --funcs-per-chunk=$(FUNCS_PER_CHUNK)
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_ELF) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py $(GAME_ELF) $(GAME_BASE) --toml=$@
@@ -668,7 +677,7 @@ $(VFPU_FUZZ_H):
 	@test -f "$@" || (echo "missing pre-generated VFPU fuzz header: $@" >&2; exit 1)
 else
 $(VFPU_FUZZ_H): $(GAME_ELF) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
-	$(PYTHON) tools/vfpu_fuzz_gen.py $(GAME_ELF) $(VFPU_FUZZ_H) --base=$(GAME_BASE)
+	$(ANALYZER_SPAN_ENV) $(PYTHON) tools/vfpu_fuzz_gen.py $(GAME_ELF) $(VFPU_FUZZ_H) --base=$(GAME_BASE)
 endif
 
 $(BUILD_DIR)/vfpu_fuzz.o: src/rt/vfpu_fuzz.c $(VFPU_FUZZ_H) src/rt/recomp.h
