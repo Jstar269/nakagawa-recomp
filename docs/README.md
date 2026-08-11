@@ -7,14 +7,32 @@ status map. Dated evidence is preserved separately and must be re-verified befor
 
 ## Start here
 
-| Need | Read |
-| --- | --- |
-| Project overview, current capability, setup pointer | [`README.md`](../README.md) |
-| Current priorities and known limitations | [`ISSUES.md`](../ISSUES.md) |
-| Contributor workflow and verification | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
-| Repository/agent guardrails | [`AGENTS.md`](../AGENTS.md) |
-| Windows toolchain and private-input setup | [`SETUP.md`](SETUP.md) |
-| This PR's complete documentation review | [`DOCUMENTATION_AUDIT.md`](DOCUMENTATION_AUDIT.md) |
+| Need | Read | Role | Authority | Freshness Expectation |
+| --- | --- | --- | --- | --- |
+| Project overview, scope, entry points | [`README.md`](../README.md) | EVERGREEN / OVERVIEW | High-level summary | Slow-changing |
+| Current priorities and known limitations | [`ISSUES.md`](../ISSUES.md) | CURRENT-STATE | Concise status dashboard | Active bring-up |
+| Contributor workflow and verification | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | POLICY / RUNBOOK | Authoritative process | Active bring-up |
+| Repository/agent guardrails | [`AGENTS.md`](../AGENTS.md) | POLICY / RUNBOOK | Authoritative developer rules | Active bring-up |
+| Windows toolchain and input setup | [`SETUP.md`](SETUP.md) | RUNBOOK / REFERENCE | Authoritative setup guide | Maintain with toolchain |
+| Historical investigation log | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | HISTORICAL / EVIDENCE | Chronological record | Immutable dates |
+
+## Documentation Authority by Topic
+
+Documentation surfaces serve specific roles. Authority depends on the domain:
+
+| Subject / Question | Authoritative Source | Scope & Expectation |
+| --- | --- | --- |
+| **Current implementation behavior** | Source code, tests, and Makefile | Verifiable behavior in code |
+| **Actionable defects & priorities** | Public GitHub Issues (`Jstar269/nakagawa-recomp`) | Live canonical issue tracking |
+| **Concise status dashboard** | [`ISSUES.md`](../ISSUES.md) | High-level status overview |
+| **Current project manual** | GitHub Wiki (`https://github.com/Jstar269/nakagawa-recomp/wiki`) | Project manual & research sitemap |
+| **Project identity & scope** | [`README.md`](../README.md) | Slow-changing entry point |
+| **Build & setup instructions** | [`SETUP.md`](SETUP.md) | Tested toolchain & input layout |
+| **CI architecture & topology** | [`CI.md`](CI.md) & Actions workflows | Path classifier & aggregate gates |
+| **Publication policy & scope** | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) & [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) | Export profile & checklists |
+| **Contribution & legal policy** | [`CONTRIBUTING.md`](../CONTRIBUTING.md) & [`DCO_POLICY.md`](DCO_POLICY.md) | DCO 1.1 attestation & PR process |
+| **Dated historical evidence** | [`STATUS_HISTORY.md`](STATUS_HISTORY.md) | Chronological log of past evidence |
+| **Operator session handoff** | [`NEXT_SESSION.md`](NEXT_SESSION.md) | Machine/operator handoff context |
 
 ## Maintained engineering guides
 

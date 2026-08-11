@@ -7,14 +7,17 @@ the native runtime build.
 
 ## Sources of truth
 
-Use these in this order when project surfaces disagree:
+Use these domain-specific authorities when project surfaces disagree:
 
-1. **Source code, tests, and Makefile** for implementation behavior.
-2. **GitHub Issues** for actionable defects, priorities, acceptance criteria, and partial-resolution state.
-3. [`ISSUES.md`](ISSUES.md) as a concise status dashboard linked to those canonical issues.
-4. Maintained `docs/` pages — start with [`docs/README.md`](docs/README.md) (index) and
-   [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md) (current session handoff) before new engineering.
-5. Dated investigation/history documents only as historical evidence that must be re-verified before reuse.
+- **Implementation behavior:** Source code, tests, and Makefile.
+- **Actionable defects & acceptance criteria:** Public GitHub Issues (`Jstar269/nakagawa-recomp`).
+- **Project manual & research sitemap:** GitHub Wiki (`https://github.com/Jstar269/nakagawa-recomp/wiki`).
+- **Concise status dashboard:** [`ISSUES.md`](ISSUES.md).
+- **Project identity, scope, & navigation:** [`README.md`](README.md).
+- **Toolchain setup & build contract:** [`docs/SETUP.md`](docs/SETUP.md).
+- **Documentation role hierarchy:** [`docs/README.md`](docs/README.md).
+- **Dated historical evidence & resolved milestones:** [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md).
+- **Machine/operator handoff context:** [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md) (local context only).
 
 Do not rely on `opencode.json` or an auto-loaded Markdown tracker; `opencode.json` is local/ignored
 state and the former comment-triggered OpenCode workflow is intentionally disabled pending any
@@ -310,3 +313,10 @@ required attestation under the project's policy. Do not retroactively fabricate 
   checks do not replace a full Git-history scan.
 - Remote GitHub rulesets, security settings, MFA, and visibility controls require explicit owner/
   repository-settings verification; never infer them from source-tree configuration.
+
+## Documentation freshness guardrails
+
+- **Evergreen docs stay current:** `README.md`, `ARCHITECTURE.md`, `SETUP.md`, and top-level guides must remain evergreen. Do not embed ephemeral dates ("as of July 25"), exact CI run IDs, or temporary blocker lists in evergreen pages.
+- **Volatile status belongs in ISSUES:** Actionable defects and milestone state belong in GitHub Issues and [`ISSUES.md`](ISSUES.md), not `README.md`.
+- **Historical evidence retains dates:** Dated experiment logs, audit snapshots, hardware oracle runs, and [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) must retain exact dates and scope. Never retroactively alter past evidence dates.
+- **Run documentation linting:** Run `python tools/lint_docs.py` before submitting documentation PRs to detect staleness anti-patterns.
