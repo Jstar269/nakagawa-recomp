@@ -4,9 +4,11 @@
 
 Nakagawa Recomp is an experimental static recompiler for the PSP release of *Hot Shots Tennis: Get a Grip*. Its name comes from the in-game Nakagawa Tennis Club. It translates a user-supplied decrypted PRX/ELF into C, links it with a native C runtime, and runs the result on Windows through SDL3 and Vulkan.
 
+**Project lineage:** Nakagawa Recomp began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project), a GPL-2.0-or-later PSP static-recompiler toolkit, and still contains substantial code inherited from that project. Nakagawa has since substantially extended and modified that codebase. See [NOTICE.md](NOTICE.md) and the [sal063 retention/provenance audit](docs/provenance/SAL063_RETENTION_2026-08-06.md) for detailed attribution, retained-code measurements, and downstream provenance.
+
 The project is not a game download or a general-purpose PSP emulator. It does not include the game, firmware modules, private keys, or private oracle traces. Development requires files from the user's own lawfully obtained copy.
 
-This is an unofficial, independent compatibility/research project. It is not affiliated with or endorsed by Sony Interactive Entertainment, Clap Hanz, PPSSPP, or the upstream toolkit authors; names and marks are used only to identify compatibility.
+This is an unofficial compatibility/research project. **"Independent" describes its relationship to Sony Interactive Entertainment, Clap Hanz, and the game rights-holders; it does not mean the recompiler codebase is clean-room or independently originated.** Nakagawa is not affiliated with or endorsed by Sony Interactive Entertainment, Clap Hanz, PPSSPP, sal063, or other upstream toolkit authors; names and marks are used only to identify compatibility and source lineage.
 
 ## Project status
 
@@ -131,11 +133,11 @@ what the pre-commit hook wants but means an unstaged edit goes unexamined.
 
 The checked-in GitHub Actions workflow defines path-gated public/synthetic Python, lint, native-object, reference-interpreter, translation, renderer-comparison, and dashboard gates without proprietary game inputs. [`docs/CI.md`](docs/CI.md) documents the applicability matrix and the stable `CI required` aggregate; manual run `30733971304` is the latest full hosted validation, while exact-head status must be checked separately for each later revision.
 
-The full `make verify` path additionally requires external oracle traces and a microtest module and intentionally reports blocked when they are absent. See [docs/STATIC_VERIFY.md](docs/STATIC_VERIFY.md).
+The full `make verify` path additionally requires external oracle traces and a microtest module and intentionally reports blocked when they are absent. See [`docs/STATIC_VERIFY.md`](docs/STATIC_VERIFY.md).
 
 ## Documentation and work tracking
 
-Start at [docs/README.md](docs/README.md).
+Start at [`docs/README.md`](docs/README.md).
 
 - **GitHub Issues:** canonical actionable work items and acceptance criteria.
 - [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md): current machine-capable handoff and evidence discipline.
