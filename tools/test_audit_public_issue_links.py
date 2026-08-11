@@ -101,7 +101,7 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         doc = self.repo_path / "ISSUES.md"
         doc.write_text(
             "# Status\n\n"
-            "## Public tracker and implementation references\n\n"
+            "## Current public tracker\n\n"
             "- [Issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) "
             "[CLOSED ISSUE]\n",
             encoding="utf-8",
@@ -125,7 +125,7 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         doc = self.repo_path / "ISSUES.md"
         doc.write_text(
             "# Status\n\n"
-            "## Public tracker and implementation references\n\n"
+            "## Current public tracker\n\n"
             "- [PR #27](https://github.com/Jstar269/nakagawa-recomp/pull/27) [MERGED PR]\n",
             encoding="utf-8",
         )
