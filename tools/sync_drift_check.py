@@ -61,6 +61,10 @@ EXPORT_MANIFEST = "PUBLIC_EXPORT.json"
 # Keep this list short and justified; every entry is a place where the two
 # repositories intentionally say different things.
 PUBLIC_ONLY_PATHS: dict[str, str] = {
+    "README.md": (
+        "The public copy describes the sanitized public source repository (public-safe-v1). "
+        "The archive really is private, so the private copy must keep its own wording."
+    ),
     "docs/PUBLICATION_READINESS.md": (
         "The public copy tells the reader their repository is the sanitized public one. "
         "The archive really is private, so the private copy must keep its own wording."
