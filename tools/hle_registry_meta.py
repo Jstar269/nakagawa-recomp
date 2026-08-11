@@ -68,12 +68,11 @@ HANDLER_STATUS = {
     # sceDmacMemcpy / sceDmacTryMemcpy. The measured contract is implemented and
     # regression-tested through production dispatch: the illegal-size and
     # illegal-address classes, whole-span validation with overflow-safe
-    # arithmetic, failure atomicity (no byte written, no GPU dirty), and
-    # memmove-correct same-pointer and overlapping copies. Two things remain
-    # unmeasured, so neither handler is "complete": the large-transfer
-    # truncation boundary that hardware proves exists but never localised
-    # (#328), and any concurrent-DMA busy result, which no capture has ever
-    # observed (#87).
+    # arithmetic, failure atomicity (no byte written, no GPU dirty),
+    # memmove-correct same-pointer and overlapping copies, and the measured
+    # 0xC000 effective prefix ceiling. The handlers remain partial because
+    # concurrent-DMA BUSY behavior and the precedence of validation for an
+    # invalid truncated tail are not established by the available evidence.
     "h_DmacMemcpy": "partial",
     "h_DmacTryMemcpy": "partial",
 }

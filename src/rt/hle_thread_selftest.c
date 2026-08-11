@@ -49,7 +49,7 @@ extern void sr_vblank_tick(void);
 /* The selftest deliberately omits the renderer, so this stands in for the
  * production invalidation callback. It records what it was told rather than
  * discarding it: "a rejected DMA request must not dirty a GPU range" is a
- * campaign requirement (#87), and the only way to assert a notification did
+ * DMA-path safety requirement, and the only way to assert a notification did
  * NOT happen is to be able to observe that it did. */
 static unsigned long s_gpu_dirty_calls;
 static uint32_t s_gpu_dirty_addr;
@@ -2316,20 +2316,19 @@ static void test_bulk_guest_span_atomicity(void) {
            "rejected DMA performs no partial guest mutation");
 }
 
-/* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions (#87, #328) -------
+/* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions ------------------
  *
  * Production dispatch: every call below enters through sr_syscall with the real
  * registered NID, so these assert the PSP-visible return value and the
  * PSP-visible memory state of the shipped handlers.
  *
- * The expected values come from durable repeated captures on a retail PSP-3001
- * / 6.61-ARK (probe `dma-semantics`, revisions v4 and v6, 2/2 runs each). Cases
- * that hardware never measured are asserted as *this runtime's* documented
- * behavior and labelled as such, so the distinction survives in the test names
- * rather than only in prose. */
-extern unsigned long sr_hle_test_dmac_unverified_calls(void);
-extern uint32_t sr_hle_test_dmac_verified_full_max(void);
-extern void sr_hle_test_dmac_reset_unverified(void);
+ * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
+ * private capture details are intentionally not part of this public-safe tree.
+ * The measured large-transfer ceiling is asserted as a prefix copy with an
+ * untouched tail. The invalid-truncated-tail case is deliberately labelled as
+ * a conservative runtime policy: hardware has not yet established whether the
+ * tail is validated before the effective transfer length is applied. */
+extern uint32_t sr_hle_test_dmac_effective_max(void);
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -2361,7 +2360,6 @@ static int dmac_span_is(uint32_t addr, uint32_t n, uint8_t value) {
 static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     reset_fixture();
     sr_hle_init();
-    sr_hle_test_dmac_reset_unverified();
 
     const uint32_t src = 0x08200000u;
     const uint32_t dst = 0x08400000u;
@@ -2439,6 +2437,45 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
                "a transfer writes nothing past its requested size");
     }
 
+    /* --- coherency matrix: RAM/VRAM directions and aliases ------------------
+     * The HLE entry must use the unified SR_HOST mapping for every source and
+     * destination class. The real GPU hook decides whether a dirty range is
+     * relevant; this production-dispatch fixture records the exact address and
+     * byte count it receives so the DMA contract cannot lose alias information
+     * before the renderer canonicalizes it. */
+    {
+        struct DmacDirectionCase {
+            uint32_t dst;
+            uint32_t src;
+            const char *label;
+        };
+        static const struct DmacDirectionCase cases[] = {
+            { 0x08300000u, 0x08280000u, "RAM-to-RAM" },
+            { 0x04080000u, 0x08320000u, "RAM-to-VRAM" },
+            { 0x08310000u, 0x04070000u, "VRAM-to-RAM" },
+            { 0x040a0000u, 0x04090000u, "VRAM-to-VRAM" },
+            { 0x440b0000u, 0x08330000u, "aliased VRAM destination" },
+            { 0x08340000u, 0x440c0000u, "aliased VRAM source" },
+        };
+        for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            const uint32_t n = 64u;
+            dmac_fill(cases[i].src, n);
+            dmac_clear(cases[i].dst, n + 1u, 0x5cu);
+            gpu_dirty_reset();
+            expect(bulk_call(nid, cases[i].dst, cases[i].src, n) == 0u,
+                   cases[i].label);
+            expect(dmac_span_matches(cases[i].dst, n, 0u),
+                   "a DMA direction copies through the unified guest mapping");
+            expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == cases[i].dst &&
+                       s_gpu_dirty_bytes == n,
+                   "a DMA direction reports its exact destination range");
+        }
+        /* The aliased destination must be the same physical bytes as its
+         * canonical 0x04xxxxxx address, not a second host allocation. */
+        expect(dmac_span_matches(0x040b0000u, 64u, 0u),
+               "an aliased VRAM destination is visible through its canonical address");
+    }
+
     /* --- proven: same-pointer and overlap behave like memmove --------------- */
 
     /* Hardware: dst == src, 16384 bytes -> 0, buffer intact (v4, 2/2). */
@@ -2465,32 +2502,54 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_matches(src, 16384u, 16u),
            "PSP: a backward-overlapping copy is memmove-correct across the span");
 
-    /* --- unresolved: the large-transfer truncation boundary (#328) ---------- */
+    /* --- measured: the 0xC000 effective ceiling ----------------------------- */
 
-    /* Hardware proves a ceiling exists (65536 loses its final byte, v4 and v6)
-     * but never established where it is. This runtime therefore copies in full
-     * and reports the event. Asserting BOTH halves is the point: it fails if
-     * someone starts truncating at a guessed boundary, and it fails if the
-     * report is dropped and the unresolved gap goes silent. */
-    const uint32_t over = sr_hle_test_dmac_verified_full_max() + 1u;
-    const unsigned long before = sr_hle_test_dmac_unverified_calls();
-    dmac_fill(src, over);
-    dmac_clear(dst, over, 0u);
-    expect(bulk_call(nid, dst, src, over) == 0u,
-           "an unmeasured oversize transfer still returns success");
-    expect(dmac_span_matches(dst, over, 0u),
-           "an unmeasured oversize transfer is copied in full, not clamped to a guess");
-    expect(sr_hle_test_dmac_unverified_calls() == before + 1u,
-           "an unmeasured oversize transfer is reported, keeping #328 visible");
+    /* Independent PSP-3001 / 6.61-ARK runs bracketed the boundary at 0xC000:
+     * 0xBFFF and 0xC000 are complete, while larger requests return success,
+     * copy the contiguous prefix, and leave the remainder untouched. Assert
+     * every byte for both registered NIDs, including the dirty range reported
+     * to the renderer. */
+    const uint32_t ceiling = sr_hle_test_dmac_effective_max();
+    expect(ceiling == 0xC000u, "the measured DMA effective ceiling is 0xC000");
+    static const uint32_t ceiling_sizes[] = {
+        0xBFFFu, 0xC000u, 0xC001u, 0xD000u, 0xF000u, 0xFFFFu, 0x10000u
+    };
+    for (unsigned i = 0; i < sizeof(ceiling_sizes) / sizeof(ceiling_sizes[0]); i++) {
+        const uint32_t requested = ceiling_sizes[i];
+        const uint32_t effective = requested > ceiling ? ceiling : requested;
+        dmac_fill(src, requested);
+        dmac_clear(dst, requested + 1u, 0xa7u);
+        gpu_dirty_reset();
+        expect(bulk_call(nid, dst, src, requested) == 0u,
+               "a measured-ceiling request returns success");
+        expect(dmac_span_matches(dst, effective, 0u),
+               "a measured-ceiling request copies the complete effective prefix");
+        expect(dmac_span_is(dst + effective, requested - effective, 0xa7u),
+               "a measured-ceiling request leaves the truncated tail untouched");
+        expect(MEM_R8(dst + requested) == 0xa7u,
+               "a measured-ceiling request writes nothing past its request");
+        expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
+                   s_gpu_dirty_bytes == effective,
+               "a measured-ceiling request dirties only the effective destination prefix");
+    }
 
-    /* A size at the evidence boundary must not be reported: the notice marks
-     * where measurement stops, so an off-by-one would misreport proven sizes. */
-    const unsigned long at_boundary = sr_hle_test_dmac_unverified_calls();
-    dmac_fill(src, sr_hle_test_dmac_verified_full_max());
-    expect(bulk_call(nid, dst, src, sr_hle_test_dmac_verified_full_max()) == 0u,
-           "the largest hardware-verified size still succeeds");
-    expect(sr_hle_test_dmac_unverified_calls() == at_boundary,
-           "the largest hardware-verified size is not reported as unmeasured");
+    /* Conservative memory-safety policy (not a hardware claim): a request
+     * whose effective prefix is in range but whose requested tail crosses the
+     * modeled arena is rejected atomically until hardware settles precedence.
+     * This prevents a partially validated bulk access from reaching SR_HOST. */
+    const uint32_t invalid_tail_dst = 0x0bff1000u;
+    const uint32_t invalid_tail_src = 0x08210000u;
+    const uint32_t invalid_tail_size = 0x10000u;
+    dmac_fill(invalid_tail_src, invalid_tail_size);
+    dmac_clear(invalid_tail_dst, ceiling, 0x6du);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
+               SCE_DMAC_ILLEGAL_ADDR,
+           "the conservative policy rejects an invalid requested tail");
+    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
+           "an invalid requested tail causes no prefix mutation");
+    expect(s_gpu_dirty_calls == 0u,
+           "an invalid requested tail causes no GPU dirty notification");
 
     (void)who;
 }

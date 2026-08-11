@@ -1696,80 +1696,38 @@ static uint32_t h_ResumeDispatchThread(CpuState *s) {
  * proceeds down the same branch. They do not yet model the subsystem behind them; the import
  * sequence vs the reference run is what validates that the returned value drives the same path. */
 static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* medium present */
-/* ---- sceDmacMemcpy / sceDmacTryMemcpy (issues #87, #328) --------------------
+/* ---- sceDmacMemcpy / sceDmacTryMemcpy ---------------------------------------
  *
- * Measured on a retail PSP-3001 / 6.61-ARK over PSPLink with durable repeated
- * captures (probe `dma-semantics`, revisions v4 and v6, two runs each,
- * byte-identical apart from absolute system-time stamps). Each clause below
- * states what it rests on, because the DMAC's small-transfer behavior is
- * settled while its large-transfer behavior is not.
+ * The current PSP-3001 / 6.61-ARK contract used here is deliberately narrow:
  *
- * PROVEN — reproduced by two independent probe revisions, 2/2 runs each:
- *   - dst == NULL, src valid, size 64  -> 0x80000103 (illegal address class)
- *   - dst valid, src == NULL, size 64  -> 0x80000103
- *   - dst and src valid, size 0        -> 0x80000104 (illegal size class)
- *   - sizes 1024 / 4096 / 16384 / 16385 / 32768 / 32769 copy completely:
- *     first byte, sampled interior bytes and the final byte all match the
- *     source pattern. 16385 and 32769 in particular rule out a 16 KiB or
- *     32 KiB ceiling.
- *   - dst == src self-copy (16384 bytes) returns 0 and leaves the buffer intact
- *   - forward overlap (dst = src + 16) and backward overlap (dst = src - 16),
- *     16384 bytes, both land memmove-correct at three sampled offsets each.
- *     There is no DMA-specific overlap corruption, so memmove is the
- *     evidence-backed primitive here — a plain forward byte loop would have
- *     shown the destructive pattern the probe was designed to detect.
- *   - sceDmacTryMemcpy is NOT a non-blocking submit: at 65536 bytes it occupies
- *     ~382 us inside the syscall and produces the same destination content as
- *     the blocking form, so both NIDs share one set of semantics here.
+ *   - a zero request returns 0x80000104 (illegal size);
+ *   - a NULL or invalid complete source/destination span returns 0x80000103
+ *     before any guest or GPU-visible side effect;
+ *   - the effective transfer length is min(requested, 0xC000), and a request
+ *     above that ceiling still returns success after copying only that prefix;
+ *   - same-pointer and forward/backward overlapping copies are memmove-correct;
+ *   - the Try form is synchronous from a single caller's point of view and
+ *     shares the measured copy/error contract;
+ *   - no concurrent BUSY result has been established, so this runtime does not
+ *     invent an asynchronous engine or a scheduler-owned DMA queue.
  *
- * NOT PROVEN — deliberately not implemented, see #328:
- *   - The exact large-transfer ceiling. A ceiling demonstrably exists: 65536
- *     byte transfers do not write their final byte (v4 and v6, four runs).
- *     But the only positional sample is a single size (49153) in a single
- *     probe revision, where byte 0xBFFF copied and byte 0xC000 did not. Sizes
- *     32770..49152 were never measured, the truncated region was never checked
- *     for prefix-contiguity, and the probe carrying that sample reports its own
- *     status=FAIL because its criterion expected the final byte to copy.
- *     Truncating a guest transfer at a guessed boundary would silently corrupt
- *     the tail of a copy if the real boundary differs, so oversized requests
- *     are copied in full and reported instead of quietly clamped.
- *   - Any BUSY result. No capture in any session observed 0x80000021; the probe
- *     is single-threaded and cannot create a concurrent-DMA condition. Nothing
- *     here fabricates one. This runtime's scheduler is cooperative and an HLE
- *     handler runs to completion without yielding, so no guest thread can
- *     observe the engine mid-transfer and a busy flag would be unreachable
- *     state rather than modelled behavior.
- *   - The precedence between the size and address error classes. Each was
- *     measured in isolation; no capture passes a NULL pointer and size 0
- *     together. Size is checked first and that ordering is unmeasured.
- *   - Transfer duration as a guest-visible quantity. Exactly one size (65536)
- *     was ever timed, and it truncates, so no rate law can be derived from the
- *     captures. Modelling a duration would mean inventing one.
+ * The complete *requested* spans are validated before the effective length is
+ * applied. Hardware has not yet settled whether an invalid truncated tail is
+ * ignored, so validating the requested range is the conservative memory-safety
+ * policy and is kept explicit rather than presented as a measured precedence.
+ * The size-before-address ordering below is likewise a runtime ordering; the
+ * combined size-zero-plus-invalid-pointer case was not part of the probe.
+ * The measured ~376–382 us observation for a large call is caller wall time;
+ * no guest-time rate law is inferred from it.
+ * Guest RAM/VRAM share the runtime's unified host allocation, and this target
+ * does not currently translate guest self-modifying code or maintain a separate
+ * instruction-cache/dispatch-table invalidation layer. DMA therefore exposes
+ * no additional code-invalidation side effect here; that boundary belongs to a
+ * future dynamic-code correctness issue rather than this copy contract.
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
-/* Largest transfer size measured to copy completely on hardware (probe v4, 2/2 runs).
- * This is an evidence boundary, not a hardware limit: it is the point beyond which
- * this runtime stops having a measurement, not a point at which the PSP stops. */
-#define SR_DMAC_VERIFIED_FULL_MAX 32769u
-
-static unsigned long s_dmac_unverified_calls = 0;
-static uint32_t s_dmac_unverified_max = 0;
-
-/* Keep an unmeasured-size transfer visible instead of silently guessing at the
- * hardware truncation boundary. The copy still happens in full; only a new
- * high-water size reports, so a game loop cannot spam the log. */
-static void sr_dmac_note_unverified_size(uint32_t n) {
-    s_dmac_unverified_calls++;
-    if (n > s_dmac_unverified_max) {
-        s_dmac_unverified_max = n;
-        fprintf(stderr,
-                "sceDmacMemcpy: size %u exceeds the largest hardware-verified full "
-                "transfer (%u); copied in full because the PSP truncation boundary is "
-                "not established (issues #87/#328)\n",
-                (unsigned)n, (unsigned)SR_DMAC_VERIFIED_FULL_MAX);
-    }
-}
+#define SCE_DMAC_EFFECTIVE_MAX 0xC000u
 
 static uint32_t h_DmacMemcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
@@ -1790,14 +1748,14 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
         if (!sr_guest_span_readable(src, n)) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
-    if (n > SR_DMAC_VERIFIED_FULL_MAX) sr_dmac_note_unverified_size(n);
+    uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;
 
     /* memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
-    memmove(SR_HOST(dst), SR_HOST(src), n);
+    memmove(SR_HOST(dst), SR_HOST(src), effective);
     extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-    sr_gpu_vram_dirty(dst, n);   /* DMA into a GPU-cached framebuffer must invalidate it */
-    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
+    sr_gpu_vram_dirty(dst, effective);   /* notify only the bytes actually transferred */
+    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
     return 0;
 }
 
@@ -1805,8 +1763,8 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
  * producing the same result as the blocking form at every measured size, so it
  * shares those semantics deliberately rather than by aliasing an unrelated
  * handler. It is a distinct registered entry so that a future busy or
- * non-blocking measurement has somewhere to land without disturbing #87's
- * proven error and overlap behavior. */
+ * non-blocking measurement has somewhere to land without changing the
+ * measured error and overlap behavior. */
 static uint32_t h_DmacTryMemcpy(CpuState *s) {
     return h_DmacMemcpy(s);
 }
@@ -8191,16 +8149,9 @@ int sr_hle_test_msgpipe_state(uint32_t uid, SrMsgPipeState *out) {
  * asserts the exact legal/illegal boundaries without duplicating the literal. */
 uint32_t sr_hle_test_msgpipe_max_capacity(void) { return MSG_PIPE_MAX_CAPACITY; }
 
-/* DMA evidence-boundary observability (#87/#328). The selftest asserts that a
- * transfer larger than any hardware-verified full copy is still performed in
- * full AND is reported, so the unresolved truncation boundary cannot be
- * silently "fixed" by clamping without a test noticing. */
-unsigned long sr_hle_test_dmac_unverified_calls(void) { return s_dmac_unverified_calls; }
-uint32_t sr_hle_test_dmac_verified_full_max(void) { return SR_DMAC_VERIFIED_FULL_MAX; }
-void sr_hle_test_dmac_reset_unverified(void) {
-    s_dmac_unverified_calls = 0;
-    s_dmac_unverified_max = 0;
-}
+/* Expose the measured effective-transfer ceiling to the executable regression
+ * without duplicating the contract literal in its fixture. */
+uint32_t sr_hle_test_dmac_effective_max(void) { return SCE_DMAC_EFFECTIVE_MAX; }
 #endif /* SR_HLE_THREAD_SELFTEST */
 
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
@@ -8914,7 +8865,7 @@ static void hle_register_bulk_memory_handlers(void) {
     sr_hle_register(0x617f3fe6, "sceDmacMemcpy", h_DmacMemcpy);
     /* Both DMAC copy NIDs register here rather than in the general table below,
      * so the executable regression enters the same registration the game does
-     * instead of a test-only mapping (#87). */
+     * instead of a test-only mapping. */
     sr_hle_register(0xd97f94d8, "sceDmacTryMemcpy", h_DmacTryMemcpy);
     sr_hle_register(0xa089eca4, "sceKernelMemset", h_Memset);
     sr_hle_register(0x1839852a, "sceKernelMemcpy", h_Memcpy);
