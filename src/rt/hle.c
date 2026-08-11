@@ -1719,6 +1719,11 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  * combined size-zero-plus-invalid-pointer case was not part of the probe.
  * The measured ~376–382 us observation for a large call is caller wall time;
  * no guest-time rate law is inferred from it.
+ * Guest RAM/VRAM share the runtime's unified host allocation, and this target
+ * does not currently translate guest self-modifying code or maintain a separate
+ * instruction-cache/dispatch-table invalidation layer. DMA therefore exposes
+ * no additional code-invalidation side effect here; that boundary belongs to a
+ * future dynamic-code correctness issue rather than this copy contract.
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u

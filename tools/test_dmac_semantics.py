@@ -144,6 +144,10 @@ class TestDmacExecutableCoverage(unittest.TestCase):
         ):
             self.assertIn(needle, text)
 
+    def test_code_invalidation_boundary_is_explicit(self) -> None:
+        region = _dmac_region()
+        self.assertIn("does not currently translate guest self-modifying code", region)
+
 
 class TestDmacGpuAliasBoundary(unittest.TestCase):
     def test_renderer_canonicalizes_cpu_dirty_aliases(self) -> None:
