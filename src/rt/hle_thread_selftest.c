@@ -874,6 +874,59 @@ static void test_time_domains_are_coherent(void) {
     (void)rtc1; (void)rtc2;
 }
 
+/* Display clock regression through the production NID registry.  HCOUNT is a
+ * scanout observation of the scheduler timeline: query count must not move it,
+ * while an explicit guest-time advance must move both current and accumulated
+ * positions.  The GE VBLANK bit shares the same rational frame phase, including
+ * the interval just beyond the old integer-16667-us rollover. */
+static void test_display_clock_reads_are_observational(void) {
+    enum {
+        NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
+        NID_DISPLAY_ACCUMULATED_HCOUNT = 0x210eab3au,
+        NID_DISPLAY_IS_VBLANK = 0x4d4e10ecu,
+    };
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    uint32_t current0 = sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT);
+    uint32_t accumulated0;
+    cpu.r[4] = 0;
+    accumulated0 = sr_syscall(&cpu, NID_DISPLAY_ACCUMULATED_HCOUNT);
+    expect(current0 == 0u && accumulated0 == 0u,
+           "display HCOUNT starts at the scheduler timeline origin");
+
+    for (int i = 0; i < 64; i++) {
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT) == current0,
+               "repeated current HCOUNT reads do not advance the scanline");
+    }
+
+    s_vtime_us = 1000u;
+    cpu.r[4] = 0;
+    uint32_t current1 = sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT);
+    cpu.r[4] = 0;
+    uint32_t accumulated1 = sr_syscall(&cpu, NID_DISPLAY_ACCUMULATED_HCOUNT);
+    expect(current1 > current0 && accumulated1 > accumulated0,
+           "elapsed scheduler time advances current and accumulated HCOUNT");
+
+    /* 16,670 us is still inside the rational 59.94-Hz frame.  The previous
+     * 16,667-us modulo made this read look like the next frame and cleared the
+     * VBLANK bit three microseconds early. */
+    s_vtime_us = 16670u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 1u,
+           "display VBLANK uses the rational scheduler frame phase");
+    s_vtime_us = 16684u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
+           "display VBLANK clears at the next rational frame");
+}
+
 static void test_interrupt_nid_semantics(void) {
     reset_fixture();
     sr_hle_init();
@@ -4239,6 +4292,7 @@ int main(int argc, char **argv) {
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
+    test_display_clock_reads_are_observational();
     test_interrupt_nid_semantics();
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();

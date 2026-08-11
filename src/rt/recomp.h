@@ -519,6 +519,12 @@ void     sched_wake(uint32_t obj);                  /* ready all threads blocked
 uint64_t sched_vtime_us(void);
 uint64_t sched_vtime_deadline_after(uint64_t delta); /* saturating guest-time deadline */
 void     sched_vtime_refresh(void);
+/* Display scanout observations derived from the same monotonic guest timeline.  The
+ * 59.94-Hz frame phase is rational (60000/1001), so repeated reads are stable and
+ * elapsed scheduler time—not HLE call count—advances the HCOUNT source. */
+uint32_t sched_display_current_hcount(void);
+uint32_t sched_display_accumulated_hcount(void);
+int      sched_display_is_vblank(void);
 void     sched_set_current_cb_wait(int cb_wait);    /* mark running thread as callback-waiting */
 void     sched_wake_callbacks(uint32_t thread_uid); /* wake thread waiting in CB-wait */
 void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wakeup-count) */

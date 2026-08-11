@@ -6749,8 +6749,7 @@ uint32_t sr_get_ge_status(void) {
      * "is the GE idle?" check passes. If the guest ever reads this register mid-frame
      * the FINISHEND flag stays set; the previous-frame-finished-so-flip semantics that the
      * driver relies on keep working. */
-    uint64_t frame_us = now_usec() % 16667;
-    uint32_t vblank   = (frame_us > 15167) ? 0x20u : 0x0u;
+    uint32_t vblank   = sched_display_is_vblank() ? 0x20u : 0x0u;
     return 0x18u | vblank;
 }
 static uint32_t h_DisplayIsVblank(CpuState *s) {
@@ -6898,18 +6897,17 @@ void sr_vblank_tick(void) {
     }
 }
 static uint32_t h_DisplayGetVcount(CpuState *s) { (void)s; return s_vcount; }
-/* The PSP scans hCountPerVblank=286 lines per frame (PPSSPP Core/HW/Display.cpp). The current
- * scanline is the intra-frame position [0,285]; the accumulated count is vcount*286 + that, and
- * it is what games poll to time intervals far finer than a frame (e.g. logo/intro durations).
- * Returning the frame counter here (286x too small) makes those waits never elapse. */
-static uint32_t s_hcount_vc = 0xffffffff, s_hcount_intra = 0;
-static uint32_t hcount_intra(void) {
-    if (s_vcount != s_hcount_vc) { s_hcount_vc = s_vcount; s_hcount_intra = 0; }
-    else if (s_hcount_intra < 285) s_hcount_intra++;
-    return s_hcount_intra;
+/* The PSP scans hCountPerVblank=286 lines per frame (PPSSPP Core/HW/Display.cpp). The
+ * scheduler owns the rational 59.94-Hz phase, so these observations advance with
+ * elapsed guest time and remain unchanged when a game polls them repeatedly. */
+static uint32_t h_DisplayGetCurrentHcount(CpuState *s) {
+    (void)s;
+    return sched_display_current_hcount();
 }
-static uint32_t h_DisplayGetCurrentHcount(CpuState *s) { (void)s; return hcount_intra(); }
-static uint32_t h_DisplayGetAccumulatedHcount(CpuState *s) { (void)s; return s_vcount * 286u + hcount_intra(); }
+static uint32_t h_DisplayGetAccumulatedHcount(CpuState *s) {
+    (void)s;
+    return sched_display_accumulated_hcount();
+}
 
 /* sceGe_user: pretend the GE finishes immediately (DrawSync returns done). eDRAM at 0x04000000. */
 typedef struct {
@@ -8803,6 +8801,15 @@ static void hle_register_time_handlers(void) {
 static void hle_register_display_handlers(void) {
     sr_hle_register(0x289d82fe, "sceDisplaySetFrameBuf", h_DisplaySetFrameBuf);
     sr_hle_register(0xeeda2e54, "sceDisplayGetFrameBuf", h_DisplayGetFrameBuf);
+    /* 0x36cdfade is sceDisplayWaitVblank (issue #83); the CB variant is 0x46f186c3 and
+     * remains unregistered until the callback-aware wait transaction lands. */
+    sr_hle_register(0x0e20f177, "sceDisplaySetMode", h_DisplaySetMode);
+    sr_hle_register(0x9c6eaad7, "sceDisplayGetVcount", h_DisplayGetVcount);
+    sr_hle_register(0x773dd3a3, "sceDisplayGetCurrentHcount", h_DisplayGetCurrentHcount);
+    sr_hle_register(0x210eab3a, "sceDisplayGetAccumulatedHcount", h_DisplayGetAccumulatedHcount);
+    sr_hle_register(0x4d4e10ec, "sceDisplayIsVblank", h_DisplayIsVblank);
+    sr_hle_register(0xdea197d4, "sceDisplayGetMode", h_DisplayGetMode);
+    sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_ok);
 }
 
 static void hle_register_atrac_handlers(void) {
@@ -9112,16 +9119,6 @@ void sr_hle_init(void) {
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
     sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
-    /* sceDisplay */
-    sr_hle_register(0x0e20f177, "sceDisplaySetMode", h_DisplaySetMode);
-    /* 0x36cdfade is sceDisplayWaitVblank (issue #83); the CB variant is 0x46f186c3 and
-     * remains unregistered until the callback-aware wait transaction lands. */
-    sr_hle_register(0x9c6eaad7, "sceDisplayGetVcount", h_DisplayGetVcount);
-    sr_hle_register(0x773dd3a3, "sceDisplayGetCurrentHcount", h_DisplayGetCurrentHcount);
-    sr_hle_register(0x210eab3a, "sceDisplayGetAccumulatedHcount", h_DisplayGetAccumulatedHcount);
-    sr_hle_register(0x4d4e10ec, "sceDisplayIsVblank", h_DisplayIsVblank);
-    sr_hle_register(0xdea197d4, "sceDisplayGetMode", h_DisplayGetMode);
-    sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_ok);
     /* sceGe_user */
     sr_hle_register(0xab49e76a, "sceGeListEnQueue", h_GeListEnQueue);
     sr_hle_register(0xb287bd61, "sceGeDrawSync", h_GeDrawSync);
