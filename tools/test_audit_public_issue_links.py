@@ -121,22 +121,22 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertTrue(any(not finding[4] for finding in findings))
         self.assertTrue(any("STALE TRACKER STATUS" in finding[3] for finding in findings))
 
-    def test_merged_pr_tracker_label_passes(self) -> None:
+    def test_open_pr_tracker_label_passes(self) -> None:
         doc = self.repo_path / "ISSUES.md"
         doc.write_text(
             "# Status\n\n"
             "## Current public tracker\n\n"
-            "- [PR #27](https://github.com/Jstar269/nakagawa-recomp/pull/27) [MERGED PR]\n",
+            "- [PR #1](https://github.com/Jstar269/nakagawa-recomp/pull/1) [OPEN PR]\n",
             encoding="utf-8",
         )
         issues_map = {
-            27: {
-                "number": 27,
+            1: {
+                "number": 1,
                 "is_pr": True,
                 "type": "PR",
-                "state": "closed",
-                "merged_at": "2026-08-11T00:00:00Z",
-                "title": "Notice PR",
+                "state": "open",
+                "merged_at": None,
+                "title": "Dependency PR",
                 "url": "",
             }
         }
