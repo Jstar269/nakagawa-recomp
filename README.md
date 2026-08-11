@@ -21,7 +21,7 @@ The recompiler is experimental, and active development focuses on fidelity, timi
 - full PSMF intro-movie playback integration ([`docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md`](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md)); and
 - formal performance benchmark baselines ([`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md)).
 
-**GitHub Issues are the canonical source of truth for active defects and acceptance criteria.** [`ISSUES.md`](ISSUES.md) provides the status dashboard; [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) preserves dated milestones and historical evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
+**Public GitHub Issues are canonical for active defects and acceptance criteria where a curated issue exists.** [`ISSUES.md`](ISSUES.md) provides the concise status map across public issues and reference evidence; [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) preserves dated milestones and historical evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
 
 ## Requirements
 
@@ -110,7 +110,7 @@ Do not combine the Makefile's two-phase `all` target into a single dependency li
 | `src/rt/` | Native C runtime, HLE, scheduler, audio/video, filesystem, and renderers |
 | `src/ref/` | C++ reference interpreter used by selftests and differential gates |
 | `assets/vfpu/` | Pinned PPSSPP-derived VFPU lookup tables with upstream provenance |
-| `font/` | Replacement PGF fonts; exact per-font redistribution chains remain pre-publication work |
+| `font/` | Replacement-font provenance/review material; `public-safe-v1` excludes the unresolved PGF/font payloads |
 | `interface/` | Separate local-only Next.js dashboard/prototype; not part of `hst.exe` |
 | `docs/` | Architecture, setup, debugging, porting, governance, verification, and legal/provenance engineering records |
 | `build/` | Fully generated local output; ignored by Git |
@@ -122,11 +122,12 @@ Generated `build/<game>/<game>_recomp_*.c` files must never be edited. Change ge
 ```powershell
 .\hst_manager.ps1 -Action Test
 python -m unittest discover -s tools -p "test_*.py" -v
-python tools/publish_audit.py --tracked-only --worktree
+python tools/publish_audit.py --tracked-only --worktree --public-scope
 ```
 
 `--worktree` audits the bytes on disk. Without it the audit reads staged Git blobs, which is
-what the pre-commit hook wants but means an unstaged edit goes unexamined.
+what the pre-commit hook wants but means an unstaged edit goes unexamined. `--public-scope` applies
+the established `public-safe-v1` exclusions used by this public repository.
 
 The checked-in GitHub Actions workflow defines path-gated public/synthetic Python, lint, native-object, reference-interpreter, translation, renderer-comparison, and dashboard gates without proprietary game inputs. [`docs/CI.md`](docs/CI.md) documents the applicability matrix and the stable `CI required` aggregate status.
 
@@ -138,7 +139,7 @@ Start at [`docs/README.md`](docs/README.md).
 
 - **GitHub Wiki:** [Nakagawa Recomp project manual](https://github.com/Jstar269/nakagawa-recomp/wiki).
 - **Broader PSP research/reference:** [recomp.jaycast.net](https://recomp.jaycast.net/) covers generalized PSP recompilation and hardware research.
-- **GitHub Issues:** canonical actionable work items and acceptance criteria.
+- **GitHub Issues:** canonical actionable work items and acceptance criteria where curated public issues exist.
 - [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md): current machine-capable handoff and evidence discipline.
 - [`ISSUES.md`](ISSUES.md): concise current-status dashboard.
 - [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md): dated resolved evidence and superseded hypotheses.
@@ -154,4 +155,4 @@ This is an independent compatibility/research project. Product and game names ar
 
 ## Contributing and security
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before submitting changes. The repository is not yet accepting a public release-security posture; arbitrary PSP/game inputs should be treated as untrusted until the parser/span hardening campaign is complete.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before submitting changes. The repository does not yet claim a release-grade security posture; arbitrary PSP/game inputs should be treated as untrusted until the parser/span hardening campaign is complete.
