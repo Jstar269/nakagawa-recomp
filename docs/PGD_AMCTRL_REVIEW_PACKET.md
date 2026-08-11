@@ -1,6 +1,6 @@
 # PGD/amctrl qualified-review packet
 
-**Status: engineering facts for qualified legal review, not legal advice.** This packet supports [GitHub issue #104](https://github.com/Jstar269/nakagawa-recomp/issues/104). It was reconciled on 2026-08-09 against `main` at `72fe8739b77f6dc2d255544651849476b463e55e`; counsel should review the cited source and intended release tree, not rely on this summary alone.
+**Status: engineering facts for qualified legal review, not legal advice.** This packet supports qualified legal review for PGD/amctrl distribution posture. It was reconciled on 2026-08-09 against `main` at `72fe8739b77f6dc2d255544651849476b463e55e`; counsel should review the cited source and intended release tree, not rely on this summary alone.
 
 ## Decision requested
 

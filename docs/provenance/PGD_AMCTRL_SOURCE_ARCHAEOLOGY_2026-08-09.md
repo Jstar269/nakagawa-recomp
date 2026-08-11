@@ -1,7 +1,7 @@
 # PGD/amctrl source archaeology — 2026-08-09
 
 **Status: technical provenance investigation complete to recoverable evidence.** This is an
-engineering record for [issue #104](https://github.com/Jstar269/nakagawa-recomp/issues/104), not a
+engineering record for [`docs/PGD_AMCTRL_REVIEW_PACKET.md`](../PGD_AMCTRL_REVIEW_PACKET.md), not a
 copyright, licensing, anti-circumvention, or distribution conclusion. Qualified review of the actual
 candidate source and binary configurations remains open.
 

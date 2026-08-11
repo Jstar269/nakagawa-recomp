@@ -78,7 +78,7 @@ sal063 is the **immediate** upstream for the files below. Percentages are the sh
 
 `src/rt/nid_names.h` and its corpus `tools/nid_corpus.json` retain that attribution: the **function names** were seeded from PPSSPP's `Core/HLE` tables and remain PPSSPP-sourced. Since the IND-1 work recorded in [docs/provenance/INDEPENDENCE_BACKLOG.md](docs/provenance/INDEPENDENCE_BACKLOG.md), 1463 of the 1615 **numeric NIDs** are no longer transcribed — they are recomputed from the name at generation time as `sha1(name)[0:4]` little-endian, the derivation `psp-build-exports` applies when building a PRX. This reduces what is copied; it does not change where the names came from, and no independence is claimed for the name list.
 
-Do **not** infer from the repository-level GPL-3.0-or-later declaration that every tracked component or combined configuration is cleared for distribution. PPSSPP's own `Core/Font/PGF.cpp` records JPCSP lineage and warns that copied portions make that file effectively GPLv3; Nakagawa's corresponding PGF provenance is therefore an unresolved publication blocker ([#98](https://github.com/Jstar269/nakagawa-recomp/issues/98)). GPL-2.0-or-later material can be conveyed under GPLv3 when that option is needed, but the exact combined-work license presentation must be settled before publication. Binary distributors must satisfy the applicable corresponding-source and notice requirements for the exact source used to build their binary.
+Do **not** infer from the repository-level GPL-3.0-or-later declaration that every tracked component or combined configuration is cleared for distribution. PPSSPP's own `Core/Font/PGF.cpp` records JPCSP lineage and warns that copied portions make that file effectively GPLv3; Nakagawa's corresponding PGF provenance is documented in [docs/PGF_LICENSE_REVIEW_PACKET.md](docs/PGF_LICENSE_REVIEW_PACKET.md). GPL-2.0-or-later material can be conveyed under GPLv3 when that option is needed, but the exact combined-work license presentation must be settled before publication. Binary distributors must satisfy the applicable corresponding-source and notice requirements for the exact source used to build their binary.
 
 ### PGD/amctrl provenance qualification
 
@@ -98,8 +98,8 @@ source-code expression are separate provenance categories.
 The pinned history and function/block matrix are in
 [docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md](docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md).
 This engineering classification does not determine the applicable notice/license or
-anti-circumvention treatment. [Issue #104](https://github.com/Jstar269/nakagawa-recomp/issues/104)
-remains open, and `public-safe-v1` continues to exclude the implementation.
+anti-circumvention treatment. Qualified legal review is detailed in [docs/PGD_AMCTRL_REVIEW_PACKET.md](docs/PGD_AMCTRL_REVIEW_PACKET.md),
+and `public-safe-v1` continues to exclude the implementation.
 
 ## Redistributed PPSSPP data
 
@@ -126,8 +126,7 @@ embedded by PPSSPP are not evidence of Sony or Fontworks outlines. These
 files are not asserted to be GPL-licensed, and nothing here suggests they are
 proprietary either. See
 [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt)
-and publication blocker
-[#99](https://github.com/Jstar269/nakagawa-recomp/issues/99). The `assets/vfpu/`
+and [docs/PGF_LICENSE_REVIEW_PACKET.md](docs/PGF_LICENSE_REVIEW_PACKET.md). The `assets/vfpu/`
 tables are a separate question and are not covered by that caveat.
 
 PPSSPP's license also preserves a BSD-compatible PSPSDK notice for defines, constants, and headers. That notice is reproduced in [THIRD_PARTY_LICENSES/PSPSDK.txt](THIRD_PARTY_LICENSES/PSPSDK.txt).

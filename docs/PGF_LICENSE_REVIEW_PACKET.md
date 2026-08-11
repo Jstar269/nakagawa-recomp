@@ -1,8 +1,7 @@
 # PGF implementation qualified-review packet
 
 **Status: engineering provenance evidence for qualified review, not legal
-advice or publication clearance.** This packet supports
-[issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98) and describes
+advice or publication clearance.** This packet supports qualified legal review for PGF implementation licensing and describes
 the implementation at Nakagawa commit
 [`77c3aba7a66be84a12ff507e35630644aaf89bd8`](https://github.com/Jstar269/nakagawa-recomp/commit/77c3aba7a66be84a12ff507e35630644aaf89bd8).
 
@@ -141,8 +140,7 @@ organization, pixel switch, and PPSSPP blend formula.
 - [`public-safe-v1`](PUBLIC_SOURCE_PROFILE.md) already excludes `pgf.c`,
   `pgf.h`, and all bundled PGF fonts and builds `pgf_unavailable.c`. The seam
   returns unavailable/failure rather than synthetic font or glyph success.
-- Replacement-font rights remain a separate issue under
-  [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99).
+- Replacement-font rights remain documented in [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt).
 
 ## Conservative engineering choices
 

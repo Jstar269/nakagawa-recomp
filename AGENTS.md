@@ -284,11 +284,7 @@ For new or materially derived code/data:
 - disclose material translation/reimplementation lineage, including AI-assisted translation;
 - keep third-party and generated data clearly distinguishable from independently authored code.
 
-The PGF PPSSPP/JPCSP licensing chain is a current publication blocker tracked in
-[#98](https://github.com/Jstar269/nakagawa-recomp/issues/98), replacement-font licensing in
-[#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), the full-history secret/privacy audit
-in [#102](https://github.com/Jstar269/nakagawa-recomp/issues/102), and qualified PGD/amctrl
-distribution review in [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104). Do not
+The PGF PPSSPP/JPCSP licensing chain is documented in [docs/PGF_LICENSE_REVIEW_PACKET.md](docs/PGF_LICENSE_REVIEW_PACKET.md), replacement-font licensing in [THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt), the full-history secret/privacy audit in [docs/KEY_HISTORY_SCRUB.md](docs/KEY_HISTORY_SCRUB.md), and qualified PGD/amctrl distribution review in [docs/PGD_AMCTRL_REVIEW_PACKET.md](docs/PGD_AMCTRL_REVIEW_PACKET.md). Do not
 "fix" any of these by changing SPDX text or generic NOTICE wording without resolving the underlying
 provenance evidence. Engineering review packets are evidence for qualified review, not legal
 clearance. The repository-level declaration is GPL-3.0-or-later ([LICENSE](LICENSE), `NOTICE.md`)

@@ -5,7 +5,7 @@ This document defines the contributor rights-attestation framework for the Nakag
 > [!IMPORTANT]
 > **DCO is Not Copyright Assignment**: A DCO sign-off certifies that you have the right to submit your contribution under the project's open-source terms. You retain copyright to your original work.
 >
-> **Residual Publication Blocker**: The exact final open-source license terms for outside contributions on the public repository remain gated on the resolution of component-level provenance issues [#98](https://github.com/Jstar269/nakagawa-recomp/issues/98), [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), and [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104).
+> **Residual Publication Blocker**: The exact final open-source license terms for outside contributions on the public repository remain gated on the resolution of component-level provenance (see [`docs/PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md), [`THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt`](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt), and [`docs/PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md)).
 
 ---
 

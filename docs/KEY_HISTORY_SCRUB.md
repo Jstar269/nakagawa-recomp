@@ -2,7 +2,7 @@
 
 The PSP KIRK/amctrl constants were removed from the working tree in commit `a2738e0` and now load only from a local gitignored file; see [PGD_KEYS.md](PGD_KEYS.md). They remain recoverable from old Git objects introduced by the initial import.
 
-This document describes the **validated key-specific scrub component**. Do **not** run/push it as a standalone rewrite merely because the procedure is ready. [#102](https://github.com/Jstar269/nakagawa-recomp/issues/102) must first finish the broader history/privacy/proprietary-material audit so every required removal can be handled in **one coordinated rewrite**.
+This document describes the **validated key-specific scrub component**. Do **not** run/push it as a standalone rewrite merely because the procedure is ready. The broader history/privacy/proprietary-material audit must first confirm every required removal so every required removal can be handled in **one coordinated rewrite**.
 
 > [!IMPORTANT]
 > The recommended public architecture is now a **fresh sanitized public repository**, while this historical development repository remains private. The rewrite below is therefore for sanitizing the private/archive graph itself if desired/required; it is not the mechanism for constructing the public repository.

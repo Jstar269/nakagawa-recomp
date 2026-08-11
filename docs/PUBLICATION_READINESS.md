@@ -17,15 +17,15 @@ The lowest-exposure public architecture is therefore a generic recompiler/runtim
 
 | Gate | Canonical item | Status |
 | --- | --- | --- |
-| PGF/JPCSP/intraFont provenance | [#98](https://github.com/Jstar269/nakagawa-recomp/issues/98), [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) | Open; implementation is excluded by the public-safe profile |
-| Exact licenses/notices for replacement PGF fonts | [#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), [`THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt`](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt) | Open; all PGFs are excluded by the public-safe profile |
-| Full reachable-history secret/proprietary/privacy audit | [#102](https://github.com/Jstar269/nakagawa-recomp/issues/102), [`tools/history_audit.py`](../tools/history_audit.py) | Closed 2026-08-06; full-history audit completed across 680 reachable commits and 4,599 objects with 0 sensitive findings found under measured scope |
-| Upstream copyright/notice inventory | [#103](https://github.com/Jstar269/nakagawa-recomp/issues/103) | Closed 2026-07-23; evidence still belongs in final review |
-| Qualified PGD/amctrl distribution review | [#104](https://github.com/Jstar269/nakagawa-recomp/issues/104), [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md), [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Open; technical provenance is complete to recoverable evidence and the implementation is excluded by the public-safe profile |
-| Reproducible release manifest & SBOM | [#149](https://github.com/Jstar269/nakagawa-recomp/issues/149), [`assets/release_manifest.json`](../assets/release_manifest.json) | Closed 2026-08-06; SPDX 2.3, SPDX 3.0.1 JSON-LD, CycloneDX 1.5 SBOM generator (`tools/generate_sbom.py`), verifier (`tools/verify_sbom.py`), and python lock (`tools/requirements-lock.txt`) implemented |
-| Contributor rights-attestation policy (DCO 1.1) | [#152](https://github.com/Jstar269/nakagawa-recomp/issues/152), [`docs/DCO_POLICY.md`](../docs/DCO_POLICY.md) | Open/Partial (DCO 1.1 policy document, `CONTRIBUTING.md`, PR template, bot policy, and sign-off correction runbooks implemented; final terms gated on #98/#99/#104) |
-| Complete public-tree manifest gate | [#154](https://github.com/Jstar269/nakagawa-recomp/issues/154), [`tools/publish_audit.py`](../tools/publish_audit.py) | Closed 2026-08-06; exhaustive candidate-tree manifest gate implemented; passing output is engineering evidence for qualified review, not legal clearance |
-| Live GitHub/OSPS governance review | [#27](https://github.com/Jstar269/nakagawa-recomp/issues/27), [`docs/OSPS_BASELINE.md`](../docs/OSPS_BASELINE.md) | Closed 2026-08-06; OSPS Level 1 baseline re-audited against empirical live GitHub API evidence with 5-state control schema |
+| PGF/JPCSP/intraFont provenance | [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) | Open; implementation is excluded by the public-safe profile |
+| Exact licenses/notices for replacement PGF fonts | [`THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt`](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt) | Open; all PGFs are excluded by the public-safe profile |
+| Full reachable-history secret/proprietary/privacy audit | [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md), [`tools/history_audit.py`](../tools/history_audit.py) | Closed 2026-08-06; full-history audit completed across 680 reachable commits and 4,599 objects with 0 sensitive findings found under measured scope |
+| Upstream copyright/notice inventory | [`NOTICE.md`](../NOTICE.md) | Closed 2026-07-23; evidence still belongs in final review |
+| Qualified PGD/amctrl distribution review | [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md), [`provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`](provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md) | Open; technical provenance is complete to recoverable evidence and the implementation is excluded by the public-safe profile |
+| Reproducible release manifest & SBOM | [`assets/release_manifest.json`](../assets/release_manifest.json) | Closed 2026-08-06; SPDX 2.3, SPDX 3.0.1 JSON-LD, CycloneDX 1.5 SBOM generator (`tools/generate_sbom.py`), verifier (`tools/verify_sbom.py`), and python lock (`tools/requirements-lock.txt`) implemented |
+| Contributor rights-attestation policy (DCO 1.1) | [`docs/DCO_POLICY.md`](../docs/DCO_POLICY.md) | Open/Partial (DCO 1.1 policy document, `CONTRIBUTING.md`, PR template, bot policy, and sign-off correction runbooks implemented; final terms gated on PGF/PGD review) |
+| Complete public-tree manifest gate | [`tools/publish_audit.py`](../tools/publish_audit.py) | Closed 2026-08-06; exhaustive candidate-tree manifest gate implemented; passing output is engineering evidence for qualified review, not legal clearance |
+| Live GitHub/OSPS governance review | [PR #27](https://github.com/Jstar269/nakagawa-recomp/pull/27), [`docs/OSPS_BASELINE.md`](../docs/OSPS_BASELINE.md) | Closed 2026-08-06; OSPS Level 1 baseline re-audited against empirical live GitHub API evidence with 5-state control schema |
 | KIRK/amctrl constants reachable in old Git history | [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) | Mandatory before any historical repository is exposed |
 
 ### Licensing posture
@@ -52,7 +52,7 @@ The conservative plan is:
 1. Keep the historical development repository private as the archive.
 2. Finish #98/#99/#102/#104 and governance review.
 3. Perform the one coordinated private-history rewrite required by #102/`KEY_HISTORY_SCRUB.md` if the archive itself is to be retained in sanitized form.
-4. Create a **new public repository from an explicitly approved sanitized tree/history**, not `git push --mirror`.
+4. Maintain the **sanitized public repository (`public-safe-v1`)** as an explicitly approved public tree/history.
 5. Push only the approved public `main` and intentionally approved tags. Do not migrate archive refs, old PR refs, Actions history, private issue comments, private oracle material, game-derived artifacts, or orphan objects.
 6. Curate/recreate only currently useful public issues with private/game-derived evidence summarized rather than copied.
 7. Configure rulesets/security settings on the new public repository before accepting contributions.

@@ -1,9 +1,6 @@
 # Public-safe source profile
 
-The `public-safe-v1` profile is the conservative initial-source configuration for issues
-[#98](https://github.com/Jstar269/nakagawa-recomp/issues/98),
-[#99](https://github.com/Jstar269/nakagawa-recomp/issues/99), and
-[#104](https://github.com/Jstar269/nakagawa-recomp/issues/104). It excludes:
+The `public-safe-v1` profile is the conservative initial-source configuration for unresolved PGF and PGD provenance (see [`docs/PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md), [`THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt`](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt), and [`docs/PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md)). It excludes:
 
 - the lineage-sensitive PGF parser/rasterizer and all bundled PGF fonts;
 - the PGD/amctrl runtime, standalone implementation, harness, and implementation tests.
