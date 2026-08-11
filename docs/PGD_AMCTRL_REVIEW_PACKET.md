@@ -29,7 +29,7 @@ The supported runtime path is the fixed-key `drm_type == 1` form used by the tar
 
 | Input | How it enters | Publication posture |
 | --- | --- | --- |
-| PSP KIRK/amctrl constants | Local `$SR_PGD_KEYS` / ignored `keys/pgd_keys.txt` | Absent from current tree/build. Known old-history copies are part of #102 + the coordinated scrub. Do not publish values or acquisition instructions. |
+| PSP KIRK/amctrl constants | Local `$SR_PGD_KEYS` / ignored `keys/pgd_keys.txt` | Absent from current tree/build. Known old-history copies are part of full-history audit + the coordinated scrub. Do not publish values or acquisition instructions. |
 | Title version key | Guest memory; CLI `--vkey`; private tests via `HST_PGD_VKEY_HEX` | Not tracked. Tests skip when absent and must never log it. |
 | Encrypted `GAMEDATA.BDL` | User's ignored savedata/install data | Not tracked/released. |
 | Decrypted output | Local CLI output or runtime block buffer | Not tracked; forbidden from public issues/releases. |
@@ -122,9 +122,9 @@ Current-head facts for the reviewer, verified at export commit `dd0bcaea` during
   engineering default this pass validated. Configurations 2–5 remain future decisions for qualified
   review.
 
-The packet's questions for counsel (1–8) remain open under #104. Nothing in this update changes the
+The packet's questions for counsel (1–8) remain open under PGD/amctrl review. Nothing in this update changes the
 exclusion posture or any anti-circumvention analysis. It predates the 2026-08-09 source archaeology
-(reconciliation PR #341 and `provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`) that
+(see `provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md`) that
 reclassified the PSP-specific BBMac/BBCipher/PGD flow from "independently claimed, to verify" to
 "derived-translated"; that reclassification does not alter this section's engineering facts or the
 exclusion default.
@@ -175,7 +175,7 @@ Counsel should also consider jurisdiction outside the U.S., contract/EULA facts,
 - `tools/test_pgd_decrypt.py` uses synthetic data and gates real-file checks on private inputs.
 - `tools/test_pgd_c.py` compiles the C implementation and compares it with the Python reference.
 - `tools/test_pgd_hardening.py` / `tools/test_pgd_malformed.py` exercise malformed headers, overflow/size bounds, invalid keys/MACs, short reads and cache behavior with synthetic fixtures.
-- `tools/publish_audit.py --tracked-only` checks the current tree for prohibited material; #102 separately owns history/privacy/proprietary-object review.
+- `tools/publish_audit.py --tracked-only` checks the current tree for prohibited material; full-history audit separately owns history/privacy/proprietary-object review.
 
 Correct decryption and tests prove engineering behavior, not permission to distribute source, binaries, keys or game content.
 

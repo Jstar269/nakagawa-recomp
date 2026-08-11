@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -40,8 +41,37 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 
 # Explicit denylist: Retired historical issue numbers from pre-export era that do not exist on public main
 RETIRED_PRIVATE_ISSUE_URLS = re.compile(
-    r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:98|99|102|104|339)\b"
+    r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:98|99|102|103|104|105|139|142|143|145|146|147|149|150|151|152|154|179|187|188|196|197|234|286|304|339)\b"
 )
+
+# Role-aware historical evidence files that preserve dated historical issue URLs
+HISTORICAL_EVIDENCE_DOCS = {
+    "docs/STATUS_HISTORY.md",
+    "docs/ROADMAP.md",
+    "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
+    "docs/COVERAGE_LEDGER.md",
+    "docs/provenance/INDEPENDENCE_BACKLOG.md",
+}
+
+
+def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.Path]:
+    """Return all tracked .md files using git ls-files."""
+    try:
+        res = subprocess.run(
+            ["git", "ls-files", "*.md"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        files = [repo_root / line for line in res.stdout.splitlines() if line.strip()]
+        if files:
+            return sorted(files)
+    except Exception:
+        pass
+
+    # Fallback if git is not available
+    return sorted(repo_root.glob("*.md")) + sorted((repo_root / "docs").glob("**/*.md"))
 
 
 def lint_readme(readme_path: pathlib.Path) -> list[str]:
@@ -60,16 +90,23 @@ def lint_readme(readme_path: pathlib.Path) -> list[str]:
     return errors
 
 
-def lint_doc_links_and_topology(doc_path: pathlib.Path) -> list[str]:
+def lint_doc_links_and_topology(doc_path: pathlib.Path, repo_root: pathlib.Path = ROOT) -> list[str]:
     errors = []
     if not doc_path.is_file():
         return errors
 
-    rel_path = doc_path.relative_to(ROOT).as_posix()
+    try:
+        rel_path = doc_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        rel_path = doc_path.name
+
+    # Skip dead-issue check for historical evidence logs that preserve exact dates/history
+    is_historical_evidence = rel_path in HISTORICAL_EVIDENCE_DOCS
+
     text = doc_path.read_text(encoding="utf-8")
 
     for idx, line in enumerate(text.splitlines(), 1):
-        if RETIRED_PRIVATE_ISSUE_URLS.search(line):
+        if not is_historical_evidence and RETIRED_PRIVATE_ISSUE_URLS.search(line):
             errors.append(f"{rel_path}:{idx}: contains dead private-era issue URL")
         for pat in OBSOLETE_TOPOLOGY_PATTERNS:
             if pat.search(line):
@@ -83,10 +120,9 @@ def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
     readme_path = repo_root / "README.md"
     all_errors.extend(lint_readme(readme_path))
 
-    # Scan all markdown files in root and docs/
-    md_files = list(repo_root.glob("*.md")) + list((repo_root / "docs").glob("**/*.md"))
-    for md_file in sorted(md_files):
-        all_errors.extend(lint_doc_links_and_topology(md_file))
+    md_files = get_tracked_markdown_files(repo_root)
+    for md_file in md_files:
+        all_errors.extend(lint_doc_links_and_topology(md_file, repo_root))
 
     return all_errors
 

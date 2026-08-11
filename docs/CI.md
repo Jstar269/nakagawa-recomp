@@ -86,13 +86,7 @@ compiled runtime objects and generated shader/code output are not cached, so the
 repository's content-addressed invalidation and freshness checks remain the
 source of truth. No volatile dollar figure is part of the repository contract.
 
-Hosted GitHub Actions execution is active again after #234. The latest full successful hosted
-validation is manual run `30733971304`,
-which passed the classifier, hygiene/security, Markdown, native/translation, dashboard, main-smoke,
-Python, Windows, and aggregate gates for its recorded candidate head. This is evidence for that head,
-not an automatic claim about later commits. Issue [#27](https://github.com/Jstar269/nakagawa-recomp/issues/27)
-tracks the broader OSPS/GitHub governance/settings audit, not a dedicated billing tracker. Dependabot
-PRs remain draft and are not substitute CI evidence; local verification remains local-only.
+Hosted GitHub Actions execution is active. Workflows pass the classifier, hygiene/security, Markdown, native/translation, dashboard, main-smoke, Python, Windows, and aggregate gates for candidate heads. PR [#27](https://github.com/Jstar269/nakagawa-recomp/pull/27) tracks the broader OSPS/GitHub governance/settings audit. Dependabot PRs remain draft and are not substitute CI evidence; local verification remains local-only.
 
 ## Windows hosted runner policy
 

@@ -5,7 +5,7 @@ The PSP KIRK/amctrl constants were removed from the working tree in commit `a273
 This document describes the **validated key-specific scrub component**. Do **not** run/push it as a standalone rewrite merely because the procedure is ready. The broader history/privacy/proprietary-material audit must first confirm every required removal so every required removal can be handled in **one coordinated rewrite**.
 
 > [!IMPORTANT]
-> The recommended public architecture is now a **fresh sanitized public repository**, while this historical development repository remains private. The rewrite below is therefore for sanitizing the private/archive graph itself if desired/required; it is not the mechanism for constructing the public repository.
+> The recommended public architecture is the **sanitized public repository (`public-safe-v1`)**, while the separate historical development repository remains private. The rewrite below is therefore for sanitizing the private/archive graph itself if desired/required; it is not the mechanism for constructing the public repository.
 
 ## Known exposure
 
@@ -13,15 +13,15 @@ The constants were introduced in the initial import (`7ac90b2 "Moving to GitHub"
 
 They are public PSP platform constants that predate this project, not project secrets that can be rotated. Their removal is nevertheless part of the project's conservative publication/history-hygiene plan because the public generic recompiler should not unnecessarily redistribute crypto constants.
 
-## Why the key scrub must be combined with #102
+## Why the key scrub must be combined with full-history privacy audit
 
-A rewrite changes every descendant SHA and disrupts clones/PR references. #102 also records other historical/privacy decisions, including:
+A rewrite changes every descendant SHA and disrupts clones/PR references. The full-history secret & privacy audit also records other historical/privacy decisions, including:
 
 - personal author email / AI-session metadata;
 - an orphaned/force-pushed commit containing small retail-EBOOT disassembly snippets that remained resolvable by SHA at the time of audit;
 - any additional secret/private-path/proprietary object surfaced by the exhaustive history scan.
 
-Rewriting the keys today and another class tomorrow would pay the disruption twice. Finish #102, build one removal plan, rewrite once.
+Rewriting the keys today and another class tomorrow would pay the disruption twice. Finish the full-history audit, build one removal plan, rewrite once.
 
 ## Key-specific verification tooling
 
@@ -33,11 +33,11 @@ The values appeared in multiple textual encodings: contiguous hex, C/Python byte
 | `tools/gen_key_scrub_spec.py` | Generates `git filter-repo --replace-text` entries for the known encodings. | Script no; generated temporary output yes |
 | `tools/test_key_scrub_tools.py` | Hermetic regression tests. | No |
 
-The key-only procedure was dry-run validated on a throwaway mirror on 2026-07-22: all known encodings were removed and the current tip tree remained byte-identical. That validates the **key transform**, not the completeness of #102.
+The key-only procedure was dry-run validated on a throwaway mirror on 2026-07-22: all known encodings were removed and the current tip tree remained byte-identical. That validates the **key transform**, not the completeness of the full-history audit.
 
 ## Prerequisites for the final combined rewrite
 
-- #102 complete and every history/privacy disposition recorded.
+- Full-history audit complete and every history/privacy disposition recorded.
 - repository development frozen for the rewrite window;
 - `git-filter-repo` installed (Git ≥2.24);
 - local `keys/pgd_keys.txt` available to the verification/generator tools and still ignored;
@@ -70,9 +70,9 @@ python tools/gen_key_scrub_spec.py --out "$TMP/pgd-key-replacements.txt"
 
 The output contains the constants. Never put it inside the repository, logs, issue comments or cloud/public artifacts. Delete it after use.
 
-## 3. Construct the **combined** #102 filter-repo plan
+## 3. Construct the **combined** filter-repo plan
 
-Merge the key replacement fragment with every other transformation #102 requires. Depending on the completed audit, that can include path/blob removal, commit-message replacements and/or mailmap/identity decisions.
+Merge the key replacement fragment with every other transformation the full-history audit requires. Depending on the completed audit, that can include path/blob removal, commit-message replacements and/or mailmap/identity decisions.
 
 Review the complete plan before running it. Do not blindly remove historical material merely because it is embarrassing; every transformation should correspond to a recorded legal/privacy/security disposition.
 
@@ -86,7 +86,7 @@ cd "$TMP/scrub.git"
 git filter-repo --force --replace-text "$TMP/pgd-key-replacements.txt" <other-reviewed-options>
 ```
 
-The literal command must be frozen in #102 before the destructive run. Do not copy the placeholder `<other-reviewed-options>` blindly.
+The literal command must be frozen in the audit plan before the destructive run. Do not copy the placeholder `<other-reviewed-options>` blindly.
 
 ## 5. Verify before any shared update
 
@@ -98,7 +98,7 @@ SR_PGD_KEYS="$REPO/keys/pgd_keys.txt" \
 # expect exit 0
 ```
 
-Also run the completed #102 secret/proprietary/privacy scanners. Verify intended ref/commit counts and, critically, that the current source tree is unchanged unless #102 explicitly required a tip-tree edit:
+Also run the completed secret/proprietary/privacy scanners. Verify intended ref/commit counts and, critically, that the current source tree is unchanged unless the audit explicitly required a tip-tree edit:
 
 ```bash
 git rev-parse HEAD^{tree}
@@ -143,7 +143,7 @@ pwsh -NoProfile -File hst_manager.ps1 -Action Verify
 python tools/publish_audit.py --tracked-only
 ```
 
-Run the complete #102 scanners as well.
+Run the complete scanners as well.
 
 ## GitHub cached/orphaned object caveat
 
@@ -151,7 +151,7 @@ A force-push is not a guarantee that every old object/reference immediately beco
 
 ## 2026-08-04 technical scan checkpoint
 
-This is a read-only checkpoint for #102. It does not rewrite, delete, or
+This is a read-only checkpoint for full-history audit. It does not rewrite, delete, or
 publish any ref.
 
 - Temporary scanner: Gitleaks v8.30.1 for Windows x64, downloaded from the
@@ -181,7 +181,7 @@ publish any ref.
   refs.
 
 The scan is a current technical secret scan, not a complete legal or
-proprietary-material disposition. #102 still requires an owner-approved
+proprietary-material disposition. Full-history audit still requires an owner-approved
 combined history plan, including the known key/object exposure and metadata
 decisions, before any rewrite or publication architecture change.
 

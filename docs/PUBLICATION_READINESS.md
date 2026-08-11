@@ -35,8 +35,8 @@ The repository-level project declaration is **GPL-3.0-or-later**, as reflected b
 components may retain GPL-2.0-or-later or other upstream-specific terms; the project declaration
 must not be read as a substitute for component-level provenance and license review.
 
-- Most project-authored and PPSSPP-derived source is marked **GPL-2.0-or-later**. That does **not** settle the combined-work license while #98 is open. PPSSPP's PGF source explicitly records JPCSP lineage and warns that copied portions make the file effectively GPLv3. Any public combined-work presentation must satisfy the applicable stronger terms if GPL-3.0-or-later portions are included; do not promise GPLv2 as an available option for that combined configuration merely because other files say `GPL-2.0-or-later`.
-- JPCSP's font implementation credits BenHur's intraFont, whose archived source is CC BY-SA 3.0. Creative Commons currently lists no non-CC license as compatible with BY-SA 3.0; GPLv3 compatibility is a BY-SA **4.0** mechanism. This makes the source-comparison question in #98 material: determine whether protectable intraFont expression actually flowed downstream or whether the commonality is functional PSP format/API information. Do not assume either outcome.
+- Most project-authored and PPSSPP-derived source is marked **GPL-2.0-or-later**. That does **not** settle the combined-work license while PGF license review is open. PPSSPP's PGF source explicitly records JPCSP lineage and warns that copied portions make the file effectively GPLv3. Any public combined-work presentation must satisfy the applicable stronger terms if GPL-3.0-or-later portions are included; do not promise GPLv2 as an available option for that combined configuration merely because other files say `GPL-2.0-or-later`.
+- JPCSP's font implementation credits BenHur's intraFont, whose archived source is CC BY-SA 3.0. Creative Commons currently lists no non-CC license as compatible with BY-SA 3.0; GPLv3 compatibility is a BY-SA **4.0** mechanism. This makes the source-comparison question in PGF provenance review material: determine whether protectable intraFont expression actually flowed downstream or whether the commonality is functional PSP format/API information. Do not assume either outcome.
 - Byte provenance is not license provenance. A binary being present in PPSSPP does not automatically place that binary under PPSSPP's program license.
 - The four PGFs and their parser/rasterizer are excluded by [`public-safe-v1`](PUBLIC_SOURCE_PROFILE.md). Its unavailable backend fails visibly; it does not revive the retired synthetic-font fallback.
 - PGD/amctrl is separately sensitive. The private development tree still compiles it, while `public-safe-v1` excludes the implementation/tools and builds a fail-closed unavailable backend. Qualified review remains required for any later source or binary configuration that retains PGD/amctrl.
@@ -50,12 +50,12 @@ GitHub documents that a private→public visibility change exposes the code and 
 The conservative plan is:
 
 1. Keep the historical development repository private as the archive.
-2. Finish #98/#99/#102/#104 and governance review.
-3. Perform the one coordinated private-history rewrite required by #102/`KEY_HISTORY_SCRUB.md` if the archive itself is to be retained in sanitized form.
+2. Finish PGF and PGD provenance review (see [`PGF_LICENSE_REVIEW_PACKET.md`](PGF_LICENSE_REVIEW_PACKET.md) and [`PGD_AMCTRL_REVIEW_PACKET.md`](PGD_AMCTRL_REVIEW_PACKET.md)) and governance review.
+3. Perform the one coordinated private-history rewrite required by [`KEY_HISTORY_SCRUB.md`](KEY_HISTORY_SCRUB.md) if the archive itself is to be retained in sanitized form.
 4. Maintain the **sanitized public repository (`public-safe-v1`)** as an explicitly approved public tree/history.
 5. Push only the approved public `main` and intentionally approved tags. Do not migrate archive refs, old PR refs, Actions history, private issue comments, private oracle material, game-derived artifacts, or orphan objects.
 6. Curate/recreate only currently useful public issues with private/game-derived evidence summarized rather than copied.
-7. Configure rulesets/security settings on the new public repository before accepting contributions.
+7. Configure rulesets/security settings on the public repository before accepting contributions.
 
 This is a risk-minimization architecture, not a statement that publication is otherwise unlawful.
 
@@ -66,7 +66,7 @@ As of 2026-08-10 this topology is in place: the repository you are reading is th
 The known PSP KIRK/amctrl constants are absent from the current tree but remain in old history. Sequence the cleanup:
 
 1. Freeze history-changing development work.
-2. Complete #102 across every reachable ref/object/metadata record.
+2. Complete full-history audit across every reachable ref/object/metadata record.
 3. Decide whether personal author email, AI-session URLs, private paths and other metadata are acceptable; add every removal to one specification.
 4. Generate **one combined** `git filter-repo` specification (known constants + everything else found).
 5. Rewrite once; verify key scrub + generic secret/proprietary scans + intended tip-tree equality; fresh-clone the result.
@@ -78,9 +78,9 @@ For the public repository, prefer creation from the approved sanitized result ra
 
 ### Legal / provenance
 
-- [x] Initial-source fallback implemented: affected #98/#99 PGF implementation/assets excluded and audited by `public-safe-v1`; substantive issues remain open for any retaining configuration.
-- [x] Initial-source fallback implemented: #104 PGD/amctrl implementation excluded and audited by `public-safe-v1`; qualified review remains required for any retaining configuration.
-- [x] #103 upstream source-notice inventory completed; retain the evidence for final review.
+- [x] Initial-source fallback implemented: affected PGF implementation/assets excluded and audited by `public-safe-v1`; substantive issues remain open for any retaining configuration.
+- [x] Initial-source fallback implemented: PGD/amctrl implementation excluded and audited by `public-safe-v1`; qualified review remains required for any retaining configuration.
+- [x] Upstream source-notice inventory completed; retain the evidence for final review.
 - [ ] Combined-work GPL presentation internally consistent; no file/binary is assigned rights the project cannot prove.
 - [ ] Every redistributed third-party artifact has exact origin, revision, terms, copyright/attribution and modification notice where required.
 - [ ] Trademark/compatibility statements remain descriptive, non-affiliation is prominent, and no branding implies sponsorship.
@@ -94,7 +94,7 @@ For the public repository, prefer creation from the approved sanitized result ra
 
 ### History / privacy
 
-- [ ] #102 complete.
+- [ ] Full-history secret & privacy audit complete.
 - [ ] Known PSP constants absent from every intended public object/ref.
 - [ ] General secret scan and binary/proprietary-object scan clean.
 - [ ] Personal email / AI-session / private URL/path metadata deliberately accepted or removed.
@@ -125,7 +125,7 @@ The repository tree cannot prove these. For the **new public repository**, verif
 - [ ] README accurately states experimental status without saying either "not playable" or an unqualified "playable"; deterministic match/return evidence and known fidelity/performance limits are both described.
 - [ ] SECURITY threat model matches the actual public surface and makes clear that arbitrary PSP/game files are untrusted input.
 - [ ] Setup cleanly distinguishes tracked source, system/toolchain dependencies, optional open-source dependencies, and user-supplied private inputs.
-- [ ] NOTICE/license/trademark statements are modest and consistent with #98/#99/#104 outcomes.
+- [ ] NOTICE/license/trademark statements are modest and consistent with PGF/PGD review outcomes.
 - [ ] AI-assistance disclosure remains factual and does not imply AI establishes originality or legal clearance.
 
 ## Binary-release-ready checklist — higher bar
@@ -162,7 +162,7 @@ At the intended publication commit, run a clean-clone local pass:
 7. Audit runtime file opens from an unrelated working directory to prove packaging completeness.
 8. Run source/dependency/security gates and preserve machine-readable results with the publication candidate.
 
-### Full-History Secret & Privacy Audit Procedure (#102)
+### Full-History Secret & Privacy Audit Procedure
 
 `tools/history_audit.py` performs a non-destructive audit across all reachable Git commits, tree objects, commit log messages, and refs.
 
@@ -181,15 +181,15 @@ At the intended publication commit, run a clean-clone local pass:
 - **Fresh Sanitized Export Recommendation**:
   The recommended public repository release architecture is a **fresh sanitized public export repository** created from a clean snapshot (e.g. via `git checkout-index`), preserving the historical development graph in a separate private repository.
 - **Automated Verification & Export Tool (`tools/build_public_export.py`)**:
-  1. Run `python tools/build_public_export.py --verify-only` to verify all pre-publication gates (fails closed if #98/#99/#104 blockers remain).
+  1. Run `python tools/build_public_export.py --verify-only` to verify all pre-publication gates (fails closed if PGF/PGD blockers remain).
   2. Run `python tools/build_public_export.py --export-dir /path/to/public_export --public-safe-profile --dry-run` to validate export path.
   3. Generate sanitized single-commit export: `python tools/build_public_export.py --export-dir /path/to/public_export --public-safe-profile`.
   4. Confirm 0 findings, 100% reproducible lock verification, and 0 history secrets before pushing to public remote.
 
 ## Additional engineering/security gates before accepting arbitrary public inputs
 
-- #15 remains the main malformed-input/guest-span hardening umbrella. Include ELF/PRX, SFO/savedata, MPEG/PSMF, PGD and archive-extraction boundaries in sanitizer/fuzz planning.
-- #145 tracks GPU/CPU framebuffer coherence; it is correctness rather than publication law, but public claims should not imply robust handling of arbitrary guest behavior until such invariants are tested.
+- PR [#15](https://github.com/Jstar269/nakagawa-recomp/pull/15) remains the main malformed-input/guest-span hardening umbrella. Include ELF/PRX, SFO/savedata, MPEG/PSMF, PGD and archive-extraction boundaries in sanitizer/fuzz planning.
+- GPU/CPU framebuffer coherence tracks GPU/CPU framebuffer coherence; it is correctness rather than publication law, but public claims should not imply robust handling of arbitrary guest behavior until such invariants are tested.
 - Add or enable CodeQL/dependency review/sanitizer workflows only when they can actually run; Actions are currently account-blocked (#27), so repository YAML alone is not a control.
 - The earlier machine-wide process-kill concern is **resolved**: the manager now tracks workspace-launched build process trees/PIDs and scopes `hst.exe` termination to this workspace. Do not keep it listed as an active defect.
 

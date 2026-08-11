@@ -39,8 +39,7 @@ npm run dev
 
 The app listens on `http://localhost:3000`.
 
-Profiles and debug profiles carry a `schemaVersion` column (added in the #188
-dashboard-integrity work). After pulling changes that touched `prisma/schema.prisma`,
+Profiles and debug profiles carry a `schemaVersion` column (added during dashboard-integrity work). After pulling changes that touched `prisma/schema.prisma`,
 re-run `npm run db:push` once so the local database gains the new column; rows are
 then validated on read and reported as `corrupt` / `unsupported-version` instead of
 being silently replaced with defaults.

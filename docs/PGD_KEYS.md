@@ -89,7 +89,7 @@ Absence is a supported development state.
 | Private PGD integration tests | Skip/report unavailable. |
 | Game route | Can run without using the optional installed `GAMEDATA.BDL` cache. |
 
-The conservative initial public-source plan may exclude PGD/amctrl entirely pending #104; therefore this private development schema must **not** be interpreted as a promise that the same interface/component will exist in a public release.
+The conservative initial public-source plan may exclude PGD/amctrl entirely pending PGD/amctrl review; therefore this private development schema must **not** be interpreted as a promise that the same interface/component will exist in a public release.
 
 ## Separate title version key
 

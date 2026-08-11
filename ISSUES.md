@@ -12,29 +12,26 @@
 
 ## Tracking model
 
-Public GitHub Issues are canonical for actionable defects and acceptance criteria. This file is intentionally a
-**short current map**, not a second issue archive. Superseded investigations belong in
-[`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) or the issue/PR discussion that produced the evidence.
-Strategy lives in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Public GitHub Issues are canonical for actionable work where a curated public issue exists. During ongoing public issue curation, this file serves as the concise status map linking to curated issues, open PRs, and domain reference documents. Superseded investigations belong in [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) or the issue/PR discussion that produced the evidence. Strategy lives in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## At a glance
 
-| Priority | State | Canonical work item |
-| --- | --- | --- |
-| P0 | Open | [Callable/resume continuation semantics](docs/issue-51-entry-semantics.md) — direct-`j` and conditional-branch continuation slices narrowed; no-direct-edge population remains open |
-| P1 | Open | [PSMF player video/audio output](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md) — intro/player state exists; real player data production remains open |
-| P1 | Closed | [Music/resource audio resolution](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md) — sustained BGM proven end-to-end by `docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md` |
-| P1 | Closed | [ATRAC3+ decoder architecture & provenance](src/rt/atrac3p/PROVENANCE.md) — FFmpeg n4.4 LGPL-2.1 provenance, HLE bridge, and title acceptance landed |
-| P1 | Open | [sceSasCore state & mix semantics](src/rt/atrac3p/PROVENANCE.md) ([sceSasCore PR #20](https://github.com/Jstar269/nakagawa-recomp/pull/20)) — remaining work is volume/ADSR/effect state validation and timing |
-| P1 | Open | [Direct XB archive VFS](docs/ISSUE196_DIRECT_XB.md) & [Scorecard portraits](docs/issue-139-face-resource-semantics.md) — resolve whether flattened extraction loses archive-slot identity |
-| P1 | Open | [#23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) — measured copy/error/prefix contract implemented; concurrent BUSY behavior and invalid-tail precedence remain open |
-| P1 | Open | [Unified PSP clock domains & interrupt delivery](docs/PSP_INTR_WAITS_MATRIX.md) — foundational timing/interrupt correctness |
-| P1 | Open | [Versioned title manifest & general toolkit boundary](assets/titles/README.md) — schema, HST manifest, and deterministic read-only planning landed; build consumption remains |
-| P2 | Open | [HST analyzer span leakage](docs/STATUS_HISTORY.md) — `tools/analyze.py` retains base-zero HST span default when `HST_EXTRA_SPANS` is absent |
-| P2 | Open | [Gameplay performance baselines](docs/PERFORMANCE.md) — measured renderer/GE wins landed; correctness/generalization outranks further optimization |
-| P1 | Open | [PGF/JPCSP/intraFont provenance review](docs/PGF_LICENSE_REVIEW_PACKET.md) — technical source archaeology complete; retain/exclude/replace review unresolved |
-| P1 | In Progress | [PGF replacement campaign](docs/PUBLIC_SOURCE_PROFILE.md) — public-safe configurations fail closed until replacement is proven |
-| P1 | Open | [PGD/amctrl distribution posture](docs/PGD_AMCTRL_REVIEW_PACKET.md) — technical provenance archaeology complete; qualified licensing/legal/anti-circumvention review remains |
+| Priority | State | Canonical work item | Type |
+| --- | --- | --- | --- |
+| P0 | Open | [Callable/resume continuation semantics](docs/issue-51-entry-semantics.md) | REFERENCE DOCUMENT |
+| P1 | Open | [PSMF player video/audio output](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md) | REFERENCE DOCUMENT |
+| P1 | Closed | [Music/resource audio resolution](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md) | REFERENCE DOCUMENT |
+| P1 | Closed | [ATRAC3+ decoder architecture & provenance](src/rt/atrac3p/PROVENANCE.md) | REFERENCE DOCUMENT |
+| P1 | Open | [sceSasCore state & mix semantics](src/rt/atrac3p/PROVENANCE.md) ([sceSasCore PR #20](https://github.com/Jstar269/nakagawa-recomp/pull/20)) | MERGED PR / REF DOC |
+| P1 | Open | [Direct XB archive VFS](docs/ISSUE196_DIRECT_XB.md) & [Scorecard portraits](docs/issue-139-face-resource-semantics.md) | REFERENCE DOCUMENT |
+| P1 | Open | [#23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) | OPEN ISSUE |
+| P1 | Open | [Unified PSP clock domains & interrupt delivery](docs/PSP_INTR_WAITS_MATRIX.md) | REFERENCE DOCUMENT |
+| P1 | Open | [Versioned title manifest & general toolkit boundary](assets/titles/README.md) | REFERENCE DOCUMENT |
+| P2 | Open | [HST analyzer span leakage](docs/STATUS_HISTORY.md) | HISTORICAL EVIDENCE |
+| P2 | Open | [Gameplay performance baselines](docs/PERFORMANCE.md) | REFERENCE DOCUMENT |
+| P1 | Open | [PGF/JPCSP/intraFont provenance review](docs/PGF_LICENSE_REVIEW_PACKET.md) | REVIEW PACKET |
+| P1 | In Progress | [PGF replacement campaign](docs/PUBLIC_SOURCE_PROFILE.md) | PROFILE DOCUMENT |
+| P1 | Open | [PGD/amctrl distribution posture](docs/PGD_AMCTRL_REVIEW_PACKET.md) | REVIEW PACKET |
 
 ## Recent audio closure
 
@@ -92,10 +89,18 @@ This repository (`Jstar269/nakagawa-recomp`) is established as the sanitized pub
 
 A clean publication audit is technical evidence about the candidate tree; it is never legal clearance.
 
-## Active public infrastructure & PRs
+## Public tracker and implementation references
 
-- Public PR [#1](https://github.com/Jstar269/nakagawa-recomp/pull/1), PR [#13](https://github.com/Jstar269/nakagawa-recomp/pull/13), PR [#14](https://github.com/Jstar269/nakagawa-recomp/pull/14), PR [#15](https://github.com/Jstar269/nakagawa-recomp/pull/15), PR [#20](https://github.com/Jstar269/nakagawa-recomp/pull/20), PR [#24](https://github.com/Jstar269/nakagawa-recomp/pull/24), PR [#25](https://github.com/Jstar269/nakagawa-recomp/pull/25), Issue [#23](https://github.com/Jstar269/nakagawa-recomp/issues/23), Issue [#26](https://github.com/Jstar269/nakagawa-recomp/issues/26), PR [#27](https://github.com/Jstar269/nakagawa-recomp/pull/27).
-- Kernel object transaction semantics, display/Vulkan error recovery, dual-repository sync contract, and DMA copy semantics are tracked under active public pull requests and issues.
+- [Issue #23 — PSP DMA copy semantics: validation, overlap, and measured transfer ceiling](https://github.com/Jstar269/nakagawa-recomp/issues/23) [OPEN ISSUE]
+- [Issue #26 — Make inherited-file modification notices explicit](https://github.com/Jstar269/nakagawa-recomp/issues/26) [OPEN ISSUE]
+- [PR #1 — Bump ruff-pre-commit from v0.16.0 to 0.16.2](https://github.com/Jstar269/nakagawa-recomp/pull/1) [OPEN PR]
+- [PR #27 — Make inherited-file modification notices explicit](https://github.com/Jstar269/nakagawa-recomp/pull/27) [OPEN PR]
+- [PR #13 — Recover unenqueued present failures and handle terminal Vulkan errors](https://github.com/Jstar269/nakagawa-recomp/pull/13) [MERGED PR]
+- [PR #14 — Update dual-repository sync contract to match sanitized export](https://github.com/Jstar269/nakagawa-recomp/pull/14) [MERGED PR]
+- [PR #15 — Align Vulkan present error classification with Khronos spec](https://github.com/Jstar269/nakagawa-recomp/pull/15) [MERGED PR]
+- [PR #20 — Fix sceSasCore routing and state validation](https://github.com/Jstar269/nakagawa-recomp/pull/20) [MERGED PR]
+- [PR #24 — Model measured PSP DMA transfer semantics](https://github.com/Jstar269/nakagawa-recomp/pull/24) [MERGED PR]
+- [PR #25 — Align README with public Wiki and research reference](https://github.com/Jstar269/nakagawa-recomp/pull/25) [MERGED PR]
 
 ## Updating this dashboard
 

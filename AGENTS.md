@@ -132,7 +132,7 @@ Address-specific/game-specific compatibility behavior is semantic debt. Any such
 - narrowly scoped to the proven contract;
 - assigned a retirement criterion.
 
-[#20](https://github.com/Jstar269/nakagawa-recomp/issues/20) tracks retirement/proof of this surface.
+[#20](https://github.com/Jstar269/nakagawa-recomp/pull/20) tracks retirement/proof of this surface.
 
 ## Correctness traps
 
@@ -187,7 +187,7 @@ Before saying an issue or acceptance criterion is complete:
 - `src/rt/sr_coro.c` — host coroutine abstraction (Windows fibers and supported POSIX path).
 - `src/rt/hle.c` — NID/HLE registry plus major PSP kernel/user HLE behavior.
 - `src/rt/atrac3p/` + `src/rt/atrac3p_bridge.c` — ATRAC3+ decoder (FFmpeg n4.4-derived,
-  LGPL-2.1-or-later) and the HLE decode bridge behind `sceAtracDecodeData` (#32). Any target that
+  LGPL-2.1-or-later) and the HLE decode bridge behind `sceAtracDecodeData` (see [`src/rt/atrac3p/PROVENANCE.md`](src/rt/atrac3p/PROVENANCE.md)). Any target that
   compiles `hle.c` needs the same `-Isrc/rt/atrac3p/...` include flags, or `avcodec.h` fails on
   `libavutil/attributes.h`.
 - `src/rt/ge.c` — software GE comparison rasterizer.
@@ -217,8 +217,8 @@ rather than a bare "publication audit: OK".
 
 For a broad or integration candidate, prefer `.\hst_manager.ps1 -Action Verify` as the canonical
 non-interactive local aggregate gate (Python unit suite, sched/profiler/heap/asset-index/HLE-thread
-selftests, the VFPU table-loader selftest (`vfpu-tables-selftest`, #187), the watchpoints-file
-parser selftest (`watchpoints-file-selftest`, #188), `vfpu-interp-selftest`, `src/ref` selftest,
+selftests, the VFPU table-loader selftest (`vfpu-tables-selftest`), the watchpoints-file
+parser selftest (`watchpoints-file-selftest`), `vfpu-interp-selftest`, `src/ref` selftest,
 `import_audit_gate.py`, `publish_audit.py` over both content sources
 (`--tracked-only` and `--tracked-only --worktree`), `gpu-coherence-selftest` and
 `gpu-capture-selftest`; exit 77 = Vulkan/validation layer unavailable → SKIP), then add the

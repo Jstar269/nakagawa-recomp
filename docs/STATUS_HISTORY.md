@@ -129,7 +129,7 @@ reviewed and merged. No private inputs, captures, credentials, or contributor at
 
 ## 2026-08-04 — #17 allocator acceptance completed
 
-Issue [#17](https://github.com/Jstar269/nakagawa-recomp/issues/17) was closed after exact-main
+Issue [#17](https://github.com/Jstar269/nakagawa-recomp/pull/17) was closed after exact-main
 verification at `e0ebaeea1248e0be407968b9566aeed11076af5c`. PR #257 added bounded free-list footer,
 size, arena, overlap, and cycle validation plus corruption/overflow negative cases; PR #258 directly
 characterized interior, low foreign, and out-of-arena frees as safe no-ops. Together with merged PRs #124,
@@ -440,7 +440,7 @@ instead.
 That instrument is deliberately **not** merged. It hard-codes this title's addresses
 (`0x00341518`, `0x0017dbcc`, `+0x3e8`/`+0x3ec`) inside the generic `src/rt/recomp.c`, and it adds a
 fourth cold branch to `sr_w32_pc` — the hottest guest store path — for a defect that is now fixed.
-Both are exactly what [#20](https://github.com/Jstar269/nakagawa-recomp/issues/20) exists to retire.
+Both are exactly what [#20](https://github.com/Jstar269/nakagawa-recomp/pull/20) exists to retire.
 It is preserved verbatim and can be resurrected as-is if a #126-class singleton/teardown ordering
 question recurs:
 

@@ -99,14 +99,14 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   device handles (`sdl3vk_get_vk`) and the present-capture API
   (`sdl3vk_capture_arm/result/cancel/source_label`).
 - `sdl3vk.c` — Phase 0: window, device, swapchain, upload/blit presenter, SDL input,
-  validation messenger, and the present-truthful frame capture (issue #57).
+  validation messenger, and the present-truthful frame capture.
 - `ge_gpu.h` / `ge_gpu.c` — Phase 1+2: capture, batching, pipeline/texture caches,
   flush + guest-VRAM writeback. Hooks defined in `src/rt/ge_shared.h`.
 - `shaders/psp.vert`, `shaders/psp.frag` — compiled by glslc (`GLSLC` in the Makefile)
   into `psp_{vert,frag}.inc` at build time.
 - `tools/ppmdiff.py`, `tools/ppm2png.py` (repo root) — A/B snapshot comparison.
 
-## Present-truthful frame capture (issue #57)
+## Present-truthful frame capture
 
 The old `sdl3vk_capture_swapchain_ppm` was an invalid acquisition: it could read a stale or
 UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In its place:
