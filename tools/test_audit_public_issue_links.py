@@ -97,6 +97,18 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertFalse(findings[0][4])
         self.assertIn("DEAD / UNRESOLVED SHORTHAND", findings[0][3])
 
+    def test_shorthand_ignored_in_fenced_code_and_heading(self) -> None:
+        doc = self.repo_path / "README.md"
+        doc.write_text(
+            "# 98 Example heading\n\n"
+            "```text\n"
+            "#98 fixture token\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        findings = audit_markdown_files(self.repo_path, {})
+        self.assertEqual(findings, [])
+
     def test_tracker_state_label_mismatch_fails(self) -> None:
         doc = self.repo_path / "ISSUES.md"
         doc.write_text(
