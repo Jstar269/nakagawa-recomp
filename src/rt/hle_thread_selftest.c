@@ -2437,6 +2437,45 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
                "a transfer writes nothing past its requested size");
     }
 
+    /* --- coherency matrix: RAM/VRAM directions and aliases ------------------
+     * The HLE entry must use the unified SR_HOST mapping for every source and
+     * destination class. The real GPU hook decides whether a dirty range is
+     * relevant; this production-dispatch fixture records the exact address and
+     * byte count it receives so the DMA contract cannot lose alias information
+     * before the renderer canonicalizes it. */
+    {
+        struct DmacDirectionCase {
+            uint32_t dst;
+            uint32_t src;
+            const char *label;
+        };
+        static const struct DmacDirectionCase cases[] = {
+            { 0x08300000u, 0x08280000u, "RAM-to-RAM" },
+            { 0x04080000u, 0x08320000u, "RAM-to-VRAM" },
+            { 0x08310000u, 0x04070000u, "VRAM-to-RAM" },
+            { 0x040a0000u, 0x04090000u, "VRAM-to-VRAM" },
+            { 0x440b0000u, 0x08330000u, "aliased VRAM destination" },
+            { 0x08340000u, 0x440c0000u, "aliased VRAM source" },
+        };
+        for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            const uint32_t n = 64u;
+            dmac_fill(cases[i].src, n);
+            dmac_clear(cases[i].dst, n + 1u, 0x5cu);
+            gpu_dirty_reset();
+            expect(bulk_call(nid, cases[i].dst, cases[i].src, n) == 0u,
+                   cases[i].label);
+            expect(dmac_span_matches(cases[i].dst, n, 0u),
+                   "a DMA direction copies through the unified guest mapping");
+            expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == cases[i].dst &&
+                       s_gpu_dirty_bytes == n,
+                   "a DMA direction reports its exact destination range");
+        }
+        /* The aliased destination must be the same physical bytes as its
+         * canonical 0x04xxxxxx address, not a second host allocation. */
+        expect(dmac_span_matches(0x040b0000u, 64u, 0u),
+               "an aliased VRAM destination is visible through its canonical address");
+    }
+
     /* --- proven: same-pointer and overlap behave like memmove --------------- */
 
     /* Hardware: dst == src, 16384 bytes -> 0, buffer intact (v4, 2/2). */
