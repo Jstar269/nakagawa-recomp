@@ -21,7 +21,7 @@ The recompiler is experimental, and active development focuses on fidelity, timi
 - full PSMF intro-movie playback integration ([`docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md`](docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md)); and
 - formal performance benchmark baselines ([`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md)).
 
-**Public GitHub Issues are canonical for active defects and acceptance criteria where a curated issue exists.** [`ISSUES.md`](ISSUES.md) provides the concise status map across public issues and reference evidence; [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) preserves dated milestones and historical evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
+**Public GitHub Issues are canonical for active defects and acceptance criteria where a curated public issue exists.** [`ISSUES.md`](ISSUES.md) provides the concise status map across public issues and reference evidence; [`docs/STATUS_HISTORY.md`](docs/STATUS_HISTORY.md) preserves dated milestones and historical evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
 
 ## Requirements
 
