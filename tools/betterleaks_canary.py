@@ -97,6 +97,10 @@ def run(binary: str) -> int:
 
         for label, content in _build_canaries(temp_root):
             case = temp_root / f"{label}.txt"
+
+            # This is a disposable, hash-derived synthetic payload whose only
+            # purpose is to exercise the scanner; it is never a credential.
+            # codeql[py/clear-text-storage-sensitive-data]
             case.write_text(content, encoding="utf-8")
             _require(label, _scan(binary, "dir", str(case)), 1)
 

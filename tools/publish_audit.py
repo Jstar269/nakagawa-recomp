@@ -2111,7 +2111,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote CSV audit manifest report to {args.csv_out}")
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        # Secret-scan findings are redacted at ingestion, but keep the machine
+        # readable stdout contract conservative too: manifest files retain the
+        # detailed audit record, while CLI output never logs finding details.
+        safe_report = {
+            "status": "FAIL" if findings else "OK",
+            "total_files": len(semantics),
+            "total_findings": len(findings),
+            "meta": {
+                "tool_version": TOOL_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "git_commit": report["meta"]["git_commit"],
+                "content_source": content_source,
+                "profile": args.profile,
+                "secret_scan_status": "ingested" if args.secret_scan_report else "not_run",
+                "aggregate_manifest_sha256": report["meta"]["aggregate_manifest_sha256"],
+            },
+            "summary": report["summary"],
+            "findings": [{"code": finding.code, "path": finding.path} for finding in findings],
+        }
+        print(json.dumps(safe_report, indent=2))
         return 1 if findings else 0
 
     scope = (
