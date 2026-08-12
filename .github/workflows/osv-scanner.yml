@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Run OSV-Scanner
-        uses: google/osv-scanner-action/osv-scanner-action@1f1242919d8a60496dd1874b24b62b2370ed4c78 # v1.7.1
+        uses: google/osv-scanner-action/osv-scanner-action@8deb546fdb875b9996d27d4950be7312dac076a1 # v2.5.0
         with:
           scan-args: |-
             --skip-git
