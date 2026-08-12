@@ -7,10 +7,8 @@ betterleaksMinVersion = "1.7.4"
 # fail the scanner.
 filter = '''
 attributes["path"] == "tools/test_history_audit.py" &&
-(
-    finding["secret"] == ("ghp_" + "123456789012345678901234567890123456") ||
-    finding["secret"] == "0123456789abcdef0123456789abcdef"
-)
+finding["rule_id"] == "github-pat" &&
+finding["secret"] == ("ghp_" + "123456789012345678901234567890123456")
 '''
 
 [extend]

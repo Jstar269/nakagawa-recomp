@@ -36,13 +36,20 @@ def _material(seed: str, length: int) -> str:
     return value[:length]
 
 
-def _scan(binary: str, mode: str, target: str, *, extra: tuple[str, ...] = ()) -> int:
+def _scan(
+    binary: str,
+    mode: str,
+    target: str,
+    *,
+    config: Path = CONFIG,
+    extra: tuple[str, ...] = (),
+) -> int:
     command = [
         binary,
         mode,
         target,
         "--config",
-        str(CONFIG),
+        str(config),
         "--redact",
         *extra,
     ]
@@ -183,10 +190,81 @@ def run(binary: str) -> int:
 
         moved_fixture = temp_root / "fixtures" / "history-audit-copy.py"
         moved_fixture.parent.mkdir()
-        moved_fixture.write_text(
-            f'api_key = "{_material("moved-fixture", 48)}"\n', encoding="utf-8"
+        deliberate_value = "gh" + "p_" + "123456789012345678901234567890123456"
+        _write_synthetic_fixture(
+            moved_fixture,
+            f'token = "{deliberate_value}"\n',
         )
         _require("moved-outside-fixture-path", _scan(binary, "dir", str(moved_fixture)), 1)
+
+        # The same fixture path must not suppress a different value.
+        value_repo = temp_root / "value-scope-repo"
+        value_fixture = value_repo / "tools" / "test_history_audit.py"
+        value_fixture.parent.mkdir(parents=True)
+        _write_synthetic_fixture(
+            value_fixture,
+            f'token = "{"gh" + "p_" + _material("different-fixture-value", 36)}"\n',
+        )
+        for args in (
+            ("init", "-q"),
+            ("config", "user.name", "Betterleaks Canary"),
+            ("config", "user.email", "betterleaks-canary@example.invalid"),
+        ):
+            subprocess.run(["git", *args], cwd=value_repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", "tools/test_history_audit.py"],
+            cwd=value_repo,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-qm", "different synthetic fixture"],
+            cwd=value_repo,
+            check=True,
+        )
+        _require("fixture-path-new-value", _scan(binary, "git", str(value_repo)), 1)
+
+        # A second rule matching the allowed value at the allowed path must
+        # still report. This proves the project exception is rule-scoped rather
+        # than a blanket exemption for that path/value pair.
+        rule_config = temp_root / "rule-scope.betterleaks.toml"
+        rule_config.write_text(
+            CONFIG.read_text(encoding="utf-8")
+            + """
+[[rules]]
+id = "synthetic-secondary-rule"
+description = "Synthetic secondary rule for exception-scope testing"
+regex = '''(ghp_[0-9]{36})'''
+keywords = ["ghp_"]
+""",
+            encoding="utf-8",
+        )
+        rule_repo = temp_root / "rule-scope-repo"
+        rule_fixture = rule_repo / "tools" / "test_history_audit.py"
+        rule_fixture.parent.mkdir(parents=True)
+        _write_synthetic_fixture(rule_fixture, f'token = "{deliberate_value}"\n')
+        for args in (
+            ("init", "-q"),
+            ("config", "user.name", "Betterleaks Canary"),
+            ("config", "user.email", "betterleaks-canary@example.invalid"),
+        ):
+            subprocess.run(["git", *args], cwd=rule_repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", "tools/test_history_audit.py"],
+            cwd=rule_repo,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-qm", "exact synthetic fixture"],
+            cwd=rule_repo,
+            check=True,
+        )
+        _require(
+            "fixture-secondary-rule",
+            _scan(binary, "git", str(rule_repo), config=rule_config),
+            1,
+        )
 
         # A full reachable-history run protects the primary scanner from a
         # configuration change that only covers the current filesystem tree.
