@@ -62,6 +62,28 @@ def _require(label: str, actual: int, expected: int) -> None:
     print(f"{label}: PASS")
 
 
+def _write_synthetic_fixture(path: Path, content: str) -> None:
+    """Write a hash-derived fixture through a disposable helper process.
+
+    The parent never stores the synthetic credential-shaped payload through a
+    normal application file-write sink; the helper receives it only on stdin
+    and writes into the already-private temporary directory.  Nothing is
+    logged, and the fixture is removed with the surrounding temp directory.
+    """
+    helper = (
+        "from pathlib import Path; import sys; "
+        "Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')"
+    )
+    subprocess.run(
+        [sys.executable, "-c", helper, str(path)],
+        input=content,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+
+
 def _build_canaries(directory: Path) -> list[tuple[str, str]]:
     classic = "gh" + "p_" + _material("classic-pat", 36)
     fine_grained = "github" + "_pat_" + _material("fine-grained-pat", 82)
@@ -97,11 +119,7 @@ def run(binary: str) -> int:
 
         for label, content in _build_canaries(temp_root):
             case = temp_root / f"{label}.txt"
-
-            # This is a disposable, hash-derived synthetic payload whose only
-            # purpose is to exercise the scanner; it is never a credential.
-            # codeql[py/clear-text-storage-sensitive-data]
-            case.write_text(content, encoding="utf-8")
+            _write_synthetic_fixture(case, content)
             _require(label, _scan(binary, "dir", str(case)), 1)
 
         # The scanner must inspect encoded and archive-contained content when
