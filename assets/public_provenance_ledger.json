@@ -1009,7 +1009,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4ee21898dcaf0227b7f7a38590d765e350de6317980ec6ad8bb6137edf93e064"
+      "sha256": "e81541ea9cc0999ba7b4d98fc81f72b7a82617e259ac2d375cb3c07c0fc87456"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -5699,7 +5699,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6287db7e54f62352cadf97cdd1038e89a142006eef4e872a7d311c0354bd08f0"
+      "sha256": "4d152ead6979d72fc5565907c95a50639976c0d7f8ef95b42540e0781db94ff2"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -5747,7 +5747,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a54e225b606977bd64c1f146fd17ba408dd753a59547f85954070b51c9059e3d"
+      "sha256": "c8ae0c27c99272dd0d6d83a0da75f0eadbcf9a1486abf3a7de2f070bbee56c21"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -6719,7 +6719,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d6164facfce1b34b279fda1388652553d7cbefe66c28b748790a5df0100cf9f"
+      "sha256": "02467b178dc79967a7fa8bd961693da475f9680ee0a610f32da5d2583c25bee1"
     },
     {
       "path": "tools/test_psp_readiness.py",

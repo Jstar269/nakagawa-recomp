@@ -11,7 +11,11 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from psp_oracle.protocol import ProtocolError, compare_texts, parse_output, provenance_issues
-from psp_oracle.run_psplink import _split_command
+from psp_oracle.run_psplink import (
+    _record_summary,
+    _split_command,
+    annotate_terminal_outcome,
+)
 
 
 META = (
@@ -157,6 +161,23 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
 
 
 class PspOracleRunnerTests(unittest.TestCase):
+    def test_capture_records_distinguish_result_skip_and_no_record(self) -> None:
+        self.assertEqual(_record_summary("transport only\n"), ("NO_RECORD", 0))
+        self.assertEqual(_record_summary(stream("psp")), ("RESULT_RECORDS", 1))
+        skipped = stream("psp").replace("status=PASS", "status=SKIP")
+        self.assertEqual(_record_summary(skipped), ("SKIP_RECORDS", 1))
+
+    def test_hang_and_reset_require_human_annotation_of_no_record_capture(self) -> None:
+        base = {"mode": "capture", "process_status": "TIMEOUT", "stdout_file": "capture.txt"}
+        hang = annotate_terminal_outcome(base, b"transport only\n", "HANG")
+        reset = annotate_terminal_outcome(base, b"transport only\n", "RESET")
+        self.assertEqual(hang["terminal_outcome"], "HANG")
+        self.assertEqual(reset["terminal_outcome"], "RESET")
+        self.assertEqual(hang["terminal_outcome_source"], "human-observed")
+        self.assertFalse(hang["acceptance_eligible"])
+        with self.assertRaises(ValueError):
+            annotate_terminal_outcome(base, stream("psp").encode(), "HANG")
+
     def test_windows_pspsh_payload_quotes_are_removed_once(self) -> None:
         command = (
             r'C:\PSPHacks\psplinkusb-windows\pspsh.exe '
@@ -261,7 +282,11 @@ class PspDmacProbeTests(unittest.TestCase):
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
         self.assertEqual(len(dmac["case_ids"]), 7)
-        self.assertIn("missing record is HANG/RESET", dmac["reset"])
+        self.assertIn("missing record is never PASS", dmac["reset"])
+        self.assertEqual(
+            set(dmac["outcome_contract"]),
+            {"result", "skip", "hang", "reset", "inconclusive"},
+        )
 
 
 if __name__ == "__main__":

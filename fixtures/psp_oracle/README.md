@@ -102,8 +102,33 @@ prefix pattern-match and non-sentinel mutation counts; `out7` is lead-guard
 mutation; `out8`/`out9` report the valid destination tail and post-request
 guard where observable (`0xFFFFFFFF` otherwise); `out10` verifies the source
 prefix; `out11` is wall time; and `out12` is the rejected boundary-allocation
-error. A missing record is not success: classify it as a hang/reset and retain
-the per-case isolation.
+error. `status=PASS` means that the call returned and the scalar measurement
+completed; it does not mean that the observed DMA semantics match Nakagawa or
+close issue #23.
+
+Terminal outcomes are deliberately distinct:
+
+| Outcome | Required evidence |
+| --- | --- |
+| Result | The expected one or three `PSP-DMAC-001` records exist; retain every scalar and status. |
+| Skip | An explicit `status=SKIP` record proves that a pre-call safety gate stopped the case. |
+| Hang | No test record, host `process_status=TIMEOUT`, and a human observes that the device remains stalled without rebooting. |
+| Reset | No test record and a human observes a device reboot/reset and PSPLink session loss. Never infer this from host process exit alone. |
+| Inconclusive | No record and neither physical observation is established, including launch or transport failures. |
+
+Run the capture with `--out <case>.runner.json`. After a no-record outcome, the
+operator records the physical observation without altering the original report:
+
+```powershell
+python tools/psp_oracle/run_psplink.py `
+  --annotate-report <case>.runner.json `
+  --observed-terminal-outcome HANG `
+  --out <case>.hang.json
+```
+
+Use `RESET` instead only after observing a reset. The annotation command
+rejects any capture that already contains a test record and marks terminal
+outcomes ineligible for scalar-result acceptance.
 
 ## Build and hardware handoff
 

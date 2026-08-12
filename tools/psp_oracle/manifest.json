@@ -102,7 +102,14 @@
       "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, while invalid-tail records prove the valid prefix allocation and rejected tail boundary before reporting return and mutation counts",
       "issues": [23],
       "risk": "medium; run concurrency first, then isolate each one-byte invalid-tail case per launch",
-      "reset": "return to PSPLINK after each case; a missing record is HANG/RESET, never PASS",
+      "reset": "return to PSPLINK after each case; a missing record is never PASS",
+      "outcome_contract": {
+        "result": "expected scalar record count is present",
+        "skip": "an explicit status=SKIP record proves the pre-call safety gate stopped the case",
+        "hang": "no test record, host timeout, and human-observed stall without reboot",
+        "reset": "no test record and human-observed device reset plus PSPLink session loss; never inferred from process exit",
+        "inconclusive": "no test record and neither physical terminal observation is established"
+      },
       "public_references": [
         "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.c",
         "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.expected",
