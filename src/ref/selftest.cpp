@@ -235,8 +235,8 @@ void TestFpuConvertEdgeCases() {
 		p.push_back(MFC1(gpr, fd));
 	};
 
-	load_float(2, 2.5f);    // round.w.s: half up -> 3
-	load_float(3, -2.5f);   // round.w.s: half up (toward +inf on ties) -> -2
+	load_float(2, 2.5f);    // round.w.s: nearest/even -> 2
+	load_float(3, -2.5f);   // round.w.s: nearest/even -> -2
 	load_float(4, 2.1f);    // ceil.w.s -> 3
 	load_float(5, 2.9f);    // floor.w.s -> 2
 	load_float(6, -2.5f);   // trunc.w.s -> -2
@@ -262,7 +262,7 @@ void TestFpuConvertEdgeCases() {
 	load_raw(21, 0x7FC00000u);  // f21 = NaN
 
 	// In-range rounding paths (fcr31 = 0 = RN).
-	to_word(T3, 2, 2, 0x0C);   // round.w.s 2.5  -> 3
+	to_word(T3, 2, 2, 0x0C);   // round.w.s 2.5  -> 2
 	to_word(T4, 3, 3, 0x0C);   // round.w.s -2.5 -> -2
 	to_word(T5, 4, 4, 0x0E);   // ceil.w.s 2.1   -> 3
 	to_word(T6, 5, 5, 0x0F);   // floor.w.s 2.9  -> 2
@@ -291,7 +291,7 @@ void TestFpuConvertEdgeCases() {
 
 	// Overflow / boundary / non-finite paths.
 	to_word(S0, 11, 11, 0x0D);  // trunc.w.s 1e30f -> 0x7FFFFFFF (positive clamp)
-	to_word(S1, 12, 12, 0x0E);  // ceil.w.s 1e30f  -> 0x80000000 (x86 host result)
+	to_word(S1, 12, 12, 0x0E);  // ceil.w.s 1e30f  -> 0x7FFFFFFF (signed saturation)
 	to_word(S2, 13, 13, 0x0F);  // floor.w.s -1e30f -> 0x80000000
 	to_word(S3, 14, 14, 0x0D);  // trunc.w.s 2^31  -> 0x7FFFFFFF
 	to_word(S4, 15, 15, 0x0D);  // trunc.w.s -2^31 -> 0x80000000
@@ -303,7 +303,7 @@ void TestFpuConvertEdgeCases() {
 	p.push_back(SYSCALL);
 
 	ref::CpuState s = RunProgram(p, base);
-	Check("round.w.s 2.5", s.r[T3], 3u);
+	Check("round.w.s 2.5 ties even", s.r[T3], 2u);
 	Check("round.w.s -2.5", s.r[T4], 0xFFFFFFFEu);
 	Check("ceil.w.s 2.1", s.r[T5], 3u);
 	Check("floor.w.s 2.9", s.r[T6], 2u);
@@ -315,7 +315,7 @@ void TestFpuConvertEdgeCases() {
 	Check("cvt.w.s 2.7 RP", s.r[26], 3u);
 	Check("cvt.w.s -2.7 RM", s.r[27], 0xFFFFFFFDu);
 	Check("trunc.w.s +1e30 clamp", s.r[S0], 0x7FFFFFFFu);
-	Check("ceil.w.s +1e30 host", s.r[S1], 0x80000000u);
+	Check("ceil.w.s +1e30 clamp", s.r[S1], 0x7FFFFFFFu);
 	Check("floor.w.s -1e30", s.r[S2], 0x80000000u);
 	Check("trunc.w.s 2^31", s.r[S3], 0x7FFFFFFFu);
 	Check("trunc.w.s -2^31", s.r[S4], 0x80000000u);
