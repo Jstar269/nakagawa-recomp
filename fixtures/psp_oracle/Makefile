@@ -11,7 +11,10 @@ $(shell mkdir -p "$(BUILD_DIR)")
 
 # Build one deterministic probe case at a time.  A physical session should
 # rebuild with CASE=callback-notify-check, CASE=wait-cancel, or
-# CASE=thread-lifecycle rather than mixing unrelated waits in one launch.
+# CASE=thread-lifecycle rather than mixing unrelated waits in one launch.  The
+# DMAC invalid-tail matrix is intentionally one case per launch because an
+# unexpected firmware response could terminate the probe before it emits a
+# record.
 CASE ?= smoke
 ifeq ($(CASE),smoke)
 CASE_ID = 0
@@ -29,8 +32,18 @@ else ifeq ($(CASE),thread-delete-explicit)
 CASE_ID = 6
 else ifeq ($(CASE),thread-delete-boundary)
 CASE_ID = 7
+else ifeq ($(CASE),dma-concurrency)
+CASE_ID = 8
+else ifeq ($(CASE),dma-invalid-tail-memcpy-dst)
+CASE_ID = 9
+else ifeq ($(CASE),dma-invalid-tail-memcpy-src)
+CASE_ID = 10
+else ifeq ($(CASE),dma-invalid-tail-try-dst)
+CASE_ID = 11
+else ifeq ($(CASE),dma-invalid-tail-try-src)
+CASE_ID = 12
 else
-$(error unsupported CASE=$(CASE); choose smoke, callback-notify-check, wait-cancel, thread-lifecycle, thread-delete-lifecycle, thread-delete-followup, thread-delete-explicit, or thread-delete-boundary)
+$(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
@@ -38,8 +51,17 @@ CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
 BUILD_PRX = 1
 PSP_FW_VERSION = 500
-PSP_EBOOT_TITLE = Nakagawa PSP Oracle Smoke
+# Keep only the invalid-tail variants at the public 24 MiB baseline. They
+# reserve the final valid prefix with the system-memory allocator and prove
+# that an allocation beginning at the next address is rejected before issuing
+# the syscall. Existing probes and the concurrency case retain their prior
+# memory request.
+ifneq ($(filter dma-invalid-tail-%,$(CASE)),)
+PSP_LARGE_MEMORY = 0
+endif
+PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
+LIBS = -lpspdmac
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)

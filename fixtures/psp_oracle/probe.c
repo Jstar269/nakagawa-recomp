@@ -2,14 +2,16 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 #include <pspkernel.h>
+#include <pspdmac.h>
 #include <pspiofilemgr.h>
+#include <pspsysmem.h>
 #include <pspthreadman.h>
+#include <psputils.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
-PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 
 #define FIXTURE_BUILD_ID "nakagawa-psp-oracle-v1"
 
@@ -25,6 +27,25 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 #define PSP_ORACLE_CASE_THREAD_DELETE_FOLLOWUP 5
 #define PSP_ORACLE_CASE_THREAD_DELETE_EXPLICIT 6
 #define PSP_ORACLE_CASE_THREAD_DELETE_BOUNDARY 7
+#define PSP_ORACLE_CASE_DMAC_CONCURRENCY 8
+#define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST 9
+#define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC 10
+#define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST 11
+#define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC 12
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
+PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
+#else
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+#endif
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+/* The default newlib heap claims the largest free partition block. A bounded
+   heap leaves the high-address system-memory allocation available to the
+   invalid-tail probe without relying on unowned memory. */
+PSP_HEAP_SIZE_KB(512);
+#endif
 
 /* PPSSPP exposes a pseudo-device that headless builds use to capture test
    output; see Core/HLE/sceIo.cpp. Real hardware has no such device and the
@@ -64,7 +85,9 @@ static void emit(int emulated, const char *text) {
 }
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
-#if PSP_ORACLE_CASE != PSP_ORACLE_CASE_THREAD_DELETE && PSP_ORACLE_CASE != PSP_ORACLE_CASE_THREAD_DELETE_FOLLOWUP && PSP_ORACLE_CASE != PSP_ORACLE_CASE_THREAD_DELETE_EXPLICIT && PSP_ORACLE_CASE != PSP_ORACLE_CASE_THREAD_DELETE_BOUNDARY
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_CANCEL || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_LIFECYCLE
 static void emit_test(int emulated, const char *case_id, int pass,
                       uint32_t result, uint32_t out0, uint32_t out1,
                       uint32_t out2, uint32_t out3) {
@@ -79,14 +102,16 @@ static void emit_test(int emulated, const char *case_id, int pass,
 }
 #endif
 
-static void emit_test_extended(int emulated, const char *case_id, int pass,
-                               uint32_t result, const uint32_t *out,
-                               size_t out_count) {
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_THREAD_DELETE
+static void emit_record_extended(int emulated, const char *test_id,
+                                 const char *case_id, const char *status,
+                                 uint32_t result, const uint32_t *out,
+                                 size_t out_count) {
     char line[1024];
     int used = snprintf(line, sizeof(line),
-                        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-001 "
+                        "NAKAGAWA_PSP_TEST schema=1 test_id=%s "
                         "case_id=%s status=%s result=0x%08x",
-                        case_id, pass ? "PASS" : "FAIL", (unsigned int)result);
+                        test_id, case_id, status, (unsigned int)result);
     for (size_t i = 0; i < out_count && used > 0 && (size_t)used < sizeof(line); i++) {
         int wrote = snprintf(line + used, sizeof(line) - (size_t)used,
                              " out%u=0x%08x", (unsigned int)i,
@@ -100,6 +125,17 @@ static void emit_test_extended(int emulated, const char *case_id, int pass,
     }
     emit(emulated, line);
 }
+#endif
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_THREAD_DELETE && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_THREAD_DELETE_BOUNDARY
+static void emit_test_extended(int emulated, const char *case_id, int pass,
+                               uint32_t result, const uint32_t *out,
+                               size_t out_count) {
+    emit_record_extended(emulated, "PSP-KERNEL-001", case_id,
+                         pass ? "PASS" : "FAIL", result, out, out_count);
+}
+#endif
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK
@@ -549,6 +585,430 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 }
 #endif
 
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+#define DMAC_API_MEMCPY 0u
+#define DMAC_API_TRY_MEMCPY 1u
+#define DMAC_MEASURED_PREFIX 0x0000c000u
+#define DMAC_REFERENCE_BUSY 0x80000021u
+
+static int dmac_call(uint32_t api, void *dst, const void *src, uint32_t size) {
+    return api == DMAC_API_TRY_MEMCPY
+        ? sceDmacTryMemcpy(dst, src, size)
+        : sceDmacMemcpy(dst, src, size);
+}
+
+static uint8_t dmac_pattern(uint32_t offset) {
+    return (uint8_t)(0x10u + (offset & 0x3fu));
+}
+
+static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
+    const uint64_t elapsed = end >= start ? end - start : 0;
+    return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
+#define DMAC_CONCURRENCY_BYTES 0x00100000u
+#define DMAC_CONCURRENCY_TRIALS 64u
+#define DMAC_FIRST_PRIORITY 0x10u
+#define DMAC_DEST_SENTINEL 0xa5u
+#define DMAC_CONCURRENCY_DST ((uint8_t *)0x04000000u)
+#define DMAC_CONCURRENCY_SRC ((uint8_t *)0x04100000u)
+
+static volatile uint32_t s_dmac_first_api;
+static volatile uint32_t s_dmac_first_entered;
+static volatile uint32_t s_dmac_first_returned;
+static volatile uint32_t s_dmac_first_result;
+static volatile uint64_t s_dmac_first_enter_us;
+static volatile uint64_t s_dmac_first_exit_us;
+
+static int dmac_first_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_dmac_first_enter_us = sceKernelGetSystemTimeWide();
+    s_dmac_first_entered = 1;
+    s_dmac_first_result = (uint32_t)dmac_call(
+        s_dmac_first_api, DMAC_CONCURRENCY_DST,
+        DMAC_CONCURRENCY_SRC, DMAC_CONCURRENCY_BYTES);
+    s_dmac_first_exit_us = sceKernelGetSystemTimeWide();
+    s_dmac_first_returned = 1;
+    return 0;
+}
+
+static uint32_t dmac_contiguous_prefix(void) {
+    uint32_t offset = 0;
+    while (offset < DMAC_CONCURRENCY_BYTES &&
+           DMAC_CONCURRENCY_DST[offset] == dmac_pattern(offset)) {
+        ++offset;
+    }
+    return offset;
+}
+
+static uint32_t dmac_non_sentinel_after(uint32_t offset) {
+    uint32_t count = 0;
+    while (offset < DMAC_CONCURRENCY_BYTES) {
+        if (DMAC_CONCURRENCY_DST[offset] != DMAC_DEST_SENTINEL) ++count;
+        ++offset;
+    }
+    return count;
+}
+
+static void run_dmac_concurrency_combo(int emulated, uint32_t first_api,
+                                       uint32_t second_api,
+                                       const char *case_id) {
+    uint32_t attempted = 0;
+    uint32_t first_entered_count = 0;
+    uint32_t first_returned_count = 0;
+    uint32_t start_window_count = 0;
+    uint32_t timeline_overlap_count = 0;
+    uint32_t first_zero_count = 0;
+    uint32_t first_other_count = 0;
+    uint32_t second_busy_count = 0;
+    uint32_t second_zero_count = 0;
+    uint32_t second_other_count = 0;
+    uint32_t busy_while_first_pending_count = 0;
+    uint32_t busy_after_first_return_count = 0;
+    uint32_t prefix_min = UINT32_MAX;
+    uint32_t prefix_max = 0;
+    uint32_t prefix_c000_count = 0;
+    uint32_t stray_mutation_count = 0;
+    uint32_t first_min_us = UINT32_MAX;
+    uint32_t first_max_us = 0;
+    uint32_t second_min_us = UINT32_MAX;
+    uint32_t second_max_us = 0;
+    uint32_t last_first_result = 0;
+    uint32_t last_second_result = 0;
+    uint32_t setup_error = 0;
+
+    for (uint32_t offset = 0; offset < DMAC_CONCURRENCY_BYTES; ++offset) {
+        DMAC_CONCURRENCY_SRC[offset] = dmac_pattern(offset);
+    }
+    sceKernelDcacheWritebackInvalidateRange(
+        DMAC_CONCURRENCY_SRC, DMAC_CONCURRENCY_BYTES);
+
+    for (uint32_t trial = 0; trial < DMAC_CONCURRENCY_TRIALS; ++trial) {
+        memset(DMAC_CONCURRENCY_DST, DMAC_DEST_SENTINEL,
+               DMAC_CONCURRENCY_BYTES);
+        sceKernelDcacheWritebackInvalidateRange(
+            DMAC_CONCURRENCY_DST, DMAC_CONCURRENCY_BYTES);
+
+        s_dmac_first_api = first_api;
+        s_dmac_first_entered = 0;
+        s_dmac_first_returned = 0;
+        s_dmac_first_result = 0;
+        s_dmac_first_enter_us = 0;
+        s_dmac_first_exit_us = 0;
+
+        const SceUID thread = sceKernelCreateThread(
+            "oracle-dmac-first", dmac_first_thread, DMAC_FIRST_PRIORITY,
+            0x2000, 0, NULL);
+        if (thread < 0) {
+            setup_error = (uint32_t)thread;
+            break;
+        }
+        const int start_result = sceKernelStartThread(thread, 0, NULL);
+        if (start_result < 0) {
+            setup_error = (uint32_t)start_result;
+            sceKernelDeleteThread(thread);
+            break;
+        }
+
+        /* A high-priority first caller can return control here only if the
+           syscall blocks/yields or has already returned.  Record that state;
+           do not infer an in-flight DMA solely from thread scheduling. */
+        const uint32_t entered_before_second = s_dmac_first_entered;
+        const uint32_t returned_before_second = s_dmac_first_returned;
+        if (entered_before_second) ++first_entered_count;
+        if (returned_before_second) ++first_returned_count;
+        if (entered_before_second && !returned_before_second) {
+            ++start_window_count;
+        }
+
+        const uint64_t second_enter_us = sceKernelGetSystemTimeWide();
+        const uint32_t second_result = (uint32_t)dmac_call(
+            second_api, DMAC_CONCURRENCY_DST,
+            DMAC_CONCURRENCY_SRC, DMAC_CONCURRENCY_BYTES);
+        const uint64_t second_exit_us = sceKernelGetSystemTimeWide();
+        (void)sceKernelWaitThreadEnd(thread, NULL);
+        sceKernelDeleteThread(thread);
+        ++attempted;
+
+        const uint32_t first_result = s_dmac_first_result;
+        const uint32_t first_us = dmac_elapsed_us(
+            s_dmac_first_enter_us, s_dmac_first_exit_us);
+        const uint32_t second_us = dmac_elapsed_us(
+            second_enter_us, second_exit_us);
+        if (second_enter_us < s_dmac_first_exit_us) ++timeline_overlap_count;
+        if (first_result == 0) ++first_zero_count; else ++first_other_count;
+        if (second_result == DMAC_REFERENCE_BUSY) {
+            ++second_busy_count;
+            if (entered_before_second && !returned_before_second) {
+                ++busy_while_first_pending_count;
+            }
+            if (returned_before_second) {
+                ++busy_after_first_return_count;
+            }
+        } else if (second_result == 0) {
+            ++second_zero_count;
+        } else {
+            ++second_other_count;
+        }
+        if (first_us < first_min_us) first_min_us = first_us;
+        if (first_us > first_max_us) first_max_us = first_us;
+        if (second_us < second_min_us) second_min_us = second_us;
+        if (second_us > second_max_us) second_max_us = second_us;
+        last_first_result = first_result;
+        last_second_result = second_result;
+
+        sceKernelDcacheInvalidateRange(
+            DMAC_CONCURRENCY_DST, DMAC_CONCURRENCY_BYTES);
+        const uint32_t prefix = dmac_contiguous_prefix();
+        if (prefix < prefix_min) prefix_min = prefix;
+        if (prefix > prefix_max) prefix_max = prefix;
+        if (prefix == DMAC_MEASURED_PREFIX) ++prefix_c000_count;
+        if (dmac_non_sentinel_after(prefix) != 0) ++stray_mutation_count;
+    }
+
+    if (attempted == 0) {
+        prefix_min = 0;
+        first_min_us = 0;
+        second_min_us = 0;
+    }
+    const uint32_t out[] = {
+        attempted,
+        first_api,
+        second_api,
+        first_entered_count,
+        first_returned_count,
+        start_window_count,
+        timeline_overlap_count,
+        first_zero_count,
+        first_other_count,
+        second_busy_count,
+        second_zero_count,
+        second_other_count,
+        busy_while_first_pending_count,
+        busy_after_first_return_count,
+        prefix_min,
+        prefix_max,
+        prefix_c000_count,
+        stray_mutation_count,
+        first_min_us,
+        first_max_us,
+        second_min_us,
+        second_max_us,
+        DMAC_FIRST_PRIORITY,
+        last_first_result,
+    };
+    emit_record_extended(emulated, "PSP-DMAC-001", case_id,
+                         setup_error ? "ERROR" : "PASS",
+                         setup_error ? setup_error : last_second_result,
+                         out, sizeof(out) / sizeof(out[0]));
+}
+
+static void run_dmac_concurrency(int emulated) {
+    /* This reproduces the scheduling shape in PSPAutotests' public DMAC test,
+       then adds a Try/Try control and a normal-call second caller.  The joint
+       scalar state distinguishes BUSY while the first caller remains pending
+       from BUSY after that syscall returned. Zero BUSY returns without a
+       first-caller window are merely "not measurable with this probe." */
+    run_dmac_concurrency_combo(emulated, DMAC_API_MEMCPY,
+                               DMAC_API_TRY_MEMCPY,
+                               "concurrent-memcpy-try");
+    run_dmac_concurrency_combo(emulated, DMAC_API_TRY_MEMCPY,
+                               DMAC_API_TRY_MEMCPY,
+                               "concurrent-try-try");
+    run_dmac_concurrency_combo(emulated, DMAC_API_TRY_MEMCPY,
+                               DMAC_API_MEMCPY,
+                               "concurrent-try-memcpy");
+}
+#endif
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+/* With PSP_LARGE_MEMORY=0, the pinned PSPSDK build contract requests the
+   24 MiB baseline user partition.  uOFW's public memory map places that
+   partition at 0x08800000 with size 0x01800000, ending at 0x0A000000.
+   The probe does not touch that boundary until the allocator has reserved the
+   entire valid prefix and independently rejected a block beginning at the
+   next address. */
+#define DMAC_BASELINE_USER_END 0x0a000000u
+#define DMAC_BOUNDARY_LEAD 0x00000100u
+#define DMAC_BOUNDARY_BLOCK_BASE \
+    (DMAC_BASELINE_USER_END - DMAC_MEASURED_PREFIX - DMAC_BOUNDARY_LEAD)
+#define DMAC_BOUNDARY_BLOCK_BYTES (DMAC_MEASURED_PREFIX + DMAC_BOUNDARY_LEAD)
+#define DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)
+#define DMAC_BOUNDARY_SENTINEL 0xa5u
+#define DMAC_BOUNDARY_GUARD 0x6du
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
+#define DMAC_INVALID_API DMAC_API_MEMCPY
+#define DMAC_INVALID_DIRECTION 0u
+#define DMAC_INVALID_CASE_ID "invalid-tail-memcpy-dst"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC
+#define DMAC_INVALID_API DMAC_API_MEMCPY
+#define DMAC_INVALID_DIRECTION 1u
+#define DMAC_INVALID_CASE_ID "invalid-tail-memcpy-src"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST
+#define DMAC_INVALID_API DMAC_API_TRY_MEMCPY
+#define DMAC_INVALID_DIRECTION 0u
+#define DMAC_INVALID_CASE_ID "invalid-tail-try-dst"
+#else
+#define DMAC_INVALID_API DMAC_API_TRY_MEMCPY
+#define DMAC_INVALID_DIRECTION 1u
+#define DMAC_INVALID_CASE_ID "invalid-tail-try-src"
+#endif
+
+static uint8_t s_dmac_valid_source[DMAC_INVALID_REQUEST]
+    __attribute__((aligned(64)));
+static uint8_t s_dmac_valid_destination[DMAC_INVALID_REQUEST + 1u]
+    __attribute__((aligned(64)));
+
+static uint32_t dmac_count_pattern(const uint8_t *bytes, uint32_t size) {
+    uint32_t count = 0;
+    for (uint32_t offset = 0; offset < size; ++offset) {
+        if (bytes[offset] == dmac_pattern(offset)) ++count;
+    }
+    return count;
+}
+
+static uint32_t dmac_count_not(const uint8_t *bytes, uint32_t size,
+                               uint8_t value) {
+    uint32_t count = 0;
+    for (uint32_t offset = 0; offset < size; ++offset) {
+        if (bytes[offset] != value) ++count;
+    }
+    return count;
+}
+
+static void emit_dmac_invalid_setup(int emulated, const char *status,
+                                    uint32_t result, uint32_t setup_mask,
+                                    uint32_t tail_allocation_result) {
+    const uint32_t out[] = {
+        setup_mask,
+        DMAC_INVALID_REQUEST,
+        DMAC_MEASURED_PREFIX,
+        DMAC_INVALID_DIRECTION,
+        DMAC_INVALID_API,
+        tail_allocation_result,
+    };
+    emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
+                         status, result, out, sizeof(out) / sizeof(out[0]));
+}
+
+static void run_dmac_invalid_tail(int emulated) {
+    uint32_t setup_mask = 0;
+    const SceUID block = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-boundary", PSP_SMEM_Addr,
+        DMAC_BOUNDARY_BLOCK_BYTES, (void *)DMAC_BOUNDARY_BLOCK_BASE);
+    if (block < 0) {
+        emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)block,
+                                setup_mask, 0);
+        return;
+    }
+    setup_mask |= 1u;
+    uint8_t *const block_head = (uint8_t *)sceKernelGetBlockHeadAddr(block);
+    if ((uintptr_t)block_head != (uintptr_t)DMAC_BOUNDARY_BLOCK_BASE) {
+        sceKernelFreePartitionMemory(block);
+        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        return;
+    }
+    setup_mask |= 2u;
+
+    /* This allocation is an observational safety gate.  If partition 2 can
+       allocate at or above the assumed end, no invalid DMA call is issued. */
+    const SceUID tail_block = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-tail-check", PSP_SMEM_Addr, 0x100,
+        (void *)DMAC_BASELINE_USER_END);
+    if (tail_block >= 0) {
+        sceKernelFreePartitionMemory(tail_block);
+        sceKernelFreePartitionMemory(block);
+        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        return;
+    }
+    setup_mask |= 4u;
+
+    uint8_t *const boundary_prefix = block_head + DMAC_BOUNDARY_LEAD;
+    memset(block_head, DMAC_BOUNDARY_GUARD, DMAC_BOUNDARY_LEAD);
+    for (uint32_t offset = 0; offset < DMAC_INVALID_REQUEST; ++offset) {
+        s_dmac_valid_source[offset] = dmac_pattern(offset);
+    }
+    memset(s_dmac_valid_destination, DMAC_BOUNDARY_SENTINEL,
+           sizeof(s_dmac_valid_destination));
+    if (DMAC_INVALID_DIRECTION == 0u) {
+        memset(boundary_prefix, DMAC_BOUNDARY_SENTINEL,
+               DMAC_MEASURED_PREFIX);
+    } else {
+        for (uint32_t offset = 0; offset < DMAC_MEASURED_PREFIX; ++offset) {
+            boundary_prefix[offset] = dmac_pattern(offset);
+        }
+    }
+    sceKernelDcacheWritebackInvalidateRange(
+        block_head, DMAC_BOUNDARY_BLOCK_BYTES);
+    sceKernelDcacheWritebackInvalidateRange(
+        s_dmac_valid_source, sizeof(s_dmac_valid_source));
+    sceKernelDcacheWritebackInvalidateRange(
+        s_dmac_valid_destination, sizeof(s_dmac_valid_destination));
+
+    void *const dst = DMAC_INVALID_DIRECTION == 0u
+        ? (void *)boundary_prefix : (void *)s_dmac_valid_destination;
+    const void *const src = DMAC_INVALID_DIRECTION == 0u
+        ? (const void *)s_dmac_valid_source : (const void *)boundary_prefix;
+    const uint64_t start_us = sceKernelGetSystemTimeWide();
+    const uint32_t result = (uint32_t)dmac_call(
+        DMAC_INVALID_API, dst, src, DMAC_INVALID_REQUEST);
+    const uint64_t end_us = sceKernelGetSystemTimeWide();
+
+    uint8_t *const valid_destination = DMAC_INVALID_DIRECTION == 0u
+        ? boundary_prefix : s_dmac_valid_destination;
+    const uint8_t *const expected_source = DMAC_INVALID_DIRECTION == 0u
+        ? s_dmac_valid_source : boundary_prefix;
+    sceKernelDcacheInvalidateRange(valid_destination, DMAC_MEASURED_PREFIX);
+    sceKernelDcacheInvalidateRange(block_head, DMAC_BOUNDARY_LEAD);
+    if (DMAC_INVALID_DIRECTION != 0u) {
+        sceKernelDcacheInvalidateRange(
+            s_dmac_valid_destination, sizeof(s_dmac_valid_destination));
+    }
+
+    const uint32_t prefix_matches = dmac_count_pattern(
+        valid_destination, DMAC_MEASURED_PREFIX);
+    const uint32_t prefix_non_sentinel = dmac_count_not(
+        valid_destination, DMAC_MEASURED_PREFIX, DMAC_BOUNDARY_SENTINEL);
+    const uint32_t guard_changed = dmac_count_not(
+        block_head, DMAC_BOUNDARY_LEAD, DMAC_BOUNDARY_GUARD);
+    const uint32_t valid_tail_changed = DMAC_INVALID_DIRECTION == 0u
+        ? UINT32_MAX
+        : (uint32_t)(s_dmac_valid_destination[DMAC_MEASURED_PREFIX] !=
+                     DMAC_BOUNDARY_SENTINEL);
+    const uint32_t post_request_changed = DMAC_INVALID_DIRECTION == 0u
+        ? UINT32_MAX
+        : (uint32_t)(s_dmac_valid_destination[DMAC_INVALID_REQUEST] !=
+                     DMAC_BOUNDARY_SENTINEL);
+    const uint32_t source_prefix_matches = dmac_count_pattern(
+        expected_source, DMAC_MEASURED_PREFIX);
+    const uint32_t out[] = {
+        setup_mask,
+        DMAC_INVALID_REQUEST,
+        DMAC_MEASURED_PREFIX,
+        DMAC_INVALID_DIRECTION,
+        DMAC_INVALID_API,
+        prefix_matches,
+        prefix_non_sentinel,
+        guard_changed,
+        valid_tail_changed,
+        post_request_changed,
+        source_prefix_matches,
+        dmac_elapsed_us(start_us, end_us),
+        (uint32_t)tail_block,
+    };
+    sceKernelFreePartitionMemory(block);
+    emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
+                         "PASS", result, out,
+                         sizeof(out) / sizeof(out[0]));
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -618,6 +1078,11 @@ int main(int argc, char *argv[]) {
         &out[15], &out[16], 2);
     emit_test_extended(emulated, "thread-delete-boundary", pass, pass ? 1u : 0u,
                        out, sizeof(out) / sizeof(out[0]));
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
+    run_dmac_concurrency(emulated);
+#elif PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
+      PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+    run_dmac_invalid_tail(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
