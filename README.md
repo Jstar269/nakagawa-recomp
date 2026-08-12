@@ -70,7 +70,7 @@ place_game_here/                 # canonical private runtime/build input
 
 The manager resolves this layout directly. Legacy root links named `eboot.elf` and `game.iso` still work but are optional. A source `EBOOT.PBP` and `DOCUMENT.DAT` may be retained as private archival inputs, but neither is read by the current manager/build/runtime once the layout above exists.
 
-`python tools/extract_xb.py` can regenerate `xbdata_extracted/`; it requires a local checkout of [libxb](https://github.com/kiwi515/libxb) under `third_party/libxb/` at the audited commit `ce6df78e5ca99241dd2bbbd68ca485e34003d760` (the 0.2.0 source snapshot). That optional dependency remains local-only; direct-archive containment and runtime semantics are investigated in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md), [`assets/release_manifest.json`](assets/release_manifest.json), and PR [#15](https://github.com/Jstar269/nakagawa-recomp/pull/15).
+`python tools/extract_xb.py` can regenerate `xbdata_extracted/`; it requires a local checkout of [libxb](https://github.com/kiwi515/libxb) under `third_party/libxb/` at the audited commit `ce6df78e5ca99241dd2bbbd68ca485e34003d760` (the 0.2.0 source snapshot). That optional dependency remains local-only; direct-archive containment and runtime semantics are investigated in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md) and [`assets/release_manifest.json`](assets/release_manifest.json).
 
 The private `place_game_here/` layout is Git-ignored. A complete ISO-only bootstrap is not automated yet: the runtime still needs the three decrypted PRXs and the plain extracted XB tree. Do not publish files from this folder.
 

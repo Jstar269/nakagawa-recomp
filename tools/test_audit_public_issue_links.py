@@ -89,6 +89,29 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertFalse(findings[0][4])
         self.assertIn("DEAD / UNRESOLVED PUBLIC REFERENCE #999", findings[0][3])
 
+    def test_reused_live_number_in_historical_doc_fails(self) -> None:
+        doc = self.repo_path / "docs" / "HARDWARE_ORACLE.md"
+        doc.parent.mkdir()
+        doc.write_text(
+            "Historical PR https://github.com/Jstar269/nakagawa-recomp/pull/35\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            35: {
+                "number": 35,
+                "is_pr": True,
+                "type": "PR",
+                "state": "open",
+                "merged_at": None,
+                "title": "Unrelated sanitized-era scanner migration",
+                "url": "",
+            }
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0][4])
+        self.assertIn("HISTORICAL NUMBER COLLISION", findings[0][3])
+
     def test_shorthand_dead_number_in_current_doc_fails(self) -> None:
         doc = self.repo_path / "NOTICE.md"
         doc.write_text("Blocked on #98\n", encoding="utf-8")

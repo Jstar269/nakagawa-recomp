@@ -24,6 +24,11 @@ from pathlib import Path
 import subprocess
 import sys
 
+try:
+    from .public_export import write_document as _write_json_document
+except ImportError:
+    from public_export import write_document as _write_json_document
+
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = ROOT / "assets" / "public_source_profile.json"
 IMPLEMENTATION_LEDGER = ROOT / "docs" / "provenance" / "IMPLEMENTATION_PROVENANCE.json"
@@ -179,7 +184,7 @@ def build_ledger(output: Path = DEFAULT_OUTPUT) -> dict:
         "entries": entries,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_json_document(output, document)
     return document
 
 

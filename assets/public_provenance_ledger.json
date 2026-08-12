@@ -296,7 +296,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "965b2360124a180cde24f10f5cb8891b4b63356686fb007ab2e6eb8970369873"
+      "sha256": "094149c41f4abb038712c4d51689ff11c33c7aca04c1b8cf07c8c1e7d8457bc3"
     },
     {
       "path": "SECURITY.md",
@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "55779bba8c8ce1704c8ccb4c6ceb01e7345cbd78e202e05d99d544ec32e32e66"
+      "sha256": "30ab3e5a9b7b58f443a5d3855b030cc8a72e85a80c8d00e250b0ab6639695e50"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -4869,7 +4869,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "78ac913be23144b23f69beb57fb270bff5ae9a81de17474613412f4f5d6b9ca6"
+      "sha256": "7a278bca49306e9dbf1ee0780253ae90b46da3a7b9a174384fd4e215af2ddf99"
     },
     {
       "path": "tools/benchmark_codegen_chunks.py",
@@ -5610,7 +5610,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b87499fda1549aa4726a2b73e1ad0b72c6c2f6d2da2f0f98b1aa8a8850076802"
+      "sha256": "cc4828e18d1667f1466d91f68bd8649811c91e661f90bc2685b9b397ca2f49df"
     },
     {
       "path": "tools/prxload.py",
@@ -5843,7 +5843,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37b84d94e02910fd27ff01237dc0ebb2509a9828355074f45d3f60203ad410b8"
+      "sha256": "30c0533015ac9ad2d86e3d2d3d650bff17fd519e1e30eb247c7ff17c00c94364"
     },
     {
       "path": "tools/publication_policy.py",
@@ -5939,7 +5939,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d694cc4308eefd3a0a1aa15f6a24857d545fe0f309b2fe2d643cc76305295e02"
+      "sha256": "a90a32c5b967bb6bd93217bba251d8aa08cddc95c6f56ae638fc629c6ca8f3e6"
     },
     {
       "path": "tools/test_boot_gate.py",
@@ -6803,7 +6803,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f90ca385b6741f66cf30c1e01f8e5536473f19b552d581f270e34c42d10ca16"
+      "sha256": "2c07b24b1d58bc41d70358b5bb8d078e3bb47f1ce5e2c1d58ea2c91181c5a033"
     },
     {
       "path": "tools/test_publish_audit.py",
