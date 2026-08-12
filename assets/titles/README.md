@@ -32,8 +32,19 @@ python tools/title_manifest.py assets/titles/synthetic.json --print-normalized
 ## Checked-in manifests
 
 - `synthetic.json` is a source-owned public fixture for schema and tool testing.
-- `pspdev-phase5.json` is a source-owned PSPDEV/PSPSDK Phase 5 fixture with
-  synthetic addresses and build paths; it contains no retail metadata.
+- `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live
+  in `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
+  is deliberately configured *differently* from `synthetic.json` — the canonical
+  user-module load base `0x08804000` rather than the user-memory region start, no
+  guest PRX of any kind, and an HLE-dependent feature set — so the manifest-driven
+  planner is proven genuinely multi-title rather than parameterized for one game.
+  It contains synthetic addresses and build paths only, and no retail metadata.
+
+The analyzer applies **no** title-specific executable span by default: a raw
+base-zero image never silently inherits another title's span. An extra executable
+span is manifest data, and it reaches `analyze`/`codegen` only through an explicit
+`--extra-span` argument or the `HST_EXTRA_SPANS` seam that the manager fills from
+the validated plan. See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
 `hst-ucus98701.json` is intentionally not checked in: it contains title-specific
 identity, module addresses, and private-route filesystem configuration. The

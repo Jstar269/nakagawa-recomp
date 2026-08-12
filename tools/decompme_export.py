@@ -164,7 +164,7 @@ def export_function(elf_path: str, addr: int, base: int, outdir: Path,
     import analyze  # noqa: E402  (repo tool, resolved via sys.path above)
 
     elf = analyze.Elf(elf_path, base=base)
-    starts, ranges = analyze.analyze(elf)
+    starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
     if addr not in set(starts):
         near = sorted(s for s in starts if abs(s - addr) <= 0x400)
         hint = ", ".join(f"{s:#x}" for s in near[:6]) or "none within 0x400"

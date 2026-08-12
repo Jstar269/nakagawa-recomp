@@ -5,9 +5,11 @@
 <#
     Strict PowerShell adapter for the versioned title_codegen_plan.py manager plan.
 
-    The Python validator owns public-manifest semantics. These helpers only validate the
-    bounded machine contract and bind its protected HST values to local private paths.
-    They never evaluate shell text or write a manifest.
+    The Python validator owns public-manifest semantics. These helpers validate the
+    bounded machine contract, check that its build-facing projections are derived from
+    its own semantics, re-check the protected-contract digest against the manifest on
+    disk, and bind the plan to local private paths. They never evaluate shell text,
+    write a manifest, or fall back to a built-in title default.
 #>
 
 $script:TitleManagerPlanVersion = 1
@@ -80,22 +82,25 @@ function Assert-TitleManagerPlan {
     param([Parameter(Mandatory = $true)][AllowNull()][object]$Plan)
 
     Assert-TitlePlanObject $Plan '$' @(
-        'plan_version', 'plan_kind', 'title_manifest_id', 'title_kind', 'game_name',
-        'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source', 'disc',
-        'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
+        'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
+        'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
+        'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
         'private_binding_requirements', 'environment', 'make'
     ) @(
-        'plan_version', 'plan_kind', 'title_manifest_id', 'title_kind', 'game_name',
-        'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source', 'disc',
-        'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
+        'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
+        'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
+        'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
         'private_binding_requirements', 'environment', 'make'
     ) | Out-Null
 
     if ((Assert-TitlePlanInteger $Plan.plan_version '$.plan_version') -ne $script:TitleManagerPlanVersion) {
         throw "unsupported manager-plan version: $($Plan.plan_version)"
     }
-    foreach ($field in @('plan_kind', 'title_manifest_id', 'title_kind', 'game_name', 'codegen_profile', 'bss_metadata_source')) {
+    foreach ($field in @('plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind', 'game_name', 'codegen_profile', 'bss_metadata_source')) {
         Assert-TitlePlanString $Plan.$field "`$.$field" | Out-Null
+    }
+    if ($Plan.protected_digest -cnotmatch '^[0-9a-f]{64}$') {
+        throw '$.protected_digest must be a lowercase 64-character SHA-256 hex digest'
     }
     [void](Assert-TitlePlanInteger $Plan.game_base '$.game_base')
     [void](Assert-TitlePlanInteger $Plan.game_entry '$.game_entry')
@@ -143,7 +148,100 @@ function Assert-TitleManagerPlan {
     return $Plan
 }
 
+function Assert-TitlePlanDerivation {
+    <#
+        Check that the plan's build-facing projections agree with the plan's own title
+        semantics. These are *relations*, not pinned constants: the manager re-derives
+        each build-facing value from the semantic field it comes from, so nothing here
+        re-encodes any title's values, yet a planner that mis-projected a manifest still
+        fails closed before Make runs.
+    #>
+    param([Parameter(Mandatory = $true)][object]$Plan)
+
+    $expectedHexBase = '0x{0:x8}' -f [uint64]$Plan.game_base
+    $expectedHexEntry = '0x{0:x8}' -f [uint64]$Plan.game_entry
+    if ($Plan.environment.GAME_BASE -ne $expectedHexBase -or $Plan.environment.GAME_ENTRY -ne $expectedHexEntry) {
+        throw 'plan analyzer environment does not match the plan executable base/entry'
+    }
+    # Make renders address 0 as bare "0" and any other address in hex; the manager
+    # accepts only that projection of the plan's own numbers.
+    $expectedMakeBase = if ($Plan.game_base -eq 0) { '0' } else { $expectedHexBase }
+    $expectedMakeEntry = if ($Plan.game_entry -eq 0) { '0' } else { $expectedHexEntry }
+    if ($Plan.make.game_base -ne $expectedMakeBase -or $Plan.make.game_entry -ne $expectedMakeEntry) {
+        throw 'plan Make base/entry does not match the plan executable base/entry'
+    }
+    $expectedProfileArg = if ($Plan.codegen_profile -eq 'none') { '' } else { "--profile=$($Plan.codegen_profile)" }
+    if ($Plan.make.codegen_profile_arg -ne $expectedProfileArg) {
+        throw 'plan Make codegen profile argument does not match the plan codegen profile'
+    }
+    if ($Plan.make.game_name -ne $Plan.game_name) {
+        throw 'plan Make game name does not match the plan game name'
+    }
+    # The analyzer span is the manifest's extra executable span, rendered for the
+    # analyzer seam. Zero spans means the empty string -- never an inherited default.
+    $spans = @($Plan.extra_executable_spans)
+    $expectedSpanText = ''
+    if ($spans.Count -eq 1) {
+        $expectedSpanText = ('0x{0:x8},0x{1:x8}' -f [uint64]$spans[0].start, [uint64]$spans[0].end)
+    } elseif ($spans.Count -gt 1) {
+        throw 'the current analyzer seam accepts at most one explicit extra executable span'
+    }
+    if ($Plan.environment.HST_EXTRA_SPANS -ne $expectedSpanText) {
+        throw 'plan analyzer span environment does not match the plan extra executable spans'
+    }
+    return $Plan
+}
+
+function Assert-TitleManifestDigest {
+    <#
+        Fail closed when the manifest on disk no longer matches the plan that was built
+        from it. The plan is produced once at manager start-up but Make may run minutes
+        later, so the digest is recomputed from the manifest file immediately before the
+        spawn: a manifest edited in between is rejected rather than silently half-applied.
+
+        The digest is recomputed by the planner itself, so there is exactly one
+        implementation of the protected-contract serialization.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][string]$PlannerScript,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [string]$PythonCommand = 'python'
+    )
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "title manifest is no longer readable: $ManifestPath"
+    }
+    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("hst-title-digest-" + [guid]::NewGuid().ToString('N') + '.err')
+    try {
+        $output = @(& $PythonCommand @($PlannerScript, $ManifestPath, '--print-protected-digest') 2> $stderrPath)
+        $exitCode = [int]$LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $detail = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw).Trim() } else { '' }
+            throw "protected-digest recomputation failed with exit code ${exitCode}: $detail"
+        }
+        $digest = ($output -join '').Trim()
+        if ($digest -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'protected-digest recomputation did not return a SHA-256 digest'
+        }
+        if ($digest -ne $Plan.protected_digest) {
+            throw "title manifest changed after planning: protected digest $digest does not match the validated plan"
+        }
+    } finally {
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+    return $Plan
+}
+
 function Get-HstManifestMakeArgs {
+    <#
+        Bind a validated manager plan to the HST manager's Make invocation.
+
+        Every build-facing value (base/entry, profile argument, module list, analyzer
+        span, build dir, chunk size) is taken from the plan; the manager keeps no copy
+        of the title contract and never falls back to a legacy HST default. The pins
+        below are *identity* checks -- this manager orchestrates exactly one title, so
+        it refuses any other plan before touching a private path.
+    #>
     param(
         [Parameter(Mandatory = $true)][object]$Plan,
         [Parameter(Mandatory = $true)][string]$GameElfForMake,
@@ -154,7 +252,11 @@ function Get-HstManifestMakeArgs {
         [Parameter(Mandatory = $true)][int]$FuncsPerChunk
     )
     Assert-TitleManagerPlan $Plan | Out-Null
-    if ($Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
+    # Every build-facing value below is consumed from the plan. The manager re-derives
+    # nothing of its own: it only checks that the plan's projections agree with the
+    # plan's semantics, then pins the one title this manager orchestrates.
+    Assert-TitlePlanDerivation $Plan | Out-Null
+    if ($Plan.plan_kind -ne 'title-manager-build' -or $Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
         throw 'the HST manager accepts only the checked-in HST retail manifest'
     }
     if ($Plan.game_base -ne 0 -or $Plan.game_entry -ne 0 -or $Plan.codegen_profile -ne 'hst' -or $Plan.bss_metadata_source -ne 'psp-header') {
@@ -164,6 +266,9 @@ function Get-HstManifestMakeArgs {
     if ($null -eq $disc -or $disc.id -ne 'UCUS98701' -or $disc.region -ne 'NA' -or $disc.revision_policy -ne 'exact-disc-id' -or ($disc.PSObject.Properties.Name -contains 'compatible_revisions')) {
         throw 'HST manifest protected disc identity/revision policy is incompatible'
     }
+    # Supported-identity pin for the one title this manager orchestrates. The span's
+    # projection into the analyzer environment is checked by Assert-TitlePlanDerivation
+    # against this same field, so the value is stated once here and nowhere else.
     $expectedSpans = @(@{ start = 3158420; end = 3173924 })
     $actualSpans = @($Plan.extra_executable_spans)
     if ($actualSpans.Count -ne 1 -or $actualSpans[0].start -ne $expectedSpans[0].start -or $actualSpans[0].end -ne $expectedSpans[0].end) {
@@ -185,11 +290,12 @@ function Get-HstManifestMakeArgs {
     if (-not $Plan.private_binding_requirements.game_elf -or -not $Plan.private_binding_requirements.module_dir -or -not $Plan.private_binding_requirements.psp_header) {
         throw 'HST manifest omitted a required private binding'
     }
-    if ($Plan.make.game_name -ne 'hst' -or $Plan.make.game_base -ne '0' -or $Plan.make.game_entry -ne '0' -or $Plan.make.codegen_profile_arg -ne '--profile=hst' -or $Plan.make.build_dir -ne ($BuildDir -replace '\\', '/') -or $Plan.make.funcs_per_chunk -ne $FuncsPerChunk) {
-        throw 'HST manager plan Make mapping conflicts with the protected manifest semantics'
-    }
-    if ($Plan.environment.GAME_BASE -ne '0x00000000' -or $Plan.environment.GAME_ENTRY -ne '0x00000000' -or $Plan.environment.HST_EXTRA_SPANS -ne '0x00303194,0x00306e24') {
-        throw 'HST manager plan analyzer environment conflicts with the protected manifest semantics'
+    # Operational consistency only: the plan was built for the same build directory and
+    # chunk size the manager is about to use. The Make base/entry/profile projections are
+    # already tied to the plan's semantics by Assert-TitlePlanDerivation, so they are not
+    # re-encoded here.
+    if ($Plan.make.build_dir -ne ($BuildDir -replace '\\', '/') -or $Plan.make.funcs_per_chunk -ne $FuncsPerChunk) {
+        throw 'HST manager plan Make mapping conflicts with the operational inputs'
     }
     foreach ($binding in @($GameElfForMake, $ModuleDirForMake, $PspHeaderForMake, $VulkanSdkForMake)) {
         Assert-TitlePlanString $binding 'private binding' | Out-Null

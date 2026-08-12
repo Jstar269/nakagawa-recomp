@@ -44,11 +44,25 @@ For the privately route-validated HST title, the opt-in manager path is:
   -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
-The manager accepts only the checked-in HST manifest in this slice. Its protected
-title values come from the validated plan; `-VulkanSdk`, `-RuntimeOpt`,
-`-RecompOpt`, and `-FuncsPerChunk` remain operational overrides. An explicit
-override wins only where the contract permits it. Without `-TitleManifest`,
-the existing HST discovery/default path is preserved exactly.
+The manager accepts only the checked-in HST manifest in this slice. Every
+build-facing value comes from the validated plan — the manager keeps no second copy
+of the title contract — and it re-checks the manifest's protected digest immediately
+before running Make, so a manifest edited after planning fails closed rather than
+building half of each contract. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and
+`-FuncsPerChunk` remain operational overrides. An explicit override wins only where
+the contract permits it. Without `-TitleManifest`, the existing HST
+discovery/default path is preserved exactly.
+
+`assets/titles/pspdev-phase5.json` is a second, materially different source-owned
+fixture (`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
+It proves the planner is genuinely multi-title: a different load base, no guest
+modules, and a different feature surface flow through the same manifest → plan →
+codegen path.
+
+The analyzer never applies a title-specific executable span of its own. If your
+title needs a code range that lives outside the section table, declare it in the
+manifest's `executable.extra_executable_spans` (the manager then supplies it) or
+pass `--extra-span=LO,HI` to `codegen.py` for a direct Make build.
 
 ## Step 2: Obtain the decrypted ELF
 

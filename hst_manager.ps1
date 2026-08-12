@@ -417,6 +417,13 @@ try {
             $startParams.Remove("WindowStyle")
         }
         if (-not $TitleManifest) { return (Start-Process @startParams) }
+        # Time-of-check/time-of-use: the plan was validated once at start-up, but Make
+        # runs later. Re-derive the manifest's protected digest now and refuse to build
+        # when the file on disk no longer matches the plan the arguments came from.
+        Assert-TitleManifestDigest `
+            -Plan $script:TitleManagerPlan `
+            -PlannerScript (Join-Path $PSScriptRoot "tools\title_codegen_plan.py") `
+            -ManifestPath $TitleManifest | Out-Null
         $state = Push-TitleAnalyzerEnvironment -Value $script:TitleManagerSpans
         try {
             return (Start-Process @startParams)

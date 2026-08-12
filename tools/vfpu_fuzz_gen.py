@@ -42,7 +42,7 @@ implementation matches PSP hardware".  See tools/vfpu_coverage_report.py.
 
 import sys
 
-from analyze import Elf, exec_ranges
+from analyze import Elf, exec_ranges, resolve_extra_spans
 import codegen
 
 
@@ -121,16 +121,19 @@ def main(argv: list[str]) -> int:
 
     synthetic = "--synthetic" in opts
     base = None
+    extra_span_arg = None
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--extra-span="):
+            extra_span_arg = o.split("=", 1)[1]
 
     if synthetic:
         # PUBLIC SYNTHETIC MODE
         if len(args) < 1:
             sys.stderr.write(
                 "usage: vfpu_fuzz_gen.py --synthetic <out.h>\n"
-                "       vfpu_fuzz_gen.py <elf> <out.h> [--base=HEX]\n"
+                "       vfpu_fuzz_gen.py <elf> <out.h> [--base=HEX] [--extra-span=LO,HI]\n"
             )
             return 2
         out_path = args[0]
@@ -149,7 +152,7 @@ def main(argv: list[str]) -> int:
         if len(args) < 2:
             sys.stderr.write(
                 "usage: vfpu_fuzz_gen.py --synthetic <out.h>\n"
-                "       vfpu_fuzz_gen.py <elf> <out.h> [--base=HEX]\n"
+                "       vfpu_fuzz_gen.py <elf> <out.h> [--base=HEX] [--extra-span=LO,HI]\n"
             )
             return 2
 
@@ -169,7 +172,7 @@ def main(argv: list[str]) -> int:
                     words[w] = 0x08900000 + 4 * i
         else:
             elf = Elf(elf_path, base=base)
-            ranges = exec_ranges(elf)
+            ranges = exec_ranges(elf, extra_spans=resolve_extra_spans(extra_span_arg))
             words = {}
             for lo, hi in ranges:
                 a = lo
