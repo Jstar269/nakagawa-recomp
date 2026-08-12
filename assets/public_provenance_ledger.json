@@ -5959,7 +5959,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1468e04d8e6d04849b2973c3136d3a607f7163d798aff32d5b9957dfdbf2abb"
+      "sha256": "1a477e8a795e4ece94b81c4724351d0f55dd01518e788da2aa3838c9b8ec03bc"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7015,7 +7015,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "95d279102b3d9dac5f75c6b875a4af54867a4300a41f0719bbd39108a98cdae9"
+      "sha256": "96bbbc9095ced46438771300e25755ff1181756c46cc7b060be0c295883bc168"
     },
     {
       "path": "tools/test_title_manager_plan.py",

@@ -35,6 +35,12 @@ HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 PLANNER = ROOT / "tools" / "title_codegen_plan.py"
 TITLES = ROOT / "assets" / "titles"
 
+# Wholly synthetic spans. The adapter's job is to re-derive a projection from the
+# plan's own numbers, so no real title's address range is needed here -- and using
+# one would put a title-specific constant into a generic test surface.
+SYNTHETIC_SPAN = (0x00400000, 0x00400100)
+SYNTHETIC_SPAN_TEXT = "0x00400000,0x00400100"
+
 
 class TitleManagerAdapterTests(unittest.TestCase):
     @classmethod
@@ -134,7 +140,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
              "does not match the plan executable base/entry"),
             ("environment-entry", lambda p: p["environment"].update(GAME_ENTRY="0xdeadbeef"),
              "does not match the plan executable base/entry"),
-            ("environment-span", lambda p: p["environment"].update(HST_EXTRA_SPANS="0x00303194,0x00306e24"),
+            ("environment-span", lambda p: p["environment"].update(HST_EXTRA_SPANS=SYNTHETIC_SPAN_TEXT),
              "does not match the plan extra executable spans"),
             ("make-base", lambda p: p["make"].update(game_base="0"),
              "does not match the plan executable base/entry"),
@@ -159,7 +165,9 @@ class TitleManagerAdapterTests(unittest.TestCase):
         # zero-based -- the same rule the analyzer enforces.
         owned["executable"]["base"] = 0
         owned["executable"]["entry"] = 0
-        owned["executable"]["extra_executable_spans"] = [{"start": 0x400000, "end": 0x400100}]
+        owned["executable"]["extra_executable_spans"] = [
+            {"start": SYNTHETIC_SPAN[0], "end": SYNTHETIC_SPAN[1]}
+        ]
         plan = title_codegen_plan.build_manager_plan(
             owned,
             game_name="synthetic",
@@ -167,7 +175,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
             build_dir=Path("build/synthetic"),
             funcs_per_chunk=64,
         )
-        self.assertEqual(plan["environment"]["HST_EXTRA_SPANS"], "0x00400000,0x00400100")
+        self.assertEqual(plan["environment"]["HST_EXTRA_SPANS"], SYNTHETIC_SPAN_TEXT)
         proc = self.run_pwsh("Assert-TitlePlanDerivation $plan | Out-Null; Write-Output 'OK'", plan)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         # Clearing only the projection is drift, and is caught.

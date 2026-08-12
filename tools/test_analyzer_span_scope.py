@@ -27,10 +27,14 @@ sys.path.insert(0, str(TOOLS))
 
 import analyze  # noqa: E402
 
-# A synthetic span that stands in for "some other title's configuration". Its value
-# is arbitrary; the tests only care that it never appears unless it was asked for.
-FOREIGN_SPAN = (0x00303194, 0x00306E24)
-FOREIGN_SPAN_TEXT = "0x00303194,0x00306e24"
+# A wholly synthetic span standing in for "some other title's configuration". It is
+# deliberately NOT any real title's address range: these tests prove isolation and
+# ownership, which no real address is needed to demonstrate, and reusing one would
+# spread a title-specific constant into generic test surfaces.
+FOREIGN_SPAN = (0x00420000, 0x00420400)
+FOREIGN_SPAN_TEXT = "0x00420000,0x00420400"
+# A second, distinct synthetic span for the cases that need two values to disagree.
+RIVAL_SPAN_TEXT = "0x00400000,0x00400100"
 PRIMARY_BASE = 0x1000
 REBASED_BASE = 0x32200000
 
@@ -139,7 +143,8 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIsNone(analyze.parse_extra_spans("   "))
         self.assertEqual(analyze.parse_extra_spans(FOREIGN_SPAN_TEXT), [FOREIGN_SPAN])
         # Decimal and whitespace-padded forms name the same range.
-        self.assertEqual(analyze.parse_extra_spans(" 3158420 , 3173924 "), [FOREIGN_SPAN])
+        decimal = f" {FOREIGN_SPAN[0]} , {FOREIGN_SPAN[1]} "
+        self.assertEqual(analyze.parse_extra_spans(decimal), [FOREIGN_SPAN])
         for malformed, pattern in (
             ("0x10", "look like 'lo,hi'"),
             ("0x10,0x20,0x30", "look like 'lo,hi'"),
@@ -163,17 +168,44 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         )
         # ...and a disagreement fails closed instead of silently picking one.
         with self.assertRaisesRegex(RuntimeError, "conflicts with"):
-            analyze.resolve_extra_spans("0x400000,0x400100", env)
+            analyze.resolve_extra_spans(RIVAL_SPAN_TEXT, env)
 
     # --- CLI seams --------------------------------------------------------
 
-    def test_analyze_cli_reports_no_span_without_an_explicit_request(self) -> None:
+    def test_analyze_cli_runs_clean_without_an_explicit_span(self) -> None:
         proc = subprocess.run(
             [sys.executable, str(TOOLS / "analyze.py"), str(self.elf), "--base=0", "--quiet"],
             cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertNotIn("0x00303194", proc.stdout + proc.stderr)
+
+    def test_codegen_cli_scans_only_the_ranges_it_was_given(self) -> None:
+        # codegen reports the ranges it actually scanned, which is the externally
+        # visible statement of what the analyzer decided. Without a span it must be
+        # the segment alone; with one, exactly the segment plus that span.
+        out_c = self.root / "scan.c"
+        argv = [
+            sys.executable, str(TOOLS / "codegen.py"), str(self.elf), str(out_c),
+            "--base=0", "--profile=none", "--funcs-per-chunk=2000",
+        ]
+        bare = subprocess.run(
+            argv, cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(bare.returncode, 0, bare.stdout + bare.stderr)
+        self.assertIn(
+            f"SCANNING RANGES: [({PRIMARY_BASE}, {PRIMARY_BASE + 8})]",
+            bare.stdout + bare.stderr,
+        )
+        spanned = subprocess.run(
+            argv + [f"--extra-span={FOREIGN_SPAN_TEXT}"],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(spanned.returncode, 0, spanned.stdout + spanned.stderr)
+        self.assertIn(
+            f"SCANNING RANGES: [({PRIMARY_BASE}, {PRIMARY_BASE + 8}), "
+            f"({FOREIGN_SPAN[0]}, {FOREIGN_SPAN[1]})]",
+            spanned.stdout + spanned.stderr,
+        )
 
     def test_codegen_primary_span_does_not_reach_a_rebased_extra_module(self) -> None:
         # The manager exports the span across the make spawn. codegen must apply it to
@@ -230,7 +262,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 sys.executable, str(TOOLS / "codegen.py"),
                 str(self.elf), str(out_c),
                 "--base=0", "--profile=none", "--funcs-per-chunk=2000",
-                "--extra-span=0x00400000,0x00400100",
+                f"--extra-span={RIVAL_SPAN_TEXT}",
             ],
             cwd=ROOT,
             env=self._clean_env(HST_EXTRA_SPANS=FOREIGN_SPAN_TEXT),
