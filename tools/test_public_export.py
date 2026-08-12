@@ -82,7 +82,7 @@ class TestPublicExport(unittest.TestCase):
             self.assertTrue((target_path / "src" / "rt" / "recomp.c").is_file())
             self.assertTrue((target_path / "LICENSE").is_file())
             self.assertTrue((target_path / "NOTICE.md").is_file())
-            # Unreviewed #98/#99/#104 components are excluded from the tree.
+            # Unresolved PGF/font and PGD/amctrl surfaces are excluded from the tree.
             for rel in (
                 "font/jpn0.pgf",
                 "font/kr0.pgf",

@@ -31,7 +31,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
 
-The `CI required` job is the stable aggregate status intended for future branch
+The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job is never hidden by the
@@ -39,7 +39,7 @@ aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
 The full-tree pre-commit run retains the publication audit and the separate
-Gitleaks scan. Markdown linting is separate so documentation changes do not pay
+pinned secret scan. Markdown linting is separate so documentation changes do not pay
 for a dashboard install. Dashboard dependency changes run the clean `npm ci`,
 test, lint, type-check, build, and standalone-output leakage checks. Native and
 Windows jobs remain synthetic/public-input gates; no private game input is put in
@@ -65,7 +65,7 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   goes false, including when an unknown path forces full applicability; the path
   facts stay true, so the ready-for-review transition needs no reclassification.
 - **`hygiene` is ungated.** The all-files pre-commit run — which includes the
-  publication safety audit and the Gitleaks scan — executes on every event, so
+  publication safety audit and the pinned secret scan — executes on every event, so
   the security and publication boundary is never path-gated.
 
 Test modules use their logical implementation subject for classification:
@@ -86,21 +86,24 @@ compiled runtime objects and generated shader/code output are not cached, so the
 repository's content-addressed invalidation and freshness checks remain the
 source of truth. No volatile dollar figure is part of the repository contract.
 
-Hosted GitHub Actions execution is active. Workflows pass the classifier, hygiene/security, Markdown, native/translation, dashboard, main-smoke, Python, Windows, and aggregate gates for candidate heads. PR [#27](https://github.com/Jstar269/nakagawa-recomp/pull/27) tracks the broader OSPS/GitHub governance/settings audit. Dependabot PRs remain draft and are not substitute CI evidence; local verification remains local-only.
+Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
+`OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
+`CodeQL` on exact pull-request heads. Path-gated workflows also run the applicable
+classifier, Markdown, native/translation, dashboard, main-smoke, Python, and
+Windows gates. A green public-safe run proves only the paths it executes; it is
+not a complete private-title gameplay route, and local verification remains
+local-only.
 
 ## Windows hosted runner policy
 
-The Windows job intentionally remains on `windows-2022` for this baseline campaign. That label is a
-GitHub-hosted Windows Server image and is not an end-user Windows support promise; the supported
-developer platform is Windows 11 x64 as documented in [SETUP.md](SETUP.md). A future
-`windows-2025` migration is a separate hosted-validation decision. It is not included here while
-Actions are disabled, because changing the image would add hosted-only uncertainty without a
-demonstrated validation benefit for this toolchain.
-
-The current `actions/runner-images` Windows Server 2022 inventory records image version
-`20260720.249.2` and **PowerShell 7.6.3** under its PowerShell Tools section. This is the hosted
-image's published software inventory, not a local-machine inference or an executed workflow run;
-recheck it when the image inventory changes. See the [Windows2022 image inventory](https://raw.githubusercontent.com/actions/runner-images/main/images/windows/Windows2022-Readme.md).
+The Windows job intentionally remains on `windows-2022`. Hosted execution is
+active, but that floating label is a GitHub-hosted Windows Server image rather
+than an end-user support promise; the supported developer platform is Windows 11
+x64 as documented in [SETUP.md](SETUP.md). A `windows-2025` migration is a
+separate hosted-validation decision. Consult the current
+[Windows 2022 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
+instead of treating a dated image version or tool inventory as an evergreen
+repository guarantee.
 
 ## Dependabot policy
 

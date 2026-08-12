@@ -5,7 +5,12 @@ This document defines the contributor rights-attestation framework for the Nakag
 > [!IMPORTANT]
 > **DCO is Not Copyright Assignment**: A DCO sign-off certifies that you have the right to submit your contribution under the project's open-source terms. You retain copyright to your original work.
 >
-> **Residual Publication Blocker**: The exact final open-source presentation for outside contributions remains gated on component-level provenance. The public candidate excludes the unresolved PGF/font and PGD/amctrl surfaces; see [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) and [`NOTICE.md`](../NOTICE.md).
+> **Residual Provenance Boundary**: Contributions target the active sanitized
+> public repository, but component-level provenance remains unresolved for the
+> excluded PGF/font and PGD/amctrl surfaces. Engineering publication controls and
+> DCO attestations are not legal clearance; see
+> [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) and
+> [`NOTICE.md`](../NOTICE.md).
 
 ---
 

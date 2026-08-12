@@ -4,6 +4,10 @@ This campaign makes the public-safe inherited-file notices explicit. It is a
 provenance and publication gate, not legal advice or a conclusion that any
 file is legally independent, derivative, or cleared for redistribution.
 
+Historical scope: this record preserves a pre-republication campaign snapshot.
+Its commit and issue numbers are historical identifiers, not current public
+tracker mappings or ordinary ancestry of the sanitized public `main` branch.
+
 ## Bounded inventory
 
 The inventory is rooted at public commit

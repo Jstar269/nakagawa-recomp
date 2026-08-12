@@ -2,13 +2,13 @@
 
 **Status: engineering provenance framework, not legal advice.** This defines how Nakagawa
 classifies the origin of its own implementation, how a classification may change, and what evidence
-each change requires. It does not clear anything for publication; the public
-candidate still requires qualified human provenance and distribution review.
+each change requires. Inclusion in the active public repository or a derived
+candidate does not replace qualified human provenance and distribution review.
 
 Companions: [NOTICE.md](../../NOTICE.md) (what the project *tells the world*),
 [`PUBLIC_SOURCE_PROFILE.md`](../PUBLIC_SOURCE_PROFILE.md) (candidate scope),
 [`../../assets/public_provenance_ledger.json`](../../assets/public_provenance_ledger.json)
-(the path-hashed public candidate ledger), and
+(the path-hashed public provenance ledger), and
 [`PUBLICATION_READINESS.md`](../PUBLICATION_READINESS.md) (release gates).
 
 ## Goal, stated precisely
@@ -149,23 +149,26 @@ independence leverage x confidence x evidence availability / replacement risk
 - **Replacement risk** — blast radius, guest-visible surface, and how a regression would present.
 
 Deliberately *low* priority regardless of score: anything owned by another active agent lane,
-anything blocked on unresolved licensing (`pgf.c` while #98 is open), and anything requiring
+anything blocked on unresolved licensing (`pgf.c` while PGF provenance and
+distribution remain unresolved), and anything requiring
 speculative PSP semantics.
 
 ## Rules that override the score
 
 1. Do not change `assets/vfpu/*.dat` to remove PPSSPP provenance. Bit-exactness is the requirement;
    provenance cosmetics are not. If independent regeneration cannot be proven, the ledger says so.
-2. Do not generate replacement fonts and call #99 solved.
+2. Do not generate replacement fonts and call their provenance/distribution review solved.
 3. Do not touch a subsystem another agent lane currently owns. Audit it, record it, defer.
-4. Do not run history rewriting. #102 owns that.
+4. Do not rewrite or reconnect repository history. The active public history
+   deliberately begins with the sanitized restoration lineage; any topology
+   change requires a separately authorized review.
 5. Do not remove or weaken an upstream notice on the strength of this engineering audit alone.
 6. Never invent a `Signed-off-by:` identity.
 
 ## Ledger maintenance
 
 `assets/public_provenance_ledger.json` is the machine-readable public record.
-The detailed development ledger is deliberately outside the public candidate;
+The detailed development ledger is deliberately outside the active public source tree;
 `tools/test_provenance_ledger.py` enforces the public record instead:
 
 - every tracked file under `src/` is covered by exactly one record (directly or by a directory

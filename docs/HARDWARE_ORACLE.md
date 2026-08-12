@@ -214,9 +214,9 @@ loop; route those to the batch path.
 | Any trace of the **retail game** on hardware | Game-derived. Private, permanently. |
 | Frame or memory dumps from the retail title | Game-derived. Private, permanently. |
 
-This is the strategic argument for the whole plan. Issue
-[#35](https://github.com/Jstar269/nakagawa-recomp/issues/35) is blocked on obtaining oracle
-evidence without redistributing proprietary inputs. **Hardware microtests authored here are the
+This is the strategic argument for the whole plan. A pre-republication tracker
+item, historically numbered #35, was blocked on obtaining oracle evidence
+without redistributing proprietary inputs. **Hardware microtests authored here are the
 only oracle path identified so far that is committable**, and therefore the only one that could
 ever run in public CI. Loops A and B stay entirely on the committable side; Loop C does too, as
 long as probes are homebrew rather than instrumentation of the shipped title.
