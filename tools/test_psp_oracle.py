@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-import unittest
+import json
 from pathlib import Path
 import sys
+import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -206,6 +207,61 @@ class PspOracleRunnerTests(unittest.TestCase):
         launcher = Path(__file__).resolve().parent / "psp_oracle" / "run_nakagawa.py"
         self.assertTrue(launcher.is_file())
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
+
+
+class PspDmacProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+
+    def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
+        for case in (
+            "dma-concurrency",
+            "dma-invalid-tail-memcpy-dst",
+            "dma-invalid-tail-memcpy-src",
+            "dma-invalid-tail-try-dst",
+            "dma-invalid-tail-try-src",
+        ):
+            self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
+        self.assertIn("LIBS = -lpspdmac", self.makefile)
+        self.assertIn("sceDmacMemcpy(dst, src, size)", self.probe)
+        self.assertIn("sceDmacTryMemcpy(dst, src, size)", self.probe)
+
+    def test_concurrency_probe_separates_a_caller_window_from_busy(self) -> None:
+        self.assertIn("#define DMAC_CONCURRENCY_TRIALS 64u", self.probe)
+        self.assertIn("start_window_count", self.probe)
+        self.assertIn("timeline_overlap_count", self.probe)
+        self.assertIn("second_busy_count", self.probe)
+        self.assertIn("busy_while_first_pending_count", self.probe)
+        self.assertIn("busy_after_first_return_count", self.probe)
+        self.assertIn('"concurrent-memcpy-try"', self.probe)
+        self.assertIn('"concurrent-try-try"', self.probe)
+        self.assertIn('"concurrent-try-memcpy"', self.probe)
+
+    def test_invalid_tail_probe_fails_closed_before_the_call(self) -> None:
+        self.assertIn("PSP_LARGE_MEMORY = 0", self.makefile)
+        self.assertIn("sceKernelAllocPartitionMemory", self.probe)
+        self.assertIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
+        self.assertIn("DMAC_BASELINE_USER_END", self.probe)
+        self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', self.probe)
+        self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
+        self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
+
+    def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
+        self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(len(dmac["case_ids"]), 7)
+        self.assertIn("missing record is HANG/RESET", dmac["reset"])
 
 
 if __name__ == "__main__":

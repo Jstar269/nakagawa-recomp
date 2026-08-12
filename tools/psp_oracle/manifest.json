@@ -84,6 +84,35 @@
       }
     },
     {
+      "id": "PSP-DMAC-001",
+      "status": "implemented",
+      "group": "dmac",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["sceDmacMemcpy", "sceDmacTryMemcpy", "thread scheduling", "system-memory allocation"],
+      "case_ids": [
+        "concurrent-memcpy-try",
+        "concurrent-try-try",
+        "concurrent-try-memcpy",
+        "invalid-tail-memcpy-dst",
+        "invalid-tail-memcpy-src",
+        "invalid-tail-try-dst",
+        "invalid-tail-try-src"
+      ],
+      "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, while invalid-tail records prove the valid prefix allocation and rejected tail boundary before reporting return and mutation counts",
+      "issues": [23],
+      "risk": "medium; run concurrency first, then isolate each one-byte invalid-tail case per launch",
+      "reset": "return to PSPLINK after each case; a missing record is HANG/RESET, never PASS",
+      "public_references": [
+        "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.c",
+        "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.expected",
+        "https://github.com/pspdev/pspsdk/blob/314b2083f2e1eaf145fc5de342736336fe1f0148/src/dmac/pspdmac.h",
+        "https://github.com/hrydgard/ppsspp/blob/06d5847da382336dc93a73b5e5adcd23de2f305d/Core/HLE/sceDmac.cpp",
+        "https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/include/common/memory.h"
+      ],
+      "implementation_note": "All five build variants compile warning-free with the pinned public PSPDEV route. No current-session PSP result is recorded: the local PSPLink endpoint was absent, so issue #23 remains hardware-blocked and runtime semantics are unchanged."
+    },
+    {
       "id": "PSP-IO-001",
       "status": "planned",
       "group": "io",
@@ -102,9 +131,9 @@
       "group": "display",
       "source": "fixtures/psp_oracle/probe.c",
       "prx": "nakagawa_psp_oracle.prx",
-      "apis": ["SetFrameBuf", "GetFrameBuf", "Vblank", "DMA", "GE sync"],
+      "apis": ["SetFrameBuf", "GetFrameBuf", "Vblank", "GE sync"],
       "invariant": "validation errors, latch order, and wait/poll states are scalar records",
-      "issues": [23, 24, 44, 64, 83, 87, 89],
+      "issues": [24, 44, 64, 83, 87, 89],
       "risk": "medium; no retail framebuffer or capture is retained",
       "reset": "return to PSPLINK after each display case",
       "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
