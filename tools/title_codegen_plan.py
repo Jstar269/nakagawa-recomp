@@ -12,6 +12,7 @@ written back to the manifest.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -25,9 +26,35 @@ MIN_FUNCS_PER_CHUNK = 1
 MAX_FUNCS_PER_CHUNK = 100_000
 MANAGER_PLAN_VERSION = 1
 
+#: Manifest fields that carry no operational meaning and are therefore excluded
+#: from the protected digest, so a prose edit never invalidates a build.
+NON_OPERATIVE_FIELDS = frozenset({"notes"})
+
 
 class TitleCodegenPlanError(ValueError):
     """Fail-closed plan construction error."""
+
+
+def compute_protected_digest(manifest: dict[str, Any]) -> str:
+    """Return the deterministic digest of a manifest's operational semantics.
+
+    The digest is taken over the *validated, canonically serialized* manifest with
+    the free-text ``notes`` removed. Because validation normalizes ordering, numeric
+    types, and optional fields before serialization, the digest depends only on
+    meaning: key order, whitespace, and line endings in the source file cannot move
+    it, while any operative mutation does. Validation also rejects unknown fields
+    outright, so nothing operative can slip past the digest unnoticed. Text is
+    compared by its exact UTF-8 bytes (no Unicode re-composition), so two spellings
+    that merely *look* alike are treated as different contracts rather than equal.
+    """
+    normalized = title_manifest.validate_manifest(manifest)
+    protected = {
+        key: value for key, value in normalized.items() if key not in NON_OPERATIVE_FIELDS
+    }
+    rendered = json.dumps(
+        protected, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def _path_text(value: Path, label: str) -> str:
@@ -273,6 +300,7 @@ def build_manager_plan(
     return {
         "plan_version": MANAGER_PLAN_VERSION,
         "plan_kind": "title-manager-build",
+        "protected_digest": compute_protected_digest(normalized),
         "title_manifest_id": normalized["id"],
         "title_kind": normalized["kind"],
         "game_name": game_name,
@@ -316,9 +344,9 @@ def canonical_json(value: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("--game-name", required=True)
-    parser.add_argument("--game-elf", required=True, type=Path)
-    parser.add_argument("--build-dir", required=True, type=Path)
+    parser.add_argument("--game-name")
+    parser.add_argument("--game-elf", type=Path)
+    parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--module-dir", type=Path)
     parser.add_argument("--psp-header", type=Path)
     parser.add_argument(
@@ -331,12 +359,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="emit the bounded manager/build configuration instead of command vectors",
     )
+    parser.add_argument(
+        "--print-protected-digest",
+        action="store_true",
+        help="print the manifest's protected-semantics digest and exit (no plan is emitted)",
+    )
     parser.add_argument("--include-optional-module", action="append", default=[])
     parser.add_argument("--funcs-per-chunk", type=int, default=2000)
     parser.add_argument("--python-command", default="python")
     args = parser.parse_args(argv)
     try:
         manifest = title_manifest.load_manifest(args.manifest)
+        if args.print_protected_digest:
+            print(compute_protected_digest(manifest))
+            return 0
+        missing = [
+            flag
+            for flag, value in (
+                ("--game-name", args.game_name),
+                ("--game-elf", args.game_elf),
+                ("--build-dir", args.build_dir),
+            )
+            if not value
+        ]
+        if missing:
+            parser.error(f"the following arguments are required: {', '.join(missing)}")
         plan_builder = build_manager_plan if args.manager_plan else build_plan
         plan = plan_builder(
             manifest,

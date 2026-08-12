@@ -8,8 +8,53 @@ inputs, or modify the manifest.
 With `--manager-plan`, the same validated configuration produces a bounded,
 versioned manager/build contract. `hst_manager.ps1` consumes that contract only
 when `-TitleManifest` is supplied; the legacy no-manifest path remains unchanged.
-The manager contract contains title semantics and private-binding requirements,
-not absolute private paths or command strings.
+The manager contract contains title semantics, a protected-contract digest, and
+private-binding requirements, not absolute private paths or command strings.
+
+## Ownership
+
+There is one owner for every title-derived value:
+
+```text
+title manifest  ->  title_manifest.validate_manifest  ->  validated manifest
+                ->  title_codegen_plan.build_manager_plan  ->  canonical plan
+                ->  title_manager_plan.ps1  ->  Make variables + analyzer seam
+                ->  codegen.py / analyze.py
+```
+
+The planner is the only place a manifest becomes build configuration. PowerShell
+adapts that plan to a process invocation and re-derives nothing of its own: it
+checks that each build-facing projection (`make.*`, `environment.*`) follows from
+the plan's own semantic fields, then pins the single title the HST manager
+orchestrates. Make consumes explicit values and contributes no title-specific
+default beyond the direct-build HST bindings at the top of the `Makefile`.
+
+Executable spans follow the same rule. `analyze.py` has no built-in span: an extra
+executable span is title configuration and reaches the analyzer only as an explicit
+argument. The environment variable `HST_EXTRA_SPANS` is read at CLI entry points
+only, and only for the primary image, so a rebased extra guest module can never
+inherit another module's span. Make passes the span as `--extra-span=LO,HI` rather
+than a recipe environment prefix, which keeps the binding working when Make falls
+back to `cmd.exe`. If both an option and an environment value are present and they
+disagree, the run fails closed.
+
+## Protected digest
+
+`compute_protected_digest()` hashes the *validated, canonically serialized*
+manifest with the free-text `notes` field removed, and the result travels in the
+plan as `protected_digest`. Because validation normalizes ordering, numeric types,
+and optional fields first, the digest depends on meaning alone: key order,
+indentation, and line endings cannot move it, a notes-only edit cannot move it, and
+any operative change does. Unknown fields are rejected by validation rather than
+excluded from the digest, so nothing operative can travel unprotected.
+
+The manager re-derives the digest from the manifest on disk immediately before
+spawning Make and refuses to build when it no longer matches the plan, closing the
+window between planning and execution. Print it directly with:
+
+```powershell
+python tools/title_codegen_plan.py assets/titles/synthetic.json --print-protected-digest
+```
 
 Private workspace bindings remain explicit:
 
@@ -40,6 +85,14 @@ Current fail-closed limits are deliberate:
 
 The manager adapter is deliberately fail-closed: this slice accepts only the
 checked-in HST manifest for HST manager actions, and it rejects unsupported plan
-versions, conflicting protected values, missing required private bindings, and
-unsupported span/profile configurations before Make runs. This does not make the
-runtime general-purpose or prove a private HST build or route.
+versions, unknown plan fields, malformed digests, projections that disagree with
+the plan's semantics, a manifest that changed after planning, missing required
+private bindings, and unsupported span/profile configurations before Make runs.
+This does not make the runtime general-purpose or prove a private HST build or
+route.
+
+`assets/titles/pspdev-phase5.json` is a second, materially different source-owned
+fixture (PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) driven through the same
+planner; see `tools/test_title_pspdev_phase5.py`. The adapter's own contract is
+covered by `tools/test_title_manager_adapter.py` and the digest by
+`tools/test_title_protected_digest.py`, all using public manifests only.

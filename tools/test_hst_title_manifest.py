@@ -59,16 +59,22 @@ class HstTitleManifestTests(unittest.TestCase):
             makefile,
         )
 
-    def test_extra_executable_span_matches_analyzer(self) -> None:
-        analyzer = (ROOT / "tools" / "analyze.py").read_text(encoding="utf-8")
+    def test_extra_executable_span_is_bound_explicitly_by_the_makefile(self) -> None:
+        # The analyzer applies no title-specific default span, so the direct-Make path
+        # binds the HST span explicitly and that binding must agree with the manifest,
+        # which is the source of truth. Otherwise a manager build and a direct Make
+        # build would analyze different address ranges.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         match = re.search(
-            r'DEFAULT_HST_EXTRA_SPANS\s*=\s*"(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)"',
-            analyzer,
+            r"HST_EXTRA_SPANS\s*\?=\s*(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)",
+            makefile,
         )
         self.assertIsNotNone(match)
         assert match is not None
         expected = [{"start": int(match.group(1), 0), "end": int(match.group(2), 0)}]
         self.assertEqual(self.manifest["executable"]["extra_executable_spans"], expected)
+        analyzer = (ROOT / "tools" / "analyze.py").read_text(encoding="utf-8")
+        self.assertNotIn("DEFAULT_HST_EXTRA_SPANS", analyzer)
 
     def test_zero_base_and_entry_match_manager_contract(self) -> None:
         manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
