@@ -19,6 +19,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "hst_manager.ps1"
 MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
+SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 VULKAN_HELPER = ROOT / "tools" / "vulkan_sdk.ps1"
 
@@ -239,6 +240,7 @@ class HstManagerManifestTests(unittest.TestCase):
     SPAN = "0x00303194,0x00306e24"
 
     def test_manifest_span_is_scoped_and_never_leaks_into_a_later_legacy_run(self) -> None:
+        self.require_hst_manifest()
         proc = self.run_in_one_shell(
             "\n".join(
                 [
@@ -261,6 +263,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertIsNone(legacy_run["hst_extra_spans"])
 
     def test_preexisting_caller_span_is_restored_exactly_after_the_manager_exits(self) -> None:
+        self.require_hst_manifest()
         caller = "0x00000010,0x00000020"
         proc = self.run_in_one_shell(
             "\n".join(
@@ -320,7 +323,14 @@ class HstManagerManifestTests(unittest.TestCase):
     def assert_no_make(self) -> None:
         self.assertEqual(self.records(), [])
 
+    def require_hst_manifest(self) -> None:
+        if not MANIFEST.is_file():
+            self.skipTest(
+                "private HST title manifest is unavailable in the sanitized public tree"
+            )
+
     def test_buildfull_legacy_and_manifest_modes_have_equal_effective_hst_values(self) -> None:
+        self.require_hst_manifest()
         legacy = self.run_manager("BuildFull")
         self.assert_manager_success(legacy)
         manifest = self.run_manager("BuildFull", MANIFEST)
@@ -363,6 +373,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertIn("Using opt-in title manifest", manifest.stdout)
 
     def test_fast_and_test_routes_preserve_legacy_action_and_effective_values(self) -> None:
+        self.require_hst_manifest()
         # `all` reaches analyze.py and receives the scoped span; `selftest` does not run the
         # analyzer, so manifest mode leaves it exactly as legacy mode does - unset.
         for action, target, spans in (
@@ -386,6 +397,7 @@ class HstManagerManifestTests(unittest.TestCase):
                 self.assertEqual(second["hst_extra_spans"], spans)
 
     def test_fuzz_receives_the_scoped_span_because_it_runs_the_pipeline(self) -> None:
+        self.require_hst_manifest()
         # `make vfpu_fuzz` invokes `$(MAKE) pipeline`, so it does reach analyze.py.
         legacy = self.run_manager("Fuzz")
         self.assert_manager_success(legacy)
@@ -404,6 +416,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assert_no_make()
 
     def test_operational_overrides_win_without_mutating_manifest(self) -> None:
+        self.require_hst_manifest()
         before = MANIFEST.read_bytes()
         proc = self.run_manager(
             "BuildFast",
@@ -420,6 +433,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertEqual(MANIFEST.read_bytes(), before)
 
     def test_manifest_validation_and_private_binding_fail_before_make(self) -> None:
+        self.require_hst_manifest()
         cases = [
             ("missing.json", None),
             ("malformed.json", "malformed"),
@@ -469,13 +483,11 @@ class HstManagerManifestTests(unittest.TestCase):
             [
                 sys.executable,
                 str(ROOT / "tools" / "title_codegen_plan.py"),
-                str(MANIFEST),
+                str(SYNTHETIC_MANIFEST),
                 "--manager-plan",
-                "--game-name=hst",
-                "--game-elf=place_game_here/EBOOT.elf",
-                "--build-dir=build/hst",
-                "--module-dir=place_game_here/EXTRACTED/decrypted",
-                "--psp-header=place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
+                "--game-name=synthetic",
+                "--game-elf=fixtures/synthetic.elf",
+                "--build-dir=build/synthetic",
             ],
             cwd=ROOT,
             capture_output=True,
@@ -517,8 +529,8 @@ class HstManagerManifestTests(unittest.TestCase):
         failing.write_text("@echo planner failed 1>&2\r\n@exit /b 7\r\n", encoding="ascii")
         command = (
             f". '{HELPER}'; "
-            f"try {{ Invoke-TitleManagerPlan -PlannerScript 'missing.py' -ManifestPath '{MANIFEST}' "
-            f"-GameName hst -GameElf eboot.elf -BuildDir build/hst -ModuleDir modules "
+            f"try {{ Invoke-TitleManagerPlan -PlannerScript 'missing.py' -ManifestPath '{SYNTHETIC_MANIFEST}' "
+            f"-GameName synthetic -GameElf fixtures/synthetic.elf -BuildDir build/synthetic -ModuleDir modules "
             f"-PspHeader header.bin -FuncsPerChunk 2000 -PythonCommand '{failing}'; exit 1 }} "
             "catch { exit 0 }"
         )

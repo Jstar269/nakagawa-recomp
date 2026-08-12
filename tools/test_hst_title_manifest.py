@@ -15,8 +15,15 @@ import title_manifest
 
 
 class HstTitleManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
+        if not cls.path.is_file():
+            raise unittest.SkipTest(
+                "private HST title manifest is unavailable in the sanitized public tree"
+            )
+
     def setUp(self) -> None:
-        self.path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
         self.manifest = title_manifest.validate_manifest(title_manifest.load_manifest(self.path))
 
     def test_public_hst_identity_and_zero_based_executable_policy(self) -> None:
