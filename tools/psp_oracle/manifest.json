@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "scope": "source-owned synthetic PSP probes only",
+  "fixture_root": "fixtures/psp_oracle",
+  "result_protocol": "tools/psp_oracle/protocol.py",
+  "tests": [
+    {
+      "id": "PSP-SMOKE-001",
+      "status": "implemented",
+      "group": "transport",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["module_start", "sceKernelExitGame"],
+      "invariant": "sum(1..100)=5050 and one PASS scalar record is emitted",
+      "issues": [35, 76, 181],
+      "risk": "low; scalar output only",
+      "reset": "return to PSPLINK after the process exits",
+      "implementation_note": "Fresh PSP-3001/6.61-ARK PSPLINK capture at source commit 570600e9dcbe7ecc8693974647accea5a9b3bfb5 compared the source-owned PRX SHA-256 e5ff23ff5ad3312072386aa7fcefaa079719b11c8a8b38e439b6651330b26833 with the generated-code Nakagawa stream. The guest symbol nakagawa_psp_oracle_sum_u32 at 0x000003cc came from ELF SHA-256 fce91db26f0889696e1a00d9c529ad339d005bf5d605d341cb69ea3f4fb9ed96; the running host smoke executable that emitted the record self-reported SHA-256 655f57d589d96412e07b0a58109816d7276cf619dbaed640c1b7082fbaf057f9. Both records returned result=0x000013ba and out0=0x00000001; report oracle/hardware-results/psp-smoke-570600e-report.json is MATCH with acceptance_eligible=true and no blockers. The generated guest body is entered through the existing production selftest path; the adapter does not reimplement the sum. Captures from the removed host-only emitter remain invalid."
+    },
+    {
+      "id": "PSP-KERNEL-001",
+      "status": "implemented",
+      "group": "kernel",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["callback registration", "wait/cancel", "thread lifecycle"],
+      "case_ids": ["callback-notify-check", "wait-cancel", "thread-lifecycle"],
+      "diagnostic_case_ids": ["thread-delete-lifecycle", "thread-delete-followup", "thread-delete-explicit", "thread-delete-boundary"],
+      "invariant": "return codes, wake ordering, and cancellation are deterministic",
+      "issues": [1, 2, 13, 14, 16, 26, 61, 74, 79, 84, 88, 92, 93, 116],
+      "risk": "medium; isolate one case per launch",
+      "reset": "reset to PSPLINK on timeout; power-cycle only by human decision",
+      "implementation_note": "Fresh exact-head PSP-3001/6.61-ARK PSPLINK session at source commit 6a8bc30796686e5194e369c35e80870f988b36a8 captured all three required cases with acceptance_eligible=true. The Nakagawa selftest artifact was SHA-256 7d7efe835e5fbe36185fea48fc031d5b3ce95a57d7805e440afebf766171d084 for each run. callback-notify-check PRX SHA-256 b9b3e577175b742f8bf2ae9c529ee974d6870a15b690fd65ee698244ebc6dfc8 -> MATCH (out0=0x000001ff, out1=0x00011234, out2=0x00000000, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/callback-notify-check.report.json); wait-cancel PRX SHA-256 df6cf7ff669ce5aeed8ba7d14b2603b3b84b5fd42ad778b5ddebd2c340450794 -> MATCH (out0=0x0000001f, out1=0x00000000, out2=0x800201ad, out3=0x800201ad; report oracle/hardware-results/psp-kernel-current-6a8bc30/wait-cancel.report.json); thread-lifecycle PRX SHA-256 42cab43532c095ed97994b67d9283e4af89bbd66002683f71de7cb2da3747bfc -> MATCH (out0=0x0000000f, out1=0x00420042, out2=0x80020198, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-lifecycle.report.json). The raw error scalars are compared, not only sign bits. An additional diagnostic thread-delete-lifecycle PRX SHA-256 82d6ae3f01bdb088d11548bc7dff3a0be5bb1615eb8a8d7418bb2a5785759a35 is acceptance-eligible but DIFFERENCE (Nakagawa PASS out0=0x00001fff versus PSP FAIL out0=0x00001fdf; out1..out8 otherwise match; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-delete-lifecycle.report.json), so the broader delete issue remains open. The source-owned thread-delete-followup is now synchronized and measured: at source commit daf9868a62b612749e2e0a92d7058f0f02c186d5, PSP-3001/6.61-ARK PRX SHA-256 375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220 and the production-HLE stream MATCH on out0=0x000fffff, out1=0x800201ac, out2=0x800200d2, out4=0x10, out7=0x800200d2, out8=0x800201ac, out9=0x77, out11=0x10, out14=0x77. The explicit sibling at source commit 454e530658998fb23ba2c1912c7fe26afaefd8ff also MATCHes after canonicalization: PRX SHA-256 b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef, explicit error out2=out7=0x800200d2, explicit positive out9=out14=0x78, and out0=0x003fffff. The raw fixture metadata remains placeholder until the current-session model/firmware is explicitly confirmed; canonicalized comparator eligibility is recorded separately in explicit_measurement. This probe-group acceptance does not close the routed issues until their individual criteria are met.",
+      "followup_measurement": {
+        "source_commit": "daf9868a62b612749e2e0a92d7058f0f02c186d5",
+        "model": "PSP-3001",
+        "firmware": "6.61-ARK",
+        "prx_sha256": "375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220",
+        "classification": "MATCH",
+        "acceptance_eligible": false,
+        "acceptance_blockers": ["current-session model/firmware metadata was not emitted by the fixture"],
+        "raw": "out0=0x000fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000077 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000077"
+      },
+      "explicit_measurement": {
+        "source_commit": "454e530658998fb23ba2c1912c7fe26afaefd8ff",
+        "model": "PSP-3001",
+        "firmware": "6.61-ARK",
+        "fixture": "nakagawa-psp-oracle-v1",
+        "prx_sha256": "b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef",
+        "initial_probe": {
+          "prx_sha256": "8276e83801f88d438c9cb237d42481901d3397c7b2f738a055219e6f3c04de7a",
+          "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-precaseb.stdout.txt",
+          "status": "FAIL fixture expectation only; raw values already showed Case B"
+        },
+        "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-synchronized.stdout.txt",
+        "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-nakagawa.stdout.txt",
+        "comparator": "build/audit/psplink-followup-explicit-454e530.json",
+        "raw_fixture_metadata_placeholder": true,
+        "classification": "MATCH",
+        "acceptance_eligible": true,
+        "acceptance_blockers": [],
+        "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000078 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000078"
+      },
+      "boundary_measurement": {
+        "source_commit": "88cc5ea709f65bf4e219fa56e51c704181070167",
+        "model": "PSP-3001",
+        "firmware": "6.61-ARK",
+        "fixture": "nakagawa-psp-oracle-v1",
+        "prx_sha256": "826a97e79c0770c6aba30077dd9b4a2927c88cf45cac622a22088e5de78a31d5",
+        "initial_probe": {
+          "prx_sha256": "4afe7b4b8f90de81e10a74d5231a474064217f84e45a29c1e2ae8d809fc1cf52",
+          "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized.stdout.txt",
+          "status": "FAIL under the old -17 propagation expectation; outer/exit scalars already showed 0x800200d2; diagnostic argument field was corrected in the final rerun"
+        },
+        "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized-corrected.stdout.txt",
+        "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-nakagawa-corrected.stdout.txt",
+        "comparator": "build/audit/psplink-boundary-88cc5ea.json",
+        "raw_fixture_metadata_placeholder": true,
+        "classification": "MATCH",
+        "acceptance_eligible": true,
+        "acceptance_blockers": [],
+        "semantic_boundary": "signed-negative non-delete exit status -> SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT; measured 0x800201a8, 0x800201ac, and -17; positive controls remain unchanged",
+        "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x800200d2 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x800200d2 out15=0x800201a8 out16=0xffffffef"
+      }
+    },
+    {
+      "id": "PSP-IO-001",
+      "status": "planned",
+      "group": "io",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["open", "seek", "async I/O", "devctl", "filesystem mutation"],
+      "invariant": "typed descriptors, offsets, callbacks, and errors are recorded without payloads",
+      "issues": [55, 68, 72, 91],
+      "risk": "medium; use a disposable Memory Stick path",
+      "reset": "close descriptors, reset to PSPLINK, and remove only the probe-owned files",
+      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+    },
+    {
+      "id": "PSP-DISPLAY-001",
+      "status": "planned",
+      "group": "display",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["SetFrameBuf", "GetFrameBuf", "Vblank", "DMA", "GE sync"],
+      "invariant": "validation errors, latch order, and wait/poll states are scalar records",
+      "issues": [23, 24, 44, 64, 83, 87, 89],
+      "risk": "medium; no retail framebuffer or capture is retained",
+      "reset": "return to PSPLINK after each display case",
+      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+    },
+    {
+      "id": "PSP-SYSTEM-001",
+      "status": "planned",
+      "group": "system",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["controller", "RTC", "system parameters", "power", "registry"],
+      "invariant": "model/firmware metadata accompanies each scalar result",
+      "issues": [34, 62, 77, 78, 80, 86, 94],
+      "risk": "low to medium; avoid timing claims until clock is pinned",
+      "reset": "return to PSPLINK; do not alter persistent settings",
+      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+    },
+    {
+      "id": "PSP-AUDIO-001",
+      "status": "planned",
+      "group": "audio",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["audio channel", "SAS", "ATRAC query"],
+      "invariant": "scalar configuration/query state matches the local comparison; no acoustic claim",
+      "issues": [38, 69, 70, 75],
+      "risk": "medium; scalar probes precede any audio recording",
+      "reset": "stop channels and return to PSPLINK",
+      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+    }
+  ]
+}

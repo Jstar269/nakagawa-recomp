@@ -1,0 +1,516 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "nakagawa-recomp",
+  "description": "Reproducible release and asset provenance manifest for Nakagawa Recomp public releases",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Three remain open and each closes only on qualified legal review, not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices; (3) PGD/amctrl distribution and anti-circumvention treatment. See NOTICE.md.",
+  "reference_environment": {
+    "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
+    "make": "GNU Make >= 4.4",
+    "python": "Python 3.14.x",
+    "vulkan_sdk": "Vulkan SDK 1.3.x",
+    "glslc": "glslc from Vulkan SDK",
+    "sdl": "SDL3 >= 3.0.0"
+  },
+  "lockfiles": {
+    "npm": "interface/package-lock.json",
+    "python": "tools/requirements-lock.txt"
+  },
+  "toolchain_locks": {
+    "compiler": "gcc-14.2.0-ucrt64",
+    "make": "make-4.4.1",
+    "python": "python-3.14.0",
+    "sdl3": "sdl3-3.2.0",
+    "vulkan_sdk": "vulkan-sdk-1.3.296.0"
+  },
+  "release_locks": {
+    "status": "REPRODUCIBLE_MANIFEST_VERIFIED",
+    "comment": "Reproducible release SBOM and dependency locks verified via tools/generate_sbom.py and tools/verify_sbom.py."
+  },
+  "provenance_families": [
+    {
+      "id": "sal063",
+      "name": "sal063 PSP Recompilation Project",
+      "license": "GPL-2.0-or-later",
+      "origin": "https://github.com/sal063/PSP-recompilation-project",
+      "revision": "da17b0e1db209206a407d097d132201e516e3855",
+      "notice_path": "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
+      "evidence_path": "assets/public_provenance_ledger.json",
+      "disposition": "included_with_attribution"
+    },
+    {
+      "id": "ppsspp",
+      "name": "PPSSPP PSP emulator lineage",
+      "license": "GPL-2.0-or-later and component notices",
+      "origin": "https://github.com/hrydgard/ppsspp",
+      "revision": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "notice_path": "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
+      "evidence_path": "assets/public_provenance_ledger.json",
+      "disposition": "included_data_and_attribution; PGF_surface_excluded"
+    },
+    {
+      "id": "pspsdk",
+      "name": "PSPSDK and PSPDEV public ABI",
+      "license": "BSD-3-Clause and per-component",
+      "origin": "https://github.com/pspdev/pspsdk",
+      "revision": "see assets/upstream/pspdev.lock.json",
+      "notice_path": "THIRD_PARTY_LICENSES/PSPSDK.txt",
+      "evidence_path": "assets/upstream/pspdev.evidence.json",
+      "disposition": "included_notice_and_synthetic_fixtures"
+    },
+    {
+      "id": "ffmpeg-atrac3p",
+      "name": "FFmpeg n4.4 ATRAC3+ subset",
+      "license": "LGPL-2.1-or-later",
+      "origin": "https://github.com/FFmpeg/FFmpeg",
+      "revision": "n4.4 / dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1",
+      "notice_path": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
+      "evidence_path": "src/rt/atrac3p/PROVENANCE.md",
+      "disposition": "included_vendored_subset"
+    },
+    {
+      "id": "sdl3",
+      "name": "SDL3",
+      "license": "Zlib",
+      "origin": "https://github.com/libsdl-org/SDL",
+      "revision": "reference_environment sdl3-3.2.0",
+      "notice_path": "NOTICE.md",
+      "evidence_path": "assets/release_manifest.json",
+      "disposition": "external_optional_dependency; audio_backend_excluded"
+    },
+    {
+      "id": "vulkan",
+      "name": "Vulkan loader and headers",
+      "license": "Apache-2.0",
+      "origin": "https://github.com/KhronosGroup/Vulkan-Loader",
+      "revision": "reference_environment vulkan-sdk-1.3.296.0",
+      "notice_path": "NOTICE.md",
+      "evidence_path": "assets/release_manifest.json",
+      "disposition": "external_system_dependency"
+    },
+    {
+      "id": "shadcn-ui",
+      "name": "shadcn/ui dashboard primitives",
+      "license": "MIT",
+      "origin": "https://github.com/shadcn-ui/ui",
+      "revision": "see interface/package-lock.json",
+      "notice_path": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
+      "evidence_path": "interface/components.json",
+      "disposition": "included_dashboard_notice"
+    },
+    {
+      "id": "vfpu",
+      "name": "PPSSPP-origin VFPU lookup tables",
+      "license": "GPL-2.0-or-later and upstream data notices",
+      "origin": "https://github.com/hrydgard/ppsspp",
+      "revision": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "notice_path": "assets/vfpu/PROVENANCE.json",
+      "evidence_path": "assets/vfpu/PROVENANCE.json",
+      "disposition": "included_byte_verified_data"
+    }
+  ],
+  "excluded_paths": [
+    {"path": "assets/titles/hst-ucus98701.json", "comment": "Title-specific manifest excluded by the public profile."},
+    {"path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md", "comment": "Private title-run acceptance evidence excluded from public scope."},
+    {"path": "docs/COVERAGE_LEDGER.md", "comment": "Internal coverage/audit snapshot excluded from public scope."},
+    {"path": "docs/DOCUMENTATION_AUDIT.md", "comment": "Internal documentation/publication audit work product excluded from public scope."},
+    {"path": "docs/DUAL_REPO_SYNC.md", "comment": "Private repository topology and synchronization procedure excluded from public scope."},
+    {"path": "docs/GHIDRA.md", "comment": "Title-specific reverse-engineering workflow excluded pending a generic rewrite."},
+    {"path": "docs/HLE_CALL_CENSUS_2026-08-05.md", "comment": "Private title-run census excluded from public scope."},
+    {"path": "docs/INVESTIGATION_CHECKPOINT_2026-07-18.md", "comment": "Private retail investigation checkpoint excluded from public scope."},
+    {"path": "docs/KEY_HISTORY_SCRUB.md", "comment": "Private archive sanitation runbook excluded from public scope."},
+    {"path": "docs/LEGAL_REWRITE_ASSESSMENT.md", "comment": "Counsel-oriented legal-risk work product excluded from public scope."},
+    {"path": "docs/NID_INTEGRITY_AUDIT_2026-08-06.md", "comment": "Dated HST/NID investigation record excluded from public scope."},
+    {"path": "docs/NEXT_SESSION.md", "comment": "Private operational continuation notes excluded from public scope."},
+    {"path": "docs/PGD_AMCTRL_REVIEW_PACKET.md", "comment": "Qualified-review packet for the excluded PGD/amctrl surface."},
+    {"path": "docs/PGD_KEYS.md", "comment": "Local PSP constants/key operating instructions excluded from public scope."},
+    {"path": "docs/PGF_LICENSE_REVIEW_PACKET.md", "comment": "Qualified-review packet for the excluded PGF/font surface."},
+    {"path": "docs/PERFORMANCE.md", "comment": "Private title-run performance/capture evidence excluded from public scope."},
+    {"path": "docs/PHASE5_HARDWARE_EVIDENCE.md", "comment": "Dated development-lane hardware acceptance record excluded from public scope."},
+    {"path": "docs/PSP_HARDWARE_FINDING_waitthreadend_20260805.md", "comment": "Dated hardware-finding work product excluded from public scope."},
+    {"path": "docs/PSP_HARDWARE_ORACLE.md", "comment": "Historical hardware-oracle operations record excluded from public scope."},
+    {"path": "docs/PSP_ISSUE_MATRIX.json", "comment": "Volatile historical issue snapshot with private-route classifications excluded from public scope."},
+    {"path": "docs/PUBLISH_VS_EXCLUDE_MATRIX.md", "comment": "Internal disposition matrix excluded; machine policy is authoritative."},
+    {"path": "docs/PUBLICATION_LANE_VERIFICATION_2026-08-06.md", "comment": "Private publication-lane verification record excluded from public scope."},
+    {"path": "docs/RETAINED_BRANCH_AUDIT_2026-08-04.md", "comment": "Internal branch/topology audit excluded from public scope."},
+    {"path": "docs/SAS_NID_SIGNATURES.md", "comment": "HST route-census/audio disposition table excluded from public scope."},
+    {"path": "docs/STATUS_HISTORY.md", "comment": "Private/game-derived engineering history excluded from public scope."},
+    {"path": "docs/TEST_DISCOVERY.md", "comment": "Dated test-discovery report with private-input-dependent counts excluded from public scope."},
+    {"path": "docs/TEST_MATRIX.json", "comment": "Generated test matrix with private asset/key skip conditions excluded from public scope."},
+    {"path": "docs/TEST_SHAPE_CLASSIFICATION.md", "comment": "Internal source-shape triage report excluded from public scope."},
+    {"path": "docs/TEST_SKIPS.md", "comment": "Private-input/key skip inventory excluded from public scope."},
+    {"path": "docs/ROADMAP.md", "comment": "Historical HST-specific strategy/topology roadmap excluded from public scope."},
+    {"path": "docs/VFPU_ORACLE_BASELINE_2026-08-05.md", "comment": "Dated VFPU oracle/hardware-result narrative excluded from public scope."},
+    {"path": "docs/issue-139-face-resource-semantics.md", "comment": "Title-specific retail-image investigation excluded from public scope."},
+    {"path": "docs/issue-51-entry-semantics.md", "comment": "Title-specific continuation investigation excluded from public scope."},
+    {"path": "docs/provenance/IMPLEMENTATION_PROVENANCE.json", "comment": "Detailed development provenance ledger contains private investigation context and links to excluded review work products; the public candidate carries the path-hashed public ledger instead."},
+    {"path": "docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md", "comment": "PGD/amctrl qualified-review source archaeology excluded from public scope."},
+    {"path": "docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md", "comment": "PGF/font qualified-review source archaeology excluded from public scope."},
+    {"path": "docs/provenance/SAL063_RETENTION_2026-08-06.md", "comment": "Internal sal063 retention worksheet excluded from public scope."}
+  ],
+  "components": [
+    {
+      "id": "sdl3-runtime",
+      "name": "SDL3 Runtime",
+      "type": "library",
+      "relationship": "DEPENDS_ON",
+      "presence": "optional_local_or_external",
+      "source_path": "SDL3.dll",
+      "upstream_origin": "https://github.com/libsdl-org/SDL",
+      "license": "Zlib",
+      "notice_path": "NOTICE.md",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": true,
+      "comment": "External/optional local runtime library. Reference SDL >= 3.0.0. Staged dist package lock remains unasserted."
+    },
+    {
+      "id": "pgf-font-jpn0",
+      "name": "PSP PGF Font jpn0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/jpn0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "e4aa9e517",
+      "conversion_script": "ttf2pgfJ",
+      "source_font_candidate": "ume-pgs5.ttf (Ume Font)",
+      "license": "Unresolved",
+      "notice_path": "NOTICE.md",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "17304b24f6175f7a221f167425b307e761ccb6bb",
+      "hashes": {
+        "sha256": "d363cec75fecfafd1511e370e48c748c30199c694b83a4026be34d799b192917"
+      }
+    },
+    {
+      "id": "pgf-font-kr0",
+      "name": "PSP PGF Font kr0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/kr0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "dc34bea8d",
+      "license": "Unresolved",
+      "notice_path": "NOTICE.md",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "9f8cce0390c827fa2195a5dc3e9885a997db6488",
+      "hashes": {
+        "sha256": "6b0b3a8be9e709d6af02223d077675e1530f9879f42656377a9d8d42e2614333"
+      }
+    },
+    {
+      "id": "pgf-font-ltn0",
+      "name": "PSP PGF Font ltn0.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/ltn0.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "a384b6224",
+      "license": "Unresolved",
+      "notice_path": "NOTICE.md",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "1f3d907ac717270a005c2e8a00e05c385d718d22",
+      "hashes": {
+        "sha256": "1184f16bc89bad1fea49093806784470281af54f279b57ef0378ce33e6603870"
+      }
+    },
+    {
+      "id": "pgf-font-ltn8",
+      "name": "PSP PGF Font ltn8.pgf",
+      "type": "asset",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "font/ltn8.pgf",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "historical_replacement_commit": "0c243ee13909a1256de4be2b9d374aa6f7b46d38",
+      "first_upstream_commit": "da40ed6e8",
+      "license": "Unresolved",
+      "notice_path": "NOTICE.md",
+      "disposition": "optional_excluded_if_unverified",
+      "public_scope_included": false,
+      "optional": true,
+      "git_blob": "a58450c7675c6f1b4e0840cef5f2dd9787eed68c",
+      "hashes": {
+        "sha256": "c8620bdd244585bbf993a82903168f6ec8464d4cbcad238d4e0ca5623c1ba3c1"
+      }
+    },
+    {
+      "id": "pgf-runtime-private-backend",
+      "name": "Lineage-sensitive PGF parser and rasterizer",
+      "type": "library",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "src/rt/pgf.c",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "0049fefc0278ace82b43f803f45e50e14b69041d6ec123cce78e00d5030205b6"
+      },
+      "comment": "Private development backend. The public-safe profile uses pgf_unavailable.c and does not redistribute this file."
+    },
+    {
+      "id": "pgd-amctrl-private-backend",
+      "name": "PGD/amctrl interoperability implementation",
+      "type": "library",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "tracked_file",
+      "source_path": "src/rt/pgd.c",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "95d61eeaa69ffbf2690eafafc369a68036c01b58f4c072e42e94b855caa4270a"
+      },
+      "comment": "Private development backend. The public-safe profile uses pgd_unavailable.c and does not redistribute this file."
+    },
+    {
+      "id": "vfpu-lut-tables",
+      "name": "VFPU LUT Data Tables Collection",
+      "type": "data_collection",
+      "relationship": "DEPENDS_ON",
+      "presence": "tracked_collection",
+      "provenance_path": "assets/vfpu/PROVENANCE.json",
+      "provenance_directory": "assets/vfpu",
+      "upstream_origin": "https://github.com/hrydgard/ppsspp",
+      "byte_verified_upstream_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+      "license": "GPL-2.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Collection of 15 runtime VFPU lookup tables tracked under assets/vfpu/. Individual file blob IDs recorded in PROVENANCE.json."
+    },
+    {
+      "id": "pspsdk-headers",
+      "name": "PSPSDK Lineage",
+      "type": "source_lineage",
+      "relationship": "OTHER",
+      "presence": "notice_lineage",
+      "upstream_origin": "https://github.com/pspdev/pspsdk",
+      "license": "BSD-3-Clause",
+      "notice_path": "THIRD_PARTY_LICENSES/PSPSDK.txt",
+      "disposition": "SOURCE_LINEAGE",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Incorporated definitions and structure lineage from PSPSDK headers. No binary runtime or build dependency."
+    },
+    {
+      "id": "pgd-amctrl-header",
+      "name": "PGD/amctrl interoperability declarations",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "src/rt/pgd.h",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "d4c343248ca7e16a71d00410a882624b90b9339ac44bc93b6cca310613193355"
+      },
+      "comment": "Declarations for the excluded PGD/amctrl implementation. Excluded with src/rt/pgd.c; the public-safe profile builds pgd_unavailable.c."
+    },
+    {
+      "id": "pgf-runtime-header",
+      "name": "Lineage-sensitive PGF parser/rasterizer declarations",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "src/rt/pgf.h",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "1402ba9bc7a038a6646d506fcaae8c87a921f059619049435e163373b013ac36"
+      },
+      "comment": "Declarations for the excluded PGF implementation. Excluded with src/rt/pgf.c; the public-safe profile builds pgf_unavailable.c."
+    },
+    {
+      "id": "pgd-python-reference",
+      "name": "PGD/amctrl Python reference decryptor",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/pgd_decrypt.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "026353d488f1e8a8ddef08ed8e920b3052306251c30d28af1f13750fe427299a"
+      },
+      "comment": "Python reference implementation from which src/rt/pgd.c was ported. Same unresolved distribution and anti-circumvention questions."
+    },
+    {
+      "id": "pgd-e2e-harness",
+      "name": "PGD end-to-end C harness",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/pgd_e2e_harness.c",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "1d4aeb54108f9ccd16bc88371ea4294ee5beb20194c5b1e3be0949e098f7a34d"
+      },
+      "comment": "Harness that exercises the excluded PGD implementation end to end."
+    },
+    {
+      "id": "pgd-synthetic-test-keys",
+      "name": "PGD synthetic test constants",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/pgd_test_keys.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "078f023c43b4f4fe8f5a9436208f9181e457bdb17f8b6148475a9cd984ba637e"
+      },
+      "comment": "Provably synthetic constants (computed affine byte patterns, not PSP key material). Excluded because it exists only to drive the excluded implementation, not because it carries key material."
+    },
+    {
+      "id": "pgd-test-c-port",
+      "name": "PGD C-port comparison tests",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/test_pgd_c.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "6c6ba54a84a8c12dd4c36574e6117c45c3d88fc66ab1772f88965a82f3f73f04"
+      },
+      "comment": "Tests for the excluded PGD C port."
+    },
+    {
+      "id": "pgd-test-python-reference",
+      "name": "PGD Python reference tests",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/test_pgd_decrypt.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "47f7551a0f8cc13b1db65f4ea45121becc8b6cdec3e10474941875437d80e3ba"
+      },
+      "comment": "Tests for the excluded PGD Python reference."
+    },
+    {
+      "id": "pgd-test-hardening",
+      "name": "PGD hardening tests",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/test_pgd_hardening.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "5369f600d03cf9427891376ec81a1f3fb15fab76d5c1439cf53c2809ed2f89b0"
+      },
+      "comment": "Tests for the excluded PGD implementation."
+    },
+    {
+      "id": "pgd-test-malformed",
+      "name": "PGD malformed-input tests",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "tools/test_pgd_malformed.py",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "hashes": {
+        "sha256": "700b9bc9db8c16ef7125e175d6479b343a4296a5bb1162ce55b5e73c2c11f5e3"
+      },
+      "comment": "Tests for the excluded PGD implementation."
+    },
+    {
+      "id": "audio-backend",
+      "name": "Optional SDL audio backend",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "src/rt/audio.c",
+      "license": "GPL-2.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_public_review",
+      "public_scope_included": false,
+      "optional": true,
+      "comment": "Materially modified sal063-derived backend. Excluded while the optional audio path is reviewed for the first public restoration."
+    },
+    {
+      "id": "iso-vfs",
+      "name": "ISO9660 virtual filesystem backend",
+      "type": "source",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "src/rt/iso.c",
+      "license": "GPL-2.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_public_review",
+      "public_scope_included": false,
+      "optional": true,
+      "comment": "Extended sal063-derived ISO/VFS implementation; excluded pending a separate generic public review."
+    },
+    {
+      "id": "ppsspp-font-evidence",
+      "name": "PPSSPP replacement-font evidence packet",
+      "type": "documentation",
+      "relationship": "OPTIONAL_DEPENDENCY_OF",
+      "presence": "excluded_from_public_profile",
+      "source_path": "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
+      "license": "Unresolved",
+      "notice_path": "NOTICE.md",
+      "disposition": "excluded_pending_qualified_review",
+      "public_scope_included": false,
+      "optional": true,
+      "comment": "Font provenance and redistribution terms remain unresolved; the evidence packet is kept private with the optional binaries."
+    }
+  ]
+}

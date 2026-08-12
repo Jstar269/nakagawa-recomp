@@ -1,0 +1,85 @@
+---
+# .clang-format — HST_Recomp C/C++ style
+# Base: LLVM with project overrides. Every option is explicit.
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+IndentCaseLabels: false
+IndentPPDirectives: None
+NamespaceIndentation: None
+
+# Line width
+ColumnLimit: 120
+
+# Braces
+BreakBeforeBraces: Attach
+
+# Pointers & references (match existing `int *p` convention)
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Spacing
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyBlock: false
+SpacesInContainerLiterals: true
+
+# Single-line control
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Includes — group & sort
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # 1: Project headers (quoted includes)
+  - Regex: '^"'
+    Priority: 1
+  # 2: Platform / system headers
+  - Regex: '^<(windows|winsock|mfapi|mfplay|mfreadwrite|mf|dinput|dxgi|d3d|shlobj|SDL)'
+    Priority: 2
+  # 3: Standard C/C++ headers
+  - Regex: '^<(std|assert|ctype|errno|float|limits|locale|math|setjmp|signal|string|time|wchar|wctype|inttypes|stdbool)'
+    Priority: 3
+  # 4: Everything else (third-party)
+  - Regex: '.*'
+    Priority: 4
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+
+# Wrapping
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakStringLiterals: true
+
+# Penalties
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60
+
+# Misc
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+ReflowComments: true
+SortUsingDeclarations: true
+...

@@ -1,0 +1,81 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// A saved recompiler profile (graphics/perf/limits/controllers/patches + strategy).
+// schemaVersion pins the persisted config schema (see src/lib/recompiler/config-schema.mjs)
+// so readers can report `unsupported-version` instead of guessing on old rows.
+model RecompilerProfile {
+  id            String   @id @default(cuid())
+  name          String
+  configJson    String
+  isDefault     Boolean  @default(false)
+  schemaVersion Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isDefault])
+}
+
+// A snapshot of build pipeline and decompilation progress telemetry.
+model TelemetryRun {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+
+  // Pipeline metrics
+  totalUnits     Int
+  unitsEarned    Int
+  unitsRegressed Int
+  completionPct  Float
+
+  // OpenGrip / Decompilation metrics
+  totalFunctions    Int   @default(0)
+  matchedFunctions  Int   @default(0)
+  totalBytes        Int   @default(0)
+  matchedBytes      Int   @default(0)
+  byteCompletionPct Float @default(0.0)
+
+  // Static Verification metrics
+  svMismatchesCount Int    @default(0)
+  svMismatchesJson  String @default("[]")
+
+  // Fuzzing metrics
+  fuzzTotalTrials  Int    @default(0)
+  fuzzPassedTrials Int    @default(0)
+  fuzzFailedTrials Int    @default(0)
+  fuzzCoveragePct  Float  @default(0.0)
+  fuzzCurveJson    String @default("[]")
+
+  // Visual Regression metrics
+  vrTotalFrames  Int   @default(0)
+  vrPassedFrames Int   @default(0)
+  vrFailedFrames Int   @default(0)
+  vrPassRate     Float @default(0.0)
+
+  // Extra raw JSON / by_phase
+  rawJson String?
+
+  @@index([timestamp])
+}
+
+// A named group of watchpoints and debug bitmask category settings
+model DebugProfile {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  watchpoints   String // JSON string of Watchpoint[]: { start: number, end: number, label: string }
+  debugMask     Int      @default(0) // target environment bitmask (SR_DEBUG)
+  isActive      Boolean  @default(false)
+  schemaVersion Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+}

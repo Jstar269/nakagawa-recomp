@@ -1,0 +1,563 @@
+name: CI
+
+on:
+  # Pull-request events include the draft/ready transitions so a draft gets
+  # cheap feedback and the ready-for-review transition starts substantive gates.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # Feature-branch commits are covered by pull_request.  A normal main push
+  # keeps only the compact smoke gate; workflow changes are the exception and
+  # request the full validation needed to prove the new CI itself.
+  push:
+    branches: [main]
+  # A manual run always executes the complete matrix, including main_smoke:
+  # tools/ci_paths.py forces full validation for workflow_dispatch regardless of
+  # changed paths, and ci_required treats every emitted gate as required. There
+  # is deliberately no input to narrow it -- a knob that cannot actually reduce
+  # the run would be misleading.
+  workflow_dispatch:
+
+concurrency:
+  # A new commit supersedes an in-flight run for the same PR/ref.  This is also
+  # intentionally shared by draft and ready events so stale draft work cannot
+  # consume a runner after the PR advances.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: Classify change
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.paths.outputs.docs_only }}
+      python_tools: ${{ steps.paths.outputs.python_tools }}
+      native_runtime: ${{ steps.paths.outputs.native_runtime }}
+      build_system: ${{ steps.paths.outputs.build_system }}
+      manager_powershell: ${{ steps.paths.outputs.manager_powershell }}
+      title_manifest: ${{ steps.paths.outputs.title_manifest }}
+      dashboard: ${{ steps.paths.outputs.dashboard }}
+      workflow_ci: ${{ steps.paths.outputs.workflow_ci }}
+      dependency_metadata: ${{ steps.paths.outputs.dependency_metadata }}
+      security_publication: ${{ steps.paths.outputs.security_publication }}
+      run_markdown: ${{ steps.paths.outputs.run_markdown }}
+      run_python: ${{ steps.paths.outputs.run_python }}
+      run_native: ${{ steps.paths.outputs.run_native }}
+      run_windows: ${{ steps.paths.outputs.run_windows }}
+      run_dashboard: ${{ steps.paths.outputs.run_dashboard }}
+      run_main_smoke: ${{ steps.paths.outputs.run_main_smoke }}
+      allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
+      draft: ${{ steps.paths.outputs.draft }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: paths
+        shell: bash
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: python tools/ci_paths.py --github-output "$GITHUB_OUTPUT"
+
+  hygiene:
+    name: Hygiene and security
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .pre-commit-config.yaml
+
+      - name: Install pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.0
+
+      - name: Run shared all-files checks
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Scan the current tracked tree with Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The pinned Gitleaks pre-commit hook scans the staged diff. Build an
+          # empty-index diff so this CI step covers every tracked file in the
+          # current revision rather than only files changed by this PR.
+          git read-tree --empty
+          git add -A
+          trap 'git reset --hard HEAD >/dev/null 2>&1 || true' EXIT
+          pre-commit run gitleaks --all-files --show-diff-on-failure
+
+  markdown:
+    name: Markdown validation
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Lint repository Markdown
+        run: npx --yes markdownlint-cli2@0.23.1
+
+  python_tools:
+    name: Python tooling gates
+    runs-on: ubuntu-24.04
+    needs: [classify, hygiene]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_python == 'true' }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Python tooling dependencies
+        # Install the authoritative project contract, including compiledb and
+        # any other declared tooling dependencies used by the suite.
+        run: python -m pip install --disable-pip-version-check .
+
+      # Ruff is deliberately NOT installed or invoked here. The shared all-files
+      # pre-commit hook in `hygiene` already runs it over every tools/*.py file,
+      # from the version pinned in .pre-commit-config.yaml, so that pin stays the
+      # single source of truth. A second pip-pinned copy here would silently
+      # drift -- it was pinned at 0.15.21 while the hook moved to 0.16.0.
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tools -p "test_*.py" -v
+
+  native_tools:
+    name: Native and translation gates
+    runs-on: ubuntu-24.04
+    needs: [classify, hygiene]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_native == 'true' }}
+    timeout-minutes: 25
+    env:
+      SR_DISPATCH_FATAL: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install native test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mipsel-linux-gnu
+
+      - name: Run import-coverage and fake-success audit gate
+        # Public gate for issue #71: manifest extraction from src/rt/hle.c,
+        # alias/waiver balance, classification-baseline drift, and synthetic
+        # malformed-ELF fixtures. Requires no game inputs.
+        run: python tools/import_audit_gate.py
+
+      - name: Compile host-neutral runtime objects on Linux
+        run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
+
+      - name: Create build directory
+        run: mkdir -p build
+
+      - name: Run selftest (C++ interpreter unit tests)
+        run: |
+          g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
+            src/ref/selftest.cpp src/ref/interp.cpp src/ref/run_elf.cpp \
+            -DSR_SELFTEST_ONLY -fno-exceptions
+          ./build/selftest
+
+      - name: Run VFPU table loader selftest (source-owned, no game inputs)
+        # Issue #187: fail-closed table load (exact length + EOF + SHA-256 +
+        # value-domain invariants), atomic once-only publication and concurrent
+        # first use. Linux gcc provides C11 threads, so the concurrency race is
+        # exercised here in addition to the Windows Win32-thread path.
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -o build/vfpu_tables_selftest \
+            src/rt/vfpu_tables_selftest.c src/rt/vfpu_tables.c
+          ./build/vfpu_tables_selftest
+
+      - name: Run watchpoints-file parser selftest (source-owned, no game inputs)
+        # Issue #188: the derived watchpoints.json artifact round-trips the
+        # exact dashboard-writer fixture into the expected native watchpoint
+        # set, plus fail-closed cases (version/format, bounds, labels,
+        # duplicates, capacity, legacy array form).
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -o build/watchpoints_file_selftest \
+            src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c
+          ./build/watchpoints_file_selftest
+
+      - name: Run VFPU interpreter selftest (source-owned, no game inputs)
+        # Issue #184: quad/vector VFPU memory ops are all-or-nothing (span
+        # preflight before any lane commit; rejected ops consume no prefixes),
+        # vcrs rejects non-triple widths with zero state change, and the vrot
+        # overlap scan only inspects active lanes. White-box TU includes the
+        # real recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern).
+        # The ASan/UBSan build below is the source-owned uninitialized-read and
+        # overflow gate the issue asks for; Windows/MinGW cannot run sanitizers.
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -o build/vfpu_interp_selftest \
+            src/rt/vfpu_interp_selftest.c -lm
+          ./build/vfpu_interp_selftest
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -o build/vfpu_interp_selftest_san \
+            src/rt/vfpu_interp_selftest.c -lm
+          ./build/vfpu_interp_selftest_san
+
+      - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
+        # #286/#32: PR-A raw decoder (4144 checks) and PR-B HLE decode bridge
+        # (4138 checks) under ASan/UBSan. The suites cover the deterministic
+        # terminator + MONO transform-path canaries, malformed/garbage-input
+        # rejection with the nb_samples=0 failure contract, and the
+        # reset/recreate lifecycle. The optional private fixture hook
+        # (ATRAC3P_FIXTURE, stream.bin + meta.txt) reports SKIP when unset and
+        # is never committed. Windows/MinGW cannot run sanitizers, so this
+        # Linux job is the ATRAC uninitialized-read/overflow gate; the FFmpeg
+        # n4.4 import stays byte-exact (no instrumentation edits). Upstream
+        # import warnings are expected and intentionally not enforced.
+        run: |
+          set -euo pipefail
+          ATRAC3P_SRCS="src/rt/atrac3p/atrac3p_api.c \
+            src/rt/atrac3p/libavcodec/atrac.c src/rt/atrac3p/libavcodec/atrac3plus.c \
+            src/rt/atrac3p/libavcodec/atrac3plusdec.c src/rt/atrac3p/libavcodec/atrac3plusdsp.c \
+            src/rt/atrac3p/libavcodec/bitstream.c src/rt/atrac3p/libavcodec/fft_float.c \
+            src/rt/atrac3p/libavcodec/fft_init_table.c src/rt/atrac3p/libavcodec/mdct_float.c \
+            src/rt/atrac3p/libavcodec/sinewin.c src/rt/atrac3p/libavutil/float_dsp.c \
+            src/rt/atrac3p/libavutil/intmath.c src/rt/atrac3p/libavutil/log2_tab.c \
+            src/rt/atrac3p/libavutil/mem.c src/rt/atrac3p/libavutil/reverse.c"
+          INC="-Isrc/rt -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
+          gcc -std=c11 -O1 $INC -o build/atrac3p_selftest \
+            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+          ./build/atrac3p_selftest
+          gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+          ./build/atrac3p_bridge_selftest
+          SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_selftest_san \
+            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+          ./build/atrac3p_selftest_san
+          gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+          ./build/atrac3p_bridge_selftest_san
+
+      - name: Build run_elf (Interpreter runner)
+        run: |
+          g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/run_elf \
+            src/ref/run_elf.cpp src/ref/interp.cpp -fno-exceptions
+
+      - name: Generate synthetic microtest C source (Gate A — generic MIPS III + FPU)
+        run: python tools/gen_microtest.py build/microtest_a.c 2 --groups integer,fpu
+
+      - name: Compile MIPS microtest ELF (Gate A, -march=r4000 -mfp32)
+        # -mfp32 is required so the single-precision FPU test group may use odd
+        # float registers ($f1/$f3/...), which the generic MIPS assembler
+        # otherwise rejects ("float register should be even").
+        run: |
+          mipsel-linux-gnu-gcc -nostdlib -static -Ttext=0x08900000 \
+            -march=r4000 -mabi=32 -mfp32 -Ibuild -o build/microtest_a.elf build/microtest_a.c
+
+      - name: Generate synthetic microtest C source (Gate B — Allegrex extensions)
+        run: python tools/gen_microtest.py build/microtest_b.c 2 --groups allegrex
+
+      - name: Compile MIPS microtest ELF (Gate B, -march=r4000)
+        # -march=r4000 is a conservative base MIPS ISA sufficient for function
+        # prologue, lui/ori, mult/multu, mfhi/mflo, general setup, and explicit
+        # syscall termination. Every Allegrex instruction-under-test is emitted
+        # as a raw .word by gen_microtest.py, so no assembler ISA extension is
+        # trusted for their encoding. No PSPSDK required.
+        run: |
+          mipsel-linux-gnu-gcc -nostdlib -static -Ttext=0x08900000 \
+            -march=r4000 -mabi=32 -Ibuild -o build/microtest_b.elf build/microtest_b.c
+
+      - name: Create dummy init trace for interpreter
+        run: echo "# init r29=0x09f00000" > build/init.trace
+
+      - name: Generate golden oracle trace (Gate A)
+        run: |
+          mkdir -p build/verify/gold
+          SR_PPM_DUMP=build/verify/gold/frame_0001.ppm ./build/run_elf build/microtest_a.elf build/init.trace build/microtest_a.trace
+
+      - name: Run recompiler codegen gate (Gate A — compile and verify MIPS-to-C translation)
+        run: |
+          mkdir -p build/verify/snap
+          SR_PPM_DUMP=build/verify/snap/frame_0001.ppm CC=gcc python tools/codegen_gate.py build/microtest_a.elf build/microtest_a.trace build/verify
+
+      - name: Generate golden oracle trace (Gate B)
+        run: |
+          mkdir -p build/verify/gold
+          SR_PPM_DUMP=build/verify/gold/frame_0002.ppm ./build/run_elf build/microtest_b.elf build/init.trace build/microtest_b.trace
+
+      - name: Run recompiler codegen gate (Gate B — Allegrex extensions)
+        run: |
+          mkdir -p build/verify/snap
+          SR_PPM_DUMP=build/verify/snap/frame_0002.ppm CC=gcc python tools/codegen_gate.py build/microtest_b.elf build/microtest_b.trace build/verify
+
+      - name: Run synthetic framebuffer-memory parity checks (A/B framebuffer diffs)
+        run: |
+          python tools/ppmdiff.py --threshold 3 build/verify/snap build/verify/gold
+          python -c "import json; r=json.load(open('visual_regression_report.json')); exit(1 if r['summary']['failed_frames'] > 0 else 0)"
+
+  dashboard:
+    name: Dashboard checks
+    runs-on: ubuntu-24.04
+    needs: [classify, hygiene]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_dashboard == 'true' }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: interface
+    env:
+      DATABASE_URL: file:./prisma/ci.db
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: interface/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit the resolved dashboard dependency graph
+        run: |
+          npm ls brace-expansion minimatch --all
+          npm audit --audit-level=high
+
+      - name: Initialize test database
+        run: npm run db:push
+
+      - name: Test
+        run: npm test
+
+      - name: Test (database-backed store integration)
+        run: npm run test:db
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build production dashboard
+        run: npm run build
+
+      - name: Reject repository leakage into standalone output
+        shell: bash
+        run: |
+          test -f .next/standalone/server.js
+          for path in Makefile AGENTS.md docs src/rt/recomp.c original_game game.iso eboot.elf; do
+            if test -e ".next/standalone/$path"; then
+              echo "standalone output leaked repository path: $path" >&2
+              exit 1
+            fi
+          done
+          if find .next/standalone -type f \( -iname '*.iso' -o -iname '*.cso' -o -iname '*.elf' -o -iname '*.prx' -o -iname '*.pbp' \) -print -quit | grep -q .; then
+            echo "standalone output contains a prohibited game-input file" >&2
+            exit 1
+          fi
+          bytes=$(du -sb .next/standalone | cut -f1)
+          if test "$bytes" -ge 536870912; then
+            echo "standalone output is unexpectedly large: $bytes bytes" >&2
+            exit 1
+          fi
+
+  windows_runtime:
+    name: Windows runtime compile gate
+    runs-on: windows-2022
+    needs: [classify, hygiene, python_tools, native_tools]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_windows == 'true' &&
+          (needs.python_tools.result == 'success' || needs.python_tools.result == 'skipped') &&
+          (needs.native_tools.result == 'success' || needs.native_tools.result == 'skipped') }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          # Keep the toolchain dependency install explicit.  Do not cache
+          # compiled runtime objects: Make's content-addressed invalidation and
+          # shader freshness checks must remain authoritative.
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+
+      - name: Verify default and override compiler resolution
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          unset CC
+
+          default_info="$(
+            mingw32-make --no-print-directory \
+              GAME_NAME=ci BUILD_DIR=build/compiler-probe VULKAN_SDK=/ucrt64 \
+              compiler-info
+          )"
+          printf '%s\n' "$default_info"
+          grep -Fx 'CC=gcc' <<<"$default_info"
+          grep -Fx 'CC_ORIGIN=file' <<<"$default_info"
+          command -v gcc
+          gcc --version
+
+          override_info="$(
+            mingw32-make --no-print-directory \
+              GAME_NAME=ci BUILD_DIR=build/compiler-probe VULKAN_SDK=/ucrt64 \
+              CC=clang compiler-info
+          )"
+          printf '%s\n' "$override_info"
+          grep -Fx 'CC=clang' <<<"$override_info"
+          grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
+
+      - name: Compile Windows runtime objects through the default compiler path
+        shell: msys2 {0}
+        run: |
+          unset CC
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            VULKAN_SDK=/ucrt64 runtime-objects
+
+      - name: Build and run scheduler selftest
+        shell: msys2 {0}
+        run: >-
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
+          CC=gcc VULKAN_SDK=/ucrt64 sched-selftest
+
+      # hle-thread-selftest compiles src/rt/hle.c directly, so it is the only
+      # gate that catches a target drifting out of step with hle.c's own
+      # dependencies. It was absent here, and silently stopped building when
+      # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
+      # same target again. Building it in CI is what stops the third recurrence.
+      - name: Build and run HLE thread selftest
+        shell: msys2 {0}
+        run: >-
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
+          CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
+
+      - name: Build and run synthetic VFPU fuzzer
+        shell: msys2 {0}
+        run: |
+          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
+          touch build/windows-runtime/ci_recomp_funcs.h
+          touch build/windows-runtime/.recomp-trace-0
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 vfpu_fuzz_build
+
+  main_smoke:
+    name: Main integration smoke
+    runs-on: ubuntu-24.04
+    needs: [classify, hygiene]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.classify.outputs.run_main_smoke == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Run compact import/publication smoke
+        # Publication audit is part of the always-present hygiene job; this
+        # smoke adds a fresh main-branch import gate without repeating it.
+        run: python tools/import_audit_gate.py
+
+  ci_required:
+    name: CI required
+    runs-on: ubuntu-24.04
+    needs: [classify, hygiene, markdown, python_tools, native_tools, dashboard, windows_runtime, main_smoke]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    env:
+      CLASSIFY_RESULT: ${{ needs.classify.result }}
+      HYGIENE_RESULT: ${{ needs.hygiene.result }}
+      MARKDOWN_RESULT: ${{ needs.markdown.result }}
+      PYTHON_RESULT: ${{ needs.python_tools.result }}
+      NATIVE_RESULT: ${{ needs.native_tools.result }}
+      DASHBOARD_RESULT: ${{ needs.dashboard.result }}
+      WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
+      MAIN_SMOKE_RESULT: ${{ needs.main_smoke.result }}
+      RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}
+      RUN_PYTHON: ${{ needs.classify.outputs.run_python }}
+      RUN_NATIVE: ${{ needs.classify.outputs.run_native }}
+      RUN_DASHBOARD: ${{ needs.classify.outputs.run_dashboard }}
+      RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}
+      RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}
+      ALLOW_SUBSTANTIVE: ${{ needs.classify.outputs.allow_substantive }}
+      DRAFT: ${{ needs.classify.outputs.draft }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check applicable gate results
+        run: python tools/ci_required.py

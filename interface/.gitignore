@@ -1,0 +1,20 @@
+# Dependencies and framework output
+/node_modules/
+/.next/
+/out/
+/coverage/
+
+# Local configuration, logs, and generated types
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+/next-env.d.ts
+
+# Local database and runtime artifacts
+/db/
+/prisma/migrations/
+/prisma/dev.db*
+/prisma/.test/
+/tool-results/

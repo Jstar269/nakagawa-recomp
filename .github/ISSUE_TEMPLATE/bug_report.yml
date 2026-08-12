@@ -1,0 +1,97 @@
+name: Bug report
+description: Report a reproducible defect without sharing proprietary game data
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Keep reports minimal and sanitized. Do not attach game
+        files, decrypted modules, extracted assets, full traces, raw memory/framebuffer dumps,
+        credentials, or logs containing private paths.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this behavior.
+          required: true
+        - label: I removed private paths, secrets, and game-derived data from this report.
+          required: true
+        - label: I did not attach game files, decrypted modules, extracted assets, full traces, or raw dumps.
+          required: true
+
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: Commit SHA or other exact source revision, if available.
+      placeholder: e.g. abc1234 or local snapshot date
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Runtime
+        - Pipeline tools
+        - Reference interpreter
+        - Dashboard
+        - Build system
+        - Documentation
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the visible behavior and why it appears incorrect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the shortest ordinary build or gameplay sequence that reproduces it.
+      placeholder: |
+        1. Build with ...
+        2. Start ...
+        3. Select ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, compiler, GPU, SDL3, and Vulkan versions that are relevant.
+      placeholder: Windows 11; MSYS2 UCRT64 GCC ...; GPU ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Small sanitized evidence excerpt
+      description: Optional. Paste only the few relevant lines; do not upload full logs or dumps.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add a cropped, sanitized screenshot only when it is necessary.

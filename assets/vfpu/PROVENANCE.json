@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/hrydgard/ppsspp",
+  "source_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+  "verified_at": "2026-07-18",
+  "files": [
+    {
+      "path": "vfpu_asin_lut65536.dat",
+      "bytes": 1536,
+      "git_blob": "507f51f24bbd5604f7f178dc30e3050b02345ffd",
+      "upstream_path": "assets/vfpu/vfpu_asin_lut65536.dat",
+      "sha256": "7a046ed71cc700dba4f90ff42e66ebd4b292281d3d2899202c3e370aa7c26ef9",
+      "type": "int32[3]"
+    },
+    {
+      "path": "vfpu_asin_lut_deltas.dat",
+      "bytes": 517448,
+      "git_blob": "1c697042eb262a4a2f6f251aa63f7003f2031f7b",
+      "upstream_path": "assets/vfpu/vfpu_asin_lut_deltas.dat",
+      "sha256": "6c6ba37ae631df90b731c6753f500e1bd4455b6435a56d50e3dd8f813b234027",
+      "type": "uint64"
+    },
+    {
+      "path": "vfpu_asin_lut_indices.dat",
+      "bytes": 798916,
+      "git_blob": "532c7780b053ec1637a259a6412118310257afbb",
+      "upstream_path": "assets/vfpu/vfpu_asin_lut_indices.dat",
+      "sha256": "418dd88590f2a2cfe4d45b27abe5e547a81ecf3ea00c90afec86740d6012d9c8",
+      "type": "uint16"
+    },
+    {
+      "path": "vfpu_exp2_lut.dat",
+      "bytes": 262144,
+      "git_blob": "dcf5449722491101481f1b13c1bca4c5ff634c81",
+      "upstream_path": "assets/vfpu/vfpu_exp2_lut.dat",
+      "sha256": "fcd6b4f4bb088e70c0c3e0aa0466d8ae9a2bf6b9459ae0a660e7de37a914ea35",
+      "type": "uint8[2]"
+    },
+    {
+      "path": "vfpu_exp2_lut65536.dat",
+      "bytes": 512,
+      "git_blob": "17cf43b47220d0b8da4d33a6b84a4857771741c6",
+      "upstream_path": "assets/vfpu/vfpu_exp2_lut65536.dat",
+      "sha256": "7a0c42d5652c0fa48f457072b02a87f949e747d3f8a04f25bfa861fc2b85b01d",
+      "type": "uint32"
+    },
+    {
+      "path": "vfpu_log2_lut.dat",
+      "bytes": 2097152,
+      "git_blob": "bb171ad0ed2a0aa521388607faf230fcc4255630",
+      "upstream_path": "assets/vfpu/vfpu_log2_lut.dat",
+      "sha256": "2ce3277fc2eaa9188f7afa341dadfd041447c07482d7aea8c5dbd1a3c869181c",
+      "type": "uint8[131072][2]"
+    },
+    {
+      "path": "vfpu_log2_lut65536.dat",
+      "bytes": 516,
+      "git_blob": "0338f134a2a77d9c1add801564e4958b4ebbeec9",
+      "upstream_path": "assets/vfpu/vfpu_log2_lut65536.dat",
+      "sha256": "f7b0f2726808c5bb7207a2a5c297df437277e95e121b7e46dc8f5cf152bb0dd4",
+      "type": "uint32"
+    },
+    {
+      "path": "vfpu_log2_lut65536_quadratic.dat",
+      "bytes": 512,
+      "git_blob": "048ba6adc9213577743f679045120aefe7c47737",
+      "upstream_path": "assets/vfpu/vfpu_log2_lut65536_quadratic.dat",
+      "sha256": "25a0ddddbf33bab98a88f9c95a678fb93d54be17b1d08a1a90131161b42eeec5",
+      "type": "uint32"
+    },
+    {
+      "path": "vfpu_rcp_lut.dat",
+      "bytes": 262144,
+      "git_blob": "cf5f0e6dc06eac716132c3262ac8f1ace4bb0d75",
+      "upstream_path": "assets/vfpu/vfpu_rcp_lut.dat",
+      "sha256": "0aee9fd249988073e4f364cd724cb6f54aa0c57ce0b515a1fe69a65444a92c55",
+      "type": "int8[2]"
+    },
+    {
+      "path": "vfpu_rsqrt_lut.dat",
+      "bytes": 262144,
+      "git_blob": "921853ff44fabef2a5ec5ccce54788cdd4fa7506",
+      "upstream_path": "assets/vfpu/vfpu_rsqrt_lut.dat",
+      "sha256": "9ebaa077ce0e70c6e6a706945bd905af681a8cc16d9fedd623b23d59d7794ced",
+      "type": "int8[2]"
+    },
+    {
+      "path": "vfpu_sin_lut8192.dat",
+      "bytes": 4100,
+      "git_blob": "ad6d0db9c869873a3d8704c6dbc0a5abb1b3f277",
+      "upstream_path": "assets/vfpu/vfpu_sin_lut8192.dat",
+      "sha256": "1017c38fcc37ced830dc68e5603725526ecadcc23bb0fdf99159622351f61676",
+      "type": "uint32"
+    },
+    {
+      "path": "vfpu_sin_lut_delta.dat",
+      "bytes": 262144,
+      "git_blob": "6e7fb3b4d0fb889e951ec948e1712bb97274efd2",
+      "upstream_path": "assets/vfpu/vfpu_sin_lut_delta.dat",
+      "sha256": "24bddbb34b59b9a714e3c1f9a0335b3fbbfcedf8d04e71f95adf1b4295fbb13b",
+      "type": "int8[2]"
+    },
+    {
+      "path": "vfpu_sin_lut_exceptions.dat",
+      "bytes": 86938,
+      "git_blob": "0a7d8c5463cc5a164733b649e312894949e86312",
+      "upstream_path": "assets/vfpu/vfpu_sin_lut_exceptions.dat",
+      "sha256": "46d585d103c9265393ed7c79bc4db7d047daf855c52358f4311a54d275e7fb74",
+      "type": "uint8"
+    },
+    {
+      "path": "vfpu_sin_lut_interval_delta.dat",
+      "bytes": 131074,
+      "git_blob": "d0f2debc077f57c2b9cd86061388d05265aef33a",
+      "upstream_path": "assets/vfpu/vfpu_sin_lut_interval_delta.dat",
+      "sha256": "1506831c116bb5def823fc89c80b8d4fcdd6c938b223855a67709fcfe3fb285b",
+      "type": "int16"
+    },
+    {
+      "path": "vfpu_sqrt_lut.dat",
+      "bytes": 262144,
+      "git_blob": "20c0959cc9ae832e8f40846514c3de63ff074a8c",
+      "upstream_path": "assets/vfpu/vfpu_sqrt_lut.dat",
+      "sha256": "634e81488992fc2a0bfe5eaa3982f8895f7cdbb59595cb1dc6934bddafde86a6",
+      "type": "int8[2]"
+    }
+  ],
+  "endianness": "little-endian"
+}

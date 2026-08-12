@@ -1,0 +1,101 @@
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types: [pre-commit, pre-push]
+
+# Keep shared hooks away from generated output, private game inputs, local third-party
+# checkouts, runtime state, and package-manager build products. Most of these paths are
+# already ignored by Git; the explicit exclusions make the policy visible here too.
+exclude: |
+  (?x)^(
+      build/|
+      third_party/|
+      place_game_here/|
+      original_game/|
+      oracle/|
+      fs/|
+      memstick/|
+      logs/|
+      interface/node_modules/|
+      interface/\.next/
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # The pinned VFPU .dat files are binary lookup tables even though
+        # identify/pre-commit classifies them as text. Three larger legacy
+        # source/test files also contain a handful of pre-existing whitespace-only
+        # blank lines; leave those historical lines untouched to avoid an unrelated
+        # mass-format diff. The local staged-diff hook below still rejects any
+        # *new* whitespace in every file.
+        exclude: >-
+          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt)$
+      - id: end-of-file-fixer
+        # Never mutate pinned binary LUT bytes.
+        exclude: ^assets/vfpu/.*\.dat$
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        # Match tools/publish_audit.py's existing 25 MiB publication ceiling.
+        args: [--maxkb=25600]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: cb8c523fd4835aba42af70f4cad5568db4df0b6c # v0.16.0
+    hooks:
+      - id: ruff-check
+        files: ^tools/.*\.py$
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+    hooks:
+      - id: gitleaks
+        stages: [pre-commit, pre-push]
+
+  - repo: local
+    hooks:
+      - id: staged-whitespace-check
+        name: reject new trailing whitespace
+        entry: git diff --cached --check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: documentation-freshness
+        name: documentation freshness audit
+        entry: python tools/lint_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: publication-policy-sync
+        name: canonical publication policy covers every tracked path
+        # Reports any tracked path the canonical policy does not classify. Runs
+        # before the audit so the failure names the missing decision rather than
+        # surfacing as a generic audit finding. Adding a file to the public
+        # surface is a publication decision and must be made deliberately.
+        entry: python tools/policy_sync.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: publication-audit
+        name: publication safety audit
+        # Policy findings (excluded path present, unclassified path, stale policy
+        # digest, manifest contradiction) are unconditional and do not depend on
+        # --public-scope; that flag adds the softer asset-scope checks on top.
+        entry: python tools/publish_audit.py --tracked-only --public-scope
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: modified-file-notice-audit
+        name: inherited modified-file notice audit
+        entry: python tools/modified_file_notice_audit.py --tracked-only
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]

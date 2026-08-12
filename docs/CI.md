@@ -1,0 +1,112 @@
+# Continuous integration and dependency maintenance
+
+The public workflow is intentionally one always-present workflow with a cheap
+classifier followed by job-level applicability checks. The classifier lives in
+[`tools/ci_paths.py`](../tools/ci_paths.py), and its regression tests are in
+[`tools/test_ci_paths.py`](../tools/test_ci_paths.py). The stable aggregate is
+implemented by [`tools/ci_required.py`](../tools/ci_required.py) and tested in
+[`tools/test_ci_required.py`](../tools/test_ci_required.py). It fails closed when
+the change set cannot be determined, so an uncertain checkout runs the broader
+gates instead of silently skipping them.
+
+Name-status parsing is structural: ordinary records contain exactly one path,
+rename/copy records contain both endpoints, and any malformed record becomes a
+history-unavailable sentinel that selects the full matrix. `CI required` also
+requires every `RUN_*` and `ALLOW_SUBSTANTIVE` output to be an explicit
+case-insensitive `true` or `false`; missing or malformed control state is red.
+
+## Workflow topology
+
+| Event/change | Jobs that run | Jobs intentionally skipped |
+| --- | --- | --- |
+| Draft pull request | classification, hygiene/security, Markdown when Markdown changed, `CI required` | Python/native, Windows, dashboard, and other substantive jobs |
+| Ready pull request, docs-only | classification, hygiene/security, Markdown, `CI required` | Python/native, Windows, dashboard |
+| Ready pull request, `interface/**` | classification, hygiene/security, dashboard, `CI required` | Python/native, Windows |
+| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, `CI required` | dashboard |
+| Ready pull request, ordinary `tools/*.py` | classification, hygiene/security, Python tooling, `CI required` | native/translation, Windows, dashboard |
+| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the substantive public gates |
+| Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, `CI required` | Python/native, Windows, dashboard |
+| Mixed dashboard/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the applicable product gates |
+| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, `CI required` | expensive platform matrix; the merged PR carried it |
+| Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
+| Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
+
+The `CI required` job is the stable aggregate status intended for future branch
+protection. It runs with `always()`, accepts an intentionally skipped irrelevant
+job, and fails when a classifier-applicable job fails, is cancelled, or is
+otherwise incomplete. A failed hygiene/security job is never hidden by the
+aggregate. Python/native jobs also wait for hygiene, so an early full-tree
+failure does not spend additional runner time on dependent expensive gates.
+
+The full-tree pre-commit run retains the publication audit and the separate
+Gitleaks scan. Markdown linting is separate so documentation changes do not pay
+for a dashboard install. Dashboard dependency changes run the clean `npm ci`,
+test, lint, type-check, build, and standalone-output leakage checks. Native and
+Windows jobs remain synthetic/public-input gates; no private game input is put in
+Actions.
+
+## Classifier invariants
+
+`tools/ci_paths.py` decides which gates run. The only failure that matters is a
+**false negative** — a build-affecting change classified as documentation or
+tooling and therefore skipping a native or Windows gate. These invariants exist
+to prevent that, and `tools/test_ci_paths.py` asserts each one:
+
+- **Unknown paths fail closed.** Any path matching no predicate forces the full
+  matrix. Adding a new kind of file makes CI more expensive, never less.
+- **Every change type counts.** The changed-file query uses name-status without
+  a narrowing diff filter, and retains both sides of a rename. Filtering to
+  `ACMR` or keeping only a rename's new name can drop a build-affecting source,
+  making a commit that removes or renames C code classify as docs-only and skip
+  the native and Windows compile gates.
+- **An empty or unobtainable file list forces the full matrix**, so a shallow
+  clone or an unusual event payload cannot quietly narrow the run.
+- **Draft suppression never rewrites classification.** Only `allow_substantive`
+  goes false, including when an unknown path forces full applicability; the path
+  facts stay true, so the ready-for-review transition needs no reclassification.
+- **`hygiene` is ungated.** The all-files pre-commit run — which includes the
+  publication safety audit and the Gitleaks scan — executes on every event, so
+  the security and publication boundary is never path-gated.
+
+Test modules use their logical implementation subject for classification:
+`tools/test_<subject>.py` is evaluated through the same subsystem predicates as
+`tools/<subject>.py`. This keeps build-relevant HST, title, codegen, and native
+tool tests on the native and Windows gates without making every Python test
+expensive. A new native-relevant tool should therefore be named and classified
+like its implementation; add a predicate only when the implementation itself
+belongs to a new subsystem.
+
+## Cost and caching rules
+
+GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
+workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
+native gates, cancels superseded PR runs, and avoids repeating the full matrix on
+ordinary main pushes. The workflow uses dependency/tool caches only (pip and npm);
+compiled runtime objects and generated shader/code output are not cached, so the
+repository's content-addressed invalidation and freshness checks remain the
+source of truth. No volatile dollar figure is part of the repository contract.
+
+Hosted GitHub Actions execution is active. Workflows pass the classifier, hygiene/security, Markdown, native/translation, dashboard, main-smoke, Python, Windows, and aggregate gates for candidate heads. PR [#27](https://github.com/Jstar269/nakagawa-recomp/pull/27) tracks the broader OSPS/GitHub governance/settings audit. Dependabot PRs remain draft and are not substitute CI evidence; local verification remains local-only.
+
+## Windows hosted runner policy
+
+The Windows job intentionally remains on `windows-2022` for this baseline campaign. That label is a
+GitHub-hosted Windows Server image and is not an end-user Windows support promise; the supported
+developer platform is Windows 11 x64 as documented in [SETUP.md](SETUP.md). A future
+`windows-2025` migration is a separate hosted-validation decision. It is not included here while
+Actions are disabled, because changing the image would add hosted-only uncertainty without a
+demonstrated validation benefit for this toolchain.
+
+The current `actions/runner-images` Windows Server 2022 inventory records image version
+`20260720.249.2` and **PowerShell 7.6.3** under its PowerShell Tools section. This is the hosted
+image's published software inventory, not a local-machine inference or an executed workflow run;
+recheck it when the image inventory changes. See the [Windows2022 image inventory](https://raw.githubusercontent.com/actions/runner-images/main/images/windows/Windows2022-Readme.md).
+
+## Dependabot policy
+
+`.github/dependabot.yml` checks GitHub Actions, dashboard npm, root pip, and
+pre-commit ecosystems monthly. Minor and patch updates are grouped per ecosystem;
+major updates remain standalone because they can change APIs, runners, or build
+semantics. Security updates remain enabled and are not suppressed by the routine
+groups. The open-PR limits keep routine maintenance from crowding out focused
+engineering work.

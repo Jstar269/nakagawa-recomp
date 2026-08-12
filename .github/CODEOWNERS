@@ -1,0 +1,54 @@
+# Ownership of publication-sensitive files.
+#
+# IMPORTANT — this file documents ownership. It is deliberately NOT paired with
+# a `require_code_owner_review: true` ruleset rule at present.
+#
+# GitHub does not let a pull-request author approve their own pull request. With
+# a single eligible human reviewer, requiring code-owner approval would make
+# every self-authored PR unmergeable, and the only way out would be an admin
+# bypass — which would turn the routine path into the bypass path and destroy
+# the control we are building. A gate that must be bypassed to do ordinary work
+# is worse than no gate, because it normalises bypassing.
+#
+# The publication boundary is therefore enforced by:
+#   1. a mandatory pull request for the default branch (no direct pushes);
+#   2. required status checks that must pass before merge, including the
+#      publication/hygiene gate;
+#   3. the fail-closed canonical policy in assets/public_source_profile.json,
+#      which rejects unknown and excluded paths mechanically.
+#
+# Machine gates do not get tired, and unlike a review requirement they cannot be
+# satisfied by the author nodding at their own change.
+#
+# FUTURE HARDENING: if a genuinely independent human reviewer with write access
+# ever joins the project, enable `require_code_owner_review: true` on the
+# default-branch ruleset and set `required_approving_review_count` to 1. That is
+# a strict improvement and should be done at that point, not before.
+
+# Default owner for everything.
+*                                       @Jstar269
+
+# Publication policy and the machinery that enforces it. Changes here alter what
+# may become public, so they deserve the most attention in review.
+/assets/public_source_profile.json      @Jstar269
+/assets/release_manifest.json           @Jstar269
+/PUBLIC_EXPORT.json                     @Jstar269
+/tools/publication_policy.py            @Jstar269
+/tools/publish_audit.py                 @Jstar269
+/tools/policy_sync.py                   @Jstar269
+/tools/build_public_export.py           @Jstar269
+/tools/public_candidate.py              @Jstar269
+/tools/test_publication_policy_gate.py  @Jstar269
+/tools/verify_key_scrub.py              @Jstar269
+
+# CI and hook definitions: the gate is only as good as its invocation.
+/.github/workflows/                     @Jstar269
+/.github/CODEOWNERS                     @Jstar269
+/.pre-commit-config.yaml                @Jstar269
+
+# Licence, notice and provenance surface.
+/LICENSE                                @Jstar269
+/NOTICE.md                              @Jstar269
+/THIRD_PARTY_LICENSES/                  @Jstar269
+/docs/provenance/                       @Jstar269
+/docs/PUBLICATION_READINESS.md          @Jstar269

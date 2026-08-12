@@ -1,0 +1,101 @@
+version: 2
+
+# Grouping policy
+#
+# Routine minor/patch bumps are grouped so ordinary dependency hygiene costs one
+# review per ecosystem. Major bumps are deliberately excluded from every group
+# so each one arrives as its own standalone PR: a major migration needs its own
+# exact-head install/lint/typecheck/build evidence and must never ride along
+# inside a routine group. PR #221 is the motivating case -- it bundled ESLint
+# 9 -> 10 and TypeScript 6 -> 7 with 19 unrelated patch bumps, which made the
+# routine part unmergeable without also accepting two toolchain migrations.
+#
+# This affects version updates only. Dependabot security updates are a separate
+# channel: they remain enabled, ungrouped, and are not subject to
+# open-pull-requests-limit.
+#
+# `time`/`timezone` stagger the four ecosystems so a monthly refresh does not
+# arrive as one simultaneous burst. `day` is deliberately absent: it applies to
+# weekly intervals only and would be inert here.
+#
+# Labels must already exist in the repository -- Dependabot does not create
+# them. These are Dependabot's own auto-created ecosystem labels, which is why
+# they are underscored.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: "04:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 6
+    labels:
+      - dependencies
+      - github_actions
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    # Major action updates intentionally remain one dependency per PR. They can
+    # change runner/runtime semantics -- for example checkout v7's pull-request
+    # safety behavior -- and must not hide inside a routine group.
+
+  - package-ecosystem: npm
+    directory: /interface
+    schedule:
+      interval: monthly
+      time: "04:30"
+      timezone: America/New_York
+    open-pull-requests-limit: 8
+    labels:
+      - dependencies
+      - javascript
+    groups:
+      dashboard-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    # Major dashboard migrations (ESLint, TypeScript, Next, React, Prisma) are
+    # deliberately standalone.
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+      time: "05:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 6
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+      time: "05:30"
+      timezone: America/New_York
+    open-pull-requests-limit: 6
+    labels:
+      - dependencies
+      - pre_commit
+    groups:
+      pre-commit-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

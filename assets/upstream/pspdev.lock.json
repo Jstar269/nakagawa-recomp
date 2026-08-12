@@ -1,0 +1,89 @@
+{
+  "components": {
+    "psp_packages": {
+      "commit": "0b6dbdef034badf483d94fd8b788315daffaf4bb",
+      "default_branch": "master",
+      "license_expression": "NOASSERTION",
+      "license_notes": "Each package recipe references separately licensed upstream source; package use requires per-package review.",
+      "repository": "https://github.com/pspdev/psp-packages"
+    },
+    "psplinkusb": {
+      "commit": "32f2fa9bca0259d68770b9678994e7ad2fd637c3",
+      "default_branch": "master",
+      "license_expression": "BSD-3-Clause",
+      "license_notes": "Optional hardware-oracle tooling only.",
+      "release": "v3.2.1",
+      "repository": "https://github.com/pspdev/psplinkusb"
+    },
+    "pspsdk": {
+      "commit": "314b2083f2e1eaf145fc5de342736336fe1f0148",
+      "default_branch": "master",
+      "license_expression": "BSD-3-Clause",
+      "license_notes": "Root license is a 3-clause BSD grant; tools/PrxEncrypter is separately GPL-3.0-only.",
+      "repository": "https://github.com/pspdev/pspsdk"
+    },
+    "psptoolchain": {
+      "commit": "57a4fc650324dea4637ea5ef9dfc2fc292c004f8",
+      "default_branch": "master",
+      "license_expression": "NOASSERTION",
+      "license_notes": "Repository-level and bundled-component licensing requires local SBOM review before redistribution.",
+      "repository": "https://github.com/pspdev/psptoolchain"
+    },
+    "psptoolchain_allegrex": {
+      "commit": "a95b7da838d9f506656092c3e0232dcf50389d89",
+      "default_branch": "main",
+      "license_expression": "NOASSERTION",
+      "license_notes": "Build scripts fetch GCC, binutils, newlib, and related components under their own licenses.",
+      "repository": "https://github.com/pspdev/psptoolchain-allegrex"
+    },
+    "psptoolchain_extra": {
+      "commit": "b5f01b00e428a604832e0dfb4bfbb991d1397e3f",
+      "default_branch": "main",
+      "license_expression": "NOASSERTION",
+      "license_notes": "Tool-specific licensing must be collected for any redistributed output.",
+      "repository": "https://github.com/pspdev/psptoolchain-extra"
+    }
+  },
+  "distribution": {
+    "archive_sha256": "cac06732ba81efcc6a9e5b6196e60a5c373b0a87f28518a188b7c99b70ccb012",
+    "commit": "cc874700eaef9e00c8ec63e0d116926e1048b656",
+    "container_digest": "sha256:184eb28094f907493928f556df68f5d3e71bcf340259c5c6b78b1d9ac28b6c7d",
+    "license_expression": "MIT",
+    "release": "v20260501",
+    "repository": "https://github.com/pspdev/pspdev"
+  },
+  "local_verification": {
+    "host_platform": "Docker Desktop 29.6.2 on Windows x86_64; linux/amd64 container",
+    "installation_method": "Official Docker Hub pspdev/pspdev:v20260501 image pinned by digest; official GitHub Debian release archive independently downloaded and hashed",
+    "status": "complete",
+    "tool_versions": {
+      "mksfoex": "v20260501 image; size=31640; sha256=d9dc7b6d04aa4110a90cc5ebdd83f831b92c2f246817f93a027f6a57337d917e",
+      "pack-pbp": "v20260501 image; size=23368; sha256=e6a0664c8839c92d4062043f0bcd1cda19ad4145ed50e8ceb212bdd214c7848b",
+      "psp-build-exports": "v20260501 image; size=86256; sha256=33499cee370935bb4c564e062f8820c4baabb1399ff03b0a8fce13fd5d10c9d7",
+      "psp-config": "v20260501 image; size=40384; sha256=8c0b64a9a45f2344454d53d6d8a7c570e4de99eae48d8ab8d2e44f43b45c2fa8",
+      "psp-fixup-imports": "v20260501 image; size=74008; sha256=35d3b1b7b00b2e72a67d343946d4e6f7037e9e70c52550178e8955f99a62e29a",
+      "psp-gcc": "GCC 15.1.1 20250425; size=2114416; sha256=eec2d72c2e6c5dd8edf9e9939e1962f3592cb0c3fd0a58684891f202b323fb8d",
+      "psp-ld": "GNU Binutils 2.44; size=1952152; sha256=8087fea32a8ac4c2fa4990c27d8bfd2f82a8fe0c4f645f18245099544a3fc7c1",
+      "psp-nm": "GNU Binutils 2.44; size=1313056; sha256=fa42644356248bdd4111d229cd9260c272af9d0434746d32536dab03abc28fe8",
+      "psp-objdump": "GNU Binutils 2.44; size=2646816; sha256=af70b390bcb7146fdd9b2b444e5ae0941d6ba9a8a70e1b37310c657fc30b4d08",
+      "psp-prxgen": "v20260501 image; size=59632; sha256=bbd6cf9e7872999d9ec12978111ed4b79fc790aa2e8ce21b598ed6802639238f",
+      "psp-readelf": "GNU Binutils 2.44; size=1100336; sha256=d90b3c25a5fb68bf13632858c91e39027b9cb7b3a38733d05998f42b072a4ce5",
+      "pspsh": "v20260501 image; size=177720; sha256=e5b02a5511f103171ba1c52763c4ce5428fec7e7d10c6b9fdaeb30b1c4f2206a",
+      "usbhostfs_pc": "USBHostFS TyRaNiD 2k6; size=156424; sha256=cb64d685f079c5e5d20f4d0f1e782fb2054d6452eace1c7c546f1c618bc604be"
+    }
+  },
+  "policy": {
+    "allow_moving_refs": false,
+    "allow_retail_or_firmware_material": false,
+    "automatic_runtime_rewrite": false,
+    "mandatory_for_hst_build_or_runtime": false,
+    "network_access_from_normal_build": false,
+    "tracked_generated_binaries_require_manifest": true
+  },
+  "reviewed_at": "2026-07-31T01:36:27Z",
+  "schema": 1,
+  "snapshot": {
+    "kind": "source-review",
+    "relationship_to_distribution": "The PSPDEV release tag and component source commits are independently pinned. This lock does not assert that the component commits are the exact sources used to build the release artifacts."
+  }
+}
