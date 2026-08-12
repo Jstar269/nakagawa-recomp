@@ -258,8 +258,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     }
 
     if (op == 0x34) {
-        /* Opcode 0x34 sub-dispatch by bits [25:21]: 3 = vcst, 0 = VV2Op, 16-23 = vf2i/vi2f
-         * conversions (not handled here). */
+        /* Opcode 0x34 sub-dispatch by bits [25:21]: 3 = vcst, 0 = VV2Op,
+         * 16-20 = vf2i/vi2f conversions. */
         int sub21 = (w >> 21) & 0x1F;
         if (sub21 == 3) {  /* vcst: broadcast a constant */
             sr_cst_load();
@@ -360,25 +360,20 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             return SR_VFPU_OTHER;  /* vrnds/vrndi/vrndf/vf2h/vh2f: no static emitter either */
         }
         if (sub21 >= 16 && sub21 <= 19) {  /* vf2in / vf2iz / vf2iu / vf2id: float -> s32
-                                            * with 2^imm scale, NaN -> INT_MAX, saturating
-                                            * (matches codegen.py vf2i emission bit-for-bit). */
-            double mult = (double)(1u << ((w >> 16) & 0x1F));
+                                            * with 2^imm scale and explicit PSP rounding. */
+            unsigned scale = (w >> 16) & 0x1F;
             float sv[4];
-            int32_t d[4];
+            uint32_t d[4];
             vreg_idx(vs, n, si); vreg_idx(vd, n, di);
             sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
-            for (int i = 0; i < n; i++) {
-                if (isnan(sv[i])) { d[i] = 0x7FFFFFFF; continue; }
-                double x = (double)sv[i] * mult;
-                if (x > 2147483647.0)            d[i] = 0x7FFFFFFF;
-                else if (x <= -2147483648.0)     d[i] = (int32_t)0x80000000;
-                else if (sub21 == 16)            d[i] = (int32_t)nearbyint(x);
-                else if (sub21 == 17)            d[i] = (int32_t)x;
-                else if (sub21 == 18)            d[i] = (int32_t)ceil(x);
-                else                             d[i] = (int32_t)floor(x);
-            }
-            /* PSP ignores destination saturation for the integer result. */
-            sr_vwrite(s, di, (float *)d, n, s->vfpuCtrl[2] & 0xFFFFFF00u);
+            for (int i = 0; i < n; i++)
+                d[i] = sr_vfpu_to_word(sv[i], sub21 - 16u, scale);
+            /* PSP ignores destination saturation for the integer result. Write
+             * the integer union member directly: treating uint32_t storage as
+             * float would violate strict aliasing and could disturb NaN-shaped
+             * integer result words. Destination write-mask bits still apply. */
+            for (int i = 0; i < n; i++)
+                if (!((s->vfpuCtrl[2] >> (8 + i)) & 1u)) s->vi[di[i]] = d[i];
             eat_prefix(s); return SR_VFPU_COMPUTE;
         }
         if (sub21 == 20) {  /* vi2f: s32 -> float scaled by 2^-imm (exact in float) */

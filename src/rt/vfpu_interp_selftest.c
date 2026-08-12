@@ -25,10 +25,10 @@
 //     an active source lane still triggers the cosine-recompute quirk;
 //   * valid aligned quad round-trips still work.
 //
-// 29 checks. No game inputs or private data required. Run via `make
-// vfpu-interp-selftest` (also wired into hst_manager.ps1 -Action Verify and
-// the Linux native CI gate, where the ASan/UBSan build runs as the
-// uninitialized-read/overflow gate the issue asks for).
+// The final check count is printed by the executable. No game inputs or private
+// data required. Run via `make vfpu-interp-selftest` (also wired into
+// hst_manager.ps1 -Action Verify and the Linux native CI gate, where the
+// ASan/UBSan build runs as the uninitialized-read/overflow gate).
 
 #define _CRT_SECURE_NO_WARNINGS
 /* White-box: include the real runtime + interpreter as translation units so the
@@ -39,6 +39,7 @@
 #include "vfpu_tables.c"
 #include "vfpu_interp.c"
 
+#include <fenv.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -369,11 +370,73 @@ static int check_vrot_overlap(void) {
     return bad;
 }
 
+static uint32_t vf2i(unsigned mode, unsigned scale) {
+    /* Scalar vf2in/vf2iz/vf2iu/vf2id, vs=0 (physical v[0]), vd=1
+     * (physical v[4]). Width bits 7/15 remain clear. */
+    return (0x34u << 26) | ((16u + (mode & 3u)) << 21) |
+           ((scale & 31u) << 16) | 1u;
+}
+
+static int check_vf2i_conversions(void) {
+    static const struct {
+        const char *name;
+        uint32_t input;
+        unsigned mode;
+        unsigned scale;
+        uint32_t expected;
+    } vectors[] = {
+        {"vf2in 0.5 ties even", 0x3f000000u, 0u, 0u, 0x00000000u},
+        {"vf2in 1.5 ties even", 0x3fc00000u, 0u, 0u, 0x00000002u},
+        {"vf2in 2.5 ties even", 0x40200000u, 0u, 0u, 0x00000002u},
+        {"vf2in -1.5 ties even", 0xbfc00000u, 0u, 0u, 0xfffffffeu},
+        {"vf2iz -2.75", 0xc0300000u, 1u, 0u, 0xfffffffeu},
+        {"vf2iu -2.25", 0xc0100000u, 2u, 0u, 0xfffffffeu},
+        {"vf2id -2.25", 0xc0100000u, 3u, 0u, 0xfffffffdu},
+        {"vf2in scaled tie", 0x3f400000u, 0u, 1u, 0x00000002u},
+        {"vf2iz largest below INTMAX", 0x3f7fffffu, 1u, 31u, 0x7fffff80u},
+        {"vf2in positive overflow", 0x3f800000u, 0u, 31u, 0x7fffffffu},
+        {"vf2in negative boundary", 0xbf800000u, 0u, 31u, 0x80000000u},
+        {"vf2in positive infinity", 0x7f800000u, 0u, 0u, 0x7fffffffu},
+        {"vf2in negative infinity", 0xff800000u, 0u, 0u, 0x80000000u},
+        {"vf2in NaN", 0x7fc00000u, 0u, 0u, 0x7fffffffu},
+        {"vf2in signaling NaN", 0x7f800001u, 0u, 0u, 0x7fffffffu},
+    };
+    static const int host_modes[] = {
+        FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO,
+    };
+    CpuState s;
+    const int saved_mode = fegetround();
+
+    for (size_t m = 0; m < sizeof(host_modes) / sizeof(host_modes[0]); m++) {
+        CHECK(fesetround(host_modes[m]) == 0, "host rounding mode is available for vf2i test");
+        for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+            setup_identity_compute(&s);
+            s.vi[0] = vectors[i].input;
+            s.vi[4] = 0xa5a5a5a5u;
+            CHECK(sr_vfpu_interp(&s, vf2i(vectors[i].mode, vectors[i].scale)) == SR_VFPU_COMPUTE,
+                  "vf2i instruction executes through production fallback");
+            CHECK(s.vi[4] == vectors[i].expected, vectors[i].name);
+        }
+    }
+    setup_identity_compute(&s);
+    s.vi[0] = 0x3fc00000u;
+    s.vi[4] = 0xa5a5a5a5u;
+    s.vfpuCtrl[2] = 1u << 8;
+    CHECK(sr_vfpu_interp(&s, vf2i(0u, 0u)) == SR_VFPU_COMPUTE,
+          "masked vf2i instruction executes through production fallback");
+    CHECK(s.vi[4] == 0xa5a5a5a5u, "vf2i honors the destination write mask");
+    CHECK(s.vfpuCtrl[0] == 0xe4u && s.vfpuCtrl[1] == 0xe4u && s.vfpuCtrl[2] == 0u,
+          "masked vf2i consumes prefixes");
+    if (saved_mode != -1) (void)fesetround(saved_mode);
+    return 0;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vrot_overlap();
+    bad |= check_vf2i_conversions();
     bad |= g_failures != 0;
     if (bad == 0) {
         printf("vfpu_interp_selftest: all %d checks passed\n", g_checks);

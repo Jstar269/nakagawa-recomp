@@ -220,12 +220,24 @@ jobs:
       - name: Create build directory
         run: mkdir -p build
 
-      - name: Run selftest (C++ interpreter unit tests)
+      - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
             src/ref/selftest.cpp src/ref/interp.cpp src/ref/run_elf.cpp \
-            -DSR_SELFTEST_ONLY -fno-exceptions
+            -DSR_SELFTEST_ONLY -fno-exceptions \
+            -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all
           ./build/selftest
+
+      - name: Run portable FPU/VFPU conversion selftest under UBSan
+        # Fixed expected vectors exercise NaN, infinities, finite overflow,
+        # signed boundaries, ties, all guest rounding modes and VFPU scaling.
+        # float-cast-overflow remains enabled: the historical implementation
+        # reached that sanitizer on FLT_MAX and must never be suppressed.
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Werror -Isrc/rt \
+            -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all \
+            -o build/fp_convert_selftest_san src/rt/fp_convert_selftest.c -lm
+          ./build/fp_convert_selftest_san
 
       - name: Run VFPU table loader selftest (source-owned, no game inputs)
         # Issue #187: fail-closed table load (exact length + EOF + SHA-256 +
@@ -263,7 +275,7 @@ jobs:
             src/rt/vfpu_interp_selftest.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
-            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
             src/rt/vfpu_interp_selftest.c -lm
           ./build/vfpu_interp_selftest_san
@@ -508,6 +520,12 @@ jobs:
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 sched-selftest
+
+      - name: Build and run portable FPU/VFPU conversion selftest
+        shell: msys2 {0}
+        run: >-
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
+          CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       # hle-thread-selftest compiles src/rt/hle.c directly, so it is the only
       # gate that catches a target drifting out of step with hle.c's own

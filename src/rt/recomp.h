@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include "fp_convert.h"
 #ifdef __cplusplus
 #include <atomic>
 typedef std::atomic_int_least32_t atomic_int_least32_t;

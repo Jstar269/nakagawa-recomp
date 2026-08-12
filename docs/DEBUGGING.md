@@ -262,7 +262,7 @@ command buffer that blits the displayed frame, then published atomically as an e
 `snap_*.ppm`/`snap_v*.ppm` files (route evidence via `dump_fb_fmt`) are still written unchanged.
 `SR_FBDUMP=<N>` publishes the presented frame as `present_source.ppm` and exits; the exit status is
 0 only if a capture was truly published, 1 otherwise (the run must not be claimed as captured when
-nothing was written). `gpu-capture-selftest` (Verify step 14) byte-checks both CPU- and GPU-source
+nothing was written). `gpu-capture-selftest` (Verify step 15) byte-checks both CPU- and GPU-source
 captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
 
 #### Where `SR_EXIT_AT_VBLANK` actually stops
