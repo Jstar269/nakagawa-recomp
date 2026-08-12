@@ -14,6 +14,9 @@ import psp_issue_matrix
 
 
 class PspIssueMatrixTests(unittest.TestCase):
+    def test_current_dma_issue_routes_to_the_dedicated_probe(self) -> None:
+        self.assertEqual(psp_issue_matrix.HARDWARE_IDS[23], "PSP-DMAC-001")
+
     def test_checked_in_snapshot_covers_every_open_issue_snapshot(self) -> None:
         path = Path(__file__).resolve().parents[1] / "docs" / "PSP_ISSUE_MATRIX.json"
         if not path.is_file():

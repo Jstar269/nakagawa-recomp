@@ -14,6 +14,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -28,6 +29,10 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
+TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
+_TEST_RECORD_RE = re.compile(
+    r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
+)
 
 
 def _tool(name: str) -> str | None:
@@ -96,6 +101,48 @@ def _split_command(command: str) -> list[str]:
     return cleaned
 
 
+def _record_summary(text: str) -> tuple[str, int]:
+    statuses = _TEST_RECORD_RE.findall(text)
+    if not statuses:
+        return "NO_RECORD", 0
+    unique = set(statuses)
+    if unique == {"SKIP"}:
+        return "SKIP_RECORDS", len(statuses)
+    if "SKIP" in unique:
+        return "MIXED_RECORDS", len(statuses)
+    return "RESULT_RECORDS", len(statuses)
+
+
+def annotate_terminal_outcome(
+    report: dict[str, object], capture: bytes, outcome: str
+) -> dict[str, object]:
+    """Attach a human-observed HANG/RESET label to a no-record capture.
+
+    A host process exit cannot distinguish a device reset from a probe hang.
+    The annotation is therefore explicit human evidence, never an inference,
+    and it is rejected when the PSP already emitted any scalar test record.
+    """
+
+    if outcome not in TERMINAL_OUTCOMES:
+        raise ValueError(f"unsupported terminal outcome: {outcome}")
+    text = capture.decode("utf-8", errors="replace")
+    classification, record_count = _record_summary(text)
+    if record_count:
+        raise ValueError("terminal outcome annotation requires a capture with no test records")
+    annotated = dict(report)
+    annotated["record_classification"] = classification
+    annotated["test_record_count"] = 0
+    annotated["terminal_outcome"] = outcome
+    annotated["terminal_outcome_source"] = "human-observed"
+    annotated["capture_sha256"] = hashlib.sha256(capture).hexdigest()
+    annotated["acceptance_eligible"] = False
+    annotated["acceptance_blockers"] = [
+        "terminal outcome has no scalar PSP result stream",
+        "human observation must be accompanied by model/firmware/CFW/clock in the hardware handoff",
+    ]
+    return annotated
+
+
 PROVENANCE_FLAGS = ("binary", "source_commit", "model", "firmware")
 
 
@@ -136,6 +183,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="human-recorded PSP model identifier")
     parser.add_argument("--firmware", help="human-recorded PSP firmware identifier")
     parser.add_argument("--out", type=Path)
+    parser.add_argument(
+        "--annotate-report",
+        type=Path,
+        help="existing capture report to annotate after a human-observed no-record outcome",
+    )
+    parser.add_argument(
+        "--observed-terminal-outcome",
+        choices=sorted(TERMINAL_OUTCOMES),
+        help="human-observed HANG or RESET; never inferred from host process status",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -143,6 +200,38 @@ def main(argv: list[str] | None = None) -> int:
     if supplied and len(supplied) != len(PROVENANCE_FLAGS):
         missing = ", ".join("--" + flag.replace("_", "-") for flag in PROVENANCE_FLAGS if flag not in supplied)
         parser.error(f"provenance metadata is all-or-nothing; missing {missing}")
+
+    if bool(args.annotate_report) != bool(args.observed_terminal_outcome):
+        parser.error("--annotate-report and --observed-terminal-outcome must be supplied together")
+    if args.annotate_report:
+        if args.command or args.psp_output or args.nakagawa_output or args.dry_run:
+            parser.error("terminal annotation cannot launch or compare another capture")
+        report = json.loads(args.annotate_report.read_text(encoding="utf-8"))
+        stdout_file = report.get("stdout_file")
+        if not isinstance(stdout_file, str):
+            parser.error("capture report has no stdout_file")
+        capture = (ROOT / stdout_file).resolve()
+        try:
+            capture.relative_to(DEFAULT_RESULTS.resolve())
+        except ValueError:
+            parser.error("capture report stdout_file escapes the hardware-results directory")
+        if not capture.is_file():
+            parser.error("capture report stdout_file does not exist")
+        try:
+            annotated = annotate_terminal_outcome(
+                report, capture.read_bytes(), args.observed_terminal_outcome
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        rendered = dump_json(annotated)
+        if args.out:
+            if args.out.resolve() == args.annotate_report.resolve():
+                parser.error("refusing to overwrite the original capture report")
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(rendered, encoding="utf-8")
+        else:
+            sys.stdout.write(rendered)
+        return 0
 
     if args.dry_run or not args.command:
         report = _plan(args)
@@ -170,6 +259,9 @@ def main(argv: list[str] | None = None) -> int:
         "stdout_file": str(capture.relative_to(ROOT)).replace("\\", "/"),
         "stderr_present": bool(stderr),
     }
+    record_classification, record_count = _record_summary(stdout)
+    report["record_classification"] = record_classification
+    report["test_record_count"] = record_count
     if args.psp_output and args.nakagawa_output:
         report["comparison"] = compare_texts(
             _canonicalize_psp(args.psp_output.read_text(encoding="utf-8"), args),

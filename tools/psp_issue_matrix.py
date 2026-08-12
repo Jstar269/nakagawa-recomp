@@ -51,7 +51,8 @@ HARDWARE = {
 HARDWARE_IDS = {
     **{number: "PSP-KERNEL-001" for number in {1, 2, 3, 13, 14, 16, 20, 26, 61, 74, 79, 84, 88, 92, 93, 116}},
     **{number: "PSP-IO-001" for number in {55, 63, 68, 72, 91}},
-    **{number: "PSP-DISPLAY-001" for number in {23, 24, 40, 44, 64, 83, 87, 89}},
+    23: "PSP-DMAC-001",
+    **{number: "PSP-DISPLAY-001" for number in {24, 40, 44, 64, 83, 87, 89}},
     **{number: "PSP-SYSTEM-001" for number in {34, 62, 77, 78, 80, 86, 94}},
     **{number: "PSP-AUDIO-001" for number in {38, 69, 70, 75}},
     **{number: "PSP-KERNEL-001" for number in {36, 82, 90}},
