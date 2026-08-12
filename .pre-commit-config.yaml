@@ -49,10 +49,14 @@ repos:
       - id: ruff-check
         files: ^tools/.*\.py$
 
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+  # Betterleaks is the actively developed successor from the Gitleaks maintainers.
+  # Its compatibility layer intentionally consumes the existing .gitleaks.toml during
+  # this migration; a follow-up on this branch should differential-test the old/new
+  # scanners before simplifying that config into a native .betterleaks.toml.
+  - repo: https://github.com/betterleaks/betterleaks
+    rev: ed69eef5c9d16d1b39f136846b7bbe5fb8471ef5 # v1.7.4
     hooks:
-      - id: gitleaks
+      - id: betterleaks
         stages: [pre-commit, pre-push]
 
   - repo: local
