@@ -109,7 +109,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          betterleaks_bin="$(find "${PRE_COMMIT_HOME:-$HOME/.cache/pre-commit}" -type f -path '*/golangenv-default/bin/betterleaks' -print -quit)"
+          # pre-commit uses the system Go toolchain when the runner provides one
+          # and otherwise creates a versioned golangenv-* environment.  Discover
+          # either form instead of assuming the fallback environment name.
+          betterleaks_bin="$(find "${PRE_COMMIT_HOME:-$HOME/.cache/pre-commit}" -type f -path '*/golangenv-*/bin/betterleaks' -print -quit)"
           test -n "$betterleaks_bin"
           echo "BETTERLEAKS_BIN=$betterleaks_bin" >> "$GITHUB_ENV"
 
