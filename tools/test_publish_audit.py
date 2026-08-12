@@ -148,7 +148,7 @@ class TestPublishAudit(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def test_gitleaks_secret_redaction_fixture(self):
+    def test_secret_scan_redaction_fixture(self):
         sentinel_secret = "SUPER_SECRET_SENTINEL_TOKEN_12345"
         leaks_data = [
             {
@@ -162,14 +162,14 @@ class TestPublishAudit(unittest.TestCase):
             json.dump(leaks_data, tmp)
             tmp_path = Path(tmp.name)
         try:
-            findings = publish_audit.parse_gitleaks_report(tmp_path)
+            findings = publish_audit.parse_secret_scan_report(tmp_path)
             self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0].code, "GITLEAKS_LEAK")
+            self.assertEqual(findings[0].code, "SECRET_SCAN_LEAK")
             self.assertNotIn(sentinel_secret, findings[0].detail)
             self.assertNotIn(sentinel_secret[:10], findings[0].detail)
 
             entries = [publish_audit.GitEntry("100644", "abc", "0", "config/secret.json", "file")]
-            report = publish_audit.generate_manifest_report(entries, findings, gitleaks_report=tmp_path)
+            report = publish_audit.generate_manifest_report(entries, findings, secret_scan_report=tmp_path)
             report_str = json.dumps(report)
             self.assertNotIn(sentinel_secret, report_str)
 

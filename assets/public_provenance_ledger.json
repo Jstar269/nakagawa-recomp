@@ -15,6 +15,15 @@
   ],
   "entries": [
     {
+      "path": ".betterleaks.toml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "d75871c6852072d69015d9239d50088bbb04a2a7ebbb311bdc240f0823bd94cc"
+    },
+    {
       "path": ".clang-format",
       "classification": "project_authored_attested",
       "evidence": {
@@ -142,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "4ed113853d8d210e7f763bff0e95f2df176e863f41950ae43fa81c0c69a0d875"
+      "sha256": "e44cb2d67ef84d200bf457e6c8f02af67167285549d0cd877db8932f04b05322"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -173,15 +182,6 @@
       "sha256": "e2d3fc3603512755235a9b817b7eb7264ce4ac70cedee5ed0ada1eaf2d46a508"
     },
     {
-      "path": ".gitleaks.toml",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "44209b45d6fb7f5f710014ec790c8329f397918bab455a9da98fee9c576ff91f"
-    },
-    {
       "path": ".markdownlint-cli2.jsonc",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -197,7 +197,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6c85d68742447523e349941987e0291d6f09af2ad6aa7e47f37a70c862bc46e3"
+      "sha256": "0d834b1d17b16feb9de612a650826b85573047191ea973ac05d30d011eaa47ce"
     },
     {
       "path": "AGENTS.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c0643fe1e994dbf79dce92a23d230c3de86c174024a77b2dca375cb34442f1ab"
+      "sha256": "f977183991b3ecdf5aeec1caa7ee6e2080a30825a9f6131c3d6bd07830dfa21e"
     },
     {
       "path": "assets/release_manifest.json",
@@ -703,7 +703,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3a532a1a02ed2abe0cfd3fbcb42d693435a610a55e5d25499264b43828c3eab3"
+      "sha256": "75db7696f408b0e0b3b0852de18426c115ac21d08379c4301c3dbc0f266e8d41"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -856,7 +856,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d8e97761fae38f4304dc0c50921cb6476228a64a45b4c6bc5aa1c5fb56fd5dee"
+      "sha256": "da5ad069df3618957c0e328deada32afc0a63ecebf90c32e9186442358f5e2cb"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -4884,6 +4884,18 @@
       "sha256": "9e0d8a6023e10a3ed43a42ea4380120498e363a477ba937984d7c752c5c6f669"
     },
     {
+      "path": "tools/betterleaks_canary.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b042df8ad48a10d2a2e21fbe765dea73bd7f78aef7b89a81ff09e29a95a835a5"
+    },
+    {
       "path": "tools/boot_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5867,7 +5879,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d0e404b6b15114362edbaaca3ae9fb0a601ac986e11405606aec925366c77b8"
+      "sha256": "5baf3d3b65e039212f46cbddc1a5de2aced6c3daa3f412a6a28d1565c56051d2"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -6815,7 +6827,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab162332b8b88e1db29a110832ffa90cd9ea76103971762a8bd761aef71a8524"
+      "sha256": "5c10ef5eb39c062cbfa901c80e6a37c5c4a253afda471cbc3ce7db5714bc1090"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
