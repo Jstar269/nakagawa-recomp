@@ -50,9 +50,8 @@ repos:
         files: ^tools/.*\.py$
 
   # Betterleaks is the actively developed successor from the Gitleaks maintainers.
-  # Its compatibility layer intentionally consumes the existing .gitleaks.toml during
-  # this migration; a follow-up on this branch should differential-test the old/new
-  # scanners before simplifying that config into a native .betterleaks.toml.
+  # The project-owned native config keeps default detection enabled and limits
+  # the synthetic history-audit exception to its exact value and path.
   - repo: https://github.com/betterleaks/betterleaks
     rev: ed69eef5c9d16d1b39f136846b7bbe5fb8471ef5 # v1.7.4
     hooks:

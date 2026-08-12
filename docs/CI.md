@@ -39,8 +39,10 @@ aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
 The full-tree pre-commit run retains the publication audit and the separate
-pinned secret scan. Markdown linting is separate so documentation changes do not pay
-for a dashboard install. Dashboard dependency changes run the clean `npm ci`,
+Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
+reachable-history scan and the synthetic canary gate. Markdown linting is
+separate so documentation changes do not pay for a dashboard install. Dashboard
+dependency changes run the clean `npm ci`,
 test, lint, type-check, build, and standalone-output leakage checks. Native and
 Windows jobs remain synthetic/public-input gates; no private game input is put in
 Actions.
@@ -65,8 +67,8 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   goes false, including when an unknown path forces full applicability; the path
   facts stay true, so the ready-for-review transition needs no reclassification.
 - **`hygiene` is ungated.** The all-files pre-commit run — which includes the
-  publication safety audit and the pinned secret scan — executes on every event, so
-  the security and publication boundary is never path-gated.
+  publication safety audit and the Betterleaks scan — executes on every event,
+  so the security and publication boundary is never path-gated.
 
 Test modules use their logical implementation subject for classification:
 `tools/test_<subject>.py` is evaluated through the same subsystem predicates as

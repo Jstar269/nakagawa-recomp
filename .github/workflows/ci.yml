@@ -76,6 +76,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Betterleaks' git mode is the history gate; a shallow checkout would
+          # silently reduce it to a current-commit scan.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -90,17 +93,35 @@ jobs:
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
 
-      - name: Scan the current tracked tree with Gitleaks
+      - name: Scan the current tracked tree with Betterleaks
         shell: bash
         run: |
           set -euo pipefail
-          # The pinned Gitleaks pre-commit hook scans the staged diff. Build an
+          # The pinned Betterleaks pre-commit hook scans the staged diff. Build an
           # empty-index diff so this CI step covers every tracked file in the
           # current revision rather than only files changed by this PR.
           git read-tree --empty
           git add -A
-          trap 'git reset --hard HEAD >/dev/null 2>&1 || true' EXIT
-          pre-commit run gitleaks --all-files --show-diff-on-failure
+          trap 'git reset --mixed HEAD >/dev/null 2>&1 || true' EXIT
+          pre-commit run betterleaks --all-files --show-diff-on-failure
+
+      - name: Locate the pinned Betterleaks binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          betterleaks_bin="$(find "${PRE_COMMIT_HOME:-$HOME/.cache/pre-commit}" -type f -path '*/golangenv-default/bin/betterleaks' -print -quit)"
+          test -n "$betterleaks_bin"
+          echo "BETTERLEAKS_BIN=$betterleaks_bin" >> "$GITHUB_ENV"
+
+      - name: Scan reachable sanitized Git history with Betterleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BETTERLEAKS_BIN" git . --redact --verbose
+
+      - name: Run Betterleaks synthetic canaries
+        shell: bash
+        run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
   markdown:
     name: Markdown validation

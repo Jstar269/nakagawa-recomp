@@ -1,0 +1,17 @@
+title = "Nakagawa public-source Betterleaks configuration"
+betterleaksMinVersion = "1.7.4"
+
+# The history-audit unit test deliberately embeds synthetic values in a
+# redaction fixture. Keep the exception tied to those exact values and file;
+# adding another secret-shaped value to tools/ or moving this fixture must still
+# fail the scanner.
+filter = '''
+attributes["path"] == "tools/test_history_audit.py" &&
+(
+    finding["secret"] == ("ghp_" + "123456789012345678901234567890123456") ||
+    finding["secret"] == "0123456789abcdef0123456789abcdef"
+)
+'''
+
+[extend]
+useDefault = true

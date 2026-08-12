@@ -219,9 +219,16 @@ def is_git_lfs_pointer(text: str) -> bool:
     return has_oid and has_size
 
 
-def parse_gitleaks_report(report_path: Path) -> list[Finding]:
+def parse_secret_scan_report(report_path: Path) -> list[Finding]:
+    """Parse a Betterleaks/Gitleaks-compatible JSON report without echoing secrets.
+
+    Betterleaks deliberately keeps the report shape compatible with the older
+    Gitleaks JSON output.  The publication audit therefore consumes the
+    neutral schema and emits neutral finding codes; callers do not need to
+    know which compatible scanner produced the report.
+    """
     if not report_path.is_file():
-        return [Finding("GITLEAKS", str(report_path), "Gitleaks report file not found")]
+        return [Finding("SECRET_SCAN", str(report_path), "secret scanner report file not found")]
     findings = []
     try:
         with report_path.open("r", encoding="utf-8") as stream:
@@ -233,10 +240,15 @@ def parse_gitleaks_report(report_path: Path) -> list[Finding]:
                     start_line = leak.get("StartLine", leak.get("startLine", 0))
                     commit_val = leak.get("Commit", leak.get("commit", "uncommitted"))
                     detail = f"Rule: {rule_id}; Line: {start_line}; Commit: {commit_val} [REDACTED]"
-                    findings.append(Finding("GITLEAKS_LEAK", file_p, detail))
+                    findings.append(Finding("SECRET_SCAN_LEAK", file_p, detail))
     except Exception as exc:
-        findings.append(Finding("GITLEAKS_PARSE", str(report_path), f"failed to parse Gitleaks report: {exc}"))
+        findings.append(Finding("SECRET_SCAN_PARSE", str(report_path), f"failed to parse secret scanner report: {exc}"))
     return findings
+
+
+def parse_gitleaks_report(report_path: Path) -> list[Finding]:
+    """Backward-compatible alias for integrations using the old function name."""
+    return parse_secret_scan_report(report_path)
 
 
 def _git_output(cmd: list[str], repo_root: Path = ROOT) -> str:
@@ -1364,7 +1376,7 @@ def audit_entries_with_semantics(
     entries: list[GitEntry],
     manifest_path: Path | None = None,
     public_scope: bool = False,
-    gitleaks_report: Path | None = None,
+    secret_scan_report: Path | None = None,
     repo_root: Path = ROOT,
     exhaustive: bool = False,
     is_candidate_root: bool = False,
@@ -1427,8 +1439,8 @@ def audit_entries_with_semantics(
 
     findings.extend(check_collisions(paths))
 
-    if gitleaks_report:
-        findings.extend(parse_gitleaks_report(gitleaks_report))
+    if secret_scan_report:
+        findings.extend(parse_secret_scan_report(secret_scan_report))
 
     content_map: dict[str, tuple[bytes | None, str | None]] = {}
     if content_source == CONTENT_INDEX:
@@ -1700,7 +1712,7 @@ def audit_entries(
     entries: list[GitEntry],
     manifest_path: Path | None = None,
     public_scope: bool = False,
-    gitleaks_report: Path | None = None,
+    secret_scan_report: Path | None = None,
     repo_root: Path = ROOT,
     exhaustive: bool = False,
     is_candidate_root: bool = False,
@@ -1717,7 +1729,7 @@ def audit_entries(
         entries=entries,
         manifest_path=manifest_path,
         public_scope=public_scope,
-        gitleaks_report=gitleaks_report,
+        secret_scan_report=secret_scan_report,
         repo_root=repo_root,
         exhaustive=exhaustive,
         is_candidate_root=is_candidate_root,
@@ -1744,7 +1756,7 @@ def generate_manifest_report(
     semantics: list[FileSemantics] | None = None,
     repo_root: Path = ROOT,
     profile: str = "public-safe-v1",
-    gitleaks_report: Path | None = None,
+    secret_scan_report: Path | None = None,
     is_candidate_root: bool = False,
     content_source: str = CONTENT_INDEX,
 ) -> dict:
@@ -1755,7 +1767,7 @@ def generate_manifest_report(
         _, semantics = audit_entries_with_semantics(
             entries,
             repo_root=repo_root,
-            gitleaks_report=gitleaks_report,
+            secret_scan_report=secret_scan_report,
             is_candidate_root=is_candidate_root,
             content_source=content_source,
         )
@@ -1770,7 +1782,7 @@ def generate_manifest_report(
     entry_json_canonical = json.dumps(canonical_entries, sort_keys=True)
     aggregate_hash = hashlib.sha256(entry_json_canonical.encode("utf-8")).hexdigest()
 
-    gitleaks_status = "ingested" if gitleaks_report else "not_run"
+    secret_scan_status = "ingested" if secret_scan_report else "not_run"
 
     text_count = sum(1 for s in semantics if s.text_binary == "text")
     binary_count = sum(1 for s in semantics if s.text_binary == "binary")
@@ -1788,7 +1800,7 @@ def generate_manifest_report(
             "git_commit": git_commit,
             "content_source": content_source,
             "profile": profile,
-            "gitleaks_status": gitleaks_status,
+            "secret_scan_status": secret_scan_status,
             "aggregate_manifest_sha256": aggregate_hash,
         },
         "summary": {
@@ -1981,9 +1993,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to write full CSV audit manifest report",
     )
     parser.add_argument(
-        "--gitleaks-report",
+        "--secret-scan-report",
         type=Path,
-        help="Path to external Gitleaks JSON findings report to ingest and check",
+        help="Path to external Betterleaks/Gitleaks-compatible JSON findings report to ingest and check",
+    )
+    parser.add_argument(
+        "--gitleaks-report",
+        dest="secret_scan_report",
+        type=Path,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--public-scope",
@@ -2047,7 +2065,7 @@ def main(argv: list[str] | None = None) -> int:
         entries,
         manifest_path=manifest_path,
         public_scope=args.public_scope,
-        gitleaks_report=args.gitleaks_report,
+        secret_scan_report=args.secret_scan_report,
         repo_root=audit_root,
         exhaustive=is_exhaustive,
         is_candidate_root=is_cand_root,
@@ -2072,7 +2090,7 @@ def main(argv: list[str] | None = None) -> int:
         semantics,
         repo_root=audit_root,
         profile=args.profile,
-        gitleaks_report=args.gitleaks_report,
+        secret_scan_report=args.secret_scan_report,
         is_candidate_root=is_cand_root,
         content_source=content_source,
     )
