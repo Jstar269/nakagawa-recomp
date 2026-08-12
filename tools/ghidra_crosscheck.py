@@ -86,7 +86,7 @@ def main(argv):
 
     image_base, exec_blocks, gfuncs = load_ghidra_csv(ns.csv)
     elf = analyze.Elf(ns.elf)
-    starts, ranges = analyze.analyze(elf)
+    starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
 
     # Ghidra entries, normalized to base 0, restricted to real code:
     # executable blocks, non-thunk (thunks model imports/PLT stubs).

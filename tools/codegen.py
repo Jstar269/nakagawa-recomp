@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 
 # Import the local analyzer
-from analyze import analyze, Elf, in_ranges, exec_ranges
+from analyze import analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
 
@@ -1727,15 +1727,18 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
     if len(args) < 2:
-        sys.stderr.write("usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] [--funcs-per-chunk=N] [--extra-elf=ELF@BASE]...\n")
+        sys.stderr.write("usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] [--funcs-per-chunk=N] [--extra-span=LO,HI] [--extra-elf=ELF@BASE]...\n")
         return 2
     base = None
     profile = None
     funcs_per_chunk = 2000
+    extra_span_arg = None
     extra_elfs = []  # list of (elf_path, base_addr)
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--extra-span="):
+            extra_span_arg = o.split("=", 1)[1]
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -1759,7 +1762,11 @@ def main(argv):
                 sys.stderr.write(f"invalid --extra-elf format: {o}\n")
                 return 2
     elf = Elf(args[0], base=base)
-    analyzed, ranges = analyze(elf)
+    # Only the primary image may carry an explicit extra executable span (its title's
+    # configuration, from --extra-span or the HST_EXTRA_SPANS seam). Every extra guest
+    # module below is rebased to its own load address and is analyzed with no extra
+    # span at all, so one module's title configuration can never reach another's.
+    analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     known = {addr for addr, info in catalog.items() if info.callable}
     resume_owners = {

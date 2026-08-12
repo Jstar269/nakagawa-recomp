@@ -1059,7 +1059,7 @@ def direct_branch_resume_owners(elf, starts, ranges, limit=DEFAULT_STEP_LIMIT):
 def main(argv):  # pragma: no cover - operator entry point
     import argparse
 
-    from analyze import Elf, analyze
+    from analyze import Elf, analyze, analyzer_span_from_env
 
     parser = argparse.ArgumentParser(
         description="Classify entry points by o32 stack-frame balance."
@@ -1089,7 +1089,7 @@ def main(argv):  # pragma: no cover - operator entry point
     args = parser.parse_args(argv[1:])
 
     elf = Elf(args.elf, base=args.base)
-    starts, ranges = analyze(elf)
+    starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
     print(f"analyzer starts: {len(starts)}")
 
     for addr in args.addr:

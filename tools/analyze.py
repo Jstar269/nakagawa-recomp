@@ -222,7 +222,72 @@ def section_bytes(elf, s):
     return elf.data[s["off"]:s["off"] + s["size"]]
 
 
-def exec_ranges(elf):
+EXTRA_SPAN_ENV = "HST_EXTRA_SPANS"
+UINT32_END_MAX = 0x100000000
+
+
+def parse_extra_spans(text, source=EXTRA_SPAN_ENV):
+    """Parse one explicit ``"lo,hi"`` executable span into ``[(lo, hi)]``.
+
+    An empty/whitespace-only string means *no* extra span. `source` only names the
+    origin in error messages (an environment variable or a command-line option), so
+    a malformed value fails closed with an actionable message instead of silently
+    analyzing the wrong address range.
+    """
+    if text is None:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) != 2:
+        raise RuntimeError("%s must look like 'lo,hi' (got %r)" % (source, text))
+    try:
+        lo, hi = (int(part, 0) for part in parts)
+    except ValueError as exc:
+        raise RuntimeError(
+            "%s must contain numeric addresses (got %r)" % (source, text)
+        ) from exc
+    if lo < 0 or hi < 0:
+        raise RuntimeError("%s must not contain negative addresses (got %r)" % (source, text))
+    if hi <= lo:
+        raise RuntimeError("%s requires hi > lo (got %r)" % (source, text))
+    if hi > UINT32_END_MAX:
+        raise RuntimeError("%s exceeds the 32-bit guest address space (got %r)" % (source, text))
+    return [(lo, hi)]
+
+
+def analyzer_span_from_env(environ=None):
+    """Return the explicit extra executable span the caller put in the environment.
+
+    This is the *only* place a span may enter from ambient process state, and it is
+    called exclusively from CLI entry points for the primary image. Library callers
+    (`exec_ranges`, `analyze`) never consult the environment, so an inherited value
+    cannot leak into a rebased extra guest module analyzed in the same process.
+    """
+    if environ is None:
+        environ = os.environ
+    return parse_extra_spans(environ.get(EXTRA_SPAN_ENV), EXTRA_SPAN_ENV)
+
+
+def resolve_extra_spans(cli_text, environ=None, source="--extra-span"):
+    """Resolve the effective span from an explicit option plus the environment.
+
+    An explicit option wins, but a *conflicting* environment value fails closed
+    rather than letting the two disagree silently about what was analyzed.
+    """
+    from_cli = parse_extra_spans(cli_text, source)
+    from_env = analyzer_span_from_env(environ)
+    if from_cli is None:
+        return from_env
+    if from_env is not None and from_env != from_cli:
+        raise RuntimeError(
+            "%s=%r conflicts with %s=%r" % (source, cli_text, EXTRA_SPAN_ENV, from_env)
+        )
+    return from_cli
+
+
+def exec_ranges(elf, extra_spans=None):
     # Build the executable address ranges from the section table, restricted to actual code
     # sections. PSP PRX ELFs declare almost every section with SHF_EXECINSTR (the loader
     # maps the whole module flat with WAX), so a naive flag check still treats .data/.rodata
@@ -250,24 +315,19 @@ def exec_ranges(elf):
         if s["addr"] is None or s["size"] is None or s["size"] <= 0:
             continue
         spans.append((s["addr"], s["addr"] + s["size"]))
-    # HST-specific extra code span outside the section table. The default is
-    # overrideable via HST_EXTRA_SPANS="lo,hi" (env) for non-default runs. This
-    # range is HST-specific and must NOT be applied when the game is rebased
-    # (GAME_BASE != 0) -- a rebased guest would live at different addresses.
-    DEFAULT_HST_EXTRA_SPANS = "0x00303194,0x00306e24"
-    game_base = elf.base if elf.base is not None else int(os.environ.get("GAME_BASE", "0"), 0)
-    if "HST_EXTRA_SPANS" in os.environ:
-        env_spans = os.environ["HST_EXTRA_SPANS"].strip()
-    else:
-        env_spans = DEFAULT_HST_EXTRA_SPANS if game_base == 0 else ""
-    if env_spans:
-        if game_base != 0:
+    # Extra code spans that live outside the section table are *caller-supplied title
+    # configuration*, never a built-in default: a generic base-zero image must not
+    # silently inherit some other title's executable span. The span is only meaningful
+    # for an unrebased image -- a rebased guest lives at different addresses -- so
+    # applying one to a rebased module fails closed instead of analyzing garbage.
+    if extra_spans:
+        effective_base = 0 if elf.base is None else elf.base
+        if effective_base != 0:
             raise RuntimeError(
-                "HST_EXTRA_SPANS is HST-specific and cannot be applied when "
-                "GAME_BASE != 0 (got GAME_BASE=0x%x)" % game_base
+                "explicit extra executable spans cannot be applied when "
+                "GAME_BASE != 0 (got GAME_BASE=0x%x)" % effective_base
             )
-        lo_s, hi_s = (p.strip() for p in env_spans.split(",", 1))
-        spans.append((int(lo_s, 0), int(hi_s, 0)))
+        spans.extend((lo, hi) for lo, hi in extra_spans)
     if not spans:
         return [(0, 0)]
     spans.sort()
@@ -646,8 +706,8 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf):
-    ranges = exec_ranges(elf)
+def analyze(elf, extra_spans=None):
+    ranges = exec_ranges(elf, extra_spans=extra_spans)
     text = elf.sec(".text")
 
     def in_text(a):
@@ -1063,14 +1123,17 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
     if not args:
-        sys.stderr.write("usage: analyze.py <elf> [--base=HEX] [--toml=out.toml] [--check=workdir] [--quiet]\n")
+        sys.stderr.write("usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] [--toml=out.toml] [--check=workdir] [--quiet]\n")
         return 2
     base = None
+    extra_span_arg = None
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--extra-span="):
+            extra_span_arg = o.split("=", 1)[1]
     elf = Elf(args[0], base=base)
-    starts, ranges = analyze(elf)
+    starts, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts
