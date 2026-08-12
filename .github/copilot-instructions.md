@@ -186,15 +186,18 @@ Preserve SPDX, copyright, and provenance notices. For third-party or materially 
 record the exact upstream project/path/revision and preserve applicable notices. Material
 AI-assisted translation/reimplementation must not obscure source lineage.
 
-Current publication blockers include:
+`Jstar269/nakagawa-recomp` is the active sanitized public source repository.
+Its publication controls are engineering and provenance gates, not legal
+clearance. Residual public-source boundaries include:
 
-- #98 — PGF/PPSSPP/JPCSP licensing provenance;
-- #99 — exact replacement-font licenses/notices;
-- #102 — full-history secret/proprietary/private-metadata audit;
-- #104 — qualified PGD/amctrl public-distribution legal review.
+- unresolved PGF implementation and replacement-font provenance/distribution review;
+- unresolved PGD/amctrl provenance and distribution review; and
+- continued exclusion of private title inputs, game-derived output, and private
+  engineering evidence.
 
-Do not resolve these by guessing a license, changing SPDX text alone, or treating AI analysis as
-legal advice.
+Do not resolve these by guessing a license, changing SPDX text alone, treating
+AI analysis as legal advice, or reconnecting private/pre-sanitization history to
+the public repository.
 
 ## AI-assisted development
 

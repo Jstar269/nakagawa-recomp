@@ -54,6 +54,29 @@ class TestDocFreshnessLinter(unittest.TestCase):
             errors = lint_doc_links_and_topology(doc, root)
         self.assertEqual(errors, [])
 
+    def test_missing_repository_relative_link_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = root / "docs" / "README.md"
+            doc.parent.mkdir()
+            doc.write_text("See [missing](NOT_PRESENT.md).\n", encoding="utf-8")
+            errors = lint_doc_links_and_topology(doc, root)
+        self.assertTrue(any("missing repository-relative link target" in error for error in errors))
+
+    def test_existing_repository_relative_link_and_fenced_example_are_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = root / "docs" / "README.md"
+            target = root / "NOTICE.md"
+            doc.parent.mkdir()
+            target.write_text("notice\n", encoding="utf-8")
+            doc.write_text(
+                "See [notice](../NOTICE.md).\n\n```md\n[example](ABSENT.md)\n```\n",
+                encoding="utf-8",
+            )
+            errors = lint_doc_links_and_topology(doc, root)
+        self.assertEqual(errors, [])
+
     def test_recursive_fallback_includes_nested_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

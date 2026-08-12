@@ -20,7 +20,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "e5fff7a6e833ef2ee674b6a4f99cf95b3c90b671937154b6c7e4a6d7e6b7b2be"
     },
@@ -30,7 +30,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "ad82d1edce2f42f5587f01140812d4379bfcbca5d4554e3a26783493c856d13e"
     },
@@ -40,7 +40,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "39f1362a9f03d0baf6a485c92b16c1ac73189e26068d5f62f610d7000b35cfd5"
     },
@@ -50,7 +50,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "e158f0e82141bb9994cc3512a1f0a082919eb1a8fecc72223fc8d821a2c6084e"
     },
@@ -97,7 +97,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7e5d717ee724f5ba88c3f4f553b2ade939b3368832199d58775810bc579acdb3"
+      "sha256": "92b9bd1b23b2284f29128a19a88cbf3608e3fd7dd9a2f25e6fb5c0de36826762"
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE/default.md",
@@ -115,7 +115,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1b1475e8e43919186e603a7ed6b6c0d5ec91df76298c87e1f206bf0cb449339b"
+      "sha256": "9884a69aed41fc8514cd4127be4833ff9b13c55422492a70750b9913a7d57bee"
     },
     {
       "path": ".github/dependabot.yml",
@@ -168,7 +168,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "e2d3fc3603512755235a9b817b7eb7264ce4ac70cedee5ed0ada1eaf2d46a508"
     },
@@ -224,7 +224,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d46bcbf00a93791b2c0f35e7c1d20bb08a73ea97a78f3873f277b9215a6d4dfe"
+      "sha256": "45f961bca75e3d5a5fdcec6d57367af9bb0d67610417efa71b1222a42d4573ca"
     },
     {
       "path": "CREDITS.md",
@@ -233,7 +233,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4e0f3e69d5c41b5b16a1ab763826d1f8efdf5af4b1726bd5af18a011213ef245"
+      "sha256": "3b578d339ca8b2e8edae0d68b0252d09296299b04bfca85b27ab5563130ec25b"
     },
     {
       "path": "DEDICATION.md",
@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "293d9d94925a6c23bf4d15f661a1e4bbbfb2a2b67752774260a388dacfe120d2"
+      "sha256": "ea561a79c15623c0f5ec087c99337f5efa1053adfe5a5234c13707bf8e269ad7"
     },
     {
       "path": "LICENSE",
@@ -268,7 +268,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "faec6901d60ba388895473b4f37ebaf7163ddc5c5c5f921f16005586073ed906"
     },
@@ -279,7 +279,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fb0abba576f400b2bae787c8e6be541e70fc51551fb244d7395c98d5d56171d2"
+      "sha256": "a24e343129eb74d393c91ebf1854598bc7adadd7e2c463c78850f854c5bde0c9"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -296,7 +296,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7e383917633ea5bb982ecb068f09fd89e20810d9f9d577e6dea2d9edfd27efdb"
+      "sha256": "094149c41f4abb038712c4d51689ff11c33c7aca04c1b8cf07c8c1e7d8457bc3"
     },
     {
       "path": "SECURITY.md",
@@ -320,7 +320,8 @@
       "path": "THIRD_PARTY_LICENSES/PSPSDK.txt",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "pspsdk",
         "upstream_paths": [],
@@ -334,7 +335,8 @@
       "path": "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "upstream-sal063-notice",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -350,7 +352,8 @@
       "path": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dependency-shadcn-dashboard",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
         "upstream_paths": [],
@@ -411,7 +414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2b4073f59c740c9e118f1f05cc23700258b3a8902a12f02ef382fa068ef6c8be"
+      "sha256": "c908a8b701227904aa3808ffa25c798e643c0b09574684e31442d83158925d60"
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
@@ -420,7 +423,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0e21bc05850c5662607160a22d2b0ffddad8871f5970024e7980005d0e3aa175"
+      "sha256": "af1419b9b459f1e84148fb14b50b3fae33dcfef11d46be84204b3009979db46f"
     },
     {
       "path": "assets/titles/synthetic.json",
@@ -435,7 +438,8 @@
       "path": "assets/upstream/pspdev.NOTICE.md",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "pspsdk",
         "upstream_paths": [],
@@ -449,7 +453,8 @@
       "path": "assets/upstream/pspdev.evidence.json",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "pspsdk",
         "upstream_paths": [],
@@ -463,7 +468,8 @@
       "path": "assets/upstream/pspdev.lock.json",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "pspsdk",
         "upstream_paths": [],
@@ -486,7 +492,8 @@
       "path": "assets/vfpu/vfpu_asin_lut65536.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -497,7 +504,8 @@
       "path": "assets/vfpu/vfpu_asin_lut_deltas.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -508,7 +516,8 @@
       "path": "assets/vfpu/vfpu_asin_lut_indices.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -519,7 +528,8 @@
       "path": "assets/vfpu/vfpu_exp2_lut.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -530,7 +540,8 @@
       "path": "assets/vfpu/vfpu_exp2_lut65536.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -541,7 +552,8 @@
       "path": "assets/vfpu/vfpu_log2_lut.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -552,7 +564,8 @@
       "path": "assets/vfpu/vfpu_log2_lut65536.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -563,7 +576,8 @@
       "path": "assets/vfpu/vfpu_log2_lut65536_quadratic.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -574,7 +588,8 @@
       "path": "assets/vfpu/vfpu_rcp_lut.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -585,7 +600,8 @@
       "path": "assets/vfpu/vfpu_rsqrt_lut.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -596,7 +612,8 @@
       "path": "assets/vfpu/vfpu_sin_lut8192.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -607,7 +624,8 @@
       "path": "assets/vfpu/vfpu_sin_lut_delta.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -618,7 +636,8 @@
       "path": "assets/vfpu/vfpu_sin_lut_exceptions.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -629,7 +648,8 @@
       "path": "assets/vfpu/vfpu_sin_lut_interval_delta.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -640,7 +660,8 @@
       "path": "assets/vfpu/vfpu_sqrt_lut.dat",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -653,7 +674,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "5bcd66f8d0d351eeb00289df4579e65da54dd5b4a9fa33209449ef789daa4239"
     },
@@ -673,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "77ad8dbabdc06870fd765acbfc0d485a7add2901bd6bac8bcde93bc3c44b4bc9"
+      "sha256": "635a83c10ce2fbd51a11a3e42b6588245764b018608a00daf9259f5d3d8ce53c"
     },
     {
       "path": "docs/CI.md",
@@ -682,7 +703,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "56942fd789d2d84a49641a3b68c2ca87049f8c77ac29447ac8145ef1b5964683"
+      "sha256": "3a532a1a02ed2abe0cfd3fbcb42d693435a610a55e5d25499264b43828c3eab3"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -691,7 +712,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "50f54643cec27252741ec86c6fc67d8bd7f21da01c8c7624520ad7da8c102dba"
+      "sha256": "4157b5578d55b3f0c4317bf2cc32aaddb415def467181f5fe16d870ed4c4d492"
     },
     {
       "path": "docs/DEBUGGING.md",
@@ -718,7 +739,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9fd36818ea23d8beb972b7e66d52000c70f5304f29d02f1a3fbdc1e695c67e37"
+      "sha256": "d71da8a629af814098006f08de17b79ee5bcd569650b02975d82cb627e216b5e"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -745,7 +766,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6dc40ce1fc7ab1d70d75a0808dee4227ad2ea72115e791f02a683bafcd35e765"
+      "sha256": "233a938325cb5fd06751fe38d2ca29a19765f430a0176e8c433e001b99a3a144"
     },
     {
       "path": "docs/PARALLEL_WORK.md",
@@ -781,7 +802,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c89108c006ec4f7390f3b6f87d29efd842233b58feebc695d9f60138b71a2b7c"
+      "sha256": "ad8478612fa1f888b902115c25cfb3cc56f3e67eaa6cec68cd289bf09d4d1c16"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -799,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "55779bba8c8ce1704c8ccb4c6ceb01e7345cbd78e202e05d99d544ec32e32e66"
+      "sha256": "30ab3e5a9b7b58f443a5d3855b030cc8a72e85a80c8d00e250b0ab6639695e50"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -808,7 +829,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9c0417696ea8220a7c68e67f8b9a79d2ccfd144fc27f69a8511a0b7e46aa36f9"
+      "sha256": "dd161c1665d4f356e77acde4e56fe6cc88f3fc22c1e4457768f89d9cea8cf6d2"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -817,7 +838,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "76401e8bd6aec09d9437f8fcab99c7319e2b2662690691be6e5703c6b8122493"
+      "sha256": "e0b6614e2b486b74e1f69a093380f2fcf9ca8bce2aad4c76c3dbde85c63ae61c"
     },
     {
       "path": "docs/README.md",
@@ -826,7 +847,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "68cfca9d5dedfd54e6b000505c2c3e27c699c30e34ded1c183cf867ef92f9704"
+      "sha256": "619c7836368cc426fd083324ccdd81aa686f78839dfebd8ac62ac8bb17230ca9"
     },
     {
       "path": "docs/SETUP.md",
@@ -835,7 +856,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b2f660c24028d094820d9c7fa2839318dca693c2192d943d552773cd2a0edf36"
+      "sha256": "d8e97761fae38f4304dc0c50921cb6476228a64a45b4c6bc5aa1c5fb56fd5dee"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -898,7 +919,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0f5bf1581f135c7546281ff9a579379461a82d52afa72c6508471268217bb096"
+      "sha256": "f3806008622f332453376f0fa8cece3d2a4534a74a1397ac11e930c1db68d748"
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
@@ -916,7 +937,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "afa8d7d6a85c01182af26c78a35f1ae734c6d726ec867038b176d7aac95c1304"
+      "sha256": "cc2282c34f598f5fe5792b05c64c098b60b8e7400e5b9462c3419eab36ce2270"
     },
     {
       "path": "fixtures/nakagawa_minimal/Makefile",
@@ -1021,7 +1042,8 @@
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-addressing-evidence",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -1062,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "f579fbd66977a955e7c2c19a66d36860bef5d907602e0a4e9e2ad53b68c71c91"
+      "sha256": "dc727119bf0e214ac9e17cb903a8c10ed10de32e397f526e1c7e95ee454e699f"
     },
     {
       "path": "hst.ps1",
@@ -1070,7 +1092,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "8c4496d320b374ea5ed1a8e62abfed7d417471e7c9dc2cac3999251128814264"
     },
@@ -1080,7 +1102,7 @@
       "evidence": {
         "source": "public provenance census",
         "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers and NOTICE.md"
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "42152dc37cd5e9e88e31e9a4391102754ba8a14aa3e211e90261150af190633c"
     },
@@ -2438,7 +2460,8 @@
       "path": "src/ref/cpu.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -2452,7 +2475,8 @@
       "path": "src/ref/interp.cpp",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -2466,7 +2490,8 @@
       "path": "src/ref/interp.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -2480,7 +2505,8 @@
       "path": "src/ref/run_elf.cpp",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -2494,7 +2520,8 @@
       "path": "src/ref/selftest.cpp",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -2508,7 +2535,8 @@
       "path": "src/rt/asset_index.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -2519,7 +2547,8 @@
       "path": "src/rt/asset_index_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -2530,7 +2559,8 @@
       "path": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2548,7 +2578,8 @@
       "path": "src/rt/atrac3p/PROVENANCE.md",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2560,13 +2591,14 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "bbcabb3ae467e1bdac62e10dd8700e6643e8e9099f8fb7042da7bbaa20712418"
+      "sha256": "072e5d11fbb60a1c7d5929f171d6b35cd4836cb87ab3b20c5d1d966ad3b84186"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2584,7 +2616,8 @@
       "path": "src/rt/atrac3p/atrac3p_api.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2602,7 +2635,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2620,7 +2654,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2638,7 +2673,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac3plus.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2656,7 +2692,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac3plus.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2674,7 +2711,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac3plus_data.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2692,7 +2730,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac3plusdec.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2710,7 +2749,8 @@
       "path": "src/rt/atrac3p/libavcodec/atrac3plusdsp.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2728,7 +2768,8 @@
       "path": "src/rt/atrac3p/libavcodec/avcodec.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2746,7 +2787,8 @@
       "path": "src/rt/atrac3p/libavcodec/avfft.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2764,7 +2806,8 @@
       "path": "src/rt/atrac3p/libavcodec/bitstream.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2782,7 +2825,8 @@
       "path": "src/rt/atrac3p/libavcodec/config.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2800,7 +2844,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft-internal.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2818,7 +2863,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2836,7 +2882,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft_float.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2854,7 +2901,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft_init_table.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2872,7 +2920,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft_table.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2890,7 +2939,8 @@
       "path": "src/rt/atrac3p/libavcodec/fft_template.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2908,7 +2958,8 @@
       "path": "src/rt/atrac3p/libavcodec/get_bits.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2926,7 +2977,8 @@
       "path": "src/rt/atrac3p/libavcodec/internal.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2944,7 +2996,8 @@
       "path": "src/rt/atrac3p/libavcodec/mathops.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2962,7 +3015,8 @@
       "path": "src/rt/atrac3p/libavcodec/mdct_float.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2980,7 +3034,8 @@
       "path": "src/rt/atrac3p/libavcodec/mdct_template.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -2998,7 +3053,8 @@
       "path": "src/rt/atrac3p/libavcodec/put_bits.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3016,7 +3072,8 @@
       "path": "src/rt/atrac3p/libavcodec/sinewin.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3034,7 +3091,8 @@
       "path": "src/rt/atrac3p/libavcodec/sinewin.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3052,7 +3110,8 @@
       "path": "src/rt/atrac3p/libavcodec/sinewin_tablegen.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3070,7 +3129,8 @@
       "path": "src/rt/atrac3p/libavcodec/version.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3088,7 +3148,8 @@
       "path": "src/rt/atrac3p/libavcodec/vlc.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3106,7 +3167,8 @@
       "path": "src/rt/atrac3p/libavutil/attributes.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3124,7 +3186,8 @@
       "path": "src/rt/atrac3p/libavutil/avassert.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3142,7 +3205,8 @@
       "path": "src/rt/atrac3p/libavutil/avconfig.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3160,7 +3224,8 @@
       "path": "src/rt/atrac3p/libavutil/avutil.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3178,7 +3243,8 @@
       "path": "src/rt/atrac3p/libavutil/bswap.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3196,7 +3262,8 @@
       "path": "src/rt/atrac3p/libavutil/channel_layout.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3214,7 +3281,8 @@
       "path": "src/rt/atrac3p/libavutil/common.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3232,7 +3300,8 @@
       "path": "src/rt/atrac3p/libavutil/config.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3250,7 +3319,8 @@
       "path": "src/rt/atrac3p/libavutil/dynarray.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3268,7 +3338,8 @@
       "path": "src/rt/atrac3p/libavutil/error.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3286,7 +3357,8 @@
       "path": "src/rt/atrac3p/libavutil/float_dsp.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3304,7 +3376,8 @@
       "path": "src/rt/atrac3p/libavutil/float_dsp.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3322,7 +3395,8 @@
       "path": "src/rt/atrac3p/libavutil/intmath.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3340,7 +3414,8 @@
       "path": "src/rt/atrac3p/libavutil/intmath.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3358,7 +3433,8 @@
       "path": "src/rt/atrac3p/libavutil/intreadwrite.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3376,7 +3452,8 @@
       "path": "src/rt/atrac3p/libavutil/libm.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3394,7 +3471,8 @@
       "path": "src/rt/atrac3p/libavutil/log.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3412,7 +3490,8 @@
       "path": "src/rt/atrac3p/libavutil/log2_tab.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3430,7 +3509,8 @@
       "path": "src/rt/atrac3p/libavutil/macros.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3448,7 +3528,8 @@
       "path": "src/rt/atrac3p/libavutil/mathematics.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3466,7 +3547,8 @@
       "path": "src/rt/atrac3p/libavutil/mem.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3484,7 +3566,8 @@
       "path": "src/rt/atrac3p/libavutil/mem.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3502,7 +3585,8 @@
       "path": "src/rt/atrac3p/libavutil/mem_internal.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3520,7 +3604,8 @@
       "path": "src/rt/atrac3p/libavutil/qsort.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3538,7 +3623,8 @@
       "path": "src/rt/atrac3p/libavutil/reverse.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3556,7 +3642,8 @@
       "path": "src/rt/atrac3p/libavutil/reverse.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3574,7 +3661,8 @@
       "path": "src/rt/atrac3p/libavutil/thread.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3592,7 +3680,8 @@
       "path": "src/rt/atrac3p/libavutil/version.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3610,7 +3699,8 @@
       "path": "src/rt/atrac3p_bridge.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-bridge-hle",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3621,7 +3711,8 @@
       "path": "src/rt/atrac3p_bridge.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-bridge-hle",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3632,7 +3723,8 @@
       "path": "src/rt/atrac3p_bridge_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-bridge-hle",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3643,7 +3735,8 @@
       "path": "src/rt/atrac3p_selftest.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "ffmpeg",
         "upstream_paths": [
@@ -3661,7 +3754,8 @@
       "path": "src/rt/atrac3p_title_accept.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "atrac3p-title-acceptance",
         "evidence_tier": "N",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3672,10 +3766,9 @@
       "path": "src/rt/audio_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "f0bc76b0d868ea79c46e812d49569acd521e4db65c2e320100ef5153547d55e7"
     },
@@ -3683,7 +3776,8 @@
       "path": "src/rt/debug.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3694,7 +3788,8 @@
       "path": "src/rt/debug.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3705,7 +3800,8 @@
       "path": "src/rt/debug_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3716,7 +3812,8 @@
       "path": "src/rt/dispatch_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-dispatch-table",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3727,7 +3824,8 @@
       "path": "src/rt/dispatch_table.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-dispatch-table",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3738,7 +3836,8 @@
       "path": "src/rt/driver.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -3752,7 +3851,8 @@
       "path": "src/rt/evf.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-event-flag-semantics",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
@@ -3763,7 +3863,8 @@
       "path": "src/rt/evf_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-event-flag-semantics",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
@@ -3774,7 +3875,8 @@
       "path": "src/rt/fbcap_policy.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "present-capture-policy",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3785,7 +3887,8 @@
       "path": "src/rt/fbcap_policy.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "present-capture-policy",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3796,7 +3899,8 @@
       "path": "src/rt/funcdiff.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -3810,7 +3914,8 @@
       "path": "src/rt/ge.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -3835,7 +3940,8 @@
       "path": "src/rt/ge_capture.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-capture-replay",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3846,7 +3952,8 @@
       "path": "src/rt/ge_capture.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-capture-replay",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3857,7 +3964,8 @@
       "path": "src/rt/ge_capture_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-capture-replay",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3868,7 +3976,8 @@
       "path": "src/rt/ge_replay.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-capture-replay",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3879,7 +3988,8 @@
       "path": "src/rt/ge_shared.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -3904,7 +4014,8 @@
       "path": "src/rt/gpu_capture_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "present-capture-policy",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3915,7 +4026,8 @@
       "path": "src/rt/gpu_coherence_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-capture-replay",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -3926,7 +4038,8 @@
       "path": "src/rt/gpu_sdl3vk/README.md",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -3942,7 +4055,8 @@
       "path": "src/rt/gpu_sdl3vk/ge_gpu.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -3958,7 +4072,8 @@
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -3974,7 +4089,8 @@
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -3990,7 +4106,8 @@
       "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4006,7 +4123,8 @@
       "path": "src/rt/gpu_sdl3vk/sdl3vk.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4022,7 +4140,8 @@
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4038,7 +4157,8 @@
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4054,7 +4174,8 @@
       "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4070,7 +4191,8 @@
       "path": "src/rt/gpu_sdl3vk/shaders/psp.vert",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4086,7 +4208,8 @@
       "path": "src/rt/guest_printf.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4097,7 +4220,8 @@
       "path": "src/rt/guest_printf_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4108,7 +4232,8 @@
       "path": "src/rt/guestmem_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4119,7 +4244,8 @@
       "path": "src/rt/gui.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4133,7 +4259,8 @@
       "path": "src/rt/h264_mf.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "media-decode-mediafoundation",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4147,7 +4274,8 @@
       "path": "src/rt/h264_null.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "media-decode-backends",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4158,7 +4286,8 @@
       "path": "src/rt/heap_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4169,7 +4298,8 @@
       "path": "src/rt/hle.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-core",
         "evidence_tier": "N",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4193,7 +4323,8 @@
       "path": "src/rt/hle_thread_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-executable-tests",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4204,7 +4335,8 @@
       "path": "src/rt/intr_conformance.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-executable-tests",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4215,7 +4347,8 @@
       "path": "src/rt/iso.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "iso-vfs-header",
         "evidence_tier": "N",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4229,10 +4362,9 @@
       "path": "src/rt/iso_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
       "sha256": "402c0efdf2be5f0b407ee3c2c8ca35dec12be087a81b9c196e0feef8e8db3a4b"
     },
@@ -4240,7 +4372,8 @@
       "path": "src/rt/mpeg.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mpeg-psmf",
         "evidence_tier": "N",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4256,7 +4389,8 @@
       "path": "src/rt/nid_names.h",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-nid-name-table",
         "evidence_tier": "S",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -4267,7 +4401,8 @@
       "path": "src/rt/osk_win.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4281,7 +4416,8 @@
       "path": "src/rt/perf.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4292,7 +4428,8 @@
       "path": "src/rt/perf.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "host-shell-and-io",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4303,7 +4440,8 @@
       "path": "src/rt/pgd_api.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgd-public-safe-seam",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4314,7 +4452,8 @@
       "path": "src/rt/pgd_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgd-public-safe-seam",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4325,7 +4464,8 @@
       "path": "src/rt/pgf_api.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-public-safe-seam",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4336,7 +4476,8 @@
       "path": "src/rt/pgf_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-public-safe-seam",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4347,7 +4488,8 @@
       "path": "src/rt/profiler_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4358,7 +4500,8 @@
       "path": "src/rt/recomp.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4377,7 +4520,8 @@
       "path": "src/rt/recomp.h",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4396,7 +4540,8 @@
       "path": "src/rt/savedata.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "savedata",
         "evidence_tier": "N",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4413,7 +4558,8 @@
       "path": "src/rt/sched.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "scheduler",
         "evidence_tier": "H",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4427,7 +4573,8 @@
       "path": "src/rt/sched_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4438,7 +4585,8 @@
       "path": "src/rt/sdkver.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4449,7 +4597,8 @@
       "path": "src/rt/sdkver_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4460,7 +4609,8 @@
       "path": "src/rt/sr_coro.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4471,7 +4621,8 @@
       "path": "src/rt/sr_coro.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4482,7 +4633,8 @@
       "path": "src/rt/sr_coro_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "coroutine-primitive",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4493,7 +4645,8 @@
       "path": "src/rt/sr_h264.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "media-decode-backends",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4504,7 +4657,8 @@
       "path": "src/rt/vfpu_addr_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-addressing-evidence",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4515,7 +4669,8 @@
       "path": "src/rt/vfpu_fuzz.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-differential-fuzz",
         "evidence_tier": "R",
         "upstream": "sal063",
         "upstream_paths": [],
@@ -4529,7 +4684,8 @@
       "path": "src/rt/vfpu_interp.c",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-interpreter",
         "evidence_tier": "R",
         "upstream": "ppsspp",
         "upstream_paths": [
@@ -4546,7 +4702,8 @@
       "path": "src/rt/vfpu_interp_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-interp-executable-regression",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4557,7 +4714,8 @@
       "path": "src/rt/vfpu_oracle_host.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-oracle-host",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4568,7 +4726,8 @@
       "path": "src/rt/vfpu_tables.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-table-loader",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4579,7 +4738,8 @@
       "path": "src/rt/vfpu_tables.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-table-loader",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4590,7 +4750,8 @@
       "path": "src/rt/vfpu_tables_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-table-loader",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4601,7 +4762,8 @@
       "path": "src/rt/vfs_path.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4612,7 +4774,8 @@
       "path": "src/rt/vfs_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4623,7 +4786,8 @@
       "path": "src/rt/watchpoints_file.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "watchpoint-artifact-parser",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4634,7 +4798,8 @@
       "path": "src/rt/watchpoints_file.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "watchpoint-artifact-parser",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4645,7 +4810,8 @@
       "path": "src/rt/watchpoints_file_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "watchpoint-artifact-parser",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4656,7 +4822,8 @@
       "path": "tools/README.md",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4667,7 +4834,8 @@
       "path": "tools/TRACE_FORMAT.md",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4678,7 +4846,8 @@
       "path": "tools/analyze.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4694,18 +4863,20 @@
       "path": "tools/audit_public_issue_links.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "78ac913be23144b23f69beb57fb270bff5ae9a81de17474613412f4f5d6b9ca6"
+      "sha256": "7a278bca49306e9dbf1ee0780253ae90b46da3a7b9a174384fd4e215af2ddf99"
     },
     {
       "path": "tools/benchmark_codegen_chunks.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4716,7 +4887,8 @@
       "path": "tools/boot_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4727,7 +4899,8 @@
       "path": "tools/build_profile.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4738,18 +4911,20 @@
       "path": "tools/build_public_export.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "107047d7b61bd073846a34a02b313339dbbfeee4eeda424a441ff3db5ee51368"
+      "sha256": "b7c84f975bbca3728fb08367ceb1196e76cd949210c4684a6079610bca0cacc2"
     },
     {
       "path": "tools/ci_paths.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4760,7 +4935,8 @@
       "path": "tools/ci_required.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4771,7 +4947,8 @@
       "path": "tools/codegen.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4787,7 +4964,8 @@
       "path": "tools/codegen_gate.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4803,7 +4981,8 @@
       "path": "tools/compat_overrides.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4814,7 +4993,8 @@
       "path": "tools/decompme_export.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4825,7 +5005,8 @@
       "path": "tools/discovery_contract.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-original",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4836,7 +5017,8 @@
       "path": "tools/elf_bounds.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-original",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4847,7 +5029,8 @@
       "path": "tools/entry_frame_balance.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4858,7 +5041,8 @@
       "path": "tools/evidence_model.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4869,7 +5053,8 @@
       "path": "tools/extract_xb.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4880,7 +5065,8 @@
       "path": "tools/funcdiff_cmp.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4896,7 +5082,8 @@
       "path": "tools/gate_stub.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4907,7 +5094,8 @@
       "path": "tools/ge_replay_metrics.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4918,7 +5106,8 @@
       "path": "tools/gen_key_scrub_spec.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4929,7 +5118,8 @@
       "path": "tools/gen_microtest.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -4945,7 +5135,8 @@
       "path": "tools/gen_nidnames.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nid-name-generator",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4956,7 +5147,8 @@
       "path": "tools/generate_benchmarks.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4967,7 +5159,8 @@
       "path": "tools/generate_sbom.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4978,7 +5171,8 @@
       "path": "tools/ghidra_crosscheck.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4989,7 +5183,8 @@
       "path": "tools/ghidra_headless.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5000,7 +5195,8 @@
       "path": "tools/ghidra_scripts/DecompileList.java",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5011,7 +5207,8 @@
       "path": "tools/ghidra_scripts/ExportFunctionsCSV.java",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5022,7 +5219,8 @@
       "path": "tools/ghidra_scripts/ListRefsTo.java",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5033,7 +5231,8 @@
       "path": "tools/history_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5044,7 +5243,8 @@
       "path": "tools/hle_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5055,7 +5255,8 @@
       "path": "tools/hle_registry_meta.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5066,7 +5267,8 @@
       "path": "tools/host_stubs.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-original",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5077,7 +5279,8 @@
       "path": "tools/hst_doctor.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5088,7 +5291,8 @@
       "path": "tools/hst_doctor_checks.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5099,7 +5303,8 @@
       "path": "tools/hst_doctor_core.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5110,7 +5315,8 @@
       "path": "tools/hst_run_support.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5121,7 +5327,8 @@
       "path": "tools/hst_safety.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5132,7 +5339,8 @@
       "path": "tools/hst_test_fixtures.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5143,7 +5351,8 @@
       "path": "tools/import_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5154,7 +5363,8 @@
       "path": "tools/import_audit_baseline.json",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5165,7 +5375,8 @@
       "path": "tools/import_audit_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5176,7 +5387,8 @@
       "path": "tools/import_fixtures.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5187,7 +5399,8 @@
       "path": "tools/imports.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5203,18 +5416,20 @@
       "path": "tools/lint_docs.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f49b26af90c65f1d0a2e4bc34afdd9eab71596b05073bb16a67a5f14af45da9"
+      "sha256": "42375c546861fff3b90d0441d958cbacd8277a2d3dddab78dd75568ef6afcc25"
     },
     {
       "path": "tools/mem_debug.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5225,7 +5440,8 @@
       "path": "tools/microtest_gate.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5241,7 +5457,8 @@
       "path": "tools/modified_file_notice_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5252,7 +5469,8 @@
       "path": "tools/nid_auditor.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5263,7 +5481,8 @@
       "path": "tools/nid_corpus.json",
       "classification": "generated_from_public_source",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-nid-name-table",
         "evidence_tier": "S",
         "generator": "documented public-source data path",
         "source_family": "ppsspp"
@@ -5274,7 +5493,8 @@
       "path": "tools/nid_name_proof.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-tooling",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5285,7 +5505,8 @@
       "path": "tools/nidseq.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5301,7 +5522,8 @@
       "path": "tools/padscript_from_log.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5312,7 +5534,8 @@
       "path": "tools/pngcmp.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5323,18 +5546,20 @@
       "path": "tools/policy_sync.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3dabd21e8b5fbde134d74d17903125ad9f4b541e211954b2d44689825c0ce0d4"
+      "sha256": "251b982db8956266e75d8d389419e44b95391be37ec2f0635f0c37b125a85f5c"
     },
     {
       "path": "tools/ppm2png.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5350,7 +5575,8 @@
       "path": "tools/ppmdiff.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5366,7 +5592,8 @@
       "path": "tools/progress_tracker.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5377,18 +5604,20 @@
       "path": "tools/provenance_ledger.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b87499fda1549aa4726a2b73e1ad0b72c6c2f6d2da2f0f98b1aa8a8850076802"
+      "sha256": "191a542eef13d1c3cb46801dfffe574f4dd39755c77bb22519c58ea941032ee9"
     },
     {
       "path": "tools/prxload.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -5404,7 +5633,8 @@
       "path": "tools/psp_import_table.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-original",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5415,7 +5645,8 @@
       "path": "tools/psp_issue_matrix.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5426,7 +5657,8 @@
       "path": "tools/psp_oracle/__init__.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5437,7 +5669,8 @@
       "path": "tools/psp_oracle/build_nakagawa_smoke.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5448,7 +5681,8 @@
       "path": "tools/psp_oracle/manifest.json",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5459,7 +5693,8 @@
       "path": "tools/psp_oracle/protocol.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5470,7 +5705,8 @@
       "path": "tools/psp_oracle/run_nakagawa.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5481,7 +5717,8 @@
       "path": "tools/psp_oracle/run_nakagawa_vfpu.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5492,7 +5729,8 @@
       "path": "tools/psp_oracle/run_psplink.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5503,7 +5741,8 @@
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5514,7 +5753,8 @@
       "path": "tools/psp_readiness.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5525,7 +5765,8 @@
       "path": "tools/pspdev_lock.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5536,7 +5777,8 @@
       "path": "tools/pspdev_probe.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5547,7 +5789,8 @@
       "path": "tools/pspsdk_compare.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5558,7 +5801,8 @@
       "path": "tools/pspsdk_source.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5569,7 +5813,8 @@
       "path": "tools/pspsdk_sync.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5580,7 +5825,8 @@
       "path": "tools/public_candidate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5591,18 +5837,20 @@
       "path": "tools/public_export.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37b84d94e02910fd27ff01237dc0ebb2509a9828355074f45d3f60203ad410b8"
+      "sha256": "30c0533015ac9ad2d86e3d2d3d650bff17fd519e1e30eb247c7ff17c00c94364"
     },
     {
       "path": "tools/publication_policy.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5613,7 +5861,8 @@
       "path": "tools/publish_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5624,7 +5873,8 @@
       "path": "tools/requirements-lock.txt",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5635,7 +5885,8 @@
       "path": "tools/shader_embed.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5646,7 +5897,8 @@
       "path": "tools/sync_drift_check.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5657,7 +5909,8 @@
       "path": "tools/test_analyze_tailcall.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5668,7 +5921,8 @@
       "path": "tools/test_asset_index_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5679,18 +5933,20 @@
       "path": "tools/test_audit_public_issue_links.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d694cc4308eefd3a0a1aa15f6a24857d545fe0f309b2fe2d643cc76305295e02"
+      "sha256": "a90a32c5b967bb6bd93217bba251d8aa08cddc95c6f56ae638fc629c6ca8f3e6"
     },
     {
       "path": "tools/test_boot_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5701,7 +5957,8 @@
       "path": "tools/test_build_truth.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5712,7 +5969,8 @@
       "path": "tools/test_callback_correctness.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5723,7 +5981,8 @@
       "path": "tools/test_ci_paths.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5734,7 +5993,8 @@
       "path": "tools/test_ci_required.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5745,7 +6005,8 @@
       "path": "tools/test_codegen_continuations.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5756,7 +6017,8 @@
       "path": "tools/test_codegen_entry_semantics.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5767,7 +6029,8 @@
       "path": "tools/test_codegen_gate_b_encoding.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5778,7 +6041,8 @@
       "path": "tools/test_codegen_madd_msub.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5789,7 +6053,8 @@
       "path": "tools/test_codegen_no_shadow_stubs.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5800,7 +6065,8 @@
       "path": "tools/test_codegen_retail_allocator.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5811,7 +6077,8 @@
       "path": "tools/test_codegen_static_verify.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5822,7 +6089,8 @@
       "path": "tools/test_codegen_vfpu_fallback.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5833,7 +6101,8 @@
       "path": "tools/test_compat_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5844,7 +6113,8 @@
       "path": "tools/test_dco_policy.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5855,7 +6125,8 @@
       "path": "tools/test_debug.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5866,7 +6137,8 @@
       "path": "tools/test_decompme_export.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5877,7 +6149,8 @@
       "path": "tools/test_dispatch_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5888,7 +6161,8 @@
       "path": "tools/test_dmac_semantics.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5899,7 +6173,8 @@
       "path": "tools/test_elf_bounds.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5910,7 +6185,8 @@
       "path": "tools/test_entry_frame_balance.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5921,7 +6197,8 @@
       "path": "tools/test_evf_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5932,7 +6209,8 @@
       "path": "tools/test_evidence_model.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5943,7 +6221,8 @@
       "path": "tools/test_extract_xb_gim.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5954,7 +6233,8 @@
       "path": "tools/test_gate_exit_resolution.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5965,7 +6245,8 @@
       "path": "tools/test_ge_capture.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5976,7 +6257,8 @@
       "path": "tools/test_gen_nidnames.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nid-name-generator",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5987,7 +6269,8 @@
       "path": "tools/test_generate_benchmarks.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5998,7 +6281,8 @@
       "path": "tools/test_guest_printf.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6009,7 +6293,8 @@
       "path": "tools/test_guest_span_routing.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6020,7 +6305,8 @@
       "path": "tools/test_guestmem_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6031,7 +6317,8 @@
       "path": "tools/test_history_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6042,7 +6329,8 @@
       "path": "tools/test_hle_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6053,7 +6341,8 @@
       "path": "tools/test_hle_umd_wakeup.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6064,7 +6353,8 @@
       "path": "tools/test_hst_doctor.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6075,7 +6365,8 @@
       "path": "tools/test_hst_doctor_hardening.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6086,7 +6377,8 @@
       "path": "tools/test_hst_manager_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6097,7 +6389,8 @@
       "path": "tools/test_hst_title_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6108,7 +6401,8 @@
       "path": "tools/test_import_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6119,7 +6413,8 @@
       "path": "tools/test_import_name_safety.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6130,7 +6425,8 @@
       "path": "tools/test_imports.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6141,7 +6437,8 @@
       "path": "tools/test_incident_regression_private.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6152,7 +6449,8 @@
       "path": "tools/test_intr_waits_matrix.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6163,7 +6461,8 @@
       "path": "tools/test_key_scrub_tools.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6174,18 +6473,20 @@
       "path": "tools/test_lint_docs.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d448f899d79d4a27505e349a96f52101ea7e4ac6f43eeb324ca9c528831095ab"
+      "sha256": "a635074e125046cf36cb18272852507f387a7cd158ddfba4fe8dd62d24bc9555"
     },
     {
       "path": "tools/test_manager_safety.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6196,7 +6497,8 @@
       "path": "tools/test_manager_safety.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6207,7 +6509,8 @@
       "path": "tools/test_manager_symbol_docs.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6218,7 +6521,8 @@
       "path": "tools/test_matrix_disposition.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6229,7 +6533,8 @@
       "path": "tools/test_matrix_report.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6240,7 +6545,8 @@
       "path": "tools/test_mem_debug.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mem-debug-tooling",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6251,7 +6557,8 @@
       "path": "tools/test_modified_file_notice_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6262,7 +6569,8 @@
       "path": "tools/test_mpeg_h264_bounds.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6273,7 +6581,8 @@
       "path": "tools/test_native_driver_hardening.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6284,7 +6593,8 @@
       "path": "tools/test_native_gate_stub_link.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6295,7 +6605,8 @@
       "path": "tools/test_nid_name_proof.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-tooling",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6306,7 +6617,8 @@
       "path": "tools/test_padscript_from_log.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6317,7 +6629,8 @@
       "path": "tools/test_progress_evidence.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6328,7 +6641,8 @@
       "path": "tools/test_progress_tracker.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6339,18 +6653,20 @@
       "path": "tools/test_provenance_ledger.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-tooling",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7895134bce6ad08abd6f7424c3b717b5f756f642012a2e272176dcf1bc0484bb"
+      "sha256": "9caed1e601b17ac6e4f46bc94c5cd6ad8bf0d05aedf7b7f0a542fcb05b4c1ce8"
     },
     {
       "path": "tools/test_prxload_psp_header.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6361,7 +6677,8 @@
       "path": "tools/test_prxload_relocations.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6372,7 +6689,8 @@
       "path": "tools/test_psp_issue_matrix.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6383,7 +6701,8 @@
       "path": "tools/test_psp_oracle.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6394,7 +6713,8 @@
       "path": "tools/test_psp_readiness.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6405,7 +6725,8 @@
       "path": "tools/test_pspdev_lock.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6416,7 +6737,8 @@
       "path": "tools/test_pspdev_probe.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6427,7 +6749,8 @@
       "path": "tools/test_pspsdk_sync.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6438,7 +6761,8 @@
       "path": "tools/test_public_candidate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6449,7 +6773,8 @@
       "path": "tools/test_public_ci_wiring.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6460,29 +6785,32 @@
       "path": "tools/test_public_export.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be798c063d0142dff7554ca7243e1c6a9769bacfd458ccb76159a61af816d5db"
+      "sha256": "6f107e4bc8cf5f423fe4e4db0779ff1d0d46d84de7ddb12c7561392573e1bab9"
     },
     {
       "path": "tools/test_publication_policy_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f90ca385b6741f66cf30c1e01f8e5536473f19b552d581f270e34c42d10ca16"
+      "sha256": "2c07b24b1d58bc41d70358b5bb8d078e3bb47f1ce5e2c1d58ea2c91181c5a033"
     },
     {
       "path": "tools/test_publish_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6493,7 +6821,8 @@
       "path": "tools/test_ref_run_elf_hardening.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6504,7 +6833,8 @@
       "path": "tools/test_release_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6515,7 +6845,8 @@
       "path": "tools/test_savedata_spans.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6526,7 +6857,8 @@
       "path": "tools/test_sbom.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6537,7 +6869,8 @@
       "path": "tools/test_sched_invariants.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6548,7 +6881,8 @@
       "path": "tools/test_sdkver_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6559,7 +6893,8 @@
       "path": "tools/test_shader_embed.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6570,7 +6905,8 @@
       "path": "tools/test_sync_drift_check.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6581,7 +6917,8 @@
       "path": "tools/test_telemetry_export_security.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6592,7 +6929,8 @@
       "path": "tools/test_title_codegen_plan.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6603,7 +6941,8 @@
       "path": "tools/test_title_codegen_synthetic.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6614,7 +6953,8 @@
       "path": "tools/test_title_manager_plan.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6625,7 +6965,8 @@
       "path": "tools/test_title_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6636,7 +6977,8 @@
       "path": "tools/test_vfpu_addressing.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-addressing-evidence",
         "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6647,7 +6989,8 @@
       "path": "tools/test_vfpu_interp_guards.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6658,7 +7001,8 @@
       "path": "tools/test_vfpu_oracle.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6669,7 +7013,8 @@
       "path": "tools/test_vfpu_provenance.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6680,7 +7025,8 @@
       "path": "tools/test_vfpu_synth_corpus.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6691,7 +7037,8 @@
       "path": "tools/test_vfpu_table_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6702,7 +7049,8 @@
       "path": "tools/test_vfpu_trace_bits.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6713,7 +7061,8 @@
       "path": "tools/test_vfs_c.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6724,7 +7073,8 @@
       "path": "tools/test_visual_oracle.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6735,7 +7085,8 @@
       "path": "tools/test_visual_oracle.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6746,7 +7097,8 @@
       "path": "tools/test_vulkan_sdk.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6757,7 +7109,8 @@
       "path": "tools/test_xb_probe.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6768,7 +7121,8 @@
       "path": "tools/title_codegen_plan.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6779,7 +7133,8 @@
       "path": "tools/title_manager_plan.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6790,7 +7145,8 @@
       "path": "tools/title_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6801,7 +7157,8 @@
       "path": "tools/tracediff.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -6817,7 +7174,8 @@
       "path": "tools/validate_assets.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6828,7 +7186,8 @@
       "path": "tools/verify_gates.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6839,7 +7198,8 @@
       "path": "tools/verify_key_scrub.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6850,7 +7210,8 @@
       "path": "tools/verify_sbom.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6861,7 +7222,8 @@
       "path": "tools/verify_vfpu_provenance.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6872,7 +7234,8 @@
       "path": "tools/vfpu_coverage_report.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6883,7 +7246,8 @@
       "path": "tools/vfpu_fuzz_gen.py",
       "classification": "upstream_derived",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "sal063",
         "upstream_paths": [
@@ -6899,7 +7263,8 @@
       "path": "tools/vfpu_synth_gen.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6910,7 +7275,8 @@
       "path": "tools/vulkan_sdk.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6921,7 +7287,8 @@
       "path": "tools/vulkan_sdk.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6932,7 +7299,8 @@
       "path": "tools/xb_probe.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance review",
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

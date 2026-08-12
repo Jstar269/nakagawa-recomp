@@ -25,12 +25,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from build_public_export import public_safe_excluded_paths  # noqa: E402
+import provenance_ledger  # noqa: E402
 LEDGER = ROOT / "docs" / "provenance" / "IMPLEMENTATION_PROVENANCE.json"
 PUBLIC_LEDGER = ROOT / "assets" / "public_provenance_ledger.json"
 
@@ -282,7 +284,30 @@ class ProvenanceLedgerTest(unittest.TestCase):
                     finding.get(field),
                     f"{finding.get('id', '<no id>')}: missing {field}",
                 )
-            self.assertIn(finding["severity"], {"low", "medium", "high"})
+                self.assertIn(finding["severity"], {"low", "medium", "high"})
+
+
+class ProvenanceLedgerGeneratorTest(unittest.TestCase):
+    def test_external_detailed_ledger_is_read_without_recording_its_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            detailed = Path(temp_dir) / "private-evidence.json"
+            detailed.write_text(
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "id": "PROV-TEST",
+                                "classification": "project-authored-independent",
+                                "paths": ["src/example.c"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            records = provenance_ledger._implementation_records(detailed)
+        self.assertEqual(records["src/example.c"]["id"], "PROV-TEST")
+        self.assertNotIn(str(detailed), json.dumps(records))
 
 
 if __name__ == "__main__":

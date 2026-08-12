@@ -5,10 +5,11 @@ are estimates and labelled as such. This document is a plan in the same sense as
 [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md), not a record of completed work.
 
 > **A narrower subset of this plan is now implemented.**
-> [`PSP_HARDWARE_ORACLE.md`](PSP_HARDWARE_ORACLE.md) covers the source-owned scalar probe, the strict
-> result protocol with its acceptance gate, the PSPLINK runbook, and the readiness preflight. Read it
-> first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the shipped
-> `tools/psp_readiness.py` — extend that tool rather than adding a second precondition checker.
+> The [source-owned scalar-probe runbook](../fixtures/psp_oracle/README.md), its
+> [strict result protocol](../tools/psp_oracle/protocol.py), and the shipped
+> [`tools/psp_readiness.py`](../tools/psp_readiness.py) cover the implemented subset. Read those
+> first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the readiness tool
+> — extend that tool rather than adding a second precondition checker.
 > What remains genuinely unbuilt here is the *instruction-trace* oracle
 > (`CODEGEN_ORACLE`/`MICROTEST_ORACLE` capture on real silicon), which the scalar probe does not
 > provide.
@@ -214,9 +215,9 @@ loop; route those to the batch path.
 | Any trace of the **retail game** on hardware | Game-derived. Private, permanently. |
 | Frame or memory dumps from the retail title | Game-derived. Private, permanently. |
 
-This is the strategic argument for the whole plan. Issue
-[#35](https://github.com/Jstar269/nakagawa-recomp/issues/35) is blocked on obtaining oracle
-evidence without redistributing proprietary inputs. **Hardware microtests authored here are the
+This is the strategic argument for the whole plan. A pre-republication tracker
+item, historically numbered #35, was blocked on obtaining oracle evidence
+without redistributing proprietary inputs. **Hardware microtests authored here are the
 only oracle path identified so far that is committable**, and therefore the only one that could
 ever run in public CI. Loops A and B stay entirely on the committable side; Loop C does too, as
 long as probes are homebrew rather than instrumentation of the shipped title.

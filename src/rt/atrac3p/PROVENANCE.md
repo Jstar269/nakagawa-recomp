@@ -206,7 +206,8 @@ contract:
   LGPL-2.1-or-later to be consistent with the imported core.
 - Repository-level declaration remains GPL-3.0-or-later (LICENSE, NOTICE.md);
   per-file SPDX is preserved and deliberate. PGF/PGD licensing blockers
-  (issues #98/#104) do not apply to this FFmpeg-derived subtree.
+  for the separate PGF/font and PGD/amctrl surfaces do not apply to this
+  FFmpeg-derived subtree.
 
 ## Verification
 

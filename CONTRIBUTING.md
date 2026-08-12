@@ -3,7 +3,7 @@
 Thanks for helping with Nakagawa Recomp. The repository-level project declaration is
 GPL-3.0-or-later, while individual source files and inherited components may retain GPL-2.0-or-later
 or other upstream-specific terms. Applicable third-party notices must be preserved. Specific
-inherited licensing/provenance questions are still under pre-publication review; do not introduce
+inherited licensing/provenance questions remain unresolved and under qualified review; do not introduce
 or relabel third-party-derived code without resolving its actual source/license chain.
 
 ## Before changing code

@@ -93,6 +93,16 @@ REQUIRED_FILES = {
 }
 
 
+class TestGeneratedDocumentBytes(unittest.TestCase):
+    def test_json_writer_uses_lf_bytes_on_every_host(self) -> None:
+        directory = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
+        output = directory / "generated.json"
+        write_document(output, {"first": 1, "second": 2})
+        raw = output.read_bytes()
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertNotIn(b"\r\n", raw)
+
+
 def content_for(path: str) -> bytes:
     if path.endswith(".pgf"):
         return SYNTHETIC_PGF

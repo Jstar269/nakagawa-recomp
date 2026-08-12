@@ -229,7 +229,8 @@ generated game code. It is not the default because the current input replay does
 scene constant across differently paced builds.
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
-See [`PERFORMANCE.md`](PERFORMANCE.md) for the local O0/O2 and chunk-size measurements.
+The [`Makefile`](../Makefile) is the source of truth for the current optimization split and
+generated chunk policy.
 
 ## Runtime Execution Model
 

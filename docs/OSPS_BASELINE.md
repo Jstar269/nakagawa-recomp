@@ -1,8 +1,14 @@
-# OpenSSF OSPS Baseline Review
+# OpenSSF OSPS Baseline Review (historical pre-republication snapshot)
 
-This is a live implementation audit against **OpenSSF OSPS Baseline Level 1, version [2026.02.19](https://baseline.openssf.org/versions/2026-02-19.html)** for the Nakagawa Recomp repository (`https://github.com/Jstar269/nakagawa-recomp`). It is not a certification, security guarantee, or substitute for reviewing live GitHub/account settings.
+This document preserves an implementation audit captured before the sanitized
+public restoration. It is not current repository status, a certification, a
+security guarantee, or a substitute for reviewing live GitHub/account settings.
+`Jstar269/nakagawa-recomp` is now the active public source repository. The
+private visibility, prospective-publication language, and tracker numbers below
+are historical observations from the captured audit and must not be interpreted
+as current public issue mappings.
 
-## Live Repository Metadata (as of 2026-08-06)
+## Historical repository metadata (captured 2026-08-06)
 
 Empirically verified via `gh repo view` and `gh api`:
 

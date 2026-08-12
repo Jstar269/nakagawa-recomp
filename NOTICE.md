@@ -34,7 +34,7 @@ it is not legal advice or a conclusion that any combined distribution is cleared
 
 ## Public-safe exclusions
 
-The candidate profile excludes the PGF parser/font payloads and PGD/amctrl
+The public source profile excludes the PGF parser/font payloads and PGD/amctrl
 implementation/tooling pending qualified review. It also excludes the sal063-
 derived ISO/VFS and SDL audio implementations until their separate public review
 is complete. These exclusions are enforced by
@@ -43,7 +43,7 @@ reject the capability and do not fabricate fonts, disc reads, playback, keys, or
 success.
 
 The HST-specific title manifest and private engineering/review documents are also
-outside the candidate. Synthetic title manifests and generic schemas are
+outside the active public source tree. Synthetic title manifests and generic schemas are
 retained; no game executable, extracted asset, save, key, capture, oracle trace,
 or generated retail translation unit is part of the public source boundary.
 
@@ -69,3 +69,7 @@ captures, extracted assets, generated output and private repository history must
 not be committed, attached to issues, or included in a release. A clean current
 tree is not historical clearance: the exact proposed history must pass the
 reachable-object/content audit before publication.
+
+The active public repository deliberately begins with the sanitized restoration
+lineage. Former private/pre-sanitization development history is not ordinary
+`main` ancestry and must not be reconnected to it.

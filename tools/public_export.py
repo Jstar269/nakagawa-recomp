@@ -82,7 +82,12 @@ def build_document(
 
 
 def write_document(path: Path, document: dict) -> None:
-    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    """Write canonical UTF-8 JSON with LF bytes on every supported host."""
+    path.write_text(
+        json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def index_files(repo_root: Path = ROOT) -> list[tuple[str, bytes]]:

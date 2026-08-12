@@ -4,6 +4,8 @@
 It uses explicit inclusion, explicit exclusions, and `REJECT` for every unknown
 path. Exclusion always wins. A path is not eligible because it looks generic,
 because a hook says so, or because a candidate asks for a relaxed mode.
+The active sanitized public repository uses this same profile; a passing profile
+check is an engineering containment result, not legal clearance.
 
 ## Excluded surfaces
 

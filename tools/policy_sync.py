@@ -68,8 +68,6 @@ def _regen_export(policy) -> None:
     document = public_export.build_document(
         policy,
         files,
-        source_tree=subprocess.run(["git", "write-tree"], cwd=ROOT, capture_output=True,
-                                   text=True, check=True).stdout.strip(),
         provenance_ledger=ledger_path.read_bytes() if ledger_path.is_file() else None,
         manifest=manifest_path.read_bytes() if manifest_path.is_file() else None,
     )

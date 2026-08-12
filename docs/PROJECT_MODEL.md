@@ -15,12 +15,12 @@ accepted input routes, and compatibility fixes.
 **Private inputs:** retail ISO, decrypted executable/modules, extracted assets, saves/install data,
 oracle traces, screenshots/frame dumps, and any locally supplied game-specific key material.
 
-**Public candidate:** general source, tests, synthetic fixtures, interoperability facts, and
+**Public source surface:** general source, tests, synthetic fixtures, interoperability facts, and
 provenance records that do not contain or reconstruct copyrighted game expression.
 
 Product 1 is not a game download, emulator distribution, or substitute source release of the game.
-A future public repository must not contain the game or a mechanically translated distribution of
-its implementation.
+The active public repository and any future release must not contain the game or
+a mechanically translated distribution of its implementation.
 
 ## Product 2 — Hot Shots Tennis decompilation/reconstruction
 
@@ -31,7 +31,7 @@ Product 2 may consume private analysis aids such as function maps, decompiler ou
 and comparison notes, but those materials are not automatically suitable for the Product 1 public
 source tree. Facts needed for interoperability—addresses, ABI behavior, structure layouts, NIDs, and
 observed state transitions—should be recorded narrowly. Expressive decompiler output or
-mechanically translated game implementation must remain outside the public source candidate unless
+mechanically translated game implementation must remain outside the public source tree unless
 qualified review establishes a separate lawful distribution basis.
 
 Product 2 should export reviewable interfaces rather than contaminate shared code with opaque
@@ -90,7 +90,7 @@ Every nontrivial change should be classifiable as one or more of:
 | `general` | reusable PSP/toolchain behavior supported by public specifications or source-owned tests |
 | `title-config` | HST values expressed as data/configuration rather than hard-coded reusable logic |
 | `title-compat` | narrowly HST-specific runtime behavior with evidence and a retirement/generalization criterion |
-| `private-analysis` | local-only analysis material that must not enter the public candidate |
+| `private-analysis` | local-only analysis material that must not enter the public source repository |
 | `upstream-derived` | adapted from an identified third party with exact revision and license provenance |
 | `generated-private` | generated from retail/private inputs and prohibited from publication |
 
@@ -136,18 +136,21 @@ The recurring operational rules are therefore:
   history-derived material;
 - provide a private rights-holder reporting path and act promptly on substantiated concerns.
 
-See `NOTICE.md`, `SECURITY.md`, `docs/KEY_HISTORY_SCRUB.md`, and
+See `NOTICE.md`, `SECURITY.md`, `docs/PUBLIC_SOURCE_PROFILE.md`, and
 `docs/PUBLICATION_READINESS.md` for the maintained operational details.
 
-## Decision rule for repository structure
+## Repository structure
 
-Until the publication gates are complete, the safest topology remains:
+The active topology is:
 
-- this historical development repository stays private;
-- private Product 2 material stays outside the prospective public source history;
-- a fresh sanitized public repository is created from an explicitly staged source candidate;
+- `Jstar269/nakagawa-recomp` is the active sanitized public source repository;
+- its public history deliberately begins with the sanitized restoration lineage,
+  without the former development history as ordinary ancestry;
+- private Product 2 material and private evidence stay outside the public source
+  history;
 - any binary release is built from a tagged public-source candidate plus user-supplied private
   inputs, with its exact SBOM/notices/corresponding source archived alongside it.
 
-This model should be revisited only with a documented threat model, provenance review, and migration
-plan—not for convenience during an individual implementation task.
+Do not reconnect private/pre-sanitization ancestry or otherwise change this
+topology without a documented threat model, provenance review, migration plan,
+and explicit maintainer authorization.

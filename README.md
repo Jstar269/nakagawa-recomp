@@ -4,7 +4,13 @@
 
 Nakagawa Recomp is an experimental static recompiler for the PSP release of *Hot Shots Tennis: Get a Grip*. Its name comes from the in-game Nakagawa Tennis Club. It translates a user-supplied decrypted PRX/ELF into C, links it with a native C runtime, and runs the result on Windows through SDL3 and Vulkan.
 
-**Project lineage:** Nakagawa Recomp began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project), a GPL-2.0-or-later PSP static-recompiler toolkit, and still contains substantial code inherited from that project. Nakagawa has since substantially extended and modified that codebase. See [NOTICE.md](NOTICE.md) for the public attribution boundary and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json) for the path-hashed public candidate ledger.
+**Project lineage:** Nakagawa Recomp began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project), a GPL-2.0-or-later PSP static-recompiler toolkit, and still contains substantial code inherited from that project. Nakagawa has since substantially extended and modified that codebase. See [NOTICE.md](NOTICE.md) for the public attribution boundary and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json) for the path-hashed public provenance ledger.
+
+`Jstar269/nakagawa-recomp` is the active sanitized public source repository. Its
+public history deliberately begins with the sanitized restoration lineage; the
+former development history is not ordinary `main` ancestry and must not be
+reconnected. Publication gates are engineering and provenance controls, not
+legal clearance.
 
 The project is not a game download or a general-purpose PSP emulator. It does not include the game, firmware modules, private keys, or private oracle traces. Development requires files from the user's own lawfully obtained copy.
 
@@ -19,7 +25,7 @@ The recompiler is experimental, and active development focuses on fidelity, timi
 - PSP HLE and scheduler edge cases tracked by the public issue tracker;
 - source-owned ATRAC3+ decoder/bridge behavior ([`src/rt/atrac3p/PROVENANCE.md`](src/rt/atrac3p/PROVENANCE.md));
 - full PSMF integration and other title-specific behavior, which are outside
-  this public-safe candidate's acceptance claim.
+  this public repository's public-safe acceptance boundary.
 
 **Public GitHub Issues are canonical for active defects and acceptance criteria where a curated public issue exists.** [`ISSUES.md`](ISSUES.md) provides the concise status map across public issues and reference evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
 
@@ -64,7 +70,7 @@ place_game_here/                 # canonical private runtime/build input
 
 The manager resolves this layout directly. Legacy root links named `eboot.elf` and `game.iso` still work but are optional. A source `EBOOT.PBP` and `DOCUMENT.DAT` may be retained as private archival inputs, but neither is read by the current manager/build/runtime once the layout above exists.
 
-`python tools/extract_xb.py` can regenerate `xbdata_extracted/`; it requires a local checkout of [libxb](https://github.com/kiwi515/libxb) under `third_party/libxb/` at the audited commit `ce6df78e5ca99241dd2bbbd68ca485e34003d760` (the 0.2.0 source snapshot). That optional dependency remains local-only; direct-archive containment and runtime semantics are investigated in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md), [`assets/release_manifest.json`](assets/release_manifest.json), and PR [#15](https://github.com/Jstar269/nakagawa-recomp/pull/15).
+`python tools/extract_xb.py` can regenerate `xbdata_extracted/`; it requires a local checkout of [libxb](https://github.com/kiwi515/libxb) under `third_party/libxb/` at the audited commit `ce6df78e5ca99241dd2bbbd68ca485e34003d760` (the 0.2.0 source snapshot). That optional dependency remains local-only; direct-archive containment and runtime semantics are investigated in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md) and [`assets/release_manifest.json`](assets/release_manifest.json).
 
 The private `place_game_here/` layout is Git-ignored. A complete ISO-only bootstrap is not automated yet: the runtime still needs the three decrypted PRXs and the plain extracted XB tree. Do not publish files from this folder.
 
@@ -144,9 +150,16 @@ Start at [`docs/README.md`](docs/README.md).
 
 ## Legal and provenance
 
-The repository-level project declaration is **GPL-3.0-or-later**, as reflected by [LICENSE](LICENSE), `assets/release_manifest.json`, and the dashboard package metadata. Many source files and inherited components retain GPL-2.0-or-later or other upstream-specific terms; that does **not** establish that every possible combined public distribution is cleared. The explicit source boundary and machine-readable provenance are in [NOTICE.md](NOTICE.md), [assets/public_source_profile.json](assets/public_source_profile.json), and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json). The public candidate excludes unresolved PGF/font and PGD/amctrl surfaces.
+The repository-level project declaration is **GPL-3.0-or-later**, as reflected by [LICENSE](LICENSE), `assets/release_manifest.json`, and the dashboard package metadata. Many source files and inherited components retain GPL-2.0-or-later or other upstream-specific terms; that does **not** establish that every possible combined public distribution is cleared. The explicit source boundary and machine-readable provenance are in [NOTICE.md](NOTICE.md), [assets/public_source_profile.json](assets/public_source_profile.json), and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json). The public source profile excludes unresolved PGF/font and PGD/amctrl surfaces.
 
-This checkout can be used to construct a fresh candidate under the explicit public-source profile. A candidate must exclude proprietary game content, generated retail output, private traces/captures, keys, saves, private routes, private repository metadata, and unresolved PGF/PGD/audio/ISO components. [NOTICE.md](NOTICE.md), [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md), and [docs/PUBLIC_SOURCE_PROFILE.md](docs/PUBLIC_SOURCE_PROFILE.md) describe the boundary; none is legal clearance.
+The active public repository can also be used to construct a fresh candidate or
+release export under the explicit public-source profile. Such an export must
+exclude proprietary game content, generated retail output, private
+traces/captures, keys, saves, private routes, private repository metadata, and
+unresolved PGF/PGD/audio/ISO components. [NOTICE.md](NOTICE.md),
+[docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md), and
+[docs/PUBLIC_SOURCE_PROFILE.md](docs/PUBLIC_SOURCE_PROFILE.md) describe the
+boundary; none is legal clearance.
 
 This is an independent compatibility/research project. Product and game names are used only to identify compatibility; no affiliation or endorsement is claimed.
 

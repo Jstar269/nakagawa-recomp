@@ -1,13 +1,19 @@
-# PSP interrupt / dispatch-context conformance matrix (issue #88)
+# PSP interrupt / dispatch-context conformance matrix (historical issue #88)
 
 <!-- markdownlint-disable MD013 -->
 
+Historical scope: this is a pre-republication snapshot captured against the
+former development `main`. Its issue and PR numbers are historical identifiers,
+not current public tracker mappings, and its implementation classifications are
+not current sanitized-`main` status.
+
 Hardware-derived expectations for the blocking and polling APIs that PSPAutotests
 `tests/intr/waits.cpp` exercises, the executable Nakagawa harness built from them, and
-the exact current-`main` classification of every cell.
+the captured then-current-`main` classification of every cell.
 
-This document is **evidence and status**, not a plan. It records what real hardware does,
-what Nakagawa does today, and which cells cannot yet be exercised and why. See
+This document is **historical evidence**, not a current plan or status dashboard.
+It records what the cited hardware oracle and captured Nakagawa revision did,
+and which cells could not then be exercised. See historical
 [issue #88](https://github.com/Jstar269/nakagawa-recomp/issues/88) for the semantics work,
 and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2
 onward remain future work.
@@ -516,7 +522,7 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      ahead of the satisfaction test too.
    **Deferred out of #88 by the same audit** - the cells remain in the tables above, pinned and
    counted as known deviations, until the owning subsystem work lands:
-   * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **[#2](https://github.com/Jstar269/nakagawa-recomp/pull/2)**.
+   * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **historical PR #2**.
      Both NIDs are registered to `h_ok` (`{ return 0; }`), so there is no object, no validation
      and no mutation; a context check there would be the only real thing in the handler and
      would turn 12 `intr-off`/`disp-off` cells plus 6 `intr-ctx` cells green on a stub. **18 cells.**
