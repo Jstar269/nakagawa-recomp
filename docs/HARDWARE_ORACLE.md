@@ -5,10 +5,11 @@ are estimates and labelled as such. This document is a plan in the same sense as
 [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md), not a record of completed work.
 
 > **A narrower subset of this plan is now implemented.**
-> [`PSP_HARDWARE_ORACLE.md`](PSP_HARDWARE_ORACLE.md) covers the source-owned scalar probe, the strict
-> result protocol with its acceptance gate, the PSPLINK runbook, and the readiness preflight. Read it
-> first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the shipped
-> `tools/psp_readiness.py` — extend that tool rather than adding a second precondition checker.
+> The [source-owned scalar-probe runbook](../fixtures/psp_oracle/README.md), its
+> [strict result protocol](../tools/psp_oracle/protocol.py), and the shipped
+> [`tools/psp_readiness.py`](../tools/psp_readiness.py) cover the implemented subset. Read those
+> first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the readiness tool
+> — extend that tool rather than adding a second precondition checker.
 > What remains genuinely unbuilt here is the *instruction-trace* oracle
 > (`CODEGEN_ORACLE`/`MICROTEST_ORACLE` capture on real silicon), which the scalar probe does not
 > provide.

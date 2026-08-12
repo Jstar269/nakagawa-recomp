@@ -86,10 +86,10 @@ def _index_blobs() -> dict[str, bytes]:
     return blobs
 
 
-def _implementation_records() -> dict[str, dict]:
-    if not IMPLEMENTATION_LEDGER.is_file():
+def _implementation_records(implementation_ledger: Path = IMPLEMENTATION_LEDGER) -> dict[str, dict]:
+    if not implementation_ledger.is_file():
         return {}
-    data = json.loads(IMPLEMENTATION_LEDGER.read_text(encoding="utf-8"))
+    data = json.loads(implementation_ledger.read_text(encoding="utf-8"))
     records: dict[str, dict] = {}
     for record in data.get("records", []):
         if not isinstance(record, dict):
@@ -152,8 +152,12 @@ def _class_for(path: str, record: dict | None) -> tuple[str, dict]:
                                           "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"}
 
 
-def build_ledger(output: Path = DEFAULT_OUTPUT) -> dict:
-    if not IMPLEMENTATION_LEDGER.is_file():
+def build_ledger(
+    output: Path = DEFAULT_OUTPUT,
+    *,
+    implementation_ledger: Path = IMPLEMENTATION_LEDGER,
+) -> dict:
+    if not implementation_ledger.is_file():
         raise RuntimeError(
             "detailed development provenance ledger is not present; the checked-in public ledger "
             "is release evidence and must not be regenerated from broad defaults"
@@ -161,7 +165,7 @@ def build_ledger(output: Path = DEFAULT_OUTPUT) -> dict:
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     included = set(policy.get("include_paths", []))
     tracked = _tracked_paths()
-    records = _implementation_records()
+    records = _implementation_records(implementation_ledger)
     blobs = _index_blobs()
     entries: list[dict] = []
     for path in tracked:
@@ -216,19 +220,37 @@ def validate_ledger(document: dict, *, require_hashes: bool = True) -> list[str]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--implementation-ledger",
+        type=Path,
+        default=IMPLEMENTATION_LEDGER,
+        help=(
+            "trusted detailed development ledger; may remain outside the public tree "
+            "and its path is never written to generated output"
+        ),
+    )
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
-    if not IMPLEMENTATION_LEDGER.is_file():
-        if not args.check or not args.output.is_file():
+    if args.check:
+        if not args.output.is_file():
+            print(
+                "provenance ledger: checked-in public ledger is absent",
+                file=sys.stderr,
+            )
+            return 1
+        document = json.loads(args.output.read_text(encoding="utf-8"))
+    else:
+        if not args.implementation_ledger.is_file():
             print(
                 "provenance ledger: detailed development ledger is absent; refusing to synthesize "
                 "public provenance from broad defaults (use --check on the checked-in ledger)",
                 file=sys.stderr,
             )
             return 1
-        document = json.loads(args.output.read_text(encoding="utf-8"))
-    else:
-        document = build_ledger(args.output)
+        document = build_ledger(
+            args.output,
+            implementation_ledger=args.implementation_ledger,
+        )
     errors = validate_ledger(document)
     if errors:
         for error in errors:

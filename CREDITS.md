@@ -9,6 +9,8 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 - **PSP Recompilation Project — sal063 / psp-recomp authors** — GPL-2.0-or-later. Immediate upstream and original basis of this repository. The upstream attribution document is preserved at [`THIRD_PARTY_LICENSES/SAL063_CREDITS.txt`](THIRD_PARTY_LICENSES/SAL063_CREDITS.txt).
 - **PPSSPP — Henrik Rydgård and contributors** — GPL-2.0-or-later plus its own third-party notices. A significant part of the immediate upstream itself derives from, ports, or models PPSSPP subsystems; Nakagawa also retains and extends some of that downstream lineage.
 
-The authoritative, component-by-component provenance record is [`NOTICE.md`](NOTICE.md). The measured sal063 retention analysis is [`docs/provenance/SAL063_RETENTION_2026-08-06.md`](docs/provenance/SAL063_RETENTION_2026-08-06.md).
+The authoritative, component-by-component provenance records are [`NOTICE.md`](NOTICE.md) and the
+[`public provenance ledger`](assets/public_provenance_ledger.json). Detailed historical comparison
+packets remain outside the public candidate.
 
 This credits file is a discoverability aid, not a replacement for `LICENSE`, `NOTICE.md`, per-file license notices, or the third-party license files that govern redistribution.

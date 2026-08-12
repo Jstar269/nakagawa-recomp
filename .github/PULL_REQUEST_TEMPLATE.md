@@ -31,7 +31,7 @@ Closes/Tracks #
 
 ## Contributor Rights Attestation (DCO 1.1)
 
-- [ ] All commits include a `Signed-off-by:` certification under Developer Certificate of Origin (DCO 1.1); see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
+- [ ] All commits include a `Signed-off-by:` certification under Developer Certificate of Origin (DCO 1.1); see [docs/DCO_POLICY.md](../docs/DCO_POLICY.md).
 - [ ] Or: these are maintainer / maintainer-directed commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md); a missing trailer is expected and is not a merge blocker.
 
 <!-- Exactly one of the two boxes above applies. The waiver is personal to the maintainer: outside contributions always need the first. Agents must never add a Signed-off-by trailer on anyone's behalf. -->
