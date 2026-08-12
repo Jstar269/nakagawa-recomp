@@ -6,6 +6,7 @@
 
 
 #include "interp.h"
+#include "../rt/fp_convert.h"
 
 #include <cmath>
 #include <cstring>
@@ -100,66 +101,6 @@ inline uint32_t ArithShiftRight(uint32_t v, unsigned n) {
 
 inline void SetR(CpuState *s, uint32_t idx, uint32_t val) {
 	if (idx != 0) s->r[idx] = val;
-}
-
-// Round half to even (PSP cvt.w.s RN, PPSSPP's round_ieee_754). Deterministic
-// regardless of the host floating-point rounding mode (no nearbyint/rint, which
-// follow the host FE_* mode). x is finite.
-inline float RoundHalfEven(float x) {
-	const float fl = std::floor(x);
-	const float diff = x - fl;
-	if (diff > 0.5f) return fl + 1.0f;
-	if (diff < 0.5f) return fl;
-	// Exactly half: tie to the even integer.
-	return std::fmod(fl, 2.0f) == 0.0f ? fl : fl + 1.0f;
-}
-
-// Single-precision float to 32-bit integer, mirroring PPSSPP's Int_FPU2op
-// (Core/MIPS/MIPSInt.cpp). Every result is selected with explicit finite-range
-// comparisons before any integer cast, so a host float->int conversion can never
-// be UB: NaN and +inf give INT_MAX, -inf gives INT_MIN; a finite value whose
-// rounded result is >= 2^31 gives 0x7FFFFFFF for trunc.w.s (PPSSPP's explicit
-// positive-overflow guard) and 0x80000000 for every other conversion (the x86
-// cvttss2si out-of-range result PPSSPP's interpreter relies on); a rounded
-// result below -2^31 gives 0x80000000. 2^31 and -2^31 are exactly representable,
-// and the largest float below 2^31 (2147483520.0f) fits int32, so the remaining
-// cast is always in range. funct selects round/trunc/ceil/floor; cvt.w.s
-// (funct 0x24) uses the rounding mode specified in fcr31[1:0]
-// (0=RN half-even, 1=RZ, 2=RP, 3=RM).
-inline uint32_t FpConvertToW(float x, uint32_t funct, uint32_t fcr31) {
-	if (std::isnan(x) || std::isinf(x))
-		return (std::isinf(x) && x < 0.0f) ? 0x80000000u : 0x7FFFFFFFu;
-	// The per-op rounding of a finite float is an exact integer-valued float
-	// (floor/ceil of a finite value never loses precision here), so all range
-	// decisions below are exact.
-	float rounded;
-	bool clamp_positive_overflow = false;
-	// Rounding mode for cvt.w.s (funct 0x24): fcr31[1:0] -- 0=RN, 1=RZ, 2=RP, 3=RM
-	const unsigned rm = (fcr31 >> 0) & 3u;
-	switch (funct) {
-		case 0x0C: rounded = std::floor(x + 0.5f); break;                 // round.w.s: round half up
-		case 0x0D:                                                         // trunc.w.s: toward zero
-			rounded = x >= 0.0f ? std::floor(x) : std::ceil(x);
-			clamp_positive_overflow = true;                                // PPSSPP: positive overflow -> INT_MAX
-			break;
-		case 0x0E: rounded = std::ceil(x); break;                          // ceil.w.s
-		case 0x0F: rounded = std::floor(x); break;                         // floor.w.s
-		case 0x24: {                                                       // cvt.w.s -- uses fcr31 rounding mode
-			switch (rm) {
-				case 0: rounded = RoundHalfEven(x); break;                 // RN
-				case 1: rounded = x >= 0.0f ? std::floor(x) : std::ceil(x); break;  // RZ
-				case 2: rounded = std::ceil(x); break;                     // RP
-				case 3: rounded = std::floor(x); break;                    // RM
-			}
-			break;
-		}
-		default: rounded = RoundHalfEven(x); break;                       // default: round-to-nearest-even
-	}
-	if (rounded >= 2147483648.0f)
-		return clamp_positive_overflow ? 0x7FFFFFFFu : 0x80000000u;
-	if (rounded < -2147483648.0f)
-		return 0x80000000u;
-	return (uint32_t)(int32_t)rounded;  // in [-2^31, 2^31): defined conversion
 }
 
 // Compute a store's address and access size from the opcode, or size 0 if not a store.
@@ -458,11 +399,11 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 						case 0x05: s->f[fd] = std::fabs(s->f[fs]); return StopReason::kRunning;  // abs.s
 						case 0x06: s->f[fd] = s->f[fs]; return StopReason::kRunning;             // mov.s
 						case 0x07: s->f[fd] = -s->f[fs]; return StopReason::kRunning;            // neg.s
-case 0x0C: s->fi[fd] = FpConvertToW(s->f[fs], 0x0C, s->fcr31); return StopReason::kRunning;  // round.w.s
-case 0x0D: s->fi[fd] = FpConvertToW(s->f[fs], 0x0D, s->fcr31); return StopReason::kRunning;  // trunc.w.s
-case 0x0E: s->fi[fd] = FpConvertToW(s->f[fs], 0x0E, s->fcr31); return StopReason::kRunning;  // ceil.w.s
-case 0x0F: s->fi[fd] = FpConvertToW(s->f[fs], 0x0F, s->fcr31); return StopReason::kRunning;  // floor.w.s
-case 0x24: s->fi[fd] = FpConvertToW(s->f[fs], 0x24, s->fcr31); return StopReason::kRunning;  // cvt.w.s
+						case 0x0C: s->fi[fd] = sr_fpu_to_word(s->f[fs], 0x0C, s->fcr31); return StopReason::kRunning;  // round.w.s
+						case 0x0D: s->fi[fd] = sr_fpu_to_word(s->f[fs], 0x0D, s->fcr31); return StopReason::kRunning;  // trunc.w.s
+						case 0x0E: s->fi[fd] = sr_fpu_to_word(s->f[fs], 0x0E, s->fcr31); return StopReason::kRunning;  // ceil.w.s
+						case 0x0F: s->fi[fd] = sr_fpu_to_word(s->f[fs], 0x0F, s->fcr31); return StopReason::kRunning;  // floor.w.s
+						case 0x24: s->fi[fd] = sr_fpu_to_word(s->f[fs], 0x24, s->fcr31); return StopReason::kRunning;  // cvt.w.s
 						default:
 							if (funct >= 0x30) {  // c.cond.s
 								uint32_t cond = funct & 0xF;
@@ -479,13 +420,9 @@ case 0x24: s->fi[fd] = FpConvertToW(s->f[fs], 0x24, s->fcr31); return StopReason
 				}
 				case 0x14: {  // fmt = W
 					if (Funct(op) == 0x20) {
-						// cvt.s.w: reinterpret the W register's bit pattern as a signed
-					// 32-bit integer, then convert to float. A uint32->int32 cast of a
-					// bit pattern is implementation-defined, so copy through memcpy
-					// for a defined result; the int32->float conversion then rounds.
-					int32_t sv;
-					std::memcpy(&sv, &s->fi[fs], sizeof(sv));
-					s->f[fd] = (float)sv;
+						// cvt.s.w: map the W register's bit pattern to its signed value
+						// without an implementation-defined uint32_t-to-int32_t cast.
+						s->f[fd] = (float)sr_u32_as_s32(s->fi[fs]);
 					return StopReason::kRunning;
 				}
 					return StopReason::kUnimplemented;

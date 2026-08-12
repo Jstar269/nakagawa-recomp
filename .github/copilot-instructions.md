@@ -54,10 +54,10 @@ pre-commit run --all-files
 `--worktree` reads the bytes on disk; the bare `--tracked-only` form reads staged Git blobs and
 will not see an unstaged edit.
 
-The canonical non-interactive aggregate gate is `.\hst_manager.ps1 -Action Verify` (14 steps:
-Python unit suite, sched/profiler/heap/asset-index/HLE-thread/VFPU-table/watchpoints/VFPU-interp
-selftests, `src/ref`, `import_audit_gate.py`, `publish_audit.py` over both content sources, and
-the two GPU selftests — exit 77 = Vulkan/validation layer unavailable → SKIP).
+The canonical non-interactive aggregate gate is `.\hst_manager.ps1 -Action Verify` (15 steps:
+Python unit suite, sched/profiler/heap/asset-index/HLE-thread/FP-conversion/VFPU-table/watchpoints/
+VFPU-interp selftests, `src/ref`, `import_audit_gate.py`, `publish_audit.py` over both content
+sources, and the two GPU selftests — exit 77 = Vulkan/validation layer unavailable → SKIP).
 
 For dashboard changes:
 

@@ -576,16 +576,16 @@ try {
 
         # Native stdout is part of a function's output stream, which the caller's
         # [void](...) would discard. Out-Host writes straight to the console instead.
-        Write-Host "`n[1/14] Python unit suite (tools/test_*.py)..." -ForegroundColor Cyan
+        Write-Host "`n[1/15] Python unit suite (tools/test_*.py)..." -ForegroundColor Cyan
         & python -m unittest discover -s tools -p "test_*.py" | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "python-unittest" }
 
-        Write-Host "`n[2/14] Scheduler/callback selftest (src/rt/sched_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[2/15] Scheduler/callback selftest (src/rt/sched_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("sched-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "sched-selftest" }
 
-        Write-Host "`n[3/14] Profiler hash-table selftest (src/rt/profiler_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[3/15] Profiler hash-table selftest (src/rt/profiler_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("profiler-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $MakeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "profiler-selftest" }
@@ -593,40 +593,45 @@ try {
         # Guest-heap boundary-tag coalescing (#122). The Makefile target landed with the
         # allocator fix but was never reachable from this route, so a coalescing regression
         # would not have failed a local Verify run.
-        Write-Host "`n[4/14] Guest-heap allocator selftest (src/rt/heap_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[4/15] Guest-heap allocator selftest (src/rt/heap_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("heap-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "heap-selftest" }
 
-        Write-Host "`n[5/14] Extracted-asset index selftest (src/rt/asset_index_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[5/15] Extracted-asset index selftest (src/rt/asset_index_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("asset-index-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "asset-index-selftest" }
 
-        Write-Host "`n[6/14] Production HLE ThreadMan selftest (src/rt/hle_thread_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[6/15] Production HLE ThreadMan selftest (src/rt/hle_thread_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("hle-thread-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "hle-thread-selftest" }
 
-        Write-Host "`n[7/14] VFPU table loader selftest (src/rt/vfpu_tables_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[7/15] Portable FPU/VFPU conversion selftest (src/rt/fp_convert_selftest.c)..." -ForegroundColor Cyan
+        $a = $makeBaseArgs + @("fp-convert-selftest", "--no-print-directory")
+        $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
+        if ($p.ExitCode -ne 0) { $failed += "fp-convert-selftest" }
+
+        Write-Host "`n[8/15] VFPU table loader selftest (src/rt/vfpu_tables_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-tables-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "vfpu-tables-selftest" }
 
-        Write-Host "`n[8/14] Watchpoints-file parser selftest (src/rt/watchpoints_file_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[9/15] Watchpoints-file parser selftest (src/rt/watchpoints_file_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("watchpoints-file-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "watchpoints-file-selftest" }
 
-        Write-Host "`n[9/14] VFPU interpreter selftest (src/rt/vfpu_interp_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[10/15] VFPU interpreter selftest (src/rt/vfpu_interp_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-interp-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "vfpu-interp-selftest" }
 
-        Write-Host "`n[10/14] Reference interpreter selftest (src/ref/selftest.cpp)..." -ForegroundColor Cyan
+        Write-Host "`n[11/15] Reference interpreter selftest (src/ref/selftest.cpp)..." -ForegroundColor Cyan
         if (-not (Invoke-Selftest)) { $failed += "selftest" }
 
-        Write-Host "`n[11/14] Import-coverage and fake-success audit gate..." -ForegroundColor Cyan
+        Write-Host "`n[12/15] Import-coverage and fake-success audit gate..." -ForegroundColor Cyan
         & python tools/import_audit_gate.py | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "import-audit-gate" }
 
@@ -637,7 +642,7 @@ try {
         # finding sit on disk while this suite reported PASS. Auditing worktree bytes alone
         # would just move the blind spot onto staged-but-uncommitted content, so run both.
         # --tracked-only selects the path set in each case; --worktree selects the bytes.
-        Write-Host "`n[12/14] Publication safety audit (staged blobs)..." -ForegroundColor Cyan
+        Write-Host "`n[13/15] Publication safety audit (staged blobs)..." -ForegroundColor Cyan
         & python tools/publish_audit.py --tracked-only | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-index" }
 
@@ -645,7 +650,7 @@ try {
         & python tools/publish_audit.py --tracked-only --worktree | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-worktree" }
 
-        Write-Host "`n[13/14] GPU framebuffer coherence selftest (gpu-coherence-selftest)..." -ForegroundColor Cyan
+        Write-Host "`n[14/15] GPU framebuffer coherence selftest (gpu-coherence-selftest)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("gpu-coherence-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -eq 77) {
@@ -654,7 +659,7 @@ try {
             $failed += "gpu-coherence-selftest"
         }
 
-        Write-Host "`n[14/14] GPU present-capture selftest (gpu-capture-selftest)..." -ForegroundColor Cyan
+        Write-Host "`n[15/15] GPU present-capture selftest (gpu-capture-selftest)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("gpu-capture-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -eq 77) {
