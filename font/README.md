@@ -1,15 +1,17 @@
 # PPSSPP replacement fonts
 
-This directory contains four replacement PGF fonts copied byte-for-byte from
-PPSSPP. They are not extracted from a PSP, a firmware image, or the user's
-game. The HLE sceFont path treats them as optional data: an invalid or missing
-font root is reported instead of hidden by a synthetic font.
+The active public source tree contains only this provenance summary in `font/`.
+Four replacement PGF payloads evaluated for local development were copied
+byte-for-byte from PPSSPP; the payloads and their detailed redistribution-review
+records remain excluded. They were not extracted from a PSP, firmware image, or
+the user's game. The HLE sceFont path treats them as optional data: an invalid or
+missing font root is reported instead of hidden by a synthetic font.
 
-The exact byte and ancestry evidence is maintained in
-[THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt](../THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt).
-PGF font payloads and their detailed redistribution-review records are outside
-the first public-safe candidate. The public build links the fail-closed PGF
-boundary and does not assume replacement fonts are present.
+The public evidence summary below identifies the compared upstream bytes. The
+active public build links the fail-closed PGF boundary and does not assume
+replacement fonts are present. See [NOTICE.md](../NOTICE.md) and the
+[public source profile](../docs/PUBLIC_SOURCE_PROFILE.md) for the enforced
+exclusion.
 
 ## Byte provenance
 

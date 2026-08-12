@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Dry-runnable fresh public export generator and pre-publication gate verifier.
+"""Dry-runnable fresh public export generator and public-export gate verifier.
 
 Consumes already-built audit/SBOM/provenance gates and fails closed when
 unresolved legal or security blockers remain. With ``--public-safe-profile``
-the exported tree actually excludes the unreviewed #98/#99/#104 components
+the exported tree actually excludes the unresolved PGF/font and PGD/amctrl surfaces
 listed in ``assets/public_source_profile.json`` (same profile consumed by
 ``tools/public_candidate.py``), records an export provenance manifest, and
 re-audits the materialized candidate tree before clearing the export.
@@ -55,8 +55,8 @@ def is_public_safe_export_tree(root: Path = ROOT) -> bool:
     """True when *root* is a materialized public-safe export, not the private source tree.
 
     ``export_sanitized_public_tree`` writes ``PUBLIC_EXPORT.json`` recording the
-    profile it applied. A public-safe export deliberately omits the unreviewed
-    #98/#99/#104 components, so source-relative checks that assert those files
+    profile it applied. A public-safe export deliberately omits the unresolved
+    PGF/font and PGD/amctrl surfaces, so source-relative checks that assert those files
     are present on disk do not apply there. A missing or unparseable manifest
     means an ordinary full checkout, so this fails closed toward running the
     stricter private-source assertions.
@@ -92,7 +92,7 @@ class GateResult:
 
 
 def check_unresolved_legal_blockers(public_safe_profile: bool = False) -> GateResult:
-    """Check for open legal/licensing blockers (#98, #99, #104)."""
+    """Check for unresolved PGF/font and PGD/amctrl review boundaries."""
     manifest_path = ROOT / "assets" / "release_manifest.json"
     if not manifest_path.is_file():
         return GateResult("Legal Blockers", False, "assets/release_manifest.json missing")
@@ -202,7 +202,7 @@ def run_sbom_verification(repo_root: Path = ROOT) -> GateResult:
 
 
 def run_all_publication_gates(public_safe_profile: bool = False, repo_root: Path = ROOT) -> list[GateResult]:
-    """Execute all pre-publication verification gates."""
+    """Execute all public-export verification gates."""
     history = run_history_audit(repo_root)
     if (
         public_safe_profile
@@ -325,7 +325,7 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
             return False
 
     if dry_run:
-        print("Dry run complete: pre-publication gates verified and target export path validated.")
+        print("Dry run complete: public-export gates verified and target export path validated.")
         return True
 
     if export_dir.exists():
@@ -449,15 +449,15 @@ def _is_excluded(relative_path: str, profile: dict) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fresh public export generator and pre-publication gate verifier.")
-    parser.add_argument("--verify-only", action="store_true", help="Only verify pre-publication gates without generating export")
+    parser = argparse.ArgumentParser(description="Fresh public export generator and public-export gate verifier.")
+    parser.add_argument("--verify-only", action="store_true", help="Only verify public-export gates without generating export")
     parser.add_argument("--export-dir", type=Path, help="Target directory for sanitized public export")
-    parser.add_argument("--public-safe-profile", action="store_true", help="Use public-safe profile (excludes unreviewed #98/#99/#104 assets)")
+    parser.add_argument("--public-safe-profile", action="store_true", help="Use public-safe profile (excludes unresolved PGF/font and PGD/amctrl surfaces)")
     parser.add_argument("--dry-run", action="store_true", help="Perform dry run without writing files")
 
     args = parser.parse_args()
 
-    print("=== Nakagawa Recomp Pre-Publication Gate Verifier ===")
+    print("=== Nakagawa Recomp Public-Export Gate Verifier ===")
     results = run_all_publication_gates(public_safe_profile=args.public_safe_profile)
 
     all_passed = True
@@ -468,10 +468,10 @@ def main() -> int:
             all_passed = False
 
     if not all_passed:
-        print("\n[FAILED CLOSED] Pre-publication gates failed. Cannot proceed to public export.")
+        print("\n[FAILED CLOSED] Public-export gates failed. Cannot proceed to public export.")
         return 1
 
-    print("\n[ALL GATES PASSED] Pre-publication gates verified.")
+    print("\n[ALL GATES PASSED] Public-export gates verified.")
 
     if args.verify_only or not args.export_dir:
         return 0

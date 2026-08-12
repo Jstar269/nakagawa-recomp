@@ -1,27 +1,30 @@
 # Public-source publication gates
 
-This is an engineering gate definition for a fresh source candidate. It is not
-legal advice, legal clearance, a binary-release approval, or evidence that a
-title runtime is playable. The machine-readable policy and the exact candidate
-tree are authoritative; this page explains the decision boundary.
+This is the engineering gate definition for changes to the active sanitized
+public repository and for any fresh source candidate or release export derived
+from it. It is not legal advice, legal clearance, a binary-release approval, or
+evidence that a title runtime is playable. The machine-readable policy and the
+exact tree being assessed are authoritative; this page explains the decision
+boundary.
 
 ## Scope
 
-The candidate is generic recompiler/runtime source, synthetic fixtures, and
-reviewed third-party notices. It must not contain game binaries or assets,
+The active public source tree, and any candidate derived from it, contains
+generic recompiler/runtime source, synthetic fixtures, and reviewed third-party
+notices. It must not contain game binaries or assets,
 decrypted modules, generated retail translation units, saves, keys, captures,
 oracle traces, private routes, private repository metadata, or derived bytes.
 Title-specific HST configuration and private engineering/review documents are
 excluded by `assets/public_source_profile.json`.
 
-The first candidate also excludes the lineage-sensitive PGF/font and PGD/amctrl
+The current public source profile also excludes the lineage-sensitive PGF/font and PGD/amctrl
 surfaces, plus the reviewed-but-not-yet-cleared sal063-derived ISO/VFS and SDL
 audio implementations. Public-safe builds link explicit unavailable boundaries;
 they reject the capability and do not fabricate success.
 
 ## Required predicates
 
-Every predicate below must pass for the same candidate tree and history. A local
+Every predicate below must pass for the same exact tree and history under review. A local
 pass is not a hosted-CI pass, a hardware pass, a visual pass, a DCO attestation,
 or a human legal decision.
 
@@ -40,7 +43,7 @@ or a human legal decision.
 5. **Supply-chain inventory.** The release manifest and SBOM cover the expected
    provenance families (sal063, PPSSPP, PSPSDK, FFmpeg/ATRAC3+, SDL3, Vulkan,
    shadcn/ui, and VFPU) with synchronized notices and lock data.
-6. **Build and tests.** The public candidate builds its generic/public-safe
+6. **Build and tests.** The public-safe target builds its generic source
    target and runs the source-owned regression gates. Missing private inputs or
    external oracles are reported as blocked/unavailable, never as passes.
 7. **Documentation and governance.** Documentation contains no private/counsel
@@ -59,5 +62,6 @@ python tools/build_public_export.py --public-safe-profile --export-dir <staging>
 python tools/publish_audit.py --candidate-root <staging> --candidate-tree --public-scope
 ```
 
-The export is not cleared merely because these commands are available. Record
-the exact candidate commit/tree, outputs, and remaining human/hosted gates.
+The repository or export is not cleared merely because these commands are
+available. Record the exact commit/tree, outputs, and remaining human/hosted
+gates.

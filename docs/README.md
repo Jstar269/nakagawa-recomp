@@ -1,9 +1,11 @@
 # Documentation
 
-This index covers the public-source candidate only. Source code, tests and the
+This index covers the active sanitized public source repository and its
+public-safe candidate/export boundary. Source code, tests and the
 Makefile remain authoritative for implementation behavior; curated GitHub Issues
 are authoritative for actionable work. Private operational, title-run, legal
-review and historical-archive documents are intentionally outside the candidate.
+review and historical-archive documents are intentionally outside the public
+source tree.
 
 ## Start here
 
@@ -40,13 +42,13 @@ review and historical-archive documents are intentionally outside the candidate.
 - [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) explains the explicit
   include/exclude policy and fail-closed candidate construction.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
-  is the path-hashed public candidate ledger; unresolved records are not clearance.
+  is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
   title-specific versus generic/synthetic surfaces.
 - [`provenance/MODIFIED_FILE_NOTICES.md`](provenance/MODIFIED_FILE_NOTICES.md)
   describes the retained upstream notice contract.
 
-The publication candidate must not include private inputs, game-derived bytes,
-captures, saves, keys, oracle material, decrypted modules, generated retail code,
-private repository metadata, or counsel/incident work product. Unknown paths fail
-closed in the machine policy.
+The active public repository and any publication candidate must not include
+private inputs, game-derived bytes, captures, saves, keys, oracle material,
+decrypted modules, generated retail code, private repository metadata, or
+counsel/incident work product. Unknown paths fail closed in the machine policy.

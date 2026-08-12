@@ -8,7 +8,8 @@ Detects deterministic classes of staleness that should not require network acces
 - ephemeral CI-run wording in the evergreen README;
 - volatile ``as of`` status claims in the evergreen README;
 - obsolete private/public repository-topology statements;
-- known retired public URLs outside explicitly historical evidence records.
+- known retired public URLs outside explicitly historical evidence records;
+- repository-relative Markdown links whose targets are absent or escape the tree.
 
 Live GitHub object existence/state is intentionally handled by ``audit_public_issue_links.py``.
 """
@@ -20,6 +21,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from urllib.parse import unquote
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -58,6 +60,9 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/COVERAGE_LEDGER.md",
     "docs/provenance/INDEPENDENCE_BACKLOG.md",
 }
+
+MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
+EXTERNAL_LINK_PREFIXES = ("http://", "https://", "mailto:", "tel:", "data:")
 
 
 def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.Path]:
@@ -119,13 +124,42 @@ def lint_doc_links_and_topology(
     is_historical_evidence = rel_path in HISTORICAL_EVIDENCE_DOCS
     text = doc_path.read_text(encoding="utf-8")
 
+    in_fence = False
+    root_resolved = repo_root.resolve()
     for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
         if not is_historical_evidence and RETIRED_PRIVATE_ISSUE_URLS.search(line):
             errors.append(f"{rel_path}:{idx}: contains dead private-era issue URL")
         for pattern in OBSOLETE_TOPOLOGY_PATTERNS:
             if pattern.search(line):
                 errors.append(
                     f"{rel_path}:{idx}: contains obsolete private-repository topology statement"
+                )
+        if in_fence:
+            continue
+        for match in MARKDOWN_LINK_RE.finditer(line):
+            raw_target = match.group(1).strip("<>")
+            if raw_target.startswith("#") or raw_target.lower().startswith(
+                EXTERNAL_LINK_PREFIXES
+            ):
+                continue
+            target = unquote(raw_target.split("#", 1)[0])
+            if not target:
+                continue
+            resolved = (doc_path.parent / target).resolve()
+            try:
+                resolved.relative_to(root_resolved)
+            except ValueError:
+                errors.append(
+                    f"{rel_path}:{idx}: repository-relative link escapes the tree: {raw_target}"
+                )
+                continue
+            if not resolved.exists():
+                errors.append(
+                    f"{rel_path}:{idx}: missing repository-relative link target: {raw_target}"
                 )
 
     return errors

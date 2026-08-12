@@ -12,7 +12,9 @@ The audit has two purposes:
 
 Historical evidence documents may intentionally preserve pre-export tracker numbers. A 404 in
 one of those documents is reported as historical evidence rather than silently reclassified as a
-current public issue. ``--strict`` additionally fails when the live GitHub query itself cannot run.
+current public issue. If the sanitized public tracker has reused the number, the historical live
+URL fails closed instead of linking readers to an unrelated object. ``--strict`` additionally
+fails when the live GitHub query itself cannot run.
 """
 
 from __future__ import annotations
@@ -224,6 +226,22 @@ def audit_markdown_files(
                     continue
 
                 obj = issues_map[num]
+                if is_historical_doc:
+                    findings.append(
+                        (
+                            rel,
+                            idx,
+                            raw,
+                            (
+                                f"HISTORICAL NUMBER COLLISION: #{num} now resolves to "
+                                f"public {obj['type']} ({obj['title']}); preserve the old "
+                                "number as plain historical text instead of a live URL"
+                            ),
+                            False,
+                        )
+                    )
+                    continue
+
                 expected_is_pr = url_type == "pull"
                 if obj["is_pr"] != expected_is_pr:
                     actual_type = "PR" if obj["is_pr"] else "Issue"
