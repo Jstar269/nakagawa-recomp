@@ -19,7 +19,12 @@ import title_manifest
 
 class TitleManagerPlanTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.hst = title_manifest.load_manifest(ROOT / "assets" / "titles" / "hst-ucus98701.json")
+        self.hst_path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
+        self.hst = (
+            title_manifest.load_manifest(self.hst_path)
+            if self.hst_path.is_file()
+            else None
+        )
         self.synthetic = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
 
     def hst_plan(self, manifest=None, **overrides):
@@ -38,7 +43,25 @@ class TitleManagerPlanTests(unittest.TestCase):
             **values,
         )
 
+    def synthetic_plan(self, manifest=None, **overrides):
+        values = {
+            "game_name": "synthetic",
+            "game_elf": Path("fixtures/synthetic.elf"),
+            "build_dir": Path("build/synthetic"),
+            "module_dir": None,
+            "psp_header": None,
+            "codegen_profile": None,
+            "funcs_per_chunk": 64,
+        }
+        values.update(overrides)
+        return title_codegen_plan.build_manager_plan(
+            self.synthetic if manifest is None else manifest,
+            **values,
+        )
+
     def test_hst_plan_is_bounded_and_contains_only_manager_fields(self) -> None:
+        if self.hst is None:
+            self.skipTest("private HST title manifest is unavailable in the sanitized public tree")
         plan = self.hst_plan()
         self.assertEqual(plan["plan_version"], 1)
         self.assertEqual(plan["plan_kind"], "title-manager-build")
@@ -76,16 +99,7 @@ class TitleManagerPlanTests(unittest.TestCase):
         self.assertNotIn("commands", plan)
 
     def test_synthetic_plan_uses_generic_profile_and_clears_hst_span(self) -> None:
-        plan = title_codegen_plan.build_manager_plan(
-            self.synthetic,
-            game_name="synthetic",
-            game_elf=Path("build/fixtures/synthetic.elf"),
-            build_dir=Path("build/synthetic"),
-            module_dir=None,
-            psp_header=None,
-            codegen_profile=None,
-            funcs_per_chunk=64,
-        )
+        plan = self.synthetic_plan(game_elf=Path("build/fixtures/synthetic.elf"))
         self.assertEqual(plan["title_kind"], "synthetic")
         self.assertEqual(plan["game_base"], 0x08800000)
         self.assertEqual(plan["game_entry"], 0x08800000)
@@ -98,27 +112,25 @@ class TitleManagerPlanTests(unittest.TestCase):
 
     def test_profile_conflict_and_bad_span_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "conflicts with the manifest"):
-            self.hst_plan(codegen_profile="none")
-        bad = copy.deepcopy(self.hst)
+            self.synthetic_plan(codegen_profile="hst")
+        bad = copy.deepcopy(self.synthetic)
         bad["executable"] = copy.deepcopy(bad["executable"])
         bad["executable"]["extra_executable_spans"] = [
             {"start": 1, "end": 2},
             {"start": 3, "end": 4},
         ]
         with self.assertRaisesRegex(ValueError, "at most one"):
-            self.hst_plan(manifest=bad)
+            self.synthetic_plan(manifest=bad)
 
     def test_cli_manager_output_is_deterministic(self) -> None:
         command = [
             sys.executable,
             str(ROOT / "tools" / "title_codegen_plan.py"),
-            str(ROOT / "assets" / "titles" / "hst-ucus98701.json"),
+            str(ROOT / "assets" / "titles" / "synthetic.json"),
             "--manager-plan",
-            "--game-name=hst",
-            "--game-elf=place_game_here/EBOOT.elf",
-            "--build-dir=build/hst",
-            "--module-dir=place_game_here/EXTRACTED/decrypted",
-            "--psp-header=place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
+            "--game-name=synthetic",
+            "--game-elf=fixtures/synthetic.elf",
+            "--build-dir=build/synthetic",
         ]
         first = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
         second = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
@@ -127,6 +139,7 @@ class TitleManagerPlanTests(unittest.TestCase):
         self.assertEqual(first.stdout, second.stdout)
         parsed = json.loads(first.stdout)
         self.assertEqual(parsed["plan_version"], 1)
+        self.assertEqual(parsed["title_manifest_id"], "synthetic-allegrex-v1")
         self.assertNotIn("commands", parsed)
 
 

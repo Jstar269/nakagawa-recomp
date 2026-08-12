@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "90b9ba4de7f48399eb838b7b132b608185d197f26a1d2c582c3cc72ec7e1e034"
+      "sha256": "31cc00c02d1ec7bbef2df7d5e538cf349412533a3c22e723034c8b369776a747"
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
@@ -6091,7 +6091,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e8b56e7bb2087381443bcf9c847edab0fb75843752c691d9cafa570f9c5055d"
+      "sha256": "0e5b9e2e714a8d5541fe32df71025658806b86904a83274d7fd4192a96ad9a46"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -6102,7 +6102,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c955869d3d8c2f0c2fa44df0a1911a634a535275343442192ebbef2ffb9ecb2f"
+      "sha256": "ace05251aad6a0532b1ac0449ae82d7860d16c5c20f3cc66cfca598193dce40e"
     },
     {
       "path": "tools/test_import_audit.py",
@@ -6377,7 +6377,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b5b9f80b2b3521ccd3e8ad746a6f806f44944fef3ee6aad2ff327faa9737f4c"
+      "sha256": "b54eefb350e27e38778093d66b8d720e3ed9cc3e117a08cc58c29ee824127155"
     },
     {
       "path": "tools/test_psp_oracle.py",
@@ -6597,7 +6597,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9622d9c3a61eba55577b84d12c25b90cf7afb81bd4ba511b1cae3523a720a239"
+      "sha256": "5c4cdb8665152cbcc33141c5aa405b40962f9b62f0d1bc3828baac3487709bde"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -6619,7 +6619,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bdea12f0fa965b69a0e8cc5ad94261a0b1fcf7e290b645df1766aa92d16c107d"
+      "sha256": "68056e250c5ffa1a0c9d339b858d8cb2e136dfa32dfded8978bcb4f79d1fdcf7"
     },
     {
       "path": "tools/test_title_manifest.py",
