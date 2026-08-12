@@ -49,10 +49,13 @@ repos:
       - id: ruff-check
         files: ^tools/.*\.py$
 
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+  # Betterleaks is the actively developed successor from the Gitleaks maintainers.
+  # The project-owned native config keeps default detection enabled and limits
+  # the synthetic history-audit exception to its exact value and path.
+  - repo: https://github.com/betterleaks/betterleaks
+    rev: ed69eef5c9d16d1b39f136846b7bbe5fb8471ef5 # v1.7.4
     hooks:
-      - id: gitleaks
+      - id: betterleaks
         stages: [pre-commit, pre-push]
 
   - repo: local
