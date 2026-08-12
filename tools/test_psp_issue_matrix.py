@@ -16,6 +16,10 @@ import psp_issue_matrix
 class PspIssueMatrixTests(unittest.TestCase):
     def test_checked_in_snapshot_covers_every_open_issue_snapshot(self) -> None:
         path = Path(__file__).resolve().parents[1] / "docs" / "PSP_ISSUE_MATRIX.json"
+        if not path.is_file():
+            self.skipTest(
+                "volatile issue snapshot is intentionally excluded from the sanitized public tree"
+            )
         matrix = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(matrix["issue_count"], len(matrix["rows"]))
         self.assertEqual(matrix["issue_count"], 85)
