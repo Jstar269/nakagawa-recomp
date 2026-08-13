@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "558408fbf818782b87c1a510bd4272c4d8e6d17de4c8508866378eb82c2b67ed"
+      "sha256": "1c510a4d7af423f3874286afc9b928b1d874526af2643df5262e26b9997aac09"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "d2f3f61f4e2491572891b678f5525d8fdbfa5286fcc5ea636ed871262682cd2d"
+      "sha256": "96769f3f67883fdb4442e42bc920ba48a762cc1418f66834f13d6b24c3046c8f"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1f11661efa9bce696e63226090ad85b4f0f86310156364ac890b5df00e9dcc61"
+      "sha256": "a8cc2ceab439d28146fff415ba62c967d41372f8c297aa4ddb6f005dc5445390"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1131,7 +1131,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "caea940e6226ad8fb5e37684f91cf18e7873a74177ea8ac3d25632578d3bf183"
+      "sha256": "ba56de2e5bc2abe65d4c6e8ceb10142fd050ed94c36a200c50a05a4374cc2cea"
     },
     {
       "path": "interface/.env.example",
@@ -4770,6 +4770,16 @@
       "sha256": "31211c32bdc5a9e4b8e77c52d2c2227eb5aa1159e01481e2f813b5cecd6743b4"
     },
     {
+      "path": "src/rt/vfpu_overlap_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "f6b9c2a40fe24fcd2e1f6177e8280f5473f9c6a3430207601852fe0ac32ef10b"
+    },
+    {
       "path": "src/rt/vfpu_tables.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7398,6 +7408,18 @@
         "modification_status": "modified_or_translated; see record"
       },
       "sha256": "352014730a608ebffd538014ce8d606ee3a1935a26492eef7b912012b8b5e409"
+    },
+    {
+      "path": "tools/vfpu_overlap_fuzz_gen.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "942095686c71572cd705356be491eef8573c774de28bae454f63a5552b835a67"
     },
     {
       "path": "tools/vfpu_synth_gen.py",
