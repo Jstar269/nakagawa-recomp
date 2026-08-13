@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "d2f3f61f4e2491572891b678f5525d8fdbfa5286fcc5ea636ed871262682cd2d"
+      "sha256": "fcc470f5b0620c4eccf2d98aad2b310fbc0a8ee193d1b7117b0704e9e715086e"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05b3175480f2115cb904ed33c7fd7c63b40ee69b09b3012a87869581785932f8"
+      "sha256": "09c28e101f61f0bf7383f14e081f3b46c3191868226767d664e73944db9d5bc2"
     },
     {
       "path": "assets/release_manifest.json",
@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cbef86f49a270cfa4f489863fb40cea4f156f2d9455dae998793e7cc85a1ef4f"
+      "sha256": "1167a1f3dff117f464e39f2ba2ef5e946cf677f1d1da5d12aa9f850e73a352f5"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -4337,7 +4337,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "5908633bdbf0f76b6ece3d35141729f6e9798abb01ec56dc4dc8c680684f71a6"
+      "sha256": "0ebf9cb3e8182e9bb6fcd9a6a59c884ddfcc60623d34c1a31a3f7487a874d155"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4349,7 +4349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "777e680e0e7e6375397f5a7481104fdd5db48606951e21e428adcaba61dfe16d"
+      "sha256": "9970dee537051e6a533ffa88bac9b232c83f4dcf641473e2f0ef56889102b5c3"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4361,7 +4361,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a8e50e2ad7816c160d1e21af493248e3d828d426d888a248080720eaa06f9d0"
+      "sha256": "df5425cd25f1ec0411006fc523261517947b111af0e37b509a8834da9c2edca3"
     },
     {
       "path": "src/rt/iso.h",
@@ -4554,7 +4554,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "893d4632bed06bef025ae967251a19456681e9bdaf6b038ffa05b9c24b86fe21"
+      "sha256": "31fc156a0d9e587fc87b350d8b1a0714fb38f4264a0bac2e9a13d92c00b12226"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4587,7 +4587,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8224e027ddc0d725c4811f4051b1b8e395673efc1153a43000acd3d034c7f25d"
+      "sha256": "1d197de79427ae4a425f4e631e7db65ae115f396b8fa8a83bf99d1bddf9eb3bd"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4599,7 +4599,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e20bc3f2e68ddab4c643415cf2cd1330bd9fc927efbd5663c4aa2243ac3d292"
+      "sha256": "9c4965afcdabcca54451a1360d3726a2f72eacc1db26cf04080f7adc64d4f9de"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -5293,7 +5293,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9a05f5b7d9ad93da4b2a93cbd0d261bb7939a668a17800e4d549db7267c8975"
+      "sha256": "1113c9da817117010182e05e1398408b105c47a52e209a8f5fe2216fca885247"
     },
     {
       "path": "tools/host_stubs.py",
@@ -5401,7 +5401,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "761882cdd25ca18e350d117dbfd8fc7df8f3990de9ccd2ef975cbc9317e31646"
+      "sha256": "033ed90bcc5d9e78d7b805b5f873cdcdc9f528f8db8189aa43e5ca52a5a12715"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -6007,7 +6007,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "387da9687e91993b39fbaccdb22cc0535c2fc905e9685a0441e4005c77d51bce"
+      "sha256": "a7ec795ddcf11709ab07ad7fdab5bd1496c48477cec6bbe5d1debe25a50423b4"
     },
     {
       "path": "tools/test_callback_correctness.py",

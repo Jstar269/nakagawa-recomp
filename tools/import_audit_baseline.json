@@ -96,10 +96,10 @@
     "status": "unreviewed"
   },
   "0x0ddcd2c9": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_TryLockMutex",
     "name": "sceKernelTryLockMutex",
-    "status": "stub"
+    "status": "partial"
   },
   "0x0e20f177": {
     "classification": "dedicated",
@@ -834,10 +834,10 @@
     "status": "unreviewed"
   },
   "0x5bf4dd27": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_LockMutexCB",
     "name": "sceKernelLockMutexCB",
-    "status": "stub"
+    "status": "partial"
   },
   "0x5cf9d852": {
     "classification": "dedicated",
@@ -1020,10 +1020,10 @@
     "status": "stub"
   },
   "0x6b30100f": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_UnlockMutex",
     "name": "sceKernelUnlockMutex",
-    "status": "stub"
+    "status": "partial"
   },
   "0x6b4a146c": {
     "classification": "dedicated",
@@ -1266,10 +1266,10 @@
     "status": "unreviewed"
   },
   "0x87d9223c": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CancelMutex",
     "name": "sceKernelCancelMutex",
-    "status": "stub"
+    "status": "partial"
   },
   "0x884c9f90": {
     "classification": "dedicated",
@@ -1560,10 +1560,10 @@
     "status": "unreviewed"
   },
   "0xa9c2cb9a": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_ReferMutexStatus",
     "name": "sceKernelReferMutexStatus",
-    "status": "stub"
+    "status": "partial"
   },
   "0xaa73c935": {
     "classification": "dedicated",
@@ -1602,10 +1602,10 @@
     "status": "unreviewed"
   },
   "0xb011b11f": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_LockMutex",
     "name": "sceKernelLockMutex",
-    "status": "stub"
+    "status": "partial"
   },
   "0xb240a59e": {
     "classification": "dedicated",
@@ -1669,9 +1669,9 @@
   },
   "0xb7d098c6": {
     "classification": "dedicated",
-    "handler": "h_CreateSema",
+    "handler": "h_CreateMutex",
     "name": "sceKernelCreateMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb7e1d8e7": {
     "classification": "fake_success",
@@ -2178,10 +2178,10 @@
     "status": "unreviewed"
   },
   "0xf8170fbe": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_DeleteMutex",
     "name": "sceKernelDeleteMutex",
-    "status": "stub"
+    "status": "partial"
   },
   "0xf88155f6": {
     "classification": "dedicated",

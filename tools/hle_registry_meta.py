@@ -79,6 +79,19 @@ HANDLER_STATUS = {
     # invalid truncated tail are not established by the available evidence.
     "h_DmacMemcpy": "partial",
     "h_DmacTryMemcpy": "partial",
+    # Plain mutex family (src/rt/mutex.c).  The measured PSPAutotests contract
+    # (tests/threads/mutex/*.expected + tests/intr/waits.expected) is
+    # implemented; priority INHERITANCE, interrupt-context ILLEGAL_CONTEXT and
+    # PPSSPP's timeout quantization stay unmeasured/out of scope, so the family
+    # is partial, not complete.
+    "h_CreateMutex": "partial",
+    "h_DeleteMutex": "partial",
+    "h_LockMutex": "partial",
+    "h_LockMutexCB": "partial",
+    "h_TryLockMutex": "partial",
+    "h_UnlockMutex": "partial",
+    "h_CancelMutex": "partial",
+    "h_ReferMutexStatus": "partial",
 }
 
 # Alias-consistency rules: every static registration whose *registered name*

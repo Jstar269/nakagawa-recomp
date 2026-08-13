@@ -247,6 +247,86 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+MUTEX_C = "src/rt/mutex.c"
+MUTEX_H = "src/rt/mutex.h"
+MUTEX_SYMBOLS = (
+    "sr_mutex_create",
+    "sr_mutex_delete",
+    "sr_mutex_lock",
+    "sr_mutex_try_lock",
+    "sr_mutex_unlock",
+    "sr_mutex_cancel",
+    "sr_mutex_refer_status",
+    "sr_mutex_thread_end",
+)
+
+
+class MutexLinkDependencyTests(unittest.TestCase):
+    """hle.c's ThreadManForUser mutex handlers call sr_mutex_* from
+    src/rt/mutex.c, so every recipe that COMPILES hle.c must also supply
+    mutex.c or the link fails on ``undefined reference to sr_mutex_*``.  The
+    hle-thread selftest compiles mutex.c directly, so it would NOT catch a
+    regression that drops mutex.c from the production RT_SRCS object list;
+    ld does, and this guard makes that failure visible before a full build.
+    """
+
+    def setUp(self) -> None:
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.lines = _logical_lines(self.makefile)
+
+    def test_mutex_symbols_are_defined_in_mutex_c(self) -> None:
+        source = (ROOT / "src" / "rt" / "mutex.c").read_text(encoding="utf-8")
+        for symbol in MUTEX_SYMBOLS:
+            definition = re.compile(rf"^\w[\w \t*]*\b{symbol}\s*\(", re.MULTILINE)
+            self.assertRegex(source, definition, msg=symbol)
+
+    def test_mutex_c_is_in_the_production_runtime_sources(self) -> None:
+        definitions = [
+            text for _, text in self.lines if re.match(r"\s*RT_SRCS\s*:?=", text)
+        ]
+        self.assertEqual(len(definitions), 1, self.lines)
+        self.assertIn(MUTEX_C, definitions[0])
+
+    def test_every_recipe_compiling_hle_c_also_supplies_mutex_c(self) -> None:
+        # A recipe is a command line (contains $(CC)); the ``$(BUILD_DIR)/hle.o:``
+        # header-dependency rule and the RT_SRCS assignment are not recipes and
+        # are covered by the previous test instead.
+        offenders = []
+        for number, text in self.lines:
+            uses_hle = "$(CC)" in text and "src/rt/hle.c" in text
+            supplies_mutex = "src/rt/mutex.c" in text
+            if uses_hle and not supplies_mutex:
+                offenders.append(f"Makefile:{number}: {text.strip()}")
+        self.assertEqual(
+            offenders,
+            [],
+            "these Makefile recipes compile src/rt/hle.c without src/rt/mutex.c; "
+            "hle.c's mutex handlers call sr_mutex_*, so the link will fail on "
+            "undefined reference:\n" + "\n".join(offenders),
+        )
+
+    def test_the_guard_rejects_a_recipe_that_drops_mutex(self) -> None:
+        """Failing-before proof: the check must catch the dropped-mutex shape."""
+        continuation = chr(92)
+        regressed = _logical_lines(
+            "\n".join(
+                [
+                    "hle-thread-selftest-build:",
+                    "\t$(CC) -o out.exe harness.c src/rt/hle.c " + continuation,
+                    "\t\tsrc/rt/sr_coro.c $(LIBS)",
+                ]
+            )
+            + "\n"
+        )
+        offenders = [
+            number
+            for number, text in regressed
+            if "$(CC)" in text and "src/rt/hle.c" in text
+            and "src/rt/mutex.c" not in text
+        ]
+        self.assertEqual(offenders, [2])
+
+
 class Atrac3pBuildPortabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
