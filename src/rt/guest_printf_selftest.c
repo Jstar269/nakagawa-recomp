@@ -42,6 +42,7 @@ uint32_t sr_get_ge_status(void) { return 0u; }
 
 static CpuState cpu;
 static int failures;
+static int checks;
 static uint32_t last_ret;
 
 static uint32_t DST, FMT, TEXT, STACK, COUNTER;
@@ -67,6 +68,7 @@ static void run_words(const char *fmtstr, const uint32_t *w, int n) {
 
 static void expect_words(const char *label, const char *fmtstr,
                          const uint32_t *w, int n, const char *want) {
+    checks++;
     run_words(fmtstr, w, n);
     const char *got = (const char *)SR_HOST(DST);
     if (strcmp(got, want) != 0) {
@@ -95,6 +97,10 @@ static void expect_words(const char *label, const char *fmtstr,
 #define EXPECT0(label, fmtstr, want) \
     expect_words((label), (fmtstr), NULL, 0, (want))
 
+static double bits_to_double(uint64_t bits) {
+    double v; memcpy(&v, &bits, sizeof v); return v;
+}
+
 static uint32_t dbl_lo(double v) {
     uint64_t b; memcpy(&b, &v, sizeof b); return (uint32_t)b;
 }
@@ -103,6 +109,7 @@ static uint32_t dbl_hi(double v) {
 }
 
 static void check_u32(const char *label, uint32_t got, uint32_t want) {
+    checks++;
     if (got != want) {
         failures++;
         fprintf(stderr, "FAIL %-30s got=0x%08x want=0x%08x\n", label, got, want);
@@ -235,8 +242,21 @@ int main(void) {
     EXPECT("out-of-range string", "%s", "(null)", 0x0c000000u);
 
     /* ---- %p --------------------------------------------------------------- */
+    /* Measured PSP newlib: "0x" is unconditional and the digits follow %x
+     * rules, so a zero pointer is "0x0" rather than a fixed-width form, and
+     * width/precision/zero-fill all apply. */
     EXPECT("pointer", "%p", "0xdeadbeef", 0xdeadbeefu);
-    EXPECT("null pointer", "%p", "0x00000000", 0u);
+    EXPECT("null pointer", "%p", "0x0", 0u);
+    EXPECT("small pointer", "%p", "0x1f", 0x1fu);
+    EXPECT("pointer width", "%20p", "          0xdeadbeef", 0xdeadbeefu);
+    EXPECT("pointer left", "%-20p|", "0xdeadbeef          |", 0xdeadbeefu);
+    EXPECT("pointer zero fill", "%020p", "0x0000000000deadbeef", 0xdeadbeefu);
+    EXPECT("pointer precision", "%.20p", "0x000000000000deadbeef", 0xdeadbeefu);
+    EXPECT("pointer width and precision", "%020.10p", "        0x00deadbeef",
+           0xdeadbeefu);
+    EXPECT("pointer precision zero", "%.0p", "0x", 0u);
+    EXPECT("pointer sign flags ignored", "%+p", "0xdeadbeef", 0xdeadbeefu);
+    EXPECT("pointer alt no double prefix", "%#p", "0xdeadbeef", 0xdeadbeefu);
 
     /* ---- guest strings at the arena span boundary -------------------------- */
     /* A string whose terminator is the last addressable guest byte. */
@@ -254,6 +274,91 @@ int main(void) {
                 "unterminated at arena end");
     }
     MEM_W8(GUEST_LAST, 0u);
+
+    /* ---- %n at the arena edge: all-or-nothing, never out of the arena ------ */
+    {
+        static const struct { const char *fmt; uint32_t width; } nwidths[] = {
+            { "1234%hhn", 1u }, { "1234%hn", 2u },
+            { "1234%n",   4u }, { "1234%lln", 8u },
+        };
+        for (unsigned k = 0; k < sizeof(nwidths) / sizeof(nwidths[0]); k++) {
+            uint32_t w = nwidths[k].width;
+
+            /* Exactly fits: the last byte written is the last arena byte. */
+            uint32_t fit = GUEST_LAST + 1u - w;
+            for (uint32_t i = 0; i < w; i++) MEM_W8(fit + i, 0xa5u);
+            run_words(nwidths[k].fmt, &fit, 1);
+            if (MEM_R8(fit) != 4u) {
+                failures++;
+                fprintf(stderr, "FAIL %-30s width=%u exact fit did not write\n",
+                        "n at arena edge", w);
+            }
+
+            /* One byte past: the span preflight must reject, leaving every
+             * still-addressable byte of the destination untouched. */
+            uint32_t over = GUEST_LAST + 2u - w;
+            for (uint32_t i = 0; i + over <= GUEST_LAST; i++) {
+                MEM_W8(over + i, 0xa5u);
+            }
+            run_words(nwidths[k].fmt, &over, 1);
+            for (uint32_t i = 0; i + over <= GUEST_LAST; i++) {
+                if (MEM_R8(over + i) != 0xa5u) {
+                    failures++;
+                    fprintf(stderr,
+                            "FAIL %-30s width=%u partial store at offset %u\n",
+                            "n past arena edge", w, i);
+                    break;
+                }
+            }
+        }
+    }
+
+    /* ---- destination running off the end of the arena ---------------------- */
+    /* sprintf has no destination bound, so the guest can aim it at the last
+     * byte.  Every store goes through the checked accessor; the run must stay
+     * inside the host allocation and still report the full PSP length. */
+    {
+        memset(SR_HOST(STACK), 0, 0x80u);
+        put_string(FMT, "%s");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = GUEST_LAST - 1u;   /* two writable bytes remain */
+        cpu.r[5] = FMT;
+        cpu.r[29] = STACK;
+        cpu.r[31] = 0x12345678u;
+        cpu.r[6] = TEXT;              /* "host0" is five bytes plus NUL */
+        g_oor_events = 0;
+        sr_guest_sprintf(&cpu);
+        if (cpu.r[2] != 5u) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s return=%u expected 5\n",
+                    "dst at arena end", cpu.r[2]);
+        }
+        if (g_oor_events == 0) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s expected bounds rejections\n",
+                    "dst at arena end");
+        }
+    }
+
+    /* ---- format string whose terminator is the last arena byte ------------- */
+    {
+        uint32_t fmt_end = GUEST_LAST - 2u;   /* "ab" then the NUL at the end */
+        MEM_W8(fmt_end, (uint8_t)'a');
+        MEM_W8(fmt_end + 1u, (uint8_t)'b');
+        MEM_W8(GUEST_LAST, 0u);
+        memset(SR_HOST(DST), 0, 0x80u);
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = DST;
+        cpu.r[5] = fmt_end;
+        cpu.r[29] = STACK;
+        cpu.r[31] = 0x12345678u;
+        sr_guest_sprintf(&cpu);
+        if (strcmp((const char *)SR_HOST(DST), "ab") != 0) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\"\n", "format ends at arena end",
+                    (const char *)SR_HOST(DST));
+        }
+    }
 
     /* ---- %n --------------------------------------------------------------- */
     MEM_W32(COUNTER, 0xa5a55a5au);
@@ -281,37 +386,134 @@ int main(void) {
     MEM_W32(COUNTER, 0u);
     EXPECT("lln consumes one word", "%lln%d", "77", COUNTER, 77u);
 
-    /* C99 forbids flags/width/precision on %n.  It is the only conversion that
-     * writes guest memory, so an out-of-grammar %n is fail-closed. */
+    /* Measured PSP newlib ignores flags, width and precision on %n and still
+     * performs the write.  Refusing here would buy no safety, since a guest can
+     * always spell a bare %n; the real guarantee is the span preflight below. */
     MEM_W32(COUNTER, 0xa5a55a5au);
-    EXPECT("flagged count rejected", "1234%0n", "1234%n", COUNTER);
-    check_u32("flagged count untouched", MEM_R32(COUNTER), 0xa5a55a5au);
+    EXPECT("flagged count still writes", "1234%0n", "1234", COUNTER);
+    check_u32("flagged count value", MEM_R32(COUNTER), 4u);
 
     MEM_W32(COUNTER, 0xa5a55a5au);
-    EXPECT("width count rejected", "1234%5n", "1234%n", COUNTER);
-    check_u32("width count untouched", MEM_R32(COUNTER), 0xa5a55a5au);
+    EXPECT("width count still writes", "1234%5n", "1234", COUNTER);
+    check_u32("width count value", MEM_R32(COUNTER), 4u);
+
+    MEM_W32(COUNTER, 0xa5a55a5au);
+    EXPECT("precision count still writes", "1234%.3n", "1234", COUNTER);
+    check_u32("precision count value", MEM_R32(COUNTER), 4u);
 
     EXPECT0("null count pointer", "%n", "");
     EXPECT("out-of-range count pointer", "%n", "", 0x0c000000u);
 
-    /* ---- malformed and unsupported grammar --------------------------------- */
-    /* Repeated length modifiers are not a valid modifier; the guest must never be
-     * able to name a host variadic type. */
-    EXPECT("repeated h", "%hhhhd", "%d", 7u);
-    EXPECT("repeated l", "%lllld", "%d", 7u);
-    EXPECT("mixed l and L", "%lLf", "%f", dbl_lo(12.5), dbl_hi(12.5));
-    EXPECT("h on float", "%hf", "%f", dbl_lo(12.5), dbl_hi(12.5));
-    EXPECT("z on float", "%zf", "%f", dbl_lo(12.5), dbl_hi(12.5));
-    EXPECT("L on integer", "%Ld", "%d", 7u);
-    EXPECT("l on string", "%ls", "%s", TEXT);
-    EXPECT("l on char", "%lc", "%c", 65u);
-    EXPECT("l on pointer", "%lp", "%p", 0xdeadbeefu);
-    EXPECT("unsupported conversion", "%q", "%q", 0x11223344u);
+    /* ---- inapplicable and repeated length modifiers ------------------------ */
+    /* Measured PSP newlib ignores a modifier that does not apply rather than
+     * refusing the spec.  Accepting it here is equally safe, because no guest
+     * byte reaches a host format either way. */
+    EXPECT("mixed l and L on float", "%lLf", "12.500000",
+           dbl_lo(12.5), dbl_hi(12.5));
+    EXPECT("h on float", "%hf", "12.500000", dbl_lo(12.5), dbl_hi(12.5));
+    EXPECT("z on float", "%zf", "12.500000", dbl_lo(12.5), dbl_hi(12.5));
+    EXPECT("ll on float", "%llf", "12.500000", dbl_lo(12.5), dbl_hi(12.5));
+    EXPECT("L on integer", "%Ld", "7", 7u);
+    EXPECT("l on string", "%ls", "host0", TEXT);
+    EXPECT("l on char", "%lc", "A", 65u);
+    EXPECT("l on pointer", "%lp", "0xdeadbeef", 0xdeadbeefu);
+    /* q is a 64-bit modifier, like ll. */
+    EXPECT("q modifier is 64-bit", "%qd", "-4294967295", 0x00000001u, 0xffffffffu);
 
-    /* A rejected spec still consumes exactly its own argument. */
-    EXPECT("cursor synced after reject", "%hhhhd|%d", "%d|8", 7u, 8u);
-    EXPECT("cursor synced after float reject", "%hf|%d", "%f|9",
+    /* Repeated h toggles short/char, and short wins when both are set; two or
+     * more l mean 64-bit and further l are idempotent. */
+    EXPECT("h narrows to 16 bits", "%hd", "-1", 0x0000ffffu);
+    EXPECT("hh narrows to 8 bits", "%hhd", "-1", 0x000000ffu);
+    EXPECT("hhh is short again", "%hhhd", "255", 0x000000ffu);
+    EXPECT("hhhh is char again", "%hhhhd", "-1", 0x000000ffu);
+    EXPECT("hhhhh is short again", "%hhhhhd", "255", 0x000000ffu);
+    EXPECT("lll is still 64-bit", "%llld", "-4294967295",
+           0x00000001u, 0xffffffffu);
+    EXPECT("llll is still 64-bit", "%lllld", "-4294967295",
+           0x00000001u, 0xffffffffu);
+
+    /* ---- unknown conversions consume no argument --------------------------- */
+    /* Measured PSP newlib emits the conversion character alone and leaves the
+     * argument cursor untouched, so the next conversion still receives the
+     * first argument.  Consuming here would shift every later conversion. */
+    EXPECT("unknown conversion", "%y|%d", "y|286331153",
+           0x11111111u, 0x22222222u);
+    EXPECT("unknown conversion w", "%w|%d", "w|286331153",
+           0x11111111u, 0x22222222u);
+    EXPECT("percent then literal", "%|%d", "|286331153",
+           0x11111111u, 0x22222222u);
+    EXPECT("uppercase P is unknown", "%P|%d", "P|286331153",
+           0x11111111u, 0x22222222u);
+
+    /* An applicable spec still consumes exactly its own argument. */
+    EXPECT("cursor after ignored modifier", "%hhhhd|%d", "-1|8", 0xffu, 8u);
+    EXPECT("cursor after float modifier", "%hf|%d", "12.500000|9",
            dbl_lo(12.5), dbl_hi(12.5), 9u);
+
+    /* ---- host-independent non-finite and hex-float spelling ---------------- */
+    /* These are produced by the bridge rather than the host libc.  Windows UCRT
+     * renders a negative quiet NaN as "nan(ind)" and pads %a to full precision,
+     * where PSP newlib and glibc use "-nan" and the shortest mantissa, so
+     * inheriting the host form would make output depend on the build machine. */
+    {
+        double inf = bits_to_double(0x7ff0000000000000ULL);
+        double nan = bits_to_double(0x7ff8000000000000ULL);
+        double neg_nan = bits_to_double(0xfff8000000000000ULL);
+        double neg_inf = bits_to_double(0xfff0000000000000ULL);
+
+        EXPECT("inf lowercase", "%f", "inf", dbl_lo(inf), dbl_hi(inf));
+        EXPECT("inf uppercase", "%F", "INF", dbl_lo(inf), dbl_hi(inf));
+        EXPECT("inf via E", "%E", "INF", dbl_lo(inf), dbl_hi(inf));
+        EXPECT("inf via g", "%g", "inf", dbl_lo(inf), dbl_hi(inf));
+        EXPECT("negative inf", "%f", "-inf", dbl_lo(neg_inf), dbl_hi(neg_inf));
+        EXPECT("inf plus flag", "%+f", "+inf", dbl_lo(inf), dbl_hi(inf));
+        /* Non-finite fields are never zero-padded. */
+        EXPECT("inf never zero padded", "%010f", "       inf",
+               dbl_lo(inf), dbl_hi(inf));
+        EXPECT("inf left justify", "%-10f|", "inf       |",
+               dbl_lo(inf), dbl_hi(inf));
+        EXPECT("nan lowercase", "%f", "nan", dbl_lo(nan), dbl_hi(nan));
+        EXPECT("nan uppercase", "%F", "NAN", dbl_lo(nan), dbl_hi(nan));
+        EXPECT("negative nan", "%f", "-nan", dbl_lo(neg_nan), dbl_hi(neg_nan));
+        EXPECT("nan never zero padded", "%010f", "       nan",
+               dbl_lo(nan), dbl_hi(nan));
+        EXPECT("nan via a", "%a", "inf", dbl_lo(inf), dbl_hi(inf));
+
+        EXPECT("hex float", "%a", "0x1.8p+0", dbl_lo(1.5), dbl_hi(1.5));
+        EXPECT("hex float upper", "%A", "0X1.8P+0", dbl_lo(1.5), dbl_hi(1.5));
+        EXPECT("hex float precision", "%.3a", "0x1.800p+0",
+               dbl_lo(1.5), dbl_hi(1.5));
+        EXPECT("hex float zero", "%a", "0x0p+0", dbl_lo(0.0), dbl_hi(0.0));
+        EXPECT("hex float long mantissa", "%a", "0x1.34a456d5cfaadp+10",
+               dbl_lo(1234.5678), dbl_hi(1234.5678));
+        /* Precision 0 rounds the fraction away entirely. */
+        EXPECT("hex float precision zero", "%.0a", "0x1p+10",
+               dbl_lo(1234.5678), dbl_hi(1234.5678));
+        /* Denormals normalise to a leading 1 with an adjusted exponent. */
+        EXPECT("hex float denormal", "%a", "0x1p-1074",
+               dbl_lo(bits_to_double(1ULL)), dbl_hi(bits_to_double(1ULL)));
+        EXPECT("hex float negative", "%a", "-0x1.8p+0",
+               dbl_lo(-1.5), dbl_hi(-1.5));
+    }
+
+    /* ---- the '0' flag zero-pads %c and %s ---------------------------------- */
+    EXPECT("char zero pad", "%05c", "0000A", 65u);
+    EXPECT("char left beats zero", "%-05c|", "A    |", 65u);
+    EXPECT("string zero pad", "%08s", "000host0", TEXT);
+    EXPECT("string left beats zero", "%-08s|", "host0   |", TEXT);
+    EXPECT("string zero pad with precision", "%08.3s", "00000hos", TEXT);
+    EXPECT("null string zero pad", "%08s", "00(null)", 0u);
+
+    /* ---- %ls is byte-wise on PSP, identical to %s -------------------------- */
+    {
+        /* wchar_t cells 0x00004142, 0x00004344, 0 -> bytes "BA\0" first. */
+        static const unsigned char wide[] = {
+            0x42, 0x41, 0, 0, 0x44, 0x43, 0, 0, 0, 0, 0, 0
+        };
+        uint32_t waddr = SR_RAM_BASE + 0x0a00u;
+        memcpy(SR_HOST(waddr), wide, sizeof wide);
+        EXPECT("wide string is byte-wise", "%ls|%d", "BA|9", waddr, 9u);
+    }
 
     /* A truncated spec at the end of the format emits nothing further. */
     EXPECT0("trailing percent", "abc%", "abc");
@@ -370,7 +572,7 @@ int main(void) {
         return 1;
     }
 
-    puts("guest printf selftest: OK");
+    printf("guest printf selftest: OK (%d checks)\n", checks);
     free(arena);
     return 0;
 }
