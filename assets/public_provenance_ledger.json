@@ -4691,7 +4691,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "18a19a157711ae8fa0071a4baab0bc41290c78013e611e225434168abee43f48"
+      "sha256": "73003cca6621343ea4dad4d75b79b0d98eea0cf0dfebec68a4bbecf5aa2549da"
     },
     {
       "path": "src/rt/strbuf_selftest.c",
@@ -4701,7 +4701,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "6b1c687a494e713e76f588d1421dccbd449436b356bb278f28ddc9cd3ec2d84d"
+      "sha256": "32000ab2fae0fe97a2592333704f78ee8556b07dc64dc0bcda80940f6d04bb51"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -5037,7 +5037,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "80421317e9684d2bbf847afb56430b74a49f554028be8ae207e631c3e1c25879"
+      "sha256": "8ca22951ac8c5b3b8f29a83eb760d8d1ccac6326ddc8304eac6cc6ec24c7e01a"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -6037,7 +6037,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "85df443b1c005d0eb19fbe69d9c87e3041b6808a85882d8c99228d6837ae6f87"
+      "sha256": "67f696cd14285b776af4361db2e387fb73d7cd2a870d0ebd1cb813e7ea592a24"
     },
     {
       "path": "tools/test_callback_correctness.py",

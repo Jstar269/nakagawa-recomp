@@ -23,6 +23,17 @@
 //   - A token that does not fit is truncated to the available space; the
 //     buffer remains a valid NUL-terminated string and the cursor stops at
 //     the NUL (the last usable byte, cap - 1).
+//
+// The implementation is additionally robust to hostile inputs and never
+// depends on every caller forever passing honest state:
+//   - `n > cap` (including `SIZE_MAX`, corrupted or adversarial cursors) is
+//     treated as the full state: no write, no pointer formed, returns `cap`.
+//   - `buf == NULL` or `cap == 0` is a documented no-op: no dereference, no
+//     write, returns the incoming cursor unchanged.
+//   - `buf + n` is only ever formed when `n < cap`, so no pointer arithmetic
+//     leaves [buf, buf + cap] and `cap - n - 1` can never underflow.
+// Callers that finalize with `buf[n] = '\0'` / `buf[n] = '\n'` must pass a
+// real buffer with `cap >= 1`; the helper itself is a pure no-op otherwise.
 
 #ifndef SR_STRBUF_H
 #define SR_STRBUF_H

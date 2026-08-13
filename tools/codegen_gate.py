@@ -127,7 +127,8 @@ def main(argv):
     rt = os.path.join(ROOT, "src", "rt")
     # The headless microtest link set is: generated chunks + recomp core + the
     # VFPU table loader (vfpu_tables.c, which owns the table globals recomp.c
-    # references) + driver + tools/gate_stub.c.  sched.c / sr_coro.c are
+    # references) + strbuf.c (recomp.c's checked-append helper) + driver +
+    # tools/gate_stub.c.  sched.c / sr_coro.c are
     # intentionally omitted because the microtest never enters the scheduler
     # (no --sched / --gui flags), and those TUs would require SDL3 headers on a
     # headless Linux runner.  gate_stub.c provides the minimal dead-symbol
@@ -137,7 +138,8 @@ def main(argv):
     if run([cc, "-O0", "-w", "-fno-var-tracking", "-D_CRT_SECURE_NO_WARNINGS",
             "-DSR_INSTRUCTION_TRACE", "-DSR_GATE_BUILD", "-I", rt, *cflags,
             "-o", drv, gen, *chunk_srcs, os.path.join(rt, "recomp.c"),
-            os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
+            os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "strbuf.c"),
+            os.path.join(rt, "driver.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
         return 1
 
