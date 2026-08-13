@@ -54,6 +54,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(chunk),
                 str(RT / "recomp.c"),
                 str(RT / "vfpu_tables.c"),
+                str(RT / "strbuf.c"),
                 str(RT / "driver.c"),
                 str(GATE_STUB),
                 "-lm",

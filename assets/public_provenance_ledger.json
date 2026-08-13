@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "558408fbf818782b87c1a510bd4272c4d8e6d17de4c8508866378eb82c2b67ed"
+      "sha256": "5d6a8464b255927ebd8294a324801e31a3822b8f03f4bf64318b6f3978dca43a"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "d2f3f61f4e2491572891b678f5525d8fdbfa5286fcc5ea636ed871262682cd2d"
+      "sha256": "ad75466c21108d93175b87afa44ae55540e8b6a7e812ec98c273d1400c1da052"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05b3175480f2115cb904ed33c7fd7c63b40ee69b09b3012a87869581785932f8"
+      "sha256": "6a021676084126265c0ad0b361373287493edcf66b9410a19662fa77439ebe3c"
     },
     {
       "path": "assets/release_manifest.json",
@@ -2484,7 +2484,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "e00a0e576308d01e7a4ac31efbdd0d5ad7b7c3701009fe74268f2a7fa4543dd2"
+      "sha256": "4e02cb57742e37e0b3d8a98f354348cbfb43faf9385e8d4ed0c8a09f349042cc"
     },
     {
       "path": "src/ref/interp.h",
@@ -3729,7 +3729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dfbdaf580ce3779ffa50622617aa66ce2f1b17046d05c01a5d604867a4867cdb"
+      "sha256": "78b3eec4718282c334c2f1829223ae435e1f23af871b0049d63c9e31ba4d0c0d"
     },
     {
       "path": "src/rt/atrac3p_selftest.c",
@@ -3748,7 +3748,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "6a2cc9c47d134dc04205f30877b5f07fc2ed18bfe9165ac85dc8ee92708bdae7"
+      "sha256": "db3bc550acadd5528e1e8d4e897cddde90c68bc4cef7cf4de447e5596842d215"
     },
     {
       "path": "src/rt/atrac3p_title_accept.c",
@@ -3954,7 +3954,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "aa7db0ef364598b21bca06ff59369455ed27a8dd820951ab7b0e0ab43a691049"
+      "sha256": "dfd6eacf8f7b8b7bda69cc2d2086563841abd09051e1583752cfdc2a38e542e4"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4534,7 +4534,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "1cd5ec292ef92f1659b76199b0c0d4420eae920e1476df5b9f3366e076f72494"
+      "sha256": "b467849073b2a9afe43bc3f9681f1e1e4e06663caf20853e99635852d940ab71"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4672,6 +4672,36 @@
         "upstream_attribution": null
       },
       "sha256": "c268d0b3087e57138dec2a4ee227b5c2c69bc92fdd975d241a3aca143314de48"
+    },
+    {
+      "path": "src/rt/strbuf.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "89ea7bc31dda29ad8301342b5e5a7321e8200b8e5f2db82404c0c29281b9e58a"
+    },
+    {
+      "path": "src/rt/strbuf.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "73003cca6621343ea4dad4d75b79b0d98eea0cf0dfebec68a4bbecf5aa2549da"
+    },
+    {
+      "path": "src/rt/strbuf_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "32000ab2fae0fe97a2592333704f78ee8556b07dc64dc0bcda80940f6d04bb51"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -5007,7 +5037,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "80421317e9684d2bbf847afb56430b74a49f554028be8ae207e631c3e1c25879"
+      "sha256": "8ca22951ac8c5b3b8f29a83eb760d8d1ccac6326ddc8304eac6cc6ec24c7e01a"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -6007,7 +6037,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "387da9687e91993b39fbaccdb22cc0535c2fc905e9685a0441e4005c77d51bce"
+      "sha256": "67f696cd14285b776af4361db2e387fb73d7cd2a870d0ebd1cb813e7ea592a24"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -6655,7 +6685,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967f94737f6fa4b179de4ef67fb7ab47470fa8b0027179828a8767fee9da5c6d"
+      "sha256": "4d87496f3ba41071110045198eaada3eca072aaf0dba2b21d86dc0bd8ee81b24"
     },
     {
       "path": "tools/test_nid_name_proof.py",

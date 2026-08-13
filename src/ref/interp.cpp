@@ -7,6 +7,7 @@
 
 #include "interp.h"
 #include "../rt/fp_convert.h"
+#include "../rt/strbuf.h"
 
 #include <cmath>
 #include <cstring>
@@ -45,25 +46,33 @@ void TraceSink::BeginStep(const CpuState *s, uint32_t pc, uint32_t op) {
 
 void TraceSink::EndStep(const CpuState *s, uint32_t mem_addr, int mem_size, const Memory *mem) {
 	char line[4096];
-	int n = std::snprintf(line, sizeof(line), "%llu pc=0x%08x op=0x%08x", step_, pc_, op_);
+	/* Checked appends: snprintf() returns the "would have been" length, so a
+	 * truncated token must not be allowed to advance the cursor past the
+	 * buffer (sr_buf_append clamps to the last NUL slot).  The line stays
+	 * byte-comparable with the recompiled-code trace whenever nothing
+	 * truncates. */
+	size_t n = 0;
+	n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08x op=0x%08x", step_, pc_, op_);
 	for (int i = 1; i < 32; i++)
 		if (s->r[i] != r_[i])
-			n += std::snprintf(line + n, sizeof(line) - n, " r%d=0x%08x", i, s->r[i]);
+			n = sr_buf_append(line, sizeof(line), n, " r%d=0x%08x", i, s->r[i]);
 	if (s->hi != hi_)
-		n += std::snprintf(line + n, sizeof(line) - n, " hi=0x%08x", s->hi);
+		n = sr_buf_append(line, sizeof(line), n, " hi=0x%08x", s->hi);
 	if (s->lo != lo_)
-		n += std::snprintf(line + n, sizeof(line) - n, " lo=0x%08x", s->lo);
+		n = sr_buf_append(line, sizeof(line), n, " lo=0x%08x", s->lo);
 	for (int i = 0; i < 32; i++)
 		if (s->fi[i] != fi_[i])
-			n += std::snprintf(line + n, sizeof(line) - n, " f%d=0x%08x", i, s->fi[i]);
+			n = sr_buf_append(line, sizeof(line), n, " f%d=0x%08x", i, s->fi[i]);
 	if (s->fcr31 != fcr31_)
-		n += std::snprintf(line + n, sizeof(line) - n, " fcr31=0x%08x", s->fcr31);
+		n = sr_buf_append(line, sizeof(line), n, " fcr31=0x%08x", s->fcr31);
 	if (mem_size == 1)
-		n += std::snprintf(line + n, sizeof(line) - n, " m8[0x%08x]=0x%02x", mem_addr, mem->Read8(mem_addr));
+		n = sr_buf_append(line, sizeof(line), n, " m8[0x%08x]=0x%02x", mem_addr, mem->Read8(mem_addr));
 	else if (mem_size == 2)
-		n += std::snprintf(line + n, sizeof(line) - n, " m16[0x%08x]=0x%04x", mem_addr, mem->Read16(mem_addr));
+		n = sr_buf_append(line, sizeof(line), n, " m16[0x%08x]=0x%04x", mem_addr, mem->Read16(mem_addr));
 	else if (mem_size == 4)
-		n += std::snprintf(line + n, sizeof(line) - n, " m32[0x%08x]=0x%08x", mem_addr, mem->Read32(mem_addr));
+		n = sr_buf_append(line, sizeof(line), n, " m32[0x%08x]=0x%08x", mem_addr, mem->Read32(mem_addr));
+	/* sr_buf_append guarantees n < sizeof(line), so the newline slot and the
+	 * fwrite byte count are always in range. */
 	line[n] = '\n';
 	std::fwrite(line, 1, n + 1, out_);
 	step_++;
