@@ -32,7 +32,6 @@ source tree.
   external-input gates.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
   source-owned probes are not hardware acceptance without measured provenance.
-- [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits.
 - [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
 
 ## Provenance and publication
