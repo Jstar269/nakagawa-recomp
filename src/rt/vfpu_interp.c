@@ -524,10 +524,12 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         uint8_t sc[1], src[4], dst[4], scv[4];
         float row[4], t[4], d[4];
         vreg_idx(vt, 1, sc);
+        /* Read-before-write for the scalar and the final source row (overlap
+         * audit): snapshot the scalar once and read the final source row BEFORE
+         * any destination lane is written, exactly as codegen.py now emits. A
+         * fresh post-write scalar read would consume a destination-clobbered
+         * value when the scalar lane lies inside vd. */
         float scalar = s->v[sc[0]];
-        for (int i = 0; i < side - 1; i++)
-            for (int j = 0; j < side; j++)
-                s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
         for (int j = 0; j < side; j++) {
             src[j] = (uint8_t)mreg_idx(vs, side, j, side - 1);
             dst[j] = (uint8_t)mreg_idx(vd, side, j, side - 1);
@@ -535,6 +537,9 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         sr_vread(row, s, src, side, s->vfpuCtrl[0]);
         sr_vread(t, s, scv, side, s->vfpuCtrl[1]);
+        for (int i = 0; i < side - 1; i++)
+            for (int j = 0; j < side; j++)
+                s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
         for (int j = 0; j < side; j++) d[j] = row[j] * t[j];
         sr_vwrite(s, dst, d, side, s->vfpuCtrl[2]);
         eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -561,15 +566,13 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             if (which != 3 && which != 6 && which != 7) {
                 if (which > 7) return SR_VFPU_OTHER;
                 /* which 1/2/4/5: vmscl alias decoded by the static emitter (codegen.py
-                 * VFPUMatrix1 "which <= 7" path); scalar register number = which. */
+                 * VFPUMatrix1 "which <= 7" path); scalar register number = which. Same
+                 * read-before-write scalar/last-row shape as sub 4 (overlap audit). */
                 int side = n;
                 uint8_t sc[1], src[4], dst[4], scv[4];
                 float row[4], t[4], d[4];
                 vreg_idx(which & 7, 1, sc);
                 float scalar = s->v[sc[0]];
-                for (int i = 0; i < side - 1; i++)
-                    for (int j = 0; j < side; j++)
-                        s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
                 for (int j = 0; j < side; j++) {
                     src[j] = (uint8_t)mreg_idx(vs, side, j, side - 1);
                     dst[j] = (uint8_t)mreg_idx(vd, side, j, side - 1);
@@ -577,6 +580,9 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 }
                 sr_vread(row, s, src, side, s->vfpuCtrl[0]);
                 sr_vread(t, s, scv, side, s->vfpuCtrl[1]);
+                for (int i = 0; i < side - 1; i++)
+                    for (int j = 0; j < side; j++)
+                        s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
                 for (int j = 0; j < side; j++) d[j] = row[j] * t[j];
                 sr_vwrite(s, dst, d, side, s->vfpuCtrl[2]);
                 eat_prefix(s); return SR_VFPU_COMPUTE;

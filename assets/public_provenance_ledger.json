@@ -4743,7 +4743,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "dd4f4772b2207c655120d7c76ecf00be31f79c1f98d63d413e095f852575a4e5"
+      "sha256": "d6bb8d496368eab56e878c53b5045a9a7f699e5da4f6fe5a7aa66e6e2c99e501"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -5017,7 +5017,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "01894012d6c5391ab15e89b068776829d67d901f07cacc3f985e3f3fb65bf506"
+      "sha256": "8e511d1be316d1986efe644c7f0ee3b3ea6c28db041de16884ce861a298100b6"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6187,7 +6187,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "74e11c2b88e42aff97fbc8de4a5a56629755369def1413da03684d593e5fe6e9"
+      "sha256": "9b0c77c893bb5e2b9c8e5d2ca88adfdfd36f9efac77b317baf7597aca0320cf6"
     },
     {
       "path": "tools/test_compat_manifest.py",
