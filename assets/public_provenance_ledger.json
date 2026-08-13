@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a4200753f84d2f89547c11085345ae44165bdc698374716e3de674fc62be4cd"
+      "sha256": "a8670c9a4706ce9eccbbedd9799660e3f3399ffe136406625593603b9e1d8d02"
     },
     {
       "path": "LICENSE",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a8cc2ceab439d28146fff415ba62c967d41372f8c297aa4ddb6f005dc5445390"
+      "sha256": "85dcb2a4b0fc4a92aa73841b21850ac811b316c5c1e5c690ef7e4a1b52ad384d"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1103,6 +1103,33 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "111ea76d0354f8b730bf054afa9f0667642d71a2c981df953b50df2caae8d8bd"
+    },
+    {
+      "path": "fixtures/vfpu_overlap_probe/Makefile",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "e0f57d67e2edb2a459e3fda8891b834c40a52eda3c3376fabab10efe3a434e74"
+    },
+    {
+      "path": "fixtures/vfpu_overlap_probe/vfpu_overlap_cases.h",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "2121283038249e73352302f44d4ecee9be083002958d3e9948c95ab91f58d061"
+    },
+    {
+      "path": "fixtures/vfpu_overlap_probe/vfpu_overlap_probe.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "fd1cd756a81f39d7a3e56d6f2ca452471dfcbc8f38be8112b565c2d0e618e913"
     },
     {
       "path": "font/README.md",
@@ -7158,6 +7185,15 @@
         "upstream_attribution": null
       },
       "sha256": "91e43c16ab5148c10368ea19b504d486c7176e0101cd07e1ba3a6cf8229fe221"
+    },
+    {
+      "path": "tools/test_vfpu_overlap_probe.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "65c6ae746ff704659f8f489233bac43613532694c8b4f428d4c7737b4fde2d91"
     },
     {
       "path": "tools/test_vfpu_provenance.py",
