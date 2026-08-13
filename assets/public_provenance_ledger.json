@@ -4234,7 +4234,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "63822753225d05f7a33423f7ce03945e10aa4d7dd410179a592458361dd309cf"
+      "sha256": "76388b13fd0fcf83af1c024af6dcb0d7e615a7709200ea29e038e3411045f4c1"
     },
     {
       "path": "src/rt/guest_printf_selftest.c",
@@ -4246,7 +4246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0f74ea588ba0b2dd87d813a16d6a25a849b529bf79411c4542b573bd6cdc25c"
+      "sha256": "48b41ded93b4f193f52ba3cfa21fd3c4a8d53a83780d3f41913b5f998ed42544"
     },
     {
       "path": "src/rt/guestmem_selftest.c",
@@ -6343,7 +6343,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1aebe0e6a2f6d330a71a72c09d2c30da2e595647df4301d1d7a15a662e051703"
+      "sha256": "896a0211627558b827de16c931ba9f8bb76f2550c488ffef197583687a512c74"
     },
     {
       "path": "tools/test_guest_span_routing.py",
