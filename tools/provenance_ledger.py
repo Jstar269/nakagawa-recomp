@@ -29,6 +29,12 @@ Classification is fail-closed:
   generator refuses to write release evidence while any included path is
   unresolved.
 
+``--check`` validates the checked-in ledger structurally (coverage, resolution,
+content hashes) and cannot authenticate attestation claims by itself: without
+the detailed development ledger it states that attestations are unverified.
+Only the release flow asserts attestation -- either by regenerating the ledger
+from the detailed ledger or by supplying an externally trusted copy.
+
 The detailed development ledger may stay outside the public tree and is never
 synthesized when absent.
 """
@@ -357,6 +363,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"provenance ledger: {error}", file=sys.stderr)
         return 1
     print(f"provenance ledger: {'checked' if args.check else 'generated'} {len(document['entries'])} explicit entries")
+    if args.check and not args.implementation_ledger.is_file():
+        print(
+            "provenance ledger: note: detailed development ledger is absent; the checked-in ledger is "
+            "validated structurally (coverage, resolution, hashes) but attestation claims are not "
+            "authenticated here -- attestation is asserted by the release flow against the detailed "
+            "development ledger or an externally trusted copy",
+            file=sys.stderr,
+        )
     return 0
 
 

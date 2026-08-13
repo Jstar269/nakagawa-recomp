@@ -1139,22 +1139,63 @@ def _provenance_ledger_findings(
     content_source: str,
     repo_root: Path,
     trusted_ledger_path: Path | None,
+    self_consistency: bool = False,
 ) -> list[Finding]:
-    """Require explicit, externally trusted provenance for every included path."""
-    trusted_path = trusted_ledger_path or (default_policy_path().parent / "public_provenance_ledger.json")
+    """Require explicit, externally trusted provenance for every included path.
+
+    The candidate's own checked-in ledger is evidence, never an authorization
+    source.  With ``--provenance-ledger`` the audited ledger is compared against
+    an externally trusted copy; any divergence fails, so a candidate cannot
+    self-authorize by naming a plausible detailed-ledger record that is not in
+    the trusted release evidence.
+
+    Without an externally trusted ledger the audit cannot verify attestation
+    claims (the candidate's own ledger would be a self-referential trust
+    anchor), so it reports ``PROVENANCE_UNVERIFIED`` and fails rather than
+    passing on the candidate's own bytes.  The explicit ``self_consistency``
+    scope keeps the developer tripwire useful: coverage, resolution, and
+    content hashes are still enforced against the audited ledger itself, but
+    the audit makes no attestation claim and says so.
+    """
     findings: list[Finding] = []
-    try:
-        trusted_raw = trusted_path.read_bytes()
-        trusted_document = json.loads(trusted_raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        return [Finding("PROVENANCE_LEDGER_UNREADABLE", str(trusted_path), str(error))]
+    if trusted_ledger_path is not None:
+        try:
+            trusted_raw = trusted_ledger_path.read_bytes()
+            trusted_document = json.loads(trusted_raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [Finding("PROVENANCE_LEDGER_UNREADABLE", str(trusted_ledger_path), str(error))]
+        anchor_label = str(trusted_ledger_path)
+    else:
+        audited_raw, audited_error = _source_control_bytes(
+            PROVENANCE_LEDGER_REL, entries, content_map, content_source, repo_root
+        )
+        if audited_error or audited_raw is None:
+            findings.append(Finding(
+                "PROVENANCE_LEDGER_MISSING", PROVENANCE_LEDGER_REL,
+                audited_error or "missing",
+            ))
+            return findings
+        trusted_raw = audited_raw
+        try:
+            trusted_document = json.loads(trusted_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            findings.append(Finding("PROVENANCE_LEDGER_UNREADABLE", PROVENANCE_LEDGER_REL, str(error)))
+            return findings
+        anchor_label = PROVENANCE_LEDGER_REL
+        if not self_consistency:
+            findings.append(Finding(
+                "PROVENANCE_UNVERIFIED", PROVENANCE_LEDGER_REL,
+                "no externally trusted provenance ledger supplied via --provenance-ledger; the candidate's "
+                "own ledger cannot attest its own provenance, so attestation claims are unverified and the "
+                "audit cannot clear them (the release flow must supply the trusted ledger)",
+            ))
     if not isinstance(trusted_document, dict) or not isinstance(trusted_document.get("entries"), list):
-        return [Finding("PROVENANCE_LEDGER_UNREADABLE", str(trusted_path), "trusted ledger has no entries array")]
+        return [Finding("PROVENANCE_LEDGER_UNREADABLE", anchor_label, "trusted ledger has no entries array")]
 
     trusted_by_path: dict[str, dict] = {}
     for record in trusted_document["entries"]:
         if not isinstance(record, dict) or not isinstance(record.get("path"), str):
-            findings.append(Finding("PROVENANCE_LEDGER_INVALID", str(trusted_path), "ledger contains malformed entry"))
+            findings.append(Finding("PROVENANCE_LEDGER_INVALID", anchor_label, "ledger contains malformed entry"))
             continue
         path = record["path"]
         if path in trusted_by_path:
@@ -1168,15 +1209,17 @@ def _provenance_ledger_findings(
     audited_ledger, read_error = _source_control_bytes(
         PROVENANCE_LEDGER_REL, entries, content_map, content_source, repo_root
     )
-    if read_error or audited_ledger is None:
-        findings.append(Finding("PROVENANCE_LEDGER_MISSING", PROVENANCE_LEDGER_REL, read_error or "missing"))
-    elif audited_ledger.replace(b"\r\n", b"\n") != trusted_raw.replace(b"\r\n", b"\n"):
-        findings.append(Finding(
-            "PROVENANCE_LEDGER_MISMATCH", PROVENANCE_LEDGER_REL,
-            "audited ledger differs from the externally trusted ledger; candidate content cannot self-authorize provenance",
-        ))
+    if trusted_ledger_path is not None:
+        if read_error or audited_ledger is None:
+            findings.append(Finding("PROVENANCE_LEDGER_MISSING", PROVENANCE_LEDGER_REL, read_error or "missing"))
+        elif audited_ledger.replace(b"\r\n", b"\n") != trusted_raw.replace(b"\r\n", b"\n"):
+            findings.append(Finding(
+                "PROVENANCE_LEDGER_MISMATCH", PROVENANCE_LEDGER_REL,
+                "audited ledger differs from the externally trusted ledger; candidate content cannot self-authorize provenance",
+            ))
 
     entry_by_path = {entry.path: entry for entry in entries}
+    record_phrase = "externally trusted provenance record" if trusted_ledger_path is not None else "provenance record"
     for path in sorted(policy.include_paths):
         if path not in entry_by_path:
             continue
@@ -1196,7 +1239,7 @@ def _provenance_ledger_findings(
         elif path not in (PROVENANCE_LEDGER_REL, "PUBLIC_EXPORT.json") and expected and hashlib.sha256(raw).hexdigest() != expected:
             findings.append(Finding(
                 "PROVENANCE_CONTENT_MISMATCH", path,
-                "audited bytes differ from the hash in the externally trusted provenance record",
+                f"audited bytes differ from the hash in the {record_phrase}",
             ))
     return findings
 
@@ -1388,6 +1431,7 @@ def audit_entries_with_semantics(
     trusted_manifest_path: Path | None = None,
     committed_tree_ref: str | None = None,
     tree_repo_root: Path | None = None,
+    provenance_self_consistency: bool = False,
 ) -> tuple[list[Finding], list[FileSemantics]]:
 
     content_source = _resolve_content_source(content_source, is_candidate_root)
@@ -1530,7 +1574,8 @@ def audit_entries_with_semantics(
                 entries, content_map, content_source, repo_root, "MANIFEST_SOURCE_MISMATCH"
             ))
         findings.extend(_provenance_ledger_findings(
-            policy, entries, content_map, content_source, repo_root, provenance_ledger_path
+            policy, entries, content_map, content_source, repo_root, provenance_ledger_path,
+            self_consistency=provenance_self_consistency,
         ))
 
     for entry in entries:
@@ -1963,7 +2008,21 @@ def main(argv: list[str] | None = None) -> int:
         "--provenance-ledger",
         type=Path,
         default=None,
-        help="Externally trusted explicit provenance ledger (default: assets/public_provenance_ledger.json)",
+        help=(
+            "Externally trusted explicit provenance ledger. Without one, attestation claims in the "
+            "candidate's own ledger cannot be verified and the audit reports PROVENANCE_UNVERIFIED "
+            "(blocked). The release flow must supply this; the developer tripwire uses "
+            "--provenance-self-consistency instead."
+        ),
+    )
+    parser.add_argument(
+        "--provenance-self-consistency",
+        action="store_true",
+        help=(
+            "Provenance scope for developer tripwires: check the audited ledger for candidate-internal "
+            "consistency (coverage, resolution, content hashes) without asserting attestation authenticity; "
+            "attestation requires --provenance-ledger in the release flow."
+        ),
     )
     parser.add_argument(
         "--export",
@@ -2080,6 +2139,7 @@ def main(argv: list[str] | None = None) -> int:
         export_path=args.export or (audit_root / "PUBLIC_EXPORT.json"),
         expected_tree_sha=args.expect_tree or committed_tree_sha,
         provenance_ledger_path=args.provenance_ledger,
+        provenance_self_consistency=args.provenance_self_consistency,
         trusted_manifest_path=args.trusted_manifest,
         committed_tree_ref=args.committed_tree,
         tree_repo_root=audit_repo_root,

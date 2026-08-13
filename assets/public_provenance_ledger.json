@@ -197,7 +197,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0d834b1d17b16feb9de612a650826b85573047191ea973ac05d30d011eaa47ce"
+      "sha256": "4f1f25e998569217a28324ccb2005592434de6ee57bd9a6a16c492d13ae2dc33"
     },
     {
       "path": "AGENTS.md",
@@ -1104,7 +1104,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "caea940e6226ad8fb5e37684f91cf18e7873a74177ea8ac3d25632578d3bf183"
+      "sha256": "2e9782871baf02566e6b154eab611637664882dde2c1ca48ad705fc73849ac41"
     },
     {
       "path": "interface/.env.example",
@@ -4949,7 +4949,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7c84f975bbca3728fb08367ceb1196e76cd949210c4684a6079610bca0cacc2"
+      "sha256": "c7d0c314b5fedc0053f6b14419b8db19bc346dd17e8da0b19fc1a27d88463bff"
     },
     {
       "path": "tools/ci_paths.py",
@@ -5642,7 +5642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac30e12a55bcc7cc1ff59541d9a263b9ac41287bff756249e5e2a7dedf037fe5"
+      "sha256": "8c15f2256f50dcb3873519cef0096124edad7250414c5119b47702aefc2115e1"
     },
     {
       "path": "tools/prxload.py",
@@ -5899,7 +5899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5baf3d3b65e039212f46cbddc1a5de2aced6c3daa3f412a6a28d1565c56051d2"
+      "sha256": "49e92ff25a7fa3891633ce673cae0c61bb05fe27ad56c24b9dd34d59bb29e108"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -6859,7 +6859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c07b24b1d58bc41d70358b5bb8d078e3bb47f1ce5e2c1d58ea2c91181c5a033"
+      "sha256": "79dafd0bbe1936eb5a58821b00b84441a795409b999a59fb8fdbbfc25257cab5"
     },
     {
       "path": "tools/test_publish_audit.py",
