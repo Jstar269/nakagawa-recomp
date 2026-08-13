@@ -8,13 +8,16 @@ The PSP-visible behavior itself is proven executably by
 ``sr_syscall`` registry and asserts return values and guest memory contents.
 These assertions guard the two properties a behavioral test cannot express:
 
-* validation of the complete requested spans before any guest or GPU side
+* validation of the effective transfer prefix before any guest or GPU side
   effect, and
 * the measured effective-prefix ceiling, including the fact that the dirty
   notification covers only bytes that were actually transferred.
 
-The concurrent BUSY result and invalid-truncated-tail precedence remain
-unknown; this module must not turn either into an invented hardware fact.
+The concurrent BUSY result is a hardware-measured contract, but the runtime has
+no active-DMA state and therefore does not implement it yet. The invalid-tail
+precedence is both hardware-measured (per the reported campaign) and implemented
+by the production helper. This module keeps those evidence and implementation
+claims separate.
 """
 
 from pathlib import Path
@@ -43,7 +46,7 @@ class TestDmacValidationOrder(unittest.TestCase):
             "if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;", region
         )
 
-    def test_complete_requested_spans_precede_copy_and_dirty(self) -> None:
+    def test_effective_span_precedes_copy_and_dirty(self) -> None:
         """A failed request must not move a byte or dirty a GPU range."""
         region = _dmac_region()
         size_check = region.index("if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;")
@@ -102,14 +105,17 @@ class TestDmacMeasuredCeiling(unittest.TestCase):
         self.assertIn("sr_gpu_vram_dirty(dst, effective)", region)
         self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
 
-    def test_measured_busy_error_constant(self) -> None:
-        """The measured BUSY return code is defined."""
+    def test_busy_is_measured_but_not_runtime_implemented(self) -> None:
+        """The runtime must not fabricate an active-DMA BUSY path."""
         region = _dmac_region()
-        self.assertIn("#define SCE_DMAC_ERROR_BUSY 0x80000021u", region)
+        self.assertIn("HARDWARE_MEASURED", region)
+        self.assertIn("RUNTIME_UNIMPLEMENTED", region)
+        self.assertNotIn("#define SCE_DMAC_ERROR_BUSY", region)
+        self.assertIn("return h_DmacMemcpy(s);", region)
 
     def test_measured_invalid_tail_precedence_is_explicit(self) -> None:
         region = _dmac_region()
-        self.assertIn("hardware applies the effective 0xC000 ceiling truncation before span", region)
+        self.assertIn("effective length is selected before span validation", region)
         self.assertIn("sr_guest_span_readable(src, effective)", region)
         self.assertIn("sr_guest_span_writable(dst, effective)", region)
 

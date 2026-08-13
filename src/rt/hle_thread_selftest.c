@@ -3041,12 +3041,11 @@ static void test_bulk_guest_span_atomicity(void) {
  * registered NID, so these assert the PSP-visible return value and the
  * PSP-visible memory state of the shipped handlers.
  *
- * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
+ * HARDWARE_MEASURED values come from the reported PSP-3000 / 6.61-ARK campaign;
  * private capture details are intentionally not part of this public-safe tree.
- * The measured large-transfer ceiling is asserted as a prefix copy with an
- * untouched tail. The invalid-truncated-tail case is deliberately labelled as
- * a conservative runtime policy: hardware has not yet established whether the
- * tail is validated before the effective transfer length is applied. */
+ * RUNTIME_IMPLEMENTED values are asserted through production dispatch below.
+ * Concurrent BUSY is HARDWARE_MEASURED but RUNTIME_UNIMPLEMENTED: this selftest
+ * must not claim that a synchronous host call models an active DMA engine. */
 extern uint32_t sr_hle_test_dmac_effective_max(void);
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
@@ -3273,11 +3272,10 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     (void)who;
 }
 
-/* Hardware measured sceDmacTryMemcpy blocking for the full transfer in single-caller
- * contexts and producing the same content as the blocking form at every size.
- * In multi-threaded execution with overlapping active DMA, sceDmacTryMemcpy
- * returns 0x80000021 (SCE_DMAC_ERROR_BUSY). The single-caller synchronous runtime
- * routes both NID entries through h_DmacMemcpy. */
+/* HARDWARE_MEASURED: single-caller sceDmacTryMemcpy matches the blocking form,
+ * while the reported multi-threaded campaign observes 0x80000021 (BUSY) during
+ * active DMA. RUNTIME_UNIMPLEMENTED: both production NIDs still route through
+ * the synchronous h_DmacMemcpy implementation; no BUSY result is fabricated. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");

@@ -1718,22 +1718,28 @@ static uint32_t h_ResumeDispatchThread(CpuState *s) {
 static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* medium present */
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy ---------------------------------------
  *
- * The PSP-3000 / 6.61-ARK contract measured on physical hardware:
+ * Evidence/implementation boundary for the PSP-3000 / 6.61-ARK report:
  *
- *   - a zero request returns 0x80000104 (illegal size);
- *   - a NULL pointer returns 0x80000103 before guest/GPU side effects;
- *   - the effective transfer length is min(requested, 0xC000);
- *   - hardware applies the effective 0xC000 ceiling truncation before span
- *     validation. A request whose effective 0xC000 prefix is valid returns
- *     success (0) after copying that prefix, even if the requested tail extends
- *     into invalid/unmapped guest memory;
+ *   HARDWARE_MEASURED:
+ *   - zero size returns 0x80000104 (illegal size);
+ *   - NULL pointers return 0x80000103 before guest/GPU side effects;
+ *   - the effective transfer length is min(requested, 0xC000), with a valid
+ *     0xC000 prefix copied successfully for a reported 0xC001 request whose
+ *     requested tail is invalid;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
- *   - sceDmacTryMemcpy returns 0x80000021 (SCE_DMAC_ERROR_BUSY) when a DMA
- *     transfer is actively executing on another thread; sceDmacMemcpy blocks
- *     until active DMA completes before executing its transfer.
+ *   - a concurrent sceDmacTryMemcpy reports 0x80000021 (BUSY) while another
+ *     DMA is active, and sceDmacMemcpy waits for active DMA.
  *
- * The single-caller synchronous runtime route executes h_DmacMemcpy synchronously
- * for both NID entries.
+ *   RUNTIME_IMPLEMENTED:
+ *   - the effective length is selected before span validation;
+ *   - the validated prefix is copied with memmove and only that range is dirtied;
+ *   - both registered NIDs execute the measured single-caller copy behavior.
+ *
+ *   RUNTIME_UNIMPLEMENTED:
+ *   - there is no active-DMA state or scheduler-owned DMA operation, so the
+ *     runtime cannot honestly return BUSY or model blocking against another
+ *     caller yet. h_DmacTryMemcpy remains a synchronous call to h_DmacMemcpy.
+ *
  * The measured ~376–382 us observation for a large call is caller wall time;
  * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
@@ -1744,7 +1750,6 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
-#define SCE_DMAC_ERROR_BUSY 0x80000021u
 #define SCE_DMAC_EFFECTIVE_MAX 0xC000u
 
 static uint32_t h_DmacMemcpy(CpuState *s) {
@@ -1774,12 +1779,9 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     return 0;
 }
 
-/* sceDmacTryMemcpy. Hardware shows it blocking for the full transfer and
- * producing the same result as the blocking form at every measured size, so it
- * shares those semantics deliberately rather than by aliasing an unrelated
- * handler. It is a distinct registered entry so that a future busy or
- * non-blocking measurement has somewhere to land without changing the
- * measured error and overlap behavior. */
+/* RUNTIME_UNIMPLEMENTED: hardware reports a distinct active-DMA BUSY state, but
+ * this runtime has no honest operation state to observe. Keep the registered
+ * entry synchronous until the scheduler/DMAC model can represent that state. */
 static uint32_t h_DmacTryMemcpy(CpuState *s) {
     return h_DmacMemcpy(s);
 }

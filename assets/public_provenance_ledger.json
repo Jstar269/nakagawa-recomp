@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67fbb2103663bd64c4c9697ecad823d3326bfcf4dee305b7d8b3207617b68961"
+      "sha256": "48a5396704827e2f89de5b6c9a1a6bce28e14745a1f19087d4e63f52d9575ce1"
     },
     {
       "path": "LICENSE",
@@ -1011,7 +1011,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e81541ea9cc0999ba7b4d98fc81f72b7a82617e259ac2d375cb3c07c0fc87456"
+      "sha256": "7ba6a36a24cf846842d20ba99d0e76bd37b4c773f706a4ea81e60e6b1509cfa3"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -4339,7 +4339,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "75e4ae30a3aee995e5af2fc4446a9a7748ea5d37e380ebb00edb1d00b12cba8f"
+      "sha256": "fd706a7e72a2d4339bd7d06e2592e5fe56dc7401445c92b9e805f02e52910ad4"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4351,7 +4351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e465b8092b60100b9bb358a3e3c29173eab609f4cf9ce44fc8cd0dfec6a0f57a"
+      "sha256": "099d5634a506ffc83764c15d140244b4f52ab56165a6d7a11d0aec7e716605f8"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5775,10 +5775,10 @@
       "path": "tools/psp_oracle/run_pspsh.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "source": "source review",
         "record_id": "hardware-oracle-toolchain",
-        "evidence_tier": "H",
-        "authorship": "independent implementation record",
+        "evidence_tier": "S",
+        "authorship": "project-authored PSPLink command wrapper; no hardware result claim",
         "upstream_attribution": null
       },
       "sha256": "79ffdcaf9f02e227b0bd095eac440e873a25e32d82f9cd715eb785a3a097c4c8"
@@ -6237,7 +6237,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04d59cde2ee7b6130d41be8220323f4d04ecf73a81054c65359cce1cebad45c6"
+      "sha256": "ec1c7efbec4214a7fa8715b1d952c8914f4290160a4855e263d3e32fc3d17fad"
     },
     {
       "path": "tools/test_elf_bounds.py",

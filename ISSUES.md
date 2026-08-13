@@ -12,7 +12,7 @@ claim.
 | Priority | State | Public work item |
 | --- | --- | --- |
 | P0 | Ongoing | Public-source safeguards: exact-tree, provenance, history, security, and export gates remain required for proposed changes and release candidates. |
-| P1 | Open | PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) remains an implementation lane. |
+| P1 | Open | PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) remains open; the reported PSP campaign supports the `0xC001`/`0xC000` truncation contract and concurrent `TryMemcpy` `BUSY`, but only truncation is implemented and active-DMA/BUSY runtime modeling remains unimplemented. |
 | P1 | Open | Portable Allegrex/VFPU float-to-word semantics are tracked in [issue #38](https://github.com/Jstar269/nakagawa-recomp/issues/38). |
 | P1 | Open | Unified PSP clocks, waits, and interrupt delivery remain source-owned runtime work. |
 | P1 | Open | Direct XB archive/VFS tooling is documented in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs remain local-only. |
