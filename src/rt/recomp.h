@@ -560,8 +560,13 @@ void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);
 int      sched_current_priority(void);
+int      sched_thread_priority(uint32_t uid);    /* priority of an arbitrary thread; 32 if unknown */
 int      sched_is_dormant(uint32_t uid);
 uint32_t sched_current_uid(void);
+/* Plain-mutex teardown: release every mutex owned by `thread_uid` and drop it
+ * from every mutex waiter list (src/rt/mutex.c). Called by the scheduler on
+ * thread exit / termination / deletion. */
+void     sr_mutex_thread_end(uint32_t thread_uid);
 uint32_t sched_worker_uid(void);                    /* dynamic worker UID (entry 0x000468c8) */
 uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (entry 0x0029a174) */
 void     sched_run(uint32_t entry, uint32_t arglen, uint32_t argp);  /* run from the entry thread */

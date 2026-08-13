@@ -89,6 +89,11 @@ extern uint32_t sr_hle_test_msgpipe_max_capacity(void);
 /* Read-only view of a production Sync entry; see hle.c (issue #43). */
 extern int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out);
 extern void sr_hle_test_sas_reset(void);
+/* Plain-mutex test hooks (src/rt/mutex.c, SR_HLE_THREAD_SELFTEST only). */
+extern void sr_mutex_test_reset(void);
+extern int sr_mutex_test_state(uint32_t uid, int32_t *level_out, uint32_t *owner_out,
+                               int32_t *initial_out, uint32_t *attr_out,
+                               int *waiters_out);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -776,6 +781,7 @@ static void reset_fixture(void) {
     s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
+    sr_mutex_test_reset();
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -2336,6 +2342,415 @@ static void test_allocate_fpl_context_precedence(void) {
         expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR, msg);
         fpl_free_pool(uid);
         cnw_end(intr_off, token);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Plain mutex object model (src/rt/mutex.c), driven through production NIDs.
+ *
+ * Every observable below is a PSPAutotests tests/threads/mutex/ expectation
+ * (or the context column of tests/intr/waits.expected), re-expressed against
+ * the production sr_syscall registry instead of a private model.  State that a
+ * NID cannot observe is read through the white-box sr_mutex_test_state probe,
+ * which is compiled only into this executable and changes no production layout.
+ * ------------------------------------------------------------------------- */
+#define NID_MX_CREATE     0xb7d098c6u
+#define NID_MX_DELETE     0xf8170fbeu
+#define NID_MX_LOCK       0xb011b11fu
+#define NID_MX_LOCK_CB    0x5bf4dd27u
+#define NID_MX_TRYLOCK    0x0ddcd2c9u
+#define NID_MX_UNLOCK     0x6b30100fu
+#define NID_MX_CANCEL     0x87d9223cu
+#define NID_MX_REFER      0xa9c2cb9au
+
+#define MX_ERR            0x80020001u  /* SCE_KERNEL_ERROR_ERROR (NULL name) */
+#define MX_ILLEGAL_ATTR   0x80020191u
+#define MX_ILLEGAL_COUNT  0x800201bdu
+#define MX_NOT_FOUND      0x800201c3u
+#define MX_LOCKED         0x800201c4u
+#define MX_UNLOCKED       0x800201c5u
+#define MX_LOCK_OVERFLOW  0x800201c6u
+#define MX_UNLOCK_UNDER   0x800201c7u
+#define MX_RECURSIVE_NOPE 0x800201c8u
+#define MX_WAIT_TIMEOUT   0x800201a8u
+#define MX_WAIT_CANCEL    0x800201a9u
+#define MX_WAIT_DELETE    0x800201b5u
+#define MX_CAN_NOT_WAIT   0x800201a7u
+
+#define MX_ATTR_RECURSIVE 0x200u
+#define MX_ATTR_PRIORITY  0x100u
+
+#define MX_NAMEBUF  0x00260000u
+#define MX_TOPTR    0x00260100u
+#define MX_INFOPTR  0x00260200u
+#define MX_NWAITPTR 0x00260300u
+
+static void mx_write_name(void) {
+    static const char nm[] = "mx";
+    for (size_t k = 0; k < sizeof nm; k++)
+        MEM_W8(MX_NAMEBUF + (uint32_t)k, (uint8_t)nm[k]);
+}
+
+static TCB *mx_begin(void) {
+    reset_fixture();
+    sr_hle_init();
+    mx_write_name();
+    TCB *self = fixture_thread(0x1e4u, TH_RUNNING, 32);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+    return self;
+}
+
+static uint32_t mx_create(uint32_t attr, int32_t initial) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = MX_NAMEBUF; cpu.r[5] = attr; cpu.r[6] = (uint32_t)initial; cpu.r[7] = 0u;
+    return sr_syscall(&cpu, NID_MX_CREATE);
+}
+
+static uint32_t mx_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Coroutine bodies: each runs as a distinct guest thread (s_cur set by the
+ * caller) and enters the production NID through sr_syscall. */
+static uint32_t s_mx_block_uid;
+static uint32_t s_mx_block_topt;
+static uint32_t s_mx_block_ret;
+static int      s_mx_block_returned;
+static uint32_t s_mx_exit_status;
+
+static void mx_lock_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_mx_block_uid; cpu.r[5] = 1u; cpu.r[6] = s_mx_block_topt;
+    s_mx_block_ret = sr_syscall(&cpu, NID_MX_LOCK);
+    s_mx_block_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void mx_lock_exit_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_mx_block_uid; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    (void)sr_syscall(&cpu, NID_MX_LOCK);          /* acquire */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_mx_exit_status;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_EXIT_THREAD);   /* terminal: releases mutex */
+}
+
+static void test_mutex_object_model(void) {
+    char msg[256];
+    int32_t level; uint32_t owner; int32_t initial; uint32_t attr; int nwait;
+
+    /* ---- 1. create contract (create.expected) ------------------------------ */
+    {
+        mx_begin();
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+        expect(sr_syscall(&cpu, NID_MX_CREATE) == MX_ERR,
+               "CreateMutex(NULL) returns SCE_KERNEL_ERROR_ERROR");
+        expect(mx_create(0x400u, 0) == MX_ILLEGAL_ATTR,
+               "CreateMutex rejects attr 0x400 (reserved bit 10)");
+        expect(mx_create(0x1000u, 0) == MX_ILLEGAL_ATTR,
+               "CreateMutex rejects attr 0x1000 (above the 0xBFF mask)");
+        expect(mx_create(0u, -1) == MX_ILLEGAL_COUNT,
+               "CreateMutex rejects a negative initial count");
+        expect(mx_create(0u, 2) == MX_ILLEGAL_COUNT,
+               "CreateMutex rejects initial>1 without ALLOW_RECURSIVE");
+
+        uint32_t m = mx_create(0u, 1);
+        expect(m > 0, "CreateMutex(name, 0, 1) succeeds");
+        expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+               level == 1 && owner == sched_current_uid() && initial == 1 && nwait == 0,
+               "a locked-created mutex starts owned by the caller at level 1");
+        expect(mx_call(NID_MX_DELETE, m, 0u, 0u) == 0u, "created mutex deletes cleanly");
+
+        uint32_t r = mx_create(MX_ATTR_RECURSIVE, 2);
+        expect(r > 0, "CreateMutex(ALLOW_RECURSIVE, 2) succeeds");
+        expect(sr_mutex_test_state(r, &level, &owner, &initial, &attr, &nwait) &&
+               level == 2 && owner == sched_current_uid(),
+               "a recursive-created mutex starts at its initial level, owned by caller");
+        expect(mx_call(NID_MX_DELETE, r, 0u, 0u) == 0u, "recursive-created mutex deletes");
+        s_cur = -1;
+    }
+
+    /* ---- 2. lock/trylock/unlock count + relock (lock/try/unlock.expected) --- */
+    {
+        mx_begin();
+        uint32_t m = mx_create(0u, 0);
+        expect(mx_call(NID_MX_LOCK, m, 0u, 0u) == MX_ILLEGAL_COUNT,
+               "LockMutex(count 0) -> ILLEGAL_COUNT");
+        expect(mx_call(NID_MX_LOCK, m, 2u, 0u) == MX_ILLEGAL_COUNT,
+               "LockMutex(count 2, non-recursive) -> ILLEGAL_COUNT");
+        expect(mx_call(NID_MX_TRYLOCK, m, 0u, 0u) == MX_ILLEGAL_COUNT,
+               "TryLockMutex(count 0) -> ILLEGAL_COUNT");
+
+        expect(mx_call(NID_MX_LOCK, m, 1u, 0u) == 0u, "LockMutex(1) acquires an unlocked mutex");
+        expect(mx_call(NID_MX_LOCK, m, 1u, 0u) == MX_RECURSIVE_NOPE,
+               "non-recursive relock -> MUTEX_RECURSIVE_NOT_ALLOWED");
+        expect(mx_call(NID_MX_TRYLOCK, m, 1u, 0u) == MX_RECURSIVE_NOPE,
+               "non-recursive TryLock relock -> MUTEX_RECURSIVE_NOT_ALLOWED");
+
+        /* A second thread (lower priority) finds it locked -> MUTEX_LOCKED. */
+        TCB *other = fixture_thread(0x1e5u, TH_RUNNING, 40);
+        s_cur = (int)(other - s_tcb); other->started = 1;
+        expect(mx_call(NID_MX_TRYLOCK, m, 1u, 0u) == MX_LOCKED,
+               "TryLock on another thread's mutex -> MUTEX_LOCKED");
+        expect(mx_call(NID_MX_UNLOCK, m, 1u, 0u) == MX_UNLOCKED,
+               "non-owner unlock -> MUTEX_UNLOCKED");
+        s_cur = -1;
+    }
+
+    /* ---- 3. delete / refer / cancel (delete/refer/cancel.expected) ---------- */
+    {
+        mx_begin();
+        uint32_t m = mx_create(0u, 0);
+        expect(mx_call(NID_MX_DELETE, 0u, 0u, 0u) == MX_NOT_FOUND,
+               "DeleteMutex(0) -> MUTEX_NOT_FOUND");
+        expect(mx_call(NID_MX_REFER, 0xDEADBEEFu, MX_INFOPTR, 0u) == MX_NOT_FOUND,
+               "ReferMutexStatus(invalid) -> MUTEX_NOT_FOUND");
+        expect(mx_call(NID_MX_CANCEL, 0u, 0, 0u) == MX_NOT_FOUND,
+               "CancelMutex(0) -> MUTEX_NOT_FOUND");
+
+        /* Refer with size==0 writes nothing; size!=0 writes the full record. */
+        MEM_W32(MX_INFOPTR, 0u);
+        expect(mx_call(NID_MX_REFER, m, MX_INFOPTR, 0u) == 0u && MEM_R32(MX_INFOPTR) == 0u,
+               "ReferMutexStatus with size 0 writes nothing");
+        MEM_W32(MX_INFOPTR, 1u);
+        expect(mx_call(NID_MX_REFER, m, MX_INFOPTR, 0u) == 0u, "ReferMutexStatus succeeds");
+        expect(MEM_R32(MX_INFOPTR + 0x00u) == 0x38u,
+               "refer writes the fixed 0x38 info size");
+        expect(MEM_R32(MX_INFOPTR + 0x28u) == 0u && MEM_R32(MX_INFOPTR + 0x2cu) == 0u &&
+               MEM_R32(MX_INFOPTR + 0x30u) == 0u && MEM_R32(MX_INFOPTR + 0x34u) == 0u,
+               "refer reports init/current/owner/waiters for an unlocked mutex");
+
+        /* Cancel acquires for the caller (count>0) or unlocks (count<=0). */
+        expect(mx_call(NID_MX_CANCEL, m, 1, MX_NWAITPTR) == 0u, "CancelMutex(count 1) succeeds");
+        expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+               level == 1 && owner == sched_current_uid() && nwait == 0 &&
+               MEM_R32(MX_NWAITPTR) == 0u,
+               "CancelMutex(1) acquires for the caller and reports 0 waiters");
+        MEM_W32(MX_NWAITPTR, 99u);
+        expect(mx_call(NID_MX_CANCEL, m, 3, MX_NWAITPTR) == MX_ILLEGAL_COUNT &&
+               MEM_R32(MX_NWAITPTR) == 99u,
+               "CancelMutex(count 3, non-recursive) fails and leaves numWaitThreads untouched");
+        expect(mx_call(NID_MX_CANCEL, m, 0, MX_NWAITPTR) == 0u, "CancelMutex(count 0) succeeds");
+        expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+               level == 0 && owner == 0u,
+               "CancelMutex(0) unlocks the mutex");
+
+        expect(mx_call(NID_MX_DELETE, m, 0u, 0u) == 0u, "DeleteMutex succeeds");
+        expect(mx_call(NID_MX_DELETE, m, 0u, 0u) == MX_NOT_FOUND,
+               "a second DeleteMutex -> MUTEX_NOT_FOUND");
+        expect(mx_call(NID_MX_LOCK, m, 1u, 0u) == MX_NOT_FOUND,
+               "LockMutex on a deleted mutex -> MUTEX_NOT_FOUND");
+        s_cur = -1;
+    }
+
+    /* ---- 4. unlock error precedence (unlock.expected) ---------------------- */
+    {
+        mx_begin();
+        uint32_t m = mx_create(0u, 0);
+        expect(mx_call(NID_MX_UNLOCK, m, 0, 0u) == MX_ILLEGAL_COUNT,
+               "UnlockMutex(count 0) -> ILLEGAL_COUNT");
+        expect(mx_call(NID_MX_UNLOCK, m, 2, 0u) == MX_ILLEGAL_COUNT,
+               "UnlockMutex(count 2, non-recursive) -> ILLEGAL_COUNT");
+        expect(mx_call(NID_MX_UNLOCK, m, 1, 0u) == MX_UNLOCKED,
+               "UnlockMutex on an unlocked mutex -> MUTEX_UNLOCKED");
+        expect(mx_call(NID_MX_LOCK, m, 1u, 0u) == 0u, "LockMutex(1) acquires");
+        expect(mx_call(NID_MX_UNLOCK, m, 1, 0u) == 0u, "UnlockMutex(1) releases");
+
+        uint32_t r = mx_create(MX_ATTR_RECURSIVE, 1);
+        expect(mx_call(NID_MX_UNLOCK, r, 2, 0u) == MX_UNLOCK_UNDER,
+               "recursive unlock above the level -> MUTEX_UNLOCK_UNDERFLOW");
+        expect(mx_call(NID_MX_UNLOCK, r, 1, 0u) == 0u, "recursive unlock to zero succeeds");
+        expect(mx_call(NID_MX_UNLOCK, r, 1, 0u) == MX_UNLOCKED,
+               "recursive unlock below zero -> MUTEX_UNLOCKED");
+
+        uint32_t ovf = mx_create(MX_ATTR_RECURSIVE, 1);
+        expect(mx_call(NID_MX_LOCK, ovf, 0x7fffffffu, 0u) == MX_LOCK_OVERFLOW,
+               "recursive lock overflowing int -> MUTEX_LOCK_OVERFLOW");
+        expect(mx_call(NID_MX_LOCK, ovf, 1u, 0u) == 0u,
+               "a recursive relock still succeeds after a rejected overflow");
+        expect(sr_mutex_test_state(ovf, &level, &owner, &initial, &attr, &nwait) &&
+               level == 2 && owner == sched_current_uid(),
+               "the accepted relock raised the level to 2");
+        s_cur = -1;
+    }
+
+    /* ---- 5. context precedence (waits.expected L168-L181) ------------------- */
+    for (int intr_off = 0; intr_off < 2; intr_off++) {
+        const char *ctx = intr_off ? "interrupts disabled" : "dispatch disabled";
+        for (int cb = 0; cb < 2; cb++) {
+            const uint32_t nid = cb ? NID_MX_LOCK_CB : NID_MX_LOCK;
+            const char *who = cb ? "sceKernelLockMutexCB" : "sceKernelLockMutex";
+            uint32_t token;
+            (void)cnw_begin(intr_off, &token);
+            mx_write_name();
+            uint32_t m = mx_create(0u, 0);
+            snprintf(msg, sizeof msg, "%s with %s answers CAN_NOT_WAIT before the bad-uid lookup", who, ctx);
+            expect(mx_call(nid, 0u, 1u, 0u) == MX_CAN_NOT_WAIT, msg);
+            snprintf(msg, sizeof msg, "%s with %s answers CAN_NOT_WAIT before count validation", who, ctx);
+            expect(mx_call(nid, m, 9u, 0u) == MX_CAN_NOT_WAIT, msg);
+            snprintf(msg, sizeof msg, "%s with %s answers CAN_NOT_WAIT on a valid unlocked mutex", who, ctx);
+            expect(mx_call(nid, m, 1u, 0u) == MX_CAN_NOT_WAIT, msg);
+            expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+                   level == 0 && owner == 0u,
+                   "the rejected calls left the mutex unlocked");
+            cnw_end(intr_off, token);
+        }
+    }
+
+    /* ---- 6. timeout preservation (lock.expected) ---------------------------- */
+    {
+        TCB *self = mx_begin();
+        s_pace_on = 0;
+        uint32_t m = mx_create(0u, 0);
+
+        /* A holder thread grabs the lock and parks. */
+        TCB *holder = fixture_thread(0x1e6u, TH_RUNNING, 32);
+        s_cur = (int)(holder - s_tcb); holder->started = 1;
+        s_mx_block_uid = m; s_mx_block_topt = 0u; s_mx_block_returned = 0;
+        holder->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        expect(holder->coro != NULL, "timeout fixture: holder coroutine created");
+        if (holder->coro) sr_coro_switch(holder->coro);
+        expect(s_mx_block_returned == 1, "timeout fixture: holder acquired the mutex");
+
+        /* The main thread now blocks with a 1000us timeout. */
+        s_cur = (int)(self - s_tcb);
+        s_mx_block_uid = m; s_mx_block_topt = MX_TOPTR; s_mx_block_returned = 0;
+        MEM_W32(MX_TOPTR, 1000u);
+        self->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        expect(self->coro != NULL, "timeout fixture: waiter coroutine created");
+        if (self->coro) sr_coro_switch(self->coro);
+        expect(s_mx_block_returned == 0 && self->state == TH_WAIT_OBJ && self->wait_obj == m,
+               "a contended lock parks the caller on the mutex");
+
+        sr_hle_advance_time(1000u);
+        s_cur = (int)(self - s_tcb);
+        if (self->coro) sr_coro_switch(self->coro);
+        expect(s_mx_block_returned == 1 && s_mx_block_ret == MX_WAIT_TIMEOUT,
+               "a timed lock that cannot acquire returns WAIT_TIMEOUT");
+        expect(MEM_R32(MX_TOPTR) == 0u,
+               "an expired lock writes the remaining timeout as 0");
+
+        if (self->coro) { sr_coro_destroy(self->coro); self->coro = NULL; }
+        if (holder->coro) { sr_coro_destroy(holder->coro); holder->coro = NULL; }
+        s_cur = -1;
+    }
+
+    /* ---- 7. thread exit releases owned mutexes (lock.expected) -------------- */
+    {
+        TCB *self = mx_begin();
+        uint32_t m = mx_create(0u, 0);
+        TCB *holder = fixture_thread(0x1e7u, TH_RUNNING, 32);
+        s_cur = (int)(holder - s_tcb); holder->started = 1;
+        s_mx_block_uid = m; s_mx_exit_status = 0u;
+        holder->coro = sr_coro_create(mx_lock_exit_body, NULL, (size_t)1 << 20);
+        expect(holder->coro != NULL, "exit fixture: holder coroutine created");
+        if (holder->coro) sr_coro_switch(holder->coro);
+        expect(holder->state == TH_DORMANT,
+               "the holder exited and went DORMANT");
+        expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+               level == 0 && owner == 0u,
+               "thread exit released the mutex it owned");
+        s_cur = (int)(self - s_tcb);
+        expect(mx_call(NID_MX_LOCK, m, 1u, 0u) == 0u,
+               "the main thread acquires the released mutex");
+        if (holder->coro) { sr_coro_destroy(holder->coro); holder->coro = NULL; }
+        s_cur = -1;
+    }
+
+    /* ---- 8. FIFO / priority hand-off and delete/cancel of waiters ----------- */
+    {
+        TCB *self = mx_begin();
+
+        /* FIFO: waiter 1 (head, priority 45) then waiter 2 (priority 40) block;
+         * the list head gets the lock regardless of priority (mutex.c
+         * multipleTest).  Both are LOWER priority than the test's main thread
+         * (32) so sched_preempt never yields the scheduler coroutine to itself. */
+        uint32_t m = mx_create(0u, 1);   /* owned by main */
+        TCB *w1 = fixture_thread(0x1e8u, TH_RUNNING, 45);
+        TCB *w2 = fixture_thread(0x1e9u, TH_RUNNING, 40);
+        s_mx_block_uid = m; s_mx_block_topt = 0u; s_mx_block_returned = 0;
+        s_cur = (int)(w1 - s_tcb); w1->started = 1;
+        w1->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (w1->coro) sr_coro_switch(w1->coro);
+        s_cur = (int)(w2 - s_tcb); w2->started = 1;
+        w2->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (w2->coro) sr_coro_switch(w2->coro);
+        expect(w1->state == TH_WAIT_OBJ && w2->state == TH_WAIT_OBJ,
+               "both FIFO waiters are blocked on the mutex");
+
+        s_cur = (int)(self - s_tcb);
+        expect(mx_call(NID_MX_UNLOCK, m, 1, 0u) == 0u, "owner unlock succeeds");
+        expect(sr_mutex_test_state(m, &level, &owner, &initial, &attr, &nwait) &&
+               owner == w1->uid && level == 1 && nwait == 1,
+               "FIFO hand-off gives the lock to the list head (w1), w2 still waits");
+        if (w1->coro) { sr_coro_destroy(w1->coro); w1->coro = NULL; }
+        if (w2->coro) { sr_coro_destroy(w2->coro); w2->coro = NULL; }
+
+        /* PRIORITY: the highest-priority waiter wins instead of the list head. */
+        uint32_t mp = mx_create(MX_ATTR_PRIORITY, 1);
+        TCB *p1 = fixture_thread(0x1eAu, TH_RUNNING, 45);
+        TCB *p2 = fixture_thread(0x1eBu, TH_RUNNING, 40);
+        s_mx_block_uid = mp; s_mx_block_returned = 0;
+        s_cur = (int)(p1 - s_tcb); p1->started = 1;
+        p1->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (p1->coro) sr_coro_switch(p1->coro);
+        s_cur = (int)(p2 - s_tcb); p2->started = 1;
+        p2->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (p2->coro) sr_coro_switch(p2->coro);
+        s_cur = (int)(self - s_tcb);
+        expect(mx_call(NID_MX_UNLOCK, mp, 1, 0u) == 0u, "priority owner unlock succeeds");
+        expect(sr_mutex_test_state(mp, &level, &owner, &initial, &attr, &nwait) &&
+               owner == p2->uid,
+               "PRIORITY hand-off gives the lock to the highest-priority waiter (p2)");
+        if (p1->coro) { sr_coro_destroy(p1->coro); p1->coro = NULL; }
+        if (p2->coro) { sr_coro_destroy(p2->coro); p2->coro = NULL; }
+
+        /* CancelMutex wakes a waiter with WAIT_CANCEL. */
+        uint32_t mc = mx_create(0u, 1);
+        TCB *cw = fixture_thread(0x1eCu, TH_RUNNING, 40);
+        s_mx_block_uid = mc; s_mx_block_returned = 0;
+        s_cur = (int)(cw - s_tcb); cw->started = 1;
+        cw->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (cw->coro) sr_coro_switch(cw->coro);
+        expect(cw->state == TH_WAIT_OBJ, "cancel fixture: waiter is blocked");
+        s_cur = (int)(self - s_tcb);
+        MEM_W32(MX_NWAITPTR, 99u);
+        expect(mx_call(NID_MX_CANCEL, mc, 1, MX_NWAITPTR) == 0u &&
+               MEM_R32(MX_NWAITPTR) == 1u,
+               "CancelMutex reports the single waiter");
+        s_cur = (int)(cw - s_tcb);
+        if (cw->coro) sr_coro_switch(cw->coro);
+        expect(s_mx_block_returned == 1 && s_mx_block_ret == MX_WAIT_CANCEL,
+               "the waiter resumed with WAIT_CANCEL");
+        if (cw->coro) { sr_coro_destroy(cw->coro); cw->coro = NULL; }
+
+        /* DeleteMutex wakes a waiter with WAIT_DELETE. */
+        uint32_t md = mx_create(0u, 1);
+        TCB *dw = fixture_thread(0x1eDu, TH_RUNNING, 40);
+        s_mx_block_uid = md; s_mx_block_returned = 0;
+        s_cur = (int)(dw - s_tcb); dw->started = 1;
+        dw->coro = sr_coro_create(mx_lock_body, NULL, (size_t)1 << 20);
+        if (dw->coro) sr_coro_switch(dw->coro);
+        expect(dw->state == TH_WAIT_OBJ, "delete fixture: waiter is blocked");
+        s_cur = (int)(self - s_tcb);
+        expect(mx_call(NID_MX_DELETE, md, 0u, 0u) == 0u, "DeleteMutex succeeds");
+        s_cur = (int)(dw - s_tcb);
+        if (dw->coro) sr_coro_switch(dw->coro);
+        expect(s_mx_block_returned == 1 && s_mx_block_ret == MX_WAIT_DELETE,
+               "the waiter resumed with WAIT_DELETE");
+        if (dw->coro) { sr_coro_destroy(dw->coro); dw->coro = NULL; }
+        s_cur = -1;
     }
 }
 
@@ -4043,16 +4458,18 @@ static void check_coroutine_lifecycle(void) {
      * test_wait_sema_count_validation, plus one park per conformance probe leg
      * that returned, plus the delay-thread body from
      * test_delay_advances_unified_timeline (its sceKernelDelayThread parks
-     * inside the syscall, and the body parks again when the syscall returns).
-     * ic_expected_parks() derives its count from the recorded outcome table,
-     * not from the park hook, so this stays a genuine cross-check of the
-     * coroutine layer rather than a tautology. */
+     * inside the syscall, and the body parks again when the syscall returns),
+     * plus the four plain-mutex bodies from test_mutex_object_model that park
+     * through selftest_park_on_scheduler (the timeout holder + timed waiter,
+     * and the cancel + delete waiters).  ic_expected_parks() derives its count
+     * from the recorded outcome table, not from the park hook, so this stays a
+     * genuine cross-check of the coroutine layer rather than a tautology. */
     {
-        int expected_parks = 4 + ic_expected_parks();
+        int expected_parks = 8 + ic_expected_parks();
         char msg[192];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
-                 "+ 1 delay body + %d returned conformance legs = %d, observed %lu)",
+                 "+ 1 delay body + 4 mutex bodies + %d returned conformance legs = %d, observed %lu)",
                  ic_expected_parks(), expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -5087,6 +5504,7 @@ int main(int argc, char **argv) {
     test_can_not_wait_semantics();
     test_wait_sema_count_validation();
     test_allocate_fpl_context_precedence();
+    test_mutex_object_model();
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();
     test_sas_core_mix_preserves_caller_pcm();

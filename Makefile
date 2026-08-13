@@ -202,6 +202,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/vfpu_interp.c \
               src/rt/hle.c \
               src/rt/sched.c \
+              src/rt/mutex.c \
               src/rt/sr_coro.c \
               $(ISO_BACKEND_SRC) \
               $(PGD_BACKEND_SRC) \
@@ -570,7 +571,7 @@ hle-thread-selftest-build:
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/mutex.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(LIBS)
 
@@ -596,12 +597,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 	$(PYTHON) tools/psp_oracle/build_nakagawa_smoke.py --elf "$(PSP_ORACLE_SMOKE_ELF)" --out-dir "$(PSP_ORACLE_SMOKE_DIR)"
 	$(PYTHON) -c "from pathlib import Path; Path(r'$(PSP_ORACLE_SMOKE_STAMP)').write_text('generated\n', encoding='ascii')"
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/mutex.c src/rt/sr_coro.c $(PGD_BACKEND_SRC)
 	$(CC) $(CFLAGS) $(HLE_SELFTEST_DEFINES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/mutex.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
 
 psp-oracle-nakagawa-smoke-build: $(PSP_ORACLE_SMOKE_EXE)

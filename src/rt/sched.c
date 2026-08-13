@@ -2551,6 +2551,10 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
     TCB *t = &s_tcb[s_cur];
     uint32_t uid = t->uid;
     t->exit_status = status;
+    /* Release every mutex this thread owns and drop it from every mutex
+     * waiter list (src/rt/mutex.c), before the DORMANT transition below so
+     * blocked lockers are handed the lock and readied for the scheduler. */
+    sr_mutex_thread_end(uid);
     sched_release_thread_resources(t);
     if (getenv("SR_SYSLOG")) fprintf(stderr, "thr 0x%x EXIT (entry 0x%08x)\n", uid, s_tcb[s_cur].entry);
     /* TCB/fiber leak fix: when a thread exits, free its fiber. The fiber was allocated
@@ -2615,6 +2619,14 @@ void sched_unwind_current(void) {
 
 int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 32; }
 
+/* Priority of an arbitrary thread, for PSP_MUTEX_ATTR_PRIORITY waiter ordering
+ * (src/rt/mutex.c).  An unknown uid answers 32 (the lowest PSP user priority),
+ * so it sorts behind every real waiter rather than fabricating a priority. */
+int sched_thread_priority(uint32_t uid) {
+    TCB *t = tcb_by_uid(uid);
+    return t ? t->priority : 32;
+}
+
 /* sceKernelChangeThreadPriority: uid 0 = current thread. */
 void sched_set_priority(uint32_t uid, int priority) {
     if (uid == 0 && s_cur >= 0) uid = s_tcb[s_cur].uid;
@@ -2633,6 +2645,7 @@ uint32_t sched_terminate_thread(uint32_t uid) {
         return SCE_KERNEL_ERROR_ILLEGAL_THID;
     }
     sched_release_thread_resources(t);
+    sr_mutex_thread_end(uid);   /* release owned mutexes; drop from waiter lists */
     if (getenv("SR_SYSLOG")) fprintf(stderr, "thr 0x%x TERMINATED (entry 0x%08x)\n", uid, t->entry);
     /* A target stopped by another thread is no longer running, so its host
      * coroutine can be destroyed immediately. The guest stack remains owned by

@@ -229,14 +229,16 @@ asserted on every run.
 * **UNTESTABLE** - no substrate exists to construct the context.
 * **control** - executed and pinned, but hardware has no cell to compare against.
 
-Totals over 54 probes x 4 columns (216 cells): **50 CONFORMS, 91 known deviations, 20 NOT RUN, 0 UNTESTABLE, 55 controls.**
+Totals over 54 probes x 4 columns (216 cells): **62 CONFORMS, 79 known deviations, 20 NOT RUN, 0 UNTESTABLE, 55 controls.**
 
-The 91 known deviations by implementation owner, recomputed from the run rather than carried
-forward: **PR-C2 20, PR-D 18, PR-E 30, #2 (plain Mutex) 18, #79 (VolatileMemLock) 5.**
+The 79 known deviations by implementation owner, recomputed from the run rather than carried
+forward: **PR-C2 20, PR-D 18, PR-E 30, #2 (plain Mutex) 6, #79 (VolatileMemLock) 5.**
 
-Of the 50: 10 were already right before this campaign (below), PR-B added 28, PR-C1
-added the 8 `sceKernelAllocateFpl` / `...CB` cells, and issue #43 added the 4
-`sceKernelWaitSema` / `...CB` **"Bad sema"** `intr-off`/`disp-off` cells.
+Of the 62: 10 were already right before this campaign (below), PR-B added 28, PR-C1
+added the 8 `sceKernelAllocateFpl` / `...CB` cells, issue #43 added the 4
+`sceKernelWaitSema` / `...CB` **"Bad sema"** `intr-off`/`disp-off` cells, and the plain-Mutex
+campaign added the 12 `sceKernelLockMutex` / `...CB` `intr-off`/`disp-off` cells
+(context-check-before-object-lookup, `src/rt/mutex.c`).
 
 ### What issue #43 moved
 
@@ -392,30 +394,30 @@ route hardware uses rather than by an unsatisfiable-wait accident.
 | `sceKernelAllocateFplCB` | Valid fpl | intr-off | L110 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelAllocateFplCB` | Valid fpl | intr-ctx | L350 | 0x80020064 | 0x00000000 | known deviation | context |
 | `sceKernelAllocateFplCB` | Valid fpl | disp-off | L111 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceKernelLockMutex` | Bad mutex | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutex` | Bad mutex | intr-off | L168 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Bad mutex | intr-ctx | L371 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Bad mutex | disp-off | L169 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Bad count | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutex` | Bad count | intr-off | L170 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Bad count | intr-ctx | L372 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Bad count | disp-off | L171 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceKernelLockMutex` | Bad mutex | normal | - | unknown | 0x800201c3 | control | n/a |
+| `sceKernelLockMutex` | Bad mutex | intr-off | L168 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutex` | Bad mutex | intr-ctx | L371 | 0x80020064 | 0x800201c3 | known deviation | context |
+| `sceKernelLockMutex` | Bad mutex | disp-off | L169 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutex` | Bad count | normal | - | unknown | 0x800201bd | control | n/a |
+| `sceKernelLockMutex` | Bad count | intr-off | L170 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutex` | Bad count | intr-ctx | L372 | 0x80020064 | 0x800201bd | known deviation | context |
+| `sceKernelLockMutex` | Bad count | disp-off | L171 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelLockMutex` | Valid mutex | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutex` | Valid mutex | intr-off | L172 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceKernelLockMutex` | Valid mutex | intr-off | L172 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelLockMutex` | Valid mutex | intr-ctx | L373 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutex` | Valid mutex | disp-off | L173 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad mutex | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutexCB` | Bad mutex | intr-off | L176 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad mutex | intr-ctx | L374 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad mutex | disp-off | L177 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad count | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutexCB` | Bad count | intr-off | L178 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad count | intr-ctx | L375 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Bad count | disp-off | L179 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceKernelLockMutex` | Valid mutex | disp-off | L173 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutexCB` | Bad mutex | normal | - | unknown | 0x800201c3 | control | n/a |
+| `sceKernelLockMutexCB` | Bad mutex | intr-off | L176 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutexCB` | Bad mutex | intr-ctx | L374 | 0x80020064 | 0x800201c3 | known deviation | context |
+| `sceKernelLockMutexCB` | Bad mutex | disp-off | L177 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutexCB` | Bad count | normal | - | unknown | 0x800201bd | control | n/a |
+| `sceKernelLockMutexCB` | Bad count | intr-off | L178 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelLockMutexCB` | Bad count | intr-ctx | L375 | 0x80020064 | 0x800201bd | known deviation | context |
+| `sceKernelLockMutexCB` | Bad count | disp-off | L179 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelLockMutexCB` | Valid mutex | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceKernelLockMutexCB` | Valid mutex | intr-off | L180 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceKernelLockMutexCB` | Valid mutex | intr-off | L180 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelLockMutexCB` | Valid mutex | intr-ctx | L376 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceKernelLockMutexCB` | Valid mutex | disp-off | L181 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceKernelLockMutexCB` | Valid mutex | disp-off | L181 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelLockLwMutex` | Bad count | normal | - | unknown | 0x00000000 | control | n/a |
 | `sceKernelLockLwMutex` | Bad count | intr-off | L184 | 0x800201a7 | 0x00000000 | known deviation | context |
 | `sceKernelLockLwMutex` | Bad count | intr-ctx | L377 | 0x80020064 | 0x00000000 | known deviation | context |
@@ -524,7 +526,7 @@ exist before the cells it unblocks can be measured at all.
 | S2 | Test-only reset for `hle.c`'s controller sample ring | 6 `sceCtrlReadBufferPositive` cells | test-only export, production-neutral |
 | S3 | A bounded-execution guard for HLE calls made from interrupt context (today an unsatisfied wait spins with no yield point) | the 12 `spin-unbounded` NOT RUN cells become directly measurable instead of inferred | production; subsumed by S5 |
 | S4 | `audio.c` linked into the selftest, or a narrower audio channel fixture | `sceAudioOutputBlocking` cells (L226-L231, L391-L392) | test wiring |
-| S5 | `ILLEGAL_CONTEXT` / `CAN_NOT_WAIT` returned by the handlers themselves, per-API, respecting each API's own error precedence | PR-B landed 28, PR-C1 8, issue #43 4. #88 still owns **50** context-semantics cells: PR-C2's 20 known deviations, plus PR-D's 18 known deviations and 12 spin-unbounded NOT RUN. PR-E separately owns **30** parameter/object-precedence cells. A further **18** plain-Mutex and **5** VolatileMemLock cells are deferred to #2 and #79 and stay counted as known deviations here | production; the actual #88 semantics work. `sched_wait_permitted()` provides the state query; the precedence lives in each handler |
+| S5 | `ILLEGAL_CONTEXT` / `CAN_NOT_WAIT` returned by the handlers themselves, per-API, respecting each API's own error precedence | PR-B landed 28, PR-C1 8, issue #43 4, #2 (plain Mutex) 12. #88 still owns **50** context-semantics cells: PR-C2's 20 known deviations, plus PR-D's 18 known deviations and 12 spin-unbounded NOT RUN. PR-E separately owns **30** parameter/object-precedence cells. The 6 plain-Mutex `intr-ctx` and **5** VolatileMemLock cells stay deferred to #2/#79 and are counted as known deviations here | production; the actual #88 semantics work. `sched_wait_permitted()` provides the state query; the precedence lives in each handler |
 
 ## Dependency-ordered implementation PRs derived from the failing matrix
 
@@ -578,9 +580,10 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
    **Deferred out of #88 by the same audit** - the cells remain in the tables above, pinned and
    counted as known deviations, until the owning subsystem work lands:
    * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **historical PR #2**.
-     Both NIDs are registered to `h_ok` (`{ return 0; }`), so there is no object, no validation
-     and no mutation; a context check there would be the only real thing in the handler and
-     would turn 12 `intr-off`/`disp-off` cells plus 6 `intr-ctx` cells green on a stub. **18 cells.**
+     The plain-Mutex campaign (issue #2) landed a real typed handler in `src/rt/mutex.c` whose
+     context check precedes the object lookup, so the 12 `intr-off`/`disp-off` cells now CONFORM.
+     The 6 `intr-ctx` cells still answer the real object/count value instead of `ILLEGAL_CONTEXT`
+     and stay counted as known deviations; they belong to PR-D's `ILLEGAL_CONTEXT` work.
    * `sceKernelVolatileMemLock` while-free and while-locked -> **[#79](https://github.com/Jstar269/nakagawa-recomp/issues/79)**.
      The handler ignores lock state entirely, so both scenarios are one code path. **5 cells**
      (4 `intr-off`/`disp-off` + 1 `intr-ctx`; while-locked `intr-ctx` is a control).

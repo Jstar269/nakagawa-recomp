@@ -32,6 +32,7 @@
 #include "pgf_api.h"
 #include "pgd_api.h"
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
+#include "mutex.h"       /* dedicated plain-Mutex object model */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
@@ -8836,6 +8837,20 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x58b1f937, "sceKernelPollSema", h_PollSema);
 }
 
+/* ---- plain mutexes (src/rt/mutex.c) -------------------------------------
+ * Dedicated typed object model.  These used to be fakes: Create was routed to
+ * h_CreateSema (a semaphore, wrong type and wrong ABI) and every other entry
+ * was h_ok.  The thin glue here forwards arguments verbatim so mutex.c stays
+ * independently testable and this file carries none of the state machine. */
+static uint32_t h_CreateMutex(CpuState *s)      { return sr_mutex_create(A0, A1, (int32_t)A2, A3); }
+static uint32_t h_DeleteMutex(CpuState *s)      { return sr_mutex_delete(A0); }
+static uint32_t h_LockMutex(CpuState *s)        { return sr_mutex_lock(A0, (int32_t)A1, A2, 0); }
+static uint32_t h_LockMutexCB(CpuState *s)      { return sr_mutex_lock(A0, (int32_t)A1, A2, 1); }
+static uint32_t h_TryLockMutex(CpuState *s)     { return sr_mutex_try_lock(A0, (int32_t)A1); }
+static uint32_t h_UnlockMutex(CpuState *s)      { return sr_mutex_unlock(A0, (int32_t)A1); }
+static uint32_t h_CancelMutex(CpuState *s)      { return sr_mutex_cancel(A0, (int32_t)A1, A2); }
+static uint32_t h_ReferMutexStatus(CpuState *s) { return sr_mutex_refer_status(A0, A1); }
+
 /* Registry scope for the issue #88 wait/blocking-context conformance matrix
  * (src/rt/intr_conformance.h).
  *
@@ -8880,9 +8895,18 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
-    sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateSema);
-    sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_ok);
-    sr_hle_register(0x5bf4dd27, "sceKernelLockMutexCB", h_ok);
+    sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateMutex);
+    sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_LockMutex);
+    sr_hle_register(0x5bf4dd27, "sceKernelLockMutexCB", h_LockMutexCB);
+    /* The remaining plain-mutex family.  waits.expected only probes Lock and
+     * LockCB, but the production-NID mutex selftest drives the whole family
+     * through this shared helper, and one definition keeps the two builds from
+     * drifting (same move policy as the other triples above). */
+    sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_DeleteMutex);
+    sr_hle_register(0x0ddcd2c9, "sceKernelTryLockMutex", h_TryLockMutex);
+    sr_hle_register(0x6b30100f, "sceKernelUnlockMutex", h_UnlockMutex);
+    sr_hle_register(0x87d9223c, "sceKernelCancelMutex", h_CancelMutex);
+    sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ReferMutexStatus);
     sr_hle_register(0x19cff145, "sceKernelCreateLwMutex", h_CreateLwMutex);
     sr_hle_register(0xbea46419, "sceKernelLockLwMutex", h_LockLwMutex);
     sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutex);
@@ -9329,12 +9353,6 @@ void sr_hle_init(void) {
     /* Status layout unmeasured -- see the note above h_CreateEventFlag. */
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ok);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ok);
-    /* regular mutexes (also no-ops) */
-    sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_ok);
-    sr_hle_register(0x0ddcd2c9, "sceKernelTryLockMutex", h_ok);
-    sr_hle_register(0x6b30100f, "sceKernelUnlockMutex", h_ok);
-    sr_hle_register(0x87d9223c, "sceKernelCancelMutex", h_ok);
-    sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ok);
 
     /* Registry utility (sceReg) stubs */
     /* Registry utility (sceReg) stubs -- issue #78: all six NIDs were registered under the
