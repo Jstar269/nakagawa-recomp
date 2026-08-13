@@ -289,5 +289,66 @@ class PspDmacProbeTests(unittest.TestCase):
         )
 
 
+class PspMutexProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        self.imports = (self.root / "fixtures" / "psp_oracle" / "mutex_imports.S").read_text(
+            encoding="utf-8"
+        )
+
+    def test_mutex_cases_are_individually_buildable(self) -> None:
+        for case in (
+            "mutex-refer-unlocked",
+            "mutex-timeout-quanta",
+            "mutex-priority-inheritance",
+            "mutex-interrupt-context",
+        ):
+            self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
+
+    def test_mutex_imports_assembly_declares_all_plain_mutex_nids(self) -> None:
+        for symbol in (
+            "sceKernelCreateMutex",
+            "sceKernelDeleteMutex",
+            "sceKernelLockMutex",
+            "sceKernelLockMutexCB",
+            "sceKernelTryLockMutex",
+            "sceKernelUnlockMutex",
+            "sceKernelCancelMutex",
+            "sceKernelReferMutexStatus",
+        ):
+            self.assertIn(symbol, self.imports)
+
+    def test_probe_implements_all_four_unresolved_mutex_cases(self) -> None:
+        self.assertIn("run_mutex_refer_unlocked_case", self.probe)
+        self.assertIn("run_mutex_timeout_quanta_case", self.probe)
+        self.assertIn("run_mutex_priority_inheritance_case", self.probe)
+        self.assertIn("run_mutex_interrupt_context_case", self.probe)
+
+    def test_manifest_registers_psp_mutex_001(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        mutex = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-MUTEX-001")
+        self.assertEqual(mutex["group"], "mutex")
+        self.assertEqual(mutex["issues"], [2])
+        self.assertEqual(
+            mutex["case_ids"],
+            [
+                "mutex-refer-unlocked",
+                "mutex-timeout-quanta",
+                "mutex-priority-inheritance",
+                "mutex-interrupt-context",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

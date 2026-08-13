@@ -16,6 +16,7 @@ claim.
 | P1 | Open | Portable Allegrex/VFPU float-to-word semantics are tracked in [issue #38](https://github.com/Jstar269/nakagawa-recomp/issues/38). |
 | P1 | Open | Unified PSP clocks, waits, and interrupt delivery remain source-owned runtime work. |
 | P1 | Open | Direct XB archive/VFS tooling is documented in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs remain local-only. |
+| P1 | Open | Plain PSP Mutex physical hardware oracle specification and probe suite are documented in [`docs/MUTEX_HARDWARE_ORACLE.md`](docs/MUTEX_HARDWARE_ORACLE.md) ([issue #2](https://github.com/Jstar269/nakagawa-recomp/issues/2)). |
 | P1 | Open | The versioned title-manifest/toolkit boundary is described in [`assets/titles/README.md`](assets/titles/README.md); only generic and synthetic manifests are public-scope. Analyzer executable spans and manifest-derived build settings now have one explicit owner ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)). |
 | P1 | Blocked | PGF/font and PGD/amctrl surfaces remain excluded pending qualified provenance and distribution review. |
 
