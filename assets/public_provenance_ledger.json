@@ -5642,7 +5642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "191a542eef13d1c3cb46801dfffe574f4dd39755c77bb22519c58ea941032ee9"
+      "sha256": "ac30e12a55bcc7cc1ff59541d9a263b9ac41287bff756249e5e2a7dedf037fe5"
     },
     {
       "path": "tools/prxload.py",
@@ -6715,7 +6715,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9caed1e601b17ac6e4f46bc94c5cd6ad8bf0d05aedf7b7f0a542fcb05b4c1ce8"
+      "sha256": "853b443ef24df23a02b7cec7959ab15543fec0ca97402f28086678b475fdabf1"
     },
     {
       "path": "tools/test_prxload_psp_header.py",
