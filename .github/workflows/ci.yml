@@ -224,7 +224,7 @@ jobs:
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
             src/ref/selftest.cpp src/ref/interp.cpp src/ref/run_elf.cpp \
-            -DSR_SELFTEST_ONLY -fno-exceptions \
+            src/rt/strbuf.c -DSR_SELFTEST_ONLY -fno-exceptions \
             -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all
           ./build/selftest
 
@@ -261,6 +261,25 @@ jobs:
             src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c
           ./build/watchpoints_file_selftest
 
+      - name: Run strbuf checked-append selftest (source-owned, no game inputs)
+        # Cursor-accumulation hardening: tiny-buffer truncation invariants
+        # (the cursor never escapes the buffer, NUL always preserved, a full
+        # buffer is a no-op) plus a byte-exactness check of the production
+        # trace-line shape. Every assertion fails under the old
+        # n += snprintf(buf + n, sizeof(buf) - n) arithmetic; the sanitizer
+        # build is the out-of-range-pointer gate. Windows/MinGW cannot run
+        # sanitizers, so this Linux job is the overflow gate.
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -o build/strbuf_selftest \
+            src/rt/strbuf_selftest.c src/rt/strbuf.c
+          ./build/strbuf_selftest
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -o build/strbuf_selftest_san \
+            src/rt/strbuf_selftest.c src/rt/strbuf.c
+          ./build/strbuf_selftest_san
+
       - name: Run VFPU interpreter selftest (source-owned, no game inputs)
         # Issue #184: quad/vector VFPU memory ops are all-or-nothing (span
         # preflight before any lane commit; rejected ops consume no prefixes),
@@ -272,12 +291,12 @@ jobs:
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/strbuf.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/strbuf.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -303,25 +322,25 @@ jobs:
             src/rt/atrac3p/libavutil/mem.c src/rt/atrac3p/libavutil/reverse.c"
           INC="-Isrc/rt -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
           gcc -std=c11 -O1 $INC -o build/atrac3p_selftest \
-            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c src/rt/strbuf.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
             src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
-            $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            $ATRAC3P_SRCS src/rt/vfpu_tables.c src/rt/strbuf.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_selftest_san \
-            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c src/rt/strbuf.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
             src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
-            $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            $ATRAC3P_SRCS src/rt/vfpu_tables.c src/rt/strbuf.c -lm
           ./build/atrac3p_bridge_selftest_san
 
       - name: Build run_elf (Interpreter runner)
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/run_elf \
-            src/ref/run_elf.cpp src/ref/interp.cpp -fno-exceptions
+            src/ref/run_elf.cpp src/ref/interp.cpp src/rt/strbuf.c -fno-exceptions
 
       - name: Generate synthetic microtest C source (Gate A — generic MIPS III + FPU)
         run: python tools/gen_microtest.py build/microtest_a.c 2 --groups integer,fpu

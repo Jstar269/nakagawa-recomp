@@ -13,6 +13,7 @@
 #include <string.h>
 #include "recomp.h"
 #include "dispatch_table.h"   /* guest code-address table + primitives (issue #45) */
+#include "strbuf.h"
 
 uint8_t *g_mem = NULL;
 int sr_hit_hle = 0;
@@ -2261,42 +2262,48 @@ void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op) {
 void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
     if (!s_fp) return;
     char line[4096];
-    int n = snprintf(line, sizeof(line), "%llu pc=0x%08x op=0x%08x", s_step, s_pc, s_op);
-    if (n < 0 || n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
+    /* Checked appends: snprintf() returns the "would have been" length, so a
+     * truncated token must not be allowed to advance the cursor past the
+     * buffer (sr_buf_append clamps to the last NUL slot).  This keeps the
+     * per-step line byte-comparable with the reference interpreter's golden
+     * trace whenever nothing truncates. */
+    size_t n = 0;
+    n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08x op=0x%08x", s_step, s_pc, s_op);
     /* Emit the per-step register-write diff in the canonical TRACE_FORMAT.md order
      * (r1..r31, hi, lo, f0..f31, fcr31, v0..v127) so the recompiled-code trace is
      * byte-comparable with the reference interpreter's golden trace. Only registers
      * whose value changed since sr_begin_impl are listed. */
     for (int i = 1; i < 32; i++)
         if (s_r[i] != s->r[i])
-            n += snprintf(line + n, sizeof(line) - (size_t)n, " r%d=0x%08x", i, s->r[i]);
+            n = sr_buf_append(line, sizeof(line), n, " r%d=0x%08x", i, s->r[i]);
     if (s_hi != s->hi)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " hi=0x%08x", s->hi);
+        n = sr_buf_append(line, sizeof(line), n, " hi=0x%08x", s->hi);
     if (s_lo != s->lo)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " lo=0x%08x", s->lo);
+        n = sr_buf_append(line, sizeof(line), n, " lo=0x%08x", s->lo);
     for (int i = 0; i < 32; i++)
         if (s_fi[i] != s->fi[i])
-            n += snprintf(line + n, sizeof(line) - (size_t)n, " f%d=0x%08x", i, s->fi[i]);
+            n = sr_buf_append(line, sizeof(line), n, " f%d=0x%08x", i, s->fi[i]);
     if (s_fcr31 != s->fcr31)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " fcr31=0x%08x", s->fcr31);
+        n = sr_buf_append(line, sizeof(line), n, " fcr31=0x%08x", s->fcr31);
     /* Compare and print the raw 32-bit register bits (the vi union view of the
      * float VFPU file): comparing the s_vi snapshot against the float view
      * converts through float, and passing a float to %x is undefined varargs
      * behavior. */
     for (int i = 0; i < 128; i++)
         if (s_vi[i] != s->vi[i])
-            n += snprintf(line + n, sizeof(line) - (size_t)n, " v%d=0x%08x", i, s->vi[i]);
+            n = sr_buf_append(line, sizeof(line), n, " v%d=0x%08x", i, s->vi[i]);
     /* Memory-write tokens (ascending by address), matching the interpreter. */
     if (mem_size == 1)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " m8[0x%08x]=0x%02x",
-                      mem_addr, MEM_R8(mem_addr));
+        n = sr_buf_append(line, sizeof(line), n, " m8[0x%08x]=0x%02x",
+                          mem_addr, MEM_R8(mem_addr));
     else if (mem_size == 2)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " m16[0x%08x]=0x%04x",
-                      mem_addr, MEM_R16(mem_addr));
+        n = sr_buf_append(line, sizeof(line), n, " m16[0x%08x]=0x%04x",
+                          mem_addr, MEM_R16(mem_addr));
     else if (mem_size == 4)
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " m32[0x%08x]=0x%08x",
-                      mem_addr, MEM_R32(mem_addr));
-    if (n < 0 || n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
+        n = sr_buf_append(line, sizeof(line), n, " m32[0x%08x]=0x%08x",
+                          mem_addr, MEM_R32(mem_addr));
+    /* sr_buf_append guarantees n < sizeof(line), so the newline slot and the
+     * fwrite byte count are always in range. */
     line[n] = '\n';
     fwrite(line, 1, n + 1, s_fp);
     s_step++;

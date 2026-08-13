@@ -195,6 +195,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/vfpu_tables.c \
               src/rt/debug.c \
               src/rt/watchpoints_file.c \
+              src/rt/strbuf.c \
               src/rt/guest_printf.c \
               src/rt/perf.c \
               src/rt/fbcap_policy.c \
@@ -255,6 +256,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
                       src/rt/vfpu_tables.c \
                       src/rt/debug.c \
                       src/rt/watchpoints_file.c \
+                      src/rt/strbuf.c \
                       src/rt/guest_printf.c \
                       src/rt/vfpu_interp.c \
                       $(ISO_BACKEND_SRC) \
@@ -268,7 +270,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest strbuf-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -431,7 +433,7 @@ sched-selftest:
 # standalone binary fails to link after the table-loader integration.
 heap-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/vfpu_tables.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/vfpu_tables.c src/rt/strbuf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -440,7 +442,7 @@ profiler-selftest:
 	$(CC) $(CFLAGS) -DSR_PROFILER_SELFTEST -ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/strbuf.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -465,6 +467,17 @@ watchpoints-file-selftest:
 		src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c $(LIBS)
 	$(BUILD_DIR)/watchpoints_file_selftest.exe
 
+# strbuf-selftest — checked-append formatting regression (src/rt/strbuf.c):
+# tiny-buffer truncation invariants (cursor never escapes the buffer, NUL
+# preserved, full-buffer no-op) plus a byte-exactness check for the production
+# trace-line shape. Every assertion here fails under the old
+# `n += snprintf(buf + n, sizeof(buf) - n, ...)` arithmetic. No game inputs or
+# private data required.
+strbuf-selftest:
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/strbuf_selftest.exe \
+		src/rt/strbuf_selftest.c src/rt/strbuf.c $(LIBS)
+	$(BUILD_DIR)/strbuf_selftest.exe
+
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
 # oversized/garbage rejection with the nb_samples=0 contract, a deterministic
@@ -479,7 +492,8 @@ atrac3p-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_selftest.exe \
-		src/rt/atrac3p_selftest.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
+		src/rt/atrac3p_selftest.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/strbuf.c -lm
 	$(BUILD_DIR)/atrac3p_selftest.exe
 
 # atrac3p-bridge-selftest — regression suite for the PSP ATRAC3+ HLE decode
@@ -493,7 +507,7 @@ atrac3p-bridge-selftest:
 		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_bridge_selftest.exe \
 		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
-		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
+		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c src/rt/strbuf.c -lm
 	$(BUILD_DIR)/atrac3p_bridge_selftest.exe
 
 # atrac3p-title-accept — PRIVATE title acceptance (PR-C, #286/#32). Decodes the
@@ -520,7 +534,7 @@ atrac3p-title-accept:
 # stubbed. No game inputs or private data required.
 vfpu-interp-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c $(LIBS)
+		src/rt/vfpu_interp_selftest.c src/rt/strbuf.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
@@ -635,7 +649,7 @@ gpu-coherence-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		src/rt/strbuf.c $(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_coherence_selftest.exe
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
@@ -646,7 +660,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		src/rt/strbuf.c $(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
@@ -666,14 +680,14 @@ ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		src/rt/strbuf.c $(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.
 selftest:
 	g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o $(BUILD_DIR)/selftest.exe \
 		src/ref/selftest.cpp src/ref/interp.cpp src/ref/run_elf.cpp \
-		-DSR_SELFTEST_ONLY -fno-exceptions
+		src/rt/strbuf.c -DSR_SELFTEST_ONLY -fno-exceptions
 	$(BUILD_DIR)/selftest.exe
 	@echo "selftest passed"
 
@@ -769,7 +783,7 @@ verify: run_elf
 # -DSR_SELFTEST_ONLY so run_elf.cpp's main() (ELF loader + trace driver) is included.
 run_elf:
 	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -o $(RUN_ELF_EXE) \
-		src/ref/run_elf.cpp src/ref/interp.cpp -fno-exceptions
+		src/ref/run_elf.cpp src/ref/interp.cpp src/rt/strbuf.c -fno-exceptions
 
 run: all
 	./$(BUILD_DIR)/$(GAME_NAME).exe --image $(BUILD_DIR)/$(GAME_NAME)_image.bin $(GAME_BASE) $(GAME_ENTRY) none none --gui

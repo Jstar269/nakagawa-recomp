@@ -247,6 +247,105 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+STRBUF_C = "src/rt/strbuf.c"
+STRBUF_VAR = "$(RT_OBJS)"  # RT_OBJS derives from RT_SRCS, which bundles strbuf.c
+
+
+def _strbuf_users() -> set[str]:
+    """Source files that reference sr_buf_append() (or #include recomp.c,
+    which does).  strbuf.c itself is the definition and is excluded."""
+    users: set[str] = set()
+    for pattern in ("*.c", "*.cpp"):
+        for source in sorted((ROOT / "src" / "rt").glob(pattern)) + sorted(
+            (ROOT / "src" / "ref").glob(pattern)
+        ):
+            text = source.read_text(encoding="utf-8")
+            if "sr_buf_append" in text or '#include "recomp.c"' in text:
+                users.add(source.name)
+    users.discard("strbuf.c")
+    return users
+
+
+class StrbufLinkDependencyTests(unittest.TestCase):
+    """recomp.c, ge.c, interp.cpp and the recomp.c-including selftest TUs call
+    sr_buf_append(), so every recipe that compiles one of them must also
+    supply src/rt/strbuf.c.  The checked-append helper replaced
+    `n += snprintf(buf + n, sizeof(buf) - n, ...)` accumulation in those
+    files; an omitting recipe fails to link on `undefined reference to
+    sr_buf_append`.  --gc-sections does not save an omitting recipe, because
+    ld resolves undefined symbols before discarding unreachable sections (the
+    same lesson as the sdl3vk/fbcap guard above).
+    """
+
+    def setUp(self) -> None:
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.lines = _logical_lines(self.makefile)
+
+    def test_strbuf_defines_its_symbols(self) -> None:
+        source = (ROOT / "src" / "rt" / "strbuf.c").read_text(encoding="utf-8")
+        for symbol in ("sr_buf_append", "sr_buf_append_v"):
+            definition = re.compile(rf"^\w[\w \t*]*\b{symbol}\s*\(", re.MULTILINE)
+            self.assertRegex(source, definition, msg=symbol)
+
+    def test_runtime_and_portable_core_src_lists_bundle_strbuf(self) -> None:
+        for var in ("RT_SRCS", "PORTABLE_CORE_SRCS"):
+            definitions = [
+                text for _, text in self.lines if re.match(rf"\s*{var}\s*:?=", text)
+            ]
+            self.assertEqual(len(definitions), 1, self.lines)
+            self.assertIn(STRBUF_C, definitions[0])
+
+    def test_every_user_of_the_helper_also_supplies_it(self) -> None:
+        users = _strbuf_users()
+        self.assertTrue(users, "no sr_buf_append users found; guard retired")
+
+        offenders = []
+        for number, text in self.lines:
+            named = [u for u in sorted(users) if f"src/rt/{u}" in text or f"src/ref/{u}" in text]
+            uses_ge_obj = "$(RT_GE_O)" in text  # ge.o users do not name ge.c
+            # Only tool invocations link; pure-compile rules (-c) and bare
+            # dependency lists (no $(CC)/$(CXX)) never resolve the symbol.
+            invokes = "$(CC)" in text or "$(CXX)" in text
+            if (
+                invokes
+                and " -c " not in text
+                and (named or uses_ge_obj)
+                and not (STRBUF_C in text or STRBUF_VAR in text)
+            ):
+                offenders.append(
+                    f"Makefile:{number}: {text.strip()} compiles "
+                    f"{', '.join(named) if named else '$(RT_GE_O)'} without "
+                    f"{STRBUF_C}; the link will fail on undefined sr_buf_append"
+                )
+        self.assertEqual(
+            offenders,
+            [],
+            "these Makefile statements compile a sr_buf_append() user without "
+            "supplying the helper:\n" + "\n".join(offenders),
+        )
+
+    def test_the_guard_rejects_a_recipe_that_drops_the_helper(self) -> None:
+        """Failing-before proof: the check must actually catch the omission."""
+        continuation = chr(92)
+        regressed = _logical_lines(
+            "\n".join(
+                [
+                    "recomp-selftest:",
+                    "\t$(CC) -o out.exe harness.c " + continuation,
+                    f"\t\tsrc/rt/profiler_selftest.c src/rt/recomp.c $(LIBS)",
+                ]
+            )
+            + "\n"
+        )
+        offenders = [
+            number
+            for number, text in regressed
+            if "src/rt/recomp.c" in text
+            and not (STRBUF_C in text or STRBUF_VAR in text)
+        ]
+        self.assertEqual(offenders, [2])
+
+
 class Atrac3pBuildPortabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

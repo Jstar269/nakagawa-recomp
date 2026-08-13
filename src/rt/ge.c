@@ -36,6 +36,7 @@
 #include "recomp.h"
 #include "ge_shared.h"
 #include "ge_capture.h"
+#include "strbuf.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -3012,14 +3013,18 @@ static void draw_prim(uint32_t op, unsigned long prim_index) {
                         primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
                     primitive_profile_finish_total();
                     if (rt && tlogged <= 13) {
-                        char buf[640]; int bn = 0;
+                        char buf[640]; size_t bn = 0;
                         for (int k = 0; k < m && k < 4; k++)
-                            bn += snprintf(buf + bn, sizeof(buf) - (size_t)bn,
-                                           " p%d[c=(%.4g,%.4g,%.4g,%.4g)->(%.1f,%.1f,%.0f) bad=%d rgba=%d,%d,%d,%d]",
-                                           k, cl[k].cx, cl[k].cy, cl[k].cz, cl[k].cw,
-                                           bad[k] ? -1.0f : p[k].x, bad[k] ? -1.0f : p[k].y,
-                                           bad[k] ? -1.0f : p[k].z, bad[k],
-                                           cl[k].r, cl[k].g, cl[k].b, cl[k].a);
+                            /* Checked append: a truncated token must not advance
+                             * the cursor past the buffer (snprintf returns the
+                             * "would have been" length).  buf stays
+                             * NUL-terminated at the cursor either way. */
+                            bn = sr_buf_append(buf, sizeof(buf), bn,
+                                               " p%d[c=(%.4g,%.4g,%.4g,%.4g)->(%.1f,%.1f,%.0f) bad=%d rgba=%d,%d,%d,%d]",
+                                               k, cl[k].cx, cl[k].cy, cl[k].cz, cl[k].cw,
+                                               bad[k] ? -1.0f : p[k].x, bad[k] ? -1.0f : p[k].y,
+                                               bad[k] ? -1.0f : p[k].z, bad[k],
+                                               cl[k].r, cl[k].g, cl[k].b, cl[k].a);
                         fprintf(stderr, "TRICLP f=%u d=%u i=%d m=%d%s\n",
                                 s_ge_frame, s_rt_draw, i, m, buf);
                     }

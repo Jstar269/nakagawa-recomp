@@ -47,6 +47,7 @@
 
 #include "atrac3p/atrac3p_api.h"
 #include "vfpu_tables.h"
+#include "strbuf.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -78,13 +79,16 @@ static const uint8_t MONO_UNIT_FRAME[] = { 0x16, 0x0c, 0xf6, 0x86, 0x87, 0x35, 0
 static int pcm_sha256_hex(const int16_t *pcm, size_t samples, char out[65])
 {
     uint8_t digest[32];
-    char *p = out;
+    size_t n = 0;
     size_t i;
 
     sr_vfpu_sha256((const uint8_t *)pcm, samples * sizeof(int16_t), digest);
+    /* Checked append: 32 x 2 hex digits exactly fill out[65] (64 + NUL).
+     * sr_buf_append clamps the cursor to the NUL slot if that ever changed,
+     * instead of advancing past the buffer like sprintf accumulation would. */
     for (i = 0; i < 32; i++)
-        p += sprintf(p, "%02x", digest[i]);
-    *p = '\0';
+        n = sr_buf_append(out, 65, n, "%02x", digest[i]);
+    out[n] = '\0';
     return 0;
 }
 
