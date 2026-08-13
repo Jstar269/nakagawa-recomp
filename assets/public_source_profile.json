@@ -688,6 +688,7 @@
     "tools/test_padscript_from_log.py",
     "tools/test_progress_evidence.py",
     "tools/test_progress_tracker.py",
+    "tools/test_provenance_attestation_gate.py",
     "tools/test_provenance_ledger.py",
     "tools/test_prxload_psp_header.py",
     "tools/test_prxload_relocations.py",

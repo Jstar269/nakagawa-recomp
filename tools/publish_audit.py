@@ -1296,6 +1296,23 @@ def _export_content_findings(
     expected_excluded = sorted(policy.exclude_paths)
     if sorted(export_document.get("excluded_paths", [])) != expected_excluded:
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "complete exclusion disposition differs from the canonical policy"))
+    # The export records the digest of the ledger blob it was generated with.
+    # The ledger blob is read from the same audited source, so this catches a
+    # ledger edit that was never followed by a regeneration (and vice versa),
+    # independently of the included-content digest above.  A candidate that
+    # edits its checked-in ledger must regenerate the export against that exact
+    # blob; the recorded digest is the release process's pin of the ledger it
+    # attested against.
+    ledger_raw, ledger_error = _source_control_bytes(
+        PROVENANCE_LEDGER_REL, entries, content_map, content_source, repo_root
+    )
+    recorded_ledger = export_document.get("provenance_ledger_sha256")
+    if recorded_ledger and ledger_raw is not None and ledger_error is None:
+        if hashlib.sha256(ledger_raw).hexdigest() != recorded_ledger:
+            findings.append(Finding(
+                "POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json",
+                "export records a provenance-ledger digest that does not match the audited ledger bytes",
+            ))
     return findings
 
 
