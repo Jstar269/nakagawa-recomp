@@ -13,7 +13,7 @@ Closes/Tracks #
 <!-- List the exact commands/routes run and their results. Do not replace evidence with "CI green". -->
 
 - [ ] `python -m unittest discover -s tools -p "test_*.py" -v`
-- [ ] `python tools/publish_audit.py --tracked-only --worktree`
+- [ ] `python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency`
 - [ ] `pre-commit run --all-files` (when available in the environment)
 - [ ] Relevant native/runtime test or build gate for the changed area
 - [ ] Dashboard test/lint/typecheck/build when `interface/` changes

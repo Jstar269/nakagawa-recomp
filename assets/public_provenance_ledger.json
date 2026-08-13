@@ -106,7 +106,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "92b9bd1b23b2284f29128a19a88cbf3608e3fd7dd9a2f25e6fb5c0de36826762"
+      "sha256": "cb8ca16f46574b8728d9124ab55552f67e144265270b4e931c11e96e467e23b0"
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE/default.md",
@@ -124,7 +124,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0e9519a3c9f89aa60e90da4916aeaec5ecb5d8393f16c254eb0fe0389da11220"
+      "sha256": "898733fd12e1203ae5fab4fb927036b314e9e1bc03c26a555e2e25b498cdfb31"
     },
     {
       "path": ".github/dependabot.yml",
@@ -829,7 +829,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7d2cf4016076fb2c9346a884baf8be382b975abf0aadb75e1d7ddbd550a4437d"
+      "sha256": "ad1c108df065cd5b30f357b49a65d2bb93ca6a594666b47180e0ce8ece6395ff"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
