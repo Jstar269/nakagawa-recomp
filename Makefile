@@ -268,7 +268,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest vfpu-overlap-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -522,6 +522,27 @@ vfpu-interp-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
 		src/rt/vfpu_interp_selftest.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
+
+# vfpu-overlap-selftest — executable source/destination aliasing audit for the
+# VFPU matrix/vector op families (vmmul/vtfm/vmscl/vmmov + vdot/vhdp/vcrs/vscl/
+# vqmul/vcrsp). The generated case header (tools/vfpu_overlap_fuzz_gen.py, no
+# game ELF required) enumerates every legal overlap class — disjoint / vd==vs /
+# vd==vt / partial / transpose-induced / source-source / all-identical /
+# scalar-in-destination — across .p/.t/.q, and the harness runs each word
+# through BOTH the emitted codegen body and sr_vfpu_interp over deterministic
+# clobber-revealing vectors and randomized finite/exotic states, plus an
+# independent read-before-write reference model where the encoding is
+# docs-legal (pspdev/vfpu-docs reg-compat). No game inputs or private data
+# required.
+VFPU_OVERLAP_H := $(BUILD_DIR)/vfpu_overlap_cases.h
+
+$(VFPU_OVERLAP_H): tools/vfpu_overlap_fuzz_gen.py tools/codegen.py
+	$(PYTHON) tools/vfpu_overlap_fuzz_gen.py $@
+
+vfpu-overlap-selftest: $(VFPU_OVERLAP_H)
+	$(CC) $(CFLAGS) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_overlap_selftest.exe \
+		src/rt/vfpu_overlap_selftest.c $(LIBS) -lm
+	$(BUILD_DIR)/vfpu_overlap_selftest.exe
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
 # results are explicit source-owned constants and the same vectors run under

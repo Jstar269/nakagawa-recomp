@@ -9,9 +9,19 @@ WITHOUT requiring the private game ELF.  The words are derived entirely from
 the VFPU instruction-format specification and the opcode families supported by
 codegen.vfpu_effect().
 
+Every word is encoded against the REAL decoder (codegen.vfpu_effect /
+sr_vfpu_interp), so a word in the corpus decodes to the op its comment names.
+
 Coverage dimensions:
-  - Opcode families: vadd/vsub/vmul/vdiv/vdot (binary), vmov/vabs/vneg/vsqrt/vrcp/vrsq
-    (unary), vmin/vmax, vsgn, vfad/vavg, vhdp, vdot, vscl, viim/vfim, vpfx (prefix/state)
+  - Binary vector ops (0x18/0x19): vadd/vsub/vdiv (0x18), vmuls/vdot/vscl/vhdp/
+    vcrs (0x19)
+  - Unary/conversion ops (0x34): vmov/vabs/vneg/vidt/vsat0/vsat1/vzero/vone,
+    vrcp/vrsq/vsin/vcos/vexp2/vlog2/vsqrt/vasin, vocp, vcst, vcmov, vf2in/z/u/d,
+    vi2f, vs2i/vi2uc/vi2c/vi2us/vi2s
+  - Compare/minmax (0x1B): vcmp, vmin, vmax
+  - Matrix ops (0x3C): vmmul, vtfm, vmscl, vcrsp.t/vqmul.q, vmmov/vmidt/vmzero/
+    vmone and the vmscl alias (VFPUMatrix1)
+  - Prefix/state (0x37): vpfxs/vpfxt/vpfxd, viim/vfim
   - Vector sizes: s (1), p (2), t (3), q (4) where the opcode supports them
   - Source/dest register slots: enough to exercise independent indices
   - Source swizzles: identity (.xyzw), reverse (.wzyx), constant 0/1, abs/neg
@@ -19,7 +29,7 @@ Coverage dimensions:
   - Saturation modes: none, [0,1], [-1,1]
   - Prefix identity vs. non-identity
   - Immediate forms (viim, vfim): boundary values 0, 1, 127, 128, 255
-  - CC conditions for vbfy/vcmov-like forms
+  - CC conditions for vcmov
 
 The generator does NOT import or scan the game ELF.  It is the only VFPU
 corpus that may be committed to the public repository.
@@ -62,38 +72,61 @@ from typing import Iterator
 # VFPU encoding helpers
 # ---------------------------------------------------------------------------
 
-def _vr(idx: int, size_code: int) -> int:
-    """Pack a vector register index (0-127) and size code (0=s,1=p,2=t,3=q)
-    into a 7-bit field as the Allegrex VFPU encoding expects."""
-    return (idx & 0x7F)
+# IMPORTANT decode contract: every word below is constructed against the REAL
+# decode implemented by codegen.vfpu_effect()/vec_size() and sr_vfpu_interp(),
+# not against a generic "Allegrex layout" guess.  The historical iterators
+# placed sub-op/register fields per the PSP assembler's logical notation and
+# produced words that the runtime decoder reads as completely different ops
+# (e.g. every "0x19 unary" word actually decoded as vmuls, and 0x1B/0x34/0x3C
+# words landed in Unsupported/skewed sub-ops), so the public fuzzer never
+# exercised vdot/vhdp/vcrs/vscl/vmmul/vtfm/vmscl/vmmov/vqmul/vcrsp through the
+# real decoder.  The builders below are verified by
+# test_vfpu_synth_corpus.py (decode assertions) and by running the synthetic
+# fuzzer itself.
 
 
-# opcode[31:26], t[25:23], s[22:18], vd[17:8], ...
-# For COP2 VFPU compute: bits 31:26 = 6'b0110xx / 0111xx depending on opcode
-# We construct words directly by opcode family.
+def _vs_pool(size: int) -> tuple[int, ...]:
+    """Source-register candidates for a vector size.
 
-def _compute_word(op6: int, vt: int, vs: int, vd: int, one: int = 0) -> int:
-    """Build a 32-bit VFPU compute instruction word.
+    The size bits are bit 7 (sizelo) and bit 15 (sizehi); neither aliases the
+    7-bit vs field (bits 14:8), so every register is usable at every size.  The
+    triple-width register decode still reads the register's own bit 6 for its
+    row, which the pool spans both ways."""
+    return (0, 4, 8, 12, 32, 64, 68)
 
-    Layout (from Allegrex VFPU encoding):
-      31:26 = major opcode (e.g. 0x18 = 011000, 0x1B = 011011, ...)
-      25    = size[1]  (with bit 7 of vd for size[0])
-      24:23 = op      (sub-operation within the family)
-      22:16 = vs      (7 bits)
-      15:8  = vd      (8 bits, bit 7 encodes size[0] in some families)
-       7:0  = vt      (7 bits + 1 padding/prefix bit)
-    The exact layout differs by family; this function covers the most common
-    binary/unary VFPU op layout used by codegen.vfpu_effect for opgroup 0x18/0x19.
-    """
-    # op6 occupies bits 31:26
-    word = (op6 & 0x3F) << 26
-    # bits 25:16 = vt[6:0] + vs[6:0] packed differently per family;
-    # simplify: treat as standard (vs[6:0] at 22:16, vt[6:0] at 7:0+, vd at 15:8)
-    word |= (vs & 0x7F) << 16
-    word |= (vd & 0xFF) << 8
-    word |= (vt & 0x7F)
-    word |= (one & 1) << 25   # size bit
-    return word & 0xFFFFFFFF
+
+def _bin_word(op6: int, sub: int, size: int, vd: int, vs: int, vt: int) -> int:
+    """Build a 0x18/0x19/0x1B/0x3C compute word that codegen.vfpu_effect decodes
+    as (op6, sub, size) with registers (vd, vs, vt).
+
+    Runtime decode (codegen.vfpu_effect / vec_size, sr_vfpu_interp):
+      op6 = bits 31:26; sub = bits 25:23; vt = bits 22:16; vs = bits 14:8;
+      vd = bits 6:0; n = ((bit 7) | (bit 15 << 1)) + 1."""
+    lo, hi = (size - 1) & 1, (size - 1) >> 1
+    return (
+        ((op6 & 0x3F) << 26)
+        | ((sub & 7) << 23)
+        | ((vt & 0x7F) << 16)
+        | ((vs & 0x7F) << 8)
+        | (vd & 0x7F)
+        | (lo << 7)
+        | (hi << 15)
+    )
+
+
+def _vfp4_word(jump: int, optype: int, size: int, vd: int, vs: int) -> int:
+    """Build a 0x34 (VFPU4) word: jump = bits 25:21, optype = bits 20:16.
+    vd/vs/size decode as in _bin_word (size bits 7/15)."""
+    lo, hi = (size - 1) & 1, (size - 1) >> 1
+    return (
+        (0x34 << 26)
+        | ((jump & 0x1F) << 21)
+        | ((optype & 0x1F) << 16)
+        | ((vs & 0x7F) << 8)
+        | (vd & 0x7F)
+        | (lo << 7)
+        | (hi << 15)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,40 +136,42 @@ def _compute_word(op6: int, vt: int, vs: int, vd: int, one: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 def _iter_vfpu0() -> Iterator[int]:
-    """Major opcode 0x18 — VFPU0: vadd, vsub, vdiv, vmul variants."""
-    # sub-op encoded in bits 23:21
-    for sub in range(8):          # vadd(0), vsub(1), vsbn(2), ?, vmul(4), vdot(5), vscl(6), ...
-        for size in (0, 1, 2, 3): # s/p/t/q
-            for vs in (0, 1, 32, 64):
-                for vt in (0, 1, 4):
+    """Major opcode 0x18 — VFPU0: vadd (sub 0), vsub (sub 1), vdiv (sub 7)."""
+    for sub in (0, 1, 7):
+        for size in (1, 2, 3, 4):
+            for vs in _vs_pool(size):
+                for vt in (0, 4, 32, 64):
                     vd = (vs + 8) & 0x7F
-                    # Build: op6=0x18, sub in bits 23:21, size in 24+bit7-of-vd, vs/vt/vd as above
-                    # Simplified encode: op6=0x18 | sub<<18 | size bits
-                    word = (0x18 << 26)
-                    word |= (sub & 0x7) << 21
-                    # size: bit 24 = size>>1, bit 7 of vd = size&1
-                    word |= ((size >> 1) & 1) << 24
-                    vd_enc = (vd & 0x7F) | ((size & 1) << 7)
-                    word |= (vs & 0x7F) << 16
-                    word |= (vd_enc & 0xFF) << 8
-                    word |= (vt & 0x7F)
-                    yield word & 0xFFFFFFFF
+                    yield _bin_word(0x18, sub, size, vd, vs, vt)
 
 
 def _iter_vfpu1() -> Iterator[int]:
-    """Major opcode 0x19 — VFPU1: unary ops (vmov, vabs, vneg, vidt, vsat0, vsat1,
-       vzero, vone, vrcp, vrsq, vsin, vcos, vexp2, vlog2, vsqrt, vasin, ...)."""
-    for sub in range(32):         # wide range of unary sub-ops
-        for size in (0, 1, 2, 3):
-            for vs in (0, 1, 8, 16, 32):
-                vd = (vs + 4) & 0x7F
-                word = (0x19 << 26)
-                word |= (sub & 0x1F) << 16    # sub-op in bits 20:16
-                vd_enc = (vd & 0x7F) | ((size & 1) << 7)
-                word |= ((size >> 1) & 1) << 24
-                word |= (vd_enc & 0xFF) << 8
-                word |= (vs & 0x7F)           # vs goes in vt-field for unary
-                yield word & 0xFFFFFFFF
+    """Major opcode 0x19 — VFPU1 binary vector ops: vmuls (sub 0), vdot (sub 1),
+    vscl (sub 2, vt is the scalar), vhdp (sub 4), vcrs (sub 5, triple only)."""
+    # vmuls: elementwise multiply, s..q
+    for size in (1, 2, 3, 4):
+        for vs in _vs_pool(size):
+            for vt in (0, 4, 32, 64):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x19, 0, size, vd, vs, vt)
+    # vdot / vhdp: scalar destination, p..q
+    for sub in (1, 4):
+        for size in (2, 3, 4):
+            for vs in _vs_pool(size):
+                for vt in (0, 4, 32, 64):
+                    vd = (vs + 8) & 0x7F
+                    yield _bin_word(0x19, sub, size, vd, vs, vt)
+    # vscl: vector * scalar, p..q
+    for size in (2, 3, 4):
+        for vs in _vs_pool(size):
+            for vt in (0, 1, 4, 32):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x19, 2, size, vd, vs, vt)
+    # vcrs: triple-vector form only (codegen/interp reject other widths)
+    for vs in (64, 68, 72):
+        for vt in (0, 4, 32):
+            vd = (vs + 8) & 0x7F
+            yield _bin_word(0x19, 5, 3, vd, vs, vt)
 
 
 def _iter_vpfx() -> Iterator[int]:
@@ -182,66 +217,125 @@ def _iter_vpfx() -> Iterator[int]:
 
 def _iter_viim_vfim() -> Iterator[int]:
     """Immediate-form VFPU instructions: viim (integer immediate to single),
-       vfim (half-float immediate).  op6 = 0xDF for viim-like, 0x7F for vfim."""
-    # viim: 0xDF000000 | vd[7:0]<<8 | imm8[7:0]
+       vfim (half-float immediate).  Both are op 0x37 with regnum 3 (bits 25:24
+       = 11); bit 23 selects vfim.  The destination register is bits 22:16, the
+       immediate is the low 16 bits (codegen.vfpu_effect / sr_vfpu_interp)."""
     for vd in (0, 1, 32, 64, 127):
         for imm in (0, 1, 0x7F, 0x80, 0xFF, 0x40, 0x3F):
-            yield ((0xDF << 24) | ((vd & 0xFF) << 8) | (imm & 0xFF)) & 0xFFFFFFFF
-    # vfim: 0x7F000000 | vd[7:0]<<8 | imm8[7:0]
-    for vd in (0, 1, 32, 64, 127):
-        for imm in (0, 1, 0x7F, 0x80, 0xFF, 0x40, 0x3F):
-            yield ((0x7F << 24) | ((vd & 0xFF) << 8) | (imm & 0xFF)) & 0xFFFFFFFF
+            yield ((0xDF << 24) | ((vd & 0x7F) << 16) | (imm & 0xFFFF)) & 0xFFFFFFFF
+            yield ((0xDF << 24) | (1 << 23) | ((vd & 0x7F) << 16) | (imm & 0xFFFF)) & 0xFFFFFFFF
 
 
 def _iter_vfpu3() -> Iterator[int]:
-    """Major opcode 0x1B — VFPU3: vcmp, vmin, vmax, vscmp, vsge, vslt, vsgn, vbfy, vcmov."""
-    for sub in range(16):
-        for size in (0, 1, 2, 3):
-            for vs in (0, 1, 8):
-                vt = (vs + 2) & 0x7F
-                vd = (vs + 4) & 0x7F
-                word = (0x1B << 26)
-                word |= (sub & 0xF) << 21
-                word |= ((size >> 1) & 1) << 24
-                vd_enc = (vd & 0x7F) | ((size & 1) << 7)
-                word |= (vs & 0x7F) << 16
-                word |= (vd_enc & 0xFF) << 8
-                word |= (vt & 0x7F)
-                yield word & 0xFFFFFFFF
+    """Major opcode 0x1B — VFPU3: vcmp (sub 0), vmin (sub 2), vmax (sub 3).
+    (vscmp/vsge/vslt/vsgn/vbfy/vcmov as named here have no static emitter or
+    interpreter path in this runtime and are intentionally not emitted.)"""
+    for sub in (0, 2, 3):
+        for size in (1, 2, 3, 4):
+            for vs in _vs_pool(size):
+                for vt in (0, 4, 32, 64):
+                    vd = (vs + 8) & 0x7F
+                    yield _bin_word(0x1B, sub, size, vd, vs, vt)
 
 
 def _iter_vfpu4() -> Iterator[int]:
-    """Major opcode 0x34 — VFPU4: matrix/vector ops including vmmul, vtfm, vhtfm, vqmul."""
-    for sub in range(8):
-        for size in (1, 2, 3):  # p/t/q make sense for matrix ops
-            for vs in (0, 32, 64):
-                vt = (vs + 4) & 0x7F
+    """Major opcode 0x34 — VFPU4 unary/conversion family: vmov/vabs/vneg/vidt/
+    vsat0/vsat1/vzero/vone (jump 0, optype 0-7), transcendental ops (jump 0,
+    optype 16-23), vocp (jump 2), vcst (jump 3), vcmov (jump 0x15), vf2in/z/u/d
+    (jumps 16-19), vi2f (jump 20), vs2i/vi2uc/vi2c/vi2us/vi2s (jump 1, idx7
+    27-31).  The historical docstring called 0x34 the matrix family -- matrix
+    ops are 0x3C; those words decoded as unsupported/skewed ops, so conversions
+    were never fuzzed either."""
+    # VV2Op: vmov(0) vabs(1) vneg(2) vidt(3) vsat0(4) vsat1(5) vzero(6) vone(7)
+    for optype in (0, 1, 2, 3, 4, 5, 6, 7):
+        for size in (1, 2, 3, 4):
+            for vs in _vs_pool(size):
                 vd = (vs + 8) & 0x7F
-                word = (0x34 << 26)
-                word |= (sub & 0x7) << 21
-                word |= ((size >> 1) & 1) << 24
-                vd_enc = (vd & 0x7F) | ((size & 1) << 7)
-                word |= (vs & 0x7F) << 16
-                word |= (vd_enc & 0xFF) << 8
-                word |= (vt & 0x7F)
-                yield word & 0xFFFFFFFF
+                yield _vfp4_word(0, optype, size, vd, vs)
+    # transcendental ops: vrcp(16) vrsq(17) vsin(18) vcos(19) vexp2(20) vlog2(21)
+    # vsqrt(22) vasin(23)
+    for optype in (16, 17, 18, 19, 20, 21, 22, 23):
+        for size in (1, 2, 3, 4):
+            for vs in _vs_pool(size):
+                vd = (vs + 8) & 0x7F
+                yield _vfp4_word(0, optype, size, vd, vs)
+    # vocp (jump 2, op9 4): d = 1 - s via forced prefixes
+    for size in (1, 2, 3, 4):
+        for vs in _vs_pool(size):
+            vd = (vs + 8) & 0x7F
+            yield _vfp4_word(2, 4, size, vd, vs)
+    # vcst (jump 3): constant broadcast, representative indices
+    for size in (1, 2, 3, 4):
+        for vs in _vs_pool(size):
+            vd = (vs + 8) & 0x7F
+            for cst in (0, 1, 16, 31):
+                yield _vfp4_word(3, cst, size, vd, vs)
+    # vcmov (jump 0x15): imm3 selects the CC bit (0..6)
+    for size in (1, 2, 3, 4):
+        for vs in _vs_pool(size):
+            vd = (vs + 8) & 0x7F
+            for imm3 in (0, 1, 5, 6):
+                yield _vfp4_word(0x15, imm3, size, vd, vs)
+    # vf2in/vf2iz/vf2iu/vf2id (jumps 16-19) and vi2f (jump 20): representative scales
+    for jump in (16, 17, 18, 19, 20):
+        for size in (1, 2, 3, 4):
+            for vs in _vs_pool(size):
+                vd = (vs + 8) & 0x7F
+                for imm in (0, 1, 15, 31):
+                    yield _vfp4_word(jump, imm, size, vd, vs)
+    # vs2i (idx7 27) / vi2uc(28) / vi2c(29) / vi2us(30) / vi2s(31)
+    for size in (1, 2, 3, 4):
+        for vs in _vs_pool(size):
+            vd = (vs + 8) & 0x7F
+            for idx7 in (27, 28, 29, 30, 31):
+                yield _vfp4_word(1, idx7, size, vd, vs)
 
 
 def _iter_vfpu12() -> Iterator[int]:
-    """Major opcode 0x3C — VFPU12: additional ops (vdet, ?)."""
-    for sub in range(4):
-        for size in (0, 1, 2, 3):
-            for vs in (0, 1, 8):
-                vt = (vs + 2) & 0x7F
-                vd = (vs + 4) & 0x7F
-                word = (0x3C << 26)
-                word |= (sub & 0x3) << 21
-                word |= ((size >> 1) & 1) << 24
-                vd_enc = (vd & 0x7F) | ((size & 1) << 7)
-                word |= (vs & 0x7F) << 16
-                word |= (vd_enc & 0xFF) << 8
-                word |= (vt & 0x7F)
-                yield word & 0xFFFFFFFF
+    """Major opcode 0x3C — VFPU12 matrix family: vmmul (sub 0), vtfm (subs 1-3),
+    vmscl (sub 4), vcrsp.t/vqmul.q (sub 5), and VFPUMatrix1 (sub 7, idx 28):
+    vmmov (which 0), vmscl alias (which 1,2,4,5), vmidt (3), vmzero (6),
+    vmone (7)."""
+    # vmmul: matrix multiply, p..q
+    for size in (2, 3, 4):
+        for vs in _vs_pool(size):
+            for vt in (0, 4, 32, 64):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x3C, 0, size, vd, vs, vt)
+    # vtfm: vector transform; matrix side and dest vector size = ins + 1
+    for ins in (1, 2, 3):
+        side = ins + 1
+        for vs in _vs_pool(side):
+            for vt in (0, 4, 32, 64):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x3C, ins, side, vd, vs, vt)
+    # vmscl: matrix * scalar (vt is the scalar), p..q
+    for size in (2, 3, 4):
+        for vs in _vs_pool(size):
+            for vt in (0, 1, 4, 32):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x3C, 4, size, vd, vs, vt)
+    # vcrsp.t (size 3) / vqmul.q (size 4); identity-prefix family in the fuzzer
+    for size in (3, 4):
+        for vs in _vs_pool(size):
+            for vt in (0, 4, 32):
+                vd = (vs + 8) & 0x7F
+                yield _bin_word(0x3C, 5, size, vd, vs, vt)
+    # VFPUMatrix1 (sub 7, idx 28): which = bits 20:16; size bits 7/15 as usual.
+    for size in (2, 3, 4):
+        for vs in _vs_pool(size):
+            vd = (vs + 8) & 0x7F
+            for which in (0, 1, 2, 3, 4, 5, 6, 7):
+                lo, hi = (size - 1) & 1, (size - 1) >> 1
+                yield (
+                    (0x3C << 26)
+                    | (28 << 21)
+                    | ((which & 0xF) << 16)
+                    | ((vs & 0x7F) << 8)
+                    | (vd & 0x7F)
+                    | (lo << 7)
+                    | (hi << 15)
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -280,6 +280,27 @@ jobs:
             src/rt/vfpu_interp_selftest.c -lm
           ./build/vfpu_interp_selftest_san
 
+      - name: Run VFPU overlap/aliasing selftest (source-owned, no game inputs)
+        # Source/destination aliasing audit for the VFPU matrix/vector op
+        # families. tools/vfpu_overlap_fuzz_gen.py enumerates every legal
+        # overlap class (disjoint / vd==vs / vd==vt / partial /
+        # transpose-induced / source-source / all-identical /
+        # scalar-in-destination) across .p/.t/.q and emits the codegen bodies;
+        # the white-box harness runs each word through both the emitted body
+        # and sr_vfpu_interp over clobber-revealing and randomized states, plus
+        # an independent read-before-write reference where docs-legal.
+        run: |
+          python tools/vfpu_overlap_fuzz_gen.py build/vfpu_overlap_cases.h
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild -D_CRT_SECURE_NO_WARNINGS \
+            -o build/vfpu_overlap_selftest \
+            src/rt/vfpu_overlap_selftest.c -lm
+          ./build/vfpu_overlap_selftest
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild -D_CRT_SECURE_NO_WARNINGS \
+            -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
+            -o build/vfpu_overlap_selftest_san \
+            src/rt/vfpu_overlap_selftest.c -lm
+          ./build/vfpu_overlap_selftest_san
+
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
         # #286/#32: PR-A raw decoder (4144 checks) and PR-B HLE decode bridge
         # (4138 checks) under ASan/UBSan. The suites cover the deterministic
