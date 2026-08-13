@@ -3252,31 +3252,32 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
                "a measured-ceiling request dirties only the effective destination prefix");
     }
 
-    /* Conservative memory-safety policy (not a hardware claim): a request
-     * whose effective prefix is in range but whose requested tail crosses the
-     * modeled arena is rejected atomically until hardware settles precedence.
-     * This prevents a partially validated bulk access from reaching SR_HOST. */
+    /* Measured PSP-3000 precedence: a request whose effective 0xC000 prefix is in
+     * range but whose requested tail crosses the arena boundary is truncated to the
+     * 0xC000 ceiling before span validation, copying the effective prefix and
+     * returning success (0). */
     const uint32_t invalid_tail_dst = 0x0bff1000u;
     const uint32_t invalid_tail_src = 0x08210000u;
     const uint32_t invalid_tail_size = 0x10000u;
     dmac_fill(invalid_tail_src, invalid_tail_size);
     dmac_clear(invalid_tail_dst, ceiling, 0x6du);
     gpu_dirty_reset();
-    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
-               SCE_DMAC_ILLEGAL_ADDR,
-           "the conservative policy rejects an invalid requested tail");
-    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
-           "an invalid requested tail causes no prefix mutation");
-    expect(s_gpu_dirty_calls == 0u,
-           "an invalid requested tail causes no GPU dirty notification");
+    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) == 0u,
+           "PSP: an invalid requested tail past 0xC000 is truncated and returns success");
+    expect(dmac_span_matches(invalid_tail_dst, ceiling, 0u),
+           "PSP: an invalid requested tail past 0xC000 copies the complete effective prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == invalid_tail_dst &&
+               s_gpu_dirty_bytes == ceiling,
+           "PSP: an invalid requested tail past 0xC000 dirties only the effective prefix");
 
     (void)who;
 }
 
-/* Hardware measured sceDmacTryMemcpy blocking for the full transfer and
- * producing the same content as the blocking form at every size it tried, so
- * the whole contract above is asserted against both NIDs. No BUSY result was
- * ever observed in any session, so none is asserted or fabricated. */
+/* Hardware measured sceDmacTryMemcpy blocking for the full transfer in single-caller
+ * contexts and producing the same content as the blocking form at every size.
+ * In multi-threaded execution with overlapping active DMA, sceDmacTryMemcpy
+ * returns 0x80000021 (SCE_DMAC_ERROR_BUSY). The single-caller synchronous runtime
+ * routes both NID entries through h_DmacMemcpy. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");

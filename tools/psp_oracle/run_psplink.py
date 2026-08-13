@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
 TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
 _TEST_RECORD_RE = re.compile(
-    r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
+    r"^(?:host0:/>\s*)?NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
 )
 
 
@@ -64,7 +64,7 @@ def _run_command(command: list[str], timeout: float) -> tuple[int | None, str, s
     try:
         completed = subprocess.run(
             command,
-            stdin=subprocess.DEVNULL,
+            stdin=None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -165,7 +165,11 @@ def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
         f"model={args.model} firmware={args.firmware} "
         f"binary_sha256={digest.hexdigest()} source_commit={args.source_commit}"
     )
-    records = [line for line in text.splitlines() if not line.startswith("NAKAGAWA_PSP_META ")]
+    records = [
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("NAKAGAWA_PSP_META ")
+        and not line.lstrip().startswith("host0:/> NAKAGAWA_PSP_META ")
+    ]
     return metadata + "\n" + "\n".join(records) + "\n"
 
 

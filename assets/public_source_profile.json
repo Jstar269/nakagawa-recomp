@@ -610,6 +610,7 @@
     "tools/psp_oracle/run_nakagawa.py",
     "tools/psp_oracle/run_nakagawa_vfpu.py",
     "tools/psp_oracle/run_psplink.py",
+    "tools/psp_oracle/run_pspsh.ps1",
     "tools/psp_oracle/verify_vfpu_addr.py",
     "tools/psp_readiness.py",
     "tools/pspdev_lock.py",

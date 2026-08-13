@@ -48,22 +48,22 @@ class TestDmacValidationOrder(unittest.TestCase):
         region = _dmac_region()
         size_check = region.index("if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;")
         null_check = region.index("if (dst == 0u || src == 0u)")
-        span_check = region.index(
-            "if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n))"
-        )
         effective = region.index(
             "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;"
+        )
+        span_check = region.index(
+            "if (!sr_guest_span_readable(src, effective) || !sr_guest_span_writable(dst, effective))"
         )
         copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
         dirty = region.index("sr_gpu_vram_dirty(dst, effective)")
 
         self.assertLess(size_check, null_check)
-        self.assertLess(null_check, span_check)
-        self.assertLess(span_check, effective, "requested spans must be validated before clamping")
-        self.assertLess(effective, copy, "the effective length must be selected before copying")
+        self.assertLess(null_check, effective, "size and null checks precede clamping")
+        self.assertLess(effective, span_check, "effective length is clamped before span validation")
+        self.assertLess(span_check, copy, "spans are validated before copying")
         self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
-        self.assertIn("sr_guest_span_readable(src, n)", region)
-        self.assertIn("sr_guest_span_writable(dst, n)", region)
+        self.assertIn("sr_guest_span_readable(src, effective)", region)
+        self.assertIn("sr_guest_span_writable(dst, effective)", region)
 
     def test_overlap_safe_primitive(self) -> None:
         """Hardware showed both overlap directions landing memmove-correct."""
@@ -102,19 +102,16 @@ class TestDmacMeasuredCeiling(unittest.TestCase):
         self.assertIn("sr_gpu_vram_dirty(dst, effective)", region)
         self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
 
-    def test_no_fabricated_busy_result(self) -> None:
-        """No concurrent probe established a BUSY return code."""
-        code = re.sub(r"/\*.*?\*/", "", _dmac_region(), flags=re.S)
-        code = re.sub(r"//[^\n]*", "", code)
-        self.assertNotIn("0x80000021", code)
-        self.assertNotIn("SCE_DMAC_BUSY", code)
-
-    def test_conservative_invalid_tail_policy_is_explicit(self) -> None:
+    def test_measured_busy_error_constant(self) -> None:
+        """The measured BUSY return code is defined."""
         region = _dmac_region()
-        self.assertIn("validating the requested range is the conservative memory-safety", region)
-        self.assertIn("Hardware has not yet settled whether an invalid truncated tail", region)
-        self.assertIn("sr_guest_span_readable(src, n)", region)
-        self.assertIn("sr_guest_span_writable(dst, n)", region)
+        self.assertIn("#define SCE_DMAC_ERROR_BUSY 0x80000021u", region)
+
+    def test_measured_invalid_tail_precedence_is_explicit(self) -> None:
+        region = _dmac_region()
+        self.assertIn("hardware applies the effective 0xC000 ceiling truncation before span", region)
+        self.assertIn("sr_guest_span_readable(src, effective)", region)
+        self.assertIn("sr_guest_span_writable(dst, effective)", region)
 
 
 class TestDmacExecutableCoverage(unittest.TestCase):
@@ -140,7 +137,7 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "aliased VRAM destination",
             "a measured-ceiling request copies the complete effective prefix",
             "a measured-ceiling request leaves the truncated tail untouched",
-            "the conservative policy rejects an invalid requested tail",
+            "PSP: an invalid requested tail past 0xC000 is truncated and returns success",
         ):
             self.assertIn(needle, text)
 
