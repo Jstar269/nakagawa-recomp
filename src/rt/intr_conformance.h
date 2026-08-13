@@ -241,12 +241,15 @@ typedef struct {
  * 28 base[] entries have been promoted from IC_BLOCKED to CNW, deliberately and
  * only after the run named each one with [PROMOTE BASELINE]: the 24 cells of the
  * genuinely-blocking CAN_NOT_WAIT work (12 probes x intr-off/disp-off), plus the
- * 4 sceKernelWaitSema/CB "Invalid count" cells. Those last 4 reach the hardware
- * value through the same code path as "Valid sema" because Nakagawa has no
- * signal-vs-maxCount validation, so the call is simply an unsatisfiable wait; the
- * hardware answer (L56/L57, L64/L65) is the same either way. They are recorded
- * here rather than left as deviations because pinning a value the runtime no
- * longer produces would fail the suite, not preserve the scope boundary.
+ * 4 sceKernelWaitSema/CB "Invalid count" cells.
+ *
+ * Issue #43 promoted 4 more -- sceKernelWaitSema/CB "Bad sema", intr-off and
+ * disp-off -- and re-pinned 8 non-hardware cells in the same group. Those last 4
+ * "Invalid count" promotions were originally reached by accident: the runtime had
+ * no signal-vs-maxCount validation, so the call was merely an unsatisfiable wait
+ * that arrived at the same context check as "Valid sema". It now has that
+ * validation and the context check now precedes it, so the same cells are reached
+ * by the route hardware uses. Same value, different path -- the point of #43.
  * ------------------------------------------------------------------------- */
 
 #define ICB   IC_BLOCKED
@@ -278,20 +281,33 @@ static const IcProbe kIcMatrix[] = {
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK},
 
 /* ---- group B: semaphore ------------------------------------------------- */
+/* Issue #43 promoted the four "Bad sema" intr-off/disp-off cells to hw: the
+ * context decision now runs ahead of the object lookup, which is what L54/L55
+ * and L62/L63 measure. The other base[] moves in this group are consequences of
+ * the same change, and none of them is a hardware claim:
+ *   - normal "Bad sema" is now UNKNOWN_SEMID rather than the 0x80020000 seam,
+ *     which is hardware-measured, but by wait.expected L21/L23 -- waits.expected
+ *     has no normal column, so this stays a CONTROL here;
+ *   - intr-ctx "Bad sema" is UNKNOWN_SEMID for the same reason and remains a
+ *     known deviation from ILLEGAL_CONTEXT, which is PR-D's cell to fix;
+ *   - normal "Invalid count" was IC_BLOCKED and is now ILLEGAL_COUNT (control);
+ *   - intr-ctx "Invalid count" was NOT RUN under the spin-unbounded gate. The
+ *     gate reads the normal-context leg, that leg now RETURNS, so the cell is
+ *     executed for the first time. It is a known deviation, not a regression. */
 { "sceKernelWaitSema", 0x4e3a1105u, "Bad sema", ICG_SEMA, 0,
-  {0, 54, 331, 55}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u)},
+  {0, 54, 331, 55}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020199u), CNW, IC_RET(0x80020199u), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitSema", 0x4e3a1105u, "Invalid count", ICG_SEMA, 1,
-  {0, 56, 332, 57}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW},
+  {0, 56, 332, 57}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201bdu), CNW, IC_RET(0x800201bdu), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitSema", 0x4e3a1105u, "Valid sema", ICG_SEMA, 2,
   {0, 58, 333, 59}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK},
 { "sceKernelWaitSemaCB", 0x6d212bacu, "Bad sema", ICG_SEMA, 0,
-  {0, 62, 334, 63}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u)},
+  {0, 62, 334, 63}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020199u), CNW, IC_RET(0x80020199u), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitSemaCB", 0x6d212bacu, "Invalid count", ICG_SEMA, 1,
-  {0, 64, 335, 65}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW},
+  {0, 64, 335, 65}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201bdu), CNW, IC_RET(0x800201bdu), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitSemaCB", 0x6d212bacu, "Valid sema", ICG_SEMA, 2,
   {0, 66, 336, 67}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW},

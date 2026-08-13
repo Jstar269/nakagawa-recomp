@@ -201,14 +201,31 @@ static uint32_t stack_arg(CpuState *s, int idx) {
     return idx < 4 ? s->r[8 + idx] : MEM_R32(s->r[29] + (uint32_t)(idx - 4) * 4);
 }
 
-/* A genuinely blocking call made with CPU interrupts disabled or thread dispatch
- * disabled returns this, per PSPAutotests tests/intr/waits.expected. The handlers
- * below check sched_wait_permitted() individually, each at the point where it has
- * finished its own validation and established that THIS invocation would block --
- * never as a shared pre-handler gate, because the same oracle shows the precedence
- * is per-API (ILLEGAL_MODE L72 and ILLEGAL_THID L204 both beat it, while WaitSema's
- * bad-object error does not). See docs/PSP_INTR_WAITS_MATRIX.md. */
+/* A blocking call made with CPU interrupts disabled or thread dispatch disabled
+ * returns this, per PSPAutotests tests/intr/waits.expected. The handlers below
+ * check sched_wait_permitted() individually, each at the point its own oracle
+ * cells put it -- never as a shared pre-handler gate, because the same oracle
+ * shows the precedence is per-API: ILLEGAL_MODE (L72) and ILLEGAL_THID (L204)
+ * both beat it, while sceKernelWaitSema's bad-object error (L54/L55) does not.
+ * See docs/PSP_INTR_WAITS_MATRIX.md. */
 #define SCE_KERNEL_ERROR_CAN_NOT_WAIT 0x800201a7u
+
+/* Semaphore error codes measured by PSPAutotests
+ * tests/threads/semaphores/wait.expected, which is a NORMAL-context oracle and
+ * therefore covers exactly the column tests/intr/waits.expected does not:
+ *
+ *   UNKNOWN_SEMID  sceKernelWaitSema(0, 1, NULL)          -> 80020199   (L21)
+ *                  sceKernelWaitSema(0xDEADBEEF, 1, NULL) -> 80020199   (L23)
+ *                  a deleted semaphore id                 -> 80020199   (L25)
+ *   ILLEGAL_COUNT  need 100 against maxCount 1            -> 800201BD   (L3, L11)
+ *                  need 0                                 -> 800201BD   (L13)
+ *                  need -1                                -> 800201BD   (L5, L15)
+ *
+ * WAIT_TIMEOUT is the same file's L9/L17 result for a wait that was legal,
+ * entered, and expired. */
+#define SCE_KERNEL_ERROR_UNKNOWN_SEMID 0x80020199u
+#define SCE_KERNEL_ERROR_ILLEGAL_COUNT 0x800201bdu
+#define SCE_KERNEL_ERROR_WAIT_TIMEOUT  0x800201a8u
 
 /* ---- kernel object UID + user-memory bump allocator ---- */
 
@@ -8317,31 +8334,93 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
             mode, enter, leave);
 }
 static uint32_t h_DeleteSema(CpuState *s) { Sync *m = sync_find(A0); if (m) m->used = 0; return 0; }
+/* Entry contract shared by sceKernelWaitSema and sceKernelWaitSemaCB.
+ *
+ * The order below is not a style choice; each step is placed where a measured
+ * oracle cell puts it, and moving any one of them breaks a cell:
+ *
+ *  1. CONTEXT.  tests/intr/waits.expected probes this API with a bad id and with
+ *     an invalid count, and gets CAN_NOT_WAIT for BOTH with interrupts disabled
+ *     (L54, L56 / CB L62, L64) and with dispatch disabled (L55, L57 / CB L63,
+ *     L65).  In normal context those same two calls answer 80020199 and
+ *     800201BD (wait.expected L21/L23, L3/L13), so the context decision must
+ *     come ahead of the object lookup AND ahead of count validation.  Being
+ *     ahead of the lookup necessarily also puts it ahead of the availability
+ *     test -- there is no object to test availability on yet.  That last step is
+ *     forced by the measured cells rather than measured directly: no fixture
+ *     calls WaitSema on an immediately-available count with a context disabled.
+ *     PPSSPP takes the same order, as corroboration only.
+ *
+ *     This deliberately reverses the earlier "only once it would genuinely
+ *     block" placement, which was chosen when the bad-object cells were still
+ *     pinned as known deviations.
+ *
+ *  2. OBJECT.  Unknown or already-deleted id -> UNKNOWN_SEMID, replacing the
+ *     generic 0x80020000 seam (wait.expected L21/L23/L25).
+ *
+ *  3. COUNT.  need <= 0 or need > maxCount -> ILLEGAL_COUNT, immediately.  need
+ *     == maxCount is legal (L1: need 1 against max 1 succeeds).
+ *
+ *     `need` is read as a signed int precisely so a negative request stays
+ *     negative here.  Comparing A1 unsigned would turn -1 into 4294967295 and
+ *     route it through the same path as any oversized request; it would reach
+ *     ILLEGAL_COUNT by luck, and the old `m->count -= need` would have ADDED to
+ *     the semaphore.  wait.expected L5/L6 and L15/L16 pin both halves: the call
+ *     fails, and the following ReferSemaStatus still reports cur=0.
+ *
+ *  4. AVAILABILITY / BLOCKING, in the callers.
+ *
+ * Step 3 running before any mutation is what makes the rejection total: no
+ * decrement, no waiter, no timeout word written, and for the CB form no clock
+ * sample and no callback dispatch.  wait.expected L11 and L13 show the supplied
+ * timeout still holding its original 500ms after an oversized and a zero
+ * request, so a rejection may not touch *toptr either.
+ *
+ * The combined case -- unknown id AND invalid count in the same call -- is NOT
+ * pinned by any cited hardware cell.  Object-before-count is what the public
+ * reference set supports; treat that single ordering as corroborated, not
+ * measured.  See docs/PSP_INTR_WAITS_MATRIX.md. */
+static uint32_t sema_wait_entry(const char *who, uint32_t uid, int need, Sync **out) {
+    uint32_t err = 0;
+    Sync *m = NULL;
+    if (!sched_wait_permitted()) {
+        err = SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    } else if ((m = sync_find(uid)) == NULL) {
+        err = SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    } else if (need <= 0 || need > m->maxc) {
+        err = SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    }
+    if (err) {
+        if (hle_log_on())
+            fprintf(stderr, "HLE: %s uid=0x%x need=%d rejected 0x%08x (from 0x%x)\n",
+                    who, uid, need, err, sched_current_uid());
+        return err;
+    }
+    *out = m;
+    return 0;
+}
+
 static uint32_t h_WaitSema(CpuState *s) {
     /* a0=semaid, a1=signal, a2=timeout ptr (0=infinite, else *a2 = microseconds). */
     uint32_t uid = A0; int need = (int)A1; uint32_t toptr = A2;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = NULL;
+    uint32_t err = sema_wait_entry("WaitSema", uid, need, &m);
+    if (err) return err;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSema uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
-    /* Placed after the object lookup so the bad-sema error keeps its current
-     * precedence, and gated on the wait actually being unsatisfiable so a sema that
-     * can be taken right now still succeeds. A rejected call decrements no count and
-     * enters no wait. (L58/L59)
-     *
-     * This also answers the "invalid count" cell (need 9 against max 1, L56/L57).
-     * Hardware reaches CAN_NOT_WAIT there too, but by a different route: it validates
-     * the signal against maxCount only AFTER the context check. Nakagawa has no
-     * maxCount validation at all, so that call is simply an unsatisfiable wait and
-     * arrives at this same point. Same hardware answer, one code path. */
-    if (m->count < need && !sched_wait_permitted())
-        return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     while (m->count < need) {
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
-            if (sched_block_on_timeout(uid, usec)) return 0x800201A8;  /* WAIT_TIMEOUT */
+            if (sched_block_on_timeout(uid, usec)) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
         } else {
             sched_block_on(uid);
         }
+        /* Deleted out from under an ALREADY-BLOCKED waiter is a different cell
+         * from the entry lookup above: wait.expected L20 measures 800201B5
+         * (WAIT_DELETE), not UNKNOWN_SEMID. Producing it needs h_DeleteSema to
+         * wake its waiters, which it does not do, so this arm is unreachable
+         * today and its seam is left untouched rather than replaced with a value
+         * that would be newly wrong. Out of scope for issue #43. */
         m = sync_find(uid); if (!m) return 0x80020000;
     }
     m->count -= need;
@@ -8349,14 +8428,13 @@ static uint32_t h_WaitSema(CpuState *s) {
 }
 static uint32_t h_WaitSemaCB(CpuState *s) {
     uint32_t uid = A0; int need = (int)A1; uint32_t toptr = A2;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = NULL;
+    /* Ahead of sched_vtime_refresh() and the callback loop: a rejected call must
+     * not sample the clock, run callbacks or write a remaining-timeout word. */
+    uint32_t err = sema_wait_entry("WaitSemaCB", uid, need, &m);
+    if (err) return err;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSemaCB uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
-    /* Ahead of sched_vtime_refresh() and the callback loop: a rejected call must not
-     * sample the clock, run callbacks or write a remaining-timeout word. (L66/L67,
-     * and L64/L65 by the shared-path argument in h_WaitSema.) */
-    if (m->count < need && !sched_wait_permitted())
-        return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
 
     sched_vtime_refresh();
     uint64_t start = sched_vtime_us();
@@ -8371,18 +8449,21 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
         }
         if (toptr) {
             sched_vtime_refresh();
-            if (sched_vtime_us() >= end) return 0x800201A8; // WAIT_TIMEOUT
+            if (sched_vtime_us() >= end) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
             uint32_t remaining = (uint32_t)(end - sched_vtime_us());
             MEM_W32(toptr, remaining);
             sched_set_current_cb_wait(1);
             int timed_out = sched_block_on_timeout(uid, remaining);
             sched_set_current_cb_wait(0);
-            if (timed_out) return 0x800201A8; // WAIT_TIMEOUT
+            if (timed_out) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
         } else {
             sched_set_current_cb_wait(1);
             sched_block_on(uid);
             sched_set_current_cb_wait(0);
         }
+        /* See h_WaitSema: hardware's delete-during-wait answer is 800201B5
+         * (wait.expected L20), which needs h_DeleteSema to wake waiters. Out of
+         * scope for issue #43; seam left as it was. */
         m = sync_find(uid); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
@@ -8402,14 +8483,34 @@ static uint32_t h_SignalSema(CpuState *s) {
     sched_preempt();    /* a woken higher-priority waiter runs immediately */
     return 0;
 }
+/* Unchanged behavior: the two literals below are now the same named constants the
+ * blocking forms use, so the family cannot drift to two different spellings of
+ * one error. sceKernelPollSema has no context gate because it never blocks. */
 static uint32_t h_PollSema(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return 0x80020199u; /* SCE_KERNEL_ERROR_UNKNOWN_SEMID */
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int need = (int)A1;
-    if (need <= 0 || need > m->maxc) return 0x800201bdu; /* SCE_KERNEL_ERROR_ILLEGAL_COUNT */
+    if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
     return 0;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Read-only semaphore probe for the executable HLE selftest (issue #43).
+ *
+ * The count-validation regressions must assert that a REJECTED wait mutated
+ * nothing, and no registered NID can observe the count without changing it:
+ * sceKernelPollSema decrements on success and sceKernelReferSemaStatus is not
+ * registered. This reads the real production Sync entry and is compiled only
+ * into the test executable. It adds no field and changes no layout. */
+int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
+    Sync *m = sync_find(uid);
+    if (!m) return 0;
+    if (count_out) *count_out = m->count;
+    if (max_out)   *max_out   = m->maxc;
+    return 1;
+}
+#endif /* SR_HLE_THREAD_SELFTEST */
 
 /* ---------------------------------------------------------------------------
  * Lightweight mutexes.

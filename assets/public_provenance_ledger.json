@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "30ab3e5a9b7b58f443a5d3855b030cc8a72e85a80c8d00e250b0ab6639695e50"
+      "sha256": "cbef86f49a270cfa4f489863fb40cea4f156f2d9455dae998793e7cc85a1ef4f"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -4337,7 +4337,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9216e9b801ed8bfb1384aadf2d01ea24d8575a642cce42e9e9fc9e89b143c0cc"
+      "sha256": "5908633bdbf0f76b6ece3d35141729f6e9798abb01ec56dc4dc8c680684f71a6"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4349,7 +4349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe3f76072b582040f43892b8d02105febfa44488b51c7b920f17e7f1fa9dfaab"
+      "sha256": "777e680e0e7e6375397f5a7481104fdd5db48606951e21e428adcaba61dfe16d"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4361,7 +4361,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8414d273dadedf83a4a16906e90fbcf7403e67403a23805e7a80f3e9b87ecfd4"
+      "sha256": "6a8e50e2ad7816c160d1e21af493248e3d828d426d888a248080720eaa06f9d0"
     },
     {
       "path": "src/rt/iso.h",
