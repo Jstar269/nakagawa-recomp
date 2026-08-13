@@ -900,8 +900,8 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
     const SceUID block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-boundary", PSP_SMEM_Addr,
-        DMAC_BOUNDARY_BLOCK_BYTES, (void *)DMAC_BOUNDARY_BLOCK_BASE);
+        2, "oracle-dmac-boundary", PSP_SMEM_High,
+        DMAC_BOUNDARY_BLOCK_BYTES, NULL);
     if (block < 0) {
         emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)block,
                                 setup_mask, 0);
@@ -909,18 +909,19 @@ static void run_dmac_invalid_tail(int emulated) {
     }
     setup_mask |= 1u;
     uint8_t *const block_head = (uint8_t *)sceKernelGetBlockHeadAddr(block);
-    if ((uintptr_t)block_head != (uintptr_t)DMAC_BOUNDARY_BLOCK_BASE) {
+    if (!block_head) {
         sceKernelFreePartitionMemory(block);
         emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
         return;
     }
     setup_mask |= 2u;
 
-    /* This allocation is an observational safety gate.  If partition 2 can
+    uint8_t *const block_end = block_head + DMAC_BOUNDARY_BLOCK_BYTES;
+    /* This allocation is an observational safety gate. If partition 2 can
        allocate at or above the assumed end, no invalid DMA call is issued. */
     const SceUID tail_block = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-tail-check", PSP_SMEM_Addr, 0x100,
-        (void *)DMAC_BASELINE_USER_END);
+        (void *)block_end);
     if (tail_block >= 0) {
         sceKernelFreePartitionMemory(tail_block);
         sceKernelFreePartitionMemory(block);

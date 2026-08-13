@@ -3041,12 +3041,11 @@ static void test_bulk_guest_span_atomicity(void) {
  * registered NID, so these assert the PSP-visible return value and the
  * PSP-visible memory state of the shipped handlers.
  *
- * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
+ * HARDWARE_MEASURED values come from the reported PSP-3000 / 6.61-ARK campaign;
  * private capture details are intentionally not part of this public-safe tree.
- * The measured large-transfer ceiling is asserted as a prefix copy with an
- * untouched tail. The invalid-truncated-tail case is deliberately labelled as
- * a conservative runtime policy: hardware has not yet established whether the
- * tail is validated before the effective transfer length is applied. */
+ * RUNTIME_IMPLEMENTED values are asserted through production dispatch below.
+ * Concurrent BUSY is HARDWARE_MEASURED but RUNTIME_UNIMPLEMENTED: this selftest
+ * must not claim that a synchronous host call models an active DMA engine. */
 extern uint32_t sr_hle_test_dmac_effective_max(void);
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
@@ -3252,31 +3251,31 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
                "a measured-ceiling request dirties only the effective destination prefix");
     }
 
-    /* Conservative memory-safety policy (not a hardware claim): a request
-     * whose effective prefix is in range but whose requested tail crosses the
-     * modeled arena is rejected atomically until hardware settles precedence.
-     * This prevents a partially validated bulk access from reaching SR_HOST. */
+    /* Measured PSP-3000 precedence: a request whose effective 0xC000 prefix is in
+     * range but whose requested tail crosses the arena boundary is truncated to the
+     * 0xC000 ceiling before span validation, copying the effective prefix and
+     * returning success (0). */
     const uint32_t invalid_tail_dst = 0x0bff1000u;
     const uint32_t invalid_tail_src = 0x08210000u;
     const uint32_t invalid_tail_size = 0x10000u;
     dmac_fill(invalid_tail_src, invalid_tail_size);
     dmac_clear(invalid_tail_dst, ceiling, 0x6du);
     gpu_dirty_reset();
-    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
-               SCE_DMAC_ILLEGAL_ADDR,
-           "the conservative policy rejects an invalid requested tail");
-    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
-           "an invalid requested tail causes no prefix mutation");
-    expect(s_gpu_dirty_calls == 0u,
-           "an invalid requested tail causes no GPU dirty notification");
+    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) == 0u,
+           "PSP: an invalid requested tail past 0xC000 is truncated and returns success");
+    expect(dmac_span_matches(invalid_tail_dst, ceiling, 0u),
+           "PSP: an invalid requested tail past 0xC000 copies the complete effective prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == invalid_tail_dst &&
+               s_gpu_dirty_bytes == ceiling,
+           "PSP: an invalid requested tail past 0xC000 dirties only the effective prefix");
 
     (void)who;
 }
 
-/* Hardware measured sceDmacTryMemcpy blocking for the full transfer and
- * producing the same content as the blocking form at every size it tried, so
- * the whole contract above is asserted against both NIDs. No BUSY result was
- * ever observed in any session, so none is asserted or fabricated. */
+/* HARDWARE_MEASURED: single-caller sceDmacTryMemcpy matches the blocking form,
+ * while the reported multi-threaded campaign observes 0x80000021 (BUSY) during
+ * active DMA. RUNTIME_UNIMPLEMENTED: both production NIDs still route through
+ * the synchronous h_DmacMemcpy implementation; no BUSY result is fabricated. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");

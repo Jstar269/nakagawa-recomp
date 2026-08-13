@@ -138,6 +138,8 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
     seen_results: set[tuple[str, str]] = set()
     for line_number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
+        if line.startswith("host0:/>"):
+            line = line[8:].strip()
         if not line or line.startswith("#"):
             continue
         tokens = line.split()

@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67fbb2103663bd64c4c9697ecad823d3326bfcf4dee305b7d8b3207617b68961"
+      "sha256": "48a5396704827e2f89de5b6c9a1a6bce28e14745a1f19087d4e63f52d9575ce1"
     },
     {
       "path": "LICENSE",
@@ -287,7 +287,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "cbc251b18c65fd98cb47d557b2a533bceabbebb5439605b0bbaf1fcdd526783a"
     },
     {
       "path": "README.md",
@@ -378,7 +379,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "ddaff3fa299b3318b667f216ae2ebe570453d82a21e6cdd2d803bd60c7ccc5ea"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -387,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05b3175480f2115cb904ed33c7fd7c63b40ee69b09b3012a87869581785932f8"
+      "sha256": "eaf8c8d7c6c58d1ec04aa5630a65e1f539e2078196446196b790b541eadc62b4"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1009,7 +1011,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e81541ea9cc0999ba7b4d98fc81f72b7a82617e259ac2d375cb3c07c0fc87456"
+      "sha256": "7ba6a36a24cf846842d20ba99d0e76bd37b4c773f706a4ea81e60e6b1509cfa3"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1018,7 +1020,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "852b40c603a9f71561814764b1e1dccd06eaed64522a5afd5b77b99e06039443"
+      "sha256": "e5125c3d07e6573856d315c8e22e3ef859f7b80107890458c3efed78a112e47e"
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
@@ -4337,7 +4339,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "5908633bdbf0f76b6ece3d35141729f6e9798abb01ec56dc4dc8c680684f71a6"
+      "sha256": "fd706a7e72a2d4339bd7d06e2592e5fe56dc7401445c92b9e805f02e52910ad4"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4349,7 +4351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "777e680e0e7e6375397f5a7481104fdd5db48606951e21e428adcaba61dfe16d"
+      "sha256": "099d5634a506ffc83764c15d140244b4f52ab56165a6d7a11d0aec7e716605f8"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5731,7 +5733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12736c6422fb2498fd4e0d6ff016c257f2ce5283895e1065244909deb651e8fa"
+      "sha256": "2acf25abcc40e6b502d49467a95016e417a0c92d15902f099984ba870ce3f7da"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -5767,7 +5769,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8ae0c27c99272dd0d6d83a0da75f0eadbcf9a1486abf3a7de2f070bbee56c21"
+      "sha256": "e2781f768c7d2a3cba9fb15cab10dc23983b5e9d27908b5da05b7248adbe4456"
+    },
+    {
+      "path": "tools/psp_oracle/run_pspsh.ps1",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "source review",
+        "record_id": "hardware-oracle-toolchain",
+        "evidence_tier": "S",
+        "authorship": "project-authored PSPLink command wrapper; no hardware result claim",
+        "upstream_attribution": null
+      },
+      "sha256": "79ffdcaf9f02e227b0bd095eac440e873a25e32d82f9cd715eb785a3a097c4c8"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -6223,7 +6237,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2dc8553a36b8088f02bbee8f3149306f7f87365373687e2527ed8316b1e6158b"
+      "sha256": "ec1c7efbec4214a7fa8715b1d952c8914f4290160a4855e263d3e32fc3d17fad"
     },
     {
       "path": "tools/test_elf_bounds.py",
@@ -6355,7 +6369,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c89dabe4b522e4ae3d9b08a3a502f5a7a8585d62d93372e23a23894fb66e3714"
+      "sha256": "5bd1369bc05caf03db986307d41041f75c0c52c43b90077c7b473fcd99cdfa45"
     },
     {
       "path": "tools/test_guestmem_c.py",

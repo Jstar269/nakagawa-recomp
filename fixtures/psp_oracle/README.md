@@ -39,6 +39,16 @@ memory are never treated as stable evidence.
 
 ## Issue 23 DMA cases
 
+The probe separates three claims: `HARDWARE_MEASURED` is the physical-PSP
+result, `RUNTIME_IMPLEMENTED` is behavior exercised through Nakagawa's
+production dispatch, and `RUNTIME_UNIMPLEMENTED` is a measured contract that
+the host runtime does not yet model. The reported campaign covers 3 x 64 = 192
+concurrency trials and four isolated `0xC001` invalid-tail launches. The public
+tree contains the source-owned probe and scalar protocol, not private capture
+bytes; a release evidence packet must retain the model/firmware/CFW/clock,
+source/PRX digest, and canonical scalar records before treating the report as
+externally trusted hardware evidence.
+
 `CASE=dma-concurrency` runs three 64-trial API combinations:
 
 - `sceDmacMemcpy` then `sceDmacTryMemcpy`;

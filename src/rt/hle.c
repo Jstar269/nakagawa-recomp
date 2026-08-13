@@ -1718,25 +1718,28 @@ static uint32_t h_ResumeDispatchThread(CpuState *s) {
 static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* medium present */
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy ---------------------------------------
  *
- * The current PSP-3001 / 6.61-ARK contract used here is deliberately narrow:
+ * Evidence/implementation boundary for the PSP-3000 / 6.61-ARK report:
  *
- *   - a zero request returns 0x80000104 (illegal size);
- *   - a NULL or invalid complete source/destination span returns 0x80000103
- *     before any guest or GPU-visible side effect;
- *   - the effective transfer length is min(requested, 0xC000), and a request
- *     above that ceiling still returns success after copying only that prefix;
+ *   HARDWARE_MEASURED:
+ *   - zero size returns 0x80000104 (illegal size);
+ *   - NULL pointers return 0x80000103 before guest/GPU side effects;
+ *   - the effective transfer length is min(requested, 0xC000), with a valid
+ *     0xC000 prefix copied successfully for a reported 0xC001 request whose
+ *     requested tail is invalid;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
- *   - the Try form is synchronous from a single caller's point of view and
- *     shares the measured copy/error contract;
- *   - no concurrent BUSY result has been established, so this runtime does not
- *     invent an asynchronous engine or a scheduler-owned DMA queue.
+ *   - a concurrent sceDmacTryMemcpy reports 0x80000021 (BUSY) while another
+ *     DMA is active, and sceDmacMemcpy waits for active DMA.
  *
- * The complete *requested* spans are validated before the effective length is
- * applied. Hardware has not yet settled whether an invalid truncated tail is
- * ignored, so validating the requested range is the conservative memory-safety
- * policy and is kept explicit rather than presented as a measured precedence.
- * The size-before-address ordering below is likewise a runtime ordering; the
- * combined size-zero-plus-invalid-pointer case was not part of the probe.
+ *   RUNTIME_IMPLEMENTED:
+ *   - the effective length is selected before span validation;
+ *   - the validated prefix is copied with memmove and only that range is dirtied;
+ *   - both registered NIDs execute the measured single-caller copy behavior.
+ *
+ *   RUNTIME_UNIMPLEMENTED:
+ *   - there is no active-DMA state or scheduler-owned DMA operation, so the
+ *     runtime cannot honestly return BUSY or model blocking against another
+ *     caller yet. h_DmacTryMemcpy remains a synchronous call to h_DmacMemcpy.
+ *
  * The measured ~376–382 us observation for a large call is caller wall time;
  * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
@@ -1753,22 +1756,19 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
-    /* Validate everything before touching guest memory: a rejected request must
-     * leave the destination bytes and the GPU's view of them exactly as they
-     * were, so no dirty notification may be issued on any failure path. */
+    /* Validate size and null pointers before touching guest memory. */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
-    /* The complete spans, not just the base addresses. sr_guest_span_* is
-     * overflow-safe (it compares the remaining arena extent against the size
-     * rather than computing addr + size), so a request whose end wraps
-     * uint32_t or crosses the end of modeled memory is rejected here rather
-     * than truncated into a partial copy. */
-    if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n)) {
-        if (!sr_guest_span_writable(dst, n)) sr_oor(dst, 0u, 1);
-        if (!sr_guest_span_readable(src, n)) sr_oor(src, 0u, 0);
+
+    /* Hardware clamps the requested size to min(n, 0xC000) before validating
+     * address spans. Only the effective transfer prefix is checked for host
+     * arena bounds. */
+    uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;
+    if (!sr_guest_span_readable(src, effective) || !sr_guest_span_writable(dst, effective)) {
+        if (!sr_guest_span_writable(dst, effective)) sr_oor(dst, 0u, 1);
+        if (!sr_guest_span_readable(src, effective)) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
-    uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;
 
     /* memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
@@ -1779,12 +1779,9 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     return 0;
 }
 
-/* sceDmacTryMemcpy. Hardware shows it blocking for the full transfer and
- * producing the same result as the blocking form at every measured size, so it
- * shares those semantics deliberately rather than by aliasing an unrelated
- * handler. It is a distinct registered entry so that a future busy or
- * non-blocking measurement has somewhere to land without changing the
- * measured error and overlap behavior. */
+/* RUNTIME_UNIMPLEMENTED: hardware reports a distinct active-DMA BUSY state, but
+ * this runtime has no honest operation state to observe. Keep the registered
+ * entry synchronous until the scheduler/DMAC model can represent that state. */
 static uint32_t h_DmacTryMemcpy(CpuState *s) {
     return h_DmacMemcpy(s);
 }
