@@ -59,8 +59,38 @@ python tools/policy_sync.py --regen-export
 python tools/history_audit.py --json
 python tools/verify_sbom.py
 python tools/build_public_export.py --public-safe-profile --export-dir <staging>
-python tools/publish_audit.py --candidate-root <staging> --candidate-tree --public-scope
+python tools/publish_audit.py --candidate-root <staging> --candidate-tree --public-scope \
+  --provenance-ledger assets/public_provenance_ledger.json
 ```
+
+The first command regenerates the public provenance ledger from the detailed
+development ledger, which may stay outside the public tree. Classification is
+fail-closed: a path-specific record is the only way an implementation path is
+attested, `tools/*`-style wildcard records are never expanded, and the
+generator refuses to write a ledger while any included path is unresolved.
+The public ledger is therefore not produced until the detailed ledger actually
+records the missing paths; `--check` validates the checked-in ledger without
+regenerating it.
+
+**The ledger is evidence, never an authorization source.** A candidate's own
+checked-in ledger cannot attest its own provenance: a contributor could edit
+`assets/public_provenance_ledger.json` to name a plausible detailed-ledger
+record that is not present in the trusted release evidence. The audit
+therefore fails closed on the trust anchor:
+
+* with `--provenance-ledger <trusted copy>` the audited ledger must match the
+externally trusted ledger byte-for-byte, so any self-authored record fails;
+* a bare audit (no flag) reports `PROVENANCE_UNVERIFIED` and fails instead of
+passing on the candidate's own bytes;
+* `--provenance-self-consistency` is the explicitly non-attesting developer
+tripwire scope (pre-commit and `hst_manager.ps1 -Action Verify`): coverage,
+resolution, and content hashes are enforced against the audited ledger itself,
+but no attestation claim is made or cleared.
+
+The release flow above regenerates the ledger from the detailed development
+ledger and then attests the export against that regenerated copy. Candidate
+hashes prove bytes, not authorization; only a record in the trusted detailed
+ledger attests a path.
 
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted

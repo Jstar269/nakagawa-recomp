@@ -15,11 +15,17 @@ consistent as the tree moves:
 - every record naming an upstream project also records a license;
 - every finding referenced from a record's ``uncertainty`` text exists.
 
+Classification is also fail-closed: an implementation-bearing path with no
+path-specific record resolves to ``unresolved``, wildcard records such as
+``tools/*`` are never expanded, and the generator refuses to write release
+evidence while any included path is unresolved.
+
 Run directly or through ``python -m unittest discover -s tools``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -27,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -308,6 +315,289 @@ class ProvenanceLedgerGeneratorTest(unittest.TestCase):
             records = provenance_ledger._implementation_records(detailed)
         self.assertEqual(records["src/example.c"]["id"], "PROV-TEST")
         self.assertNotIn(str(detailed), json.dumps(records))
+
+
+class ProvenanceFailClosedTest(unittest.TestCase):
+    """Adversarial suite for fail-closed provenance classification.
+
+    Every fixture is synthetic.  These tests pin the P0 property: an
+    implementation-bearing path may never receive a
+    ``project_authored_attested`` classification merely because no specific
+    record exists, neither the historical ``tools/*`` wildcard nor a policy
+    edit may self-authorize one, and release evidence may not be generated
+    while any included path is unresolved.
+    """
+
+    # -- classification ------------------------------------------------------
+
+    def test_new_unrecorded_src_c_file_is_unresolved(self) -> None:
+        cls, evidence = provenance_ledger._class_for("src/rt/new_widget.c", None)
+        self.assertEqual(cls, "unresolved")
+        self.assertEqual(evidence["source"], "missing path-specific provenance record")
+        self.assertNotEqual(cls, "project_authored_attested")
+
+    def test_new_unrecorded_src_header_is_unresolved(self) -> None:
+        cls, _ = provenance_ledger._class_for("src/rt/new_widget.h", None)
+        self.assertEqual(cls, "unresolved")
+
+    def test_new_unrecorded_implementation_tool_is_unresolved(self) -> None:
+        cls, _ = provenance_ledger._class_for("tools/brand_new_tool.py", None)
+        self.assertEqual(cls, "unresolved")
+
+    def test_unrecorded_root_script_is_unresolved(self) -> None:
+        cls, _ = provenance_ledger._class_for("hst.ps1", None)
+        self.assertEqual(cls, "unresolved")
+
+    def test_interface_implementation_is_not_wholesale_configuration(self) -> None:
+        """The dashboard's src/ is implementation, not reviewed configuration."""
+        self.assertEqual(
+            provenance_ledger._class_for("interface/src/lib/new_module.ts", None)[0], "unresolved"
+        )
+        self.assertEqual(
+            provenance_ledger._class_for("interface/src/app/api/route.ts", None)[0], "unresolved"
+        )
+        self.assertEqual(
+            provenance_ledger._class_for("interface/package.json", None)[0], "reviewed_configuration"
+        )
+        self.assertEqual(
+            provenance_ledger._class_for("interface/next.config.ts", None)[0], "reviewed_configuration"
+        )
+
+    def test_docs_config_fixture_metadata_rules_are_preserved(self) -> None:
+        cases = {
+            "docs/ARCHITECTURE.md": "reviewed_documentation",
+            "tools/README.md": "reviewed_documentation",
+            "src/rt/atrac3p/PROVENANCE.md": "reviewed_documentation",
+            "README.md": "reviewed_documentation",
+            "LICENSE": "reviewed_documentation",
+            ".clang-format": "reviewed_configuration",
+            ".gitignore": "reviewed_configuration",
+            "Makefile": "reviewed_configuration",
+            "mk/build_common.mk": "reviewed_configuration",
+            ".github/workflows/ci.yml": "reviewed_configuration",
+            "pyproject.toml": "reviewed_configuration",
+            "interface/package-lock.json": "reviewed_configuration",
+            "interface/prisma/schema.prisma": "reviewed_configuration",
+            "fixtures/psp_oracle/probe.c": "synthetic_fixture",
+            "tools/test_gen_nidnames.py": "synthetic_fixture",
+            "assets/titles/synthetic.json": "public_factual_metadata",
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(provenance_ledger._class_for(path, None)[0], expected, path)
+
+    def test_explicit_unresolved_record_stays_unresolved(self) -> None:
+        record = {"id": "PROV-X", "classification": "unresolved", "evidence_tier": "N"}
+        cls, evidence = provenance_ledger._class_for("src/rt/thing.c", record)
+        self.assertEqual(cls, "unresolved")
+        self.assertEqual(evidence["record_id"], "PROV-X")
+        self.assertIn("reason", evidence)
+
+    def test_specific_record_wins_over_deterministic_rules(self) -> None:
+        record = {
+            "id": "PROV-UPSTREAM", "classification": "upstream-third-party",
+            "evidence_tier": "S", "upstream": "ffmpeg", "upstream_license": "LGPL-2.1-or-later",
+        }
+        cls, evidence = provenance_ledger._class_for("docs/whatever.md", record)
+        self.assertEqual(cls, "upstream_derived")
+        self.assertEqual(evidence["record_id"], "PROV-UPSTREAM")
+
+    def test_is_implementation_path(self) -> None:
+        for impl in ("src/rt/x.c", "tools/x.py", "hst.ps1", "copy_build_assets.ps1",
+                     "interface/src/lib/x.ts", "interface/scripts/prepare-standalone.mjs"):
+            with self.subTest(impl=impl):
+                self.assertTrue(provenance_ledger.is_implementation_path(impl), impl)
+        for not_impl in ("docs/x.md", "Makefile", "mk/build_common.mk", "assets/titles/x.json",
+                         ".gitignore", "interface/package.json"):
+            with self.subTest(not_impl=not_impl):
+                self.assertFalse(provenance_ledger.is_implementation_path(not_impl), not_impl)
+
+    # -- wildcard semantics --------------------------------------------------
+
+    def test_historical_tools_wildcard_is_never_expanded(self) -> None:
+        """A `tools/*` record must not cover any path, old or new."""
+        detailed = {"records": [
+            {"id": "tooling-general", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/*"]},
+            {"id": "PROV-SPECIFIC", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/specific_tool.py"]},
+        ]}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "detailed.json"
+            ledger.write_text(json.dumps(detailed), encoding="utf-8")
+            records = provenance_ledger._implementation_records(ledger)
+        self.assertEqual(set(records), {"tools/specific_tool.py"})
+        new_tool = "tools/brand_new_tool.py"
+        self.assertIsNone(records.get(new_tool))
+        cls, evidence = provenance_ledger._class_for(new_tool, records.get(new_tool))
+        self.assertEqual(cls, "unresolved")
+        self.assertEqual(evidence["source"], "missing path-specific provenance record")
+
+    def test_missing_detailed_ledger_is_empty_not_synthesized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            records = provenance_ledger._implementation_records(Path(temp_dir) / "absent.json")
+        self.assertEqual(records, {})
+
+    def test_missing_detailed_ledger_refuses_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "ledger.json"
+            with self.assertRaises(RuntimeError):
+                provenance_ledger.build_ledger(
+                    output, implementation_ledger=Path(temp_dir) / "absent.json"
+                )
+            self.assertFalse(output.exists())
+
+    # -- hermetic generator --------------------------------------------------
+
+    def _hermetic_repo(self, files: dict[str, str], include: list[str]) -> tuple[Path, Path]:
+        """A tiny real Git repo with a synthetic policy and tracked files."""
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory())) / "repo"
+        repo.mkdir()
+        for argv in (("init", "-q", "."), ("config", "user.email", "t@example.invalid"),
+                     ("config", "user.name", "test")):
+            subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True)
+        policy = repo / "assets" / "public_source_profile.json"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(
+            json.dumps({"name": "hermetic-profile", "include_paths": sorted(include)}),
+            encoding="utf-8",
+        )
+        for rel, text in files.items():
+            target = repo / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True, capture_output=True)
+        return repo, policy
+
+    def _detailed_ledger(self, repo: Path, records: list[dict]) -> Path:
+        detailed = repo.parent / "detailed-implementation-ledger.json"
+        detailed.write_text(json.dumps({"records": records}), encoding="utf-8")
+        return detailed
+
+    def _run_build_ledger(self, repo: Path, policy: Path, detailed: Path, output: Path) -> dict:
+        with mock.patch.object(provenance_ledger, "ROOT", repo), \
+             mock.patch.object(provenance_ledger, "POLICY_PATH", policy):
+            return provenance_ledger.build_ledger(output, implementation_ledger=detailed)
+
+    def test_generation_refuses_unrecorded_implementation_path(self) -> None:
+        repo, policy = self._hermetic_repo(
+            {"src/new_widget.c": "// synthetic fixture\nint x(void){return 0;}\n",
+             "tools/helper.py": "# synthetic fixture\n",
+             "docs/guide.md": "# synthetic fixture\n"},
+            ["src/new_widget.c", "tools/helper.py", "docs/guide.md"],
+        )
+        detailed = self._detailed_ledger(repo, [
+            {"id": "PROV-HELPER", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/helper.py"]},
+        ])
+        output = repo.parent / "out" / "public_provenance_ledger.json"
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_build_ledger(repo, policy, detailed, output)
+        self.assertIn("src/new_widget.c", str(ctx.exception))
+        self.assertFalse(output.exists())
+
+    def test_policy_edit_plus_regeneration_cannot_self_authorize(self) -> None:
+        """Adding a source to the policy and regenerating must fail without a record."""
+        repo, policy = self._hermetic_repo(
+            {"src/new_widget.c": "// synthetic fixture\n"}, ["src/new_widget.c"]
+        )
+        detailed = self._detailed_ledger(repo, [])
+        output = repo.parent / "out" / "public_provenance_ledger.json"
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_build_ledger(repo, policy, detailed, output)
+        self.assertIn("src/new_widget.c", str(ctx.exception))
+        self.assertFalse(output.exists())
+
+    def test_generation_refuses_explicit_unresolved_record(self) -> None:
+        repo, policy = self._hermetic_repo(
+            {"src/thing.c": "// synthetic fixture\n"}, ["src/thing.c"]
+        )
+        detailed = self._detailed_ledger(repo, [
+            {"id": "PROV-UNRESOLVED", "classification": "unresolved",
+             "evidence_tier": "N", "paths": ["src/thing.c"]},
+        ])
+        output = repo.parent / "out" / "public_provenance_ledger.json"
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_build_ledger(repo, policy, detailed, output)
+        self.assertIn("src/thing.c", str(ctx.exception))
+
+    def test_regeneration_is_deterministic_and_byte_identical(self) -> None:
+        repo, policy = self._hermetic_repo(
+            {"src/new_widget.c": "// synthetic fixture\nint x(void){return 0;}\n",
+             "tools/helper.py": "# synthetic fixture\n",
+             "docs/guide.md": "# synthetic fixture\n",
+             "Makefile": "all:\n\t@echo hi\n"},
+            ["src/new_widget.c", "tools/helper.py", "docs/guide.md", "Makefile"],
+        )
+        detailed = self._detailed_ledger(repo, [
+            {"id": "PROV-WIDGET", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["src/new_widget.c"]},
+            {"id": "PROV-HELPER", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/helper.py"]},
+        ])
+        out1 = repo.parent / "out1" / "public_provenance_ledger.json"
+        out2 = repo.parent / "out2" / "public_provenance_ledger.json"
+        self._run_build_ledger(repo, policy, detailed, out1)
+        self._run_build_ledger(repo, policy, detailed, out2)
+        self.assertEqual(out1.read_bytes(), out2.read_bytes())
+        document = json.loads(out1.read_text(encoding="utf-8"))
+        by_path = {e["path"]: e for e in document["entries"]}
+        self.assertEqual(by_path["src/new_widget.c"]["classification"], "project_authored_attested")
+        self.assertEqual(by_path["tools/helper.py"]["classification"], "project_authored_attested")
+        self.assertEqual(by_path["Makefile"]["classification"], "reviewed_configuration")
+        self.assertEqual(by_path["docs/guide.md"]["classification"], "reviewed_documentation")
+        # Hash the exact bytes that were committed (the index blob), not the
+        # working tree copy, which Git may have re-encoded with CRLF on Windows.
+        expected_hash = hashlib.sha256(
+            "// synthetic fixture\nint x(void){return 0;}\n".encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(by_path["src/new_widget.c"]["sha256"], expected_hash)
+
+    # -- validation ----------------------------------------------------------
+
+    def test_validate_ledger_rejects_stale_or_missing_hashes(self) -> None:
+        document = {"entries": [
+            {"path": "src/a.c", "classification": "project_authored_attested",
+             "evidence": {"source": "x"}, "sha256": "too-short"},
+            {"path": "src/b.c", "classification": "project_authored_attested",
+             "evidence": {"source": "x"}},
+        ]}
+        errors = provenance_ledger.validate_ledger(document)
+        hash_errors = [e for e in errors if "content hash" in e]
+        self.assertEqual(len(hash_errors), 2)
+
+    def test_validate_ledger_rejects_unknown_classification(self) -> None:
+        document = {"entries": [
+            {"path": "src/a.c", "classification": "project-authored-independent",
+             "evidence": {"source": "x"}, "sha256": "0" * 64},
+        ]}
+        errors = provenance_ledger.validate_ledger(document)
+        self.assertTrue(any("unsupported provenance class" in e for e in errors))
+
+    def test_validate_ledger_require_resolved_rejects_unresolved(self) -> None:
+        document = {"entries": [
+            {"path": "src/a.c", "classification": "unresolved",
+             "evidence": {"source": "missing path-specific provenance record"}, "sha256": "0" * 64},
+        ]}
+        self.assertTrue(any(
+            "unresolved" in e
+            for e in provenance_ledger.validate_ledger(document, require_resolved=True)
+        ))
+        self.assertFalse(any(
+            "unresolved" in e for e in provenance_ledger.validate_ledger(document)
+        ))
+
+    def test_check_mode_rejects_unresolved_ledger_via_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "public_provenance_ledger.json"
+            ledger.write_text(json.dumps({"entries": [
+                {"path": "src/a.c", "classification": "unresolved",
+                 "evidence": {"source": "missing path-specific provenance record"},
+                 "sha256": "0" * 64},
+            ]}), encoding="utf-8")
+            code = provenance_ledger.main(["--check", "--output", str(ledger)])
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

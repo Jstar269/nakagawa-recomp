@@ -649,12 +649,16 @@ try {
         # finding sit on disk while this suite reported PASS. Auditing worktree bytes alone
         # would just move the blind spot onto staged-but-uncommitted content, so run both.
         # --tracked-only selects the path set in each case; --worktree selects the bytes.
+        # --provenance-self-consistency scopes the provenance ledger check to candidate-internal
+        # consistency (coverage, resolution, content hashes). This checkout cannot attest against
+        # the trusted release evidence: attestation authenticity is only asserted by the release
+        # flow, which supplies the externally trusted ledger via publish_audit --provenance-ledger.
         Write-Host "`n[13/15] Publication safety audit (staged blobs)..." -ForegroundColor Cyan
-        & python tools/publish_audit.py --tracked-only | Out-Host
+        & python tools/publish_audit.py --tracked-only --provenance-self-consistency | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-index" }
 
         Write-Host "      ... and the working tree on disk..." -ForegroundColor Cyan
-        & python tools/publish_audit.py --tracked-only --worktree | Out-Host
+        & python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-worktree" }
 
         Write-Host "`n[14/15] GPU framebuffer coherence selftest (gpu-coherence-selftest)..." -ForegroundColor Cyan

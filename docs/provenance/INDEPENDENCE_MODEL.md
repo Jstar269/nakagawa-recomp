@@ -169,15 +169,22 @@ speculative PSP semantics.
 
 `assets/public_provenance_ledger.json` is the machine-readable public record.
 The detailed development ledger is deliberately outside the active public source tree;
+`tools/provenance_ledger.py` builds the public record from it and
 `tools/test_provenance_ledger.py` enforces the public record instead:
 
-- every tracked file under `src/` is covered by exactly one record (directly or by a directory
-  record);
+- every included implementation path is covered by exactly one **path-specific** record;
+  wildcard records such as `tools/*` are never expanded, so a newly added tool without its
+  own record resolves to `unresolved` and cannot be published;
 - every classification is in the closed vocabulary above;
 - every file whose header declares `Derived from <project>` has a record whose classification is
   `derived-translated`, `derived-data`, `behavior-informed`, or `unresolved` — never
   `project-authored-independent`;
 - every record naming an upstream project also carries a license field.
+
+Documentation, configuration, public factual metadata, and explicitly synthetic fixtures keep
+narrow deterministic classifications that need no ledger record. Any other unrecorded path — in
+particular implementation under `src/`, `tools/`, or the dashboard — resolves to `unresolved`,
+and the generator refuses to write release evidence while any included path is unresolved.
 
 The gate catches drift; it cannot catch a dishonest record. Classification remains a human judgment
 that the ledger merely makes auditable.

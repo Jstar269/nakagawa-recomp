@@ -47,7 +47,7 @@ Run checks proportional to the change:
 
 ```powershell
 python -m unittest discover -s tools -p "test_*.py" -v
-python tools/publish_audit.py --tracked-only --worktree
+python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency
 pre-commit run --all-files
 ```
 
