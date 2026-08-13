@@ -19,7 +19,8 @@ CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestGuestPrintf(unittest.TestCase):
-    def test_float_format_and_double_alignment(self):
+    def test_psp_abi_behavior(self):
+        """Run the PSP-EABI behavioral regressions in guest_printf_selftest.c."""
         assert CC is not None
         with tempfile.TemporaryDirectory(prefix="guestprintf_") as tmp:
             exe = Path(tmp) / "guest_printf_selftest.exe"
@@ -50,6 +51,47 @@ class TestGuestPrintf(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("guest printf selftest: OK", result.stdout)
+
+    def test_no_guest_controlled_host_format(self):
+        """The bridge must never pass a runtime-built format to a host printf.
+
+        The guest owns every byte of the format string, so a non-literal host
+        format is exactly the defect this file exists to prevent: guest length
+        modifiers would select a host variadic type that the fixed C argument
+        does not match. Compiling with -Werror=format-nonliteral makes that a
+        build failure rather than a review question. The pre-rewrite bridge
+        assembled guest flags/width/precision/length bytes into a `conv[]`
+        buffer and failed this gate at four snprintf() call sites.
+        """
+        assert CC is not None
+        with tempfile.TemporaryDirectory(prefix="guestprintf_fmt_") as tmp:
+            obj = Path(tmp) / "guest_printf.o"
+            build = subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-O2",
+                    "-c",
+                    "-Wall",
+                    "-Wextra",
+                    "-Wformat=2",
+                    "-Wformat-nonliteral",
+                    "-Wformat-security",
+                    "-Werror",
+                    f"-I{RT}",
+                    "-o",
+                    os.fspath(obj),
+                    os.fspath(RT / "guest_printf.c"),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                build.returncode,
+                0,
+                "guest_printf.c must contain only compile-time literal host "
+                "formats:\n" + build.stdout + build.stderr,
+            )
 
 
 if __name__ == "__main__":
