@@ -2408,6 +2408,13 @@ static uint32_t mx_create(uint32_t attr, int32_t initial) {
     return sr_syscall(&cpu, NID_MX_CREATE);
 }
 
+static uint32_t mx_create_named(uint32_t name, uint32_t attr, int32_t initial) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name; cpu.r[5] = attr; cpu.r[6] = (uint32_t)initial; cpu.r[7] = 0u;
+    return sr_syscall(&cpu, NID_MX_CREATE);
+}
+
 static uint32_t mx_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
     CpuState cpu;
     memset(&cpu, 0, sizeof cpu);
@@ -2478,6 +2485,18 @@ static void test_mutex_object_model(void) {
                level == 2 && owner == sched_current_uid(),
                "a recursive-created mutex starts at its initial level, owned by caller");
         expect(mx_call(NID_MX_DELETE, r, 0u, 0u) == 0u, "recursive-created mutex deletes");
+
+        /* A non-NULL but unmapped name must not fault, form an out-of-object
+         * host pointer, or be read: create.expected only distinguishes NULL
+         * from any readable name, so this truncates to an empty name and still
+         * succeeds (PPSSPP's strncpy path behaves the same). */
+        uint32_t um = mx_create_named(0xDEADBEEFu, 0u, 0);
+        expect(um > 0, "CreateMutex with an unmapped non-NULL name still succeeds");
+        MEM_W32(MX_INFOPTR, 1u);
+        expect(mx_call(NID_MX_REFER, um, MX_INFOPTR, 0u) == 0u &&
+               MEM_R32(MX_INFOPTR + 0x04u) == 0u,
+               "the unmapped name truncated to an empty string in the refer record");
+        expect(mx_call(NID_MX_DELETE, um, 0u, 0u) == 0u, "the unmapped-name mutex deletes");
         s_cur = -1;
     }
 
@@ -2576,12 +2595,29 @@ static void test_mutex_object_model(void) {
 
         uint32_t ovf = mx_create(MX_ATTR_RECURSIVE, 1);
         expect(mx_call(NID_MX_LOCK, ovf, 0x7fffffffu, 0u) == MX_LOCK_OVERFLOW,
-               "recursive lock overflowing int -> MUTEX_LOCK_OVERFLOW");
+               "recursive lock overflowing int -> MUTEX_LOCK_OVERFLOW (lock.expected INT_MAX)");
         expect(mx_call(NID_MX_LOCK, ovf, 1u, 0u) == 0u,
                "a recursive relock still succeeds after a rejected overflow");
         expect(sr_mutex_test_state(ovf, &level, &owner, &initial, &attr, &nwait) &&
                level == 2 && owner == sched_current_uid(),
                "the accepted relock raised the level to 2");
+
+        /* Boundary cell (lock.expected): level 1 + (INT_MAX-1) == INT_MAX is
+         * the largest representable count and must succeed; the very next
+         * increment overflows.  This pins the safe-arithmetic overflow bound
+         * and stays clean under UBSan at -O2/-O3 (the old count + level < 0
+         * form is signed-overflow UB). */
+        uint32_t bnd = mx_create(MX_ATTR_RECURSIVE, 1);
+        expect(mx_call(NID_MX_LOCK, bnd, 0x7ffffffeu, 0u) == 0u,
+               "level 1 + (INT_MAX-1) == INT_MAX succeeds (lock.expected boundary)");
+        expect(sr_mutex_test_state(bnd, &level, &owner, &initial, &attr, &nwait) &&
+               level == 0x7fffffffu,
+               "the boundary relock set the level to INT_MAX");
+        expect(mx_call(NID_MX_LOCK, bnd, 1u, 0u) == MX_LOCK_OVERFLOW,
+               "INT_MAX + 1 -> MUTEX_LOCK_OVERFLOW");
+        expect(sr_mutex_test_state(bnd, &level, &owner, &initial, &attr, &nwait) &&
+               level == 0x7fffffffu,
+               "the rejected overflow left the level at INT_MAX");
         s_cur = -1;
     }
 

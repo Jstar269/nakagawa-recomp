@@ -80,9 +80,21 @@
  *    highest-priority waiter, priority.expected).  Priority INHERITANCE
  *    (raising the owner's effective priority while held) is NOT implemented and
  *    is unmeasured by the public tests.
- *  - ReferMutexStatus writes lockThread = owning uid, and 0 while unlocked
- *    (consistent with the LwMutex workarea here).  PPSSPP writes -1; the
- *    public tests normalise -1 to 0 so neither is disproven.
+ *  - ReferMutexStatus lockThread: MEASURED as 0 while unlocked by
+ *    refer.expected ("...lockThread=0"), and as the owning uid while held.
+ *    PPSSPP writes -1 instead, but the hardware capture shows 0.
+ *  - Cancel/Delete of a timed waiter does NOT write the REMAINING timeout back
+ *    to timeoutPtr here; PPSSPP's __KernelUnlockMutexForThread writes the
+ *    unscheduled remainder on both WAIT_CANCEL and WAIT_DELETE.  The public
+ *    tests only exercise cancel/delete waiters with a NULL timeout, so this
+ *    cell is unmeasured.
+ *  - Invalid guest pointers (unmapped name/options/timeoutPtr/infoPtr) do not
+ *    fault here: the runtime preflights each span and treats an unreadable name
+ *    as empty, an invalid optionsPtr as ILLEGAL_ATTR, an invalid timeoutPtr as
+ *    a 0us deadline, and an unwritable infoPtr as ILLEGAL_ATTR.  Real hardware
+ *    would raise an address exception for these; the public tests do not probe
+ *    them (refer.c comments its NULL-info case as "Crashes."), so the exact
+ *    error codes are unmeasured.
  */
 
 #include "recomp.h"
@@ -96,7 +108,13 @@ int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);
 
 #define SR_MUTEX_MAX          1024u   /* create.expected: "Create 1024: OK" */
-#define SR_MUTEX_MAX_WAITERS  128u    /* == sched.c MAXTHREADS */
+/* sched.c MAXTHREADS == 128.  A mutex with waiters has a live owner thread, so
+ * at most MAXTHREADS-1 threads can be simultaneously blocked on it, and a
+ * thread waits on exactly one object at a time.  n_waiters therefore never
+ * reaches this bound; the defensive capacity check in mutex_add_waiter is kept
+ * and handled (not ignored) so a future MAXTHREADS increase cannot silently
+ * strand a waiter. */
+#define SR_MUTEX_MAX_WAITERS  128u
 
 enum { MUTEX_WAIT_NONE = 0, MUTEX_WAIT_MUST_WAIT = 1 };
 
@@ -163,10 +181,14 @@ static void mutex_remove_waiter(SrMutex *m, uint32_t thread_uid) {
 static void mutex_read_name(uint32_t addr, char *out, size_t max) {
     if (!addr || !out || max == 0) return;
     out[0] = '\0';
-    const uint8_t *p = (const uint8_t *)SR_HOST(addr);
+    /* Per-byte preflight, then MEM_R8 (which re-checks sr_inrange before it
+     * forms SR_HOST): a non-NULL but unmapped name truncates to an empty string
+     * instead of ever forming or dereferencing an out-of-object host pointer.
+     * create.expected only distinguishes NULL from any readable name, so a
+     * truncated name is still a valid (successful) create. */
     for (size_t i = 0; i + 1 < max; i++) {
         if (!sr_guest_span_readable(addr + (uint32_t)i, 1u)) { out[i] = '\0'; return; }
-        char c = (char)p[i];
+        char c = (char)MEM_R8(addr + (uint32_t)i);
         if (c == '\0') { out[i] = '\0'; return; }
         out[i] = c;
         out[i + 1] = '\0';
@@ -239,8 +261,14 @@ static uint32_t mutex_lock_try(SrMutex *m, int32_t count) {
     const uint32_t cur = sched_current_uid();
     if (count <= 0) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (count > 1 && !recursive) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
-    /* Two positive ints overflowing to negative == overflow (lock.expected). */
-    if (count + m->lock_level < 0) return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
+    /* lock.expected: "Lock 1 => INT_MAX (recursive)" -> 800201C6, while
+     * "Lock 1 => INT_MAX - 1 (recursive)" succeeds at level INT_MAX.  The
+     * kernel predicate is therefore "count + lockLevel wraps past INT32_MAX".
+     * Express that bound without signed overflow: count and lock_level are
+     * both non-negative here (count > 0 above; lock_level is kept >= 0 by the
+     * unlock/cancel paths), so INT32_MAX - lock_level cannot underflow and the
+     * comparison is exact -- count + lock_level > INT32_MAX. */
+    if (count > INT32_MAX - m->lock_level) return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
     /* Acquire BEFORE the relock test: an unlocked mutex has lock_thread == 0
      * (the "no owner" sentinel), and interrupt context reports the current uid
      * as 0 (s_cur < 0).  Testing lock_thread == cur first would misread that
@@ -303,7 +331,13 @@ uint32_t sr_mutex_lock(uint32_t uid, int32_t count, uint32_t toptr, int cb) {
     if (r != MUTEX_WAIT_MUST_WAIT) return r;
 
     const uint32_t self = sched_current_uid();
-    mutex_add_waiter(m, self, count, toptr);
+    /* Provably unreachable (see SR_MUTEX_MAX_WAITERS): a full waiter table
+     * would need MAXTHREADS threads all blocked on one mutex while its owner
+     * still runs.  Handle it anyway with the same resource-exhaustion code as
+     * mutex_new, rather than blocking with no waiter entry (which the loop
+     * below would misread as WAIT_DELETE). */
+    if (!mutex_add_waiter(m, self, count, toptr))
+        return SCE_KERNEL_ERROR_NO_MEMORY;
 
     for (;;) {
         m = mutex_find(uid);
