@@ -645,6 +645,7 @@
     "tools/test_codegen_retail_allocator.py",
     "tools/test_codegen_static_verify.py",
     "tools/test_codegen_vfpu_fallback.py",
+    "tools/test_codegen_vfpu_overlap.py",
     "tools/test_compat_manifest.py",
     "tools/test_dco_policy.py",
     "tools/test_debug.py",
