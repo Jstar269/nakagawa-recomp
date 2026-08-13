@@ -86,6 +86,8 @@ typedef struct {
 } SrMsgPipeState;
 extern int sr_hle_test_msgpipe_state(uint32_t uid, SrMsgPipeState *out);
 extern uint32_t sr_hle_test_msgpipe_max_capacity(void);
+/* Read-only view of a production Sync entry; see hle.c (issue #43). */
+extern int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out);
 extern void sr_hle_test_sas_reset(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -1567,6 +1569,14 @@ static void test_dispatch_suspend_resume_nid_semantics(void) {
  *     is disabled, which is what keeps the check a wait gate rather than a
  *     blanket syscall gate.
  *
+ * The precedence is per-API, and sceKernelWaitSema/CB sit on the other side of
+ * it from sceKernelWaitEventFlag and sceKernelWaitThreadEnd: waits.expected
+ * L54-L57 and L62-L65 answer CAN_NOT_WAIT for a bad id and for an invalid count,
+ * so for that one family the gate is ahead of the object lookup and therefore
+ * ahead of the availability test too. Its "would not have blocked still
+ * succeeds" leg is asserted as CAN_NOT_WAIT below for exactly that reason; the
+ * gate-not-blanket property is carried by the other five families here.
+ *
  * Everything enters through sr_syscall's registered-NID lookup, so these are
  * production-dispatch assertions on the real handlers.
  * ------------------------------------------------------------------------- */
@@ -1724,17 +1734,29 @@ static void test_can_not_wait_semantics(void) {
         snprintf(msg, sizeof msg, "%s: rejected call did not enter a wait", who);
         expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
 
-        /* The bad-object error still wins over the context error, exactly as it
-         * does on current main. Hardware answers CAN_NOT_WAIT here too, but that
-         * is a separate precedence correction and is deliberately NOT made here. */
+        /* The context error now wins over the bad-object error for this family:
+         * waits.expected L54/L55 (CB L62/L63) measure CAN_NOT_WAIT for a bad id,
+         * where normal context answers UNKNOWN_SEMID (wait.expected L21/L23). */
         memset(&cpu, 0, sizeof cpu);
         cpu.r[4] = 0u; cpu.r[5] = 1u; cpu.r[6] = 0u;
         snprintf(msg, sizeof msg,
-                 "%s on a bad sema still returns its object error, not CAN_NOT_WAIT", who);
-        expect(sr_syscall(&cpu, nid) == 0x80020000u, msg);
+                 "%s on a bad sema returns CAN_NOT_WAIT, ahead of its object error", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
+
+        /* Same for an invalid count: L56/L57 (CB L64/L65). Normal context here is
+         * ILLEGAL_COUNT, so this is the gate beating count validation too. */
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 9u; cpu.r[6] = 0u;   /* 9 against maxCount 1 */
+        snprintf(msg, sizeof msg,
+                 "%s on an invalid count returns CAN_NOT_WAIT, ahead of ILLEGAL_COUNT", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
         cnw_end(0, token);
 
-        /* A count that IS available is not a wait: it succeeds and decrements. */
+        /* A count that IS available is still rejected. This cell is not measured
+         * directly -- no fixture calls WaitSema on an available count with a
+         * context disabled -- but it is FORCED by the two cells above: a gate
+         * ahead of the object lookup cannot also be behind the availability test
+         * that needs the object. */
         self = cnw_begin(0, &token);
         memset(&cpu, 0, sizeof cpu);
         cpu.r[4] = CNW_NAMEBUF; cpu.r[5] = 0; cpu.r[6] = 1u; cpu.r[7] = 1u;  /* init 1, max 1 */
@@ -1742,8 +1764,13 @@ static void test_can_not_wait_semantics(void) {
         memset(&cpu, 0, sizeof cpu);
         cpu.r[4] = sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
         snprintf(msg, sizeof msg,
-                 "%s with an available count still succeeds with dispatch disabled", who);
-        expect(sr_syscall(&cpu, nid) == 0u, msg);
+                 "%s with an available count is still rejected with dispatch disabled", who);
+        expect(sr_syscall(&cpu, nid) == CNW_ERR, msg);
+        int cur = -1, mx = -1;
+        expect(sr_hle_test_sema_state(sema, &cur, &mx) && cur == 1 && mx == 1,
+               "the context-rejected wait left the available count untouched");
+        expect(self->state == TH_RUNNING && self->wait_obj == 0,
+               "the context-rejected available wait entered no wait");
         cnw_end(0, token);
     }
 
@@ -1851,6 +1878,266 @@ static void test_can_not_wait_semantics(void) {
         memset(&c, 0, sizeof c);
         expect(sr_syscall(&c, NID_SCE_KERNEL_SLEEP_THREAD) == 0u,
                "control: a satisfiable sleep still returns 0 in normal context");
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelWaitSema / sceKernelWaitSemaCB signal-count validation (issue #43)
+ * -------------------------------------------------------------------------
+ * The conformance matrix in intr_conformance.h is built from
+ * tests/intr/waits.expected, which has no normal-context column for this family.
+ * tests/threads/semaphores/wait.expected IS that column, measured on hardware,
+ * and these are its cells -- entered through the registered production NIDs, not
+ * through helper calls:
+ *
+ *   L1        need 1 against max 1, count 1        -> OK, count 1 -> 0
+ *   L3/L4     need 100 against max 1               -> 800201BD, cur still 0
+ *   L5/L6     need -1                              -> 800201BD, cur still 0
+ *   L11       need 100 with a 500ms timeout        -> 800201BD, 500ms LEFT
+ *   L13       need 0 with a 500ms timeout          -> 800201BD, 500ms LEFT
+ *   L15       need -1 with a 500ms timeout         -> 800201BD, 500ms LEFT
+ *   L21/L23   id 0 and id 0xDEADBEEF               -> 80020199
+ *   L25       a deleted id                         -> 80020199
+ *   L28       need 2 against max 1, off-thread     -> 800201BD, no reschedule
+ *
+ * The `Sema: OK (...cur=N...)` line that follows each failing call in that file
+ * is why every rejection here also asserts the count, and the "500ms left" in
+ * L11/L13/L15 is why every rejection with a timeout pointer asserts the word is
+ * untouched. L5/L6 is the sharp one: before this change `count -= need` ran with
+ * a negative need, ADDED to the semaphore, and returned success.
+ *
+ * s_sync[128] is never cleared between tests and the conformance matrix runs
+ * later out of the same table, so every semaphore created here is deleted.
+ * ------------------------------------------------------------------------- */
+#define NID_WSV_DELETE_SEMA      0x28b6489cu
+#define NID_WSV_SIGNAL_SEMA      0x3f53e640u
+#define NID_WSV_CREATE_CALLBACK  0xe81caf8fu
+#define NID_WSV_NOTIFY_CALLBACK  0xc11ba8c4u
+#define WSV_NAMEBUF              0x00250100u
+#define WSV_TIMEOUT_PTR          0x00250200u
+#define WSV_TIMEOUT_US           500000u
+#define WSV_ILLEGAL_COUNT        0x800201bdu   /* SCE_KERNEL_ERROR_ILLEGAL_COUNT */
+#define WSV_UNKNOWN_SEMID        0x80020199u   /* SCE_KERNEL_ERROR_UNKNOWN_SEMID */
+
+static TCB *wsv_begin(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x1e0u, TH_RUNNING, 32);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+    return self;
+}
+
+static uint32_t wsv_create(int init, int max) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = WSV_NAMEBUF; cpu.r[5] = 0u;
+    cpu.r[6] = (uint32_t)init; cpu.r[7] = (uint32_t)max;
+    return sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
+}
+
+static void wsv_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    (void)sr_syscall(&cpu, NID_WSV_DELETE_SEMA);
+}
+
+static uint32_t wsv_wait(uint32_t nid, uint32_t uid, uint32_t need, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = need; cpu.r[6] = toptr;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Read-only count view; -1 when the object does not exist. */
+static int wsv_count(uint32_t uid) {
+    int count = -1, max = -1;
+    if (!sr_hle_test_sema_state(uid, &count, &max)) return -1;
+    (void)max;
+    return count;
+}
+
+/* One rejected request, checked for every way a rejection could still leak:
+ * wrong code, mutated count, enqueued waiter, consumed timeout. */
+static void wsv_reject(uint32_t nid, const char *who, TCB *self, uint32_t uid,
+                       uint32_t need, int use_timeout, uint32_t want,
+                       int count_before, const char *what) {
+    char msg[256];
+    uint32_t toptr = use_timeout ? WSV_TIMEOUT_PTR : 0u;
+    if (use_timeout) MEM_W32(WSV_TIMEOUT_PTR, WSV_TIMEOUT_US);
+
+    uint32_t rc = wsv_wait(nid, uid, need, toptr);
+    snprintf(msg, sizeof msg, "%s: %s returns 0x%08x", who, what, want);
+    expect(rc == want, msg);
+
+    if (count_before >= 0) {
+        snprintf(msg, sizeof msg, "%s: %s left the semaphore count at %d", who, what, count_before);
+        expect(wsv_count(uid) == count_before, msg);
+    }
+    snprintf(msg, sizeof msg, "%s: %s enqueued no waiter and left the caller RUNNING", who, what);
+    expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
+    if (use_timeout) {
+        snprintf(msg, sizeof msg, "%s: %s did not consume the supplied timeout", who, what);
+        expect(MEM_R32(WSV_TIMEOUT_PTR) == WSV_TIMEOUT_US, msg);
+    }
+}
+
+/* Coroutine for the CB control leg: a VALID sceKernelWaitSemaCB that genuinely
+ * blocks, so the "no callback ran" assertion above it is measured against an
+ * observable that is known to fire. */
+static uint32_t s_wsv_cb_sema;
+static uint32_t s_wsv_cb_ret;
+static int s_wsv_cb_returned;
+
+static void wsv_cb_coro_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_wsv_cb_sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    s_wsv_cb_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA_CB);
+    s_wsv_cb_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_wait_sema_count_validation(void) {
+    char msg[256];
+
+    for (int i = 0; i < 2; i++) {
+        const uint32_t nid = i ? NID_CNW_WAIT_SEMA_CB : NID_CNW_WAIT_SEMA;
+        const char *who = i ? "sceKernelWaitSemaCB" : "sceKernelWaitSema";
+
+        /* ---- 1. boundaries against maxCount 1 with the count available ----- */
+        TCB *self = wsv_begin();
+        uint32_t sema = wsv_create(1, 1);
+        snprintf(msg, sizeof msg, "%s fixture: semaphore starts at count 1, max 1", who);
+        expect(wsv_count(sema) == 1, msg);
+
+        wsv_reject(nid, who, self, sema, 0u, 0, WSV_ILLEGAL_COUNT, 1, "need 0");
+        wsv_reject(nid, who, self, sema, 0xFFFFFFFFu, 0, WSV_ILLEGAL_COUNT, 1, "need -1");
+        wsv_reject(nid, who, self, sema, 2u, 0, WSV_ILLEGAL_COUNT, 1, "need maxCount+1");
+
+        snprintf(msg, sizeof msg, "%s: need 1 with the count available succeeds", who);
+        expect(wsv_wait(nid, sema, 1u, 0u) == 0u, msg);
+        snprintf(msg, sizeof msg, "%s: the satisfied wait decremented the count to 0", who);
+        expect(wsv_count(sema) == 0, msg);
+        wsv_delete(sema);
+
+        /* ---- 2. need == maxCount is legal; maxCount+1 is not (max 3) ------- */
+        sema = wsv_create(3, 3);
+        wsv_reject(nid, who, self, sema, 4u, 0, WSV_ILLEGAL_COUNT, 3, "need 4 against maxCount 3");
+        snprintf(msg, sizeof msg, "%s: need == maxCount with enough count succeeds", who);
+        expect(wsv_wait(nid, sema, 3u, 0u) == 0u, msg);
+        snprintf(msg, sizeof msg, "%s: the maxCount wait decremented by exactly maxCount", who);
+        expect(wsv_count(sema) == 0, msg);
+        wsv_delete(sema);
+
+        sema = wsv_create(2, 3);
+        snprintf(msg, sizeof msg, "%s: a partial take of an available count succeeds", who);
+        expect(wsv_wait(nid, sema, 1u, 0u) == 0u, msg);
+        snprintf(msg, sizeof msg, "%s: the partial take decremented by exactly 1", who);
+        expect(wsv_count(sema) == 1, msg);
+        wsv_delete(sema);
+
+        /* ---- 3. a negative request cannot INCREASE the count --------------- */
+        /* count 0: the old `m->count -= need` would have made this 1 and
+         * returned success. wait.expected L5/L6 measures failure with cur=0. */
+        sema = wsv_create(0, 1);
+        wsv_reject(nid, who, self, sema, 0xFFFFFFFFu, 0, WSV_ILLEGAL_COUNT, 0,
+                   "need -1 against count 0 (the state-corruption case)");
+        wsv_delete(sema);
+
+        /* ---- 4. a rejected request does not consume the timeout (L11/13/15) */
+        sema = wsv_create(0, 1);
+        wsv_reject(nid, who, self, sema, 0u,          1, WSV_ILLEGAL_COUNT, 0, "need 0 with a timeout");
+        wsv_reject(nid, who, self, sema, 0xFFFFFFFFu, 1, WSV_ILLEGAL_COUNT, 0, "need -1 with a timeout");
+        wsv_reject(nid, who, self, sema, 9u,          1, WSV_ILLEGAL_COUNT, 0, "need 9 against maxCount 1 with a timeout");
+        wsv_delete(sema);
+
+        /* ---- 5. unknown, invalid and deleted ids (L21, L23, L25) ----------- */
+        wsv_reject(nid, who, self, 0u, 1u, 0, WSV_UNKNOWN_SEMID, -1, "id 0");
+        wsv_reject(nid, who, self, 0xDEADBEEFu, 1u, 0, WSV_UNKNOWN_SEMID, -1, "id 0xDEADBEEF");
+
+        sema = wsv_create(1, 1);
+        wsv_delete(sema);
+        wsv_reject(nid, who, self, sema, 1u, 0, WSV_UNKNOWN_SEMID, -1, "a deleted id");
+
+        /* UNRESOLVED PRECEDENCE. No cited hardware cell combines an unknown id
+         * with an invalid count, so this pins the corroborated object-before-
+         * count ordering as a regression guard -- it is NOT a hardware claim.
+         * See docs/PSP_INTR_WAITS_MATRIX.md. */
+        wsv_reject(nid, who, self, 0u, 0u, 1, WSV_UNKNOWN_SEMID, -1,
+                   "id 0 with need 0 (unknown id wins; combined order not hardware-measured)");
+        s_cur = -1;
+    }
+
+    /* ---- 6. a rejected CB wait never reaches callback delivery ------------- */
+    {
+        TCB *self = wsv_begin();
+        s_oracle_mode = 1;
+        s_oracle_callback_calls = 0;
+
+        static const char cbname[] = "wsv-cb";
+        for (size_t k = 0; k < sizeof cbname; k++)
+            MEM_W8(WSV_NAMEBUF + (uint32_t)k, (uint8_t)cbname[k]);
+
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = WSV_NAMEBUF; cpu.r[5] = ORACLE_CALLBACK_ENTRY; cpu.r[6] = 0x55u;
+        uint32_t cb = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+        expect(cb > 0 && sr_callback_is_valid(cb),
+               "WaitSemaCB probe: callback registered through CreateCallback");
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = cb; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u,
+               "WaitSemaCB probe: callback notified and now pending");
+        expect(s_oracle_callback_calls == 0,
+               "WaitSemaCB probe: notifying alone dispatched nothing");
+
+        /* count 0 < need 9, so the OLD code entered the callback loop here. */
+        uint32_t sema = wsv_create(0, 1);
+        expect(wsv_wait(NID_CNW_WAIT_SEMA_CB, sema, 9u, 0u) == WSV_ILLEGAL_COUNT,
+               "sceKernelWaitSemaCB rejects an oversized request with a callback pending");
+        expect(s_oracle_callback_calls == 0,
+               "the rejected CB wait ran no callback-delivery loop");
+        expect(self->state == TH_RUNNING && self->wait_obj == 0 && self->is_cb_wait == 0,
+               "the rejected CB wait entered no callback wait");
+        expect(wsv_count(sema) == 0, "the rejected CB wait left the count at 0");
+
+        /* Control: the same observable DOES fire once the request is valid and
+         * genuinely blocks, so the assertions above are not passing on a probe
+         * that could never have fired. */
+        s_wsv_cb_sema = sema;
+        s_wsv_cb_ret = 0xFFFFFFFFu;
+        s_wsv_cb_returned = 0;
+        self->coro = sr_coro_create(wsv_cb_coro_body, NULL, (size_t)4 << 20);
+        expect(self->coro != NULL, "WaitSemaCB control coroutine created");
+        if (self->coro) sr_coro_switch(self->coro);
+
+        expect(s_oracle_callback_calls == 1,
+               "control: a VALID blocking CB wait did dispatch the pending callback");
+        expect(self->state == TH_WAIT_OBJ && self->wait_obj == sema,
+               "control: the valid CB wait blocked on the semaphore");
+        expect(self->is_cb_wait == 1, "control: the blocked CB wait is marked as a callback wait");
+        expect(s_wsv_cb_returned == 0, "control: the valid CB wait has not returned yet");
+
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        (void)sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA);
+        if (self->state == TH_READY && self->coro) {
+            s_cur = (int)(self - s_tcb);
+            sr_coro_switch(self->coro);
+        }
+        expect(s_wsv_cb_returned == 1 && s_wsv_cb_ret == 0u,
+               "control: the valid CB wait resumed and succeeded after SignalSema");
+        expect(wsv_count(sema) == 0,
+               "control: the resumed CB wait decremented exactly its signal count");
+
+        if (self->coro) { sr_coro_destroy(self->coro); self->coro = NULL; }
+        wsv_delete(sema);
+        s_oracle_mode = 0;
+        s_oracle_callback_calls = 0;
         s_cur = -1;
     }
 }
@@ -3752,18 +4039,20 @@ static void check_coroutine_lifecycle(void) {
            "no switch was ever issued with a NULL target");
     expect(lc.child_to_other == 0,
            "every switch out of a child coroutine targeted the adopted scheduler");
-    /* Two joiner bodies, plus one park per conformance probe leg that returned,
-     * plus the delay-thread body from test_delay_advances_unified_timeline (its
-     * sceKernelDelayThread parks inside the syscall, and the body parks again
-     * when the syscall returns).  ic_expected_parks() derives its count from
-     * the recorded outcome table, not from the park hook, so this stays a
-     * genuine cross-check of the coroutine layer rather than a tautology. */
+    /* Two joiner bodies, plus the WaitSemaCB control body from
+     * test_wait_sema_count_validation, plus one park per conformance probe leg
+     * that returned, plus the delay-thread body from
+     * test_delay_advances_unified_timeline (its sceKernelDelayThread parks
+     * inside the syscall, and the body parks again when the syscall returns).
+     * ic_expected_parks() derives its count from the recorded outcome table,
+     * not from the park hook, so this stays a genuine cross-check of the
+     * coroutine layer rather than a tautology. */
     {
-        int expected_parks = 3 + ic_expected_parks();
-        char msg[160];
+        int expected_parks = 4 + ic_expected_parks();
+        char msg[192];
         snprintf(msg, sizeof msg,
-                 "every parking body parked exactly once (2 joiners + 1 delay body "
-                 "+ %d returned conformance legs = %d, observed %lu)",
+                 "every parking body parked exactly once (2 joiners + 1 sema CB body "
+                 "+ 1 delay body + %d returned conformance legs = %d, observed %lu)",
                  ic_expected_parks(), expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -4796,6 +5085,7 @@ int main(int argc, char **argv) {
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
+    test_wait_sema_count_validation();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();

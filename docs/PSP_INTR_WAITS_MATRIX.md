@@ -33,6 +33,16 @@ known deviations — deferring the work does not remove the evidence.
 | In-tree status | `third_party/` is **Git-ignored**. The oracle file is not part of this repository; the tables below and `src/rt/intr_conformance.h` are transcriptions that cite it by line number |
 | Transcription gate | `tools/test_intr_waits_matrix.py` re-derives every hardware value from the oracle when a checkout is present, and SKIPs (never passes) when it is not |
 
+**A second oracle covers the column this one does not.** `waits.expected` has no
+normal-context cells for the semaphore family, which is why every normal-context
+entry below is a *control*. `tests/threads/semaphores/wait.expected` (31 lines,
+same upstream, same Git-ignored status) is a normal-context hardware capture of
+`sceKernelWaitSema` specifically, and issue #43 used it to implement the
+ordinary count contract. It is cited by line number in `src/rt/hle.c` and in
+`test_wait_sema_count_validation()` in `src/rt/hle_thread_selftest.c`; it does
+not feed `hw[]` here, because these tables are `waits.expected` transcriptions
+and mixing two sources into one column would make the gate unverifiable.
+
 `pspautotests` ships a `LICENSE.txt` containing only the placeholder text
 "TO FILL WITH THE LEAST RESTRICTIVE COMPATIBLE LICENSE". No SPDX identifier is asserted
 for this data on that basis. What is reproduced here is a set of measured return codes
@@ -131,9 +141,10 @@ a hand-copied flag list.
 ### Outcomes
 
 Hardware returns immediately in every cell here. The genuinely blocking waits now consult
-interrupt and dispatch state (PR-B), as do the blocking FPL allocate forms (PR-C1), but the
-remaining immediate/satisfied cases, the interrupt-context cells and the parameter/object
-corrections do not yet, so a probe can still enter a real wait. Each probe therefore runs on its own coroutine standing in for a
+interrupt and dispatch state (PR-B), as do the blocking FPL allocate forms (PR-C1) and
+`sceKernelWaitSema`/`CB` unconditionally (issue #43), but the remaining immediate/satisfied
+cases, the interrupt-context cells and the parameter/object corrections do not yet, so a
+probe can still enter a real wait. Each probe therefore runs on its own coroutine standing in for a
 guest thread; if it does not come back, its TCB is parked in `TH_WAIT_*` and the outcome is
 `WOULD_BLOCK` - a first-class measurement, not a hang.
 
@@ -185,8 +196,13 @@ are entered exactly as before. Keeping the old gate would have opened it for the
 looping probes - `WaitSema`/`CB`, `WaitEventFlag`/`CB`, `WaitThreadEnd`/`CB` - and hung
 the suite. The normal-context leg measures the underlying condition instead and is
 unaffected by any context semantics; it produced identical gating on the PR-A baseline,
-where `base[normal]` and `base[intr-off]` agree in every row. Retiring these 14 cells
-needs PR-D.
+where `base[normal]` and `base[intr-off]` agree in every row. Retiring the remaining 12
+cells needs PR-D.
+
+The gate re-opening by itself is not hypothetical: issue #43 made
+`sceKernelWaitSema`/`CB` **"Invalid count"** return `ILLEGAL_COUNT` in normal context
+instead of blocking, and the two `intr-ctx` cells behind it went from NOT RUN to executed
+on the next run with no change to the harness. 14 spin-unbounded cells became 12.
 
 ### Registry scope
 
@@ -213,13 +229,42 @@ asserted on every run.
 * **UNTESTABLE** - no substrate exists to construct the context.
 * **control** - executed and pinned, but hardware has no cell to compare against.
 
-Totals over 54 probes x 4 columns (216 cells): **46 CONFORMS, 93 known deviations, 22 NOT RUN, 0 UNTESTABLE, 55 controls.**
+Totals over 54 probes x 4 columns (216 cells): **50 CONFORMS, 91 known deviations, 20 NOT RUN, 0 UNTESTABLE, 55 controls.**
 
-The 93 known deviations by implementation owner, recomputed from the run rather than carried
-forward: **PR-C2 24, PR-D 16, PR-E 30, #2 (plain Mutex) 18, #79 (VolatileMemLock) 5.**
+The 91 known deviations by implementation owner, recomputed from the run rather than carried
+forward: **PR-C2 20, PR-D 18, PR-E 30, #2 (plain Mutex) 18, #79 (VolatileMemLock) 5.**
 
-Of the 46: 10 were already right before this campaign (below), PR-B added 28, and PR-C1
-added the 8 `sceKernelAllocateFpl` / `...CB` cells.
+Of the 50: 10 were already right before this campaign (below), PR-B added 28, PR-C1
+added the 8 `sceKernelAllocateFpl` / `...CB` cells, and issue #43 added the 4
+`sceKernelWaitSema` / `...CB` **"Bad sema"** `intr-off`/`disp-off` cells.
+
+### What issue #43 moved
+
+Issue #43 is a count-validation fix, not a context-semantics PR, but it takes the
+first slice of PR-C2 with it because the two are the same statement: putting the
+context check ahead of the object lookup is what the bad-sema cells measure, and
+count validation cannot be inserted without deciding where the context check
+sits relative to it. Twelve cells in group B changed:
+
+| cells | before | after | nature |
+| ---: | --- | --- | --- |
+| 4 | `0x80020000` known deviation | `0x800201a7` **CONFORMS** | `WaitSema`/`CB` bad sema, `intr-off`+`disp-off`. PR-C2 scope, landed here |
+| 2 | `0x80020000` known deviation | `0x80020199` known deviation | `WaitSema`/`CB` bad sema, `intr-ctx`. Still not `ILLEGAL_CONTEXT`; still PR-D |
+| 2 | `0x80020000` control | `0x80020199` control | `WaitSema`/`CB` bad sema, normal. Hardware-measured, but by `wait.expected` L21/L23, not by this oracle |
+| 2 | `WOULD_BLOCK` control | `0x800201bd` control | `WaitSema`/`CB` invalid count, normal. Same: measured by `wait.expected` L3/L13, recorded here as a control |
+| 2 | NOT RUN `spin-unbounded` | `0x800201bd` known deviation | `WaitSema`/`CB` invalid count, `intr-ctx`. The gate reads the normal leg; that leg now RETURNS, so these execute for the first time |
+
+The last row is a coverage gain, not a regression: two cells that could never be
+measured now are, and they report honestly against `ILLEGAL_CONTEXT`.
+
+**One ordering in the new implementation is not hardware-established.** An
+unknown Sema id combined with an invalid count is not a cell in either oracle:
+`waits.cpp` probes bad-id and invalid-count separately, and `wait.c` never
+combines them. `sceKernelWaitSema` resolves it object-first (`UNKNOWN_SEMID`),
+which is what the public reference set supports and what PPSSPP does. That is
+**corroborated, not measured**, and `test_wait_sema_count_validation()` pins it
+as a regression guard with that label attached. Do not promote it to a hardware
+claim without a cell.
 
 Ten of the conforming cells are precedence cells the runtime already got right because it
 validates before it would have blocked: `sceKernelWaitEventFlag` and
@@ -233,14 +278,19 @@ lands 28. The extra four are `sceKernelWaitSema` and `sceKernelWaitSemaCB` **"In
 count"** (`waits.expected` L56/L57, L64/L65), and they are not a widened fix - they are the
 same fix observed through a second fixture. The PR-B/PR-C split was drawn on *hardware's*
 blocking classification, where invalid count is an immediate case because hardware
-validates the signal against `maxCount`. Nakagawa has no such validation, so
-`sceKernelWaitSema(sema, 9, NULL)` against a max-1 semaphore is simply a wait that can
-never be satisfied, and it reaches the same `m->count < need` decision point as the valid
+validates the signal against `maxCount`. Nakagawa had no such validation, so
+`sceKernelWaitSema(sema, 9, NULL)` against a max-1 semaphore was simply a wait that could
+never be satisfied, and it reached the same `m->count < need` decision point as the valid
 case through the same statement. Hardware's answer for those four cells is `CAN_NOT_WAIT`
-either way, so they are promoted rather than left pinned to a value the runtime no longer
-produces. Distinguishing them would require adding `maxCount` validation, which would not
-change these four cells at all - hardware checks the context first - and would additionally
-move two normal-context control cells. That belongs to PR-C/PR-E.
+either way, so they were promoted rather than left pinned to a value the runtime no longer
+produced.
+
+That paragraph closed by predicting adding `maxCount` validation "would not change these
+four cells at all - hardware checks the context first - and would additionally move two
+normal-context control cells." **Issue #43 added the validation and measured exactly
+that**: the four cells kept `CAN_NOT_WAIT`, and the two normal-context controls moved from
+`WOULD_BLOCK` to `0x800201bd`. The prediction held; the four cells are now reached by the
+route hardware uses rather than by an unsatisfiable-wait accident.
 
 ### Full matrix
 
@@ -270,25 +320,25 @@ move two normal-context control cells. That belongs to PR-C/PR-E.
 | `sceDisplayWaitVblankStart` | - | intr-off | L34 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceDisplayWaitVblankStart` | - | intr-ctx | L325 | 0x80020064 | not run | NOT RUN | context |
 | `sceDisplayWaitVblankStart` | - | disp-off | L35 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceKernelWaitSema` | Bad sema | normal | - | unknown | 0x80020000 | control | n/a |
-| `sceKernelWaitSema` | Bad sema | intr-off | L54 | 0x800201a7 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSema` | Bad sema | intr-ctx | L331 | 0x80020064 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSema` | Bad sema | disp-off | L55 | 0x800201a7 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSema` | Invalid count | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceKernelWaitSema` | Bad sema | normal | - | unknown | 0x80020199 | control | n/a |
+| `sceKernelWaitSema` | Bad sema | intr-off | L54 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelWaitSema` | Bad sema | intr-ctx | L331 | 0x80020064 | 0x80020199 | known deviation | context |
+| `sceKernelWaitSema` | Bad sema | disp-off | L55 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelWaitSema` | Invalid count | normal | - | unknown | 0x800201bd | control | n/a |
 | `sceKernelWaitSema` | Invalid count | intr-off | L56 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceKernelWaitSema` | Invalid count | intr-ctx | L332 | 0x80020064 | not run | NOT RUN | context |
+| `sceKernelWaitSema` | Invalid count | intr-ctx | L332 | 0x80020064 | 0x800201bd | known deviation | context |
 | `sceKernelWaitSema` | Invalid count | disp-off | L57 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelWaitSema` | Valid sema | normal | - | unknown | WOULD_BLOCK | control | n/a |
 | `sceKernelWaitSema` | Valid sema | intr-off | L58 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelWaitSema` | Valid sema | intr-ctx | L333 | 0x80020064 | not run | NOT RUN | context |
 | `sceKernelWaitSema` | Valid sema | disp-off | L59 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceKernelWaitSemaCB` | Bad sema | normal | - | unknown | 0x80020000 | control | n/a |
-| `sceKernelWaitSemaCB` | Bad sema | intr-off | L62 | 0x800201a7 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSemaCB` | Bad sema | intr-ctx | L334 | 0x80020064 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSemaCB` | Bad sema | disp-off | L63 | 0x800201a7 | 0x80020000 | known deviation | context |
-| `sceKernelWaitSemaCB` | Invalid count | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceKernelWaitSemaCB` | Bad sema | normal | - | unknown | 0x80020199 | control | n/a |
+| `sceKernelWaitSemaCB` | Bad sema | intr-off | L62 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelWaitSemaCB` | Bad sema | intr-ctx | L334 | 0x80020064 | 0x80020199 | known deviation | context |
+| `sceKernelWaitSemaCB` | Bad sema | disp-off | L63 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
+| `sceKernelWaitSemaCB` | Invalid count | normal | - | unknown | 0x800201bd | control | n/a |
 | `sceKernelWaitSemaCB` | Invalid count | intr-off | L64 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceKernelWaitSemaCB` | Invalid count | intr-ctx | L335 | 0x80020064 | not run | NOT RUN | context |
+| `sceKernelWaitSemaCB` | Invalid count | intr-ctx | L335 | 0x80020064 | 0x800201bd | known deviation | context |
 | `sceKernelWaitSemaCB` | Invalid count | disp-off | L65 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelWaitSemaCB` | Valid sema | normal | - | unknown | WOULD_BLOCK | control | n/a |
 | `sceKernelWaitSemaCB` | Valid sema | intr-off | L66 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
@@ -472,9 +522,9 @@ exist before the cells it unblocks can be measured at all.
 | ---: | --- | --- | --- |
 | S1 | `sceKernelSuspendDispatchThread` / `sceKernelResumeDispatchThread` registered, backed by dispatch-suspension state `s_dispatch_enabled` | 54-cell dispatch-disabled column | Done (#346) |
 | S2 | Test-only reset for `hle.c`'s controller sample ring | 6 `sceCtrlReadBufferPositive` cells | test-only export, production-neutral |
-| S3 | A bounded-execution guard for HLE calls made from interrupt context (today an unsatisfied wait spins with no yield point) | the 14 `spin-unbounded` NOT RUN cells become directly measurable instead of inferred | production; subsumed by S5 |
+| S3 | A bounded-execution guard for HLE calls made from interrupt context (today an unsatisfied wait spins with no yield point) | the 12 `spin-unbounded` NOT RUN cells become directly measurable instead of inferred | production; subsumed by S5 |
 | S4 | `audio.c` linked into the selftest, or a narrower audio channel fixture | `sceAudioOutputBlocking` cells (L226-L231, L391-L392) | test wiring |
-| S5 | `ILLEGAL_CONTEXT` / `CAN_NOT_WAIT` returned by the handlers themselves, per-API, respecting each API's own error precedence | PR-B landed 28 and PR-C1 8. #88 still owns **54** context-semantics cells: PR-C2's 24 known deviations, plus PR-D's 16 known deviations and 14 spin-unbounded NOT RUN. PR-E separately owns **30** parameter/object-precedence cells. A further **18** plain-Mutex and **5** VolatileMemLock cells are deferred to #2 and #79 and stay counted as known deviations here | production; the actual #88 semantics work. `sched_wait_permitted()` provides the state query; the precedence lives in each handler |
+| S5 | `ILLEGAL_CONTEXT` / `CAN_NOT_WAIT` returned by the handlers themselves, per-API, respecting each API's own error precedence | PR-B landed 28, PR-C1 8, issue #43 4. #88 still owns **50** context-semantics cells: PR-C2's 20 known deviations, plus PR-D's 18 known deviations and 12 spin-unbounded NOT RUN. PR-E separately owns **30** parameter/object-precedence cells. A further **18** plain-Mutex and **5** VolatileMemLock cells are deferred to #2 and #79 and stay counted as known deviations here | production; the actual #88 semantics work. `sched_wait_permitted()` provides the state query; the precedence lives in each handler |
 
 ## Dependency-ordered implementation PRs derived from the failing matrix
 
@@ -513,13 +563,18 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      keeps its own registration and is unchanged - it does not block, so the rule does not
      reach it. No #16 reclamation/lifetime work absorbed.
      Acceptance: 46 CONFORMS, 93 known deviations, 22 NOT RUN, 0 UNTESTABLE.
-   * **PR-C2 - the remaining wait APIs.** `WaitSema`/`CB` bad sema, `WaitEventFlag`/`CB` bad
-     flag and already-set, `LockLwMutex`/`CB` bad count and valid, `WaitThreadEnd`/`CB` not
-     running. **12 probes x 2 columns = 24 cells.** These API families have live HST import
-     exposure, so this leg wants a bounded HST route alongside the matrix. Note it reverses
+   * **PR-C2 - the remaining wait APIs.** Discovery scope was `WaitSema`/`CB` bad sema,
+     `WaitEventFlag`/`CB` bad flag and already-set, `LockLwMutex`/`CB` bad count and valid,
+     `WaitThreadEnd`/`CB` not running: **12 probes x 2 columns = 24 cells.** Note it reverses
      PR-B's "only once it would genuinely block" placement for `WaitSema` and `WaitEventFlag`:
      the measured bad-object cells put the check ahead of the lookup, which necessarily puts it
      ahead of the satisfaction test too.
+     **Issue #43 landed the `WaitSema`/`CB` bad-sema pair (4 cells)** as part of the semaphore
+     count-validation fix, for exactly that reason - the reversal and the validation are one
+     edit. **20 cells remain**: `WaitEventFlag`/`CB` bad flag and already-set,
+     `LockLwMutex`/`CB` bad count and valid, `WaitThreadEnd`/`CB` not running.
+     These API families have live HST import exposure, so the remaining leg wants a bounded
+     HST route alongside the matrix.
    **Deferred out of #88 by the same audit** - the cells remain in the tables above, pinned and
    counted as known deviations, until the owning subsystem work lands:
    * `sceKernelLockMutex` / `...CB`, all 3 scenarios -> **historical PR #2**.
@@ -536,8 +591,10 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      invalid-type cells to a third value and register as a **regression**, not a deviation.
 4. **PR-D - `ILLEGAL_CONTEXT` from interrupt context (S3+S5).** Requires PR-B/PR-C so the
    handlers already have a context check to extend. After the Mutex, VolatileMem and UMD
-   ownership moves it retires the 14 `spin-unbounded` NOT RUN cells plus **16** `intr-ctx`
-   known-deviation cells = **30 cells**. Must preserve the two documented inversions:
+   ownership moves it retires the 12 `spin-unbounded` NOT RUN cells plus **18** `intr-ctx`
+   known-deviation cells = **30 cells**. (Issue #43 moved two `WaitSema`/`CB` invalid-count
+   cells from the first group to the second by making that call return instead of spin; the
+   total is unchanged.) Must preserve the two documented inversions:
    `sceKernelWaitThreadEnd(0)` keeps returning `ILLEGAL_THID` (`0x80020197`), and `sceDisplayWaitVblank`
    keeps *succeeding* with 1 (`0x00000001`).
 5. **PR-E - parameter-precedence & object-error corrections.** `sceUmdWaitDriveStat*` invalid type must
