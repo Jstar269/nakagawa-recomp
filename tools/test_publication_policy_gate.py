@@ -123,6 +123,19 @@ def run_audit(candidate: Path, *extra: str, policy: Path | None = None) -> subpr
     return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
 
 
+def run_audit_no_anchor(candidate: Path, *extra: str, policy: Path | None = None) -> subprocess.CompletedProcess:
+    """Like ``run_audit`` but never auto-supplies ``--provenance-ledger``.
+
+    Exercises the same-tree trust-anchor modes: the bare audit must report
+    ``PROVENANCE_UNVERIFIED`` (blocked) and the explicit
+    ``--provenance-self-consistency`` scope must not assert attestation.
+    """
+    argv = [sys.executable, str(AUDIT), "--candidate-root", str(candidate), *extra]
+    if policy is not None:
+        argv += ["--policy", str(policy)]
+    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+
+
 def findings_of(result: subprocess.CompletedProcess) -> list[tuple[str, str]]:
     """Parse ``CODE: path: detail`` lines into (code, path) pairs."""
     parsed: list[tuple[str, str]] = []
@@ -479,6 +492,91 @@ class TestPolicyIntegrity(FixtureMixin, unittest.TestCase):
         result = run_audit(candidate, "--provenance-ledger", str(trusted_ledger), policy=policy)
         self.assertEqual(result.returncode, 1)
         self.assertIn("PROVENANCE_MISSING", {c for c, _ in findings_of(result)})
+
+    def test_fabricated_record_id_fails_against_external_anchor(self):
+        """A plausible-but-fabricated detailed-ledger record_id cannot self-authorize.
+
+        The attacker adds a new implementation path, includes it in the policy, and
+        names a plausible detailed-ledger record that is not present in the trusted
+        release evidence (the same record id the plain-mutex branch uses).  The
+        candidate ledger, profile, and export are fully self-consistent.  Against an
+        externally trusted ledger copy the fabrication still fails closed.
+        """
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        trusted_ledger = candidate.parent / "trusted-ledger.json"
+        trusted_ledger.write_bytes((candidate / "assets" / "public_provenance_ledger.json").read_bytes())
+        new_path = candidate / "src" / "rt" / "fabricated_source.c"
+        new_path.write_bytes(SYNTHETIC_C.encode())
+        document = json.loads((candidate / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        document["include_paths"].append("src/rt/fabricated_source.c")
+        document["include_paths"].sort()
+        policy.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        (candidate / "assets" / "public_source_profile.json").write_text(
+            json.dumps(document, indent=2), encoding="utf-8"
+        )
+        ledger = json.loads((candidate / "assets" / "public_provenance_ledger.json").read_text(encoding="utf-8"))
+        ledger["entries"].append({
+            "path": "src/rt/fabricated_source.c",
+            "classification": "project_authored_attested",
+            "evidence": {
+                "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+                "record_id": "hle-plain-mutex-semantics",
+                "evidence_tier": "R",
+                "authorship": "independent implementation record",
+                "upstream_attribution": "ppsspp",
+            },
+            "sha256": hashlib.sha256(SYNTHETIC_C.encode()).hexdigest(),
+        })
+        (candidate / "assets" / "public_provenance_ledger.json").write_text(
+            json.dumps(ledger, indent=2), encoding="utf-8"
+        )
+        policy_obj = load_policy(policy)
+        files = [(p.relative_to(candidate).as_posix(), p.read_bytes())
+                 for p in candidate.rglob("*") if p.is_file() and p.name != "PUBLIC_EXPORT.json"]
+        files.append(("PUBLIC_EXPORT.json", b""))
+        write_document(candidate / "PUBLIC_EXPORT.json", build_document(policy_obj, files,
+            provenance_ledger=(candidate / "assets" / "public_provenance_ledger.json").read_bytes(),
+            manifest=(candidate / "assets" / "release_manifest.json").read_bytes()))
+        result = run_audit(candidate, "--provenance-ledger", str(trusted_ledger), policy=policy)
+        self.assertEqual(result.returncode, 1)
+        codes = {c for c, _ in findings_of(result)}
+        self.assertIn("PROVENANCE_LEDGER_MISMATCH", codes)
+        self.assertIn("PROVENANCE_MISSING", codes)
+
+    def test_bare_audit_without_trusted_ledger_is_blocked(self):
+        """A bare audit must not pass on the candidate's own ledger.
+
+        Without ``--provenance-ledger`` the candidate's own ledger would be a
+        self-referential trust anchor; the audit must report the attestation as
+        unverifiable and fail instead of blessing the candidate's own bytes.
+        """
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        result = run_audit_no_anchor(candidate, policy=policy)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("PROVENANCE_UNVERIFIED", {c for c, _ in findings_of(result)})
+
+    def test_provenance_self_consistency_scope_does_not_assert_attestation(self):
+        """The explicit developer tripwire scope passes a consistent candidate without claiming attestation."""
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        result = run_audit_no_anchor(candidate, "--provenance-self-consistency", policy=policy)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        codes = {c for c, _ in findings_of(result)}
+        self.assertNotIn("PROVENANCE_UNVERIFIED", codes)
+        self.assertNotIn("PROVENANCE_LEDGER_MISMATCH", codes)
+
+    def test_provenance_self_consistency_scope_still_catches_stale_hashes(self):
+        """The developer tripwire still enforces coverage and content hashes against the audited ledger."""
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        (candidate / "src" / "rt" / "safe.c").write_bytes(
+            SYNTHETIC_C.replace("return 0;", "return 1;").encode()
+        )
+        result = run_audit_no_anchor(candidate, "--provenance-self-consistency", policy=policy)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("PROVENANCE_CONTENT_MISMATCH", {c for c, _ in findings_of(result)})
 
 
 class TestManifestReconciliation(FixtureMixin, unittest.TestCase):

@@ -129,6 +129,12 @@ def run_publish_audit(repo_root: Path = ROOT) -> GateResult:
         return GateResult("Publication Audit", False, "tools/publish_audit.py missing")
 
     command = [sys.executable, str(audit_script), "--tracked-only"]
+    # This gate runs against the tree it lives in, which cannot attest against the
+    # trusted release evidence (the detailed development ledger lives outside the
+    # public candidate). Scope the provenance check to candidate-internal
+    # consistency; the release flow asserts attestation separately via
+    # publish_audit --candidate-root ... --provenance-ledger.
+    command.append("--provenance-self-consistency")
     # A materialized public-safe candidate deliberately omits manifest entries
     # whose disposition is excluded. Audit that tree in public scope, while a
     # source checkout remains strict by default.

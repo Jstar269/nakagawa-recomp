@@ -106,7 +106,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "92b9bd1b23b2284f29128a19a88cbf3608e3fd7dd9a2f25e6fb5c0de36826762"
+      "sha256": "cb8ca16f46574b8728d9124ab55552f67e144265270b4e931c11e96e467e23b0"
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE/default.md",
@@ -124,7 +124,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0e9519a3c9f89aa60e90da4916aeaec5ecb5d8393f16c254eb0fe0389da11220"
+      "sha256": "898733fd12e1203ae5fab4fb927036b314e9e1bc03c26a555e2e25b498cdfb31"
     },
     {
       "path": ".github/dependabot.yml",
@@ -197,7 +197,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0d834b1d17b16feb9de612a650826b85573047191ea973ac05d30d011eaa47ce"
+      "sha256": "4f1f25e998569217a28324ccb2005592434de6ee57bd9a6a16c492d13ae2dc33"
     },
     {
       "path": "AGENTS.md",
@@ -829,7 +829,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd161c1665d4f356e77acde4e56fe6cc88f3fc22c1e4457768f89d9cea8cf6d2"
+      "sha256": "ad1c108df065cd5b30f357b49a65d2bb93ca6a594666b47180e0ce8ece6395ff"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -919,7 +919,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f3806008622f332453376f0fa8cece3d2a4534a74a1397ac11e930c1db68d748"
+      "sha256": "397ac756ec2f6977f395f32dcc91a15be7766fce8c674259cd7bf60fc4c18d8f"
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
@@ -1104,7 +1104,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "caea940e6226ad8fb5e37684f91cf18e7873a74177ea8ac3d25632578d3bf183"
+      "sha256": "2e9782871baf02566e6b154eab611637664882dde2c1ca48ad705fc73849ac41"
     },
     {
       "path": "interface/.env.example",
@@ -4949,7 +4949,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7c84f975bbca3728fb08367ceb1196e76cd949210c4684a6079610bca0cacc2"
+      "sha256": "c7d0c314b5fedc0053f6b14419b8db19bc346dd17e8da0b19fc1a27d88463bff"
     },
     {
       "path": "tools/ci_paths.py",
@@ -5642,7 +5642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "191a542eef13d1c3cb46801dfffe574f4dd39755c77bb22519c58ea941032ee9"
+      "sha256": "8c15f2256f50dcb3873519cef0096124edad7250414c5119b47702aefc2115e1"
     },
     {
       "path": "tools/prxload.py",
@@ -5899,7 +5899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5baf3d3b65e039212f46cbddc1a5de2aced6c3daa3f412a6a28d1565c56051d2"
+      "sha256": "49e92ff25a7fa3891633ce673cae0c61bb05fe27ad56c24b9dd34d59bb29e108"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -6715,7 +6715,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9caed1e601b17ac6e4f46bc94c5cd6ad8bf0d05aedf7b7f0a542fcb05b4c1ce8"
+      "sha256": "853b443ef24df23a02b7cec7959ab15543fec0ca97402f28086678b475fdabf1"
     },
     {
       "path": "tools/test_prxload_psp_header.py",
@@ -6859,7 +6859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c07b24b1d58bc41d70358b5bb8d078e3bb47f1ce5e2c1d58ea2c91181c5a033"
+      "sha256": "79dafd0bbe1936eb5a58821b00b84441a795409b999a59fb8fdbbfc25257cab5"
     },
     {
       "path": "tools/test_publish_audit.py",

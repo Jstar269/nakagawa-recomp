@@ -90,7 +90,12 @@ repos:
         # Policy findings (excluded path present, unclassified path, stale policy
         # digest, manifest contradiction) are unconditional and do not depend on
         # --public-scope; that flag adds the softer asset-scope checks on top.
-        entry: python tools/publish_audit.py --tracked-only --public-scope
+        # --provenance-self-consistency: pre-commit runs in this checkout and has no access to
+        # the externally trusted provenance ledger, so it asserts candidate-internal consistency
+        # (coverage, resolution, content hashes) and explicitly does not attest authenticity.
+        # Attestation is asserted only by the release flow via --provenance-ledger; a bare audit
+        # without either flag fails with PROVENANCE_UNVERIFIED rather than self-authorizing.
+        entry: python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
         language: system
         pass_filenames: false
         always_run: true
