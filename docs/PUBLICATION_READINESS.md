@@ -62,6 +62,15 @@ python tools/build_public_export.py --public-safe-profile --export-dir <staging>
 python tools/publish_audit.py --candidate-root <staging> --candidate-tree --public-scope
 ```
 
+The first command regenerates the public provenance ledger from the detailed
+development ledger, which may stay outside the public tree. Classification is
+fail-closed: a path-specific record is the only way an implementation path is
+attested, `tools/*`-style wildcard records are never expanded, and the
+generator refuses to write a ledger while any included path is unresolved.
+The public ledger is therefore not produced until the detailed ledger actually
+records the missing paths; `--check` validates the checked-in ledger without
+regenerating it.
+
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted
 gates.
