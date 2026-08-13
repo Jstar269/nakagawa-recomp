@@ -14,6 +14,7 @@ claim.
 | P0 | Ongoing | Public-source safeguards: exact-tree, provenance, history, security, and export gates remain required for proposed changes and release candidates. |
 | P1 | Open | PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) remains an implementation lane. |
 | P1 | Open | Portable Allegrex/VFPU float-to-word semantics are tracked in [issue #38](https://github.com/Jstar269/nakagawa-recomp/issues/38). |
+| P1 | Open | Exotic VFPU NaN/Inf matrix/multiply divergences: [issue #40](https://github.com/Jstar269/nakagawa-recomp/issues/40) is reduced to one mechanism and the codegen/interp split is fixed; PSP result bits remain hardware-unresolved pending the source-owned probe ([`fixtures/vfpu_nan_payload/`](fixtures/vfpu_nan_payload/)). |
 | P1 | Open | Unified PSP clocks, waits, and interrupt delivery remain source-owned runtime work. |
 | P1 | Open | Direct XB archive/VFS tooling is documented in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs remain local-only. |
 | P1 | Open | The versioned title-manifest/toolkit boundary is described in [`assets/titles/README.md`](assets/titles/README.md); only generic and synthetic manifests are public-scope. Analyzer executable spans and manifest-derived build settings now have one explicit owner ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)). |
