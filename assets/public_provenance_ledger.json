@@ -1104,7 +1104,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "6fe1e8c4fdca7149562d6d8181b7803e98c9f7500aef2d612f1de30a140387c7"
+      "sha256": "caea940e6226ad8fb5e37684f91cf18e7873a74177ea8ac3d25632578d3bf183"
     },
     {
       "path": "interface/.env.example",
