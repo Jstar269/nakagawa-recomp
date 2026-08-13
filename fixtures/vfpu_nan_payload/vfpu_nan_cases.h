@@ -35,11 +35,11 @@
  * MATRIX LAYOUT
  * -------------
  * Matches the hardware/PPSSPP matrix register layout (ReadMatrix): for a 3x3
- * (t-size) matrix, element (row r, col c) of matrix M<n> lives at
- * S((n*16) + (r*4) + c).  So:
- *   M000 -> S000,S001,S002 | S004,S005,S006 | S008,S009,S010
- *   M100 -> S016,S017,S018 | S020,S021,S022 | S024,S025,S026
- *   M200 -> S032,S033,S034 | S036,S037,S038 | S040,S041,S042
+ * (t-size) matrix, element (column c, row r) of matrix M<n> lives at
+ * S<n><c><r>.  So:
+ *   M000 -> S000,S001,S002 | S010,S011,S012 | S020,S021,S022
+ *   M100 -> S100,S101,S102 | S110,S111,S112 | S120,S121,S122
+ *   M200 -> S200,S201,S202 | S210,S211,S212 | S220,S221,S222
  * vmmul computes Mvd[a][b] = sum_c Mvs[b][c] * Mvt[a][c] (the PPSSPP/codegen
  * convention, which is what the host audit used).
  */
@@ -52,7 +52,7 @@
 typedef struct {
     const char *id;          /* stable case id, printed verbatim          */
     unsigned op;             /* 0 = vmmul.t M200, M000, M100             */
-                             /* 1 = vtfm3.t T100, M100, T000             */
+                             /* 1 = vtfm3.t C200, M100, C000             */
     unsigned int in[18];     /* raw bits: M000[9] then M100[9]           */
 } VfpuNanCase;
 

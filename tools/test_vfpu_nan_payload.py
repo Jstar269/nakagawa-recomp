@@ -71,7 +71,7 @@ class ProbeContractTests(unittest.TestCase):
 
     def test_both_ops_are_covered(self) -> None:
         self.assertIn("vmmul.t M200, M000, M100", self.probe)
-        self.assertIn("vtfm3.t T100, M100, T000", self.probe)
+        self.assertIn("vtfm3.t C200, M100, C000", self.probe)
 
 
 class ProbeBuildContractTests(unittest.TestCase):

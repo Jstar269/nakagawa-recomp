@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a4200753f84d2f89547c11085345ae44165bdc698374716e3de674fc62be4cd"
+      "sha256": "fb7fe2a3c268ae1c00a0a90d7444905f8b62bf4deaa776623b83c27dcbb26caa"
     },
     {
       "path": "LICENSE",
@@ -1066,7 +1066,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "f79a6f247198898d0d8e81db3f4ae1b44cbfe03a7eb0ed0f8d1e72302391bf35"
+      "sha256": "2783eff1d259e37fd7de2e5d1c07e2633c180613153f170d98b2c4e203957e3a"
     },
     {
       "path": "fixtures/vfpu_nan_payload/vfpu_nan_probe.c",
@@ -1075,7 +1075,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9904c2e7d0faaf1ed91803956df74a57329235fdbdac7537a37c298c52a5039c"
+      "sha256": "f76798ecc78a16781e2e21cf7d757422d45526911ec9373765d875935ee04499"
     },
     {
       "path": "fixtures/vfpu_oracle/Makefile",
@@ -7126,7 +7126,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1df6e1e84ba734dd046f27623bdb5733bebc1d2071d08b3a95fcfe53aa852a0"
+      "sha256": "c4d62ef6c70b2ecb26386c1f96c7968e6314182f3ab2ea69fedb5adfdea865db"
     },
     {
       "path": "tools/test_vfpu_oracle.py",
