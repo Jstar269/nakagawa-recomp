@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -111,13 +112,14 @@ def materialize(ref: str, destination: Path, profile_path: Path) -> dict:
     return metadata
 
 
-def audit_candidate(destination: Path) -> list[publish_audit.Finding]:
+def audit_candidate(destination: Path, provenance_ledger: Path | None = None) -> list[publish_audit.Finding]:
     entries = publish_audit._get_filesystem_entries(destination)
     return publish_audit.audit_entries(
         entries,
         manifest_path=destination / "assets" / "release_manifest.json",
         public_scope=True,
         repo_root=destination,
+        provenance_ledger_path=provenance_ledger,
     )
 
 
@@ -126,10 +128,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--ref", default="HEAD", help="Exact Git ref to export (default: HEAD)")
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
+    parser.add_argument(
+        "--provenance-ledger",
+        type=Path,
+        default=None,
+        help="Release-controlled provenance ledger generated from the private detailed ledger; "
+             "required because the materialized candidate's own checked-in ledger is "
+             "candidate-controlled evidence and can never be the attestation anchor",
+    )
     args = parser.parse_args(argv)
+    if args.provenance_ledger is None:
+        print(
+            "public candidate: FAIL: --provenance-ledger is required; the candidate's own "
+            "checked-in ledger cannot attest its own provenance",
+            file=sys.stderr,
+        )
+        return 1
     try:
         metadata = materialize(args.ref, args.destination, args.profile.resolve())
-        findings = audit_candidate(args.destination.resolve())
+        findings = audit_candidate(args.destination.resolve(), args.provenance_ledger.resolve())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
         print(f"public candidate: FAIL: {error}")
         return 2

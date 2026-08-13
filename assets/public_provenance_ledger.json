@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05b3175480f2115cb904ed33c7fd7c63b40ee69b09b3012a87869581785932f8"
+      "sha256": "5c5319ba3dd5e912431cf01de0c3fdf74c990368b24972c900a5b6856cbc8d28"
     },
     {
       "path": "assets/release_manifest.json",
@@ -4949,7 +4949,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7d0c314b5fedc0053f6b14419b8db19bc346dd17e8da0b19fc1a27d88463bff"
+      "sha256": "285deb671fbce449e53920ba7299cc466ab6f1961bd274d201709f914322e1d4"
     },
     {
       "path": "tools/ci_paths.py",
@@ -5863,7 +5863,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44ccd615fa3822a67420543916aad176004ebfef33f1cff91c01798d9b06fdf7"
+      "sha256": "1ce62eb74c5f3fe5a7547c3ccaad3e6d365e18c3b118b0c86835424ef0c99c27"
     },
     {
       "path": "tools/public_export.py",
@@ -5899,7 +5899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49e92ff25a7fa3891633ce673cae0c61bb05fe27ad56c24b9dd34d59bb29e108"
+      "sha256": "9f8cbcd18613d387a62d52ad23215e9314c655be4bd87ee36a2e4aeda8bf044b"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -6704,6 +6704,15 @@
         "upstream_attribution": null
       },
       "sha256": "4f114a468e18e11dd05a4a7231b97600a3044abce2ef6da18bbd567175eefa83"
+    },
+    {
+      "path": "tools/test_provenance_attestation_gate.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "8b2a5dd274b5e8dd77c8ff382c75a9e7c2a50712b14a13d10576c37360115212"
     },
     {
       "path": "tools/test_provenance_ledger.py",

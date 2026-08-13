@@ -248,21 +248,32 @@ def load_public_safe_profile() -> tuple[dict, Path]:
     return profile, profile_path
 
 
-def run_candidate_audit(candidate_root: Path) -> GateResult:
-    """Run the exhaustive candidate-tree public-scope manifest gate on an export."""
+def run_candidate_audit(candidate_root: Path, trusted_ledger: Path | None = None) -> GateResult:
+    """Run the exhaustive candidate-tree public-scope manifest gate on an export.
+
+    The materialized candidate carries its own checked-in ledger, which is
+    candidate-controlled evidence and can never be the attestation anchor.
+    ``--provenance-ledger`` therefore must supply the release-controlled ledger
+    regenerated from the private detailed development ledger; without it the
+    candidate-tree audit fails closed with PROVENANCE_UNVERIFIED.
+    """
     audit_script = ROOT / "tools" / "publish_audit.py"
     if not audit_script.is_file():
         return GateResult("Candidate-Tree Audit", False, "tools/publish_audit.py missing")
 
+    command = [
+        sys.executable,
+        str(audit_script),
+        "--candidate-root",
+        str(candidate_root),
+        "--candidate-tree",
+        "--public-scope",
+    ]
+    if trusted_ledger is not None:
+        command.extend(["--provenance-ledger", str(trusted_ledger)])
+
     res = subprocess.run(
-        [
-            sys.executable,
-            str(audit_script),
-            "--candidate-root",
-            str(candidate_root),
-            "--candidate-tree",
-            "--public-scope",
-        ],
+        command,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -460,6 +471,16 @@ def main() -> int:
     parser.add_argument("--export-dir", type=Path, help="Target directory for sanitized public export")
     parser.add_argument("--public-safe-profile", action="store_true", help="Use public-safe profile (excludes unresolved PGF/font and PGD/amctrl surfaces)")
     parser.add_argument("--dry-run", action="store_true", help="Perform dry run without writing files")
+    parser.add_argument(
+        "--trusted-ledger",
+        type=Path,
+        default=None,
+        help=(
+            "Release-controlled provenance ledger generated from the private detailed ledger. "
+            "Required for the post-export candidate-tree audit; the exported tree's own "
+            "checked-in ledger is candidate-controlled evidence and is never the trust anchor."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -495,7 +516,7 @@ def main() -> int:
 
     # Post-export gate: the materialized tree must itself pass the exhaustive
     # candidate public-scope manifest gate, not just the source gates above.
-    audit = run_candidate_audit(args.export_dir)
+    audit = run_candidate_audit(args.export_dir, trusted_ledger=args.trusted_ledger)
     print(f"[{'PASS' if audit.passed else 'FAIL'}] {audit.name}: {audit.detail}")
     if not audit.passed:
         print(
