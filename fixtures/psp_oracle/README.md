@@ -11,7 +11,7 @@ default `CASE=smoke` build emits `PSP-SMOKE-001`; kernel sessions build one
 case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-lifecycle`, `CASE=thread-delete-lifecycle`,
 `CASE=thread-delete-followup`, `CASE=thread-delete-explicit`, or
-`CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
+`CASE=thread-delete-boundary`. Mutex sessions build one case per launch with `CASE=mutex-refer-unlocked`, `CASE=mutex-timeout-quanta`, `CASE=mutex-priority-inheritance`, or `CASE=mutex-interrupt-context`. DMA sessions use `CASE=dma-concurrency` or one
 of the four `CASE=dma-invalid-tail-*` cases described below.
 
 The thread-delete follow-up is a bounded two-control probe for the

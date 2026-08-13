@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67fbb2103663bd64c4c9697ecad823d3326bfcf4dee305b7d8b3207617b68961"
+      "sha256": "77779292efbbf332b1198312ab5a4bbba32723f818c7f6b5bb9ec67c68ce06dd"
     },
     {
       "path": "LICENSE",
@@ -287,7 +287,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "cd78fa61a69668aac07261fae6975a1234ea8e464fc95a1af08a519df2724e3a"
     },
     {
       "path": "README.md",
@@ -378,7 +379,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "e4d4fc535093e87d56227b94c9c1ae18773881b3ea766fbe48b283dfb7ad6da6"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -387,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "09c28e101f61f0bf7383f14e081f3b46c3191868226767d664e73944db9d5bc2"
+      "sha256": "e5bb088744f6c5df10b4ff6fce08fd56f6d58e558f6de2e88be863868b0a6230"
     },
     {
       "path": "assets/release_manifest.json",
@@ -760,6 +762,16 @@
       "sha256": "94abc2502cafa36548bb1418905ee949a1e5c244b6a62c02ff776d5f81698bd5"
     },
     {
+      "path": "docs/MUTEX_HARDWARE_ORACLE.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "c801c211ccf58dde91bba9c1d7bf5ecb7763f23f7913792b947831d76ad9f208"
+    },
+    {
       "path": "docs/OSPS_BASELINE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -847,7 +859,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "619c7836368cc426fd083324ccdd81aa686f78839dfebd8ac62ac8bb17230ca9"
+      "sha256": "fd03880cca7c8bd00b5119f7746236ee34a5495b42f8e0f2e4aca98abc5d1b89"
     },
     {
       "path": "docs/SETUP.md",
@@ -1000,7 +1012,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0bed0d157b41241787c13bf7be04f272ea82f0dfa1fffdcd17de16a774191623"
+      "sha256": "57fdd7fcdbe1c5aae719aea24daf6f75cd5ebdf3a0d2aaee13362f6187286d7f"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1009,7 +1021,17 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e81541ea9cc0999ba7b4d98fc81f72b7a82617e259ac2d375cb3c07c0fc87456"
+      "sha256": "c3d828668f75e21caf710a02fd7565a4e9986b8ff463f49a37430568ac198626"
+    },
+    {
+      "path": "fixtures/psp_oracle/mutex_imports.S",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "ee64c070e1ad7a0999746bba7eab0786fad58f2a34e01fc8c2036f69e05293b4"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1018,7 +1040,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "852b40c603a9f71561814764b1e1dccd06eaed64522a5afd5b77b99e06039443"
+      "sha256": "4bc909df821cb8add45ace61b7c2ce914fd290213119ac55e1be7663a4aa2171"
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
@@ -4406,6 +4428,30 @@
       "sha256": "e7197f12fc9f6426b07bef2a7546a4709775f5f50339bfbda6cbdd548fb79166"
     },
     {
+      "path": "src/rt/mutex.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-plain-mutex-semantics",
+        "evidence_tier": "R",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
+      },
+      "sha256": "341e031118423c51f61cd75f5010bb99bfe7e8d45a8d75814eb1d370eb7be0eb"
+    },
+    {
+      "path": "src/rt/mutex.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-plain-mutex-semantics",
+        "evidence_tier": "R",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
+      },
+      "sha256": "24a6e34f4a705acd26c901393fc60426b4e057851babc2c9297c8561141b33ce"
+    },
+    {
       "path": "src/rt/nid_names.h",
       "classification": "generated_from_public_source",
       "evidence": {
@@ -5719,7 +5765,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d152ead6979d72fc5565907c95a50639976c0d7f8ef95b42540e0781db94ff2"
+      "sha256": "bd3f637e54bcdf788ec4460b30e66b0f88ad1968dd6fc3f0e6ba7247b56b2b72"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -6763,7 +6809,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02467b178dc79967a7fa8bd961693da475f9680ee0a610f32da5d2583c25bee1"
+      "sha256": "ba3f52e06ff2bd97f24ca79a7411f6903c906ead98361d5586da93ce7844180c"
     },
     {
       "path": "tools/test_psp_readiness.py",
