@@ -862,10 +862,18 @@ def vfpu_effect(addr, w):
     if op == 0x19 and sub == 4:  # vhdp
         ti = vreg_indices(vt, n)
         dst = vreg_indices(vd, 1)[0]
-        terms = "+".join(f"_s[{i}]*_t[{i}]" for i in range(n - 1)) + f"+1.0f*_t[{n - 1}]"
+        # Accumulate into a local starting at +0.0f with one += per term, exactly
+        # matching sr_vfpu_interp's vhdp fold (issue #40 shape policy). A single
+        # chained expression (_s[0]*_t[0]+...+1.0f*_t[n-1]) starts from the FIRST
+        # product instead of +0.0f, which flips the result sign when the products
+        # are opposite-signed zeros and picks a different NaN payload on NaN
+        # sources -- the overlap/aliasing audit found -0 vs +0 and 0x7fc00000 vs
+        # 0x7fc00001 divergences on vhdp with the destination overlapping the
+        # sources. Same term order, so finite results are bit-identical.
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d={terms}; _d=isnan(_d)?fabsf(_d):_d; "
+                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
+                f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
                 f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 5:  # vcrs
