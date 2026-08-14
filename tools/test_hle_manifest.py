@@ -360,6 +360,13 @@ class LiveManifestTests(unittest.TestCase):
         self.assertEqual(self.regs[0x46F61F8B]["classification"], "controlled_unsupported")
         self.assertEqual(self.regs[0xB9848A74]["classification"], "controlled_unsupported")
 
+    def test_psmf_controlled_unsupported_cites_no_stale_public_tracker(self) -> None:
+        # Public #31 is a closed dependency-bump PR unrelated to the PSMF demux
+        # surface; the metadata must describe the refusal contract instead of
+        # pointing at a live-but-wrong tracker object.
+        source = Path(meta.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("issue #31", source)
+
     def test_committed_baseline_is_current_and_reproducible(self) -> None:
         baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
         self.assertEqual(baseline, manifest_to_baseline(self.manifest))

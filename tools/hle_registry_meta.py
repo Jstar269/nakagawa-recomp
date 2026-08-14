@@ -18,7 +18,7 @@ Classification model (per registered NID):
   controlled_unsupported -- a dedicated handler that deliberately refuses the
                             operation with the API's own documented error
                             (e.g. the PSMF getters returning PSMF_ERR_NO_DATA
-                            until issue #31 lands). Unsupported, but honest.
+                            until the real demux is connected). Unsupported, but honest.
   dedicated              -- a handler written for this API. NOT a claim of
                             completeness; see HANDLER_STATUS.
 
@@ -61,8 +61,9 @@ HANDLER_STATUS = {
     # no parameters; the full observable contract is the float bits.
     "h_DisplayGetFramePerSec": "complete",
     # Documented controlled-error policy: PSMF video/audio getters return
-    # PSMF_ERR_NO_DATA until the real demux is connected (AGENTS.md; the
-    # attract movie stays black by design). Tracked by issue #31.
+    # PSMF_ERR_NO_DATA until the real demux is connected (the attract movie
+    # stays black by design). No public tracker exists yet; the refusal
+    # contract is documented here.
     "h_PsmfGetVideo": "controlled_unsupported",
     "h_PsmfGetAudio": "controlled_unsupported",
     # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
