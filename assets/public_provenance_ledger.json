@@ -5353,7 +5353,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bfc26dee629cd26dfa92e12b0ff24ffae6e7cad570ce5f4b6fd63315657fa6b2"
+      "sha256": "b05321739d828adabcc7bf96868ec7ab68e8853a9ba10cd3a036aa5679d464cf"
     },
     {
       "path": "tools/hst_safety.ps1",
@@ -7180,7 +7180,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9df6e2f84f86314fd5688459deaa26d2c5230d16ab313f6890a18f761e68f7b7"
+      "sha256": "8e66d881c4b569018d66d288a5313c5fd837da7204bf9ff32d1d043f2c5fb18f"
     },
     {
       "path": "tools/test_visual_oracle.py",

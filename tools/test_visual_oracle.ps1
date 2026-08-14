@@ -183,9 +183,41 @@ try {
         [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $base "UCUS98701GAMEDATA"))) `
             "GAMEDATA must not be copied into the baseline"
-        [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
+        # The restore's own verdict has to be asserted. Discarding it hid the defect this
+        # test was written to cover: post-swap verification compared the WHOLE live root
+        # against a manifest that deliberately excludes GAMEDATA, so every GAMEDATA file
+        # counted as an unexplained extra and the restore always failed -- while GAMEDATA
+        # itself did survive, so the surviving-install assertion still passed.
+        $r = Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot
+        Assert-True ($null -ne $r) "restore must not fail merely because a GAMEDATA install exists"
+        Assert-True ($r.Action -eq "restored") "second use must restore, got $($r.Action)"
         Assert-True ((Get-Content -LiteralPath (Join-Path $root "UCUS98701GAMEDATA/BIG.BIN")) -eq "install") `
             "GAMEDATA must survive a restore untouched"
+        Assert-True ((Get-Content -LiteralPath (Join-Path $root "UCUS98701/DATA0.BIN")) -eq "save") `
+            "the managed save must be restored alongside an untouched install"
+    }
+
+    Test-Case "a completed restore leaves no swap orphan behind" {
+        # An orphan .hst_savebase_* sibling is the signal for an interrupted swap, and the
+        # next restore fails closed on it. A restore that ran to completion must therefore
+        # leave none, or one run poisons every later run of the same baseline.
+        $root = Join-Path $tmpRoot "ms4/PSP/SAVEDATA"
+        New-Item -ItemType Directory -Path (Join-Path $root "UCUS98701") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $root "UCUS98701GAMEDATA") -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $root "UCUS98701/DATA0.BIN") -Value "save"
+        Set-Content -LiteralPath (Join-Path $root "UCUS98701GAMEDATA/BIG.BIN") -Value "install"
+        $base = Join-Path $tmpRoot "base4"
+        [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
+        [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
+        $parent = [IO.Path]::GetDirectoryName((Get-CanonicalPath -Path $root))
+        $orphans = @(Get-ChildItem -LiteralPath $parent -Directory -Force |
+            Where-Object { $_.Name -like ".hst_savebase_*" })
+        Assert-True ($orphans.Count -eq 0) `
+            "restore left $($orphans.Count) swap orphan(s), which fails every later restore closed"
+        # ...and a third run must still be able to restore, not trip the orphan guard.
+        $r = Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot
+        Assert-True ($null -ne $r -and $r.Action -eq "restored") `
+            "a repeated restore must keep working across runs"
     }
 } finally {
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
