@@ -46,6 +46,10 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 extern void sr_vblank_tick(void);
 
+/* Test-build-only white-box view of the no-frame watchdog state exported by
+ * hle.c: the observation count and the vblanks-since-flip clock. */
+extern void sr_watchdog_test_state(unsigned long *fires, uint32_t *vblanks_since_flip);
+
 /* The selftest deliberately omits the renderer, so this stands in for the
  * production invalidation callback. It records what it was told rather than
  * discarding it: "a rejected DMA request must not dirty a GPU range" is a
@@ -88,6 +92,11 @@ extern int sr_hle_test_msgpipe_state(uint32_t uid, SrMsgPipeState *out);
 extern uint32_t sr_hle_test_msgpipe_max_capacity(void);
 /* Read-only view of a production Sync entry; see hle.c (issue #43). */
 extern int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out);
+/* Read-only view of the sceDisplaySetFrameBuf outcome accounting (defined in hle.c).
+ * Any out-pointer may be NULL. */
+extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *immediate,
+                                        unsigned long *latched, unsigned long *rejected,
+                                        uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -1359,6 +1368,143 @@ static void test_vcount_freezes_during_interrupt_disable(void) {
     expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
            "VCOUNT advances exactly once when the deferred vblank delivers");
     (void)sys0;
+}
+
+/* sceDisplaySetFrameBuf flip accounting.
+ *
+ * A stretch of vblanks with no new presented frame is a NO-NEW-FLIP observation,
+ * and it has two opposite causes: the guest stopped asking for flips, or the guest
+ * asked and this handler refused. The no-frame watchdog reports only a flip-vcount
+ * delta, which cannot tell those apart -- a real investigation had to guess. These
+ * counters make the distinction observable, so they are load-bearing diagnostics
+ * and must not regress.
+ *
+ * Contract asserted here, through production NID dispatch:
+ *   - an accepted immediate (sync=0) flip counts as `immediate`, not as a rejection;
+ *   - a refused request counts as `rejected`, records the PSP error it returned, and
+ *     leaves the active scanout state untouched (a refusal must not half-apply);
+ *   - every call is counted exactly once, whatever the outcome.
+ * Refusal cases used: sync>1 (INVALID_MODE) and a misaligned address (ILLEGAL_ADDR); both
+ * are pre-existing behavior, so this test pins the accounting, not the error policy. */
+static void test_display_setframebuf_flip_accounting(void) {
+    /* These do not fit in an int, so they cannot be enum constants, and
+     * SCE_KERNEL_ERROR_ILLEGAL_ADDR already exists as a file-scope macro. */
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t ERR_INVALID_MODE = 0x80000107u;
+    static const uint32_t ERR_ILLEGAL_ADDR = SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    static const uint32_t VRAM_A = 0x04000000u;
+    static const uint32_t VRAM_B = 0x04044000u;
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    unsigned long c0, i0, l0, r0;
+    sr_display_test_flip_counts(&c0, &i0, &l0, &r0, NULL);
+
+    /* Accepted immediate flip: stride/format match the latched state, so it presents. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    uint32_t ok = sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF);
+    unsigned long c1, i1, l1, r1;
+    sr_display_test_flip_counts(&c1, &i1, &l1, &r1, NULL);
+    expect(ok == 0u, "SetFrameBuf accepts a matching immediate flip");
+    expect(c1 == c0 + 1u, "SetFrameBuf counts the accepted call");
+    expect(i1 == i0 + 1u, "an accepted immediate flip is counted as immediate");
+    expect(r1 == r0, "an accepted flip is not counted as a rejection");
+
+    /* Refusal 1: sync out of range. */
+    cpu.r[4] = VRAM_A; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 2;
+    uint32_t bad_sync = sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF);
+    unsigned long c2, i2, l2, r2; uint32_t err2;
+    sr_display_test_flip_counts(&c2, &i2, &l2, &r2, &err2);
+    expect(bad_sync == ERR_INVALID_MODE,
+           "SetFrameBuf refuses sync>1 with INVALID_MODE");
+    expect(c2 == c1 + 1u, "SetFrameBuf counts a refused call");
+    expect(r2 == r1 + 1u, "a refused request is counted as a rejection");
+    expect(err2 == ERR_INVALID_MODE,
+           "the rejection records the error actually returned");
+    expect(i2 == i1 && l2 == l1,
+           "a refusal is not also counted as an accepted flip");
+
+    /* Refusal 2: misaligned address, to show the accounting tracks which refusal was
+     * last and is not wired to a single error path. */
+    cpu.r[4] = VRAM_A + 1u; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    uint32_t bad_addr = sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF);
+    unsigned long c3, i3, l3, r3; uint32_t err3;
+    sr_display_test_flip_counts(&c3, &i3, &l3, &r3, &err3);
+    expect(bad_addr == ERR_ILLEGAL_ADDR,
+           "SetFrameBuf refuses a misaligned address with ILLEGAL_ADDR");
+    expect(c3 == c2 + 1u && r3 == r2 + 1u, "the misaligned refusal is counted too");
+    expect(err3 == ERR_ILLEGAL_ADDR,
+           "the recorded error tracks the most recent refusal");
+    expect(i3 == i2, "a refused request performed no flip");
+}
+
+/* No-frame watchdog observation boundary semantics.
+ *
+ * The no-frame watchdog reports a NO-NEW-FLIP observation, not a hang verdict:
+ * a stretch with no new presented frame is exactly what a legitimately static
+ * scene (e.g. a save-confirmation modal waiting for user input) also produces.
+ * The contract asserted here is the clock itself, through production
+ * sr_vblank_tick:
+ *   - exactly one observation is emitted per 600-vblank boundary while no new
+ *     frame is presented (never a burst, never a miss), regardless of the
+ *     initial phase residue;
+ *   - an accepted immediate flip resets the clock: the next observation needs a
+ *     fresh 600-vblank stretch;
+ *   - a refused request is not a new frame, so it must not reset the clock.
+ */
+static void test_watchdog_no_new_frame_observation(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM_B = 0x04044000u;
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    unsigned long f0;
+    uint32_t d0;
+    sr_watchdog_test_state(&f0, &d0);
+
+    /* 600 delivered vblanks with no flip: exactly one observation fires. */
+    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    unsigned long f1;
+    uint32_t d1;
+    sr_watchdog_test_state(&f1, &d1);
+    expect(f1 == f0 + 1ul,
+           "no-new-frame observation fires exactly once per 600 vblanks");
+    expect(d1 == d0 + 600u,
+           "the vblanks-since-flip clock advanced by the delivered ticks");
+
+    /* Another 600 with still no flip: the next boundary fires once more. */
+    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    unsigned long f2;
+    sr_watchdog_test_state(&f2, NULL);
+    expect(f2 == f1 + 1ul,
+           "the observation fires again at the next 600-vblank boundary");
+
+    /* An accepted immediate flip is a new frame: it resets the clock, so the
+     * next firing needs a fresh 600-vblank stretch. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "SetFrameBuf accepts a matching immediate flip (watchdog reset case)");
+    uint32_t d_after_flip;
+    sr_watchdog_test_state(NULL, &d_after_flip);
+    expect(d_after_flip == 0u,
+           "an accepted flip resets the vblanks-since-flip clock");
+    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    unsigned long f3;
+    sr_watchdog_test_state(&f3, NULL);
+    expect(f3 == f2 + 1ul,
+           "after a reset the next observation needs a fresh 600-vblank stretch");
+
+    /* A refused request is not a new frame: the clock keeps running. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 2; /* sync>1 */
+    (void)sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF);
+    uint32_t d_after_refusal;
+    sr_watchdog_test_state(NULL, &d_after_refusal);
+    expect(d_after_refusal == 600u,
+           "a refused request does not reset the no-frame clock");
 }
 
 static void test_interrupt_nid_semantics(void) {
@@ -5081,6 +5227,8 @@ int main(int argc, char **argv) {
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
     test_vcount_freezes_during_interrupt_disable();
+    test_display_setframebuf_flip_accounting();
+    test_watchdog_no_new_frame_observation();
     test_interrupt_nid_semantics();
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();
