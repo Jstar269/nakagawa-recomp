@@ -250,6 +250,12 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 
     if (!present_slot_due()) {
         sr_perf_present_skip();
+#ifdef SR_SDL3VK
+        /* A host present that never runs must not service an armed capture: otherwise a
+         * later present would publish the old path with newer pixels. Resolve it as
+         * "nothing attempted" so the next request can arm cleanly. */
+        if (s_sdl3) sdl3vk_capture_cancel();
+#endif
         gui_pump();
         return;
     }
