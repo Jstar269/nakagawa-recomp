@@ -26,9 +26,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #define PSP_W 480
@@ -675,6 +680,41 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
     return 1;
 }
 
+/* Create the parent directory of `path` (mkdir -p on the directory component only).
+ * FBSNAP publishes under build/snapshots/, which no build step creates. An existing
+ * directory is success; an existing non-directory leaves the later file open to fail
+ * cleanly, so publication never invents a success. */
+static int cap_ensure_parent_dir(const char *path) {
+    char dir[1024];
+    size_t n = strlen(path);
+    if (!n || n >= sizeof dir) return 0;
+    memcpy(dir, path, n + 1);
+    while (n > 0 && (dir[n - 1] == '/' || dir[n - 1] == '\\')) dir[--n] = '\0';
+    char *sep = NULL;
+    for (char *q = dir; *q; q++)
+        if (*q == '/' || *q == '\\') sep = q;
+    if (!sep) return 1;               /* bare file name: current directory exists */
+    *sep = '\0';
+    if (sep == dir) return 1;         /* "/file" or "\\file": the root exists */
+    for (char *q = dir; *q; q++) {
+        if (*q != '/' && *q != '\\') continue;
+        char save = q[1];
+        q[1] = '\0';
+#ifdef _WIN32
+        if (_mkdir(dir) != 0 && errno != EEXIST) { q[1] = save; return 0; }
+#else
+        if (mkdir(dir, 0777) != 0 && errno != EEXIST) { q[1] = save; return 0; }
+#endif
+        q[1] = save;
+    }
+#ifdef _WIN32
+    if (_mkdir(dir) != 0 && errno != EEXIST) return 0;
+#else
+    if (mkdir(dir, 0777) != 0 && errno != EEXIST) return 0;
+#endif
+    return 1;
+}
+
 /* Publish the readback as a P6 PPM whose name ends in .ppm: the format matches the
  * extension. Rows are read at the copy's tight pitch (w*4 bytes), not at some
  * allocation-derived pitch, and exactly w*h*3 bytes are written. Publication is atomic:
@@ -682,6 +722,7 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
  * reader never observes a half-written file. */
 static int cap_write_file(void) {
     if (!s_cap_buf || !s_cap_map || !s_cap_path[0]) return 0;
+    if (!cap_ensure_parent_dir(s_cap_path)) return 0;
     if (s_cap_noncoherent) {
         VkMappedMemoryRange rng = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
         rng.memory = s_cap_mem;
@@ -752,6 +793,10 @@ static void cap_finish(int ok, const char *why) {
 }
 
 int sdl3vk_capture_arm(const char *path) {
+    /* A rejected request is a new capture attempt, not permission to reuse the last
+     * completed result. Preserve the in-flight state while clearing only the reportable
+     * outcome so callers cannot mistake a stale success/failure for this request. */
+    s_cap_result = 0;
     if (s_renderer_terminal) return 0;
     if (!s_dev || !s_swap) return 0;
     if (s_cap_state != CAP_IDLE && s_cap_state != CAP_DONE && s_cap_state != CAP_FAILED)
@@ -1086,7 +1131,14 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             f->submitted = 0;
             f->source = VK_NULL_HANDLE;
         }
-        if (!cap_write_file()) { why = "capture readback or publication failed"; goto fail; }
+        /* The frame reached the presentation engine (vkQueuePresentKHR succeeded above):
+         * a readback/publication failure must not make the frame itself look unpresented,
+         * because gui.c would otherwise re-present it through the CPU fallback. The
+         * capture still resolves as attempted-and-failed (-1), never a fabricated success. */
+        if (!cap_write_file()) {
+            cap_finish(0, "capture readback or publication failed");
+            return 1;
+        }
         cap_finish(1, NULL);
     }
     return 1;
@@ -1150,6 +1202,14 @@ static int cap_test_setenv(const char *name, const char *value) {
     return SetEnvironmentVariableA(name, value) ? 1 : 0;
 #else
     return setenv(name, value, 1) == 0;
+#endif
+}
+
+static int cap_test_rmdir(const char *path) {
+#ifdef _WIN32
+    return _rmdir(path) == 0;
+#else
+    return rmdir(path) == 0;
 #endif
 }
 
@@ -1459,6 +1519,125 @@ int sdl3vk_capture_selftest(void) {
         cap_test_image_destroy(&big);
     }
 
+    /* ---- production publication path -------------------------------------------------
+     * FBSNAP's build/snapshots directory is not created by the build. The capture
+     * publisher owns that boundary and must create it before opening its temp sibling. */
+    {
+        const char *p = "build/snapshots/selftest_frame.ppm";
+        cap_test_rmdir("build/snapshots");
+        cap_test_rmdir("build");
+        if (!sdl3vk_capture_arm(p)) {
+            fprintf(stderr, "pubdir: arm refused\n"); ok = 0;
+        } else {
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "pubdir: present failed\n"); ok = 0;
+            }
+            if (sdl3vk_capture_result() != 1) {
+                fprintf(stderr, "pubdir: result=%d (expected 1)\n",
+                        sdl3vk_capture_result()); ok = 0;
+            }
+            if (!cap_test_verify_ppm(p, PSP_W, PSP_H)) {
+                fprintf(stderr, "pubdir: PPM bytes wrong\n"); ok = 0;
+            }
+        }
+        remove(p);
+        cap_test_rmdir("build/snapshots");
+        cap_test_rmdir("build");
+    }
+
+    /* ---- publication failure vs present truth, then recovery -------------------------
+     * A regular file blocks the requested parent directory. The frame still reached the
+     * presentation engine, so only the capture fails; removing the blocker must let the
+     * immediately following request succeed. */
+    {
+        const char *p = "blocked/selftest_x.ppm";
+        FILE *f = fopen("blocked", "wb");
+        if (!f) {
+            fprintf(stderr, "blocked: could not create file blocker\n"); ok = 0;
+        } else {
+            fputc(0, f); fclose(f);
+        }
+        if (!sdl3vk_capture_arm(p)) {
+            fprintf(stderr, "blocked: arm refused\n"); ok = 0;
+        } else {
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "blocked: present must succeed despite publication failure\n"); ok = 0;
+            }
+            if (sdl3vk_capture_result() != -1) {
+                fprintf(stderr, "blocked: result=%d (expected -1)\n",
+                        sdl3vk_capture_result()); ok = 0;
+            }
+        }
+        {
+            FILE *chk = fopen(p, "rb");
+            if (chk) { fclose(chk); fprintf(stderr, "blocked: file must not exist\n"); ok = 0; }
+        }
+        remove(p);
+        remove("blocked");
+
+        if (!sdl3vk_capture_arm(p)) {
+            fprintf(stderr, "blocked-recover: arm refused\n"); ok = 0;
+        } else if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "blocked-recover: present failed\n"); ok = 0;
+        } else if (sdl3vk_capture_result() != 1 || !cap_test_verify_ppm(p, PSP_W, PSP_H)) {
+            fprintf(stderr, "blocked-recover: capture did not recover\n"); ok = 0;
+        }
+        remove(p);
+        cap_test_rmdir("blocked");
+    }
+
+    /* ---- stale-arm and rejected-arm protection --------------------------------------
+     * Cancellation represents a present slot dropped by the output cap. The next present
+     * must not service that old path, and a refused replacement arm must not expose the
+     * previous capture's result. */
+    {
+        const char *p = "selftest_stale.ppm";
+        if (!sdl3vk_capture_arm(p)) {
+            fprintf(stderr, "stale: arm refused\n"); ok = 0;
+        }
+        sdl3vk_capture_cancel();
+        if (sdl3vk_capture_result() != 0) {
+            fprintf(stderr, "stale: cancelled result=%d\n",
+                    sdl3vk_capture_result()); ok = 0;
+        }
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "stale: later present failed\n"); ok = 0;
+        }
+        {
+            FILE *chk = fopen(p, "rb");
+            if (chk) { fclose(chk); fprintf(stderr, "stale: cancelled arm published\n"); ok = 0; }
+        }
+        remove(p);
+
+    }
+
+    /* ---- repeated requests ---------------------------------------------------------- */
+    {
+        const char *p1 = "selftest_repeat_a.ppm";
+        const char *p2 = "selftest_repeat_b.ppm";
+        if (!sdl3vk_capture_arm(p1)) {
+            fprintf(stderr, "repeat: first arm refused\n"); ok = 0;
+        }
+        if (sdl3vk_capture_arm(p2)) {
+            fprintf(stderr, "repeat: second arm while pending accepted\n"); ok = 0;
+        }
+        if (sdl3vk_capture_result() != 0) {
+            fprintf(stderr, "repeat: refused arm left stale result=%d\n", sdl3vk_capture_result()); ok = 0;
+        }
+        if (sdl3vk_present_rgba(px) != 1 || sdl3vk_capture_result() != 1) {
+            fprintf(stderr, "repeat: first capture did not complete\n"); ok = 0;
+        }
+        if (!cap_test_verify_ppm(p1, PSP_W, PSP_H)) {
+            fprintf(stderr, "repeat: first path PPM bytes wrong\n"); ok = 0;
+        }
+        {
+            FILE *chk = fopen(p2, "rb");
+            if (chk) { fclose(chk); fprintf(stderr, "repeat: refused path published\n"); ok = 0; }
+        }
+        remove(p1);
+        remove(p2);
+    }
+
     /* ---- present error recovery and disposition tests ------------------------------- */
     {
         /* Test 1: VK_SUBOPTIMAL_KHR (enqueued rebuild) */
@@ -1470,6 +1649,24 @@ int sdl3vk_capture_selftest(void) {
         if (sdl3vk_swapchain_generation() <= sc0) {
             fprintf(stderr, "present fault SUBOPTIMAL: expected swapchain rebuild\n"); ok = 0;
         }
+
+        /* The enqueued present/rebuild path must still publish the capture recorded in
+         * the same submission; rebuilding the swapchain cannot silently drop it. */
+        sc0 = sdl3vk_swapchain_generation();
+        if (!sdl3vk_capture_arm("selftest_subopt.ppm")) {
+            fprintf(stderr, "present fault SUBOPTIMAL: capture arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "present fault SUBOPTIMAL capture: present failed\n"); ok = 0;
+        }
+        if (sdl3vk_swapchain_generation() <= sc0 || sdl3vk_capture_result() != 1) {
+            fprintf(stderr, "present fault SUBOPTIMAL capture: rebuild/result invalid\n"); ok = 0;
+        }
+        if (!cap_test_verify_ppm("selftest_subopt.ppm", PSP_W, PSP_H)) {
+            fprintf(stderr, "present fault SUBOPTIMAL capture: PPM bytes wrong\n"); ok = 0;
+        }
+        remove("selftest_subopt.ppm");
 
         /* Test 2: VK_ERROR_OUT_OF_DATE_KHR (enqueued present / stale swapchain) */
         sc0 = sdl3vk_swapchain_generation();
@@ -1569,6 +1766,10 @@ int sdl3vk_capture_selftest(void) {
         }
         if (sdl3vk_capture_arm("selftest_terminal_refused.ppm")) {
             fprintf(stderr, "terminal state: capture arm must be refused when terminal\n"); ok = 0;
+        }
+        if (sdl3vk_capture_result() != 0) {
+            fprintf(stderr, "terminal state: refused arm exposed stale result=%d\n",
+                    sdl3vk_capture_result()); ok = 0;
         }
     }
 
