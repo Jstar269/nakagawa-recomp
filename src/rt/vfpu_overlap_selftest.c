@@ -47,6 +47,16 @@
 //
 // Run via `make vfpu-overlap-selftest` (wired into hst_manager.ps1 -Action
 // Verify and the Linux CI gate).  No game inputs or private data required.
+//
+// OPTIMIZATION-LEVEL CONTRACT: the differential asserts bit-exact agreement
+// (NaN payloads included) between two SEPARATELY compiled shapes -- the
+// emitted codegen body and the interpreter loop.  That agreement is
+// emission-shape-scoped: at -O0 the accumulate-local body and the loop
+// compile to the identical addss sequence (issue #40).  Above -O0 a compiler
+// may legally reassociate either shape and select a different NaN payload on
+// NaN/Inf lanes (observed NaN-vs-NaN payload/sign splits at -O1..-O3, never a
+// finite-lane mismatch), so this harness must be compiled at -O0 -- the
+// Makefile default and the CI step both do so.
 
 #define _CRT_SECURE_NO_WARNINGS
 /* White-box: include the real runtime + interpreter as translation units so the

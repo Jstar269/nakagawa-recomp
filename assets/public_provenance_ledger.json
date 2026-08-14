@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1c510a4d7af423f3874286afc9b928b1d874526af2643df5262e26b9997aac09"
+      "sha256": "82f13aa15bb5937078eacdb0b88bd0a97d1ab43942779b1af31b5578a61b013a"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -4803,7 +4803,7 @@
         "source": "missing path-specific provenance record",
         "statement": "no path-specific record exists in the detailed implementation ledger; independent authorship or derivation cannot be attested without one"
       },
-      "sha256": "f6b9c2a40fe24fcd2e1f6177e8280f5473f9c6a3430207601852fe0ac32ef10b"
+      "sha256": "17afd16b3ed6101abc3e96db42bf468ed91bdf7831f87de96b67dd87e8ca7f9d"
     },
     {
       "path": "src/rt/vfpu_tables.c",

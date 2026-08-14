@@ -289,13 +289,25 @@ jobs:
         # the white-box harness runs each word through both the emitted body
         # and sr_vfpu_interp over clobber-revealing and randomized states, plus
         # an independent read-before-write reference where docs-legal.
+        #
+        # -O0 is the semantic contract here, matching the Makefile target: the
+        # exotic differential asserts BIT-EXACT agreement (NaN payloads
+        # included) between two separately compiled shapes. That agreement is
+        # emission-shape-scoped -- at -O0 the emitted accumulate-local body and
+        # the interpreter loop compile to the identical addss sequence (issue
+        # #40). Above -O0 the compiler may legally reassociate either shape and
+        # select a different NaN payload on NaN/Inf lanes (observed on
+        # gcc 16.1/MinGW at -O1..-O3: NaN-vs-NaN payload/sign splits only,
+        # never a finite-lane mismatch), so the differential is compiled at -O0
+        # where its guarantee holds. The ASan/UBSan build runs at -O0 too;
+        # sanitizers do not require an optimization level.
         run: |
           python tools/vfpu_overlap_fuzz_gen.py build/vfpu_overlap_cases.h
-          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild -D_CRT_SECURE_NO_WARNINGS \
+          gcc -std=c11 -O0 -Wall -Wextra -Isrc/rt -Ibuild \
             -o build/vfpu_overlap_selftest \
             src/rt/vfpu_overlap_selftest.c -lm
           ./build/vfpu_overlap_selftest
-          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild -D_CRT_SECURE_NO_WARNINGS \
+          gcc -std=c11 -O0 -Wall -Wextra -Isrc/rt -Ibuild \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_overlap_selftest_san \
             src/rt/vfpu_overlap_selftest.c -lm
