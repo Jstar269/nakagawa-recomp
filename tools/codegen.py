@@ -788,17 +788,17 @@ def vfpu_effect(addr, w):
             writes.append(f"float _s[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _s, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
-        if which <= 7:  # vmscl
+        if which <= 7:  # vmscl (same read-before-write scalar/last-row shape as sub 4)
             scalar_vidx = vreg_indices(which & 7, 1)[0]
             side = n
-            writes = []
-            for row in range(side - 1):
-                for col in range(side):
-                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * s->v[{scalar_vidx}];")
             last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
             last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
+            writes = [f"float _sc = s->v[{scalar_vidx}];"]
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
+            for row in range(side - 1):
+                for col in range(side):
+                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
             writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -933,14 +933,24 @@ def vfpu_effect(addr, w):
         vt = (w >> 16) & 0x7F
         scalar_vidx = vreg_indices(vt, 1)[0]
         side = n
-        writes = []
-        for row in range(side - 1):
-            for col in range(side):
-                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * s->v[{scalar_vidx}];")
+        # Read-before-write for the scalar and the final source row: the scalar
+        # is snapshotted once (raw, for rows 0..side-2, and again through the T
+        # prefix machinery for the final row) and the final source row is read
+        # BEFORE any destination lane is written. A fresh per-row s->v[scalar]
+        # read (pre-#48 shape) or a last-row read emitted after the row writes
+        # would silently consume a destination-clobbered source when the scalar
+        # lane or the last row lies inside vd (overlap/aliasing audit). Rows
+        # 0..side-2 still read their own source lane immediately before writing
+        # it, which is safe for the identical-overlap encoding and matches the
+        # interpreter exactly.
         last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
         last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
+        writes = [f"float _sc = s->v[{scalar_vidx}];"]
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
+        for row in range(side - 1):
+            for col in range(side):
+                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
         writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0
