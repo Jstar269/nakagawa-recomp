@@ -19,7 +19,20 @@
  * (0xFFC00000 from an invalid inf*0 product vs. 0x7FC00001, the quieted input
  * sNaN).  None of those host words is established PSP behavior.
  *
- * Public evidence status (see the issue audit):
+ * Silicon result-bit evidence (accepted hardware-oracle record): the probe
+ * was repaired and run on physical PSP-3000 (ARK-5 6.61) across 20 runs per
+ * vector.  Established cells:
+ *   - sNaN quieting: 0x7FC00001 (quiet bit set, payload preserved);
+ *   - order independence: a lane whose dot product meets two different NaNs
+ *     produces one stable word regardless of operand order;
+ *   - default invalid NaN: 0x7FC00000 (invalid inf*0 product);
+ *   - FTZ: subnormal products are flushed to signed zero;
+ *   - zero sign and inf/nan propagation preserved across all vectors.
+ * The per-case output words are recorded in the accepted hardware-evidence
+ * lane (PSPLink/private records), not reproduced here; this public fixture
+ * carries the inputs and the established cells only.
+ *
+ * Public-source evidence status (see the issue audit):
  *   - PSPAutotests tests/cpu/vfpu/matrix.c covers vmmul/vtfm with ordinary
  *     finite matrices only; the NaN/Inf cases in vector.c are recorded as
  *     "%f" text ("nan"), so payloads and signs are not recorded anywhere.
@@ -28,18 +41,20 @@
  *     to 0x7F800001 and flushes subnormal products to signed zero, but
  *     hrydgard/ppsspp issue #21070 states vfpu_dot is confirmed *not* to
  *     exactly match PSP hardware, so that model is corroboration, not
- *     hardware evidence.
- *   - The cells below therefore remain hardware-unresolved until this probe
- *     is measured on silicon.
+ *     hardware evidence.  PPSSPP behavior is never promoted to hardware
+ *     truth here.
+ *   - The host words seen in the differential (0xFFC00000 vs 0x7FC00001)
+ *     are host artifacts of the -O0 addss operand order, not PSP behavior;
+ *     neither equals the measured default invalid NaN 0x7FC00000.
  *
  * MATRIX LAYOUT
  * -------------
  * Matches the hardware/PPSSPP matrix register layout (ReadMatrix): for a 3x3
- * (t-size) matrix, element (row r, col c) of matrix M<n> lives at
- * S((n*16) + (r*4) + c).  So:
- *   M000 -> S000,S001,S002 | S004,S005,S006 | S008,S009,S010
- *   M100 -> S016,S017,S018 | S020,S021,S022 | S024,S025,S026
- *   M200 -> S032,S033,S034 | S036,S037,S038 | S040,S041,S042
+ * (t-size) matrix, element (column c, row r) of matrix M<n> lives at
+ * S<n><c><r>.  So:
+ *   M000 -> S000,S001,S002 | S010,S011,S012 | S020,S021,S022
+ *   M100 -> S100,S101,S102 | S110,S111,S112 | S120,S121,S122
+ *   M200 -> S200,S201,S202 | S210,S211,S212 | S220,S221,S222
  * vmmul computes Mvd[a][b] = sum_c Mvs[b][c] * Mvt[a][c] (the PPSSPP/codegen
  * convention, which is what the host audit used).
  */
@@ -52,13 +67,13 @@
 typedef struct {
     const char *id;          /* stable case id, printed verbatim          */
     unsigned op;             /* 0 = vmmul.t M200, M000, M100             */
-                             /* 1 = vtfm3.t T100, M100, T000             */
+                             /* 1 = vtfm3.t C200, M100, C000             */
     unsigned int in[18];     /* raw bits: M000[9] then M100[9]           */
 } VfpuNanCase;
 
 /* One divergent-lane dot product per case.  Lane (0,0) of the vmmul result is
  *   M100[0][0]*M000[0][0] + M100[0][1]*M000[0][1] + M100[0][2]*M000[0][2]
- * (for vtfm3, d[0] = M100[0][k]*T000[k] over k=0..2 with the same matrix
+ * (for vtfm3, d[0] = M100[0][k]*C000[k] over k=0..2 with the same matrix
  * convention).  Every case keeps the other lanes finite (all-zero matrices
  * produce +0.0 lanes) so a divergence in lane (0,0) is unambiguous. */
 static const VfpuNanCase VFPU_NAN_CASES[VFPU_NAN_CASE_COUNT] = {
@@ -128,7 +143,7 @@ static const VfpuNanCase VFPU_NAN_CASES[VFPU_NAN_CASE_COUNT] = {
     },
     {
         "vtfm3-nan-payload", 1,
-        /* vtfm3.t T100, M100, T000 with T000 = {+0.0, +sNaN, +0.0} and the
+        /* vtfm3.t C200, M100, C000 with C000 = {+0.0, +sNaN, +0.0} and the
            M100 matrix of case 1.  d[0] = inf*0 + 0*sNaN + 0*0 -> two NaNs
            in the matrix/vector multiply chain. */
         {0x00000000u, 0x7F800001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
