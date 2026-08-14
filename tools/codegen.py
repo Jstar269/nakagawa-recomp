@@ -884,9 +884,16 @@ def vfpu_effect(addr, w):
         lines = []
         for a in range(side):
             for b in range(side):
-                terms = "+".join(f"s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}]"
-                                 for c in range(side))
-                lines.append(f"float _m{a}_{b}=0.0f+{terms};")
+                # Accumulate into a local float with one += per term, exactly
+                # matching sr_vfpu_interp's vmmul loop shape. A single chained
+                # expression (0.0f+t0+t1+...) compiles to a different addss
+                # operand order at -O0, and x86-64 SSE selects the *first* NaN
+                # source on NaN+NaN, so the two paths can pick different NaN
+                # payloads for exotic inputs (issue #40). Same term order, so
+                # finite results are bit-identical.
+                lines.append(f"float _m{a}_{b}=0.0f;")
+                for c in range(side):
+                    lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
         return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
@@ -898,10 +905,13 @@ def vfpu_effect(addr, w):
         di = vreg_indices(vd, side)
         lines = []
         for i in range(side):
-            terms = [f"s->v[{mreg_index(vs, side, i, k)}]*s->v[{ti[k]}]" for k in range(tn)]
+            # Same accumulate-into-local shape as sr_vfpu_interp's vtfm (see the
+            # vmmul comment above for the NaN payload rationale, issue #40).
+            lines.append(f"float _v{i}=0.0f;")
+            for k in range(tn):
+                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, k)}]*s->v[{ti[k]}];")
             if ins >= n:
-                terms.append(f"s->v[{mreg_index(vs, side, i, ins)}]")
-            lines.append(f"float _v{i}=0.0f+{'+'.join(terms)};")
+                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
         return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
     if op == 0x19 and sub == 2:  # vscl
