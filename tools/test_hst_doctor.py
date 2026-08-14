@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,13 +15,13 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "tools" / "hst_doctor.py"
-SPEC = importlib.util.spec_from_file_location("hst_doctor", MODULE_PATH)
-assert SPEC and SPEC.loader
-hst_doctor = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = hst_doctor
-SPEC.loader.exec_module(hst_doctor)
+TOOLS = ROOT / "tools"
+MODULE_PATH = TOOLS / "hst_doctor.py"
+sys.path.insert(0, str(TOOLS))
+
+import hst_doctor  # noqa: E402
 import hst_doctor_checks  # noqa: E402
+import hst_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
 
@@ -145,6 +144,94 @@ This remains subject to legal review.
             hst_doctor.check_repository_contract(report)
             failures = [result for result in report.results if result.status == "FAIL"]
             self.assertEqual(failures, [])
+
+    def test_live_repository_notice_passes_disclaimer_checks(self) -> None:
+        report = hst_doctor.Report(ROOT, "repo")
+        hst_doctor.check_repository_contract(report)
+        failures = [result for result in report.results if result.code.startswith("NOTICE_") and result.status == "FAIL"]
+        self.assertEqual(failures, [], f"Live NOTICE.md failed disclaimer checks: {failures}")
+
+
+class DatarootAndSaveRootCheckTests(unittest.TestCase):
+    def test_sr_dataroot_relative_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = hst_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": "relative/path/to/assets"}):
+                hst_doctor.check_private_inputs(report, need_iso=False, need_assets=True)
+            failures = [result for result in report.results if result.code == "INPUT_SR_DATAROOT" and result.status == "FAIL"]
+            self.assertTrue(failures)
+            self.assertIn("not an absolute path", failures[0].summary)
+
+    def test_sr_dataroot_nonexistent_directory_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "does_not_exist"
+            report = hst_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": str(missing.resolve())}):
+                hst_doctor.check_private_inputs(report, need_iso=False, need_assets=True)
+            failures = [result for result in report.results if result.code == "INPUT_SR_DATAROOT" and result.status == "FAIL"]
+            self.assertTrue(failures)
+            self.assertIn("not found", failures[0].summary)
+
+    def test_sr_dataroot_empty_directory_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty_dir = root / "empty_assets"
+            empty_dir.mkdir()
+            report = hst_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": str(empty_dir.resolve())}):
+                hst_doctor.check_private_inputs(report, need_iso=False, need_assets=True)
+            failures = [result for result in report.results if result.code == "INPUT_SR_DATAROOT" and result.status == "FAIL"]
+            self.assertTrue(failures)
+            self.assertIn("empty", failures[0].summary)
+
+    def test_sr_dataroot_populated_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            assets_dir = root / "populated_assets"
+            assets_dir.mkdir()
+            (assets_dir / "file1.bin").write_bytes(b"data")
+            report = hst_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": str(assets_dir.resolve())}):
+                hst_doctor.check_private_inputs(report, need_iso=False, need_assets=True)
+            passes = [result for result in report.results if result.code == "INPUT_SR_DATAROOT" and result.status == "PASS"]
+            self.assertTrue(passes)
+            self.assertEqual(passes[0].metadata.get("files_scanned"), 1)
+
+    def test_save_root_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Default memstick (created on demand or existing and writable)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_save_root(report, root)
+            res = next(r for r in report.results if r.code == "SAVE_ROOT")
+            self.assertEqual(res.status, "PASS")
+
+            # SR_MEMSTICK pointing to a regular file fails
+            bad_file = root / "save_file.bin"
+            bad_file.write_bytes(b"not a dir")
+            report_bad = hst_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_MEMSTICK": str(bad_file.resolve())}):
+                hst_doctor_checks.check_save_root(report_bad, root)
+            res_bad = next(r for r in report_bad.results if r.code == "SAVE_ROOT")
+            self.assertEqual(res_bad.status, "FAIL")
+
+    def test_build_profile_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_dir = root / "build" / "hst"
+            build_dir.mkdir(parents=True)
+
+            # Public safe profile
+            (build_dir / "runtime_profile.json").write_text(
+                json.dumps({"entries": {"CFLAGS": "-O0 -DSR_PUBLIC_SAFE"}}), encoding="utf-8"
+            )
+            report = hst_doctor.Report(root, "products")
+            hst_doctor_checks.check_build_profile(report, root)
+            res = next(r for r in report.results if r.code == "BUILD_PROFILE")
+            self.assertEqual(res.status, "INFO")
+            self.assertEqual(res.metadata.get("public_safe"), 1)
 
 
 class CliTests(unittest.TestCase):

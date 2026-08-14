@@ -304,9 +304,12 @@ feature must report that honestly rather than creating a placeholder artifact; s
 
 ## Troubleshooting
 
+- **Preflight diagnostics:** run `.\hst.ps1 Doctor` (or `python tools/hst_doctor.py`) to validate your toolchain, build dependencies, and private game inputs.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** ensure the UCRT64 SDL3 `bin` directory is on `PATH`, or place a compatible `SDL3.dll` at the repository root so the manager copies it beside `hst.exe`.
-- **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout.
+- **`PUBLIC_SAFE=1` active:** when building in a public tree where capability-excluded backends are stubbed, the runtime compiles with `PUBLIC_SAFE=1`. In this mode, UMD/ISO lookups return `-1` and retail disc routes fail closed.
+- **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated.
+- **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **Clean build omits chunks:** use the unchanged two-process `all` target; do not rewrite it as `all: pipeline compile`.
 - **Watchdog fires:** `SR_WATCHDOG_EXIT` counts vblanks since the last newly
   presented frame, not seconds or frame count. The no-frame watchdog is a

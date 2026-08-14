@@ -13,6 +13,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import uuid
 
 from hst_doctor_core import (
     EXPECTED_DISC_ID,
@@ -442,32 +443,166 @@ def check_private_inputs(report: Report, *, need_iso: bool, need_assets: bool) -
                     )
 
     if need_assets:
-        data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
-        if not data_root.is_dir():
-            report.fail(
-                "INPUT_XB_DATA",
-                "Missing extracted XB asset tree",
-                path=data_root,
-                remediation="Run the documented libxb extraction workflow from your own game files.",
-            )
-        else:
-            count, error = _bounded_nonempty_directory(data_root)
-            if error:
-                report.fail("INPUT_XB_DATA", "Could not scan the extracted XB asset tree", path=data_root, detail=error)
-            elif count == 0:
+        sr_dataroot = os.environ.get("SR_DATAROOT")
+        if sr_dataroot:
+            data_path = Path(sr_dataroot)
+            if not data_path.is_absolute():
                 report.fail(
-                    "INPUT_XB_DATA",
-                    "The extracted XB asset directory is empty",
-                    path=data_root,
-                    remediation="Complete extraction; an empty placeholder directory is not a valid runtime input.",
+                    "INPUT_SR_DATAROOT",
+                    f"SR_DATAROOT is not an absolute path: {sr_dataroot}",
+                    path=data_path,
+                    remediation="Provide an absolute directory path for SR_DATAROOT.",
+                )
+            elif not data_path.is_dir():
+                report.fail(
+                    "INPUT_SR_DATAROOT",
+                    f"Configured SR_DATAROOT directory was not found: {sr_dataroot}",
+                    path=data_path,
+                    remediation="Create or specify an existing directory containing extracted game assets.",
                 )
             else:
-                report.pass_(
+                count, error = _bounded_nonempty_directory(data_path)
+                if error:
+                    report.fail("INPUT_SR_DATAROOT", "Could not scan the SR_DATAROOT asset tree", path=data_path, detail=error)
+                elif count == 0:
+                    report.fail("INPUT_SR_DATAROOT", "The configured SR_DATAROOT directory is empty", path=data_path)
+                else:
+                    report.pass_(
+                        "INPUT_SR_DATAROOT",
+                        "Configured SR_DATAROOT asset tree is populated",
+                        path=data_path,
+                        metadata={"files_scanned": count, "scan_capped": count >= 100_000},
+                    )
+        else:
+            data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
+            if not data_root.is_dir():
+                report.fail(
                     "INPUT_XB_DATA",
-                    "Extracted XB asset tree is populated",
+                    "Missing extracted XB asset tree",
                     path=data_root,
-                    metadata={"files_scanned": count, "scan_capped": count >= 100_000},
+                    remediation="Run the documented libxb extraction workflow from your own game files.",
                 )
+            else:
+                count, error = _bounded_nonempty_directory(data_root)
+                if error:
+                    report.fail("INPUT_XB_DATA", "Could not scan the extracted XB asset tree", path=data_root, detail=error)
+                elif count == 0:
+                    report.fail(
+                        "INPUT_XB_DATA",
+                        "The extracted XB asset directory is empty",
+                        path=data_root,
+                        remediation="Complete extraction; an empty placeholder directory is not a valid runtime input.",
+                    )
+                else:
+                    report.pass_(
+                        "INPUT_XB_DATA",
+                        "Extracted XB asset tree is populated",
+                        path=data_root,
+                        metadata={"files_scanned": count, "scan_capped": count >= 100_000},
+                    )
+
+
+def check_save_root(report: Report, root: Path) -> None:
+    env_save = os.environ.get("SR_MEMSTICK")
+    if env_save:
+        save_path = Path(env_save)
+        if not save_path.is_absolute():
+            report.fail(
+                "SAVE_ROOT",
+                f"SR_MEMSTICK is not an absolute path: {env_save}",
+                path=save_path,
+                remediation="Provide an absolute directory path for SR_MEMSTICK.",
+            )
+            return
+        if save_path.is_file():
+            report.fail(
+                "SAVE_ROOT",
+                f"SR_MEMSTICK points to a regular file, expected directory: {env_save}",
+                path=save_path,
+                remediation="Point SR_MEMSTICK to a folder for save data storage.",
+            )
+            return
+        save_root = save_path
+    else:
+        save_root = root / "memstick"
+
+    probe_name = f".doctor_probe_{os.getpid()}_{uuid.uuid4().hex}.tmp"
+    if save_root.is_dir():
+        probe_file = save_root / probe_name
+        try:
+            probe_file.write_bytes(b"probe")
+            report.pass_("SAVE_ROOT", "Save/memstick directory exists and is writable", path=save_root)
+        except OSError as exc:
+            report.fail("SAVE_ROOT", f"Save/memstick directory is not writable: {exc}", path=save_root)
+        finally:
+            try:
+                if probe_file.exists():
+                    probe_file.unlink()
+            except OSError:
+                pass
+    elif save_root.parent.is_dir():
+        probe_file = save_root.parent / probe_name
+        try:
+            probe_file.write_bytes(b"probe")
+            report.pass_("SAVE_ROOT", "Save/memstick directory will be created on demand", path=save_root)
+        except OSError as exc:
+            report.fail("SAVE_ROOT", f"Save/memstick parent directory is not writable: {exc}", path=save_root.parent)
+        finally:
+            try:
+                if probe_file.exists():
+                    probe_file.unlink()
+            except OSError:
+                pass
+    else:
+        report.fail(
+            "SAVE_ROOT",
+            f"Save/memstick parent directory does not exist: {save_root.parent}",
+            path=save_root,
+            remediation="Create the parent directory or configure SR_MEMSTICK to a valid location.",
+        )
+
+
+def check_build_profile(report: Report, root: Path) -> None:
+    profile_file = root / "build" / "hst" / "runtime_profile.json"
+    if profile_file.is_file():
+        try:
+            data = json.loads(profile_file.read_text(encoding="utf-8"))
+            raw_entries: list[str] = []
+            sections = data.get("sections")
+            if isinstance(sections, dict):
+                for sec in sections.values():
+                    if isinstance(sec, dict):
+                        ent = sec.get("entries")
+                        if isinstance(ent, list):
+                            raw_entries.extend(str(item) for item in ent)
+                        elif isinstance(ent, dict):
+                            raw_entries.extend(f"{k}={v}" for k, v in ent.items())
+            ent = data.get("entries")
+            if isinstance(ent, list):
+                raw_entries.extend(str(item) for item in ent)
+            elif isinstance(ent, dict):
+                raw_entries.extend(f"{k}={v}" for k, v in ent.items())
+
+            all_flags = " ".join(raw_entries)
+            is_public_safe = "SR_PUBLIC_SAFE" in all_flags or "PUBLIC_SAFE=1" in all_flags
+            if is_public_safe:
+                report.info(
+                    "BUILD_PROFILE",
+                    "Selected build profile: public-safe (PUBLIC_SAFE=1; public profile with excluded backends stubbed)",
+                    path=profile_file,
+                    metadata={"profile": "public_safe", "public_safe": 1},
+                )
+            else:
+                report.info(
+                    "BUILD_PROFILE",
+                    "Selected build profile: full (PUBLIC_SAFE=0; all built backends enabled)",
+                    path=profile_file,
+                    metadata={"profile": "full", "public_safe": 0},
+                )
+        except (OSError, json.JSONDecodeError):
+            report.info("BUILD_PROFILE", "Runtime build profile recorded (unparsed)", path=profile_file)
+    else:
+        report.info("BUILD_PROFILE", "No runtime build profile recorded yet (unbuilt)")
 
 
 def check_vfpu_assets(report: Report) -> None:
@@ -645,14 +780,38 @@ def check_repository_contract(report: Report) -> None:
     if notice.is_file():
         text = notice.read_text(encoding="utf-8", errors="replace").lower()
         disclaimer_checks = {
-            "NOTICE_NO_GAME": ("does not grant rights to the game", "game/firmware rights boundary"),
-            "NOTICE_NO_KEYS": ("no decryption keys", "no-key distribution boundary"),
-            "NOTICE_NO_AFFILIATION": ("not endorsed", "independence/no-endorsement disclaimer"),
-            "NOTICE_PRIVATE_INPUT": ("users must supply their own legally obtained", "lawful user-supplied input requirement"),
-            "NOTICE_LEGAL_REVIEW": ("legal review", "unresolved legal-review boundary"),
+            "NOTICE_NO_GAME": (
+                (
+                    "does not grant rights to the game",
+                    "no game executable",
+                    "excludes all game content",
+                    "public source boundary",
+                ),
+                "game/firmware rights boundary",
+            ),
+            "NOTICE_NO_KEYS": (
+                ("no decryption keys", "private inputs, keys", "ships no keys", "no key"),
+                "no-key distribution boundary",
+            ),
+            "NOTICE_NO_AFFILIATION": (
+                ("not endorsed", "not affiliated with or endorsed by"),
+                "independence/no-endorsement disclaimer",
+            ),
+            "NOTICE_PRIVATE_INPUT": (
+                (
+                    "users must supply their own legally obtained",
+                    "users must supply any lawful external inputs",
+                    "user-supplied",
+                ),
+                "lawful user-supplied input requirement",
+            ),
+            "NOTICE_LEGAL_REVIEW": (
+                ("legal review", "not legal advice", "qualified review"),
+                "unresolved legal-review boundary",
+            ),
         }
-        for code, (needle, description) in disclaimer_checks.items():
-            if needle in text:
+        for code, (needles, description) in disclaimer_checks.items():
+            if any(n in text for n in needles):
                 report.pass_(code, f"NOTICE includes {description}")
             else:
                 report.fail(code, f"NOTICE is missing the expected {description}")
