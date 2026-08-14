@@ -3,19 +3,23 @@
 
 /* PSP-side VFPU NaN/Inf matrix/multiply probe (issue #40).
  *
- * Settles the observable result-bit cells left unresolved by the host-synthetic
- * audit: for vmmul.t / vtfm3.t lanes whose dot product encounters NaNs,
- * infinity, or subnormals, the PSP's own output word (payload, quiet bit, and
- * sign) is printed as compact hex.  The inputs are the reduced deterministic
- * vector set from the issue; no retail/private data is required.
+ * For vmmul.t / vtfm3.t lanes whose dot product encounters NaNs, infinity, or
+ * subnormals, the PSP's own output word (payload, quiet bit, and sign) is
+ * printed as compact hex.  The inputs are the reduced deterministic vector
+ * set from the issue; no retail/private data is required.
+ *
+ * This probe was run on physical PSP-3000 (ARK-5 6.61), 20 runs per vector;
+ * the accepted measurements settle sNaN quieting (0x7FC00001), order
+ * independence, the default invalid NaN (0x7FC00000), and FTZ subnormal
+ * flushing (see the shared input header).  Re-running it on hardware (or
+ * PPSSPP as corroboration only) compares each NAKAGAWA_PSP_TEST record
+ * against those accepted records; the emulator route must be labelled
+ * "ppsspp" evidence, never hardware.
  *
  * Bit-transfer discipline (same as the transcendental oracle probe): inputs
  * are moved into the VFPU with mtv and results are moved out with mfv, so a
  * NaN payload or a denormal reaches and leaves the FPU without a host-side
  * float round trip.
- *
- * Run on hardware (or PPSSPP as corroboration only) and compare each
- * NAKAGAWA_PSP_TEST record against the host-runtime analysis in the issue.
  */
 
 #include <pspkernel.h>
@@ -52,14 +56,14 @@ static void emit(int emulated, const char *text) {
 }
 
 /* One mtv per raw word: bit-exact moves into the t-size matrix/vector slots.
- * M000 -> S000,S001,S002 | S004,S005,S006 | S008,S009,S010
- * M100 -> S016,S017,S018 | S020,S021,S022 | S024,S025,S026
- * T000 -> S000,S001,S002 (vtfm3 vector operand) */
+ * M000 -> S000,S001,S002 | S010,S011,S012 | S020,S021,S022
+ * M100 -> S100,S101,S102 | S110,S111,S112 | S120,S121,S122
+ * C000 -> S000,S001,S002 (vtfm3 vector operand) */
 static void load_matrix_0(const unsigned int in[9]) {
     __asm__ volatile(
         "mtv %0, S000\n" "mtv %1, S001\n" "mtv %2, S002\n"
-        "mtv %3, S004\n" "mtv %4, S005\n" "mtv %5, S006\n"
-        "mtv %6, S008\n" "mtv %7, S009\n" "mtv %8, S010\n"
+        "mtv %3, S010\n" "mtv %4, S011\n" "mtv %5, S012\n"
+        "mtv %6, S020\n" "mtv %7, S021\n" "mtv %8, S022\n"
         :: "r"(in[0]), "r"(in[1]), "r"(in[2]), "r"(in[3]),
            "r"(in[4]), "r"(in[5]), "r"(in[6]), "r"(in[7]), "r"(in[8])
         : "memory");
@@ -67,33 +71,33 @@ static void load_matrix_0(const unsigned int in[9]) {
 
 static void load_matrix_1(const unsigned int in[9]) {
     __asm__ volatile(
-        "mtv %0, S016\n" "mtv %1, S017\n" "mtv %2, S018\n"
-        "mtv %3, S020\n" "mtv %4, S021\n" "mtv %5, S022\n"
-        "mtv %6, S024\n" "mtv %7, S025\n" "mtv %8, S026\n"
+        "mtv %0, S100\n" "mtv %1, S101\n" "mtv %2, S102\n"
+        "mtv %3, S110\n" "mtv %4, S111\n" "mtv %5, S112\n"
+        "mtv %6, S120\n" "mtv %7, S121\n" "mtv %8, S122\n"
         :: "r"(in[0]), "r"(in[1]), "r"(in[2]), "r"(in[3]),
            "r"(in[4]), "r"(in[5]), "r"(in[6]), "r"(in[7]), "r"(in[8])
         : "memory");
 }
 
-/* vmmul.t M200, M000, M100; result M200 -> S032,S033,S034 | S036,S037,S038 |
- * S040,S041,S042.  All nine lanes are read out; the divergent cell is (0,0). */
+/* vmmul.t M200, M000, M100; result M200 -> S200,S201,S202 | S210,S211,S212 |
+ * S220,S221,S222. All nine lanes are read out; the divergent cell is (0,0). */
 static void run_vmmul(unsigned int out[9]) {
     __asm__ volatile(
         "vmmul.t M200, M000, M100\n"
-        "mfv %0, S032\n" "mfv %1, S033\n" "mfv %2, S034\n"
-        "mfv %3, S036\n" "mfv %4, S037\n" "mfv %5, S038\n"
-        "mfv %6, S040\n" "mfv %7, S041\n" "mfv %8, S042\n"
+        "mfv %0, S200\n" "mfv %1, S201\n" "mfv %2, S202\n"
+        "mfv %3, S210\n" "mfv %4, S211\n" "mfv %5, S212\n"
+        "mfv %6, S220\n" "mfv %7, S221\n" "mfv %8, S222\n"
         : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3]),
           "=r"(out[4]), "=r"(out[5]), "=r"(out[6]), "=r"(out[7]), "=r"(out[8])
         :: "memory");
 }
 
-/* vtfm3.t T100, M100, T000; T000 = S000..S002 (first three words of the
- * case's M000 slot), result T100 -> S003,S004,S005. */
+/* vtfm3.t C200, M100, C000; C000 = S000..S002 (first three words of the
+ * case's M000 slot), result C200 -> S200,S201,S202. */
 static void run_vtfm3(unsigned int out[3]) {
     __asm__ volatile(
-        "vtfm3.t T100, M100, T000\n"
-        "mfv %0, S003\n" "mfv %1, S004\n" "mfv %2, S005\n"
+        "vtfm3.t C200, M100, C000\n"
+        "mfv %0, S200\n" "mfv %1, S201\n" "mfv %2, S202\n"
         : "=r"(out[0]), "=r"(out[1]), "=r"(out[2])
         :: "memory");
 }

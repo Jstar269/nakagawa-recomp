@@ -5,9 +5,12 @@
 (issue #40).
 
 These guard the properties that keep the probe meaningful.  They deliberately
-do not assert any numeric result: the correct PSP output words are exactly
-what this probe exists to discover, and baking an expectation in would promote
-host-specific NaN behavior to a fabricated hardware contract.
+do not assert any numeric result: the accepted per-case PSP output words are
+recorded in the hardware-evidence lane (PSP-3000 measurements), and baking a
+host-side expectation in here would promote host-specific NaN behavior to a
+fabricated hardware contract.  The settled cells (sNaN quieting 0x7FC00001,
+order independence, default invalid NaN 0x7FC00000, FTZ subnormal flush) are
+stated in the fixture headers, not asserted in code.
 """
 
 from __future__ import annotations
@@ -71,7 +74,7 @@ class ProbeContractTests(unittest.TestCase):
 
     def test_both_ops_are_covered(self) -> None:
         self.assertIn("vmmul.t M200, M000, M100", self.probe)
-        self.assertIn("vtfm3.t T100, M100, T000", self.probe)
+        self.assertIn("vtfm3.t C200, M100, C000", self.probe)
 
 
 class ProbeBuildContractTests(unittest.TestCase):
