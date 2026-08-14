@@ -207,7 +207,7 @@ put the game in a "no save data" state no existing route was authored against. `
 never touched: that is the ~400 MB install, and removing it would trigger a reinstall that
 changes the route's timing completely.
 
-**Safety contract (#183).** `-SaveBase` is a path *inside the repository root* (the manager
+**Safety contract.** `-SaveBase` is a path *inside the repository root* (the manager
 anchors every managed path to its own script location, never the caller's CWD). The baseline
 and the live `memstick/PSP/SAVEDATA` root must be distinct canonical directories, and neither
 may contain the other. On first use the manager writes `.hst_savebase_manifest.json` into the
@@ -254,7 +254,7 @@ so existing routes and tooling are unaffected. `-SnapEvery` still sets the caden
 window. Like the other controls this is a host-side gate: no guest work is skipped and captured
 frames are byte-identical to an ungated run.
 
-Since issue #57, FBSNAP/FBDUMP capture is **present-truthful** (the old `sdl3vk_capture_swapchain_ppm`
+FBSNAP/FBDUMP capture is **present-truthful** (the old `sdl3vk_capture_swapchain_ppm`
 was an invalid acquisition that could read a stale/undefined image and published a PPM under a
 `.png` name). The swapchain capture is now armed *before* the present and recorded inside the same
 command buffer that blits the displayed frame, then published atomically as an exact P6 `.ppm`

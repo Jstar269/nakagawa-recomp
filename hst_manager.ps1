@@ -579,23 +579,28 @@ try {
             return $false
         }
         $failed = @()
+        # Per-gate machine-readable status. The summary line emitted at the end is the
+        # stable contract for tooling: every gate here is PASS/FAIL/SKIP, and the
+        # external-oracle/private-input gates that are deliberately outside this suite are
+        # listed as NOT_RUN so a consumer can never mistake their absence for a pass.
+        $gateStatus = @{}
         $makeBaseArgs = @(Get-HstMakeBaseArgs)
 
         # Native stdout is part of a function's output stream, which the caller's
         # [void](...) would discard. Out-Host writes straight to the console instead.
         Write-Host "`n[1/15] Python unit suite (tools/test_*.py)..." -ForegroundColor Cyan
         & python -m unittest discover -s tools -p "test_*.py" | Out-Host
-        if ($LASTEXITCODE -ne 0) { $failed += "python-unittest" }
+        if ($LASTEXITCODE -ne 0) { $failed += "python-unittest"; $gateStatus["python-unittest"] = "FAIL" } else { $gateStatus["python-unittest"] = "PASS" }
 
         Write-Host "`n[2/15] Scheduler/callback selftest (src/rt/sched_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("sched-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "sched-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "sched-selftest"; $gateStatus["sched-selftest"] = "FAIL" } else { $gateStatus["sched-selftest"] = "PASS" }
 
         Write-Host "`n[3/15] Profiler hash-table selftest (src/rt/profiler_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("profiler-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $MakeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
-        if ($p.ExitCode -ne 0) { $failed += "profiler-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "profiler-selftest"; $gateStatus["profiler-selftest"] = "FAIL" } else { $gateStatus["profiler-selftest"] = "PASS" }
 
         # Guest-heap boundary-tag coalescing (#122). The Makefile target landed with the
         # allocator fix but was never reachable from this route, so a coalescing regression
@@ -603,44 +608,44 @@ try {
         Write-Host "`n[4/15] Guest-heap allocator selftest (src/rt/heap_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("heap-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
-        if ($p.ExitCode -ne 0) { $failed += "heap-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "heap-selftest"; $gateStatus["heap-selftest"] = "FAIL" } else { $gateStatus["heap-selftest"] = "PASS" }
 
         Write-Host "`n[5/15] Extracted-asset index selftest (src/rt/asset_index_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("asset-index-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "asset-index-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "asset-index-selftest"; $gateStatus["asset-index-selftest"] = "FAIL" } else { $gateStatus["asset-index-selftest"] = "PASS" }
 
         Write-Host "`n[6/15] Production HLE ThreadMan selftest (src/rt/hle_thread_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("hle-thread-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "hle-thread-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "hle-thread-selftest"; $gateStatus["hle-thread-selftest"] = "FAIL" } else { $gateStatus["hle-thread-selftest"] = "PASS" }
 
         Write-Host "`n[7/15] Portable FPU/VFPU conversion selftest (src/rt/fp_convert_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("fp-convert-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "fp-convert-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "fp-convert-selftest"; $gateStatus["fp-convert-selftest"] = "FAIL" } else { $gateStatus["fp-convert-selftest"] = "PASS" }
 
         Write-Host "`n[8/15] VFPU table loader selftest (src/rt/vfpu_tables_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-tables-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "vfpu-tables-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "vfpu-tables-selftest"; $gateStatus["vfpu-tables-selftest"] = "FAIL" } else { $gateStatus["vfpu-tables-selftest"] = "PASS" }
 
         Write-Host "`n[9/15] Watchpoints-file parser selftest (src/rt/watchpoints_file_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("watchpoints-file-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "watchpoints-file-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "watchpoints-file-selftest"; $gateStatus["watchpoints-file-selftest"] = "FAIL" } else { $gateStatus["watchpoints-file-selftest"] = "PASS" }
 
         Write-Host "`n[10/15] VFPU interpreter selftest (src/rt/vfpu_interp_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-interp-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
-        if ($p.ExitCode -ne 0) { $failed += "vfpu-interp-selftest" }
+        if ($p.ExitCode -ne 0) { $failed += "vfpu-interp-selftest"; $gateStatus["vfpu-interp-selftest"] = "FAIL" } else { $gateStatus["vfpu-interp-selftest"] = "PASS" }
 
         Write-Host "`n[11/15] Reference interpreter selftest (src/ref/selftest.cpp)..." -ForegroundColor Cyan
-        if (-not (Invoke-Selftest)) { $failed += "selftest" }
+        if (-not (Invoke-Selftest)) { $failed += "selftest"; $gateStatus["ref-selftest"] = "FAIL" } else { $gateStatus["ref-selftest"] = "PASS" }
 
         Write-Host "`n[12/15] Import-coverage and fake-success audit gate..." -ForegroundColor Cyan
         & python tools/import_audit_gate.py | Out-Host
-        if ($LASTEXITCODE -ne 0) { $failed += "import-audit-gate" }
+        if ($LASTEXITCODE -ne 0) { $failed += "import-audit-gate"; $gateStatus["import-audit-gate"] = "FAIL" } else { $gateStatus["import-audit-gate"] = "PASS" }
 
         # Both content sources, because "Verify passed" has to be true of every byte this
         # checkout could publish. The pre-commit hook audits staged blobs and is right to:
@@ -655,19 +660,22 @@ try {
         # flow, which supplies the externally trusted ledger via publish_audit --provenance-ledger.
         Write-Host "`n[13/15] Publication safety audit (staged blobs)..." -ForegroundColor Cyan
         & python tools/publish_audit.py --tracked-only --provenance-self-consistency | Out-Host
-        if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-index" }
+        if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-index"; $gateStatus["publish-audit-index"] = "FAIL" } else { $gateStatus["publish-audit-index"] = "PASS" }
 
         Write-Host "      ... and the working tree on disk..." -ForegroundColor Cyan
         & python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency | Out-Host
-        if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-worktree" }
+        if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-worktree"; $gateStatus["publish-audit-worktree"] = "FAIL" } else { $gateStatus["publish-audit-worktree"] = "PASS" }
 
         Write-Host "`n[14/15] GPU framebuffer coherence selftest (gpu-coherence-selftest)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("gpu-coherence-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -eq 77) {
             Write-Host "[SKIP] gpu-coherence-selftest: Vulkan initialization unavailable" -ForegroundColor Yellow
+            $gateStatus["gpu-coherence-selftest"] = "SKIP"
         } elseif ($p.ExitCode -ne 0) {
-            $failed += "gpu-coherence-selftest"
+            $failed += "gpu-coherence-selftest"; $gateStatus["gpu-coherence-selftest"] = "FAIL"
+        } else {
+            $gateStatus["gpu-coherence-selftest"] = "PASS"
         }
 
         Write-Host "`n[15/15] GPU present-capture selftest (gpu-capture-selftest)..." -ForegroundColor Cyan
@@ -675,16 +683,35 @@ try {
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -eq 77) {
             Write-Host "[SKIP] gpu-capture-selftest: Vulkan or validation layer unavailable" -ForegroundColor Yellow
+            $gateStatus["gpu-capture-selftest"] = "SKIP"
         } elseif ($p.ExitCode -ne 0) {
-            $failed += "gpu-capture-selftest"
+            $failed += "gpu-capture-selftest"; $gateStatus["gpu-capture-selftest"] = "FAIL"
+        } else {
+            $gateStatus["gpu-capture-selftest"] = "PASS"
         }
 
         Write-Host ""
         if ($failed.Count -gt 0) {
             Write-Host "[FAIL] Verification failed: $($failed -join ', ')" -ForegroundColor Red
-            return $false
+        } else {
+            Write-Host "[PASS] All verification suites passed." -ForegroundColor Green
         }
-        Write-Host "[PASS] All verification suites passed." -ForegroundColor Green
+        $summaryOrder = @(
+            "python-unittest", "sched-selftest", "profiler-selftest", "heap-selftest",
+            "asset-index-selftest", "hle-thread-selftest", "fp-convert-selftest",
+            "vfpu-tables-selftest", "watchpoints-file-selftest", "vfpu-interp-selftest",
+            "ref-selftest", "import-audit-gate", "publish-audit-index", "publish-audit-worktree",
+            "gpu-coherence-selftest", "gpu-capture-selftest"
+        )
+        $summaryParts = @(foreach ($name in $summaryOrder) { "$name=$($gateStatus[$name])" })
+        # External-oracle/private-input gates are deliberately outside this suite; name them
+        # explicitly so a machine consumer cannot mistake their absence for a pass.
+        $summaryParts += "make-verify=NOT_RUN(private PPSSPP oracle traces absent)"
+        $summaryParts += "atrac3p-title-accept=NOT_RUN(private title stream absent)"
+        $summaryParts += "visual-oracle=NOT_RUN(private title route required)"
+        $summaryAggregate = if ($failed.Count -gt 0) { "FAIL" } else { "PASS" }
+        Write-Host ("VERIFY_SUMMARY aggregate={0} {1}" -f $summaryAggregate, ($summaryParts -join " "))
+        if ($failed.Count -gt 0) { return $false }
         return $true
     }
 

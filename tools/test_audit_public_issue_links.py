@@ -142,6 +142,119 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         findings = audit_markdown_files(self.repo_path, {})
         self.assertEqual(findings, [])
 
+    def test_at_a_glance_open_row_linking_closed_issue_fails(self) -> None:
+        # Regression: ISSUES.md used to declare an "Open" portable-float-to-word row
+        # that pointed at #38 after the fix had merged (the follow-on was #40).
+        doc = self.repo_path / "ISSUES.md"
+        doc.write_text(
+            "# Status\n\n"
+            "## At a glance\n\n"
+            "| Priority | State | Public work item |\n"
+            "| --- | --- | --- |\n"
+            "| P1 | Open | Float-to-word: [issue #38](https://github.com/Jstar269/nakagawa-recomp/issues/38) |\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            38: {
+                "number": 38,
+                "is_pr": False,
+                "type": "Issue",
+                "state": "closed",
+                "merged_at": None,
+                "title": "portable float-to-word (merged via PR #39)",
+                "url": "",
+            }
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertTrue(any(not finding[4] for finding in findings))
+        self.assertTrue(any("STALE TRACKER STATUS" in finding[3] for finding in findings))
+        self.assertTrue(any("State 'Open'" in finding[3] for finding in findings))
+
+    def test_at_a_glance_open_row_linking_open_issue_passes(self) -> None:
+        doc = self.repo_path / "ISSUES.md"
+        doc.write_text(
+            "# Status\n\n"
+            "## At a glance\n\n"
+            "| Priority | State | Public work item |\n"
+            "| --- | --- | --- |\n"
+            "| P1 | Open | Exotic VFPU: [issue #40](https://github.com/Jstar269/nakagawa-recomp/issues/40) |\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            40: {
+                "number": 40,
+                "is_pr": False,
+                "type": "Issue",
+                "state": "open",
+                "merged_at": None,
+                "title": "Exotic VFPU NaN/Inf divergences",
+                "url": "",
+            }
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertTrue(all(finding[4] for finding in findings))
+
+    def test_at_a_glance_non_open_rows_are_not_checked(self) -> None:
+        doc = self.repo_path / "ISSUES.md"
+        doc.write_text(
+            "# Status\n\n"
+            "## At a glance\n\n"
+            "| Priority | State | Public work item |\n"
+            "| --- | --- | --- |\n"
+            "| P1 | Blocked | [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) |\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            23: {
+                "number": 23,
+                "is_pr": False,
+                "type": "Issue",
+                "state": "closed",
+                "merged_at": None,
+                "title": "Closed thing",
+                "url": "",
+            }
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertTrue(all(finding[4] for finding in findings))
+
+    def test_copilot_instructions_is_current_facing(self) -> None:
+        # copilot-instructions.md carried pre-export shorthand numbers (#20 as an
+        # "issue", #32 for the ATRAC bridge) that misresolved to unrelated public
+        # objects. It is developer-facing, so its shorthand references must now be
+        # liveness-audited like the other current-facing docs.
+        doc = self.repo_path / ".github" / "copilot-instructions.md"
+        doc.parent.mkdir()
+        doc.write_text("See GitHub issue #999\n", encoding="utf-8")
+        findings = audit_markdown_files(self.repo_path, {})
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0][4])
+        self.assertIn("DEAD / UNRESOLVED SHORTHAND", findings[0][3])
+
+    def test_osps_baseline_and_dated_records_are_historical_evidence(self) -> None:
+        # Self-declared pre-republication snapshots and dated audit records keep
+        # their pre-export tracker numbers as plain historical evidence; a 404 on
+        # the public tracker must be reported as preserved historical evidence, not
+        # as a dead current reference.
+        cases = (
+            "docs/OSPS_BASELINE.md",
+            "docs/ISSUE196_DIRECT_XB.md",
+            "docs/provenance/MODIFIED_FILE_NOTICES.md",
+        )
+        for index, rel in enumerate(cases):
+            with self.subTest(rel=rel):
+                root = self.repo_path / f"case{index}"
+                doc = root / rel
+                doc.parent.mkdir(parents=True, exist_ok=True)
+                doc.write_text(
+                    "See https://github.com/Jstar269/nakagawa-recomp/issues/999\n",
+                    encoding="utf-8",
+                )
+                findings = audit_markdown_files(root, {})
+                self.assertEqual(len(findings), 1)
+                self.assertTrue(findings[0][4])
+                self.assertIn("HISTORICAL EVIDENCE REFERENCE", findings[0][3])
+
     def test_tracker_state_label_mismatch_fails(self) -> None:
         doc = self.repo_path / "ISSUES.md"
         doc.write_text(
