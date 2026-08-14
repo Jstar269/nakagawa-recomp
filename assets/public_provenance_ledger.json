@@ -7168,7 +7168,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8f067bf9cacf67a751050f363c73c685e4e1bc0a19052e6f699b9956a6a79bd"
+      "sha256": "a767d6d9d63b54c4037ee0662c695c9839b2d7323303974427b790886e8d4955"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
@@ -7406,7 +7406,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25807eeaf1b516c1a1149190c299f4bb2906c1741e21897b1a1946265d91ded5"
+      "sha256": "9dc0fa43fad06692a4801707e0f487eeb42ddcbbd49773cafbac2c632b742994"
     },
     {
       "path": "tools/vulkan_sdk.ps1",
