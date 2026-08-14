@@ -28,6 +28,80 @@ class SyntheticCorpusTests(unittest.TestCase):
         from vfpu_synth_gen import generate_synthetic_corpus
         self._corpus = generate_synthetic_corpus()
 
+    # ------------------------------------------------------------------
+    # Decode-shape invariants.  The historical iterators packed fields per
+    # a generic "Allegrex layout" guess, so every corpus word decoded as a
+    # different op than the iterator claimed (e.g. all "0x19 unary" words
+    # decoded as vmuls and 0x1B/0x34/0x3C words fell into Unsupported or
+    # skewed sub-ops), which silently removed vdot/vhdp/vcrs/vscl/vmmul/
+    # vtfm/vmscl/vmmov/vqmul/vcrsp from public differential fuzz.  These
+    # tests pin every word to the REAL decoder (codegen.vfpu_effect): each
+    # must emit a static body with no interpreter fallback, and the matrix/
+    # vector families must actually be present.
+    # ------------------------------------------------------------------
+
+    def test_every_word_decodes_without_fallback(self) -> None:
+        """No corpus word may raise Unsupported (skipped by the fuzzer) or
+        fall back to sr_vfpu_interp (self-compare, excluded by the fuzzer).
+        Either would silently remove the word from differential coverage."""
+        import codegen
+        bad: list[str] = []
+        for w in self._corpus:
+            try:
+                body, _, _ = codegen.vfpu_effect(0x08900000, w)
+            except codegen.Unsupported as e:
+                bad.append(f"0x{w:08x} unsupported: {e}")
+                continue
+            if "sr_vfpu_interp" in body:
+                bad.append(f"0x{w:08x} falls back to sr_vfpu_interp")
+        self.assertEqual(
+            bad, [],
+            "corpus words must decode through the static emitter:\n"
+            + "\n".join(bad[:20]),
+        )
+
+    def test_matrix_and_vector_ops_are_present(self) -> None:
+        """The corpus must contain words the runtime decoder classifies as each
+        of the matrix/vector ops the fuzzer is meant to cover (issue: synthetic
+        corpus scramble).  Fields per codegen.vfpu_effect decode: sub = bits
+        25:23, VFPUMatrix1 idx = bits 25:21 = 28, which = bits 20:16."""
+        def classify(w: int) -> str | None:
+            op = w >> 26
+            sub = (w >> 23) & 7
+            if op == 0x3C:
+                if sub == 0:
+                    return "vmmul"
+                if sub in (1, 2, 3):
+                    return "vtfm"
+                if sub == 4:
+                    return "vmscl"
+                if sub == 5:
+                    return "vqmul/vcrsp"
+                if sub == 7 and ((w >> 21) & 0x1F) == 28:
+                    return "vmmov/vmscl-alias/vmidt/vmzero/vmone"
+                return None
+            if op == 0x19:
+                return {0: "vmuls", 1: "vdot", 2: "vscl", 4: "vhdp", 5: "vcrs"}.get(sub)
+            if op == 0x1B:
+                return {0: "vcmp", 2: "vmin", 3: "vmax"}.get(sub)
+            if op == 0x34:
+                jump = (w >> 21) & 0x1F
+                return "vv2op/trans" if jump == 0 else f"vfp4-jump{jump}"
+            return None
+
+        present = {name for w in self._corpus if (name := classify(w))}
+        required = {
+            "vmmul", "vtfm", "vmscl", "vmmov/vmscl-alias/vmidt/vmzero/vmone",
+            "vdot", "vhdp", "vcrs", "vscl", "vqmul/vcrsp", "vcmp", "vmin", "vmax",
+            "vv2op/trans",
+        }
+        missing = required - present
+        self.assertEqual(
+            missing, set(),
+            "corpus must cover every matrix/vector/compare family:"
+            f" missing {sorted(missing)}",
+        )
+
     def test_corpus_is_nonempty(self):
         self.assertGreater(
             len(self._corpus), 0,
