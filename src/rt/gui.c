@@ -69,6 +69,11 @@ static int present_slot_due(void) {
     return 1;
 }
 
+/* True when the most recent gui_present() call actually attempted a host present (the
+ * output cap did not drop it). hle.c uses this to run the present-gap watchdog. */
+static int s_last_present_attempted = 0;
+int gui_present_attempted(void) { return s_last_present_attempted; }
+
 #ifdef SR_SDL3VK
 static void sync_sdl_input(void) {
     s_buttons = sdl3vk_buttons();
@@ -245,14 +250,23 @@ void gui_pump(void) {
 }
 
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+    s_last_present_attempted = 0;
     if (!s_on) return;
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
         sr_perf_present_skip();
+#ifdef SR_SDL3VK
+        /* A present that never runs must not service an armed capture: otherwise the
+         * stale arm is picked up by a LATER present and publishes frame N's file name
+         * with frame N+k's pixels (and blocks every arm in between). Resolve it as
+         * "nothing attempted" so the next present can arm cleanly. */
+        if (s_sdl3) sdl3vk_capture_cancel();
+#endif
         gui_pump();
         return;
     }
+    s_last_present_attempted = 1;
 
 #ifdef SR_SDL3VK
     if (s_sdl3) {

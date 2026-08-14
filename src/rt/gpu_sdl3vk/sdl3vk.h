@@ -58,6 +58,11 @@ int  sdl3vk_wait_image(void *vk_image);
  *                           armed, 0 when the renderer is unavailable (no Vulkan device)
  *                           or a capture is already pending.
  * sdl3vk_capture_result()   1 = written, 0 = nothing attempted, -1 = attempted and failed.
+ * sdl3vk_capture_consumed() 1 when the most recent arm was serviced by a present
+ *                           (published or failed), 0 while still armed/unserviced or
+ *                           cancelled. Distinguishes "skipped by the output cap" from
+ *                           "attempted and failed" so report lines can never carry a
+ *                           stale result from an earlier capture.
  * sdl3vk_capture_cancel()   resolve an armed-but-unserviced capture as "nothing attempted"
  *                           (the present never ran, e.g. the frame slot was skipped).
  * sdl3vk_capture_source_label()  "cpu-framebuffer" or "gpu-render-target" describing the
@@ -66,9 +71,15 @@ int  sdl3vk_wait_image(void *vk_image);
  *                           a capture of the CPU (BGRA) framebuffer from one of the GE
  *                           (RGBA) render target.
  *
- * The written file is a P6 PPM named with a .ppm extension: the format matches the name. */
+ * The written file is a P6 PPM named with a .ppm extension: the format matches the name.
+ * Publication creates the parent directory on demand (the FBSNAP route publishes under
+ * build/snapshots/, which no build step creates). A publication failure resolves the
+ * capture as attempted-and-failed (-1) but does NOT fail the present itself: the frame
+ * reached the presentation engine, and failing the present would make gui.c re-present
+ * it through the CPU fallback. */
 int  sdl3vk_capture_arm(const char *path);
 int  sdl3vk_capture_result(void);
+int  sdl3vk_capture_consumed(void);
 void sdl3vk_capture_cancel(void);
 const char *sdl3vk_capture_source_label(void);
 

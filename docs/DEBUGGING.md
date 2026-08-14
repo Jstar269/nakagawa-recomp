@@ -265,6 +265,29 @@ command buffer that blits the displayed frame, then published atomically as an e
 nothing was written). `gpu-capture-selftest` (Verify step 15) byte-checks both CPU- and GPU-source
 captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
 
+Capture publication creates the parent directory on demand: `build/snapshots/` is not a build
+artifact, and before the runtime did this every FBSNAP capture failed its `fopen` with ENOENT and
+reported `result=-1` even though the readback had succeeded. A publication failure (e.g. a parent
+path that is a regular file) resolves the capture as attempted-and-failed (`result=-1`) without
+failing the present itself — the frame DID reach the presentation engine, and failing the present
+would make the CPU fallback re-present the same frame.
+
+The host output cap (30 Hz by default, see `SR_FPS_CAP`) drops presents between output slots. An
+armed frame whose present is dropped is **cancelled, not deferred**: the runtime reports
+`FBSNAP ... -> SKIPPED (no present serviced this frame)` and the next present arms fresh. This is
+what keeps frame numbering truthful — a capture file's number always matches the frame it
+actually contains, because a stale arm can never be picked up by a later present. With
+`SR_FBSNAP=N`, consecutive files step by at least N vblanks; steps larger than N mean the cap
+dropped presents in between and are normal.
+
+`tools/frame_capture_check.py` (run automatically by `VisualOracle` into `capture_check.json`)
+accounts every capture against the stderr report lines, detects black and stale (byte-identical
+consecutive) frames, reports frame-number gaps and `PRESENT_GAP`/`WATCHDOG` lines, and classifies
+the present state: `guest-running-no-present` (vcounts advance, no host present serviced) vs
+`guest-stalled-no-flip` (no `sceDisplaySetFrameBuf` at all) vs process deadlock (no `PRESENT_GAP`
+and no `WATCHDOG` line — detected by the manager's backstop deadline). Only hashes and metrics are
+written to the manifest; pixels never leave the machine.
+
 #### Where `SR_EXIT_AT_VBLANK` actually stops
 
 It is the **last statement of `sr_vblank_tick()`**. At that point vblank *V* is complete in

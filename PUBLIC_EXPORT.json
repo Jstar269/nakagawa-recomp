@@ -4,13 +4,13 @@
   "generated_evidence": "Generated from the canonical publication policy and exact source bytes. Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded from its own included-content digest to avoid a self-reference.",
   "profile": "public-safe-v1",
   "policy_version": "2.0.0",
-  "policy_sha256": "5ae1ad124d5383913b89318dd744adbd5399d3c34d9023f992bae01ef30e82c7",
+  "policy_sha256": "9ef162543979ebc718ef84afb6570eff6dcc8c1d4a34c875eaf1246d388fc7bf",
   "audit_tool_version": "0.4.0",
-  "tracked_file_count": 620,
+  "tracked_file_count": 622,
   "included_file_count": 620,
   "exported_file_count": 620,
-  "excluded_file_count": 0,
-  "included_content_sha256": "aba82df7b321a001ff02a6cae1b2221420677c0eaf6b1d9a12fb45593abccc0b",
+  "excluded_file_count": 2,
+  "included_content_sha256": "8cb68a170bbc68645d07332c84640df5762487ce4858404edf029b0ae1ddac2a",
   "digest_excludes": [
     "PUBLIC_EXPORT.json"
   ],
@@ -59,9 +59,11 @@
     "src/rt/pgd.h",
     "src/rt/pgf.c",
     "src/rt/pgf.h",
+    "tools/frame_capture_check.py",
     "tools/pgd_decrypt.py",
     "tools/pgd_e2e_harness.c",
     "tools/pgd_test_keys.py",
+    "tools/test_frame_capture_check.py",
     "tools/test_pgd_c.py",
     "tools/test_pgd_decrypt.py",
     "tools/test_pgd_hardening.py",
@@ -70,7 +72,10 @@
   "excluded_globs": [
     "font/*.pgf"
   ],
-  "excluded_present_paths": [],
+  "excluded_present_paths": [
+    "tools/frame_capture_check.py",
+    "tools/test_frame_capture_check.py"
+  ],
   "provenance_ledger_sha256": "2894ecd008eca11d8cc22b2f7e3a67dbfcc928a1d832b4ab4e48144ba26bad86",
-  "manifest_sha256": "fb2075c8134325b883145e9dad90240a6d8885e16911bb8734c2afc07608ecfc"
+  "manifest_sha256": "b64980e4a8852d851fa06b4f1c0927702e9a6c6fa4f7b92e395dd7b52c2a3c4a"
 }
