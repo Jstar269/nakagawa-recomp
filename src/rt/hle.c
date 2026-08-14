@@ -6208,6 +6208,7 @@ static DisplayFrameState s_display_latched = { 0x04000000u, 512, 3 };
 static int s_display_latched_pending;
 static uint32_t s_framebuf = 0x04000000u, s_vcount = 0;
 static uint32_t s_last_flip_vcount = 0;   /* hang watchdog (see sr_vblank_tick) */
+static uint32_t s_last_host_present_vcount = 0; /* present-gap watchdog (guest flips, no host present) */
 
 /* A guest-VRAM dump is a publication boundary, not an ordinary present. The Vulkan
  * presenter deliberately queues its readback, so materialize only this display target
@@ -6437,15 +6438,21 @@ static int display_host_span_valid(const DisplayFrameState *fb) {
     return sr_guest_span_readable(fb->addr, bytes);
 }
 
-static void display_present_active(void) {
-    if (!gui_on() || !s_display_active.addr) return;
+/* Present the active scanout buffer. Returns 1 when a host present was actually
+ * attempted (the output cap did not drop it); 0 when the window is absent, the span is
+ * invalid, or the present was skipped. Callers use this to track host-present progress
+ * for the present-gap watchdog, which must distinguish "guest running but no host
+ * present" from the no-flip hang covered by the existing WATCHDOG. */
+static int display_present_active(void) {
+    if (!gui_on() || !s_display_active.addr) return 0;
     if (!display_host_span_valid(&s_display_active)) {
         fprintf(stderr, "DISPLAY_PRESENT: refusing invalid span addr=0x%08x stride=%d fmt=%d\n",
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
-        return;
+        return 0;
     }
     gui_present(s_display_active.addr, s_display_active.fmt,
                 (uint32_t)s_display_active.stride);
+    return gui_present_attempted();
 }
 
 /* ---- swapchain-truthful present capture (issue #57) -------------------------------
@@ -6513,7 +6520,14 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         if (!fd || vcount < (uint32_t)atoi(fd)) return NULL;
         if (!sr_fbcap_path(SR_FBCAP_FBDUMP, 0, s_fbcap_armed, sizeof s_fbcap_armed))
             return NULL;
-        (void)sdl3vk_capture_arm(s_fbcap_armed);
+        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+            /* A refused arm must not leave a path behind: the report below would
+             * otherwise print a stale result from an earlier capture as if it were
+             * this frame's. */
+            s_fbcap_armed[0] = '\0';
+            s_fbcap_legacy[0] = '\0';
+            return NULL;
+        }
         return s_fbcap_armed;
     }
     /* SR_FBSNAP: <N> every / AFTER / WINDOWS gates. */
@@ -6546,7 +6560,11 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         else
             snprintf(s_fbcap_legacy, sizeof s_fbcap_legacy, "snap_%u.ppm",
                      (vcount / (uint32_t)fs) % 8u);
-        (void)sdl3vk_capture_arm(s_fbcap_armed);
+        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+            s_fbcap_armed[0] = '\0';
+            s_fbcap_legacy[0] = '\0';
+            return NULL;
+        }
         return s_fbcap_armed;
     }
 }
@@ -6586,7 +6604,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
-        display_present_active();
+        if (display_present_active())
+            s_last_host_present_vcount = s_vcount;
     } else {
         s_display_latched = requested;
         s_display_latched_pending = 1;
@@ -6644,8 +6663,19 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             }
         }
         extern int sdl3vk_capture_result(void);
-        fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
-                s_vcount, s_fbcap_armed, sdl3vk_capture_result());
+        extern int sdl3vk_capture_consumed(void);
+        extern void sdl3vk_capture_cancel(void);
+        if (sdl3vk_capture_consumed()) {
+            fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
+                    s_vcount, s_fbcap_armed, sdl3vk_capture_result());
+        } else {
+            /* The host output cap dropped this frame's present (or the window is gone):
+             * the arm was cancelled and must NOT be serviced by a later frame, and the
+             * report must not carry a stale result from an earlier capture. */
+            sdl3vk_capture_cancel();
+            fprintf(stderr, "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)\n",
+                    s_vcount);
+        }
         s_fbcap_armed[0] = '\0';
         s_fbcap_legacy[0] = '\0';
     }
@@ -6685,9 +6715,15 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                       g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata); }
             sr_dump_calls();
             extern void sched_dump_threads(void); sched_dump_threads();
-            int cres = sdl3vk_capture_result();
-            fprintf(stderr, "present capture result=%d (source=%s)\n", cres,
-                    sdl3vk_capture_source_label());
+            extern int sdl3vk_capture_consumed(void);
+            /* Only a capture actually serviced by THIS frame's present may be read: an
+             * unserviced arm (output cap skipped the present) means nothing was
+             * attempted, and a stale result from an earlier capture must not be able to
+             * turn a no-capture exit into a false success. */
+            int cres = sdl3vk_capture_consumed() ? sdl3vk_capture_result() : 0;
+            fprintf(stderr, "present capture result=%d (source=%s)%s\n", cres,
+                    sdl3vk_capture_source_label(),
+                    sdl3vk_capture_consumed() ? "" : " (not serviced: no present this frame)");
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 _Exit(1);
@@ -6823,7 +6859,8 @@ void sr_vblank_tick(void) {
         s_display_latched_pending = 0;
         s_framebuf = s_display_active.addr;
         s_last_flip_vcount = s_vcount;
-        display_present_active();
+        if (display_present_active())
+            s_last_host_present_vcount = s_vcount;
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
@@ -6878,6 +6915,25 @@ void sr_vblank_tick(void) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
               _Exit(1);
           }
+        }
+    }
+    /* Present-gap diagnostic (capture acceptance): the hang watchdog above catches the
+     * case where the guest stops flipping buffers entirely. This one distinguishes
+     * "guest running but the host stopped presenting" -- the guest keeps calling
+     * sceDisplaySetFrameBuf while no host present is serviced -- from process deadlock,
+     * where s_vcount itself stops advancing and neither line is emitted. Active only
+     * for capture routes, after the first host present, once per 120-vblank window. */
+    {
+        static int pg_on = -1;
+        if (pg_on < 0)
+            pg_on = (getenv("SR_FBSNAP") || getenv("SR_FBDUMP") || getenv("SR_FBDIAG")) ? 1 : 0;
+        if (pg_on && s_last_host_present_vcount > 0) {
+            uint32_t pgap = s_vcount - s_last_host_present_vcount;
+            if (pgap >= 120 && (pgap % 120) == 0)
+                fprintf(stderr,
+                        "PRESENT_GAP: vcount=%u last_host_present=%u gap=%u (~%us) -- "
+                        "guest running, no host present serviced\n",
+                        s_vcount, s_last_host_present_vcount, pgap, pgap / 60);
         }
     }
     /* Frame capture happens at sceDisplaySetFrameBuf (the instant a finished frame is presented),

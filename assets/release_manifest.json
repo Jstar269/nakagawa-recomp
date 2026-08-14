@@ -147,7 +147,9 @@
     {"path": "docs/provenance/IMPLEMENTATION_PROVENANCE.json", "comment": "Detailed development provenance ledger contains private investigation context and links to excluded review work products; the public candidate carries the path-hashed public ledger instead."},
     {"path": "docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md", "comment": "PGD/amctrl qualified-review source archaeology excluded from public scope."},
     {"path": "docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md", "comment": "PGF/font qualified-review source archaeology excluded from public scope."},
-    {"path": "docs/provenance/SAL063_RETENTION_2026-08-06.md", "comment": "Internal sal063 retention worksheet excluded from public scope."}
+    {"path": "docs/provenance/SAL063_RETENTION_2026-08-06.md", "comment": "Internal sal063 retention worksheet excluded from public scope."},
+    {"path": "tools/frame_capture_check.py", "comment": "New implementation-bearing temporal-acceptance tool; awaiting a provenance record before public scope."},
+    {"path": "tools/test_frame_capture_check.py", "comment": "Unit tests for tools/frame_capture_check.py; excluded with the tool pending its provenance record."}
   ],
   "components": [
     {

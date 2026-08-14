@@ -770,6 +770,20 @@ try {
             Write-Host "[!] Could not clear stale snapshots before the run: $($_.Exception.Message)" -ForegroundColor Red
             return $false
         }
+        # The present-truthful swapchain captures land in build/snapshots/ (frame_%04u.ppm
+        # numbered by vblank, frame_v<vcount>.ppm with windows). Clear them the same way:
+        # a shorter second run must not leave the first run's tail behind, and a refused
+        # cleanup is a hard stop, not a silent mix.
+        $swapSnapDir = Join-Path $script:RepoRoot "build\snapshots"
+        if (Test-Path $swapSnapDir) {
+            try {
+                @(Get-ChildItem -LiteralPath $swapSnapDir -Filter "frame_*.ppm" -File -ErrorAction Stop) |
+                    Remove-Item -Force -ErrorAction Stop
+            } catch {
+                Write-Host "[!] Could not clear stale swapchain snapshots before the run: $($_.Exception.Message)" -ForegroundColor Red
+                return $false
+            }
+        }
 
         $env:SR_PADSCRIPT     = (Resolve-Path $Route).Path
         $env:SR_NOINPUT       = "1"
@@ -821,6 +835,12 @@ try {
         }
         $captures = @(Get-ChildItem (Join-Path (Get-Location) "snap_*.ppm") -ErrorAction SilentlyContinue)
         $captures | ForEach-Object { Copy-Item $_.FullName (Join-Path $outDir $_.Name) -Force }
+        # Present-truthful swapchain captures (build/snapshots/frame_*.ppm) belong in the
+        # oracle archive beside the legacy guest-VRAM dumps; they are the acceptance
+        # sequence this route exists to produce.
+        $swapCaptures = @(Get-ChildItem (Join-Path $script:RepoRoot "build\snapshots\frame_*.ppm") -ErrorAction SilentlyContinue)
+        $swapCaptures | ForEach-Object { Copy-Item $_.FullName (Join-Path $outDir $_.Name) -Force }
+        $allCaptures = @($captures) + @($swapCaptures)
         # A Benchmark run's telemetry belongs with the captures it describes, not in the
         # shared logs/ slot the next run overwrites. Only under Benchmark: any other profile
         # would archive a leftover perf.csv from some earlier run as if it described this one.
@@ -829,10 +849,27 @@ try {
             if (Test-Path $perfCsv) { Copy-Item $perfCsv (Join-Path $outDir "perf.csv") -Force }
         }
 
+        # Frame-sequence acceptance over the archived captures + stderr: black/stale-frame
+        # detection, capture-result accounting, and present-gap classification. Writes
+        # capture_check.json (hashes only, never pixels) into the oracle directory. A check
+        # failure is reported but does not disqualify the captures themselves.
+        $captureCheck = ""
+        $checkJson = Join-Path $outDir "capture_check.json"
+        $checkLog = Join-Path $outDir "stderr.log"
+        if (Test-Path $checkLog) {
+            $checkOut = & python tools/frame_capture_check.py --dir $outDir `
+                --log $checkLog --out $checkJson 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $captureCheck = (($checkOut | Select-Object -Last 1) -join "").Trim()
+            } else {
+                Write-Host "[!] frame_capture_check.py failed: $($checkOut -join '; ')" -ForegroundColor Yellow
+            }
+        }
+
         $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
         $rate = if ($secs -gt 0 -and $vblanks -gt 0) { [math]::Round($vblanks / $secs, 1) } else { 0 }
         $verdict = Get-OracleVerdict -ReachedExit $reachedExit -TimedOut $runResult.TimedOut `
-                       -ExitCode $runResult.ExitCode -CaptureCount $captures.Count `
+                       -ExitCode $runResult.ExitCode -CaptureCount $allCaptures.Count `
                        -RequestedVblank $ExitAtVblank -ObservedVblank $vblanks
 
         $manifest = [ordered]@{
@@ -857,7 +894,9 @@ try {
             reached_exit         = $reachedExit
             timed_out            = $runResult.TimedOut
             exit_code            = $runResult.ExitCode
-            capture_count        = $captures.Count
+            capture_count        = $allCaptures.Count
+            swapchain_capture_count = $swapCaptures.Count
+            capture_check        = $captureCheck
             wall_seconds         = $secs
             guest_vblanks_per_s  = $rate
         }
@@ -865,7 +904,9 @@ try {
             Out-File -FilePath (Join-Path $outDir "oracle_manifest.json") -Encoding utf8
 
         $summary = "VisualOracle result: name=$OracleName wall_s=$secs vblanks=$vblanks " +
-                   "guest_vblanks_per_s=$rate captures=$($captures.Count) exit_code=$($runResult.ExitCode) " +
+                   "guest_vblanks_per_s=$rate captures=$($allCaptures.Count) " +
+                   "swapchain_captures=$($swapCaptures.Count) capture_check=$captureCheck " +
+                   "exit_code=$($runResult.ExitCode) " +
                    "timed_out=$($runResult.TimedOut) reached_exit=$reachedExit complete=$($verdict.Complete)"
         Write-Host $summary -ForegroundColor $(if ($verdict.Complete) { "Green" } else { "Yellow" })
         $summary | Out-File -FilePath (Join-Path $outDir "oracle_summary.txt") -Encoding utf8
@@ -875,7 +916,7 @@ try {
             $verdict.Reasons | ForEach-Object { Write-Host "      - $_" -ForegroundColor Yellow }
             return $false
         }
-        Write-Host "[PASS] $($captures.Count) captures archived to $outDir" -ForegroundColor Green
+        Write-Host "[PASS] $($allCaptures.Count) captures archived to $outDir" -ForegroundColor Green
         return $true
     }
 

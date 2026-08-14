@@ -215,6 +215,7 @@ int gui_pad_present(void) { return 0; }
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)fbaddr; (void)fmt; (void)stride;
 }
+int gui_present_attempted(void) { return 0; }
 /* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
  * a fully validated descriptor is correctly classified as guest-authoritative. */
 struct GeGpuFbDescriptor;
@@ -233,6 +234,8 @@ void ge_set_frame(uint32_t frame) { (void)frame; }
 uint32_t ge_framebuffer(void) { return 0u; }
 int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
 int sdl3vk_capture_result(void) { return 0; }
+int sdl3vk_capture_consumed(void) { return 0; }
+void sdl3vk_capture_cancel(void) {}
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sdl3vk_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
