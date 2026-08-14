@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "558408fbf818782b87c1a510bd4272c4d8e6d17de4c8508866378eb82c2b67ed"
+      "sha256": "1c510a4d7af423f3874286afc9b928b1d874526af2643df5262e26b9997aac09"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "d2f3f61f4e2491572891b678f5525d8fdbfa5286fcc5ea636ed871262682cd2d"
+      "sha256": "96769f3f67883fdb4442e42bc920ba48a762cc1418f66834f13d6b24c3046c8f"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a988011992992e0c2b8a9f214abe2d95c7303950257f14fcd563ad5530da6c7c"
+      "sha256": "6b6970901f1875351aaf73fa8a9d642778e501672b6c74469c2b53e16696eaf4"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1131,7 +1131,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "0d52be1fd04ee1ba876cb5a91228189ed7e3b4a1a0b9ed909db5b81aa82400d7"
+      "sha256": "c970794a2887cac783d607c583d58cacc38b43d4d7b8dfbb2d32dbadb16c0025"
     },
     {
       "path": "interface/.env.example",
@@ -4770,6 +4770,15 @@
       "sha256": "31211c32bdc5a9e4b8e77c52d2c2227eb5aa1159e01481e2f813b5cecd6743b4"
     },
     {
+      "path": "src/rt/vfpu_overlap_selftest.c",
+      "classification": "unresolved",
+      "evidence": {
+        "source": "missing path-specific provenance record",
+        "statement": "no path-specific record exists in the detailed implementation ledger; independent authorship or derivation cannot be attested without one"
+      },
+      "sha256": "f6b9c2a40fe24fcd2e1f6177e8280f5473f9c6a3430207601852fe0ac32ef10b"
+    },
+    {
       "path": "src/rt/vfpu_tables.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7404,6 +7413,15 @@
         "modification_status": "modified_or_translated; see record"
       },
       "sha256": "352014730a608ebffd538014ce8d606ee3a1935a26492eef7b912012b8b5e409"
+    },
+    {
+      "path": "tools/vfpu_overlap_fuzz_gen.py",
+      "classification": "unresolved",
+      "evidence": {
+        "source": "missing path-specific provenance record",
+        "statement": "no path-specific record exists in the detailed implementation ledger; independent authorship or derivation cannot be attested without one"
+      },
+      "sha256": "942095686c71572cd705356be491eef8573c774de28bae454f63a5552b835a67"
     },
     {
       "path": "tools/vfpu_synth_gen.py",
