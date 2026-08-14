@@ -6513,7 +6513,13 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         if (!fd || vcount < (uint32_t)atoi(fd)) return NULL;
         if (!sr_fbcap_path(SR_FBCAP_FBDUMP, 0, s_fbcap_armed, sizeof s_fbcap_armed))
             return NULL;
-        (void)sdl3vk_capture_arm(s_fbcap_armed);
+        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+            /* A refused arm must not leave a path behind: the report below would
+             * otherwise print a stale result from an earlier capture. */
+            s_fbcap_armed[0] = '\0';
+            s_fbcap_legacy[0] = '\0';
+            return NULL;
+        }
         return s_fbcap_armed;
     }
     /* SR_FBSNAP: <N> every / AFTER / WINDOWS gates. */
@@ -6546,7 +6552,11 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         else
             snprintf(s_fbcap_legacy, sizeof s_fbcap_legacy, "snap_%u.ppm",
                      (vcount / (uint32_t)fs) % 8u);
-        (void)sdl3vk_capture_arm(s_fbcap_armed);
+        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+            s_fbcap_armed[0] = '\0';
+            s_fbcap_legacy[0] = '\0';
+            return NULL;
+        }
         return s_fbcap_armed;
     }
 }
@@ -6644,8 +6654,16 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             }
         }
         extern int sdl3vk_capture_result(void);
-        fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
-                s_vcount, s_fbcap_armed, sdl3vk_capture_result());
+        int cres = sdl3vk_capture_result();
+        if (cres != 0) {
+            fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
+                    s_vcount, s_fbcap_armed, cres);
+        } else {
+            /* The output cap dropped this frame's present: the arm was cancelled and
+             * must not be serviced by a later frame, nor reported with a stale result. */
+            fprintf(stderr, "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)\n",
+                    s_vcount);
+        }
         s_fbcap_armed[0] = '\0';
         s_fbcap_legacy[0] = '\0';
     }
@@ -6660,7 +6678,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             fbdu = sr_fbcap_env_on("SR_FBDUMP");
             fbdu_n = fd ? atoi(fd) : 0;
         }
-        if (sync == 0u && fbdu && s_framebuf && s_vcount >= (uint32_t)fbdu_n &&
+        if (sync == 0u && fbdu && s_fbcap_armed[0] && s_framebuf &&
+            s_vcount >= (uint32_t)fbdu_n &&
             display_host_span_valid(&s_display_active)) {
             extern unsigned long g_ge_pixels;
             extern unsigned long g_tex_samples, g_tex_nonzero;
@@ -6685,9 +6704,12 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                       g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata); }
             sr_dump_calls();
             extern void sched_dump_threads(void); sched_dump_threads();
+            /* Only a capture serviced by this frame's present may affect the exit
+             * verdict. An unserviced arm is a failed attempt, never a stale success. */
             int cres = sdl3vk_capture_result();
-            fprintf(stderr, "present capture result=%d (source=%s)\n", cres,
-                    sdl3vk_capture_source_label());
+            fprintf(stderr, "present capture result=%d (source=%s)%s\n", cres,
+                    sdl3vk_capture_source_label(),
+                    cres == 0 ? " (not serviced: no present this frame)" : "");
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 _Exit(1);

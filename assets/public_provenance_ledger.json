@@ -4154,7 +4154,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "79aef5ddd8deed56c2b402d965942dc52606c3b42a8e7d8159bd0fcd65d20614"
+      "sha256": "7bcf3c6de14b1cf80ac27eaa097a7dd424eaabc6444dc51b50da151b390cab0a"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -4171,7 +4171,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "fdb6e656f00e04414034e4accf755a805021884d84b03af1a7fdfbcdb38aabe1"
+      "sha256": "1fdd07acb7664476507a686af299ffbb1c01e64a4ebf82623a174c1df14baf57"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -4273,7 +4273,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "830d55c2a9e47cc9370cd672cf3f876561bce3d0bad8fed4f16aca8abb5936f0"
+      "sha256": "057b525d786384f81c15a70293c8dcb61244c73747ccee8febeb8f6ecbfb804a"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -4337,7 +4337,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "5908633bdbf0f76b6ece3d35141729f6e9798abb01ec56dc4dc8c680684f71a6"
+      "sha256": "92927112e55a6a90f5d8b49519473a9511c5a5183e56334d9cfa5a190214b9ec"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",

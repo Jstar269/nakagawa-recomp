@@ -66,7 +66,9 @@ int  sdl3vk_wait_image(void *vk_image);
  *                           a capture of the CPU (BGRA) framebuffer from one of the GE
  *                           (RGBA) render target.
  *
- * The written file is a P6 PPM named with a .ppm extension: the format matches the name. */
+ * The written file is a P6 PPM named with a .ppm extension: the format matches the name.
+ * Publication creates the parent directory on demand. A publication failure resolves the
+ * capture as attempted-and-failed (-1) but does not fail the already-presented frame. */
 int  sdl3vk_capture_arm(const char *path);
 int  sdl3vk_capture_result(void);
 void sdl3vk_capture_cancel(void);
