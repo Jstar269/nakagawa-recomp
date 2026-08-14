@@ -124,7 +124,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "898733fd12e1203ae5fab4fb927036b314e9e1bc03c26a555e2e25b498cdfb31"
+      "sha256": "15c5ea64fd2fb39572fdec98cd471fb0536f814f5cba4abe3eebda8067eb0327"
     },
     {
       "path": ".github/dependabot.yml",
@@ -206,7 +206,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99e9d2c1b6a47dd6c15e9b1256d433be035ed07cafbe4ccb05dec1b53b0d9e7b"
+      "sha256": "856aa33e537e81bc60322bea811d9f6bbdc87c46038629483d25229ed1377064"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67fbb2103663bd64c4c9697ecad823d3326bfcf4dee305b7d8b3207617b68961"
+      "sha256": "c01ce468347c656501a87e73a5f38fd4dd31656828cdbe7604c7c05ccc4734d2"
     },
     {
       "path": "LICENSE",
@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "635a83c10ce2fbd51a11a3e42b6588245764b018608a00daf9259f5d3d8ce53c"
+      "sha256": "e39e8857471cd1fc5a29aafaff0720a0fe326654a3a9c774a91e0b9e0b541c2a"
     },
     {
       "path": "docs/CI.md",
@@ -721,7 +721,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d5d280301159a9ec91b137f8983f335db16ba43e3c4f10ac1885e535ce34fc57"
+      "sha256": "13c8f49d8f6ab50d8b2741ad9c65988313d1e5459381868f427a9a65c6aa5a10"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -730,7 +730,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cdc43ba75fce2dd934090b9e11bcf0f616e3ab98f0af241214bfa3891f1718a1"
+      "sha256": "500c4d23fb823e1706536529c3dc7f47aee7d58855c2020abe61f7982baaec1a"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -847,7 +847,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "619c7836368cc426fd083324ccdd81aa686f78839dfebd8ac62ac8bb17230ca9"
+      "sha256": "088999f864a543dfc81e64c99a13b23576d14f1e57d1169cba5502a6fd95561e"
     },
     {
       "path": "docs/SETUP.md",
@@ -892,7 +892,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fd677221884b8fc1e720b199169543944099d117734a405570911a6df55fa822"
+      "sha256": "5c6d28acd1869f2a6d6a11c1f411b15d48eb23f91f4414d397d99229c3d1ddd9"
     },
     {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
@@ -1104,7 +1104,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "2e9782871baf02566e6b154eab611637664882dde2c1ca48ad705fc73849ac41"
+      "sha256": "0d52be1fd04ee1ba876cb5a91228189ed7e3b4a1a0b9ed909db5b81aa82400d7"
     },
     {
       "path": "interface/.env.example",
@@ -4889,7 +4889,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7a278bca49306e9dbf1ee0780253ae90b46da3a7b9a174384fd4e215af2ddf99"
+      "sha256": "5a957d202f08dffbb862d0073cb8a2a3fa30fc9f9d4b9e556bfc77226252fac4"
     },
     {
       "path": "tools/benchmark_codegen_chunks.py",
@@ -5293,7 +5293,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9a05f5b7d9ad93da4b2a93cbd0d261bb7939a668a17800e4d549db7267c8975"
+      "sha256": "4349b2c9b40ad95d2f48845c7ce3af7401149cf175a193a9e94e045a574479e8"
     },
     {
       "path": "tools/host_stubs.py",
@@ -5983,7 +5983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a90a32c5b967bb6bd93217bba251d8aa08cddc95c6f56ae638fc629c6ca8f3e6"
+      "sha256": "b40885e72b12f331362ad0f46a6ddb04216038d0031e9258460951da611d33e9"
     },
     {
       "path": "tools/test_boot_gate.py",
@@ -6391,7 +6391,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "135e2f5a1de6baa635e52eb9348217c9b06b0ff836ceb8e256716aa6a57b7e23"
+      "sha256": "46f6d377b75e503906bdacb5c31a970987305cd83d3eb2214b8928022a17bfc8"
     },
     {
       "path": "tools/test_hle_umd_wakeup.py",
@@ -6559,7 +6559,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d5082bd7bd1d398be6fdaa5dc950cdf1629b040002f929a25c44f0290ef1195"
+      "sha256": "70f2531d9ae4cf1a0ac2ccb3c66c30c75d83b61e4330d688eb8daeaa30d063f9"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",

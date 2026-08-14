@@ -25,7 +25,8 @@ private PSP ELF/PRX → analyze.py → function + CFG + context
 Nakagawa's reference interpreter / recompiler prove **execution** correctness; a
 decomp.me 100% match proves **machine-code equivalence** for a compiler+flags. They
 answer different questions and are strongest together — neither is authority over the
-other (a match is *evidence*, e.g. for function boundaries and #51).
+other (a match is *evidence*, e.g. for function boundaries and callable-vs-continuation
+classification).
 
 ## Privacy discipline (non-negotiable)
 
@@ -93,7 +94,7 @@ the default here) and/or contribute Allegrex assembler support upstream.
 6. **Matched-function database** — in the private game-data repo, as human/matching
    evidence (not execution semantics).
 7. **Analyzer feedback** — feed matches back as boundary/call-graph/type evidence
-   (directly serves #51's callable-vs-continuation distinction).
+   (directly serves the callable-vs-continuation distinction).
 8. **Upstream collaboration** — a PSP compiler preset, improved Allegrex/VFPU support
    — only after the publication/legal questions are settled.
 

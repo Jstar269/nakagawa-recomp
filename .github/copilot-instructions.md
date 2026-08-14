@@ -57,7 +57,9 @@ will not see an unstaged edit.
 The canonical non-interactive aggregate gate is `.\hst_manager.ps1 -Action Verify` (15 steps:
 Python unit suite, sched/profiler/heap/asset-index/HLE-thread/FP-conversion/VFPU-table/watchpoints/
 VFPU-interp selftests, `src/ref`, `import_audit_gate.py`, `publish_audit.py` over both content
-sources, and the two GPU selftests — exit 77 = Vulkan/validation layer unavailable → SKIP).
+sources, and the two GPU selftests — exit 77 = Vulkan/validation layer unavailable → SKIP). The
+suite ends with a machine-checkable `VERIFY_SUMMARY` line naming each subgate's PASS/SKIP/FAIL
+status and the private-input gates reported as NOT_RUN.
 
 For dashboard changes:
 
@@ -110,7 +112,8 @@ the missing behavior.
 
 Address-specific/game-specific compatibility behavior is semantic debt. Any unavoidable override
 must have concrete evidence, narrow scope, a regression/route, and a retirement criterion. See
-GitHub issue #20.
+the compatibility-override inventory in `tools/compat_overrides.py`, enforced by
+`tools/test_compat_manifest.py`.
 
 ### Unknown operations must stay visible
 
@@ -161,7 +164,7 @@ Do not invent or document an `SR_HLE_CONTINUE` switch; it does not exist.
 - `src/rt/sched.c` — cooperative PSP-thread scheduling, lifecycle, waits, and virtual time.
 - `src/rt/hle.c` — NID registry and major PSP kernel/user HLE behavior.
 - `src/rt/atrac3p/` + `src/rt/atrac3p_bridge.c` — ATRAC3+ decoder (FFmpeg n4.4-derived,
-  LGPL-2.1-or-later) and the HLE bridge behind `sceAtracDecodeData` (#32); compiling `hle.c`
+  LGPL-2.1-or-later) and the HLE bridge behind `sceAtracDecodeData`; compiling `hle.c`
   needs the atrac3p include paths.
 - `src/rt/ge.c` — software GE comparison rasterizer.
 - `src/rt/gpu_sdl3vk/` — SDL3/Vulkan host/input/rendering path.

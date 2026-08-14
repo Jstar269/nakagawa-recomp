@@ -124,6 +124,41 @@ class ManagerSafetyContractTests(unittest.TestCase):
         # Early `exit` must not skip that restoration.
         self.assertIn('if ($Action -and $script:ManagerExitCode -ne 0) {\n    exit $script:ManagerExitCode', self.manager)
 
+    def test_verify_suite_emits_a_machine_readable_gate_summary(self) -> None:
+        # The Verify suite must report which subgates executed/passed/skipped and which
+        # private-input gates were not run, in a stable machine-checkable line, without
+        # changing the existing [PASS]/[FAIL]/exit-code contract.
+        self.assertIn("VERIFY_SUMMARY", self.manager)
+        self.assertIn("aggregate=", self.manager)
+        for gate in (
+            "python-unittest",
+            "sched-selftest",
+            "profiler-selftest",
+            "heap-selftest",
+            "asset-index-selftest",
+            "hle-thread-selftest",
+            "fp-convert-selftest",
+            "vfpu-tables-selftest",
+            "watchpoints-file-selftest",
+            "vfpu-interp-selftest",
+            "ref-selftest",
+            "import-audit-gate",
+            "publish-audit-index",
+            "publish-audit-worktree",
+            "gpu-coherence-selftest",
+            "gpu-capture-selftest",
+        ):
+            self.assertIn(f'"{gate}"', self.manager, f"VERIFY_SUMMARY must cover {gate}")
+        for unavailable in (
+            "make-verify=NOT_RUN",
+            "atrac3p-title-accept=NOT_RUN",
+            "visual-oracle=NOT_RUN",
+        ):
+            self.assertIn(unavailable, self.manager)
+        # A SKIP (Vulkan unavailable) must be reported as SKIP, never folded into a pass.
+        self.assertIn('$gateStatus["gpu-coherence-selftest"] = "SKIP"', self.manager)
+        self.assertIn('$gateStatus["gpu-capture-selftest"] = "SKIP"', self.manager)
+
     def test_no_early_exit_inside_the_try_body(self) -> None:
         # Every failure inside the action dispatch records a code and breaks, so the
         # finally block runs before the single exit at the end.

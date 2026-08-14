@@ -132,7 +132,8 @@ Address-specific/game-specific compatibility behavior is semantic debt. Any such
 - narrowly scoped to the proven contract;
 - assigned a retirement criterion.
 
-[#20](https://github.com/Jstar269/nakagawa-recomp/pull/20) tracks retirement/proof of this surface.
+The compatibility-override inventory in `tools/compat_overrides.py`, enforced by
+`tools/test_compat_manifest.py`, tracks retirement/proof of this surface.
 
 ## Correctness traps
 
@@ -224,7 +225,10 @@ parser selftest (`watchpoints-file-selftest`), `vfpu-interp-selftest`, `src/ref`
 `gpu-capture-selftest`; exit 77 = Vulkan/validation layer unavailable → SKIP), then add the
 subsystem-specific native/runtime route required by the change (audio: `atrac3p-selftest` and
 `atrac3p-bridge-selftest` are source-owned; `atrac3p-title-accept` is the private acceptance route
-and exits 77 when the private stream is absent → SKIP).
+and exits 77 when the private stream is absent → SKIP). The suite ends with a machine-checkable
+`VERIFY_SUMMARY` line naming each subgate's PASS/SKIP/FAIL status and the private-input gates
+reported as NOT_RUN, so an aggregate "passed" can never be mistaken for a run that executed
+everything.
 
 Docs changes: `npx --yes markdownlint-cli2@0.23.1`. Dashboard changes:
 `cd interface && npm ci && npm test && npm run lint && npm run typecheck && npm run build` (plus

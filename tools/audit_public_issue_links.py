@@ -8,7 +8,11 @@ The audit has two purposes:
 
 * full ``github.com/Jstar269/nakagawa-recomp/{issues,pull}/N`` URLs are checked
   in every tracked Markdown document;
-* shorthand ``#N`` references are checked in explicitly current-facing documents.
+* shorthand ``#N`` references are checked in explicitly current-facing documents
+  (including ``.github/copilot-instructions.md``);
+* ISSUES.md ``## At a glance`` rows whose State cell is ``Open`` must not link to a
+  closed public issue/PR, so a merged fix cannot silently leave an "Open" row
+  pointing at the closed tracker item it resolved.
 
 Historical evidence documents may intentionally preserve pre-export tracker numbers. A 404 in
 one of those documents is reported as historical evidence rather than silently reclassified as a
@@ -34,6 +38,7 @@ CURRENT_FACING_DOCS = {
     "README.md",
     "AGENTS.md",
     "ISSUES.md",
+    ".github/copilot-instructions.md",
     "CONTRIBUTING.md",
     "NOTICE.md",
     "assets/README.md",
@@ -66,6 +71,9 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
+    "docs/OSPS_BASELINE.md",
+    "docs/ISSUE196_DIRECT_XB.md",
+    "docs/provenance/MODIFIED_FILE_NOTICES.md",
 }
 
 FULL_URL_PAT = re.compile(
@@ -81,6 +89,12 @@ ANY_GITHUB_TRACKER_URL_PAT = re.compile(
 SHORTHAND_PAT = re.compile(r"(?<![A-Fa-f0-9_#])#(\d+)\b")
 STATE_LABEL_PAT = re.compile(r"\[(OPEN ISSUE|CLOSED ISSUE|OPEN PR|CLOSED PR|MERGED PR)\]")
 TRACKER_SECTION = "## Current public tracker"
+# ISSUES.md "At a glance" rows declare a State cell ("Open") next to the tracker
+# links they cite. A row whose State says the work item is open must not point at a
+# closed issue/PR; that is exactly how the portable float-to-word row silently went
+# stale against the closed #38 after the fix merged.
+AT_A_GLANCE_SECTION = "## At a glance"
+ISSUES_ROW_STATE_PAT = re.compile(r"^\|\s*\w+\s*\|\s*(\w+)\s*\|")
 
 
 def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.Path]:
@@ -183,6 +197,7 @@ def audit_markdown_files(
         is_current_doc = rel in CURRENT_FACING_DOCS
         is_historical_doc = rel in HISTORICAL_EVIDENCE_DOCS
         in_tracker_section = False
+        in_at_a_glance = False
         in_fenced_code = False
 
         text = doc_path.read_text(encoding="utf-8")
@@ -193,6 +208,7 @@ def audit_markdown_files(
 
             if line.startswith("## "):
                 in_tracker_section = rel == "ISSUES.md" and line.strip() == TRACKER_SECTION
+                in_at_a_glance = rel == "ISSUES.md" and line.strip() == AT_A_GLANCE_SECTION
 
             url_matches = list(FULL_URL_PAT.finditer(line))
             full_nums = {int(match.group(1)) for match in ANY_GITHUB_TRACKER_URL_PAT.finditer(line)}
@@ -293,6 +309,29 @@ def audit_markdown_files(
                                 True,
                             )
                         )
+
+            if in_at_a_glance and url_matches:
+                row_state = ISSUES_ROW_STATE_PAT.match(line)
+                if row_state and row_state.group(1) == "Open":
+                    for match in url_matches:
+                        num = int(match.group(2))
+                        obj = issues_map.get(num)
+                        if obj is None:
+                            # An unresolvable number is already reported above.
+                            continue
+                        if obj.get("state") != "open":
+                            findings.append(
+                                (
+                                    rel,
+                                    idx,
+                                    f"#{num}",
+                                    (
+                                        "STALE TRACKER STATUS: row declares State 'Open' but "
+                                        f"#{num} is a public {public_status_label(obj)}"
+                                    ),
+                                    False,
+                                )
+                            )
 
             if in_tracker_section and url_matches:
                 labels = STATE_LABEL_PAT.findall(line)

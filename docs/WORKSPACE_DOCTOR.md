@@ -91,7 +91,7 @@ The run scope verifies:
 
 The doctor's VFPU check remains a name/size baseline for workspace diagnosis; content
 authentication, semantic invariants, checked indexing, and thread-safe publication now live in
-the runtime loader itself (issue #187, `src/rt/vfpu_tables.c`, embedded SHA-256 manifest).
+the runtime loader itself (`src/rt/vfpu_tables.c`, embedded SHA-256 manifest).
 
 ## Exit status
 
