@@ -228,17 +228,36 @@ function Read-SaveBaseManifest {
     }
 }
 
+# The one place the managed/unmanaged split is decided. Capture, stage-copy and the swap
+# all skip the *GAMEDATA* install; verification has to use the same rule or it reads the
+# install as unexplained extra content.
+function Test-SaveBaseUnmanagedName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    return ($Name -like "*GAMEDATA*")
+}
+
 function Compare-SaveBaseInventory {
     <#
         Compare a directory's actual content against a manifest. Returns the list of
         differing relative paths (missing, extra, size or hash mismatch).
+
+        -IncludesUnmanaged marks a root that legitimately holds directories the baseline
+        never captures (the live save root always sits beside the ~400 MB *GAMEDATA*
+        install). Their files are not extras: the manifest was written to exclude them,
+        so counting them as differences fails every restore on a real installed title.
+        Baseline and stage roots are compared without it, so they stay strictly verified.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Root,
-        [Parameter(Mandatory = $true)][object]$Manifest
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [switch]$IncludesUnmanaged
     )
     $actual = @{}
     foreach ($e in (New-SaveBaseInventory -Root $Root)) {
+        if ($IncludesUnmanaged) {
+            $top = ($e.rel -split '[\\/]')[0]
+            if (Test-SaveBaseUnmanagedName -Name $top) { continue }
+        }
         $actual[$e.rel] = "$($e.size)|$($e.sha256)"
     }
     $diff = @()
@@ -323,7 +342,7 @@ function Sync-SaveBase {
         }
 
         $live = @(Get-ChildItem -LiteralPath $saveCanon -Directory -Force -ErrorAction Stop |
-            Where-Object { $_.Name -notlike "*GAMEDATA*" })
+            Where-Object { -not (Test-SaveBaseUnmanagedName -Name $_.Name) })
 
         if (-not (Test-Path -LiteralPath $baseCanon -PathType Container)) {
             # ---- CAPTURE: bind the live save set to a manifest. ----
@@ -377,7 +396,7 @@ function Sync-SaveBase {
         try {
             New-Item -ItemType Directory -Path $stage -Force -ErrorAction Stop | Out-Null
             foreach ($d in @(Get-ChildItem -LiteralPath $baseCanon -Directory -Force -ErrorAction Stop)) {
-                if ($d.Name -like "*GAMEDATA*") { continue }
+                if (Test-SaveBaseUnmanagedName -Name $d.Name) { continue }
                 Copy-Item -LiteralPath $d.FullName -Destination $stage -Recurse -Force -ErrorAction Stop
             }
             if ($Failpoint -eq "stage-copy") { throw "injected stage-copy failure (test seam)" }
@@ -422,7 +441,7 @@ function Sync-SaveBase {
 
             # Verify the live root against the manifest before the rollback may be dropped.
             if ($Failpoint -eq "verify") { throw "injected post-swap verification failure (test seam)" }
-            $liveDiff = @(Compare-SaveBaseInventory -Root $saveCanon -Manifest $manifest)
+            $liveDiff = @(Compare-SaveBaseInventory -Root $saveCanon -Manifest $manifest -IncludesUnmanaged)
             if ($liveDiff.Count -gt 0) {
                 throw "post-swap verification failed ($($liveDiff.Count) difference(s)); live save left in rollback"
             }
