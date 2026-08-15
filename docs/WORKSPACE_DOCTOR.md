@@ -34,10 +34,10 @@ For automation or the optional local dashboard:
 | Scope | Checks |
 | --- | --- |
 | `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, and tracked-private-path hygiene when a local Git checkout is available |
-| `inputs` | Decrypted MIPS ELF/PRXs, original `~PSP` header, ISO selection/format/disc-ID signal, and populated XB extraction tree |
+| `inputs` | Decrypted MIPS ELF/PRXs, original `~PSP` header, ISO selection/format/disc-ID signal, populated XB extraction tree or configured `SR_DATAROOT`, and save/memstick storage (`SAVE_ROOT`) |
 | `build` | Windows 11/x64, PowerShell/Python, UCRT64 compiler and Make tools, SDL3/Vulkan link inputs, and private code-generation inputs |
-| `products` | Built `hst.exe` and `hst_image.bin` only |
-| `run` | Windows/x64/Python, ISO and XB assets, VFPU tables, runtime DLLs, `hst.exe`, and `hst_image.bin` |
+| `products` | Built `hst.exe`, `hst_image.bin`, and recorded build profile (`BUILD_PROFILE`) |
+| `run` | Windows/x64/Python, ISO and XB assets (`SR_DATAROOT`), save directory (`SAVE_ROOT`), VFPU tables, runtime DLLs, `hst.exe`, and `hst_image.bin` |
 | `all` | Every check above |
 
 ## What it validates
@@ -73,7 +73,8 @@ The doctor does more than test path existence:
 - exactly one ISO candidate must be selected; ambiguous multiple-ISO workspaces fail closed;
 - the ISO must contain an ISO9660 primary volume descriptor;
 - the supported `UCUS98701` disc ID is searched for as an additional identity signal;
-- `xbdata_extracted/` must contain files rather than merely exist as an empty placeholder.
+- `xbdata_extracted/` (or configured `SR_DATAROOT`) must contain files rather than merely exist as an empty placeholder;
+- `memstick/` (or configured `SR_MEMSTICK`) is verified for directory presence and writability (`SAVE_ROOT`).
 
 The disc-ID scan is deliberately an additional signal, not a cryptographic identity guarantee. A
 future importer should parse `PARAM.SFO`, record exact source hashes, and bind all generated inputs to
@@ -86,8 +87,9 @@ The run scope verifies:
 - all 15 required VFPU table names and exact byte sizes;
 - an x86-64 `SDL3.dll` from the build directory, repository root, or configured UCRT64 bin path;
 - an x86-64 Vulkan loader;
-- an x86-64 `build/hst/hst.exe`; and
-- a nonempty `build/hst/hst_image.bin`.
+- an x86-64 `build/hst/hst.exe`;
+- a nonempty `build/hst/hst_image.bin`;
+- recorded runtime build profile (`BUILD_PROFILE`).
 
 The doctor's VFPU check remains a name/size baseline for workspace diagnosis; content
 authentication, semantic invariants, checked indexing, and thread-safe publication now live in

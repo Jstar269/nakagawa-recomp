@@ -165,6 +165,15 @@ class ManagerSafetyContractTests(unittest.TestCase):
         body = self.manager[self.manager.index("if ($Action) {") : self.manager.index("} catch {")]
         self.assertNotIn("exit 1", body, "action dispatch must not exit before the finally block")
 
+    def test_manager_prebuild_and_prerun_fail_fast(self) -> None:
+        # Invoke-HstBuild validates required private inputs before invoking make
+        self.assertIn('Missing required private build inputs', self.manager)
+        self.assertIn('place_game_here/EBOOT.elf', self.manager)
+        # Run-HstEngine validates required runtime assets before spawning
+        self.assertIn('No game ISO found at place_game_here/ISO/<game>.iso', self.manager)
+        self.assertIn('Extracted asset tree was not found', self.manager)
+        self.assertIn('=== NAKAGAWA RECOMP RUNTIME LAUNCH ===', self.manager)
+
 
 if __name__ == "__main__":
     unittest.main()
