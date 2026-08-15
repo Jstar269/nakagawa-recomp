@@ -5181,6 +5181,236 @@ static int run_psp_oracle(int argc, char **argv) {
     return rc;
 }
 
+/* ---- state-qualified acceptance routes (issue #64) --------------------------------
+ *
+ * These exercise the production route engine in hle.c: the real parser, the real
+ * signature matcher and the real step machine. Only the entry is test-specific --
+ * observations are handed to sr_route_step() directly rather than sampled from a
+ * framebuffer, because this executable deliberately omits the renderer.
+ *
+ * The defect they pin down is issue #64: an acceptance route that reaches the wrong
+ * screen must fail loudly. Under the previous fixed-vblank pad script there was no
+ * expression for "the screen the next press assumes", so a run that entered STORY MODE
+ * instead of the Exhibition route completed normally and was archived as evidence. Every
+ * FAILED expectation below is therefore a case that had no failure mode at all before.
+ */
+int      sr_route_load(const char *path);
+uint32_t sr_route_step(uint32_t vblank, const uint8_t *sig);
+int      sr_route_status(void);
+int      sr_route_sig_bytes(void);
+void     sr_route_reset(void);
+
+enum { RT_OFF = 0, RT_LEGACY, RT_RUNNING, RT_DONE, RT_FAILED };
+
+#define RT_PATH "route_selftest_tmp.pad"
+
+static void rt_write(const char *body) {
+    FILE *fp = fopen(RT_PATH, "wb");
+    if (!fp) { expect(0, "route selftest could not create its temporary route file"); return; }
+    fputs(body, fp);
+    fclose(fp);
+}
+
+/* A flat signature is enough to separate "screens" here: the matcher under test compares
+ * mean absolute difference, and a constant differs from another constant by exactly the
+ * gap between them, which makes the tolerance boundary exact rather than approximate. */
+static void rt_hex(char *out, int value) {
+    int n = sr_route_sig_bytes();
+    for (int i = 0; i < n; i++) snprintf(out + i * 2, 3, "%02x", value & 0xff);
+}
+static void rt_sig(uint8_t *out, int value) {
+    for (int i = 0; i < sr_route_sig_bytes(); i++) out[i] = (uint8_t)value;
+}
+
+static void test_route_program_advances_only_on_observed_state(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigA[576], sigB[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "# route program\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT SINGLE_PLAYER_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "WAIT SINGLE_PLAYER_MENU 1000\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route program loads");
+    expect(sr_route_status() == RT_RUNNING, "a loaded route program is running");
+    rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
+
+    /* No observation: the route may not advance and may not press. Elapsed vblanks alone
+     * are exactly what issue #64 showed to be worthless. */
+    for (uint32_t v = 0; v < 200; v++)
+        expect(sr_route_step(v, NULL) == 0u, "an unobserved WAIT emits no input");
+    expect(sr_route_status() == RT_RUNNING, "an unobserved WAIT is still waiting");
+
+    /* Wrong screen observed: still no advance. */
+    expect(sr_route_step(200, sigB) == 0u, "the wrong screen does not satisfy a WAIT");
+
+    /* Right screen: the WAIT completes and the following PRESS starts on the same vblank. */
+    expect(sr_route_step(201, sigA) == 0x4000u, "the press begins on the vblank the screen is reached");
+    for (uint32_t v = 202; v < 217; v++)
+        expect(sr_route_step(v, NULL) == 0x4000u, "the press is held for its full width");
+    expect(sr_route_step(217, NULL) == 0u, "the press is released after its width");
+
+    expect(sr_route_step(240, sigB) == 0u, "the second WAIT is satisfied by the second screen");
+    expect(sr_route_status() == RT_DONE, "END completes the route");
+    remove(RT_PATH);
+}
+
+static void test_route_wait_timeout_fails_loudly(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigB[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT SINGLE_PLAYER_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS 4000 16\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the timeout route loads");
+    rt_sig(sigB, 0x80);
+    for (uint32_t v = 0; v < 100; v++) sr_route_step(v, sigB);
+    expect(sr_route_status() == RT_RUNNING, "the WAIT is still pending inside its budget");
+    sr_route_step(100, sigB);
+    expect(sr_route_status() == RT_FAILED, "a WAIT that times out fails the route");
+    expect(sr_route_step(101, sigB) == 0u, "a failed route emits no further input");
+    remove(RT_PATH);
+}
+
+static void test_route_expect_rejects_the_wrong_screen(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigA[576], sigB[576];
+
+    /* The #64 divergence in miniature: the route believes it is on the Main Menu, the
+     * guest is one level deeper. The run must stop, not press on. */
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT SINGLE_PLAYER_MENU %s\n"
+             "EXPECT MAIN_MENU\n"
+             "PRESS 4000 16\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the expect route loads");
+    rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
+    expect(sr_route_step(10, sigB) == 0u, "a mismatched EXPECT presses nothing");
+    expect(sr_route_status() == RT_FAILED, "a mismatched EXPECT fails the route");
+
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the expect route reloads");
+    expect(sr_route_step(10, sigA) == 0x4000u, "a matching EXPECT advances to the press");
+    expect(sr_route_status() == RT_RUNNING, "a matching EXPECT keeps the route running");
+    remove(RT_PATH);
+}
+
+static void test_route_expect_without_observation_fails_closed(void) {
+    char hexA[1024], body[4096];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20);
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 20\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "EXPECT MAIN_MENU\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the unobserved-expect route loads");
+    for (uint32_t v = 0; v < 20 * 8 + 60; v++) sr_route_step(v, NULL);
+    expect(sr_route_status() == RT_RUNNING, "EXPECT waits for an observation within its budget");
+    sr_route_step(20 * 8 + 60, NULL);
+    expect(sr_route_status() == RT_FAILED,
+           "EXPECT fails closed when no framebuffer observation ever arrives");
+    remove(RT_PATH);
+}
+
+static void test_route_signature_tolerance_is_enforced(void) {
+    char hexA[1024], body[4096];
+    uint8_t near_sig[576], far_sig[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x40);
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU tol=8 %s\n"
+             "WAIT MAIN_MENU 10000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the tolerance route loads");
+    rt_sig(near_sig, 0x48);   /* mean absolute difference 8: inside tol=8 */
+    rt_sig(far_sig,  0x49);   /* mean absolute difference 9: outside tol=8 */
+    sr_route_step(0, far_sig);
+    expect(sr_route_status() == RT_RUNNING, "a signature outside tolerance does not match");
+    sr_route_step(1, near_sig);
+    expect(sr_route_status() == RT_DONE, "a signature at the tolerance boundary matches");
+    remove(RT_PATH);
+}
+
+static void test_route_malformed_files_are_refused(void) {
+    char hexA[1024], body[4096];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20);
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT EXHIBITION_SETUP 1000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a route naming an undefined checkpoint is refused");
+    expect(sr_route_status() == RT_FAILED, "an unusable route file fails the run");
+
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU 0011223344\nWAIT MAIN_MENU 100\n");
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a truncated signature is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "SIGGRID 8 8\n"
+             "WAIT MAIN_MENU 100\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "SIGGRID after a CHECKPOINT is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "8600 0x4000 16\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a file mixing a program with bare frame lines is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\nSTEP_SIDEWAYS 3\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "an unknown route keyword is refused");
+    remove(RT_PATH);
+}
+
+static void test_route_legacy_pad_script_is_unchanged(void) {
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script still loads");
+    expect(sr_route_status() == RT_LEGACY,
+           "a bare pad script keeps its original absolute-frame behaviour");
+    expect(sr_route_step(8600, NULL) == 0u,
+           "the program stepper stays inert for a legacy pad script");
+
+    sr_route_reset();
+    rt_write("# comment only\n\n");
+    expect(sr_route_load(RT_PATH) == 0, "an empty route file loads nothing");
+    expect(sr_route_status() == RT_OFF, "an empty route file leaves the pad unscripted");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -5241,6 +5471,18 @@ int main(int argc, char **argv) {
     test_sas_state_contracts();
     test_msgpipe_safety();
     test_intr_context_conformance();
+
+    /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
+     * run the same paths terminate the process with status 86 so a wrong reached state can
+     * never be archived as a completed route. */
+    _putenv("SR_ROUTE_NO_EXIT=1");
+    test_route_program_advances_only_on_observed_state();
+    test_route_wait_timeout_fails_loudly();
+    test_route_expect_rejects_the_wrong_screen();
+    test_route_expect_without_observation_fails_closed();
+    test_route_signature_tolerance_is_enforced();
+    test_route_malformed_files_are_refused();
+    test_route_legacy_pad_script_is_unchanged();
 
     check_coroutine_lifecycle();
 

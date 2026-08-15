@@ -6078,6 +6078,443 @@ typedef struct { uint32_t btn; uint8_t lx, ly; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 128, 128 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 
+/* ---- state-qualified acceptance routes (issue #64) --------------------------------
+ *
+ * A pad script written as "press CROSS at vblank 8600" is a bet that the guest is on the
+ * screen its author saw when they recorded it. Boot and transition durations vary between
+ * otherwise identical replays, so that bet loses: seven replays of one script from one
+ * restored save baseline reached two different menu depths, and the two divergent runs
+ * spent their whole budget in Story Mode instead of the intended Exhibition match. Both
+ * still reported a complete run, because "reached vblank N" was the only thing anything
+ * checked. Elapsed vblanks are not state.
+ *
+ * A route program replaces the bet with a measurement. Steps run in sequence, and a step
+ * that names a screen does not complete until that screen is observed:
+ *
+ *   SIGGRID <cols> <rows>        signature grid (default 12x8); must precede CHECKPOINT
+ *   SAMPLE_EVERY <vblanks>       observation cadence (default 20)
+ *   TOLERANCE <n>                default per-checkpoint match tolerance (default 12)
+ *   CHECKPOINT <NAME> [tol=<n>] <hex>
+ *                                a screen signature; repeat NAME for alternates
+ *   WAIT <NAME> <timeout>        block until NAME is observed; fail loudly on timeout
+ *   EXPECT <NAME>                assert NAME is on screen right now; fail loudly if not
+ *   PRESS <hexmask> <width>      hold mask for width vblanks
+ *   DELAY <n>                    advance n vblanks (input cadence within one screen)
+ *   END                          route complete
+ *
+ * "Observed" means a coarse signature of the presented framebuffer: the frame is divided
+ * into cols x rows cells and each cell contributes its mean R, G and B. A screen matches
+ * when the mean absolute difference against a recorded signature is within tolerance.
+ * This is a private-title acceptance signal, not a PSP oracle: it proves which screen the
+ * emulated guest reached, nothing about hardware. It is used because the alternatives are
+ * worse -- guest menu-state addresses would be exactly the title-address patching this
+ * project forbids, and no existing runtime event distinguishes a menu from its submenu.
+ *
+ * Failure is loud and terminal: ROUTE_FAIL on stderr and exit 86, so a run that reached
+ * the wrong screen can never be archived as a successful route. SR_ROUTE_NO_EXIT keeps
+ * the process alive for the executable regression tests (presence-based, like the other
+ * legacy SR_* switches); SR_ROUTE_LEARN prints every sampled signature so a new checkpoint
+ * can be recorded from a route the author has visually identified.
+ *
+ * Signatures are derived from retail frames and therefore belong in the private route
+ * file beside the rest of the run inputs; nothing here writes one into the repository.
+ *
+ * A file with no keyword lines keeps the original "frame hexmask width" behaviour exactly.
+ */
+#define ROUTE_MAX_CELLS  192          /* 16x12 */
+#define ROUTE_SIG_MAX    (ROUTE_MAX_CELLS * 3)
+#define ROUTE_MAX_CP     64
+#define ROUTE_MAX_STEPS  256
+#define ROUTE_MAX_LEGACY 256
+#define ROUTE_NAME_MAX   32
+#define ROUTE_FAIL_EXIT  86
+
+enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_END };
+enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
+
+typedef struct {
+    char    name[ROUTE_NAME_MAX];
+    int     tol;
+    uint8_t sig[ROUTE_SIG_MAX];
+} RouteCheckpoint;
+
+typedef struct {
+    int      op;
+    char     name[ROUTE_NAME_MAX];   /* WAIT / EXPECT */
+    uint32_t a, b;                   /* PRESS: mask,width   DELAY/WAIT: vblanks */
+    int      line;                   /* source line, for diagnostics */
+} RouteStep;
+
+static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
+static int      s_route_ncp;
+static RouteStep s_route_prog[ROUTE_MAX_STEPS];
+static int      s_route_nsteps;
+static int      s_route_pc;
+static uint32_t s_route_step_start;
+static int      s_route_step_started;
+static int      s_route_state = ROUTE_OFF;
+static int      s_route_cols = 12, s_route_rows = 8;
+static int      s_route_tol = 12;
+static int      s_route_sample_every = 20;
+static int      s_route_learn;
+static uint32_t s_route_keys;
+static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
+static int      s_route_nlegacy;
+static int      s_route_loaded;
+
+static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
+
+/* A route that cannot be trusted must not be allowed to look like one that can. Every
+ * failure path lands here: it names the step, the vblank and what was actually on screen,
+ * then terminates with a distinct status so the manager's verdict cannot record the run
+ * as complete. Tests set SR_ROUTE_NO_EXIT to inspect the terminal state instead. */
+static void route_fail(const char *fmt, ...) {
+    va_list ap;
+    s_route_state = ROUTE_FAILED;
+    fputs("ROUTE_FAIL: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+    if (!getenv("SR_ROUTE_NO_EXIT")) _Exit(ROUTE_FAIL_EXIT);
+}
+
+static int route_hex_nib(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Exactly `want` bytes of hex and nothing else: a truncated signature would silently
+ * compare only its prefix and match screens it has never seen. */
+static int route_parse_sig(const char *hex, uint8_t *out, int want) {
+    int n = 0;
+    while (hex[0] && hex[1] && n < want) {
+        int hi = route_hex_nib((unsigned char)hex[0]);
+        int lo = route_hex_nib((unsigned char)hex[1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        hex += 2;
+    }
+    return (n == want && *hex == '\0') ? 0 : -1;
+}
+
+static int route_distance(const uint8_t *a, const uint8_t *b, int n) {
+    long sum = 0;
+    for (int i = 0; i < n; i++) {
+        int d = (int)a[i] - (int)b[i];
+        sum += d < 0 ? -d : d;
+    }
+    return n > 0 ? (int)(sum / n) : 255;
+}
+
+/* Closest defined checkpoint to what is on screen. A failure that can say "this looks
+ * like SINGLE_PLAYER_MENU (d=3)" is a diagnosis; "not MAIN_MENU" is only a complaint. */
+static int route_best_match(const uint8_t *sig, int *out_d) {
+    int best = -1, best_d = 255, n = route_sig_bytes();
+    for (int i = 0; i < s_route_ncp; i++) {
+        int d = route_distance(s_route_cp[i].sig, sig, n);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (out_d) *out_d = best_d;
+    return best;
+}
+
+/* A name may be defined more than once (one screen, several stable appearances, e.g. a
+ * menu with and without a transient banner); any alternate within tolerance matches. */
+static int route_matches(const char *name, const uint8_t *sig, int *out_d) {
+    int n = route_sig_bytes(), best_d = 255, hit = 0;
+    for (int i = 0; i < s_route_ncp; i++) {
+        if (strcmp(s_route_cp[i].name, name) != 0) continue;
+        int d = route_distance(s_route_cp[i].sig, sig, n);
+        if (d < best_d) best_d = d;
+        if (d <= s_route_cp[i].tol) hit = 1;
+    }
+    if (out_d) *out_d = best_d;
+    return hit;
+}
+
+static int route_cp_defined(const char *name) {
+    for (int i = 0; i < s_route_ncp; i++)
+        if (strcmp(s_route_cp[i].name, name) == 0) return 1;
+    return 0;
+}
+
+/* Route files are authored by hand beside the private run inputs, so every parse error is
+ * reported with its line and refuses the route rather than running a partial program. */
+static int route_parse_line(char *line, int lineno, const char *path) {
+    char *tok = strtok(line, " \t\r\n");
+    if (!tok || tok[0] == '#') return 0;
+
+    if (tok[0] >= '0' && tok[0] <= '9') {
+        if (s_route_nsteps > 0 || s_route_ncp > 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: bare frame line inside a route program\n", path, lineno);
+            return -1;
+        }
+        if (s_route_nlegacy >= ROUTE_MAX_LEGACY) return 0;
+        char *m = strtok(NULL, " \t\r\n");
+        char *w = strtok(NULL, " \t\r\n");
+        if (!m || !w) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: expected '<frame> <hexmask> <width>'\n", path, lineno);
+            return -1;
+        }
+        s_route_legacy[s_route_nlegacy].f    = (uint32_t)strtoul(tok, NULL, 10);
+        s_route_legacy[s_route_nlegacy].mask = (uint32_t)strtoul(m, NULL, 16);
+        s_route_legacy[s_route_nlegacy].w    = (uint32_t)strtoul(w, NULL, 10);
+        s_route_nlegacy++;
+        return 0;
+    }
+
+    if (s_route_nlegacy > 0) {
+        fprintf(stderr, "ROUTE_PARSE: %s:%d: route program mixed with bare frame lines\n", path, lineno);
+        return -1;
+    }
+
+    if (strcmp(tok, "SIGGRID") == 0) {
+        char *c = strtok(NULL, " \t\r\n"), *r = strtok(NULL, " \t\r\n");
+        if (!c || !r) { fprintf(stderr, "ROUTE_PARSE: %s:%d: SIGGRID <cols> <rows>\n", path, lineno); return -1; }
+        int cols = atoi(c), rows = atoi(r);
+        if (cols < 1 || rows < 1 || cols * rows > ROUTE_MAX_CELLS) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: SIGGRID %dx%d out of range (cols*rows <= %d)\n",
+                    path, lineno, cols, rows, ROUTE_MAX_CELLS);
+            return -1;
+        }
+        if (s_route_ncp > 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: SIGGRID must precede every CHECKPOINT\n", path, lineno);
+            return -1;
+        }
+        s_route_cols = cols; s_route_rows = rows;
+        return 0;
+    }
+    if (strcmp(tok, "SAMPLE_EVERY") == 0 || strcmp(tok, "TOLERANCE") == 0) {
+        char *v = strtok(NULL, " \t\r\n");
+        int n = v ? atoi(v) : -1;
+        if (n < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <n>, n >= 1\n", path, lineno, tok); return -1; }
+        if (tok[0] == 'S') s_route_sample_every = n; else s_route_tol = n;
+        return 0;
+    }
+    if (strcmp(tok, "CHECKPOINT") == 0) {
+        char *name = strtok(NULL, " \t\r\n");
+        char *next = name ? strtok(NULL, " \t\r\n") : NULL;
+        int tol = s_route_tol;
+        if (!name || !next) { fprintf(stderr, "ROUTE_PARSE: %s:%d: CHECKPOINT <NAME> [tol=<n>] <hex>\n", path, lineno); return -1; }
+        if (strncmp(next, "tol=", 4) == 0) {
+            tol = atoi(next + 4);
+            next = strtok(NULL, " \t\r\n");
+            if (tol < 0 || !next) { fprintf(stderr, "ROUTE_PARSE: %s:%d: bad tol= or missing signature\n", path, lineno); return -1; }
+        }
+        if (s_route_ncp >= ROUTE_MAX_CP) { fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d checkpoints\n", path, lineno, ROUTE_MAX_CP); return -1; }
+        if (strlen(name) >= ROUTE_NAME_MAX) { fprintf(stderr, "ROUTE_PARSE: %s:%d: checkpoint name too long\n", path, lineno); return -1; }
+        if (route_parse_sig(next, s_route_cp[s_route_ncp].sig, route_sig_bytes()) != 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: signature must be exactly %d hex bytes for a %dx%d grid\n",
+                    path, lineno, route_sig_bytes(), s_route_cols, s_route_rows);
+            return -1;
+        }
+        snprintf(s_route_cp[s_route_ncp].name, ROUTE_NAME_MAX, "%s", name);
+        s_route_cp[s_route_ncp].tol = tol;
+        s_route_ncp++;
+        return 0;
+    }
+
+    {
+        RouteStep st;
+        memset(&st, 0, sizeof st);
+        st.line = lineno;
+        if (strcmp(tok, "WAIT") == 0 || strcmp(tok, "EXPECT") == 0) {
+            st.op = tok[0] == 'W' ? ROUTE_OP_WAIT : ROUTE_OP_EXPECT;
+            char *name = strtok(NULL, " \t\r\n");
+            if (!name || strlen(name) >= ROUTE_NAME_MAX) { fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <NAME>\n", path, lineno, tok); return -1; }
+            snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
+            if (st.op == ROUTE_OP_WAIT) {
+                char *t = strtok(NULL, " \t\r\n");
+                long to = t ? atol(t) : -1;
+                if (to < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT <NAME> <timeout_vblanks>\n", path, lineno); return -1; }
+                st.a = (uint32_t)to;
+            }
+        } else if (strcmp(tok, "PRESS") == 0) {
+            st.op = ROUTE_OP_PRESS;
+            char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
+            if (!m || !w) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>\n", path, lineno); return -1; }
+            st.a = (uint32_t)strtoul(m, NULL, 16);
+            st.b = (uint32_t)strtoul(w, NULL, 10);
+            if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
+        } else if (strcmp(tok, "DELAY") == 0) {
+            st.op = ROUTE_OP_DELAY;
+            char *n = strtok(NULL, " \t\r\n");
+            long v = n ? atol(n) : -1;
+            if (v < 0) { fprintf(stderr, "ROUTE_PARSE: %s:%d: DELAY <vblanks>\n", path, lineno); return -1; }
+            st.a = (uint32_t)v;
+        } else if (strcmp(tok, "END") == 0) {
+            st.op = ROUTE_OP_END;
+        } else {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: unknown route keyword '%s'\n", path, lineno, tok);
+            return -1;
+        }
+        if (s_route_nsteps >= ROUTE_MAX_STEPS) { fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d steps\n", path, lineno, ROUTE_MAX_STEPS); return -1; }
+        s_route_prog[s_route_nsteps++] = st;
+    }
+    return 0;
+}
+
+/* Discard every loaded route. Only the executable regression tests call this; a run loads
+ * its route once. */
+void sr_route_reset(void) {
+    s_route_ncp = s_route_nsteps = s_route_nlegacy = 0;
+    s_route_pc = 0;
+    s_route_step_start = 0;
+    s_route_step_started = 0;
+    s_route_state = ROUTE_OFF;
+    s_route_cols = 12; s_route_rows = 8;
+    s_route_tol = 12;
+    s_route_sample_every = 20;
+    s_route_keys = 0;
+    s_route_loaded = 0;
+}
+
+int sr_route_load(const char *path) {
+    char line[4096];
+    int lineno = 0, bad = 0;
+    FILE *fp;
+
+    s_route_ncp = s_route_nsteps = s_route_nlegacy = 0;
+    s_route_pc = 0;
+    s_route_step_started = 0;
+    s_route_keys = 0;
+    s_route_state = ROUTE_OFF;
+    s_route_loaded = 1;
+    if (!path || !path[0]) return 0;
+    fp = fopen(path, "r");
+    if (!fp) {
+        fprintf(stderr, "ROUTE_PARSE: cannot open route file '%s'\n", path);
+        return 0;
+    }
+    while (fgets(line, sizeof line, fp)) {
+        lineno++;
+        if (route_parse_line(line, lineno, path) != 0) { bad = 1; break; }
+    }
+    fclose(fp);
+    if (bad) {
+        route_fail("route file '%s' is not usable; refusing to run an unverified route", path);
+        return 0;
+    }
+    if (s_route_nsteps > 0) {
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if ((st->op == ROUTE_OP_WAIT || st->op == ROUTE_OP_EXPECT) && !route_cp_defined(st->name)) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: no CHECKPOINT defines '%s'\n", path, st->line, st->name);
+                route_fail("route file '%s' names undefined checkpoints", path);
+                return 0;
+            }
+        }
+        s_route_state = ROUTE_RUNNING;
+        fprintf(stderr, "ROUTE: program loaded from %s (%d steps, %d checkpoints, grid %dx%d, "
+                        "sample_every=%d, tolerance=%d)\n",
+                path, s_route_nsteps, s_route_ncp, s_route_cols, s_route_rows,
+                s_route_sample_every, s_route_tol);
+        return 1;
+    }
+    if (s_route_nlegacy > 0) {
+        s_route_state = ROUTE_LEGACY;
+        return 1;
+    }
+    return 0;
+}
+
+static void route_load_once(void) {
+    if (s_route_loaded) return;
+    s_route_loaded = 1;
+    s_route_learn = getenv("SR_ROUTE_LEARN") ? 1 : 0;
+    const char *sp = getenv("SR_PADSCRIPT");
+    if (sp && sp[0]) sr_route_load(sp);
+}
+
+static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
+
+/* One vblank of the route program. `sig` is the observed screen signature, or NULL when
+ * no observation was taken this vblank. Returns the button mask for this vblank. */
+uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
+    uint32_t keys = 0;
+    if (s_route_state != ROUTE_RUNNING) return 0;
+    for (int guard = 0; guard <= ROUTE_MAX_STEPS; guard++) {
+        if (s_route_pc >= s_route_nsteps) {
+            s_route_state = ROUTE_DONE;
+            fprintf(stderr, "ROUTE_OK: %d steps completed by vblank %u\n", s_route_nsteps, v);
+            return keys;
+        }
+        RouteStep *st = &s_route_prog[s_route_pc];
+        if (!s_route_step_started) { s_route_step_start = v; s_route_step_started = 1; }
+        uint32_t el = v - s_route_step_start;
+        switch (st->op) {
+        case ROUTE_OP_PRESS:
+            if (el < st->b) return keys | st->a;
+            route_advance();
+            continue;
+        case ROUTE_OP_DELAY:
+            if (el < st->a) return keys;
+            route_advance();
+            continue;
+        case ROUTE_OP_WAIT: {
+            int d = 255;
+            if (sig && route_matches(st->name, sig, &d)) {
+                fprintf(stderr, "ROUTE: reached %s at vblank %u (step %d, d=%d)\n",
+                        st->name, v, s_route_pc, d);
+                route_advance();
+                continue;
+            }
+            if (el >= st->a) {
+                int bd = 255, bi = sig ? route_best_match(sig, &bd) : -1;
+                route_fail("line %d: WAIT %s timed out after %u vblanks (from vblank %u to %u); "
+                           "closest observed screen %s d=%d (match needs d<=%d)",
+                           st->line, st->name, el, s_route_step_start, v,
+                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd, s_route_tol);
+                return keys;
+            }
+            return keys;
+        }
+        case ROUTE_OP_EXPECT: {
+            if (!sig) {
+                /* An EXPECT that never receives an observation must not stall forever: the
+                 * framebuffer sync can fail, and a silent stall would look like progress. */
+                if (el >= (uint32_t)(s_route_sample_every * 8 + 60)) {
+                    route_fail("line %d: EXPECT %s had no framebuffer observation for %u vblanks "
+                               "from vblank %u", st->line, st->name, el, s_route_step_start);
+                    return keys;
+                }
+                return keys;
+            }
+            int d = 255;
+            if (route_matches(st->name, sig, &d)) {
+                fprintf(stderr, "ROUTE: confirmed %s at vblank %u (step %d, d=%d)\n",
+                        st->name, v, s_route_pc, d);
+                route_advance();
+                continue;
+            }
+            {
+                int bd = 255, bi = route_best_match(sig, &bd);
+                route_fail("line %d: EXPECT %s at vblank %u, but the screen is %s d=%d "
+                           "(%s d=%d, match needs d<=%d)",
+                           st->line, st->name, v,
+                           bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d, s_route_tol);
+            }
+            return keys;
+        }
+        case ROUTE_OP_END:
+            s_route_state = ROUTE_DONE;
+            fprintf(stderr, "ROUTE_OK: %d steps completed by vblank %u\n", s_route_pc + 1, v);
+            return keys;
+        default:
+            route_fail("line %d: corrupt route step", st->line);
+            return keys;
+        }
+    }
+    return keys;
+}
+
+int sr_route_status(void) { return s_route_state; }
+int sr_route_sig_bytes(void) { return route_sig_bytes(); }
+
 /* sceCtrl: sticks centred. To drive past the skippable intro movie and confirmation prompts
  * without a human, pulse START/CROSS/CIRCLE for a few frames on a periodic cadence (edge presses,
  * so the game sees press+release). Disable with SR_NOINPUT for a truly neutral pad. */
@@ -6086,28 +6523,18 @@ static uint32_t h_CtrlButtons(void) {
      * window environment no key is ever pressed, so without the pulse the intro movie never gets
      * its START and loops forever. SR_NOINPUT disables the pulse for a neutral pad. */
     uint32_t keys = gui_on() ? gui_buttons() : 0;
-    /* SR_PADSCRIPT=<file>: lines of "frame hexmask width" -- press mask at frame for width
-     * frames. Lets an unattended run navigate menus deterministically; replaces the default
-     * START pulse entirely when present. */
+    /* SR_PADSCRIPT=<file>: either a route program (issue #64: state-qualified steps) or the
+     * original absolute table of "frame hexmask width" lines -- press mask at frame for width
+     * frames. Either way it replaces the default START pulse entirely. The program's keys for
+     * this vblank were computed by route_tick() before the sample was latched. */
+    route_load_once();
+    if (s_route_state != ROUTE_OFF && s_route_state != ROUTE_LEGACY) return keys | s_route_keys;
     {
-        static int scr_n = -1;
-        static struct { uint32_t f, mask; uint32_t w; } scr[256];
-        if (scr_n < 0) {
-            scr_n = 0;
-            const char *sp = getenv("SR_PADSCRIPT");
-            if (sp) {
-                FILE *fp = fopen(sp, "r");
-                if (fp) {
-                    while (scr_n < 256 &&
-                           fscanf(fp, "%u %x %u", &scr[scr_n].f, &scr[scr_n].mask, &scr[scr_n].w) == 3)
-                        scr_n++;
-                    fclose(fp);
-                }
-            }
-        }
-        if (scr_n > 0) {
-            for (int i = 0; i < scr_n; i++)
-                if (s_vcount_fwd >= scr[i].f && s_vcount_fwd < scr[i].f + scr[i].w) keys |= scr[i].mask;
+        if (s_route_nlegacy > 0) {
+            for (int i = 0; i < s_route_nlegacy; i++)
+                if (s_vcount_fwd >= s_route_legacy[i].f &&
+                    s_vcount_fwd < s_route_legacy[i].f + s_route_legacy[i].w)
+                    keys |= s_route_legacy[i].mask;
             return keys;
         }
     }
@@ -6503,6 +6930,124 @@ static void display_present_active(void) {
                 (uint32_t)s_display_active.stride);
 }
 
+/* ---- route observation (issue #64) ------------------------------------------------
+ *
+ * Decode one presented pixel. fmt: 0=5650, 1=5551, 2=4444, 3=8888 -- the same table
+ * dump_fb_fmt writes its PPMs from, factored out so the route signature and the capture
+ * files can never disagree about what a frame looked like. */
+static void fb_decode_px(uint32_t fbaddr, int fmt, uint32_t stride, int x, int y,
+                         unsigned char rgb[3]) {
+    if (fmt == 3) {
+        uint32_t p = MEM_R32(fbaddr + (uint32_t)(y * (int)stride + x) * 4);
+        rgb[0] = p & 0xFF; rgb[1] = (p >> 8) & 0xFF; rgb[2] = (p >> 16) & 0xFF;
+        return;
+    }
+    uint16_t p = MEM_R16(fbaddr + (uint32_t)(y * (int)stride + x) * 2);
+    if (fmt == 1) {
+        rgb[0] = (unsigned char)(((p) & 0x1F) * 255 / 31);
+        rgb[1] = (unsigned char)(((p >> 5) & 0x1F) * 255 / 31);
+        rgb[2] = (unsigned char)(((p >> 10) & 0x1F) * 255 / 31);
+    } else if (fmt == 2) {
+        rgb[0] = (unsigned char)(((p) & 0xF) * 17);
+        rgb[1] = (unsigned char)(((p >> 4) & 0xF) * 17);
+        rgb[2] = (unsigned char)(((p >> 8) & 0xF) * 17);
+    } else {
+        rgb[0] = (unsigned char)(((p) & 0x1F) * 255 / 31);
+        rgb[1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
+        rgb[2] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
+    }
+}
+
+/* The presenter queues its readback, so guest VRAM has to be made current before it can
+ * be believed -- the same boundary snapshot_sync_ok() enforces for published captures.
+ * Reporting is bounded because a route samples repeatedly and a systematic sync failure
+ * would otherwise bury the ROUTE_FAIL that follows it. */
+static int route_sync_fb(void) {
+    GeGpuFbDescriptor d = { s_display_active.addr, (uint32_t)s_display_active.fmt,
+                            (uint32_t)s_display_active.stride, 480u, 272u };
+    int rc = gegpu_sync_guest_fb(&d);
+    if (rc == GEGPU_SYNC_OK || rc == GEGPU_SYNC_NO_TARGET) return 1;
+    static int warned = 0;
+    if (warned < 3) {
+        warned++;
+        fprintf(stderr, "ROUTE: framebuffer synchronisation failed (rc=%d); no observation "
+                        "this sample\n", rc);
+    }
+    return 0;
+}
+
+/* Mean R/G/B of a fixed 4x4 subgrid of each cell. Subsampling rather than averaging every
+ * pixel keeps the observation cheap enough that it cannot pace the run it is measuring:
+ * at the default 12x8 grid this reads 1536 pixels, once every SAMPLE_EVERY vblanks, and
+ * only while a WAIT or EXPECT is pending. */
+static int route_sample(uint8_t *out) {
+    if (!s_display_active.addr || !display_host_span_valid(&s_display_active)) return 0;
+    if (!route_sync_fb()) return 0;
+    uint32_t stride = (uint32_t)s_display_active.stride;
+    if (!stride) stride = 512;
+    int fmt = s_display_active.fmt;
+    int k = 0;
+    for (int cy = 0; cy < s_route_rows; cy++)
+        for (int cx = 0; cx < s_route_cols; cx++) {
+            unsigned sum[3] = { 0, 0, 0 };
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    int x = (cx * 480) / s_route_cols + (sx * (480 / s_route_cols)) / 4;
+                    int y = (cy * 272) / s_route_rows + (sy * (272 / s_route_rows)) / 4;
+                    if (x > 479) x = 479;
+                    if (y > 271) y = 271;
+                    unsigned char rgb[3];
+                    fb_decode_px(s_display_active.addr, fmt, stride, x, y, rgb);
+                    sum[0] += rgb[0]; sum[1] += rgb[1]; sum[2] += rgb[2];
+                }
+            out[k++] = (uint8_t)(sum[0] / 16);
+            out[k++] = (uint8_t)(sum[1] / 16);
+            out[k++] = (uint8_t)(sum[2] / 16);
+        }
+    return 1;
+}
+
+/* SR_ROUTE_LEARN: print the signature of one frame. Authoring a checkpoint means looking
+ * at a captured frame and deciding what screen it is, so the signature has to be emitted
+ * for exactly the vblanks that are captured -- otherwise the author is transcribing a
+ * signature from a frame they never saw. Called from the periodic sampler and again from
+ * the capture path, deduplicated by vblank. */
+static void route_learn_emit(uint32_t v, const uint8_t *sig) {
+    static uint32_t last = UINT32_MAX;
+    uint8_t local[ROUTE_SIG_MAX];
+    char hex[ROUTE_SIG_MAX * 2 + 1];
+    int n = route_sig_bytes();
+    if (v == last) return;
+    if (!sig) {
+        if (!route_sample(local)) return;
+        sig = local;
+    }
+    last = v;
+    for (int i = 0; i < n; i++) snprintf(hex + i * 2, 3, "%02x", sig[i]);
+    fprintf(stderr, "ROUTE_SIG v=%u %s\n", v, hex);
+}
+
+/* Once per delivered vblank, before the controller sample is latched, so a checkpoint
+ * reached on this vblank can release its press on this vblank. */
+static void route_tick(uint32_t v) {
+    route_load_once();
+    if (s_route_state != ROUTE_RUNNING && !s_route_learn) { s_route_keys = 0; return; }
+
+    uint8_t sig[ROUTE_SIG_MAX];
+    const uint8_t *observed = NULL;
+    int pending = 0;
+    if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
+        int op = s_route_prog[s_route_pc].op;
+        pending = (op == ROUTE_OP_WAIT || op == ROUTE_OP_EXPECT);
+    }
+    if ((pending || s_route_learn) && (v % (uint32_t)s_route_sample_every) == 0 &&
+        route_sample(sig)) {
+        observed = sig;
+        if (s_route_learn) route_learn_emit(v, sig);
+    }
+    s_route_keys = sr_route_step(v, observed);
+}
+
 /* ---- swapchain-truthful present capture (issue #57) -------------------------------
  *
  * The capture-slot policy (fbcap_policy.h) decides who owns the next present:
@@ -6715,6 +7260,9 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 dump_fb_fmt(s_fbcap_legacy, s_display_active.addr, s_display_active.fmt,
                             (uint32_t)s_display_active.stride);
                 fprintf(stderr, "FBSNAP f=%u -> %s\n", s_vcount, s_fbcap_legacy);
+                /* Issue #64: pair the captured frame with its route signature so a new
+                 * checkpoint is transcribed from the frame the author actually looked at. */
+                if (s_route_learn) route_learn_emit(s_vcount, NULL);
             } else {
                 fprintf(stderr, "FBSNAP f=%u -> SKIPPED (synchronisation failed)\n", s_vcount);
             }
@@ -6806,25 +7354,7 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
     for (int y = 0; y < 272; y++)
         for (int x = 0; x < 480; x++) {
             unsigned char rgb[3];
-            if (fmt == 3) {
-                uint32_t p = MEM_R32(fbaddr + (uint32_t)(y * (int)stride + x) * 4);
-                rgb[0] = p & 0xFF; rgb[1] = (p >> 8) & 0xFF; rgb[2] = (p >> 16) & 0xFF;
-            } else {
-                uint16_t p = MEM_R16(fbaddr + (uint32_t)(y * (int)stride + x) * 2);
-                if (fmt == 1) {
-                    rgb[0] = (unsigned char)(((p) & 0x1F) * 255 / 31);
-                    rgb[1] = (unsigned char)(((p >> 5) & 0x1F) * 255 / 31);
-                    rgb[2] = (unsigned char)(((p >> 10) & 0x1F) * 255 / 31);
-                } else if (fmt == 2) {
-                    rgb[0] = (unsigned char)(((p) & 0xF) * 17);
-                    rgb[1] = (unsigned char)(((p >> 4) & 0xF) * 17);
-                    rgb[2] = (unsigned char)(((p >> 8) & 0xF) * 17);
-                } else {
-                    rgb[0] = (unsigned char)(((p) & 0x1F) * 255 / 31);
-                    rgb[1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
-                    rgb[2] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
-                }
-            }
+            fb_decode_px(fbaddr, fmt, stride, x, y, rgb);
             fwrite(rgb, 1, 3, f);
         }
     fclose(f);
@@ -6931,6 +7461,10 @@ void sr_vblank_tick(void) {
     }
     ge_set_frame(s_vcount);
 
+    /* Issue #64: advance the state-qualified route before the controller sample is
+     * latched, so a checkpoint observed on this vblank releases its press on this vblank
+     * rather than one frame late. */
+    route_tick(s_vcount_fwd);
     sr_ctrl_sample();   /* latch one controller sample per frame (PPSSPP ring semantics) */
     /* Last-resort un-wedge for the frame-ready latch (0x331b80): if it has been stuck
      * above 0 for a sustained stretch of vblanks with no list completing to clear it,

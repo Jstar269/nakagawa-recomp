@@ -18,6 +18,7 @@ claim.
 | P1 | Open | Direct XB archive/VFS tooling is documented in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs remain local-only. |
 | P1 | Open | The versioned title-manifest/toolkit boundary is described in [`assets/titles/README.md`](assets/titles/README.md); only generic and synthetic manifests are public-scope. Analyzer executable spans and manifest-derived build settings now have one explicit owner ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)). |
 | P1 | Blocked | PGF/font and PGD/amctrl surfaces remain excluded pending qualified provenance and distribution review. |
+| P1 | Open | Acceptance-route determinism: [issue #64](https://github.com/Jstar269/nakagawa-recomp/issues/64). Routes now assert the screen they reach (`WAIT`/`EXPECT` in `SR_PADSCRIPT`, see [`docs/DEBUGGING.md`](docs/DEBUGGING.md)); a run that reaches a different state fails loudly instead of completing. |
 
 ## Evidence boundary
 

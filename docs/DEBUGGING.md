@@ -132,12 +132,16 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4) |
 | `SR_PADSTART=N` | Pad override start frame |
-| `SR_PADSCRIPT=FILE` | Scripted pad input (`frame hexmask width`, one row per pulse) |
+| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
+| `SR_ROUTE_LEARN=1` | Print the route signature of every sampled and captured frame (`ROUTE_SIG v=<n> <hex>`) |
+| `SR_ROUTE_NO_EXIT=1` | Do not terminate on a route failure (executable regression tests only) |
 
-`SR_PADSCRIPT` is the preferred way to make a visual route repeatable. Its
-parser accepts numeric rows only, so do not put headings or comments in the
-file. To turn a recorded run into a replay:
+`SR_PADSCRIPT` is the preferred way to make a visual route repeatable. Prefer a
+**route program** (below) for anything that has to be trusted as evidence; the
+legacy numeric table is still accepted unchanged for existing routes, and its
+parser accepts numeric rows only, so do not put headings in such a file.
+To turn a recorded run into a replay:
 
 ```powershell
 $env:SR_INLOG = "1"
@@ -152,6 +156,65 @@ $env:SR_NOINPUT = "1"
 The converter expands shorter presses because a one-vblank desktop automation
 pulse can fall between the game's controller reads. Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+### State-qualified route programs (issue #64)
+
+A route written as absolute vblanks is a bet that the guest is on the screen its author saw
+when they recorded it. Boot and transition durations vary between otherwise identical
+replays, so the bet loses: seven replays of one script from one restored save baseline
+reached two different menu depths, and the two divergent runs spent their whole budget in
+Story Mode rather than the intended Exhibition match. **Both still reported a complete run**,
+because "reached vblank N" was the only thing anything checked. Elapsed vblanks are a budget,
+never a proof of state.
+
+A route program makes each input wait for the screen it assumes. `SR_PADSCRIPT` selects it
+automatically: a file containing any keyword line is a program, a file of bare numeric rows
+keeps the original behaviour exactly, and a file mixing the two is refused.
+
+| Line | Meaning |
+| ---- | ------- |
+| `SIGGRID <cols> <rows>` | Signature grid, default `12 8`; must precede every `CHECKPOINT` |
+| `SAMPLE_EVERY <n>` | Observation cadence in vblanks (default 20) |
+| `TOLERANCE <n>` | Default match tolerance, mean absolute channel difference (default 12) |
+| `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to allow alternates |
+| `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
+| `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
+| `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
+| `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `END` | Route complete |
+
+`#` starts a comment. A screen is "observed" by a coarse signature of the presented
+framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
+R, G and B; a screen matches when the mean absolute difference from a recorded signature is
+within tolerance. Sampling only runs while a `WAIT` or `EXPECT` is pending, so a route pays
+nothing for it while pressing or delaying.
+
+**Failure is loud and terminal.** A failed `WAIT` or `EXPECT` prints `ROUTE_FAIL:` naming the
+step, the vblank and the screen that was actually there, then exits **86**. The manager reads
+that narration back into `oracle_manifest.json` (`route_kind`, `route_checkpoints`,
+`route_fail_reason`) and a failed or unfinished route makes the run **inadmissible**, so a run
+that took a different path through the menus can no longer be archived as though it were the
+route it names.
+
+Authoring a checkpoint takes one learning run:
+
+```powershell
+$env:SR_ROUTE_LEARN = "1"
+.\hst_manager.ps1 -Action VisualOracle -Route logs/route_legacy.pad -ExitAtVblank 9500 `
+    -SnapEvery 60 -SnapWindows "7800-9200" -SaveBase logs/oracle_savebase -OracleName learn
+```
+
+Every captured frame emits its signature at the same vblank
+(`ROUTE_SIG v=8220 <hex>` beside `snap_v8220.ppm`), so you convert the frame you actually
+looked at — `python tools/ppm2png.py snap_v8220.ppm out.png`, identify the screen, then paste
+that vblank's hex into a `CHECKPOINT` line. Signatures are derived from retail frames: they
+belong in the private route file beside the rest of the run inputs and must never be
+committed.
+
+Two habits keep a program honest. Gate every screen *transition* with `WAIT`, and use `DELAY`
+only for input cadence inside one screen — a `DELAY` standing in for a transition is the
+fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
+proves you arrived, `EXPECT` proves the press did what the route claims.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 
