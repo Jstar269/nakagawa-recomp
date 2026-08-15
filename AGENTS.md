@@ -121,7 +121,8 @@ Never:
 without the external trust anchor may fail `PROVENANCE_UNVERIFIED` by design. Do not report either
 state as a release approval.
 
-Preserve per-file SPDX/copyright/upstream notices. Never invent a `Signed-off-by:` identity. DCO
+Preserve per-file SPDX/copyright/upstream notices. **AI tools and automated agents must never invent
+or add a `Signed-off-by:` identity on behalf of a human, company, or the tool itself.** DCO
 attestation is a human contributor action.
 
 ## 5. Private inputs and output isolation
