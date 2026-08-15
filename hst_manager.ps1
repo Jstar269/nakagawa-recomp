@@ -952,6 +952,26 @@ try {
         )
 
         Assert-TitleManagerPrivateBindings
+        if (-not $TitleManifest) {
+            $missingBuildInputs = @()
+            if (-not $GameElfPath -or -not (Test-Path -LiteralPath $GameElfPath)) {
+                $missingBuildInputs += "place_game_here/EBOOT.elf"
+            }
+            if (-not (Test-Path -LiteralPath $PspHeaderPath -PathType Leaf)) {
+                $missingBuildInputs += $PspHeaderPath
+            }
+            foreach ($prx in @("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx")) {
+                $prxPath = Join-Path $ModuleDirPath $prx
+                if (-not (Test-Path -LiteralPath $prxPath -PathType Leaf)) {
+                    $missingBuildInputs += $prxPath
+                }
+            }
+            if ($missingBuildInputs.Count -gt 0) {
+                Write-BuildError -Message "Missing required private build inputs: $($missingBuildInputs -join ', ')"
+                Write-Host "    Place your lawfully decrypted EBOOT.elf, EBOOT.BIN, and decrypted PRXs in place_game_here/ before building." -ForegroundColor Yellow
+                return $false
+            }
+        }
         Stop-BuildProcesses
         $buildDir = "build\hst"
         if (-not (Test-Path $buildDir)) {
@@ -1140,6 +1160,25 @@ try {
             return
         }
 
+        if (-not (Test-Path $imagePath)) {
+            Write-Host "[!] Error: Game image target is missing: $imagePath. Execute build pipeline first." -ForegroundColor Red
+            return
+        }
+
+        if (-not $TitleManifest) {
+            if (-not $GameIsoPath -or -not (Test-Path -LiteralPath $GameIsoPath)) {
+                Write-Host "[!] Cannot run game: No game ISO found at place_game_here/ISO/<game>.iso (or game.iso)." -ForegroundColor Red
+                Write-Host "    Place your lawfully obtained game ISO in place_game_here/ISO/ before launching." -ForegroundColor Yellow
+                return
+            }
+            $effectiveDataRoot = if ($env:SR_DATAROOT) { $env:SR_DATAROOT } else { "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted" }
+            if (-not (Test-Path -LiteralPath $effectiveDataRoot -PathType Container)) {
+                Write-Host "[!] Cannot run game: Extracted asset tree was not found at $effectiveDataRoot." -ForegroundColor Red
+                Write-Host "    Run 'python tools/extract_xb.py' to extract assets before launching." -ForegroundColor Yellow
+                return
+            }
+        }
+
         Stop-WorkspaceHst
         Start-Sleep -Milliseconds 150
 
@@ -1295,6 +1334,14 @@ try {
         } else {
             $args += "--sched"
         }
+
+        Write-Host "=== NAKAGAWA RECOMP RUNTIME LAUNCH ===" -ForegroundColor Green
+        Write-Host "  Binary    : $exePath" -ForegroundColor Gray
+        Write-Host "  Profile   : $Profile" -ForegroundColor Gray
+        Write-Host "  ISO       : $(if ($GameIsoPath) { $GameIsoPath } else { '<none>' })" -ForegroundColor Gray
+        Write-Host "  Data Root : $(if ($env:SR_DATAROOT) { $env:SR_DATAROOT } else { 'place_game_here/EXTRACTED/.../xbdata_extracted (default)' })" -ForegroundColor Gray
+        Write-Host "  Save Root : $(if ($env:SR_MEMSTICK) { $env:SR_MEMSTICK } else { 'memstick (default)' })" -ForegroundColor Gray
+        Write-Host "======================================" -ForegroundColor Green
 
         Write-Host "Spawning host runtime executable..." -ForegroundColor Cyan
         $proc = Start-Process -FilePath $exePath -ArgumentList $args `

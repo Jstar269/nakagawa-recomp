@@ -19,15 +19,18 @@ import argparse
 from dataclasses import asdict
 import json
 from pathlib import Path
+import sys
 from typing import Sequence
 
 from hst_doctor_core import Report, _parse_elf, _validate_iso, _validate_pe_x64
 from hst_doctor_checks import (
     check_build_products,
+    check_build_profile,
     check_platform,
     check_private_inputs,
     check_repository_contract,
     check_runtime_dependencies,
+    check_save_root,
     check_toolchain,
     check_vfpu_assets,
 )
@@ -35,7 +38,7 @@ from hst_doctor_checks import (
 
 def render_text(report: Report) -> str:
     lines = [
-        f"Nakagawa Recomp Doctor — scope={report.scope}",
+        f"Nakagawa Recomp Doctor -- scope={report.scope}",
         f"root={report.root}",
         "",
     ]
@@ -103,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
     args = build_parser().parse_args(argv)
     root = args.root.resolve()
     report = Report(root, args.scope)
@@ -119,10 +132,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             need_iso=args.scope in {"inputs", "all"},
             need_assets=args.scope in {"inputs", "all"},
         )
+    if args.scope in {"inputs", "run", "all"}:
+        check_save_root(report, root)
     if args.scope == "run":
         check_private_inputs(report, need_iso=True, need_assets=True)
     if args.scope in {"products", "run", "all"}:
         check_build_products(report)
+        check_build_profile(report, root)
     if args.scope in {"run", "all"}:
         check_vfpu_assets(report)
         check_runtime_dependencies(report, args.msys_path)

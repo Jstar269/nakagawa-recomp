@@ -307,6 +307,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, ")\n");
     }
 
+#ifdef SR_PUBLIC_SAFE
+    fprintf(stderr, "BOOT_EVENT phase=init public_safe=1\n");
+#else
+    fprintf(stderr, "BOOT_EVENT phase=init public_safe=0\n");
+#endif
+
     /* Image mode: a pre-relocated flat image (e.g. a rebased PRX from tools/prxload.py) is
      * loaded at <base> and run from <entry>. Required for relocatable PRXs, which must be
      * rebased + relocated before they have concrete addresses.
