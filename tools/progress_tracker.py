@@ -581,13 +581,18 @@ def _check_sequence(*, last_log: str | None, ordered: list[str]) -> str:
 
 
 def _check_watchdog_abort(*, last_log: str | None) -> str:
-    """A WATCHDOG line marks a stall / no-frame abort, not forward progress. Its
+    """A WATCHDOG abort line marks a no-frame abort, not forward progress. Its
     presence is a regression; its absence earns no positive credit here (a dedicated
-    watchdog-detection test would own verifying the watchdog itself) (#48)."""
+    watchdog-detection test would own verifying the watchdog itself) (#48).
+
+    Only the abort form (``WATCHDOG: ... aborting ...``) is treated as a regression.
+    The periodic no-frame observation (``WATCHDOG: no new frame presented ...``) is a
+    neutral NO-NEW-FLIP observation, not a verdict: a legitimately static scene also
+    stops presenting, so its presence alone must not mark a regression."""
     if not last_log:
         return "pending"
     lines = _log_lines(last_log)
-    if any(re.search(r"WATCHDOG:", line) for line in lines):
+    if any(re.search(r"WATCHDOG:.*aborting", line) for line in lines):
         return "regressed"
     return "pending"
 

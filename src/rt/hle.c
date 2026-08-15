@@ -1349,8 +1349,14 @@ typedef struct {
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
+/* scePsmfPlayer activity counters. The no-frame watchdog reports the sceMpeg counters,
+ * which are a different library; without these there is no evidence for or against the
+ * player path being involved in a no-new-frame stretch. File-local: no other translation
+ * unit consumes them (the watchdog that prints them lives in this file). */
+static unsigned long s_psmf_calls = 0, s_psmf_getvideo = 0, s_psmf_getaudio = 0;
 static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
     SrPsmfPlayer *freeSlot = NULL;
+    s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
     for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
         if (s_psmf_players[i].used && s_psmf_players[i].guest == guest) return &s_psmf_players[i];
         if (!s_psmf_players[i].used && !freeSlot) freeSlot = &s_psmf_players[i];
@@ -1387,8 +1393,8 @@ static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)re
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);return 0;}
 static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return p?p->status:PSMF_ERR_STATUS;}
 static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(p->status==PSMF_STATUS_FINISHED&&p->loopStatus){p->status=PSMF_STATUS_PLAYING;p->currentPts=0;psmf_flush(p);}return 0;}
-static uint32_t h_PsmfGetVideo(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
-static uint32_t h_PsmfGetAudio(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
+static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
+static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
 static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
 
 static uint32_t h_IoDevctl(CpuState *s) {
@@ -6071,7 +6077,6 @@ static void sr_dump_calls(void) {
 typedef struct { uint32_t btn; uint8_t lx, ly; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 128, 128 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
-#define CTRL_WAIT_OBJ 0xC471D000u
 
 /* sceCtrl: sticks centred. To drive past the skippable intro movie and confirmation prompts
  * without a human, pulse START/CROSS/CIRCLE for a few frames on a periodic cadence (edge presses,
@@ -6207,7 +6212,57 @@ static DisplayFrameState s_display_active = { 0x04000000u, 512, 3 };
 static DisplayFrameState s_display_latched = { 0x04000000u, 512, 3 };
 static int s_display_latched_pending;
 static uint32_t s_framebuf = 0x04000000u, s_vcount = 0;
-static uint32_t s_last_flip_vcount = 0;   /* hang watchdog (see sr_vblank_tick) */
+static uint32_t s_last_flip_vcount = 0;   /* no-frame watchdog clock (see sr_vblank_tick) */
+
+/* sceDisplaySetFrameBuf outcome accounting.
+ *
+ * A stretch with no presented frame has two completely different causes, and the
+ * no-frame watchdog cannot distinguish them from the flip counter alone:
+ *   - the guest never asks for a flip (its render/present loop is not reaching the
+ *     call), or
+ *   - the guest does ask and this handler refuses the request.
+ * Those point at opposite subsystems, so record which one actually happened rather
+ * than leaving the diagnosis to inference. Counters only; no behavior depends on
+ * them, and the cost is a few increments per call. */
+static struct {
+    unsigned long calls, immediate, latched, rejected;
+    uint32_t last_vcount, last_addr, last_sync;
+    int32_t  last_stride, last_fmt;
+    uint32_t last_err, last_err_vcount, last_err_addr, last_err_sync;
+    int32_t  last_err_stride, last_err_fmt;
+} s_setfb;
+
+/* Number of no-frame watchdog observations emitted (see sr_vblank_tick). The
+ * threshold alone is a NO-NEW-FLIP observation, not a hang verdict, so this
+ * counter only says how often the threshold was crossed. File-local: the
+ * selftest reads it through the accessor below, nothing else consumes it. */
+static unsigned long s_watchdog_fires = 0;
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* White-box view of the flip accounting for the conformance harness. The counters are
+ * file-static because nothing outside this file may steer display state; the regression
+ * needs to read them to prove a refused request is recorded rather than silently lost. */
+void sr_display_test_flip_counts(unsigned long *calls, unsigned long *immediate,
+                                 unsigned long *latched, unsigned long *rejected,
+                                 uint32_t *last_err);
+/* White-box view of the no-frame observation count and the vblanks-since-flip
+ * clock for the conformance harness. */
+void sr_watchdog_test_state(unsigned long *fires, uint32_t *vblanks_since_flip);
+#endif
+
+/* Record a refused sceDisplaySetFrameBuf and return the PSP error unchanged, so
+ * every rejection path is accounted for in exactly one place. */
+static uint32_t display_setframebuf_reject(uint32_t err, uint32_t addr, int32_t stride,
+                                           int32_t fmt, uint32_t sync) {
+    s_setfb.rejected++;
+    s_setfb.last_err = err;
+    s_setfb.last_err_vcount = s_vcount;
+    s_setfb.last_err_addr = addr;
+    s_setfb.last_err_stride = stride;
+    s_setfb.last_err_fmt = fmt;
+    s_setfb.last_err_sync = sync;
+    return err;
+}
 
 /* A guest-VRAM dump is a publication boundary, not an ordinary present. The Vulkan
  * presenter deliberately queues its readback, so materialize only this display target
@@ -6571,20 +6626,30 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         fprintf(stderr, "DISPLAY_SET_FB: buf=0x%08x stride=%d fmt=%d sync=%u vcount=%u\n",
                 addr, stride, fmt, sync, s_vcount);
 
-    if (sync > 1u) return 0x80000107u;       /* SCE_KERNEL_ERROR_INVALID_MODE */
-    if (addr && !display_address_valid(addr))
-        return 0x80000103u;                  /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-    if ((addr & 0x0fu) != 0u)
-        return 0x80000103u;                  /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+    s_setfb.calls++;
+    s_setfb.last_vcount = s_vcount;
+    s_setfb.last_addr = addr;
+    s_setfb.last_stride = stride;
+    s_setfb.last_fmt = fmt;
+    s_setfb.last_sync = sync;
+
+    if (sync > 1u)                           /* SCE_KERNEL_ERROR_INVALID_MODE */
+        return display_setframebuf_reject(0x80000107u, addr, stride, fmt, sync);
+    if (addr && !display_address_valid(addr)) /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+        return display_setframebuf_reject(0x80000103u, addr, stride, fmt, sync);
+    if ((addr & 0x0fu) != 0u)                /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+        return display_setframebuf_reject(0x80000103u, addr, stride, fmt, sync);
     if (((uint32_t)stride & 0x3fu) != 0u || (stride == 0 && addr != 0u))
-        return 0x80000104u;                  /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
-    if (fmt < 0 || fmt > 3) return 0x80000108u; /* SCE_KERNEL_ERROR_INVALID_FORMAT */
+        return display_setframebuf_reject(0x80000104u, addr, stride, fmt, sync);
+    if (fmt < 0 || fmt > 3)                  /* SCE_KERNEL_ERROR_INVALID_FORMAT */
+        return display_setframebuf_reject(0x80000108u, addr, stride, fmt, sync);
     if (sync == 0u &&
         (stride != s_display_latched.stride || fmt != s_display_latched.fmt))
-        return 0x80000107u;
+        return display_setframebuf_reject(0x80000107u, addr, stride, fmt, sync);
 
     DisplayFrameState requested = { addr, stride, fmt };
     if (sync == 0u) {
+        s_setfb.immediate++;
         /* PSP names sync=0 IMMEDIATE.  The host has no scanline clock, so this
          * updates the guest-visible/current state immediately; sync=1 remains
          * the modeled next-frame latch applied at VBLANK. */
@@ -6598,6 +6663,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
         display_present_active();
     } else {
+        s_setfb.latched++;
         s_display_latched = requested;
         s_display_latched_pending = 1;
         /* PSP autotests observe format/stride immediately, but the address
@@ -6880,24 +6946,54 @@ void sr_vblank_tick(void) {
             latch_stuck = 0;
         }
     }
-    /* Hang watchdog: vblanks keep being delivered even when every game thread is blocked,
-     * so a stretch with no sceDisplaySetFrameBuf means the render loop is stuck (e.g. an
-     * infinite wait). Dump the thread table + mpeg counters so the hang is diagnosable.
-     * SR_WATCHDOG_EXIT=<N>: abort after N vblanks with no frame (default: no abort). */
+    /* No-frame watchdog: vblanks keep being delivered even when every game thread is
+     * blocked, so a stretch with no new sceDisplaySetFrameBuf is a NO-NEW-FLIP
+     * observation. It is not by itself a hang, scheduler-stall, or scene-transition
+     * verdict: a legitimately static scene (e.g. a save-confirmation modal waiting for
+     * user input) also stops presenting. The display-outcome counters, thread wait
+     * state, and movie-stack activity below are the facts that let a human classify
+     * the stretch.
+     * SR_WATCHDOG_EXIT=<N>: abort after N vblanks with no new frame (default: no abort). */
     uint32_t diff = s_vcount - s_last_flip_vcount;
     if (diff > 0 && (diff % 600) == 0) {
-        extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
-        fprintf(stderr, "WATCHDOG: no frame presented for %u vblanks (~%us); "
-                "mpeg put=%lu getavc=%lu avcdec=%lu nodata=%lu\n",
-                diff, diff / 60,
-                g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata);
-        fprintf(stderr, "BOOT_EVENT phase=stalled no_frame_vblanks=%u seconds=%u\n", diff, diff / 60);
+        s_watchdog_fires++;
+        fprintf(stderr,
+                "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "
+                "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
+                diff, diff / 60);
+        fprintf(stderr,
+                "BOOT_EVENT phase=stalled observation=no_new_flip no_frame_vblanks=%u seconds=%u\n",
+                diff, diff / 60);
+        /* Which side of the display handoff stopped presenting: did the guest stop
+         * asking for flips, or are its requests being refused? last_vcount vs
+         * s_last_flip_vcount separates "no call since the last flip" from "calls
+         * that did not present". */
+        fprintf(stderr,
+                "WATCHDOG_DISPLAY: calls=%lu immediate=%lu latched=%lu rejected=%lu "
+                "last_call_v=%u last_req=0x%08x/%d/%d sync=%u "
+                "last_err=0x%08x@v%u req=0x%08x/%d/%d sync=%u pending=%d active=0x%08x/%d/%d\n",
+                s_setfb.calls, s_setfb.immediate, s_setfb.latched, s_setfb.rejected,
+                s_setfb.last_vcount, s_setfb.last_addr, s_setfb.last_stride,
+                s_setfb.last_fmt, s_setfb.last_sync,
+                s_setfb.last_err, s_setfb.last_err_vcount, s_setfb.last_err_addr,
+                s_setfb.last_err_stride, s_setfb.last_err_fmt, s_setfb.last_err_sync,
+                s_display_latched_pending, s_display_active.addr,
+                s_display_active.stride, s_display_active.fmt);
+        /* Thread wait state: a parked thread's reason is read from the dump (wait
+         * reason/deadline/callback/wakeup/join columns), not from a stale wait_obj. */
         { extern void sched_dump_threads(void); sched_dump_threads(); }
+        /* Movie-stack activity: sceMpeg and scePsmfPlayer are separate libraries; these
+         * counters say whether either stack was being fed. */
+        extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
+        fprintf(stderr, "WATCHDOG_MPEG: put=%lu getavc=%lu avcdec=%lu nodata=%lu\n",
+                g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata);
+        fprintf(stderr, "WATCHDOG_PSMF: player_calls=%lu getvideo=%lu getaudio=%lu\n",
+                s_psmf_calls, s_psmf_getvideo, s_psmf_getaudio);
         fflush(stderr);
         { static int wde = -1;
           if (wde < 0) { const char *e = getenv("SR_WATCHDOG_EXIT"); wde = e ? atoi(e) : 0; }
           if (wde > 0 && diff >= (uint32_t)wde) {
-              fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
+              fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
               _Exit(1);
           }
         }
@@ -6918,7 +7014,7 @@ void sr_vblank_tick(void) {
      * vblank V is complete in every respect this function is responsible for -- the frame
      * counter is advanced, ge_set_frame(V) has run, sr_ctrl_sample() has latched V's controller
      * sample (so a pad-script press scheduled for V is delivered before the exit), and the latch
-     * assist and hang watchdog have run. What it does NOT wait for is work that happens outside
+     * assist and no-frame watchdog have run. What it does NOT wait for is work that happens outside
      * sr_vblank_tick: guest threads resumed by this vblank run after it returns, and a frame
      * whose sceDisplaySetFrameBuf lands later in vblank V is neither presented nor captured. So
      * a route's last input must be scheduled comfortably before V -- a settle window of a few
@@ -8926,6 +9022,23 @@ static void hle_register_wait_conformance_handlers(void) {
  * _Exit(7) on an unregistered NID under the fiber scheduler, so a matrix cell
  * whose NID is out of registry scope must be detected without calling it. */
 int sr_hle_test_is_registered(uint32_t nid) { return hle_find(nid) != NULL; }
+
+/* See the forward declaration next to the counters themselves. */
+void sr_display_test_flip_counts(unsigned long *calls, unsigned long *immediate,
+                                 unsigned long *latched, unsigned long *rejected,
+                                 uint32_t *last_err) {
+    if (calls)     *calls     = s_setfb.calls;
+    if (immediate) *immediate = s_setfb.immediate;
+    if (latched)   *latched   = s_setfb.latched;
+    if (rejected)  *rejected  = s_setfb.rejected;
+    if (last_err)  *last_err  = s_setfb.last_err;
+}
+
+/* See the forward declaration next to the counters themselves. */
+void sr_watchdog_test_state(unsigned long *fires, uint32_t *vblanks_since_flip) {
+    if (fires)             *fires             = s_watchdog_fires;
+    if (vblanks_since_flip) *vblanks_since_flip = s_vcount - s_last_flip_vcount;
+}
 #endif /* SR_HLE_THREAD_SELFTEST */
 
 static void hle_register_time_handlers(void) {

@@ -104,6 +104,22 @@ class TestWatchdog(TrackerTestBase):
         self.write_log("stderr_run1.log", ["frame 0", "WATCHDOG: no frame in 5s, aborting"])
         self.assertEqual(pt._check_watchdog_abort(last_log="stderr_run1.log"), "regressed")
 
+    def test_watchdog_abort_form_is_regression(self):
+        self.write_log("stderr_run1.log", [
+            "frame 0",
+            "WATCHDOG: no new frame presented for 600 vblanks (~10s) - neutral NO-NEW-FLIP observation, not by itself a hang/stall verdict",
+            "WATCHDOG: aborting after 600 vblanks with no new frame (SR_WATCHDOG_EXIT=600)",
+        ])
+        self.assertEqual(pt._check_watchdog_abort(last_log="stderr_run1.log"), "regressed")
+
+    def test_neutral_no_new_frame_observation_is_not_a_regression(self):
+        self.write_log("stderr_run1.log", [
+            "frame 0",
+            "WATCHDOG: no new frame presented for 600 vblanks (~10s) - neutral NO-NEW-FLIP observation, not by itself a hang/stall verdict",
+            "frame 1",
+        ])
+        self.assertEqual(pt._check_watchdog_abort(last_log="stderr_run1.log"), "pending")
+
     def test_absent_watchdog_is_pending_not_verified(self):
         self.write_log("stderr_run1.log", ["frame 0", "frame 1"])
         self.assertEqual(pt._check_watchdog_abort(last_log="stderr_run1.log"), "pending")

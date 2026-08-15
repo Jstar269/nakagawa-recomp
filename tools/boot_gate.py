@@ -8,6 +8,12 @@ the run started but did not meet that evidence contract. Exit 2 means the log is
 absent/invalid. ``--allow-present-only`` explicitly lowers only the frame-content
 requirement for liveness diagnostics; the JSON output still labels that evidence
 as ``present-submitted`` rather than visual success.
+
+A ``phase=stalled`` event carrying ``observation=no_new_flip`` is reported as a
+neutral observation (``observations`` JSON list), not a disqualifying reason: the
+no-frame watchdog fires on a stretch of vblanks with no new presented frame, which
+a legitimately static scene (e.g. a save-confirmation modal waiting for input) also
+produces. Legacy bare ``phase=stalled`` events remain disqualifying.
 """
 
 from __future__ import annotations
@@ -83,10 +89,26 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
     )
     stalled = "stalled" in phases
 
+    # A phase=stalled event from the current runtime carries
+    # observation=no_new_flip: the no-frame watchdog fires on a stretch of
+    # vblanks with no new presented frame, which a legitimately static scene
+    # (e.g. a save-confirmation modal waiting for input) also produces. That is
+    # a neutral NO-NEW-FLIP observation, not a hang/stall verdict, so it is
+    # reported as an observation instead of a disqualifying reason. Only the
+    # legacy bare phase=stalled event (old runtime logs) keeps its
+    # disqualifying meaning.
+    no_frame_observation = any(
+        event.get("phase") == "stalled" and event.get("observation") == "no_new_flip"
+        for event in events
+    )
+    observations: list[str] = []
+    if no_frame_observation:
+        observations.append("no-frame-observation")
+
     reasons: list[str] = []
     if not sequence_ok:
         reasons.append("milestones-incomplete-or-out-of-order")
-    if stalled:
+    if stalled and not no_frame_observation:
         reasons.append("stalled")
     if faults:
         reasons.append("disqualifying-fault")
@@ -100,6 +122,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
     return {
         "ok": ok,
         "stalled": stalled,
+        "observations": observations,
         "lastPhase": last_phase,
         "reached": reached,
         "sequenceOk": sequence_ok,

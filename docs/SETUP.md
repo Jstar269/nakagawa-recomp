@@ -309,6 +309,11 @@ feature must report that honestly rather than creating a placeholder artifact; s
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout.
 - **Clean build omits chunks:** use the unchanged two-process `all` target; do not rewrite it as `all: pipeline compile`.
 - **Watchdog fires:** `SR_WATCHDOG_EXIT` counts vblanks since the last newly
-  presented frame, not seconds or frame count. If a title waits for a
-  profile/save or cannot open a title-specific cache, inspect the local
-  diagnostic log. Do not copy that input or its path into Git.
+  presented frame, not seconds or frame count. The no-frame watchdog is a
+  NO-NEW-FLIP observation, not a hang verdict: a legitimately static scene
+  (e.g. a save-confirmation modal waiting for input) also stops presenting.
+  Classify a firing with the facts the watchdog prints -- `WATCHDOG_DISPLAY`
+  outcome counters, the thread wait-state dump, and the `WATCHDOG_MPEG` /
+  `WATCHDOG_PSMF` activity -- rather than from the threshold alone. If a title
+  waits for a profile/save or cannot open a title-specific cache, inspect the
+  local diagnostic log. Do not copy that input or its path into Git.

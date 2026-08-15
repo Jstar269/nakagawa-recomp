@@ -436,6 +436,12 @@ static int sched_guest_hexdump(uint32_t addr, char *out, size_t out_sz) {
     return 1;
 }
 
+/* Threads blocked in sceDisplayWaitVblankStart wait on this object; deliver_vblank readies
+ * them, so the render loop draws exactly once per delivered vblank instead of spinning. */
+#define VBLANK_WAIT_OBJ 0x56424c4bu   /* "VBLK" */
+/* sceCtrl's blocking reads park on CTRL_WAIT_OBJ (shared via recomp.h), so a thread dump
+ * can name the wait instead of printing a bare cookie. */
+
 /* Diagnostic: dump every thread's state, entry, saved PC, and what it waits on. Reveals a thread
  * blocked on a sema/event that is never signalled (a likely scene-transition gate). */
 void sched_dump_threads(void) {
@@ -474,9 +480,39 @@ void sched_dump_threads(void) {
     }
     for (int i = 0; i < s_ntcb; i++) {
         TCB *t = &s_tcb[i];
-        fprintf(stderr, "  uid=0x%x entry=0x%08x pc=0x%08x %-10s pri=%d wait_obj=0x%x wake=%llu\n",
+        /* State alone does not say WHY a thread is parked, and "wait_obj" is a stale
+         * field on a thread that is not actually in an object wait -- reading it as a
+         * live wait reason has already misdirected one investigation. Report the
+         * distinguishing flags, and print the deadline as a remaining duration
+         * (INF for an untimed wait) so a wait that will never expire is obvious. */
+        const char *why = "-";
+        if (t->state == TH_WAIT_OBJ) {
+            if (t->join_waiting)      why = "thread-end";
+            else if (t->sleeping)     why = "sleep";
+            else if (t->wait_obj == CTRL_WAIT_OBJ) why = "ctrl";
+            else if (t->wait_obj == VBLANK_WAIT_OBJ) why = "vblank";
+            else                      why = "object";
+        } else if (t->state == TH_WAIT_DELAY) {
+            why = "delay";
+        }
+        char deadline[32];
+        uint64_t now = sched_vtime_us();
+        if (t->state != TH_WAIT_OBJ && t->state != TH_WAIT_DELAY)
+            snprintf(deadline, sizeof deadline, "-");
+        else if (t->wake == (uint64_t)-1)
+            snprintf(deadline, sizeof deadline, "INF");
+        else if (t->wake > now)
+            snprintf(deadline, sizeof deadline, "%lluus",
+                     (unsigned long long)(t->wake - now));
+        else
+            snprintf(deadline, sizeof deadline, "DUE");
+        fprintf(stderr,
+                "  uid=0x%x entry=0x%08x pc=0x%08x %-10s pri=%d wait_obj=0x%x wake=%llu"
+                " why=%s in=%s cb=%d wakeups=%d join=0x%x\n",
                 t->uid, t->entry, t->saved.pc, st[t->state < 5 ? t->state : 0], t->priority,
-                t->wait_obj, (unsigned long long)t->wake);
+                t->wait_obj, (unsigned long long)t->wake,
+                why, deadline, t->is_cb_wait, t->wakeups,
+                t->join_waiting ? t->join_target : 0u);
     }
 }
 
@@ -485,9 +521,6 @@ void sched_dump_threads(void) {
  * when no thread is runnable (i.e. once per simulated frame). */
 uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_arg(void);
-/* Threads blocked in sceDisplayWaitVblankStart wait on this object; deliver_vblank readies
- * them, so the render loop draws exactly once per delivered vblank instead of spinning. */
-#define VBLANK_WAIT_OBJ 0x56424c4bu   /* "VBLK" */
 static uint64_t s_vbl_count = 0;     /* vblanks delivered so far (latch reference) */
 
 /* The vblank is an interrupt: it can fire WHILE a thread runs (from the yield path, or while a

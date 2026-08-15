@@ -79,6 +79,19 @@ class BootGateTests(unittest.TestCase):
         self.assertTrue(result["stalled"])
         self.assertIn("stalled", result["disqualifyingReasons"])
 
+    def test_no_new_flip_observation_is_reported_not_disqualifying(self) -> None:
+        result = self.parse(
+            self.ordered_prefix()
+            + [
+                event("stalled", observation="no_new_flip", no_frame_vblanks="600", seconds="10"),
+                event("first_frame", source="cpu", nonzero_pixels=1),
+            ]
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["stalled"])
+        self.assertNotIn("stalled", result["disqualifyingReasons"])
+        self.assertIn("no-frame-observation", result["observations"])
+
     def test_gpu_present_only_is_liveness_not_visual_success(self) -> None:
         lines = self.ordered_prefix() + [event("first_frame", source="gpu")]
         strict = self.parse(lines)

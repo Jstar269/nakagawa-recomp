@@ -520,6 +520,8 @@ void     sched_block_on(uint32_t obj);              /* block current thread unti
 void     sched_wait_vblank(void);                   /* block current thread until the next delivered vblank */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
+/* Wait-object ids shared between hle.c (wait side) and sched.c (thread-dump side). */
+#define CTRL_WAIT_OBJ 0xC471D000u                   /* sceCtrl blocking reads park on this object */
 uint64_t sched_vtime_us(void);
 uint64_t sched_vtime_deadline_after(uint64_t delta); /* saturating guest-time deadline */
 void     sched_vtime_refresh(void);

@@ -270,7 +270,7 @@ captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
 It is the **last statement of `sr_vblank_tick()`**. At that point vblank *V* is complete in
 everything that function owns: the frame counter is advanced, `ge_set_frame(V)` has run,
 `sr_ctrl_sample()` has latched *V*'s controller sample (so a pad-script press scheduled *for* V is
-delivered before the exit), and the latch assist and hang watchdog have run.
+delivered before the exit), and the latch assist and no-frame watchdog have run.
 
 It does **not** wait for work outside the tick. Guest threads this vblank resumed run after it
 returns, and a frame whose `sceDisplaySetFrameBuf` lands later in vblank *V* is neither presented
@@ -336,7 +336,7 @@ committed.
 | Variable | Description |
 | ---------- | ------------- |
 | `SR_VBLANK_Q_US=N` | Vblank quantum in microseconds |
-| `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no frame |
+| `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
@@ -519,4 +519,4 @@ VIDEO: present fb=0x04000000 fmt=3 stride=512
 
 1. Avoid `SR_DEBUG=0xFF` in production — causes massive stderr output
 2. Use specific categories: `SR_DEBUG=0x02` for HLE tracing only
-3. Set `SR_WATCHDOG_EXIT=N` to abort after N vblanks without a newly presented frame
+3. Set `SR_WATCHDOG_EXIT=N` to abort after N vblanks without a newly presented frame; the firing is a NO-NEW-FLIP observation, so classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints, not the threshold alone
