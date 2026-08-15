@@ -206,7 +206,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "856aa33e537e81bc60322bea811d9f6bbdc87c46038629483d25229ed1377064"
+      "sha256": "527a475532b9996ff958622764892a4454e54044f5317ca8a1db2c742c6b1538"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
