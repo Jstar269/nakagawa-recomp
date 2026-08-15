@@ -5390,6 +5390,49 @@ static void test_route_press_until_stops_when_the_screen_arrives(void) {
     remove(RT_PATH);
 }
 
+/* Some screens accept an input only once the work behind them finishes -- the title draws
+ * its CONTINUE option long before it will act on one, and no pixel says which. Repeating
+ * until the NEXT screen appears leaves a window where a press can still reach it; repeating
+ * only while the current screen is on show ends the input before anything else can. */
+static void test_route_press_while_ends_with_its_screen(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigA[576], sigB[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "CHECKPOINT TITLE %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS_WHILE TITLE 4000 8 300 12000\n"
+             "WAIT MAIN_MENU 5000\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_WHILE route loads");
+    rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
+
+    expect(sr_route_step(0, sigA) == 0x4000u, "PRESS_WHILE presses while its screen is up");
+    expect(sr_route_step(10, sigA) == 0u, "the press respects its width");
+    expect(sr_route_step(300, sigA) == 0x4000u, "the press repeats one period later");
+    expect(sr_route_status() == RT_RUNNING, "PRESS_WHILE keeps going while the screen is up");
+
+    /* The screen goes away -- to something that is not the next checkpoint either, which is
+     * what a crossfade looks like. The step ends there, long before the menu is live. */
+    uint8_t midway[576];
+    for (int i = 0; i < sr_route_sig_bytes(); i++) midway[i] = 0x50;
+    expect(sr_route_step(600, midway) == 0u, "PRESS_WHILE stops as soon as its screen is gone");
+    expect(sr_route_step(900, midway) == 0u, "nothing is pressed while waiting for the next screen");
+    sr_route_step(1200, sigB);
+    expect(sr_route_status() == RT_DONE, "the following WAIT completes the route");
+
+    /* Entering the step one vblank before its screen is drawn must not skip the input. */
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the PRESS_WHILE route reloads");
+    expect(sr_route_step(0, midway) == 0x4000u, "the press still fires before its screen appears");
+    expect(sr_route_status() == RT_RUNNING, "PRESS_WHILE does not complete before its screen is seen");
+    remove(RT_PATH);
+}
+
 static void test_route_press_until_timeout_fails_loudly(void) {
     char hexA[1024], hexB[1024], body[4096];
     uint8_t sigB[576];
@@ -5634,6 +5677,7 @@ int main(int argc, char **argv) {
     test_route_expect_without_observation_fails_closed();
     test_route_signature_tolerance_is_enforced();
     test_route_press_until_stops_when_the_screen_arrives();
+    test_route_press_while_ends_with_its_screen();
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();

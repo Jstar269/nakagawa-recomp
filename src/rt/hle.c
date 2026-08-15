@@ -6132,7 +6132,7 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -6245,6 +6245,14 @@ static int route_best_match(const uint8_t *sig, int *out_d) {
     if (out_d) *out_d = best_d;
     return best;
 }
+
+/* What the run last actually saw. A failure diagnosed only from the vblank it fired on is
+ * usually blank -- observations are periodic and a timeout rarely lands on one -- so the
+ * last observation is kept and named instead. */
+static char s_route_seen[96] = "no screen was observed at all";
+static int  s_route_while_seen;   /* PRESS_WHILE has seen its screen at least once */
+
+static const char *route_seen_desc(void) { return s_route_seen; }
 
 static int route_find(const char *name) {
     for (int i = 0; i < s_route_ncp; i++)
@@ -6418,19 +6426,26 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 if (to < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT <NAME> <timeout_vblanks>\n", path, lineno); return -1; }
                 st.a = (uint32_t)to;
             }
-        } else if (strcmp(tok, "PRESS_UNTIL") == 0) {
+        } else if (strcmp(tok, "PRESS_UNTIL") == 0 || strcmp(tok, "PRESS_WHILE") == 0) {
             /* The boot prefix is the one part of a route that genuinely has to repeat an
              * input until something happens: the warning screens and the intro movie each
              * need their own START and there is no way to know in advance how many. Written
              * as a fixed table it is the worst kind of timed route -- every extra press is
              * one that lands on whatever comes next if the run is faster than the recording.
-             * Written as a repeat-until-observed it stops the moment the screen arrives. */
-            st.op = ROUTE_OP_UNTIL;
+             * Written as a repeat-until-observed it stops the moment the screen arrives.
+             *
+             * PRESS_WHILE is the other half of that problem. Some screens accept an input
+             * only once the work behind them finishes -- the title screen draws its NEW
+             * GAME / CONTINUE options long before it will act on one, and no pixel says
+             * which. Repeating until the *next* screen appears leaves a window in which a
+             * press can still be latched by it; repeating only while the current screen is
+             * on show ends the input well before anything else can receive it. */
+            st.op = tok[6] == 'U' ? ROUTE_OP_UNTIL : ROUTE_OP_WHILE;
             char *name = strtok(NULL, " \t\r\n");
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
             char *p = strtok(NULL, " \t\r\n"), *t = strtok(NULL, " \t\r\n");
             if (!name || strlen(name) >= ROUTE_NAME_MAX || !m || !w || !p || !t) {
-                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>\n", path, lineno);
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <NAME> <hexmask> <width> <period> <timeout>\n", path, lineno, tok);
                 return -1;
             }
             snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
@@ -6439,7 +6454,7 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             st.c = (uint32_t)strtoul(p, NULL, 10);
             st.d = (uint32_t)strtoul(t, NULL, 10);
             if (st.b < 1 || st.c <= st.b || st.d < st.c) {
-                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL needs width >= 1, period > width, timeout >= period\n", path, lineno);
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s needs width >= 1, period > width, timeout >= period\n", path, lineno, tok);
                 return -1;
             }
         } else if (strcmp(tok, "PRESS") == 0) {
@@ -6479,6 +6494,8 @@ void sr_route_reset(void) {
     s_route_tol = 12;
     s_route_sample_every = 20;
     s_route_keys = 0;
+    s_route_while_seen = 0;
+    snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
 }
 
@@ -6491,6 +6508,7 @@ int sr_route_load(const char *path) {
     s_route_pc = 0;
     s_route_step_started = 0;
     s_route_keys = 0;
+    s_route_while_seen = 0;
     s_route_state = ROUTE_OFF;
     s_route_loaded = 1;
     if (!path || !path[0]) return 0;
@@ -6556,6 +6574,16 @@ static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
 uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
     uint32_t keys = 0;
     if (s_route_state != ROUTE_RUNNING) return 0;
+    if (sig) {
+        int bd = 255, bi = route_best_match(sig, &bd);
+        if (bi >= 0 && bd <= s_route_cp[bi].tol)
+            snprintf(s_route_seen, sizeof s_route_seen, "last saw %s at vblank %u (d=%d)",
+                     s_route_cp[bi].name, v, bd);
+        else
+            snprintf(s_route_seen, sizeof s_route_seen,
+                     "last saw an unrecorded screen at vblank %u (closest %s d=%d)", v,
+                     bi >= 0 ? s_route_cp[bi].name : "-", bd);
+    }
     for (int guard = 0; guard <= ROUTE_MAX_STEPS; guard++) {
         if (s_route_pc >= s_route_nsteps) {
             s_route_state = ROUTE_DONE;
@@ -6583,11 +6611,35 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                 continue;
             }
             if (el >= st->d) {
-                int bd = 255, bi = sig ? route_best_match(sig, &bd) : -1;
-                route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); "
-                           "closest observed screen %s d=%d",
+                route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); %s",
+                           st->line, st->name, el, s_route_step_start, route_seen_desc());
+                return keys;
+            }
+            if ((el % st->c) < st->b) keys |= st->a;
+            return keys;
+        }
+        case ROUTE_OP_WHILE: {
+            int d = 255;
+            if (sig && !route_matches(st->name, sig, &d)) {
+                if (s_route_while_seen) {
+                    fprintf(stderr, "ROUTE: left %s at vblank %u (step %d, after %u vblanks)\n",
+                            st->name, v, s_route_pc, el);
+                    s_route_while_seen = 0;
+                    route_advance();
+                    continue;
+                }
+            } else if (sig) {
+                /* Do not let the step complete before its screen was ever on show: entering
+                 * it one vblank early would otherwise skip the input entirely. */
+                s_route_while_seen = 1;
+            }
+            if (el >= st->d) {
+                int ever = s_route_while_seen;
+                s_route_while_seen = 0;
+                route_fail("line %d: PRESS_WHILE %s gave up after %u vblanks (from vblank %u); "
+                           "the screen %s; %s",
                            st->line, st->name, el, s_route_step_start,
-                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd);
+                           ever ? "never went away" : "was never on show", route_seen_desc());
                 return keys;
             }
             if ((el % st->c) < st->b) keys |= st->a;
@@ -6602,12 +6654,10 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                 continue;
             }
             if (el >= st->a) {
-                int bd = 255, bi = sig ? route_best_match(sig, &bd) : -1;
                 int wi = route_find(st->name);
                 route_fail("line %d: WAIT %s timed out after %u vblanks (from vblank %u to %u); "
-                           "closest observed screen %s d=%d (match needs d<=%d)",
-                           st->line, st->name, el, s_route_step_start, v,
-                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd,
+                           "%s (a match needs d<=%d)",
+                           st->line, st->name, el, s_route_step_start, v, route_seen_desc(),
                            wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
                 return keys;
             }
@@ -7177,10 +7227,14 @@ static void route_tick(uint32_t v) {
 
     uint8_t sig[ROUTE_SIG_MAX];
     const uint8_t *observed = NULL;
+    /* Which steps need to see the screen, stated as "everything except the ones that do
+     * not". A step that needs an observation and never gets one cannot make progress and
+     * only reveals itself at its timeout, so the default is deliberately to sample: adding
+     * a new state-gated step must not be able to silently disable its own observations. */
     int pending = 0;
     if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
         int op = s_route_prog[s_route_pc].op;
-        pending = (op == ROUTE_OP_WAIT || op == ROUTE_OP_EXPECT || op == ROUTE_OP_UNTIL);
+        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
     }
     if ((pending || s_route_learn) && (v % (uint32_t)s_route_sample_every) == 0 &&
         route_sample(sig)) {

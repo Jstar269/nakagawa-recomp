@@ -181,6 +181,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
 | `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
 | `PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
