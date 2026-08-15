@@ -721,7 +721,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7fe77c24301fe3411f189d81c9945fc71696d7a8a50019b963e8d73b2e0d0626"
+      "sha256": "f592e39eab91679a434b454c87a4606896583b41cf4b202dd7e20072d55fbe6b"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4364,7 +4364,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "cd154d5ad4d2104a282adc658e6c7d146933667c98e9b16e9e4d4e1323e67f05"
+      "sha256": "5ed637cede9f16f3a386d2250970f9969f215337f234be24b4b41fd310f74523"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4376,7 +4376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0276dd8f4092b027ae047cac5e4573d26bd62edd99d92c22a3048a9bd29699b9"
+      "sha256": "282bdb90d99346b474ad74fa26d3570ea930874609420e54633c5b1d0ca03fce"
     },
     {
       "path": "src/rt/intr_conformance.h",

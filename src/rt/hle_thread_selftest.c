@@ -5353,6 +5353,146 @@ static void test_route_signature_tolerance_is_enforced(void) {
     remove(RT_PATH);
 }
 
+/* HST redraws its menus over a club backdrop that is not the same every run, so a
+ * whole-frame comparison rejects the right screen. Recording the screen twice makes the
+ * bytes the two recordings disagree on drop out of the comparison. */
+/* The boot prefix has to repeat an input until a screen arrives. As a fixed table every
+ * extra press lands on whatever comes next when the run is faster than the recording --
+ * which is how a CROSS meant for the title screen ended up opening a menu (issue #64). */
+static void test_route_press_until_stops_when_the_screen_arrives(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigA[576], sigB[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "CHECKPOINT TITLE %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS_UNTIL TITLE 0008 8 240 12000\n"
+             "PRESS 4000 8\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL route loads");
+    rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
+
+    expect(sr_route_step(0, NULL) == 0x0008u, "PRESS_UNTIL pulses at the start of each period");
+    expect(sr_route_step(7, NULL) == 0x0008u, "the pulse covers its full width");
+    expect(sr_route_step(8, NULL) == 0u, "the pulse stops after its width");
+    expect(sr_route_step(240, NULL) == 0x0008u, "the pulse repeats one period later");
+    expect(sr_route_step(480, sigB) == 0x0008u, "a different screen does not end the repeat");
+
+    /* The screen arrives: the repeat ends and the next step starts in the same vblank,
+     * so the START pulse is never issued again. */
+    expect(sr_route_step(481, sigA) == 0x4000u, "the next step begins on the vblank the screen arrives");
+    expect(sr_route_step(485, NULL) == 0x4000u, "the following press holds for its width");
+    expect(sr_route_step(489, NULL) == 0u, "no further pulse is issued once the screen was reached");
+    expect(sr_route_status() == RT_DONE, "the route completes after the gated press");
+    remove(RT_PATH);
+}
+
+static void test_route_press_until_timeout_fails_loudly(void) {
+    char hexA[1024], hexB[1024], body[4096];
+    uint8_t sigB[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20); rt_hex(hexB, 0x80);
+    snprintf(body, sizeof body,
+             "CHECKPOINT TITLE %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS_UNTIL TITLE 0008 8 240 1000\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the PRESS_UNTIL timeout route loads");
+    rt_sig(sigB, 0x80);
+    for (uint32_t v = 0; v < 1000; v++) sr_route_step(v, sigB);
+    expect(sr_route_status() == RT_RUNNING, "PRESS_UNTIL keeps trying inside its budget");
+    sr_route_step(1000, sigB);
+    expect(sr_route_status() == RT_FAILED, "PRESS_UNTIL that never sees its screen fails the route");
+
+    sr_route_reset();
+    rt_write("CHECKPOINT TITLE 00\nPRESS_UNTIL TITLE 0008 8 4 1000\n");
+    expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL whose period does not exceed its width is refused");
+    remove(RT_PATH);
+}
+
+static void test_route_alternate_signatures_mask_variable_content(void) {
+    char hexA[1024], hexB[1024], hexC[1024], body[8192];
+    uint8_t obs[576];
+    int n = sr_route_sig_bytes();
+
+    sr_route_reset();
+    /* Two recordings of one screen: the first half is stable, the second half varies. */
+    for (int i = 0; i < n; i++) {
+        snprintf(hexA + i * 2, 3, "%02x", i < n / 2 ? 0x40 : 0x10);
+        snprintf(hexB + i * 2, 3, "%02x", i < n / 2 ? 0x40 : 0xd0);
+        snprintf(hexC + i * 2, 3, "%02x", 0x90);
+    }
+    snprintf(body, sizeof body,
+             "TOLERANCE 6\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT OTHER_SCREEN %s\n"
+             "WAIT MAIN_MENU 10000\n"
+             "END\n", hexA, hexB, hexC);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a checkpoint with two recordings loads");
+
+    /* Stable half matches, variable half is a third value neither recording saw. */
+    for (int i = 0; i < n; i++) obs[i] = (uint8_t)(i < n / 2 ? 0x42 : 0x77);
+    sr_route_step(0, obs);
+    expect(sr_route_status() == RT_DONE,
+           "a screen matches on the bytes its recordings agree on, whatever varies elsewhere");
+
+    /* A genuinely different screen must still be rejected on the stable half alone. */
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the masked route reloads");
+    for (int i = 0; i < n; i++) obs[i] = 0x90;
+    sr_route_step(0, obs);
+    expect(sr_route_status() == RT_RUNNING,
+           "masking the variable bytes must not make a different screen match");
+
+    /* Two recordings that share almost nothing are not one screen, and a route built on
+     * them would match anything. Refuse it rather than run a route that cannot fail. */
+    sr_route_reset();
+    for (int i = 0; i < n; i++) {
+        snprintf(hexA + i * 2, 3, "%02x", 0x10);
+        snprintf(hexB + i * 2, 3, "%02x", 0xf0);
+    }
+    snprintf(body, sizeof body,
+             "TOLERANCE 6\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "END\n", hexA, hexB);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0,
+           "two recordings with nothing in common are refused as one checkpoint");
+    expect(sr_route_status() == RT_FAILED, "an indistinguishable checkpoint fails the run");
+
+    /* Masking is what makes this possible, so it is also what could make two checkpoints
+     * collapse into each other. A route whose assertions cannot distinguish its own screens
+     * cannot fail, which is worse than having no assertions. */
+    sr_route_reset();
+    for (int i = 0; i < n; i++) {
+        int stable = i < n / 4;
+        snprintf(hexA + i * 2, 3, "%02x", stable ? 0x40 : 0x10);
+        snprintf(hexB + i * 2, 3, "%02x", stable ? 0x40 : 0xd0);
+        snprintf(hexC + i * 2, 3, "%02x", stable ? 0x41 : 0x88);
+    }
+    snprintf(body, sizeof body,
+             "TOLERANCE 6\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "CHECKPOINT SINGLE_PLAYER_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "END\n", hexA, hexB, hexC);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0,
+           "a checkpoint that also matches another checkpoint's recording is refused");
+    remove(RT_PATH);
+}
+
 static void test_route_malformed_files_are_refused(void) {
     char hexA[1024], body[4096];
 
@@ -5391,6 +5531,18 @@ static void test_route_malformed_files_are_refused(void) {
     snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\nSTEP_SIDEWAYS 3\n", hexA);
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 0, "an unknown route keyword is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\nTOLERANCE 4\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "TOLERANCE after a CHECKPOINT is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a file of checkpoints with no steps is refused");
+    expect(sr_route_status() == RT_FAILED,
+           "an unfinished route must not silently fall back to the default pad pulse");
     remove(RT_PATH);
 }
 
@@ -5481,6 +5633,9 @@ int main(int argc, char **argv) {
     test_route_expect_rejects_the_wrong_screen();
     test_route_expect_without_observation_fails_closed();
     test_route_signature_tolerance_is_enforced();
+    test_route_press_until_stops_when_the_screen_arrives();
+    test_route_press_until_timeout_fails_loudly();
+    test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
     test_route_legacy_pad_script_is_unchanged();
 

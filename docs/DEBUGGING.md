@@ -175,19 +175,36 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | ---- | ------- |
 | `SIGGRID <cols> <rows>` | Signature grid, default `12 8`; must precede every `CHECKPOINT` |
 | `SAMPLE_EVERY <n>` | Observation cadence in vblanks (default 20) |
-| `TOLERANCE <n>` | Default match tolerance, mean absolute channel difference (default 12) |
-| `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to allow alternates |
+| `TOLERANCE <n>` | Default match tolerance, mean absolute channel difference (default 12); must precede every `CHECKPOINT` |
+| `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
 | `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
+| `PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
 `#` starts a comment. A screen is "observed" by a coarse signature of the presented
 framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
 R, G and B; a screen matches when the mean absolute difference from a recorded signature is
-within tolerance. Sampling only runs while a `WAIT` or `EXPECT` is pending, so a route pays
-nothing for it while pressing or delaying.
+within tolerance. Sampling only runs while a `WAIT`, `EXPECT` or `PRESS_UNTIL` is pending,
+so a route pays nothing for it while pressing or delaying.
+
+**Record a screen twice when part of it varies.** HST draws its menus over a club backdrop
+that is not the same every run, so a whole-frame comparison rejects the right screen: two
+recordings of the Main Menu taken from different runs sit 14 apart, well outside any
+tolerance that still separates the Main Menu from its submenu. Repeating a `CHECKPOINT`
+name records the same screen again, and the bytes the recordings disagree on are dropped
+from the comparison — they carry the variation, not the identity. On the two observed
+backdrops that leaves about half the frame informative and the Main Menu ~8x closer to
+itself than to the submenu. Recordings sharing less than a quarter of the frame are refused
+at load: they are not one screen, and a route built on them could not fail.
+
+**`PRESS_UNTIL` is for the boot prefix.** The warning screens and intro movie each need
+their own START and there is no way to know in advance how many. As a fixed table, every
+extra press is one that lands on whatever comes next when the run is faster than the
+recording — which is precisely how a `CROSS` meant for the title screen ended up opening a
+menu. `PRESS_UNTIL TITLE_SCREEN 0008 8 240 15000` stops the moment the title appears.
 
 **Failure is loud and terminal.** A failed `WAIT` or `EXPECT` prints `ROUTE_FAIL:` naming the
 step, the vblank and the screen that was actually there, then exits **86**. The manager reads

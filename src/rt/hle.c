@@ -6123,25 +6123,40 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
  */
 #define ROUTE_MAX_CELLS  192          /* 16x12 */
 #define ROUTE_SIG_MAX    (ROUTE_MAX_CELLS * 3)
-#define ROUTE_MAX_CP     64
+#define ROUTE_MAX_CP     32
+#define ROUTE_MAX_ALT    4
+#define ROUTE_MIN_ACTIVE_BYTES 12
 #define ROUTE_MAX_STEPS  256
 #define ROUTE_MAX_LEGACY 256
 #define ROUTE_NAME_MAX   32
 #define ROUTE_FAIL_EXIT  86
 
-enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_END };
+enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
+       ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
+/* One named screen. Parts of a screen legitimately vary between otherwise identical
+ * replays -- HST redraws its menus over a club backdrop that is not the same every run --
+ * so a whole-frame comparison rejects the right screen. Recording the same screen twice
+ * under different variable content solves this without a hand-authored region mask: bytes
+ * that disagree between the alternates carry the variation, not the identity, and are
+ * dropped from the comparison. Measured on the two menu backdrops seen here that leaves
+ * about half the frame informative, and the Main Menu still sits ~8x closer to itself than
+ * to the submenu it was being confused with. A checkpoint recorded once compares whole. */
 typedef struct {
     char    name[ROUTE_NAME_MAX];
     int     tol;
-    uint8_t sig[ROUTE_SIG_MAX];
+    int     nsig;
+    int     nactive;
+    uint8_t sig[ROUTE_MAX_ALT][ROUTE_SIG_MAX];
+    uint8_t active[ROUTE_SIG_MAX];   /* 1 = this byte takes part in the comparison */
 } RouteCheckpoint;
 
 typedef struct {
     int      op;
-    char     name[ROUTE_NAME_MAX];   /* WAIT / EXPECT */
-    uint32_t a, b;                   /* PRESS: mask,width   DELAY/WAIT: vblanks */
+    char     name[ROUTE_NAME_MAX];   /* WAIT / EXPECT / PRESS_UNTIL */
+    uint32_t a, b, c, d;             /* PRESS: mask,width   DELAY/WAIT: vblanks
+                                      * PRESS_UNTIL: mask,width,period,timeout */
     int      line;                   /* source line, for diagnostics */
 } RouteStep;
 
@@ -6201,44 +6216,97 @@ static int route_parse_sig(const char *hex, uint8_t *out, int want) {
     return (n == want && *hex == '\0') ? 0 : -1;
 }
 
-static int route_distance(const uint8_t *a, const uint8_t *b, int n) {
-    long sum = 0;
-    for (int i = 0; i < n; i++) {
-        int d = (int)a[i] - (int)b[i];
-        sum += d < 0 ? -d : d;
+/* Mean absolute difference over the checkpoint's informative bytes, taking the closest
+ * recorded alternate. */
+static int route_distance(const RouteCheckpoint *cp, const uint8_t *sig) {
+    int n = route_sig_bytes(), best = 255;
+    if (cp->nactive <= 0) return 255;
+    for (int k = 0; k < cp->nsig; k++) {
+        long sum = 0;
+        for (int i = 0; i < n; i++) {
+            if (!cp->active[i]) continue;
+            int d = (int)cp->sig[k][i] - (int)sig[i];
+            sum += d < 0 ? -d : d;
+        }
+        int mean = (int)(sum / cp->nactive);
+        if (mean < best) best = mean;
     }
-    return n > 0 ? (int)(sum / n) : 255;
+    return best;
 }
 
 /* Closest defined checkpoint to what is on screen. A failure that can say "this looks
  * like SINGLE_PLAYER_MENU (d=3)" is a diagnosis; "not MAIN_MENU" is only a complaint. */
 static int route_best_match(const uint8_t *sig, int *out_d) {
-    int best = -1, best_d = 255, n = route_sig_bytes();
+    int best = -1, best_d = 255;
     for (int i = 0; i < s_route_ncp; i++) {
-        int d = route_distance(s_route_cp[i].sig, sig, n);
+        int d = route_distance(&s_route_cp[i], sig);
         if (d < best_d) { best_d = d; best = i; }
     }
     if (out_d) *out_d = best_d;
     return best;
 }
 
-/* A name may be defined more than once (one screen, several stable appearances, e.g. a
- * menu with and without a transient banner); any alternate within tolerance matches. */
-static int route_matches(const char *name, const uint8_t *sig, int *out_d) {
-    int n = route_sig_bytes(), best_d = 255, hit = 0;
-    for (int i = 0; i < s_route_ncp; i++) {
-        if (strcmp(s_route_cp[i].name, name) != 0) continue;
-        int d = route_distance(s_route_cp[i].sig, sig, n);
-        if (d < best_d) best_d = d;
-        if (d <= s_route_cp[i].tol) hit = 1;
-    }
-    if (out_d) *out_d = best_d;
-    return hit;
+static int route_find(const char *name) {
+    for (int i = 0; i < s_route_ncp; i++)
+        if (strcmp(s_route_cp[i].name, name) == 0) return i;
+    return -1;
 }
 
-static int route_cp_defined(const char *name) {
-    for (int i = 0; i < s_route_ncp; i++)
-        if (strcmp(s_route_cp[i].name, name) == 0) return 1;
+static int route_matches(const char *name, const uint8_t *sig, int *out_d) {
+    int i = route_find(name);
+    if (i < 0) { if (out_d) *out_d = 255; return 0; }
+    int d = route_distance(&s_route_cp[i], sig);
+    if (out_d) *out_d = d;
+    return d <= s_route_cp[i].tol;
+}
+
+/* Decide which bytes of a checkpoint carry its identity. With one recorded signature that
+ * is the whole frame; with several it is the bytes they agree on. */
+static int route_finalize_checkpoints(const char *path) {
+    int n = route_sig_bytes();
+    for (int c = 0; c < s_route_ncp; c++) {
+        RouteCheckpoint *cp = &s_route_cp[c];
+        cp->nactive = 0;
+        for (int i = 0; i < n; i++) {
+            int lo = 255, hi = 0;
+            for (int k = 0; k < cp->nsig; k++) {
+                int v = cp->sig[k][i];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+            cp->active[i] = (uint8_t)(hi - lo <= cp->tol);
+            cp->nactive += cp->active[i];
+        }
+        if (cp->nactive < ROUTE_MIN_ACTIVE_BYTES) {
+            fprintf(stderr,
+                    "ROUTE_PARSE: %s: checkpoint '%s' has only %d of %d bytes in common across "
+                    "its %d recorded signatures; there is not enough left to identify a screen\n",
+                    path, cp->name, cp->nactive, n, cp->nsig);
+            return -1;
+        }
+        if (cp->nsig > 1)
+            fprintf(stderr, "ROUTE: checkpoint %s uses %d of %d bytes (%d signatures, tol=%d)\n",
+                    cp->name, cp->nactive, n, cp->nsig, cp->tol);
+    }
+    /* The real requirement is not how much of a frame survives masking -- a title screen is
+     * mostly backdrop and legitimately keeps a fifth of it -- but that the checkpoints can
+     * still be told apart. Two that match each other make every assertion between them
+     * vacuous, and a route that cannot fail is worse than no route, so refuse it here rather
+     * than let it report success. */
+    for (int a = 0; a < s_route_ncp; a++)
+        for (int b = 0; b < s_route_ncp; b++) {
+            if (a == b) continue;
+            for (int k = 0; k < s_route_cp[b].nsig; k++) {
+                int d = route_distance(&s_route_cp[a], s_route_cp[b].sig[k]);
+                if (d <= s_route_cp[a].tol) {
+                    fprintf(stderr,
+                            "ROUTE_PARSE: %s: checkpoint '%s' also matches a recording of '%s' "
+                            "(d=%d, tol=%d); the route could not tell them apart\n",
+                            path, s_route_cp[a].name, s_route_cp[b].name, d, s_route_cp[a].tol);
+                    return -1;
+                }
+            }
+        }
     return 0;
 }
 
@@ -6292,7 +6360,15 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         char *v = strtok(NULL, " \t\r\n");
         int n = v ? atoi(v) : -1;
         if (n < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <n>, n >= 1\n", path, lineno, tok); return -1; }
-        if (tok[0] == 'S') s_route_sample_every = n; else s_route_tol = n;
+        if (tok[0] == 'S') { s_route_sample_every = n; return 0; }
+        /* A checkpoint takes the tolerance in force when it is parsed, and its tolerance
+         * also decides which bytes are informative. A later TOLERANCE would silently mean
+         * something different for the checkpoints above it than the file appears to say. */
+        if (s_route_ncp > 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: TOLERANCE must precede every CHECKPOINT\n", path, lineno);
+            return -1;
+        }
+        s_route_tol = n;
         return 0;
     }
     if (strcmp(tok, "CHECKPOINT") == 0) {
@@ -6305,16 +6381,25 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             next = strtok(NULL, " \t\r\n");
             if (tol < 0 || !next) { fprintf(stderr, "ROUTE_PARSE: %s:%d: bad tol= or missing signature\n", path, lineno); return -1; }
         }
-        if (s_route_ncp >= ROUTE_MAX_CP) { fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d checkpoints\n", path, lineno, ROUTE_MAX_CP); return -1; }
         if (strlen(name) >= ROUTE_NAME_MAX) { fprintf(stderr, "ROUTE_PARSE: %s:%d: checkpoint name too long\n", path, lineno); return -1; }
-        if (route_parse_sig(next, s_route_cp[s_route_ncp].sig, route_sig_bytes()) != 0) {
+        int idx = route_find(name);
+        if (idx < 0) {
+            if (s_route_ncp >= ROUTE_MAX_CP) { fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d checkpoints\n", path, lineno, ROUTE_MAX_CP); return -1; }
+            idx = s_route_ncp++;
+            memset(&s_route_cp[idx], 0, sizeof s_route_cp[idx]);
+            snprintf(s_route_cp[idx].name, ROUTE_NAME_MAX, "%s", name);
+        }
+        if (s_route_cp[idx].nsig >= ROUTE_MAX_ALT) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d signatures for '%s'\n", path, lineno, ROUTE_MAX_ALT, name);
+            return -1;
+        }
+        if (route_parse_sig(next, s_route_cp[idx].sig[s_route_cp[idx].nsig], route_sig_bytes()) != 0) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: signature must be exactly %d hex bytes for a %dx%d grid\n",
                     path, lineno, route_sig_bytes(), s_route_cols, s_route_rows);
             return -1;
         }
-        snprintf(s_route_cp[s_route_ncp].name, ROUTE_NAME_MAX, "%s", name);
-        s_route_cp[s_route_ncp].tol = tol;
-        s_route_ncp++;
+        s_route_cp[idx].nsig++;
+        s_route_cp[idx].tol = tol;
         return 0;
     }
 
@@ -6332,6 +6417,30 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 long to = t ? atol(t) : -1;
                 if (to < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT <NAME> <timeout_vblanks>\n", path, lineno); return -1; }
                 st.a = (uint32_t)to;
+            }
+        } else if (strcmp(tok, "PRESS_UNTIL") == 0) {
+            /* The boot prefix is the one part of a route that genuinely has to repeat an
+             * input until something happens: the warning screens and the intro movie each
+             * need their own START and there is no way to know in advance how many. Written
+             * as a fixed table it is the worst kind of timed route -- every extra press is
+             * one that lands on whatever comes next if the run is faster than the recording.
+             * Written as a repeat-until-observed it stops the moment the screen arrives. */
+            st.op = ROUTE_OP_UNTIL;
+            char *name = strtok(NULL, " \t\r\n");
+            char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
+            char *p = strtok(NULL, " \t\r\n"), *t = strtok(NULL, " \t\r\n");
+            if (!name || strlen(name) >= ROUTE_NAME_MAX || !m || !w || !p || !t) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>\n", path, lineno);
+                return -1;
+            }
+            snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
+            st.a = (uint32_t)strtoul(m, NULL, 16);
+            st.b = (uint32_t)strtoul(w, NULL, 10);
+            st.c = (uint32_t)strtoul(p, NULL, 10);
+            st.d = (uint32_t)strtoul(t, NULL, 10);
+            if (st.b < 1 || st.c <= st.b || st.d < st.c) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL needs width >= 1, period > width, timeout >= period\n", path, lineno);
+                return -1;
             }
         } else if (strcmp(tok, "PRESS") == 0) {
             st.op = ROUTE_OP_PRESS;
@@ -6402,11 +6511,15 @@ int sr_route_load(const char *path) {
     if (s_route_nsteps > 0) {
         for (int i = 0; i < s_route_nsteps; i++) {
             RouteStep *st = &s_route_prog[i];
-            if ((st->op == ROUTE_OP_WAIT || st->op == ROUTE_OP_EXPECT) && !route_cp_defined(st->name)) {
+            if ((st->op == ROUTE_OP_WAIT || st->op == ROUTE_OP_EXPECT) && route_find(st->name) < 0) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: no CHECKPOINT defines '%s'\n", path, st->line, st->name);
                 route_fail("route file '%s' names undefined checkpoints", path);
                 return 0;
             }
+        }
+        if (route_finalize_checkpoints(path) != 0) {
+            route_fail("route file '%s' has checkpoints that cannot be told apart", path);
+            return 0;
         }
         s_route_state = ROUTE_RUNNING;
         fprintf(stderr, "ROUTE: program loaded from %s (%d steps, %d checkpoints, grid %dx%d, "
@@ -6418,6 +6531,12 @@ int sr_route_load(const char *path) {
     if (s_route_nlegacy > 0) {
         s_route_state = ROUTE_LEGACY;
         return 1;
+    }
+    if (s_route_ncp > 0) {
+        /* Checkpoints with no program is an unfinished route file. Running it would leave
+         * the pad on its default START pulse, which is not what the file asks for. */
+        route_fail("route file '%s' defines checkpoints but no steps", path);
+        return 0;
     }
     return 0;
 }
@@ -6455,6 +6574,25 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             if (el < st->a) return keys;
             route_advance();
             continue;
+        case ROUTE_OP_UNTIL: {
+            int d = 255;
+            if (sig && route_matches(st->name, sig, &d)) {
+                fprintf(stderr, "ROUTE: reached %s at vblank %u (step %d, d=%d, after %u vblanks)\n",
+                        st->name, v, s_route_pc, d, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->d) {
+                int bd = 255, bi = sig ? route_best_match(sig, &bd) : -1;
+                route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); "
+                           "closest observed screen %s d=%d",
+                           st->line, st->name, el, s_route_step_start,
+                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd);
+                return keys;
+            }
+            if ((el % st->c) < st->b) keys |= st->a;
+            return keys;
+        }
         case ROUTE_OP_WAIT: {
             int d = 255;
             if (sig && route_matches(st->name, sig, &d)) {
@@ -6465,10 +6603,12 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             }
             if (el >= st->a) {
                 int bd = 255, bi = sig ? route_best_match(sig, &bd) : -1;
+                int wi = route_find(st->name);
                 route_fail("line %d: WAIT %s timed out after %u vblanks (from vblank %u to %u); "
                            "closest observed screen %s d=%d (match needs d<=%d)",
                            st->line, st->name, el, s_route_step_start, v,
-                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd, s_route_tol);
+                           bi >= 0 ? s_route_cp[bi].name : "<none observed>", bd,
+                           wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
                 return keys;
             }
             return keys;
@@ -6493,10 +6633,12 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             }
             {
                 int bd = 255, bi = route_best_match(sig, &bd);
+                int wi = route_find(st->name);
                 route_fail("line %d: EXPECT %s at vblank %u, but the screen is %s d=%d "
                            "(%s d=%d, match needs d<=%d)",
                            st->line, st->name, v,
-                           bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d, s_route_tol);
+                           bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d,
+                           wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
             }
             return keys;
         }
@@ -7038,7 +7180,7 @@ static void route_tick(uint32_t v) {
     int pending = 0;
     if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
         int op = s_route_prog[s_route_pc].op;
-        pending = (op == ROUTE_OP_WAIT || op == ROUTE_OP_EXPECT);
+        pending = (op == ROUTE_OP_WAIT || op == ROUTE_OP_EXPECT || op == ROUTE_OP_UNTIL);
     }
     if ((pending || s_route_learn) && (v % (uint32_t)s_route_sample_every) == 0 &&
         route_sample(sig)) {
