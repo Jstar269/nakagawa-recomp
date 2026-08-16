@@ -761,6 +761,11 @@ static void vblank_pace(void) {
  * bypassing interrupt-disable state. */
 static int s_vblank_q_us = -1;          /* pacing quantum us; <0 lazy-init from env */
 static uint64_t s_last_vblank_ns;       /* when deliver_vblank() last ran (host clock) */
+/* Paced-mode diagnostic only. Counts yields at which the host quantum had elapsed
+ * since the last delivery even though the scheduler's rational source had already
+ * been latched from the same host sample -- i.e. VBLANK SERVICE is behind, not
+ * production. Never used to create an event; see the #70 slice B note in sr_yield. */
+static uint64_t s_vblank_service_late;
 static void vblank_pace_quantum_init(void) {
     if (s_vblank_q_us >= 0) return;
     const char *e = getenv("SR_VBLANK_Q_US");
@@ -2102,8 +2107,29 @@ void sr_yield(CpuState *s) {
     /* The SR_YIELD macro no longer calls sr_vblank_quantum_due() (perf: it was invoking
      * SDL_GetTicksNS on 99.9% of all yield points). Instead, check it here inside
      * sr_yield() which fires once per TIMESLICE (1000 yields). This preserves the
-     * safety net for sparse yield cadences while eliminating millions of clock queries. */
-    if (sr_vblank_quantum_due()) sched_raise_interrupt(SCHED_INTR_VBLANK);
+     * safety net for sparse yield cadences while eliminating millions of clock queries.
+     *
+     * #70 slice B -- VBLANK production has exactly one owner. The quantum is a
+     * host-wall-clock watchdog on the interval since the last DELIVERY; it never
+     * advanced s_vbl_next_us, so in paced mode raising the source here inserted an
+     * extra guest VBLANK at the ~16.000 ms quantum boundary 683 us ahead of the
+     * ~16.683 ms rational one, and the rational deadline then fired anyway: two
+     * events per period, with vcount, the wait latch and waiter wakeups all landing
+     * off the display timeline. In paced mode the watchdog has nothing left to add
+     * either -- scheduler_progress_time() at the top of this same function already
+     * sampled the host clock and scheduler_latch_due_events() just latched every
+     * elapsed rational deadline from it. A quantum still due at this point therefore
+     * means DELIVERY is behind (interrupts suspended, or service re-entered), which
+     * is worth counting but must not manufacture an event; scheduler_service_pending()
+     * immediately below is the thing that catches up.
+     *
+     * Turbo (SR_NOVBPACE=1) keeps the raise: it has no host-anchored virtual clock,
+     * so a guest loop that never reaches an explicit advancement point has no other
+     * VBLANK source at all. */
+    if (sr_vblank_quantum_due()) {
+        if (s_pace_on) s_vblank_service_late++;
+        else sched_raise_interrupt(SCHED_INTR_VBLANK);
+    }
     scheduler_service_pending();
     TCB *t = &s_tcb[s_cur];
     /* Only switch if someone else could run; otherwise keep going (avoids pointless churn). */
@@ -2190,8 +2216,9 @@ void sr_yield(CpuState *s) {
             /* running counts only TH_RUNNING. wait_obj threads are broken out
              * separately -- folding them into "running" (as this once did) makes a
              * fully-blocked scheduler look busy and reads as a false stall. */
-            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d\n",
-                    t->uid, s->pc, s->r[31], s_ntcb, ready, delay, waitobj, dormant, run);
+            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d vbl_service_late=%llu\n",
+                    t->uid, s->pc, s->r[31], s_ntcb, ready, delay, waitobj, dormant, run,
+                    (unsigned long long)s_vblank_service_late);
             for (int i = 0; i < s_ntcb; i++)
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %-10s prio %d pc=0x%08x ra=0x%08x s3=0x%08x v0=0x%08x wait_obj=0x%x wakeups=%d\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state < 5 ? s_tcb[i].state : 0],

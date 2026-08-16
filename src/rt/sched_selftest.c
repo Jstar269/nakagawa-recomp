@@ -1344,6 +1344,126 @@ static void test_paced_vtime_is_host_anchored(void) {
     s_host_ns_fn = NULL;
 }
 
+/* Independent restatement of the PSP display rate. 59.94 Hz is exactly 60000/1001 Hz,
+ * so the k-th VBLANK deadline after an origin delivery is floor(k * 1001000 / 60) us.
+ * Derived from the rate itself rather than from sched.c's carry loop, so a drift in
+ * that loop shows up here as a mismatch instead of agreeing with itself. */
+static uint64_t rational_vblanks_through(uint64_t host_us_now) {
+    uint64_t n = 0;
+    for (uint64_t k = 0; (k * 1001000ull) / 60ull <= host_us_now; k++) n++;
+    return n;
+}
+
+/* #70 slice B -- exactly one VBLANK authority in paced mode.
+ *
+ * Paced mode had two independent producers of a guest VBLANK:
+ *
+ *   1. the scheduler's exact rational source -- s_vbl_next_us, advanced in
+ *      60000/1001 Hz steps by scheduler_latch_due_events();
+ *   2. sr_vblank_quantum_due(), a host-wall-clock watchdog that raised
+ *      SCHED_INTR_VBLANK directly once SR_VBLANK_Q_US (default 16000 us) had passed
+ *      since the last DELIVERY -- without advancing the source deadline.
+ *
+ * The two boundaries are 683 us apart, so producer 2 fires first every frame and
+ * producer 1 then fires anyway: two guest VBLANKs per 16.683 ms period, i.e. structural
+ * over-delivery, and vcount/latch/waiter wakeups landing at a cadence the display
+ * timeline never agreed to.
+ *
+ * The fixture walks the host clock across both boundaries with a VBLANK waiter parked,
+ * then sweeps 200 ms and compares the delivered sequence against the rate restated
+ * independently above. */
+static void test_paced_vblank_has_one_authority(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    uint64_t vbl0 = s_vbl_count;
+
+    int spinner = mk(0x240u, TH_RUNNING, 40);
+    int waiter  = mk(0x241u, TH_WAIT_OBJ, 40);
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = (uint64_t)-1;
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Host t = 0: the source deadline sits on the origin, so the first yield
+     * establishes the phase and resets the watchdog's reference point. */
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 1u, "the rational source delivers the origin VBLANK");
+    expect(s_vbl_next_us == 16683u,
+           "the source deadline advances one exact rational period");
+    s_tcb[waiter].state = TH_WAIT_OBJ;      /* re-park for the boundary comparison */
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = (uint64_t)-1;
+
+    /* Host t = 16.000 ms: the safety quantum is due, the rational deadline is not. */
+    set_host_us(16000u);
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    expect(sr_vblank_quantum_due(),
+           "the host safety quantum is due at the 16.000 ms boundary");
+    uint64_t late0 = s_vblank_service_late;
+    sr_yield(&g_cpu_store);
+    expect(s_vblank_service_late > late0,
+           "a still-due paced quantum is counted as late service, not raised as a source");
+    expect(s_vbl_count - vbl0 == 1u,
+           "the safety quantum does not produce a VBLANK ahead of the rational deadline");
+    expect(g_test_vblank_delivered == 1u,
+           "GetVcount does not tick at the safety boundary");
+    expect(s_tcb[waiter].state == TH_WAIT_OBJ,
+           "a VBLANK waiter is not woken at the safety boundary");
+    expect(s_vbl_next_us == 16683u,
+           "the source deadline is unchanged by the safety quantum");
+
+    /* Host t = 16.683 ms: the rational boundary. Exactly one more event. */
+    set_host_us(16683u);
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 2u,
+           "the rational deadline delivers exactly one VBLANK");
+    expect(g_test_vblank_delivered == 2u, "GetVcount ticks once per delivered VBLANK");
+    expect(s_tcb[waiter].state == TH_READY,
+           "the VBLANK waiter wakes on the rational boundary");
+    expect(s_vbl_next_us == 33366u,
+           "the source deadline advances to the next exact rational period");
+
+    /* Sweep 200 ms in 1 ms host steps and compare the delivered sequence with the
+     * 60000/1001 schedule restated independently of sched.c. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    vbl0 = s_vbl_count;
+    spinner = mk(0x242u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    int sequence_ok = 1;
+    for (uint64_t t_us = 0; t_us <= 200000u; t_us += 1000u) {
+        set_host_us(t_us);
+        s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+        sr_yield(&g_cpu_store);
+        if (s_vbl_count - vbl0 != rational_vblanks_through(t_us)) sequence_ok = 0;
+    }
+    expect(sequence_ok,
+           "paced VBLANK delivery follows the 60000/1001 schedule at every step");
+    expect(s_vbl_count - vbl0 == 12u,
+           "200 ms of host time delivers exactly 12 paced VBLANKs (origin + 11)");
+
+    /* Coalescing is intentional and survives: a host jump across many periods
+     * advances the source timeline past all of them but delivers ONE event -- the
+     * pending set is a bit, not a queue. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    vbl0 = s_vbl_count;
+    spinner = mk(0x243u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);                 /* origin delivery */
+    set_host_us(1000000u);                  /* one host second later, no service between */
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 2u,
+           "a multi-period host jump coalesces into one delivered VBLANK");
+    expect(s_vbl_next_us > 1000000u && s_vbl_next_us <= 1016683u,
+           "coalescing still advances the source timeline past every missed period");
+    s_host_ns_fn = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 int main(void) {
@@ -1398,6 +1518,7 @@ int main(void) {
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
+    test_paced_vblank_has_one_authority();
 
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
