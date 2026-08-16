@@ -182,6 +182,45 @@ static void reset_sched(void) {
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
+    s_host_ns_fn = NULL;
+    s_clock_epoch_ns = 0;
+    s_vbl_next_ns = 0;
+    s_vbl_period_rem = 0;
+    s_vtime_period_rem = 0;
+}
+
+/* ---- controlled host monotonic clock ------------------------------------------------
+ * Paced mode anchors guest virtual time to the host monotonic clock, so asserting a
+ * paced timing contract against the real clock would be a race. sched.c routes every
+ * host-time read through its host_now_ns() seam; these tests install a source they
+ * move explicitly, so nothing but the test advances host time. */
+static uint64_t g_test_host_ns;
+static uint64_t test_host_ns(void) { return g_test_host_ns; }
+static void set_host_us(uint64_t us) { g_test_host_ns = us * 1000ull; }
+
+/* Install the controlled source and put every host-anchored timing variable at a
+ * known common origin. `paced` selects the production profile (host-anchored) or
+ * turbo (SR_NOVBPACE=1, virtual clock advanced explicitly). */
+static void begin_clock_fixture(int paced, uint64_t host_us_now) {
+    s_host_ns_fn = test_host_ns;
+    set_host_us(host_us_now);
+    s_pace_on = paced ? 1 : 0;
+    s_clock_epoch_ns = 0;
+    s_vbl_next_ns = 0;
+    s_vbl_period_rem = 0;
+    s_vtime_period_rem = 0;
+    s_vbl_event_period_rem = 0;
+    s_vbl_next_us = 0;
+    s_vtime_us = 0;
+    s_pending_interrupts = 0;
+    s_vblank_q_us = 16000;
+    s_last_vblank_ns = g_test_host_ns;
+}
+
+/* Silence both VBLANK paths so a timing test can isolate one contract. */
+static void disable_vblank_sources(void) {
+    s_vbl_next_us = (uint64_t)-1;
+    s_vblank_q_us = 0x7fffffff;
 }
 
 /* Fabricate a bare TCB for pure pick_next() decision tests (no stack, no coroutine). */
@@ -1237,6 +1276,291 @@ static void test_interrupt_frame_is_restored(void) {
            "a source raised by the handler remains pending for its own service path");
 }
 
+/* #70 slice A -- paced mode owns its clock, and the owner is the host.
+ *
+ * With vblank pacing ON (the production profile) guest virtual time is a SAMPLE of the
+ * host monotonic clock: s_vtime_us may catch up to host time, never overtake it. The
+ * yield path's "nobody else is runnable" branch used to advance the virtual clock to
+ * the soonest future waiter deadline in BOTH modes. In paced mode that manufactures
+ * guest time out of nothing -- a busy-waiting thread with a distant sleeper beside it
+ * pushes s_vtime_us (and every delay, timed wait and VBLANK deadline derived from it)
+ * ahead of real time, which is the guest-runs-fast half of the measured #70 drift.
+ *
+ * Fixture: host monotonic time is pinned well below a future waiter's deadline, the
+ * waiter exists, and the scheduler is driven repeatedly. The asserted invariant is
+ * ownership, not a rate: virtual time never exceeds the sampled host time merely
+ * because a waiter would like it to. */
+static void test_paced_vtime_is_host_anchored(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();     /* slice A is about the clock, not VBLANK production */
+
+    int spinner = mk(0x230u, TH_RUNNING, 40);
+    int sleeper = mk(0x231u, TH_WAIT_DELAY, 40);
+    s_tcb[sleeper].wake = 5000000u;          /* 5 s of guest time in the future */
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    set_host_us(1000u);                      /* host has elapsed 1 ms, nothing like 5 s */
+    int outran = 0;
+    for (int i = 0; i < 8; i++) {
+        s_tcb[spinner].state = TH_RUNNING;   /* the spinner keeps being re-scheduled */
+        s_cur = spinner;
+        sr_yield(&g_cpu_store);
+        if (s_vtime_us > 1000u) outran = 1;
+    }
+    expect(!outran,
+           "paced guest virtual time never advances beyond the sampled host clock");
+    expect(s_vtime_us == 1000u,
+           "paced guest virtual time tracks the sampled host clock exactly");
+    expect(s_tcb[sleeper].state == TH_WAIT_DELAY,
+           "a future timed waiter is not woken early by manufactured guest time");
+
+    /* Host time advancing is what moves the guest clock -- and it still reaches the
+     * deadline, so the waiter is not starved, just no longer early. */
+    set_host_us(5000000u);
+    s_tcb[spinner].state = TH_RUNNING;
+    s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us == 5000000u,
+           "paced guest virtual time follows the host clock forward");
+    (void)pick_next();
+    expect(s_tcb[sleeper].state == TH_READY,
+           "the timed waiter becomes runnable once host time reaches its deadline");
+
+    /* Turbo (SR_NOVBPACE=1) has no host anchor: jumping the virtual clock over an idle
+     * wait is its architecturally intended behaviour and must survive the fix. */
+    reset_sched();
+    begin_clock_fixture(0, 0u);
+    disable_vblank_sources();
+    int tspin = mk(0x232u, TH_RUNNING, 40);
+    int tsleep = mk(0x233u, TH_WAIT_DELAY, 40);
+    s_tcb[tsleep].wake = 5000000u;
+    s_cur = tspin;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us >= 5000000u,
+           "turbo mode still jumps virtual time over an idle wait");
+    s_host_ns_fn = NULL;
+}
+
+/* Independent restatement of the PSP display rate. 59.94 Hz is exactly 60000/1001 Hz,
+ * so the k-th VBLANK deadline after an origin delivery is floor(k * 1001000 / 60) us.
+ * Derived from the rate itself rather than from sched.c's carry loop, so a drift in
+ * that loop shows up here as a mismatch instead of agreeing with itself. */
+static uint64_t rational_vblanks_through(uint64_t host_us_now) {
+    uint64_t n = 0;
+    for (uint64_t k = 0; (k * 1001000ull) / 60ull <= host_us_now; k++) n++;
+    return n;
+}
+
+/* #70 slice B -- exactly one VBLANK authority in paced mode.
+ *
+ * Paced mode had two independent producers of a guest VBLANK:
+ *
+ *   1. the scheduler's exact rational source -- s_vbl_next_us, advanced in
+ *      60000/1001 Hz steps by scheduler_latch_due_events();
+ *   2. sr_vblank_quantum_due(), a host-wall-clock watchdog that raised
+ *      SCHED_INTR_VBLANK directly once SR_VBLANK_Q_US (default 16000 us) had passed
+ *      since the last DELIVERY -- without advancing the source deadline.
+ *
+ * The two boundaries are 683 us apart, so producer 2 fires first every frame and
+ * producer 1 then fires anyway: two guest VBLANKs per 16.683 ms period, i.e. structural
+ * over-delivery, and vcount/latch/waiter wakeups landing at a cadence the display
+ * timeline never agreed to.
+ *
+ * The fixture walks the host clock across both boundaries with a VBLANK waiter parked,
+ * then sweeps 200 ms and compares the delivered sequence against the rate restated
+ * independently above. */
+static void test_paced_vblank_has_one_authority(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    uint64_t vbl0 = s_vbl_count;
+
+    int spinner = mk(0x240u, TH_RUNNING, 40);
+    int waiter  = mk(0x241u, TH_WAIT_OBJ, 40);
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = (uint64_t)-1;
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Host t = 0: the source deadline sits on the origin, so the first yield
+     * establishes the phase and resets the watchdog's reference point. */
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 1u, "the rational source delivers the origin VBLANK");
+    expect(s_vbl_next_us == 16683u,
+           "the source deadline advances one exact rational period");
+    s_tcb[waiter].state = TH_WAIT_OBJ;      /* re-park for the boundary comparison */
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = (uint64_t)-1;
+
+    /* Host t = 16.000 ms: the safety quantum is due, the rational deadline is not. */
+    set_host_us(16000u);
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    expect(sr_vblank_quantum_due(),
+           "the host safety quantum is due at the 16.000 ms boundary");
+    uint64_t late0 = s_vblank_late_service_yields;
+    sr_yield(&g_cpu_store);
+    expect(s_vblank_late_service_yields > late0,
+           "a still-due paced quantum is counted as late service, not raised as a source");
+    expect(s_vbl_count - vbl0 == 1u,
+           "the safety quantum does not produce a VBLANK ahead of the rational deadline");
+    expect(g_test_vblank_delivered == 1u,
+           "GetVcount does not tick at the safety boundary");
+    expect(s_tcb[waiter].state == TH_WAIT_OBJ,
+           "a VBLANK waiter is not woken at the safety boundary");
+    expect(s_vbl_next_us == 16683u,
+           "the source deadline is unchanged by the safety quantum");
+
+    /* Host t = 16.683 ms: the rational boundary. Exactly one more event. */
+    set_host_us(16683u);
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 2u,
+           "the rational deadline delivers exactly one VBLANK");
+    expect(g_test_vblank_delivered == 2u, "GetVcount ticks once per delivered VBLANK");
+    expect(s_tcb[waiter].state == TH_READY,
+           "the VBLANK waiter wakes on the rational boundary");
+    expect(s_vbl_next_us == 33366u,
+           "the source deadline advances to the next exact rational period");
+
+    /* Sweep 200 ms in 1 ms host steps and compare the delivered sequence with the
+     * 60000/1001 schedule restated independently of sched.c. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    vbl0 = s_vbl_count;
+    spinner = mk(0x242u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    int sequence_ok = 1;
+    for (uint64_t t_us = 0; t_us <= 200000u; t_us += 1000u) {
+        set_host_us(t_us);
+        s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+        sr_yield(&g_cpu_store);
+        if (s_vbl_count - vbl0 != rational_vblanks_through(t_us)) sequence_ok = 0;
+    }
+    expect(sequence_ok,
+           "paced VBLANK delivery follows the 60000/1001 schedule at every step");
+    expect(s_vbl_count - vbl0 == 12u,
+           "200 ms of host time delivers exactly 12 paced VBLANKs (origin + 11)");
+
+    /* Coalescing is intentional and survives: a host jump across many periods
+     * advances the source timeline past all of them but delivers ONE event -- the
+     * pending set is a bit, not a queue. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    vbl0 = s_vbl_count;
+    spinner = mk(0x243u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);                 /* origin delivery */
+    set_host_us(1000000u);                  /* one host second later, no service between */
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_count - vbl0 == 2u,
+           "a multi-period host jump coalesces into one delivered VBLANK");
+    expect(s_vbl_next_us > 1000000u && s_vbl_next_us <= 1016683u,
+           "coalescing still advances the source timeline past every missed period");
+    s_host_ns_fn = NULL;
+}
+
+/* #70 slice C -- an expired timed wait enters strict-priority scheduling.
+ *
+ * PSP scheduling is strict-priority preemptive, and a timed wait whose deadline has
+ * passed is a RUNNABLE thread. Expiry was only ever noticed inside pick_next(), which
+ * runs on the scheduler coroutine; sched_preempt() -- the check that actually takes the
+ * CPU away from a running thread at an eligible boundary -- scanned only threads
+ * already marked TH_READY. A priority-16 thread whose delay came due therefore did not
+ * displace a priority-40 runner: it waited for that runner to yield or block, which for
+ * a busy-wait loop can be an unbounded amount of real time. Waking late is the same
+ * defect class as the clock drift in slices A and B, one level up.
+ *
+ * "Immediate" here means the next eligible scheduler/interrupt boundary, not
+ * asynchronous mid-instruction switching, and interrupt-disabled / dispatch-disabled
+ * deferral still holds. Both are asserted below. */
+static void test_expired_timed_wait_enters_strict_priority(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();
+
+    int runner = mk(0x250u, TH_RUNNING, 40);
+    int waiter = mk(0x251u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Before the deadline the boundary changes nothing. */
+    set_host_us(500u);
+    sched_resume_interrupts(1u);
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "a timed wait that is not yet due is not promoted");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "the running thread keeps the CPU before the waiter's deadline");
+
+    /* The deadline comes due; the next eligible boundary hands the CPU over. */
+    set_host_us(1000u);
+    sched_resume_interrupts(1u);
+    expect(s_tcb[waiter].state == TH_READY,
+           "an expired timed wait becomes runnable at an eligible scheduler boundary");
+    expect(s_tcb[runner].state == TH_READY,
+           "the lower-priority runner is preempted rather than left RUNNING");
+    expect(pick_next() == waiter,
+           "the expired higher-priority waiter wins strict-priority selection");
+
+    /* Deferral: an ineligible boundary promotes nothing and switches nothing, and the
+     * work happens at the next eligible one instead. */
+    reset_sched();
+    begin_clock_fixture(1, 2000u);
+    disable_vblank_sources();
+    runner = mk(0x252u, TH_RUNNING, 40);
+    waiter = mk(0x253u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_vtime_us = 2000u;                       /* already past the deadline */
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    (void)sched_suspend_interrupts();
+    sched_preempt();
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "an interrupt-disabled context defers the expired waiter");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "an interrupt-disabled context does not switch away from the runner");
+
+    s_interrupts_enabled = 1;
+    (void)sched_suspend_dispatch();
+    sched_preempt();
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "a dispatch-disabled context defers the expired waiter");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "a dispatch-disabled context does not switch away from the runner");
+
+    (void)sched_resume_dispatch(1u);          /* the next eligible boundary */
+    expect(s_tcb[waiter].state == TH_READY,
+           "restoring dispatch runs the deferred promotion");
+    expect(s_tcb[runner].state == TH_READY,
+           "restoring dispatch runs the deferred preemption");
+
+    /* Strict priority is not weakened in the other direction: an expired waiter that is
+     * numerically weaker, or equal, does not take the CPU from the running thread. */
+    reset_sched();
+    begin_clock_fixture(1, 2000u);
+    disable_vblank_sources();
+    runner = mk(0x254u, TH_RUNNING, 16);
+    int weaker = mk(0x255u, TH_WAIT_DELAY, 40);
+    int equal  = mk(0x256u, TH_WAIT_DELAY, 16);
+    s_tcb[weaker].wake = 1000u;
+    s_tcb[equal].wake = 1000u;
+    s_vtime_us = 2000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sched_preempt();
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "an expired weaker- or equal-priority waiter does not preempt the runner");
+    expect(s_tcb[weaker].state == TH_READY && s_tcb[equal].state == TH_READY,
+           "both expired waiters are still promoted to runnable");
+    s_host_ns_fn = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 int main(void) {
@@ -1290,6 +1614,9 @@ int main(void) {
     test_clock_reads_are_observational();
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
+    test_paced_vtime_is_host_anchored();
+    test_paced_vblank_has_one_authority();
+    test_expired_timed_wait_enters_strict_priority();
 
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

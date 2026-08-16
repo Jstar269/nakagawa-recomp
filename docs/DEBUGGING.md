@@ -416,7 +416,7 @@ committed.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_VBLANK_Q_US=N` | Vblank quantum in microseconds |
+| `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |

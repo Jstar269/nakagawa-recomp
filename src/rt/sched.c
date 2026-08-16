@@ -559,12 +559,24 @@ static uint32_t s_vtime_period_rem;  /* turbo-mode microsecond remainder, denomi
 static uint64_t s_vbl_next_us = 0;   /* guest-time deadline for the next VBLANK source event */
 static uint32_t s_vbl_event_period_rem; /* 59.94 Hz event period carry, denominator 60000 */
 
+/* Host monotonic-clock seam.  Every host-time read in this file goes through
+ * host_now_ns() so the paced-mode contract (guest virtual time is a SAMPLE of
+ * host monotonic time, never a jump ahead of it) can be asserted deterministically
+ * by the white-box scheduler selftest, which #includes this file and installs a
+ * controlled source.  Deliberately file-static with no exported setter: nothing
+ * outside this translation unit can redirect the runtime clock, and the production
+ * path is the NULL branch (a plain SDL_GetTicksNS call). */
+static uint64_t (*s_host_ns_fn)(void) = NULL;
+static uint64_t host_now_ns(void) {
+    return s_host_ns_fn ? s_host_ns_fn() : SDL_GetTicksNS();
+}
+
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
     s_pace_on = getenv("SR_NOVBPACE") ? 0 : 1;
     fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s)\n", s_pace_on, getenv("SR_NOVBPACE"));
     fflush(stderr);
-    s_clock_epoch_ns = SDL_GetTicksNS();
+    s_clock_epoch_ns = host_now_ns();
     s_vbl_next_ns = s_clock_epoch_ns;
     s_vbl_period_rem = 0;
     s_vtime_period_rem = 0;
@@ -578,7 +590,7 @@ static void pace_setup(void) {
 int sched_vbl_paced(void) { pace_setup(); return s_pace_on > 0; }
 
 static uint64_t host_us(void) {
-    return (SDL_GetTicksNS() - s_clock_epoch_ns) / 1000u;
+    return (host_now_ns() - s_clock_epoch_ns) / 1000u;
 }
 
 /* Observe host time without manufacturing guest time in deterministic mode.  All
@@ -715,12 +727,12 @@ static void vblank_pace(void) {
         }
         return;
     }
-    uint64_t now = SDL_GetTicksNS();
+    uint64_t now = host_now_ns();
     if (s_vbl_next_ns > now) {
         uint64_t wait_started = sr_perf_now_ns();
         SDL_DelayPrecise(s_vbl_next_ns - now);
         sr_perf_guest_idle_wait(wait_started);
-        now = SDL_GetTicksNS();
+        now = host_now_ns();
     }
     /* 59.94 Hz is 60000/1001 Hz. Carry the fractional nanoseconds so the
      * accumulated deadline has no floating-point or per-frame rounding drift. */
@@ -736,19 +748,37 @@ static void vblank_pace(void) {
     vtime_refresh();
 }
 
-/* Host-clock-anchored vblank safety net. Recomp emits SR_YIELD only at function entries and
+/* Host-clock-anchored vblank watchdog. Recomp emits SR_YIELD only at function entries and
  * loop back-edges, so the worker's busy-wait on 0x310a034 fires sr_yield() extremely sparsely
  * (once every few host seconds). That causes the vblank source latch for engine_Init's callback
- * chain (cb#2) to never flip in time. We track host wall-time since the last vblank
- * delivery and latch an extra VBLANK source inside sr_yield whenever host-time advances past
- * s_vblank_quantum_us (or for turbo mode, every call).
+ * chain (cb#2) to never flip in time. We track host wall-time since the last vblank delivery
+ * and compare it against s_vblank_q_us inside sr_yield.
  *
- * The pending source is then serviced at the normal eligible-delivery phase; pacing on the
- * host-clock deadline still happens inside vblank_pace() when pace_mode=1. The net effect is:
- * the engine vblank callback chain gets invoked fast enough for the latch to flip without
- * bypassing interrupt-disable state. */
+ * What that comparison DOES depends on the profile, and the split is the #70 slice B contract:
+ *
+ *   turbo (SR_NOVBPACE=1): there is no host-anchored virtual clock, so the quantum latches an
+ *     out-of-band VBLANK source. This is turbo's only escape from a guest loop that never
+ *     reaches an explicit advancement point, and it is retained deliberately.
+ *
+ *   paced (default): the quantum produces NOTHING. scheduler_progress_time() at the top of the
+ *     same sr_yield already sampled the host clock and scheduler_latch_due_events() already
+ *     latched every elapsed rational deadline from that sample, so the scheduler's rational
+ *     60000/1001 source is the single producer. Raising here as well used to insert a second
+ *     guest VBLANK per period at the ~16.000 ms quantum boundary, 683 us ahead of the
+ *     ~16.683 ms rational one. The quantum is now read only as a diagnostic.
+ *
+ * Either way the pending source is serviced at the normal eligible-delivery phase, without
+ * bypassing interrupt-disable state; pacing on the host-clock deadline still happens inside
+ * vblank_pace() when pace_mode=1. */
 static int s_vblank_q_us = -1;          /* pacing quantum us; <0 lazy-init from env */
 static uint64_t s_last_vblank_ns;       /* when deliver_vblank() last ran (host clock) */
+/* Paced-mode diagnostic only, and a RATE rather than an event count: it counts sr_yield calls
+ * at which the host quantum had elapsed since the last delivery even though the rational source
+ * had already been latched from the same host sample. That can only mean VBLANK SERVICE is
+ * behind (interrupts suspended, or service re-entered), never that production is, so a long
+ * suspension increments it once per yield for its whole duration. Never used to create an
+ * event; see the #70 slice B note in sr_yield. */
+static uint64_t s_vblank_late_service_yields;
 static void vblank_pace_quantum_init(void) {
     if (s_vblank_q_us >= 0) return;
     const char *e = getenv("SR_VBLANK_Q_US");
@@ -756,26 +786,26 @@ static void vblank_pace_quantum_init(void) {
      * while still firing approximately once per vblank cycle. Tunable downward via env if boot-path
      * vblank-callback chain needs higher density. */
     s_vblank_q_us = e ? atoi(e) : 16000;
-    s_last_vblank_ns = SDL_GetTicksNS();
+    s_last_vblank_ns = host_now_ns();
 }
-/* Returns 1 if the host wall-clock has crossed s_vblank_q_us since the last delivery.
- * sr_yield consults this AFTER the regular (paced) check, and uses it to fire vblank
- * OOB even if the recomp-emitted SR_YIELD cadence is too sparse for steady pacing.
+/* Returns 1 if the host wall-clock has crossed s_vblank_q_us since the last delivery. This is
+ * the raw observation only; what sr_yield does with it differs by profile (see the block above
+ * -- an out-of-band source in turbo, a diagnostic in paced mode).
  * Exported (recomp.h) so the SR_YIELD macro in sched.c-side callers can poll it on every
  * emit without going through sr_yield()'s slice countdown. */
 int sr_vblank_quantum_due(void) {
     pace_setup();
     vblank_pace_quantum_init();
-    uint64_t since_us = (SDL_GetTicksNS() - s_last_vblank_ns) / 1000u;
+    uint64_t since_us = (host_now_ns() - s_last_vblank_ns) / 1000u;
     return since_us >= (uint64_t)s_vblank_q_us;
 }
-static void vblank_clock_reset(void) { s_last_vblank_ns = SDL_GetTicksNS(); }
+static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 
 /* Microseconds of virtual time until the next vblank is due (0 when overdue). */
 static uint64_t vblank_due_us(void) {
     pace_setup();
     if (!s_pace_on) return 0;
-    uint64_t now = SDL_GetTicksNS();
+    uint64_t now = host_now_ns();
     if (now >= s_vbl_next_ns) return 0;
     return (s_vbl_next_ns - now) / 1000u;
 }
@@ -1470,6 +1500,20 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     return 0;
 }
 
+/* A timed wait whose deadline has passed -- an elapsed sceKernelDelayThread, or a timed
+ * sema/event wait that timed out -- describes a thread the kernel owes the CPU to, not a
+ * blocked one. Promoting it is therefore part of EVERY scheduling decision, not a private
+ * step of thread selection: sched_preempt() has to see it too, or an expired thread with a
+ * numerically stronger priority sits behind a running weaker one until that thread happens
+ * to yield or block (#70 slice C). Idempotent, and deliberately state-only: it decides
+ * nothing about who runs next, it only restores the truth about who is runnable. */
+static void sched_promote_expired_waits(void) {
+    for (int i = 0; i < s_ntcb; i++)
+        if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
+            s_vtime_us >= s_tcb[i].wake)
+            s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+}
+
 /* Pick the highest-priority runnable thread (lowest PSP priority number). Wakes delayed
  * threads whose deadline has passed.
  *
@@ -1482,15 +1526,15 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
  * on a busy-wait that hardware would satisfy, fix the subsystem that fails to produce the
  * awaited state.)
  *
+ * A timed wait whose deadline has passed is a RUNNABLE thread, so promoting it is part
+ * of every scheduling decision -- not just this one. See sched_promote_expired_waits().
+ *
  * Equal-priority peers round-robin deterministically: the scan starts one slot after the
  * previous winner, so among READY threads at the best priority the next one in cyclic slot
  * order wins. Selection depends only on TCB states and the rotation cursor -- identical
  * state yields an identical decision. Returns an index or -1 if nothing is runnable. */
 static int pick_next(void) {
-    for (int i = 0; i < s_ntcb; i++)
-        if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-            s_vtime_us >= s_tcb[i].wake)
-            s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+    sched_promote_expired_waits();
     int best_pri = 0;
     int have_ready = 0;
     for (int i = 0; i < s_ntcb; i++) {
@@ -2090,8 +2134,29 @@ void sr_yield(CpuState *s) {
     /* The SR_YIELD macro no longer calls sr_vblank_quantum_due() (perf: it was invoking
      * SDL_GetTicksNS on 99.9% of all yield points). Instead, check it here inside
      * sr_yield() which fires once per TIMESLICE (1000 yields). This preserves the
-     * safety net for sparse yield cadences while eliminating millions of clock queries. */
-    if (sr_vblank_quantum_due()) sched_raise_interrupt(SCHED_INTR_VBLANK);
+     * safety net for sparse yield cadences while eliminating millions of clock queries.
+     *
+     * #70 slice B -- VBLANK production has exactly one owner. The quantum is a
+     * host-wall-clock watchdog on the interval since the last DELIVERY; it never
+     * advanced s_vbl_next_us, so in paced mode raising the source here inserted an
+     * extra guest VBLANK at the ~16.000 ms quantum boundary 683 us ahead of the
+     * ~16.683 ms rational one, and the rational deadline then fired anyway: two
+     * events per period, with vcount, the wait latch and waiter wakeups all landing
+     * off the display timeline. In paced mode the watchdog has nothing left to add
+     * either -- scheduler_progress_time() at the top of this same function already
+     * sampled the host clock and scheduler_latch_due_events() just latched every
+     * elapsed rational deadline from it. A quantum still due at this point therefore
+     * means DELIVERY is behind (interrupts suspended, or service re-entered), which
+     * is worth counting but must not manufacture an event; scheduler_service_pending()
+     * immediately below is the thing that catches up.
+     *
+     * Turbo (SR_NOVBPACE=1) keeps the raise: it has no host-anchored virtual clock,
+     * so a guest loop that never reaches an explicit advancement point has no other
+     * VBLANK source at all. */
+    if (sr_vblank_quantum_due()) {
+        if (s_pace_on) s_vblank_late_service_yields++;
+        else sched_raise_interrupt(SCHED_INTR_VBLANK);
+    }
     scheduler_service_pending();
     TCB *t = &s_tcb[s_cur];
     /* Only switch if someone else could run; otherwise keep going (avoids pointless churn). */
@@ -2100,11 +2165,23 @@ void sr_yield(CpuState *s) {
         if (i != s_cur && (s_tcb[i].state == TH_READY ||
             ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
              s_vtime_us >= s_tcb[i].wake))) { other = 1; break; }
-    /* If no other thread is runnable AND nothing is sleeping on a small timer, advance virtual
-     * time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115 spinning in
-     * critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without ever waking
-     * the UMD-callback waker. Cap each spur by the lowest wake-time across waiters so we
-     * never skip past a scheduled event. */
+    /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
+     * advances virtual time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115
+     * spinning in critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without
+     * ever waking the UMD-callback waker. Cap each spur by the lowest wake-time across
+     * waiters so we never skip past a scheduled event.
+     *
+     * #70 slice A -- clock ownership. This spur is a TURBO-mode construct and must not run
+     * in paced mode. With pacing on, guest virtual time is a SAMPLE of the host monotonic
+     * clock (scheduler_progress_time() above already took it); jumping s_vtime_us to a
+     * waiter's deadline puts guest time AHEAD of host time, and since every delay, timed
+     * wait and the rational VBLANK deadline are expressed in that same clock, the whole
+     * guest timeline then runs fast by however much this branch manufactured. A busy-wait
+     * loop beside one sleeper (exactly the HST boot/worker shape) hits this branch
+     * continuously, which is the guest-runs-fast half of the measured #70 drift.
+     *
+     * Paced mode needs no spur: real time reaches the waiter's deadline on its own, and
+     * scheduler_progress_time() at the top of every sr_yield samples it. */
     if (!other) {
         /* Phase 2.1-follow v3: BOUND vtime advancement tightly to real wake deadlines.
          * Recomp-emitted SR_YIELD on every backward branch (codegen.py lines 832/837)
@@ -2122,10 +2199,14 @@ void sr_yield(CpuState *s) {
          * Fix: drive vtime only forward enough to wake any imminent, finite-deadline
          * waiter (so timer-driven threads still get promoted by pick_next). Skip direct
          * VBLANK delivery here -- cadence is preserved by:
-         *   - vtime_refresh syncs s_vtime_us to SDL's monotonic clock every 256 yields
-         *   - sr_vblank_quantum_due latches a source at host-time, then the eligible
-         *     delivery phase invokes deliver_vblank
-         *   - sched_run idle loop (line 1367) drives the vblank chain
+         *   - scheduler_progress_time() at the top of every sr_yield, which in turbo
+         *     charges the deterministic quantum and in paced mode samples the host clock
+         *   - scheduler_latch_due_events(), which raises the source for every elapsed
+         *     rational deadline and coalesces the missed ones into the pending bit
+         *   - the eligible-delivery phase (scheduler_service_pending) invoking
+         *     deliver_vblank
+         *   - the sched_run idle loop driving the vblank chain when nothing is runnable
+         *   - in turbo only, sr_vblank_quantum_due() latching an out-of-band source
          * With no imminent wait, adv stays at 0 -- the recomp-fast-loop Sleep
          * cascade is broken, the worker exits f_00025a18 in ms, frame 2 presents.
          *
@@ -2133,16 +2214,18 @@ void sr_yield(CpuState *s) {
          * finite timed wait -- must skip it or the initial wait check below would
          * set adv=(uint64_t)-1 and create an invalid deadline.
          */
-        uint64_t adv = 0;
-        for (int i = 0; i < s_ntcb; i++) {
-            if (i == s_cur) continue;
-            if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-                s_tcb[i].wake != (uint64_t)-1 && s_tcb[i].wake > s_vtime_us) {
-                uint64_t delta = s_tcb[i].wake - s_vtime_us;
-                if (adv == 0 || delta < adv) adv = delta;
+        if (!s_pace_on) {
+            uint64_t adv = 0;
+            for (int i = 0; i < s_ntcb; i++) {
+                if (i == s_cur) continue;
+                if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
+                    s_tcb[i].wake != (uint64_t)-1 && s_tcb[i].wake > s_vtime_us) {
+                    uint64_t delta = s_tcb[i].wake - s_vtime_us;
+                    if (adv == 0 || delta < adv) adv = delta;
+                }
             }
+            scheduler_add_time(adv);
         }
-        scheduler_add_time(adv);
         scheduler_latch_due_events();
         scheduler_service_pending();
         /* Diagnostic: spin watchdog. */
@@ -2164,8 +2247,9 @@ void sr_yield(CpuState *s) {
             /* running counts only TH_RUNNING. wait_obj threads are broken out
              * separately -- folding them into "running" (as this once did) makes a
              * fully-blocked scheduler look busy and reads as a false stall. */
-            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d\n",
-                    t->uid, s->pc, s->r[31], s_ntcb, ready, delay, waitobj, dormant, run);
+            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d vbl_late_service_yields=%llu\n",
+                    t->uid, s->pc, s->r[31], s_ntcb, ready, delay, waitobj, dormant, run,
+                    (unsigned long long)s_vblank_late_service_yields);
             for (int i = 0; i < s_ntcb; i++)
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %-10s prio %d pc=0x%08x ra=0x%08x s3=0x%08x v0=0x%08x wait_obj=0x%x wakeups=%d\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state < 5 ? s_tcb[i].state : 0],
@@ -2269,9 +2353,20 @@ void sr_yield(CpuState *s) {
 /* PSP scheduling is strict-priority preemptive: the moment a higher-priority thread becomes
  * ready (e.g. sceKernelStartThread starts one), it runs instead of the current thread. Without
  * this, a low-priority boot thread that starts a high-priority worker and busy-waits on its
- * output would never let the worker run. Call after any op that readies a thread. */
+ * output would never let the worker run. Call after any op that readies a thread.
+ *
+ * #70 slice C: a thread also becomes ready when its own deadline passes, with nobody calling
+ * anything. That expiry used to be noticed only inside pick_next(), which runs on the
+ * scheduler coroutine, so the scan below -- the check that actually takes the CPU away --
+ * could not see it and a stronger-priority thread whose delay came due waited for the weaker
+ * runner to yield or block. Promote first, then apply the unchanged strict-priority rule.
+ *
+ * This stays a boundary-triggered check, not continuous preemption: the caller decides when
+ * a scheduler/interrupt boundary is reached, and the interrupt-disabled / dispatch-disabled
+ * gate above still defers the whole thing to the next eligible one. */
 void sched_preempt(void) {
     if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    sched_promote_expired_waits();
     TCB *cur = &s_tcb[s_cur];
     int best = -1;
     for (int i = 0; i < s_ntcb; i++) {
