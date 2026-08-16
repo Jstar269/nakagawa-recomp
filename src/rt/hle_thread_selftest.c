@@ -6102,8 +6102,8 @@ static void test_service_only_preempts_inside_nested_ge_bridge(void) {
            "to a fresh quantum in between");
     expect(s_gebr_hle_depth_after_bridge == 1,
            "GE bridge: g_hle_depth is unchanged across the bridge");
-    expect(outer->hle_depth == 0 || outer->hle_depth == 1,
-           "GE bridge: the TCB HLE depth stays consistent with the running depth");
+    expect(outer->hle_depth == 1,
+           "GE bridge: the outgoing TCB banked exactly the caller's HLE depth");
     expect(s_gebr_latch_after_bridge == 1u,
            "GE bridge: the nested guest's own frame-latch decrement survived the preemption, "
            "so ge_finish_callback did not apply its fallback assist-decrement");
