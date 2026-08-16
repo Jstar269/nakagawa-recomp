@@ -748,24 +748,37 @@ static void vblank_pace(void) {
     vtime_refresh();
 }
 
-/* Host-clock-anchored vblank safety net. Recomp emits SR_YIELD only at function entries and
+/* Host-clock-anchored vblank watchdog. Recomp emits SR_YIELD only at function entries and
  * loop back-edges, so the worker's busy-wait on 0x310a034 fires sr_yield() extremely sparsely
  * (once every few host seconds). That causes the vblank source latch for engine_Init's callback
- * chain (cb#2) to never flip in time. We track host wall-time since the last vblank
- * delivery and latch an extra VBLANK source inside sr_yield whenever host-time advances past
- * s_vblank_quantum_us (or for turbo mode, every call).
+ * chain (cb#2) to never flip in time. We track host wall-time since the last vblank delivery
+ * and compare it against s_vblank_q_us inside sr_yield.
  *
- * The pending source is then serviced at the normal eligible-delivery phase; pacing on the
- * host-clock deadline still happens inside vblank_pace() when pace_mode=1. The net effect is:
- * the engine vblank callback chain gets invoked fast enough for the latch to flip without
- * bypassing interrupt-disable state. */
+ * What that comparison DOES depends on the profile, and the split is the #70 slice B contract:
+ *
+ *   turbo (SR_NOVBPACE=1): there is no host-anchored virtual clock, so the quantum latches an
+ *     out-of-band VBLANK source. This is turbo's only escape from a guest loop that never
+ *     reaches an explicit advancement point, and it is retained deliberately.
+ *
+ *   paced (default): the quantum produces NOTHING. scheduler_progress_time() at the top of the
+ *     same sr_yield already sampled the host clock and scheduler_latch_due_events() already
+ *     latched every elapsed rational deadline from that sample, so the scheduler's rational
+ *     60000/1001 source is the single producer. Raising here as well used to insert a second
+ *     guest VBLANK per period at the ~16.000 ms quantum boundary, 683 us ahead of the
+ *     ~16.683 ms rational one. The quantum is now read only as a diagnostic.
+ *
+ * Either way the pending source is serviced at the normal eligible-delivery phase, without
+ * bypassing interrupt-disable state; pacing on the host-clock deadline still happens inside
+ * vblank_pace() when pace_mode=1. */
 static int s_vblank_q_us = -1;          /* pacing quantum us; <0 lazy-init from env */
 static uint64_t s_last_vblank_ns;       /* when deliver_vblank() last ran (host clock) */
-/* Paced-mode diagnostic only. Counts yields at which the host quantum had elapsed
- * since the last delivery even though the scheduler's rational source had already
- * been latched from the same host sample -- i.e. VBLANK SERVICE is behind, not
- * production. Never used to create an event; see the #70 slice B note in sr_yield. */
-static uint64_t s_vblank_service_late;
+/* Paced-mode diagnostic only, and a RATE rather than an event count: it counts sr_yield calls
+ * at which the host quantum had elapsed since the last delivery even though the rational source
+ * had already been latched from the same host sample. That can only mean VBLANK SERVICE is
+ * behind (interrupts suspended, or service re-entered), never that production is, so a long
+ * suspension increments it once per yield for its whole duration. Never used to create an
+ * event; see the #70 slice B note in sr_yield. */
+static uint64_t s_vblank_late_service_yields;
 static void vblank_pace_quantum_init(void) {
     if (s_vblank_q_us >= 0) return;
     const char *e = getenv("SR_VBLANK_Q_US");
@@ -775,9 +788,9 @@ static void vblank_pace_quantum_init(void) {
     s_vblank_q_us = e ? atoi(e) : 16000;
     s_last_vblank_ns = host_now_ns();
 }
-/* Returns 1 if the host wall-clock has crossed s_vblank_q_us since the last delivery.
- * sr_yield consults this AFTER the regular (paced) check, and uses it to fire vblank
- * OOB even if the recomp-emitted SR_YIELD cadence is too sparse for steady pacing.
+/* Returns 1 if the host wall-clock has crossed s_vblank_q_us since the last delivery. This is
+ * the raw observation only; what sr_yield does with it differs by profile (see the block above
+ * -- an out-of-band source in turbo, a diagnostic in paced mode).
  * Exported (recomp.h) so the SR_YIELD macro in sched.c-side callers can poll it on every
  * emit without going through sr_yield()'s slice countdown. */
 int sr_vblank_quantum_due(void) {
@@ -2141,7 +2154,7 @@ void sr_yield(CpuState *s) {
      * so a guest loop that never reaches an explicit advancement point has no other
      * VBLANK source at all. */
     if (sr_vblank_quantum_due()) {
-        if (s_pace_on) s_vblank_service_late++;
+        if (s_pace_on) s_vblank_late_service_yields++;
         else sched_raise_interrupt(SCHED_INTR_VBLANK);
     }
     scheduler_service_pending();
@@ -2186,10 +2199,14 @@ void sr_yield(CpuState *s) {
          * Fix: drive vtime only forward enough to wake any imminent, finite-deadline
          * waiter (so timer-driven threads still get promoted by pick_next). Skip direct
          * VBLANK delivery here -- cadence is preserved by:
-         *   - vtime_refresh syncs s_vtime_us to SDL's monotonic clock every 256 yields
-         *   - sr_vblank_quantum_due latches a source at host-time, then the eligible
-         *     delivery phase invokes deliver_vblank
-         *   - sched_run idle loop (line 1367) drives the vblank chain
+         *   - scheduler_progress_time() at the top of every sr_yield, which in turbo
+         *     charges the deterministic quantum and in paced mode samples the host clock
+         *   - scheduler_latch_due_events(), which raises the source for every elapsed
+         *     rational deadline and coalesces the missed ones into the pending bit
+         *   - the eligible-delivery phase (scheduler_service_pending) invoking
+         *     deliver_vblank
+         *   - the sched_run idle loop driving the vblank chain when nothing is runnable
+         *   - in turbo only, sr_vblank_quantum_due() latching an out-of-band source
          * With no imminent wait, adv stays at 0 -- the recomp-fast-loop Sleep
          * cascade is broken, the worker exits f_00025a18 in ms, frame 2 presents.
          *
@@ -2230,9 +2247,9 @@ void sr_yield(CpuState *s) {
             /* running counts only TH_RUNNING. wait_obj threads are broken out
              * separately -- folding them into "running" (as this once did) makes a
              * fully-blocked scheduler look busy and reads as a false stall. */
-            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d vbl_service_late=%llu\n",
+            fprintf(stderr, "sched: spin on uid 0x%x at pc=0x%08x ra=0x%08x; threads=%d ready=%d delay=%d wait_obj=%d dormant=%d running=%d vbl_late_service_yields=%llu\n",
                     t->uid, s->pc, s->r[31], s_ntcb, ready, delay, waitobj, dormant, run,
-                    (unsigned long long)s_vblank_service_late);
+                    (unsigned long long)s_vblank_late_service_yields);
             for (int i = 0; i < s_ntcb; i++)
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %-10s prio %d pc=0x%08x ra=0x%08x s3=0x%08x v0=0x%08x wait_obj=0x%x wakeups=%d\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state < 5 ? s_tcb[i].state : 0],

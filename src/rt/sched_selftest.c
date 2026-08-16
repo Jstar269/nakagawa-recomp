@@ -1399,9 +1399,9 @@ static void test_paced_vblank_has_one_authority(void) {
     s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
     expect(sr_vblank_quantum_due(),
            "the host safety quantum is due at the 16.000 ms boundary");
-    uint64_t late0 = s_vblank_service_late;
+    uint64_t late0 = s_vblank_late_service_yields;
     sr_yield(&g_cpu_store);
-    expect(s_vblank_service_late > late0,
+    expect(s_vblank_late_service_yields > late0,
            "a still-due paced quantum is counted as late service, not raised as a source");
     expect(s_vbl_count - vbl0 == 1u,
            "the safety quantum does not produce a VBLANK ahead of the rational deadline");

@@ -721,7 +721,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "63c01ad3b9146ef50dba85ee2f6674b3efd68856d1f66de91b17aca7c799e3e2"
+      "sha256": "5da8af2adfaa4dd2b695a5a5b972b61d2031677bbcffabb595b7954a19a24f80"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4614,7 +4614,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "eabd88688c5e76bb7a1cfb228d87d674509c48d7e5c522eac1dbc370ae0a3d10"
+      "sha256": "72eefaf0adf5d760c0cd402d0621cd2acae90b8ac05daeeb361e66025d2b5e35"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4626,7 +4626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4664e87dfbeb54c1c3119b4246513d2dea4c64fc2f438b77062a4f315142fc0"
+      "sha256": "b26386b7dea6eb64d96d406c1e569b54691ba2720509f12152b012b1be0eb4f6"
     },
     {
       "path": "src/rt/sdkver.h",
