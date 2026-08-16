@@ -559,12 +559,24 @@ static uint32_t s_vtime_period_rem;  /* turbo-mode microsecond remainder, denomi
 static uint64_t s_vbl_next_us = 0;   /* guest-time deadline for the next VBLANK source event */
 static uint32_t s_vbl_event_period_rem; /* 59.94 Hz event period carry, denominator 60000 */
 
+/* Host monotonic-clock seam.  Every host-time read in this file goes through
+ * host_now_ns() so the paced-mode contract (guest virtual time is a SAMPLE of
+ * host monotonic time, never a jump ahead of it) can be asserted deterministically
+ * by the white-box scheduler selftest, which #includes this file and installs a
+ * controlled source.  Deliberately file-static with no exported setter: nothing
+ * outside this translation unit can redirect the runtime clock, and the production
+ * path is the NULL branch (a plain SDL_GetTicksNS call). */
+static uint64_t (*s_host_ns_fn)(void) = NULL;
+static uint64_t host_now_ns(void) {
+    return s_host_ns_fn ? s_host_ns_fn() : SDL_GetTicksNS();
+}
+
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
     s_pace_on = getenv("SR_NOVBPACE") ? 0 : 1;
     fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s)\n", s_pace_on, getenv("SR_NOVBPACE"));
     fflush(stderr);
-    s_clock_epoch_ns = SDL_GetTicksNS();
+    s_clock_epoch_ns = host_now_ns();
     s_vbl_next_ns = s_clock_epoch_ns;
     s_vbl_period_rem = 0;
     s_vtime_period_rem = 0;
@@ -578,7 +590,7 @@ static void pace_setup(void) {
 int sched_vbl_paced(void) { pace_setup(); return s_pace_on > 0; }
 
 static uint64_t host_us(void) {
-    return (SDL_GetTicksNS() - s_clock_epoch_ns) / 1000u;
+    return (host_now_ns() - s_clock_epoch_ns) / 1000u;
 }
 
 /* Observe host time without manufacturing guest time in deterministic mode.  All
@@ -715,12 +727,12 @@ static void vblank_pace(void) {
         }
         return;
     }
-    uint64_t now = SDL_GetTicksNS();
+    uint64_t now = host_now_ns();
     if (s_vbl_next_ns > now) {
         uint64_t wait_started = sr_perf_now_ns();
         SDL_DelayPrecise(s_vbl_next_ns - now);
         sr_perf_guest_idle_wait(wait_started);
-        now = SDL_GetTicksNS();
+        now = host_now_ns();
     }
     /* 59.94 Hz is 60000/1001 Hz. Carry the fractional nanoseconds so the
      * accumulated deadline has no floating-point or per-frame rounding drift. */
@@ -756,7 +768,7 @@ static void vblank_pace_quantum_init(void) {
      * while still firing approximately once per vblank cycle. Tunable downward via env if boot-path
      * vblank-callback chain needs higher density. */
     s_vblank_q_us = e ? atoi(e) : 16000;
-    s_last_vblank_ns = SDL_GetTicksNS();
+    s_last_vblank_ns = host_now_ns();
 }
 /* Returns 1 if the host wall-clock has crossed s_vblank_q_us since the last delivery.
  * sr_yield consults this AFTER the regular (paced) check, and uses it to fire vblank
@@ -766,16 +778,16 @@ static void vblank_pace_quantum_init(void) {
 int sr_vblank_quantum_due(void) {
     pace_setup();
     vblank_pace_quantum_init();
-    uint64_t since_us = (SDL_GetTicksNS() - s_last_vblank_ns) / 1000u;
+    uint64_t since_us = (host_now_ns() - s_last_vblank_ns) / 1000u;
     return since_us >= (uint64_t)s_vblank_q_us;
 }
-static void vblank_clock_reset(void) { s_last_vblank_ns = SDL_GetTicksNS(); }
+static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 
 /* Microseconds of virtual time until the next vblank is due (0 when overdue). */
 static uint64_t vblank_due_us(void) {
     pace_setup();
     if (!s_pace_on) return 0;
-    uint64_t now = SDL_GetTicksNS();
+    uint64_t now = host_now_ns();
     if (now >= s_vbl_next_ns) return 0;
     return (s_vbl_next_ns - now) / 1000u;
 }
@@ -2100,11 +2112,23 @@ void sr_yield(CpuState *s) {
         if (i != s_cur && (s_tcb[i].state == TH_READY ||
             ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
              s_vtime_us >= s_tcb[i].wake))) { other = 1; break; }
-    /* If no other thread is runnable AND nothing is sleeping on a small timer, advance virtual
-     * time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115 spinning in
-     * critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without ever waking
-     * the UMD-callback waker. Cap each spur by the lowest wake-time across waiters so we
-     * never skip past a scheduled event. */
+    /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
+     * advances virtual time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115
+     * spinning in critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without
+     * ever waking the UMD-callback waker. Cap each spur by the lowest wake-time across
+     * waiters so we never skip past a scheduled event.
+     *
+     * #70 slice A -- clock ownership. This spur is a TURBO-mode construct and must not run
+     * in paced mode. With pacing on, guest virtual time is a SAMPLE of the host monotonic
+     * clock (scheduler_progress_time() above already took it); jumping s_vtime_us to a
+     * waiter's deadline puts guest time AHEAD of host time, and since every delay, timed
+     * wait and the rational VBLANK deadline are expressed in that same clock, the whole
+     * guest timeline then runs fast by however much this branch manufactured. A busy-wait
+     * loop beside one sleeper (exactly the HST boot/worker shape) hits this branch
+     * continuously, which is the guest-runs-fast half of the measured #70 drift.
+     *
+     * Paced mode needs no spur: real time reaches the waiter's deadline on its own, and
+     * scheduler_progress_time() at the top of every sr_yield samples it. */
     if (!other) {
         /* Phase 2.1-follow v3: BOUND vtime advancement tightly to real wake deadlines.
          * Recomp-emitted SR_YIELD on every backward branch (codegen.py lines 832/837)
@@ -2133,16 +2157,18 @@ void sr_yield(CpuState *s) {
          * finite timed wait -- must skip it or the initial wait check below would
          * set adv=(uint64_t)-1 and create an invalid deadline.
          */
-        uint64_t adv = 0;
-        for (int i = 0; i < s_ntcb; i++) {
-            if (i == s_cur) continue;
-            if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-                s_tcb[i].wake != (uint64_t)-1 && s_tcb[i].wake > s_vtime_us) {
-                uint64_t delta = s_tcb[i].wake - s_vtime_us;
-                if (adv == 0 || delta < adv) adv = delta;
+        if (!s_pace_on) {
+            uint64_t adv = 0;
+            for (int i = 0; i < s_ntcb; i++) {
+                if (i == s_cur) continue;
+                if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
+                    s_tcb[i].wake != (uint64_t)-1 && s_tcb[i].wake > s_vtime_us) {
+                    uint64_t delta = s_tcb[i].wake - s_vtime_us;
+                    if (adv == 0 || delta < adv) adv = delta;
+                }
             }
+            scheduler_add_time(adv);
         }
-        scheduler_add_time(adv);
         scheduler_latch_due_events();
         scheduler_service_pending();
         /* Diagnostic: spin watchdog. */

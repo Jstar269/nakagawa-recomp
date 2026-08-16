@@ -182,6 +182,45 @@ static void reset_sched(void) {
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
+    s_host_ns_fn = NULL;
+    s_clock_epoch_ns = 0;
+    s_vbl_next_ns = 0;
+    s_vbl_period_rem = 0;
+    s_vtime_period_rem = 0;
+}
+
+/* ---- controlled host monotonic clock ------------------------------------------------
+ * Paced mode anchors guest virtual time to the host monotonic clock, so asserting a
+ * paced timing contract against the real clock would be a race. sched.c routes every
+ * host-time read through its host_now_ns() seam; these tests install a source they
+ * move explicitly, so nothing but the test advances host time. */
+static uint64_t g_test_host_ns;
+static uint64_t test_host_ns(void) { return g_test_host_ns; }
+static void set_host_us(uint64_t us) { g_test_host_ns = us * 1000ull; }
+
+/* Install the controlled source and put every host-anchored timing variable at a
+ * known common origin. `paced` selects the production profile (host-anchored) or
+ * turbo (SR_NOVBPACE=1, virtual clock advanced explicitly). */
+static void begin_clock_fixture(int paced, uint64_t host_us_now) {
+    s_host_ns_fn = test_host_ns;
+    set_host_us(host_us_now);
+    s_pace_on = paced ? 1 : 0;
+    s_clock_epoch_ns = 0;
+    s_vbl_next_ns = 0;
+    s_vbl_period_rem = 0;
+    s_vtime_period_rem = 0;
+    s_vbl_event_period_rem = 0;
+    s_vbl_next_us = 0;
+    s_vtime_us = 0;
+    s_pending_interrupts = 0;
+    s_vblank_q_us = 16000;
+    s_last_vblank_ns = g_test_host_ns;
+}
+
+/* Silence both VBLANK paths so a timing test can isolate one contract. */
+static void disable_vblank_sources(void) {
+    s_vbl_next_us = (uint64_t)-1;
+    s_vblank_q_us = 0x7fffffff;
 }
 
 /* Fabricate a bare TCB for pure pick_next() decision tests (no stack, no coroutine). */
@@ -1237,6 +1276,74 @@ static void test_interrupt_frame_is_restored(void) {
            "a source raised by the handler remains pending for its own service path");
 }
 
+/* #70 slice A -- paced mode owns its clock, and the owner is the host.
+ *
+ * With vblank pacing ON (the production profile) guest virtual time is a SAMPLE of the
+ * host monotonic clock: s_vtime_us may catch up to host time, never overtake it. The
+ * yield path's "nobody else is runnable" branch used to advance the virtual clock to
+ * the soonest future waiter deadline in BOTH modes. In paced mode that manufactures
+ * guest time out of nothing -- a busy-waiting thread with a distant sleeper beside it
+ * pushes s_vtime_us (and every delay, timed wait and VBLANK deadline derived from it)
+ * ahead of real time, which is the guest-runs-fast half of the measured #70 drift.
+ *
+ * Fixture: host monotonic time is pinned well below a future waiter's deadline, the
+ * waiter exists, and the scheduler is driven repeatedly. The asserted invariant is
+ * ownership, not a rate: virtual time never exceeds the sampled host time merely
+ * because a waiter would like it to. */
+static void test_paced_vtime_is_host_anchored(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();     /* slice A is about the clock, not VBLANK production */
+
+    int spinner = mk(0x230u, TH_RUNNING, 40);
+    int sleeper = mk(0x231u, TH_WAIT_DELAY, 40);
+    s_tcb[sleeper].wake = 5000000u;          /* 5 s of guest time in the future */
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    set_host_us(1000u);                      /* host has elapsed 1 ms, nothing like 5 s */
+    int outran = 0;
+    for (int i = 0; i < 8; i++) {
+        s_tcb[spinner].state = TH_RUNNING;   /* the spinner keeps being re-scheduled */
+        s_cur = spinner;
+        sr_yield(&g_cpu_store);
+        if (s_vtime_us > 1000u) outran = 1;
+    }
+    expect(!outran,
+           "paced guest virtual time never advances beyond the sampled host clock");
+    expect(s_vtime_us == 1000u,
+           "paced guest virtual time tracks the sampled host clock exactly");
+    expect(s_tcb[sleeper].state == TH_WAIT_DELAY,
+           "a future timed waiter is not woken early by manufactured guest time");
+
+    /* Host time advancing is what moves the guest clock -- and it still reaches the
+     * deadline, so the waiter is not starved, just no longer early. */
+    set_host_us(5000000u);
+    s_tcb[spinner].state = TH_RUNNING;
+    s_cur = spinner;
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us == 5000000u,
+           "paced guest virtual time follows the host clock forward");
+    (void)pick_next();
+    expect(s_tcb[sleeper].state == TH_READY,
+           "the timed waiter becomes runnable once host time reaches its deadline");
+
+    /* Turbo (SR_NOVBPACE=1) has no host anchor: jumping the virtual clock over an idle
+     * wait is its architecturally intended behaviour and must survive the fix. */
+    reset_sched();
+    begin_clock_fixture(0, 0u);
+    disable_vblank_sources();
+    int tspin = mk(0x232u, TH_RUNNING, 40);
+    int tsleep = mk(0x233u, TH_WAIT_DELAY, 40);
+    s_tcb[tsleep].wake = 5000000u;
+    s_cur = tspin;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us >= 5000000u,
+           "turbo mode still jumps virtual time over an idle wait");
+    s_host_ns_fn = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 int main(void) {
@@ -1290,6 +1397,7 @@ int main(void) {
     test_clock_reads_are_observational();
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
+    test_paced_vtime_is_host_anchored();
 
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
