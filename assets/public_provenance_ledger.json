@@ -721,7 +721,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9505caac97008e54867b1341598e7b31687ae7562276ce0485e8ee14f83b8533"
+      "sha256": "63c01ad3b9146ef50dba85ee2f6674b3efd68856d1f66de91b17aca7c799e3e2"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
