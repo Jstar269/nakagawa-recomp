@@ -846,6 +846,10 @@ try {
             if ($m) { $vblanks = [int]$m.Matches[0].Groups[1].Value; $reachedExit = $true }
             Copy-Item $errLog (Join-Path $outDir "stderr.log") -Force
         }
+        # Issue #64: what the route actually reached, recovered from the runtime's own
+        # narration. A run that took a different path through the menus is not the run the
+        # route describes, and must not be archived as though it were.
+        $routeOutcome = Read-RouteOutcome -StderrPath (Join-Path $outDir "stderr.log")
         $captures = @(Get-ChildItem (Join-Path (Get-Location) "snap_*.ppm") -ErrorAction SilentlyContinue)
         $captures | ForEach-Object { Copy-Item $_.FullName (Join-Path $outDir $_.Name) -Force }
         # A Benchmark run's telemetry belongs with the captures it describes, not in the
@@ -860,7 +864,8 @@ try {
         $rate = if ($secs -gt 0 -and $vblanks -gt 0) { [math]::Round($vblanks / $secs, 1) } else { 0 }
         $verdict = Get-OracleVerdict -ReachedExit $reachedExit -TimedOut $runResult.TimedOut `
                        -ExitCode $runResult.ExitCode -CaptureCount $captures.Count `
-                       -RequestedVblank $ExitAtVblank -ObservedVblank $vblanks
+                       -RequestedVblank $ExitAtVblank -ObservedVblank $vblanks `
+                       -RouteKind $routeOutcome.Kind -RouteFailReason $routeOutcome.FailReason
 
         $manifest = [ordered]@{
             oracle_name          = $OracleName
@@ -872,6 +877,9 @@ try {
             exe_sha256           = $exeHash
             route_path           = (Resolve-Path $Route).Path
             route_sha256         = $routeHash
+            route_kind           = $routeOutcome.Kind
+            route_checkpoints    = @($routeOutcome.Checkpoints)
+            route_fail_reason    = $routeOutcome.FailReason
             run_profile          = $RunProfile
             requested_vblank     = $ExitAtVblank
             observed_vblank      = $vblanks
@@ -893,7 +901,8 @@ try {
 
         $summary = "VisualOracle result: name=$OracleName wall_s=$secs vblanks=$vblanks " +
                    "guest_vblanks_per_s=$rate captures=$($captures.Count) exit_code=$($runResult.ExitCode) " +
-                   "timed_out=$($runResult.TimedOut) reached_exit=$reachedExit complete=$($verdict.Complete)"
+                   "timed_out=$($runResult.TimedOut) reached_exit=$reachedExit route=$($routeOutcome.Kind) " +
+                   "checkpoints=$($routeOutcome.Checkpoints.Count) complete=$($verdict.Complete)"
         Write-Host $summary -ForegroundColor $(if ($verdict.Complete) { "Green" } else { "Yellow" })
         $summary | Out-File -FilePath (Join-Path $outDir "oracle_summary.txt") -Encoding utf8
 
