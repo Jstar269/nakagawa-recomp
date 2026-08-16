@@ -1487,6 +1487,20 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     return 0;
 }
 
+/* A timed wait whose deadline has passed -- an elapsed sceKernelDelayThread, or a timed
+ * sema/event wait that timed out -- describes a thread the kernel owes the CPU to, not a
+ * blocked one. Promoting it is therefore part of EVERY scheduling decision, not a private
+ * step of thread selection: sched_preempt() has to see it too, or an expired thread with a
+ * numerically stronger priority sits behind a running weaker one until that thread happens
+ * to yield or block (#70 slice C). Idempotent, and deliberately state-only: it decides
+ * nothing about who runs next, it only restores the truth about who is runnable. */
+static void sched_promote_expired_waits(void) {
+    for (int i = 0; i < s_ntcb; i++)
+        if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
+            s_vtime_us >= s_tcb[i].wake)
+            s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+}
+
 /* Pick the highest-priority runnable thread (lowest PSP priority number). Wakes delayed
  * threads whose deadline has passed.
  *
@@ -1499,15 +1513,15 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
  * on a busy-wait that hardware would satisfy, fix the subsystem that fails to produce the
  * awaited state.)
  *
+ * A timed wait whose deadline has passed is a RUNNABLE thread, so promoting it is part
+ * of every scheduling decision -- not just this one. See sched_promote_expired_waits().
+ *
  * Equal-priority peers round-robin deterministically: the scan starts one slot after the
  * previous winner, so among READY threads at the best priority the next one in cyclic slot
  * order wins. Selection depends only on TCB states and the rotation cursor -- identical
  * state yields an identical decision. Returns an index or -1 if nothing is runnable. */
 static int pick_next(void) {
-    for (int i = 0; i < s_ntcb; i++)
-        if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-            s_vtime_us >= s_tcb[i].wake)
-            s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+    sched_promote_expired_waits();
     int best_pri = 0;
     int have_ready = 0;
     for (int i = 0; i < s_ntcb; i++) {
@@ -2322,9 +2336,20 @@ void sr_yield(CpuState *s) {
 /* PSP scheduling is strict-priority preemptive: the moment a higher-priority thread becomes
  * ready (e.g. sceKernelStartThread starts one), it runs instead of the current thread. Without
  * this, a low-priority boot thread that starts a high-priority worker and busy-waits on its
- * output would never let the worker run. Call after any op that readies a thread. */
+ * output would never let the worker run. Call after any op that readies a thread.
+ *
+ * #70 slice C: a thread also becomes ready when its own deadline passes, with nobody calling
+ * anything. That expiry used to be noticed only inside pick_next(), which runs on the
+ * scheduler coroutine, so the scan below -- the check that actually takes the CPU away --
+ * could not see it and a stronger-priority thread whose delay came due waited for the weaker
+ * runner to yield or block. Promote first, then apply the unchanged strict-priority rule.
+ *
+ * This stays a boundary-triggered check, not continuous preemption: the caller decides when
+ * a scheduler/interrupt boundary is reached, and the interrupt-disabled / dispatch-disabled
+ * gate above still defers the whole thing to the next eligible one. */
 void sched_preempt(void) {
     if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    sched_promote_expired_waits();
     TCB *cur = &s_tcb[s_cur];
     int best = -1;
     for (int i = 0; i < s_ntcb; i++) {

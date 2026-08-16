@@ -1464,6 +1464,103 @@ static void test_paced_vblank_has_one_authority(void) {
     s_host_ns_fn = NULL;
 }
 
+/* #70 slice C -- an expired timed wait enters strict-priority scheduling.
+ *
+ * PSP scheduling is strict-priority preemptive, and a timed wait whose deadline has
+ * passed is a RUNNABLE thread. Expiry was only ever noticed inside pick_next(), which
+ * runs on the scheduler coroutine; sched_preempt() -- the check that actually takes the
+ * CPU away from a running thread at an eligible boundary -- scanned only threads
+ * already marked TH_READY. A priority-16 thread whose delay came due therefore did not
+ * displace a priority-40 runner: it waited for that runner to yield or block, which for
+ * a busy-wait loop can be an unbounded amount of real time. Waking late is the same
+ * defect class as the clock drift in slices A and B, one level up.
+ *
+ * "Immediate" here means the next eligible scheduler/interrupt boundary, not
+ * asynchronous mid-instruction switching, and interrupt-disabled / dispatch-disabled
+ * deferral still holds. Both are asserted below. */
+static void test_expired_timed_wait_enters_strict_priority(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();
+
+    int runner = mk(0x250u, TH_RUNNING, 40);
+    int waiter = mk(0x251u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Before the deadline the boundary changes nothing. */
+    set_host_us(500u);
+    sched_resume_interrupts(1u);
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "a timed wait that is not yet due is not promoted");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "the running thread keeps the CPU before the waiter's deadline");
+
+    /* The deadline comes due; the next eligible boundary hands the CPU over. */
+    set_host_us(1000u);
+    sched_resume_interrupts(1u);
+    expect(s_tcb[waiter].state == TH_READY,
+           "an expired timed wait becomes runnable at an eligible scheduler boundary");
+    expect(s_tcb[runner].state == TH_READY,
+           "the lower-priority runner is preempted rather than left RUNNING");
+    expect(pick_next() == waiter,
+           "the expired higher-priority waiter wins strict-priority selection");
+
+    /* Deferral: an ineligible boundary promotes nothing and switches nothing, and the
+     * work happens at the next eligible one instead. */
+    reset_sched();
+    begin_clock_fixture(1, 2000u);
+    disable_vblank_sources();
+    runner = mk(0x252u, TH_RUNNING, 40);
+    waiter = mk(0x253u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_vtime_us = 2000u;                       /* already past the deadline */
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    (void)sched_suspend_interrupts();
+    sched_preempt();
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "an interrupt-disabled context defers the expired waiter");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "an interrupt-disabled context does not switch away from the runner");
+
+    s_interrupts_enabled = 1;
+    (void)sched_suspend_dispatch();
+    sched_preempt();
+    expect(s_tcb[waiter].state == TH_WAIT_DELAY,
+           "a dispatch-disabled context defers the expired waiter");
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "a dispatch-disabled context does not switch away from the runner");
+
+    (void)sched_resume_dispatch(1u);          /* the next eligible boundary */
+    expect(s_tcb[waiter].state == TH_READY,
+           "restoring dispatch runs the deferred promotion");
+    expect(s_tcb[runner].state == TH_READY,
+           "restoring dispatch runs the deferred preemption");
+
+    /* Strict priority is not weakened in the other direction: an expired waiter that is
+     * numerically weaker, or equal, does not take the CPU from the running thread. */
+    reset_sched();
+    begin_clock_fixture(1, 2000u);
+    disable_vblank_sources();
+    runner = mk(0x254u, TH_RUNNING, 16);
+    int weaker = mk(0x255u, TH_WAIT_DELAY, 40);
+    int equal  = mk(0x256u, TH_WAIT_DELAY, 16);
+    s_tcb[weaker].wake = 1000u;
+    s_tcb[equal].wake = 1000u;
+    s_vtime_us = 2000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sched_preempt();
+    expect(s_tcb[runner].state == TH_RUNNING,
+           "an expired weaker- or equal-priority waiter does not preempt the runner");
+    expect(s_tcb[weaker].state == TH_READY && s_tcb[equal].state == TH_READY,
+           "both expired waiters are still promoted to runnable");
+    s_host_ns_fn = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 int main(void) {
@@ -1519,6 +1616,7 @@ int main(void) {
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
+    test_expired_timed_wait_enters_strict_priority();
 
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
