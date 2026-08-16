@@ -104,6 +104,11 @@ uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
 uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
 void sr_yield(CpuState *s) { (void)s; }
+/* SR_YIELD's safe-boundary service hook (#70). sr_sched_on is 0 here, so neither
+ * branch of the macro ever runs; the symbols exist only to satisfy the link. */
+atomic_int_least32_t sr_service_request;
+void sr_sched_request_service(void) {}
+void sr_sched_service_only(void) {}
 uint64_t SDL_GetTicksNS(void) { return 0u; }
 
 #define VFPU_OP(op) ((uint32_t)(op) << 26)

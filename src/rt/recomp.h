@@ -450,6 +450,29 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid);
 extern int     sr_sched_on;
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
+/* #70 -- prompt scheduler service at a generated safe boundary.
+ *
+ * The timeslice answers "has this thread run long enough to rotate?". It is deliberately
+ * coarse (TIMESLICE yields), and under a continuously runnable CPU-bound guest several
+ * exact 60000/1001 VBLANK deadlines can elapse between two expiries. Production is
+ * correct in that window -- scheduler_latch_due_events() advances every elapsed rational
+ * deadline -- but SCHED_INTR_VBLANK is a coalescing bit, so the missed periods collapse
+ * into one delivery and measured delivered cadence falls below the produced cadence.
+ *
+ * `sr_service_request` separates the second question -- "is host-timed scheduler work
+ * due?" -- from the timeslice. It is a STICKY advisory: many requests before one service
+ * collapse to one, because the request means "sample the authoritative clock now", NOT
+ * "one request equals one VBLANK". Only the runtime/guest host thread ever acts on it;
+ * a producer may only store 1 into it and must touch nothing else.
+ *
+ * Ordering is deliberately relaxed on both sides: the flag carries no payload. The
+ * consumer does not read producer-written data on the strength of having seen it -- it
+ * re-reads the authoritative host monotonic clock itself -- so there is nothing for an
+ * acquire to order against, and a request observed one boundary late is indistinguishable
+ * from a timer that woke one boundary late (which is already a supported case). */
+extern atomic_int_least32_t sr_service_request;
+void sr_sched_request_service(void);   /* sticky "host-timed work may be due" hint */
+void sr_sched_service_only(void);      /* service-only scheduler phase; never rotates peers */
 /* Environment-gated, bounded guest-function probe used by boot diagnostics.
  * Codegen emits calls only at explicitly reviewed function boundaries. */
 void sr_boot_probe(CpuState *s, uint32_t guest_pc);
@@ -474,11 +497,20 @@ uint64_t sr_profile_test_block_count(uint32_t pc);
 uint64_t sr_profile_test_lookup_drops(void);
 #endif
 
+/* The safe-boundary fast path is two predicted-not-taken branches, both over
+ * relaxed loads of already-hot atomics. The service check deliberately does NOT
+ * read a host clock, assign (s)->pc, or touch sr_timeslice: a service request is
+ * not a rotation request, so the ordinary quantum decrement below still runs
+ * exactly once per boundary whether or not service happened. */
 #define SR_YIELD(s, target_pc) do { \
     if (__builtin_expect(g_prof_enabled, 0)) { \
         sr_profile_block(target_pc); \
     } \
     if (__builtin_expect(sr_sched_on, 1)) { \
+        if (__builtin_expect( \
+                atomic_load_explicit(&sr_service_request, memory_order_relaxed) != 0, 0)) { \
+            sr_sched_service_only(); \
+        } \
         if (atomic_fetch_sub_explicit(&sr_timeslice, 1, memory_order_relaxed) <= 1) { \
             (s)->pc = (target_pc); \
             sr_yield(s); \

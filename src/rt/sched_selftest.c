@@ -79,9 +79,13 @@ uint32_t g_frame_prims = 0;
 
 int gui_on(void) { return 0; }
 void gui_pump(void) {}
+/* The real SR_YIELD macro is under test below, so its profiling hook has to link. */
+int g_prof_enabled = 0;
+void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 static uint32_t g_test_vblank_handler;
 static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;
+static int g_test_handler_requests_service;
 static CpuState g_test_handler_seen;
 uint32_t sr_vblank_handler(void) { return g_test_vblank_handler; }
 uint32_t sr_vblank_arg(void) { return 0; }
@@ -125,6 +129,12 @@ void dispatch(CpuState *s, uint32_t target) {
             sched_raise_interrupt(SCHED_INTR_GE);
             g_test_handler_raise_ge = 0;
         }
+        if (g_test_handler_requests_service) {
+            /* Recursion probe: guest code running inside the interrupt frame reaches a
+             * safe boundary with a request pending. It must not re-enter service. */
+            sr_sched_request_service();
+            SR_YIELD(s, 0x0000beefu);
+        }
         /* Prove that a handler's register mutations are discarded with its frame. */
         s->r[16] = 0xdeadbeefu;
         s->pc = 0xfeedfaceu;
@@ -156,6 +166,7 @@ static void reset_sched(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    s_dispatch_enabled = 1;
     s_root_seen = 0;
     g_root_uid = 0x110u;
     g_worker_uid = 0x114u;
@@ -176,6 +187,10 @@ static void reset_sched(void) {
     g_test_vblank_handler = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
+    g_test_handler_requests_service = 0;
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    atomic_store_explicit(&s_service_deadline_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     memset(&g_test_handler_seen, 0, sizeof(g_test_handler_seen));
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
@@ -215,6 +230,23 @@ static void begin_clock_fixture(int paced, uint64_t host_us_now) {
     s_pending_interrupts = 0;
     s_vblank_q_us = 16000;
     s_last_vblank_ns = g_test_host_ns;
+    publish_service_deadline();
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+}
+
+/* One generated-style safe boundary, expanded from the REAL SR_YIELD macro in recomp.h --
+ * the same text codegen emits at function entries and loop back-edges. The #70 service
+ * tests deliberately drive this rather than calling sr_sched_service_only() directly, so
+ * they pin the production fast path (including its interaction with sr_timeslice) instead
+ * of a helper the runtime would never reach on its own. */
+#define TEST_SAFE_BOUNDARY(pc) SR_YIELD(&g_cpu_store, (uint32_t)(pc))
+
+static int32_t test_slice(void) {
+    return (int32_t)atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+}
+static int test_service_requested(void) {
+    return atomic_load_explicit(&sr_service_request, memory_order_relaxed) != 0;
 }
 
 /* Silence both VBLANK paths so a timing test can isolate one contract. */
@@ -1561,6 +1593,363 @@ static void test_expired_timed_wait_enters_strict_priority(void) {
     s_host_ns_fn = NULL;
 }
 
+/* #70 residual -- prompt service at a generated safe boundary.
+ *
+ * FAILING-BEFORE (the primary defect this mission addresses):
+ *   Generated code reaches SR_YIELD boundaries constantly, but the macro entered the
+ *   scheduler only when the ordinary quantum (TIMESLICE = 1000 boundaries) expired. Under a
+ *   continuously runnable CPU-bound guest -- the measured HST shape, ~98% guest CPU -- several
+ *   exact 60000/1001 deadlines elapse inside one quantum. Production is not wrong about how
+ *   many were produced (scheduler_latch_due_events() advances every elapsed deadline), but
+ *   SCHED_INTR_VBLANK is a coalescing BIT, so they collapse into one delivery. That is the
+ *   measured 37.1-51.9 delivered Hz against exact ~59.94 Hz production.
+ *
+ * The fixture below reproduces that precisely: pacing on, interrupts on, one RUNNING thread,
+ * a quantum that stays far above 1, and a synthetic host clock stepped across three rational
+ * deadlines. Without a service request the boundaries change nothing -- that is the defect,
+ * asserted as a fact rather than assumed. With one sticky request, a SINGLE boundary performs
+ * the whole authoritative sequence, and everything the service-only phase must NOT do is
+ * pinned in the same test: the quantum is not reset, the current thread keeps the CPU, and
+ * the guest PC is not rewritten. */
+static void test_service_request_is_serviced_at_safe_boundary(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+
+    int spinner = mk(0x260u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    g_cpu_store.pc = 0x00abcdefu;
+
+    /* Establish the display phase from the origin exactly as the runtime does. */
+    sr_yield(&g_cpu_store);
+    expect(s_vbl_next_us == 16683u, "origin service leaves one exact rational period pending");
+    s_tcb[spinner].state = TH_RUNNING;
+    s_cur = spinner;
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    uint64_t vbl0 = s_vbl_count;
+    uint32_t pc0 = g_cpu_store.pc;
+
+    /* 60 ms of host time: deadlines 16683, 33366 and 50050 have all come due. */
+    set_host_us(60000u);
+
+    for (int i = 0; i < 64; i++) TEST_SAFE_BOUNDARY(0x00001000u);
+    expect(s_vbl_count == vbl0,
+           "FAILING-BEFORE: safe boundaries alone service nothing before the quantum expires");
+    expect(s_vtime_us == 0u,
+           "FAILING-BEFORE: an unrequested safe boundary reads no host clock");
+    expect(test_slice() == TIMESLICE - 64,
+           "each safe boundary costs exactly one quantum unit");
+
+    int32_t slice_before = test_slice();
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00001000u);
+
+    expect(s_vbl_count - vbl0 == 1u,
+           "a due request delivers one coalesced VBLANK at the very next safe boundary");
+    expect(s_vtime_us == 60000u,
+           "service samples the authoritative host clock and advances guest time to it");
+    expect(s_vbl_next_us == 66733u,
+           "every elapsed rational deadline advanced (16683/33366/50050 -> next 66733)");
+    expect(test_slice() == slice_before - 1,
+           "service-only entry does not reset the ordinary scheduler quantum");
+    expect(!test_service_requested(), "a serviced request is consumed");
+    expect(s_cur == spinner && s_tcb[spinner].state == TH_RUNNING,
+           "the current thread keeps the CPU across a service-only boundary");
+    expect(g_cpu_store.pc == pc0,
+           "service does not rewrite CpuState.pc");
+
+    /* Stickiness, in the direction that matters: many requests before one service collapse
+     * to one, because a request means "sample the clock", not "produce a VBLANK". */
+    for (int i = 0; i < 5; i++) sr_sched_request_service();
+    set_host_us(60000u + 16733u);            /* exactly one more period elapses */
+    TEST_SAFE_BOUNDARY(0x00001000u);
+    expect(s_vbl_count - vbl0 == 2u,
+           "five collapsed requests over one elapsed period still deliver one VBLANK");
+    s_host_ns_fn = NULL;
+}
+
+/* Timer timing must never determine event COUNT, so both wake errors are harmless.
+ * Early: the request finds nothing due and costs one authoritative sample. Late: one
+ * request makes the runtime advance every period it slept through, with the coalescing
+ * contract unchanged. Neither path lets the advisory become a second VBLANK producer. */
+static void test_service_request_wake_timing_is_not_authoritative(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int spinner = mk(0x261u, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);                              /* origin delivery */
+    s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    uint64_t vbl0 = s_vbl_count;
+
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           s_clock_epoch_ns + s_vbl_next_us * 1000u,
+           "the published service deadline is the rational source deadline in host ns");
+
+    /* EARLY wake: 10 ms in, the next rational deadline is 16.683 ms away. */
+    set_host_us(10000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00002000u);
+    expect(s_vbl_count == vbl0, "an early request produces no VBLANK");
+    expect(s_vbl_next_us == 16683u, "an early request does not move the source deadline");
+    expect(s_vtime_us == 10000u, "an early request still costs one authoritative sample");
+    expect(!test_service_requested(), "an early request is consumed like any other");
+
+    /* LATE wake: one whole host second with no service in between. */
+    set_host_us(1000000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00002000u);
+    expect(s_vbl_count - vbl0 == 1u,
+           "a late request still delivers exactly one coalesced VBLANK");
+    expect(s_vbl_next_us > 1000000u && s_vbl_next_us <= 1016683u,
+           "a late request advances the source timeline past every missed period");
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           s_clock_epoch_ns + s_vbl_next_us * 1000u,
+           "the republished deadline follows the single rational producer");
+    s_host_ns_fn = NULL;
+}
+
+/* Fairness is untouched. A service request says host-timed work may be due; it says
+ * nothing about whose turn it is. Equal-priority peers must not rotate and lower-priority
+ * peers must not run, because both would be a scheduling decision the boundary never asked
+ * for -- and both would show up as guest-visible nondeterminism under host load. */
+static void test_service_only_does_not_rotate_peers(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x262u, TH_RUNNING, 40);
+    int equal  = mk(0x263u, TH_READY, 40);
+    int lower  = mk(0x264u, TH_READY, 60);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    int last_pick0 = s_last_pick;
+
+    set_host_us(60000u);
+    sr_sched_request_service();
+    int32_t slice_before = test_slice();
+    TEST_SAFE_BOUNDARY(0x00003000u);
+
+    expect(g_test_vblank_delivered == 1u, "the request is serviced");
+    expect(s_cur == runner && s_tcb[runner].state == TH_RUNNING,
+           "an equal-priority peer does not take the CPU at a service-only boundary");
+    expect(s_tcb[equal].state == TH_READY, "the equal-priority peer stays merely READY");
+    expect(s_tcb[lower].state == TH_READY, "the lower-priority peer stays merely READY");
+    expect(s_last_pick == last_pick0,
+           "no round-robin selection happens: the rotation cursor is untouched");
+    expect(test_slice() == slice_before - 1,
+           "no peer switch means no fresh quantum");
+    s_host_ns_fn = NULL;
+}
+
+/* The one control-flow effect service-only may have is the existing strict-priority rule.
+ * If the authoritative host sample makes a numerically STRONGER thread runnable, that
+ * thread must take the CPU at this eligible boundary -- the same contract sched_preempt()
+ * already applies from sched_resume_interrupts(). */
+static void test_service_only_preempts_only_for_higher_priority(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();          /* this is about promotion, not VBLANK production */
+    int runner = mk(0x265u, TH_RUNNING, 40);
+    int strong = mk(0x266u, TH_WAIT_DELAY, 16);
+    s_tcb[strong].wake = 1000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Before the deadline nothing changes, even with a request pending. */
+    set_host_us(500u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00004000u);
+    expect(s_tcb[strong].state == TH_WAIT_DELAY,
+           "a not-yet-due timed wait is not promoted by a service request");
+    expect(s_tcb[runner].state == TH_RUNNING, "the runner keeps the CPU before the deadline");
+
+    /* Host time crosses the deadline: strict priority applies at this boundary. */
+    set_host_us(1000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00004000u);
+    expect(s_tcb[strong].state == TH_READY,
+           "an expired stronger-priority waiter becomes runnable at a service-only boundary");
+    expect(s_tcb[runner].state == TH_READY,
+           "the weaker runner is preempted rather than left RUNNING");
+    expect(pick_next() == strong,
+           "the promoted stronger thread wins strict-priority selection");
+    s_host_ns_fn = NULL;
+}
+
+/* Interrupt suspension is a CPU-wide scheduler lock on the single-core PSP. An ineligible
+ * boundary must DEFER the request, never consume it, and must not add a host-clock read
+ * that the pre-#70 runtime did not already perform. Resume then services the one coalesced
+ * VBLANK, and the still-set request proves the "one request is not one VBLANK" contract. */
+static void test_service_request_defers_while_interrupts_disabled(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x267u, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    uint32_t token = sched_suspend_interrupts();
+    set_host_us(60000u);
+    sr_sched_request_service();
+    int32_t slice_before = test_slice();
+    for (int i = 0; i < 8; i++) TEST_SAFE_BOUNDARY(0x00005000u);
+
+    expect(g_test_vblank_delivered == 0u,
+           "no VBLANK is delivered while interrupts are disabled");
+    expect(test_service_requested(),
+           "the request survives every ineligible boundary instead of being consumed");
+    expect(s_vtime_us == 0u,
+           "an ineligible boundary observes host time only through the pre-existing paths");
+    expect(test_slice() == slice_before - 8,
+           "an ineligible boundary still costs exactly one quantum unit");
+
+    sched_resume_interrupts(token);
+    expect(g_test_vblank_delivered == 1u,
+           "resume delivers the one coalesced VBLANK the suspension deferred");
+    expect(test_service_requested(),
+           "resume does not clear the request: the flag is a hint, not an event");
+
+    uint64_t vbl_after_resume = s_vbl_count;
+    TEST_SAFE_BOUNDARY(0x00005000u);
+    expect(s_vbl_count == vbl_after_resume,
+           "servicing the leftover request produces no second VBLANK for the same period");
+    expect(!test_service_requested(), "the deferred request is finally consumed");
+    s_host_ns_fn = NULL;
+}
+
+/* Interrupts and dispatch are independent states in this runtime (waits.expected proves
+ * they are not aliases). Dispatch suspension defers guest THREAD SWITCHING; it does not
+ * stop interrupt delivery -- sr_yield already behaves this way. Service-only inherits both
+ * halves unchanged because it reuses scheduler_service_pending() and sched_preempt(). */
+static void test_service_only_respects_dispatch_suspension(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x268u, TH_RUNNING, 40);
+    int strong = mk(0x269u, TH_WAIT_DELAY, 16);
+    s_tcb[strong].wake = 1000u;
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    uint32_t token = sched_suspend_dispatch();
+    expect(token == 1u, "SuspendDispatch returns the enabled token");
+    set_host_us(60000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00006000u);
+
+    expect(g_test_vblank_delivered == 1u,
+           "interrupt delivery is not gated by dispatch suspension");
+    expect(!test_service_requested(), "an eligible boundary consumes the request");
+    expect(s_tcb[strong].state == TH_WAIT_DELAY,
+           "dispatch suspension defers the expired waiter's promotion");
+    expect(s_cur == runner && s_tcb[runner].state == TH_RUNNING,
+           "dispatch suspension defers the guest thread switch");
+
+    (void)sched_resume_dispatch(token);
+    expect(s_tcb[strong].state == TH_READY,
+           "restoring dispatch runs the deferred promotion");
+    expect(s_tcb[runner].state == TH_READY,
+           "restoring dispatch runs the deferred preemption");
+    s_host_ns_fn = NULL;
+}
+
+/* A request raised from inside the VBLANK interrupt frame -- by guest handler code that
+ * reaches its own safe boundary -- must not re-enter service. deliver_vblank() runs with
+ * s_servicing_interrupts set, and that is exactly the state the eligibility test rejects.
+ * The request is deferred, not dropped, so the next ordinary boundary still consumes it. */
+static void test_service_request_cannot_recurse_into_delivery(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x26au, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    g_test_vblank_handler = 0x00004321u;
+    g_test_handler_requests_service = 1;
+
+    set_host_us(60000u);
+    sr_sched_request_service();
+    int32_t slice_before = test_slice();
+    TEST_SAFE_BOUNDARY(0x00007000u);
+
+    expect(g_test_handler_calls == 1u,
+           "a request raised inside the interrupt frame does not re-enter delivery");
+    expect(g_test_vblank_delivered == 1u, "exactly one VBLANK is delivered");
+    expect(test_service_requested(),
+           "the recursive request is deferred to an eligible boundary, not dropped");
+    expect(test_slice() == slice_before - 2,
+           "two safe boundaries were executed: the guest's and the handler's");
+
+    g_test_handler_requests_service = 0;
+    uint64_t vbl_before = s_vbl_count;
+    TEST_SAFE_BOUNDARY(0x00007000u);
+    expect(!test_service_requested(), "the deferred recursive request is consumed later");
+    expect(s_vbl_count == vbl_before, "and produces no extra VBLANK");
+    s_host_ns_fn = NULL;
+}
+
+/* A pending source bit that predates the request must be serviceable at a safe boundary
+ * without waiting for the quantum. VBLANK production is disabled here so the only possible
+ * source of the delivery is the already-latched bit. */
+static void test_service_only_delivers_an_already_pending_bit(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    disable_vblank_sources();
+    int runner = mk(0x26bu, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    sched_raise_interrupt(SCHED_INTR_GE);
+    uint64_t vbl0 = s_vbl_count;      /* s_vbl_count is a runtime-lifetime counter */
+    int32_t slice_before = test_slice();
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x00008000u);
+
+    expect(g_test_vblank_delivered == 1u,
+           "an already-pending VBLANK is delivered at a safe boundary, not at quantum expiry");
+    expect((sched_pending_interrupts() & SCHED_INTR_VBLANK) == 0u,
+           "the delivered source leaves the pending set");
+    expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
+           "a source with no implemented handler stays pending rather than being dropped");
+    expect(test_slice() == slice_before - 1, "still one quantum unit for one boundary");
+    expect(s_vbl_count - vbl0 == 1u && s_vbl_next_us == UINT64_MAX,
+           "service delivers the bit without fabricating a source event");
+    s_host_ns_fn = NULL;
+}
+
+/* Turbo (SR_NOVBPACE=1) has no host-anchored virtual clock, so the advisory must not
+ * exist there and nothing may set the flag: the safe-boundary fast path collapses to one
+ * predicted-not-taken load and turbo semantics are unchanged. The same start function is
+ * also proved inert when explicitly disabled in paced mode (SR_NOSERVICEHINT), which is
+ * what keeps this selftest free of any real host thread or timer. */
+static void test_turbo_has_no_service_advisory(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0u);            /* turbo */
+    int runner = mk(0x26cu, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    service_hint_start();
+    expect(s_service_hint_thread == NULL,
+           "turbo does not start a host service-request advisory");
+
+    uint64_t vtime0 = s_vtime_us, vbl0 = s_vbl_count;
+    int32_t slice_before = test_slice();
+    for (int i = 0; i < 64; i++) TEST_SAFE_BOUNDARY(0x00009000u);
+    expect(s_vtime_us == vtime0 && s_vbl_count == vbl0,
+           "with no request the added boundary branch is inert in turbo");
+    expect(test_slice() == slice_before - 64,
+           "turbo quantum accounting is unchanged");
+
+    /* Paced, but explicitly disabled: still no worker, and still no request producer. */
+    s_pace_on = 1;
+    s_service_hint_disabled = 1;
+    service_hint_start();
+    expect(s_service_hint_thread == NULL,
+           "SR_NOSERVICEHINT keeps the advisory out of paced mode too");
+    expect(!test_service_requested(),
+           "no advisory means nothing sets the request: the selftest stays deterministic");
+    s_host_ns_fn = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 int main(void) {
@@ -1617,7 +2006,18 @@ int main(void) {
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
     test_expired_timed_wait_enters_strict_priority();
+    test_service_request_is_serviced_at_safe_boundary();
+    test_service_request_wake_timing_is_not_authoritative();
+    test_service_only_does_not_rotate_peers();
+    test_service_only_preempts_only_for_higher_priority();
+    test_service_request_defers_while_interrupts_disabled();
+    test_service_only_respects_dispatch_suspension();
+    test_service_request_cannot_recurse_into_delivery();
+    test_service_only_delivers_an_already_pending_bit();
+    test_turbo_has_no_service_advisory();
 
+    expect(s_service_hint_thread == NULL,
+           "the scheduler selftest never creates a host advisory thread");
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

@@ -4339,7 +4339,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ed822f20afbd421bef57c144cdfe7d1567e8e5cca2230cf5a79de37cddc65d3e"
+      "sha256": "13e6637038b3c41e1a56bc5c5c941443dfc1ae2d3c89cb852bc1eef45029c244"
     },
     {
       "path": "src/rt/hle.c",
@@ -4581,7 +4581,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "10ecea5de80af3fecc77fb3dd08cf27387cebc0940ad824cd8474d12d10bd2e2"
+      "sha256": "c31677935fada9e7f731012abdf661379a9affccfc228d84e60cd6e404a9ffa6"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4614,7 +4614,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "72eefaf0adf5d760c0cd402d0621cd2acae90b8ac05daeeb361e66025d2b5e35"
+      "sha256": "716a0367168669935fe0a08a9d598cc345bca7793535b367e1a2424980adb67c"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4626,7 +4626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b26386b7dea6eb64d96d406c1e569b54691ba2720509f12152b012b1be0eb4f6"
+      "sha256": "064afeda58ebcbf3da53947b1a832288c39aa4d3c4083c73b9c5b7107db8e93b"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -4755,7 +4755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3239c8332e2abf47940ea61b907c224f2c14082b96f4609279baf8323890c182"
+      "sha256": "64218dde5d663a444ced806dfacaf21d3387e389652d78f0de951841f56adbb2"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -5147,7 +5147,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1fd85d967fe28177c4b47d46ab1bfb19b33afcb728a14b62a84c043b2839a65e"
+      "sha256": "aee2182ecb6893cb4a3ad170b62367d3b9a01cd57a19756a2c6818df0353ca5a"
     },
     {
       "path": "tools/ge_replay_metrics.py",

@@ -12,7 +12,8 @@
 //     audio, VFPU fallback, or debug-watch functions. They run straight-line C
 //     that terminates at the explicit `syscall` (funct 0x0C) in exit_stub().
 //   - sr_sched_on stays 0, so the SR_YIELD macro in generated code is a cheap
-//     no-op that never calls sr_yield or consults sr_timeslice.
+//     no-op that never calls sr_yield, consults sr_timeslice, or enters the
+//     safe-boundary service path.
 //   - If a supposedly dead stub is ever reached, it returns a safe value
 //     (0 / false / no-op) rather than crashing or silently skipping CPU state.
 //   - sr_syscall is the only stub reached on the intended exit path: the explicit
@@ -57,6 +58,11 @@ CpuState *s_cpu = NULL;
 int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
 void    sr_yield(CpuState *s) { (void)s; }
+/* SR_YIELD's safe-boundary service hook (#70). Same reasoning as sr_yield above:
+ * sr_sched_on is 0, so neither branch of the macro is ever taken. */
+atomic_int_least32_t sr_service_request = 0;
+void    sr_sched_request_service(void) {}
+void    sr_sched_service_only(void) {}
 uint32_t sched_current_uid(void) { return 0u; }
 uint32_t sched_root_uid(void)     { return 0x110u; }
 uint32_t sched_worker_uid(void)   { return 0x114u; }

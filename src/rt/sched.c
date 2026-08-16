@@ -24,12 +24,16 @@
 #include "perf.h"
 
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_thread.h>
+#include <SDL3/SDL_error.h>
 #include <stdio.h>
 #include <string.h>
 #include <setjmp.h>
 
 int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
+/* See recomp.h for the contract. Sticky, relaxed, payload-free. */
+atomic_int_least32_t sr_service_request = 0;
 
 #define TIMESLICE 1000           /* yields per thread run before preemption (smaller = more frequent vblank delivery, fixes UMD-init spin) */
 #define MAXTHREADS 128
@@ -571,6 +575,42 @@ static uint64_t host_now_ns(void) {
     return s_host_ns_fn ? s_host_ns_fn() : SDL_GetTicksNS();
 }
 
+/* #70 -- the NEXT SERVICE DEADLINE, published for the host service-request advisory.
+ *
+ * WHICH deadline this is matters, and the two candidates are not interchangeable:
+ *
+ *   s_vbl_next_ns is the PRESENTATION pacing deadline consumed by vblank_pace(). That
+ *     function runs only from sched_run()'s idle branch, i.e. only when no guest thread
+ *     is runnable. The measured #70 route is ~98% guest CPU with idle_ms ~0.3, so under
+ *     exactly the condition this mission addresses s_vbl_next_ns is not advanced at all
+ *     and sits arbitrarily far in the past. Deriving a wake time from it would degenerate
+ *     to a fixed-floor poll with no relationship to the display cadence. It is therefore
+ *     NOT safe to publish as the service deadline.
+ *
+ *   s_vbl_next_us IS the rational source deadline: the single VBLANK producer advances it
+ *     (and only it) through scheduler_advance_vblank_deadlines(), in exact 60000/1001
+ *     steps, and it is expressed in the same host-anchored microseconds as host_us().
+ *     s_clock_epoch_ns converts it back to an absolute host-monotonic instant.
+ *
+ * So the advisory is tied to a scheduler-owned deadline and invents no second cadence.
+ * The published value is written by the runtime thread only, read by the advisory worker
+ * only, and carries no other state -- one relaxed 64-bit atomic is the entire interface.
+ * The advisory may act on a stale value with no correctness consequence: waking early
+ * merely costs one extra authoritative host sample that finds nothing due, and waking
+ * late costs nothing at all, because the runtime -- not the timer -- decides how many
+ * rational periods elapsed. */
+static atomic_uint_least64_t s_service_deadline_ns;
+
+static void publish_service_deadline(void) {
+    uint64_t ns;
+    if (s_vbl_next_us == UINT64_MAX ||
+        s_vbl_next_us > (UINT64_MAX - s_clock_epoch_ns) / 1000u)
+        ns = UINT64_MAX;                       /* saturated timeline: never due again */
+    else
+        ns = s_clock_epoch_ns + s_vbl_next_us * 1000u;
+    atomic_store_explicit(&s_service_deadline_ns, ns, memory_order_relaxed);
+}
+
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
     s_pace_on = getenv("SR_NOVBPACE") ? 0 : 1;
@@ -582,6 +622,7 @@ static void pace_setup(void) {
     s_vtime_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_event_period_rem = 0;
+    publish_service_deadline();
 }
 
 /* True when the scheduler paces vblanks to real time (the default). gui_present uses this to
@@ -648,6 +689,10 @@ static void scheduler_advance_vblank_deadlines(uint64_t count) {
     else
         s_vbl_next_us += (uint64_t)delta;
     s_vbl_event_period_rem = new_rem;
+    /* The single producer just moved its deadline: republish it for the advisory.
+     * This is the ONLY place the deadline can move forward, so the published value
+     * cannot describe a cadence the source did not agree to. */
+    publish_service_deadline();
 }
 
 static void scheduler_latch_due_events(void) {
@@ -915,6 +960,127 @@ static void scheduler_service_pending(void) {
         deliver_vblank();
     }
     s_servicing_interrupts = 0;
+}
+
+void sr_sched_request_service(void) {
+    atomic_store_explicit(&sr_service_request, 1, memory_order_relaxed);
+}
+
+/* #70 -- the service-only scheduler phase.
+ *
+ * This runs on the SAME runtime/guest host thread as the generated code that reached the
+ * safe boundary, so every scheduler variable it touches is still single-threaded. It is
+ * NOT sr_yield(): it answers only "is host-timed scheduler work due?", never "has this
+ * thread run long enough to rotate?". Concretely it must not, and does not:
+ *
+ *   - reset or otherwise write sr_timeslice (the macro's one decrement per boundary is
+ *     the whole quantum accounting);
+ *   - rotate equal-priority peers, or let a lower-priority peer run;
+ *   - assign CpuState.pc, or advance s_tick / the yield-path diagnostics;
+ *   - fabricate a VBLANK, increment s_vbl_count, or move s_vbl_next_us -- only the
+ *     rational source below scheduler_latch_due_events() may do that.
+ *
+ * The one control-flow effect it may have is the existing strict-priority rule: if the
+ * authoritative host sample promotes a numerically STRONGER thread, sched_preempt() takes
+ * the CPU away exactly as it already does from sched_resume_interrupts(). The call
+ * sequence below is deliberately identical to that function's, so there is one eligible-
+ * boundary shape in the runtime rather than two:
+ *
+ *     host sample -> s_vtime_us -> rational latch -> pending -> eligible delivery -> preempt
+ *
+ * Eligibility is tested BEFORE the request is consumed. An ineligible boundary therefore
+ * DEFERS the request rather than losing it -- the sticky flag survives, and the next
+ * eligible boundary (or sched_resume_interrupts, which does this same work) services it.
+ * Both tests are plain loads of runtime-thread-owned ints, so a long interrupt-suspended
+ * or recursive-service region costs one branch per safe boundary and reads no host clock.
+ * That recursion test is also what stops a request raised from inside a VBLANK handler
+ * from re-entering delivery: scheduler_service_pending()/deliver_vblank() run with
+ * s_servicing_interrupts set. */
+void sr_sched_service_only(void) {
+    if (!s_interrupts_enabled || s_servicing_interrupts) return;
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    scheduler_progress_time();
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sched_preempt();
+}
+
+/* ---- host service-request advisory ---------------------------------------------------
+ *
+ * The sticky flag above is inert without a truthful producer: nothing in a CPU-bound
+ * guest sets it. This worker is that producer, and it is a WAKEUP HINT, never a VBLANK
+ * source. Its entire authority is one relaxed store of 1 into sr_service_request. It
+ * reads only SDL_GetTicksNS() and two atomics; it never touches CpuState, s_cur, any TCB,
+ * s_vtime_us, s_vbl_next_us, s_vbl_next_ns, s_vbl_count, s_pending_interrupts,
+ * sched_raise_interrupt(), deliver_vblank(), any coroutine, guest memory, or callback
+ * state. It deliberately does NOT go through host_now_ns(): that seam's function pointer
+ * is runtime-thread-owned test state, and the worker must not read it.
+ *
+ * Because the count of events is decided entirely by the runtime thread re-sampling the
+ * authoritative clock and advancing every elapsed rational deadline, this worker's timing
+ * cannot change how many VBLANKs exist:
+ *   - waking EARLY costs one extra authoritative sample that finds nothing due;
+ *   - waking LATE (host scheduling jitter, a suspend/resume, a stalled runtime) collapses
+ *     into one sticky request, and the runtime then advances all elapsed periods itself.
+ *
+ * Turbo (SR_NOVBPACE=1) has no host-anchored virtual clock, so the advisory is not started
+ * at all there and the flag is never set: the safe-boundary fast path stays a single
+ * predicted-not-taken load and turbo semantics are unchanged. SR_NOSERVICEHINT=1 disables
+ * the worker in paced mode too, so the same binary can be run with and without it. */
+#define SR_SERVICE_HINT_FLOOR_NS   500000ull   /* never spin: every iteration sleeps */
+#define SR_SERVICE_HINT_MAX_NS    4000000ull   /* bounds shutdown latency and stale-deadline drift */
+
+static SDL_Thread *s_service_hint_thread = NULL;
+static atomic_int_least32_t s_service_hint_stop;
+static int s_service_hint_disabled = -1;
+
+static int SDLCALL service_hint_worker(void *unused) {
+    (void)unused;
+    while (!atomic_load_explicit(&s_service_hint_stop, memory_order_relaxed)) {
+        uint64_t now = SDL_GetTicksNS();
+        uint64_t deadline = atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed);
+        uint64_t wait;
+        if (now >= deadline) {
+            sr_sched_request_service();
+            wait = SR_SERVICE_HINT_FLOOR_NS;
+        } else {
+            wait = deadline - now;
+            if (wait > SR_SERVICE_HINT_MAX_NS) wait = SR_SERVICE_HINT_MAX_NS;
+            if (wait < SR_SERVICE_HINT_FLOOR_NS) wait = SR_SERVICE_HINT_FLOOR_NS;
+        }
+        SDL_DelayNS(wait);
+    }
+    return 0;
+}
+
+/* Created exactly once, by sched_run() before the first guest thread is resumed. The
+ * s_service_hint_thread guard makes a repeated start a no-op, so no reset/re-init path
+ * can produce a duplicate worker. Failure to create is not fatal: the runtime simply
+ * keeps the pre-#70 timeslice-only service cadence. */
+static void service_hint_start(void) {
+    if (s_service_hint_thread) return;
+    if (!sched_vbl_paced()) return;                  /* turbo: no host anchor, no advisory */
+    if (s_service_hint_disabled < 0)
+        s_service_hint_disabled = getenv("SR_NOSERVICEHINT") ? 1 : 0;
+    if (s_service_hint_disabled) return;
+    atomic_store_explicit(&s_service_hint_stop, 0, memory_order_relaxed);
+    publish_service_deadline();                      /* never let the worker read an unset deadline */
+    s_service_hint_thread = SDL_CreateThread(service_hint_worker, "sr-service-hint", NULL);
+    if (!s_service_hint_thread)
+        fprintf(stderr, "sched: service-request advisory unavailable (%s); "
+                        "falling back to timeslice-only service\n", SDL_GetError());
+}
+
+/* Stop and JOIN before sched_run() returns, i.e. before the driver runs any teardown and
+ * long before sdl3vk_shutdown()/SDL_Quit(). After the join no further request can be
+ * raised, so the flag is cleared here and the runtime is left exactly as it would be if
+ * the advisory had never existed. */
+static void service_hint_stop(void) {
+    if (!s_service_hint_thread) return;
+    atomic_store_explicit(&s_service_hint_stop, 1, memory_order_relaxed);
+    SDL_WaitThread(s_service_hint_thread, NULL);
+    s_service_hint_thread = NULL;
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
 }
 
 static void coro_body(void *param) {
@@ -2816,6 +2982,13 @@ int sched_is_dormant(uint32_t uid) {
 /* The scheduler loop. Runs on the main (converted) fiber. Creates the entry thread, then keeps
  * resuming the highest-priority ready thread until none remain runnable. */
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
+    /* Start the host service-request advisory before the first guest thread is resumed,
+     * so no guest code can reach a safe boundary while the producer is still absent. Its
+     * first act is sched_vbl_paced(), which resolves the profile through pace_setup();
+     * turbo declines the worker outright. The process may still exit from inside a guest
+     * thread (an unimplemented import), in which case the worker is torn down with the
+     * process -- safe, because everything it touches is process-lifetime static storage. */
+    service_hint_start();
     uint32_t uid = sched_create_thread(entry, 32, 0);
     TCB *t0 = tcb_by_uid(uid);
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
@@ -2942,4 +3115,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         s_cur = -1;
         s_tick++;
     }
+    /* Every exit from the loop above lands here. Join the advisory worker before the
+     * driver begins teardown; after this point nothing can raise a service request. */
+    service_hint_stop();
 }
