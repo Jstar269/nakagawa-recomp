@@ -55,6 +55,27 @@ class VfpuFallbackTests(unittest.TestCase):
         self.assertIn("0xFF000000u",effect)
         self.assertIn("s->r[10] =",effect)
 
+    def test_vmmul_accumulates_into_a_local_like_the_interpreter(self):
+        # Issue #40: a single chained expression (0.0f+t0+t1+...) compiles to a
+        # different addss operand order at -O0 than sr_vfpu_interp's loop, and
+        # x86-64 SSE selects the *first* NaN source on NaN+NaN, so the two paths
+        # kept different NaN payloads for exotic matrix inputs. The emission must
+        # stay an accumulate-into-local so the paths agree on any host.
+        word=(0x3c<<26)|(0<<23)|(4<<16)|(2<<8)|(1<<15)  # vmmul 3x3, vs=1, vt=0, vd=0
+        effect,_,_=codegen.vfpu_effect(0x5000,word)
+        self.assertIn("float _m0_0=0.0f;",effect)
+        self.assertIn("_m0_0+=s->v[",effect)
+        self.assertNotRegex(effect, r"float _m[0-9]_[0-9]=0\.0f\+",
+                            "chained vmmul expression reintroduces the NaN payload split")
+
+    def test_vtfm_accumulates_into_a_local_like_the_interpreter(self):
+        word=(0x3c<<26)|(1<<23)|(1<<16)|(2<<8)|0  # vtfm3 3-lane, ins=1
+        effect,_,_=codegen.vfpu_effect(0x5100,word)
+        self.assertIn("float _v0=0.0f;",effect)
+        self.assertIn("_v0+=s->v[",effect)
+        self.assertNotRegex(effect, r"float _v[0-9]=0\.0f\+",
+                            "chained vtfm expression reintroduces the NaN payload split")
+
 
 if __name__ == "__main__":
     unittest.main()
