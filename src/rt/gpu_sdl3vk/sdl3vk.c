@@ -913,6 +913,19 @@ static int recover_unenqueued_present(PresentFrame *f) {
     return 1;
 }
 
+/* Presentation filter selection policy (issue #68): nearest filtering for exact integer
+ * source->viewport scaling (1:1, 2x, 3x, etc.), which eliminates bilinear blur on 2x/integer
+ * scaling while preserving pixel crispness; linear filtering for fractional/non-integer scaling
+ * to avoid uneven pixel stepping/aliasing. */
+static VkFilter sdl3vk_present_filter(int srcw, int srch, int vw, int vh) {
+    if (srcw > 0 && srch > 0 && vw > 0 && vh > 0 &&
+        (vw % srcw == 0) && (vh % srch == 0) &&
+        (vw / srcw == vh / srch)) {
+        return VK_FILTER_NEAREST;
+    }
+    return VK_FILTER_LINEAR;
+}
+
 static int present_common(VkImage src, int srcw, int srch, const uint32_t *upload) {
     if (s_renderer_terminal) return -1;
     const char *why = NULL;
@@ -990,9 +1003,10 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         blt.dstOffsets[0].x = x0;      blt.dstOffsets[0].y = y0;
         blt.dstOffsets[1].x = x0 + vw; blt.dstOffsets[1].y = y0 + vh; blt.dstOffsets[1].z = 1;
         blt.dstOffsets[0].z = 0;
+        VkFilter filter = sdl3vk_present_filter(srcw, srch, vw, vh);
         vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blt, VK_FILTER_LINEAR);
+                       1, &blt, filter);
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1431,6 +1445,43 @@ int sdl3vk_capture_selftest(void) {
     if (!sdl3vk_init("Nakagawa GPU capture selftest")) {
         fprintf(stderr, "gpu capture selftest: SKIP (Vulkan initialization unavailable)\n");
         return 77;
+    }
+
+    /* ---- filter selection policy (issue #68) --------------------------------------- */
+    /* Exact integer scaling must select VK_FILTER_NEAREST */
+    if (sdl3vk_present_filter(480, 272, 960, 544) != VK_FILTER_NEAREST) {
+        fprintf(stderr, "filter: 480x272 -> 960x544 must select NEAREST\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(960, 544, 960, 544) != VK_FILTER_NEAREST) {
+        fprintf(stderr, "filter: 960x544 -> 960x544 must select NEAREST\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 480, 272) != VK_FILTER_NEAREST) {
+        fprintf(stderr, "filter: 480x272 -> 480x272 must select NEAREST\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 1440, 816) != VK_FILTER_NEAREST) {
+        fprintf(stderr, "filter: 480x272 -> 1440x816 must select NEAREST\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 1920, 1088) != VK_FILTER_NEAREST) {
+        fprintf(stderr, "filter: 480x272 -> 1920x1088 must select NEAREST\n"); ok = 0;
+    }
+    /* Fractional and non-integer scaling must select VK_FILTER_LINEAR */
+    if (sdl3vk_present_filter(480, 272, 720, 408) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: 480x272 -> 720x408 (1.5x) must select LINEAR\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 1200, 680) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: 480x272 -> 1200x680 (2.5x) must select LINEAR\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 1000, 566) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: 480x272 -> 1000x566 fractional must select LINEAR\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(960, 544, 1440, 816) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: 960x544 -> 1440x816 fractional must select LINEAR\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(480, 272, 960, 540) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: 480x272 -> 960x540 non-uniform must select LINEAR\n"); ok = 0;
+    }
+    if (sdl3vk_present_filter(0, 0, 960, 544) != VK_FILTER_LINEAR) {
+        fprintf(stderr, "filter: invalid dimensions must select LINEAR\n"); ok = 0;
     }
 
     /* ---- CPU framebuffer path (B8G8R8A8 fbimg) -------------------------------------- */
