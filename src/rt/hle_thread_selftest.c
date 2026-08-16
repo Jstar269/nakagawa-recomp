@@ -785,6 +785,7 @@ static void reset_fixture(void) {
     s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
+    s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -2286,6 +2287,193 @@ static void test_wait_sema_count_validation(void) {
         s_oracle_callback_calls = 0;
         s_cur = -1;
     }
+}
+
+/* -------------------------------------------------------------------------
+ * #70 slice C: an expired timed WAIT-OBJECT enters strict-priority scheduling
+ * -------------------------------------------------------------------------
+ * sched_preempt() now promotes a timed wait whose deadline has passed before it
+ * applies the strict-priority rule. The scheduler-only regression for that drives
+ * a synthetic TH_WAIT_DELAY TCB; this one drives the real TH_WAIT_OBJ path end to
+ * end, through the registered production NIDs and the production handler:
+ *
+ *   sceKernelWaitSema / sceKernelWaitSemaCB
+ *     -> h_WaitSema / h_WaitSemaCB (hle.c)
+ *       -> sched_block_on_timeout() (sched.c)   TH_WAIT_OBJ, wake = deadline
+ *         -> sched_promote_expired_waits() via sched_preempt()
+ *
+ * A priority-16 thread enters an actual timed wait on a semaphore that is never
+ * signalled, the deterministic scheduler clock is advanced to exactly the
+ * deadline, and a priority-40 runner then reaches an eligible sched_preempt()
+ * boundary.
+ *
+ * Promoting EARLIER must not change what the guest is told, so the timeout code,
+ * the semaphore count and the wait bookkeeping are all asserted on the far side
+ * of the resume: an earlier promotion must not turn a timeout into a success,
+ * consume a count that was never available, or leave a ghost waiter that a later
+ * signal would be absorbed by.
+ * ------------------------------------------------------------------------- */
+#define SLC_TIMEOUT_PTR   0x00250300u
+#define SLC_TIMEOUT_US    1000u
+#define SLC_WAIT_TIMEOUT  0x800201a8u   /* SCE_KERNEL_ERROR_WAIT_TIMEOUT */
+
+static uint32_t s_slc_nid;
+static uint32_t s_slc_sema;
+static uint32_t s_slc_ret;
+static int      s_slc_returned;
+static uint32_t s_slc_signal_ret;
+static int      s_slc_runner_fellthrough;
+
+/* The waiter runs the wait on its own coroutine, exactly as a guest thread does:
+ * sched_block_on_timeout() switches away from inside the syscall, and the return
+ * value is only observable once the scheduler resumes it. */
+static void slc_waiter_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_slc_sema; cpu.r[5] = 1u; cpu.r[6] = SLC_TIMEOUT_PTR;
+    s_slc_ret = sr_syscall(&cpu, s_slc_nid);
+    s_slc_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+/* The priority-40 runner also gets its own coroutine, so the preemption transfer
+ * out of sched_preempt() is a genuine child-to-scheduler switch rather than a
+ * self-switch on the adopted scheduler coroutine.
+ *
+ * The body deliberately does nothing after the boundary except record that it got
+ * there. When the promotion is in place sched_preempt() does NOT return here -- it
+ * transfers to the scheduler, which is the behaviour under test -- so reaching the
+ * line below is itself the negative observation. */
+static void slc_runner_body(void *arg) {
+    (void)arg;
+    /* The deterministic clock reaches the waiter's deadline EXACTLY -- due, not
+     * overshot -- and this thread then hits an eligible strict-priority boundary. */
+    s_vtime_us = SLC_TIMEOUT_US;
+    sched_preempt();
+    s_slc_runner_fellthrough = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_expired_timed_sema_wait_enters_strict_priority(uint32_t nid,
+                                                                const char *who) {
+    char msg[256];
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *runner = fixture_thread(0x1f0u, TH_RUNNING, 40);   /* holds the CPU */
+    TCB *waiter = fixture_thread(0x1f1u, TH_READY, 16);     /* numerically stronger */
+    const int runner_idx = (int)(runner - s_tcb);
+    const int waiter_idx = (int)(waiter - s_tcb);
+    runner->started = 1;
+    s_cur = runner_idx;
+
+    /* count 0 against need 1: the wait must genuinely block, never take a count. */
+    uint32_t sema = wsv_create(0, 1);
+    snprintf(msg, sizeof msg, "%s slice C: fixture semaphore starts at count 0", who);
+    expect(wsv_count(sema) == 0, msg);
+
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = nid; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    snprintf(msg, sizeof msg, "%s slice C: waiter coroutine created", who);
+    expect(waiter->coro != NULL, msg);
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+
+    /* The production handler blocked it on the object with a finite deadline. */
+    snprintf(msg, sizeof msg, "%s slice C: the timed wait blocked on the semaphore object", who);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == sema, msg);
+    snprintf(msg, sizeof msg, "%s slice C: the deadline is the supplied timeout", who);
+    expect(waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+    snprintf(msg, sizeof msg, "%s slice C: the blocking wait has not returned yet", who);
+    expect(s_slc_returned == 0, msg);
+    snprintf(msg, sizeof msg, "%s slice C: the blocking wait consumed no count", who);
+    expect(wsv_count(sema) == 0, msg);
+
+    /* Hand the CPU to the priority-40 runner, which advances the clock to the
+     * deadline and reaches the eligible sched_preempt() boundary from inside its
+     * own coroutine. */
+    s_slc_runner_fellthrough = 0;
+    s_slc_signal_ret = 0xFFFFFFFFu;
+    runner->coro = sr_coro_create(slc_runner_body, NULL, (size_t)4 << 20);
+    snprintf(msg, sizeof msg, "%s slice C: runner coroutine created", who);
+    expect(runner->coro != NULL, msg);
+    if (!runner->coro) { wsv_delete(sema); s_cur = -1; return; }
+    s_cur = runner_idx;
+    runner->state = TH_RUNNING;
+    sr_coro_switch(runner->coro);
+
+    snprintf(msg, sizeof msg,
+             "%s slice C (A): the expired timed WAIT_OBJ waiter becomes runnable at the boundary", who);
+    expect(waiter->state == TH_READY, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (B): the priority-40 runner is preempted by the expired priority-16 waiter", who);
+    expect(runner->state == TH_READY, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (B): the expired waiter wins strict-priority selection", who);
+    expect(pick_next() == waiter_idx, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (B): the boundary transferred control out of the runner", who);
+    expect(s_slc_runner_fellthrough == 0, msg);
+
+    /* Resume it the way sched_run would, and read what the guest is actually told. */
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+
+    snprintf(msg, sizeof msg, "%s slice C: the timed wait returned after promotion", who);
+    expect(s_slc_returned == 1, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (C): the guest receives SCE_KERNEL_ERROR_WAIT_TIMEOUT (0x800201a8)", who);
+    expect(s_slc_ret == SLC_WAIT_TIMEOUT, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (F): earlier promotion manufactured no success result", who);
+    expect(s_slc_ret != 0u, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (D): the timed-out wait left the semaphore count unchanged", who);
+    expect(wsv_count(sema) == 0, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (E): the resumed thread is in no wait state", who);
+    expect(waiter->state != TH_WAIT_OBJ && waiter->state != TH_WAIT_DELAY, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (E): callback-wait bookkeeping is cleared on the way out", who);
+    expect(waiter->is_cb_wait == 0, msg);
+
+    /* The sharp half of (E): the timed-out thread's wait_obj still names the
+     * semaphore, so a signal arriving afterwards must raise the count rather than
+     * be handed to a ghost waiter. Issued with no current thread, so it cannot be
+     * reached by the runner falling through its boundary. */
+    waiter->state = TH_DORMANT;         /* it took its result and stopped competing */
+    s_cur = -1;
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        s_slc_signal_ret = sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA);
+    }
+    snprintf(msg, sizeof msg, "%s slice C: the post-timeout signal succeeded", who);
+    expect(s_slc_signal_ret == 0u, msg);
+    snprintf(msg, sizeof msg,
+             "%s slice C (E): a later signal is not absorbed by the timed-out waiter", who);
+    expect(wsv_count(sema) == 1, msg);
+
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    if (runner->coro) { sr_coro_destroy(runner->coro); runner->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_expired_timed_object_waits_enter_strict_priority(void) {
+    test_expired_timed_sema_wait_enters_strict_priority(NID_CNW_WAIT_SEMA,
+                                                        "sceKernelWaitSema");
+    test_expired_timed_sema_wait_enters_strict_priority(NID_CNW_WAIT_SEMA_CB,
+                                                        "sceKernelWaitSemaCB");
 }
 
 /* -------------------------------------------------------------------------
@@ -4186,7 +4374,12 @@ static void check_coroutine_lifecycle(void) {
     expect(lc.child_to_other == 0,
            "every switch out of a child coroutine targeted the adopted scheduler");
     /* Two joiner bodies, plus the WaitSemaCB control body from
-     * test_wait_sema_count_validation, plus one park per conformance probe leg
+     * test_wait_sema_count_validation, plus the two waiter bodies from
+     * test_expired_timed_object_waits_enter_strict_priority (each parks once, after
+     * its timed wait returns the timeout; the two runner bodies in that test park
+     * ZERO times, because sched_preempt() transfers control out of them and never
+     * returns -- which is exactly what that test asserts), plus one park per
+     * conformance probe leg
      * that returned, plus the delay-thread body from
      * test_delay_advances_unified_timeline (its sceKernelDelayThread parks
      * inside the syscall, and the body parks again when the syscall returns).
@@ -4194,11 +4387,12 @@ static void check_coroutine_lifecycle(void) {
      * not from the park hook, so this stays a genuine cross-check of the
      * coroutine layer rather than a tautology. */
     {
-        int expected_parks = 4 + ic_expected_parks();
-        char msg[192];
+        int expected_parks = 6 + ic_expected_parks();
+        char msg[224];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
-                 "+ 1 delay body + %d returned conformance legs = %d, observed %lu)",
+                 "+ 1 delay body + 2 slice-C waiters + %d returned conformance legs "
+                 "= %d, observed %lu)",
                  ic_expected_parks(), expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -5659,6 +5853,7 @@ int main(int argc, char **argv) {
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
     test_wait_sema_count_validation();
+    test_expired_timed_object_waits_enter_strict_priority();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();
