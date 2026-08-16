@@ -598,17 +598,37 @@ static uint64_t host_now_ns(void) {
  * The advisory may act on a stale value with no correctness consequence: waking early
  * merely costs one extra authoritative host sample that finds nothing due, and waking
  * late costs nothing at all, because the runtime -- not the timer -- decides how many
- * rational periods elapsed. */
-static atomic_uint_least64_t s_service_deadline_ns;
+ * rational periods elapsed.
+ *
+ * STARTUP CONTRACT. The deadline begins NOT_ARMED and stays that way until the rational
+ * source has moved itself to a real FUTURE deadline, which only happens after the
+ * pre-existing runtime has taken its first ordinary scheduler service. This matters:
+ * pace_setup() leaves s_vbl_next_us == 0, i.e. "due at the clock epoch". Publishing that
+ * would let the advisory request service at the very first generated safe boundary and
+ * so DETERMINE the origin VBLANK, moving it earlier than the boundary that produced it
+ * before this mechanism existed. While NOT_ARMED the worker never requests anything, so
+ * the first VBLANK stays exactly where main puts it and the advisory only takes over for
+ * the deadlines that follow it. */
+#define SR_SERVICE_DEADLINE_NOT_ARMED UINT64_MAX
+static atomic_uint_least64_t s_service_deadline_ns = SR_SERVICE_DEADLINE_NOT_ARMED;
 
+static void disarm_service_deadline(void) {
+    atomic_store_explicit(&s_service_deadline_ns, SR_SERVICE_DEADLINE_NOT_ARMED,
+                          memory_order_relaxed);
+}
+
+/* Arm ONLY on a real future deadline. A source deadline that is already due (the startup
+ * origin, or an intermediate step of a multi-period catch-up) and a saturated timeline
+ * both leave the advisory NOT_ARMED, because in neither case is there a future instant
+ * for it to sleep toward. */
 static void publish_service_deadline(void) {
-    uint64_t ns;
-    if (s_vbl_next_us == UINT64_MAX ||
-        s_vbl_next_us > (UINT64_MAX - s_clock_epoch_ns) / 1000u)
-        ns = UINT64_MAX;                       /* saturated timeline: never due again */
-    else
-        ns = s_clock_epoch_ns + s_vbl_next_us * 1000u;
-    atomic_store_explicit(&s_service_deadline_ns, ns, memory_order_relaxed);
+    if (s_vbl_next_us == UINT64_MAX || s_vbl_next_us <= s_vtime_us ||
+        s_vbl_next_us > (UINT64_MAX - s_clock_epoch_ns) / 1000u) {
+        disarm_service_deadline();
+        return;
+    }
+    atomic_store_explicit(&s_service_deadline_ns,
+                          s_clock_epoch_ns + s_vbl_next_us * 1000u, memory_order_relaxed);
 }
 
 static void pace_setup(void) {
@@ -622,7 +642,9 @@ static void pace_setup(void) {
     s_vtime_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_event_period_rem = 0;
-    publish_service_deadline();
+    /* Explicitly NOT armed: the origin deadline is due-at-epoch, and the advisory must
+     * not be what notices it. See the startup contract above. */
+    disarm_service_deadline();
 }
 
 /* True when the scheduler paces vblanks to real time (the default). gui_present uses this to
@@ -999,8 +1021,12 @@ void sr_sched_request_service(void) {
 void sr_sched_service_only(void) {
     if (!s_interrupts_enabled || s_servicing_interrupts) return;
     atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    /* scheduler_progress_time() samples the host clock into s_vtime_us AND ends with
+     * scheduler_latch_due_events(), so the rational latch is already covered here. An
+     * explicit second latch call would be a no-op, not a second event -- the source
+     * deadline has been advanced past s_vtime_us -- but it is still dead work on the
+     * only path that runs at generated safe-boundary frequency, so it is not made. */
     scheduler_progress_time();
-    scheduler_latch_due_events();
     scheduler_service_pending();
     sched_preempt();
 }
@@ -1023,12 +1049,75 @@ void sr_sched_service_only(void) {
  *   - waking LATE (host scheduling jitter, a suspend/resume, a stalled runtime) collapses
  *     into one sticky request, and the runtime then advances all elapsed periods itself.
  *
- * Turbo (SR_NOVBPACE=1) has no host-anchored virtual clock, so the advisory is not started
- * at all there and the flag is never set: the safe-boundary fast path stays a single
- * predicted-not-taken load and turbo semantics are unchanged. SR_NOSERVICEHINT=1 disables
- * the worker in paced mode too, so the same binary can be run with and without it. */
-#define SR_SERVICE_HINT_FLOOR_NS   500000ull   /* never spin: every iteration sleeps */
-#define SR_SERVICE_HINT_MAX_NS    4000000ull   /* bounds shutdown latency and stale-deadline drift */
+ * Turbo (SR_NOVBPACE=1) has no host-anchored virtual clock, so the advisory is not
+ * applicable there and is never started: the flag is never set, the safe-boundary fast
+ * path stays a single predicted-not-taken load, and turbo semantics are unchanged.
+ *
+ * SR_NOSERVICEHINT=1 -- TEMPORARY DRAFT ACCEPTANCE SWITCH, REMOVE BEFORE READY. It exists
+ * only so the upcoming private #70 campaign can A/B the SAME binary with and without the
+ * advisory. It is deliberately not documented as a supported runtime setting, and it is
+ * the ONLY way paced mode is allowed to run the pre-#70 timeslice-only service cadence:
+ * an advisory that was wanted but could not be created is fatal (see below). */
+#define SR_SERVICE_HINT_MIN_NS       500000ull  /* floor; also the post-request re-observe delay */
+#define SR_SERVICE_HINT_BACKOFF_NS  4000000ull  /* due, but the runtime has not serviced yet */
+#define SR_SERVICE_HINT_MAX_NS     20000000ull  /* cap on one sleep toward a future deadline */
+
+/* One deterministic worker iteration, as a pure decision over (now, published deadline,
+ * request already outstanding). The real SDL worker below calls exactly this, and so does
+ * the selftest -- so wake policy is provable without a host thread or a host clock.
+ *
+ * CADENCE ARGUMENT for the 20 ms cap. The cap can only shorten a sleep toward a FUTURE
+ * deadline, and a paced period is 16.683 ms, so in steady state the cap never binds: the
+ * worker sleeps exactly to the published deadline, raises one request, waits 0.5 ms, and
+ * then observes the republished (future) deadline. Two wakeups per display period, and
+ * the advisory can never become the cadence limiter, because it never sleeps past the
+ * next deadline the rational source published. NOT_ARMED and a still-unserviced request
+ * are the only states that sleep on a fixed interval, and neither can produce an event.
+ *
+ * The 4 ms backoff covers "deadline due, request still pending": re-raising a sticky flag
+ * changes nothing, so the worker must not spin while the runtime is legitimately unable to
+ * service (interrupts suspended, or no safe boundary reached yet). */
+typedef struct {
+    int      request;    /* 1 = raise the sticky service request this iteration */
+    uint64_t wait_ns;    /* host sleep before the next iteration; never 0 */
+} ServiceHintStep;
+
+static ServiceHintStep service_hint_step(uint64_t now_ns, uint64_t deadline_ns,
+                                         int request_outstanding) {
+    ServiceHintStep step;
+    step.request = 0;
+    if (deadline_ns == SR_SERVICE_DEADLINE_NOT_ARMED) {
+        step.wait_ns = SR_SERVICE_HINT_MAX_NS;      /* nothing to sleep toward; do not poll fast */
+    } else if (now_ns < deadline_ns) {
+        uint64_t remaining = deadline_ns - now_ns;
+        if (remaining > SR_SERVICE_HINT_MAX_NS) remaining = SR_SERVICE_HINT_MAX_NS;
+        if (remaining < SR_SERVICE_HINT_MIN_NS) remaining = SR_SERVICE_HINT_MIN_NS;
+        step.wait_ns = remaining;
+    } else if (request_outstanding) {
+        step.wait_ns = SR_SERVICE_HINT_BACKOFF_NS;
+    } else {
+        step.request = 1;
+        step.wait_ns = SR_SERVICE_HINT_MIN_NS;
+    }
+    return step;
+}
+
+typedef enum {
+    SR_SERVICE_HINT_STARTED = 0,
+    SR_SERVICE_HINT_NOT_APPLICABLE,       /* turbo: no host-anchored clock to service against */
+    SR_SERVICE_HINT_EXPLICITLY_DISABLED,  /* SR_NOSERVICEHINT: temporary draft A/B switch */
+    SR_SERVICE_HINT_FAILED,               /* wanted, but the host thread could not be created */
+} ServiceHintStatus;
+
+/* Host-thread seams. File-static and NULL in production, so the real SDL entry points are
+ * the only thing the runtime ever reaches; the selftest installs deterministic stand-ins
+ * to prove start/stop/join/creation-failure without spawning a thread. Nothing here is a
+ * public runtime API. SDL_CreateThread is a macro in SDL3, so it must be expanded inside a
+ * function rather than stored as a function pointer. */
+typedef SDL_Thread *(*ServiceHintCreateFn)(SDL_ThreadFunction fn, const char *name, void *data);
+typedef void (*ServiceHintJoinFn)(SDL_Thread *thread, int *status);
+static ServiceHintCreateFn s_service_hint_create_fn = NULL;
+static ServiceHintJoinFn   s_service_hint_join_fn = NULL;
 
 static SDL_Thread *s_service_hint_thread = NULL;
 static atomic_int_least32_t s_service_hint_stop;
@@ -1037,48 +1126,66 @@ static int s_service_hint_disabled = -1;
 static int SDLCALL service_hint_worker(void *unused) {
     (void)unused;
     while (!atomic_load_explicit(&s_service_hint_stop, memory_order_relaxed)) {
-        uint64_t now = SDL_GetTicksNS();
-        uint64_t deadline = atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed);
-        uint64_t wait;
-        if (now >= deadline) {
-            sr_sched_request_service();
-            wait = SR_SERVICE_HINT_FLOOR_NS;
-        } else {
-            wait = deadline - now;
-            if (wait > SR_SERVICE_HINT_MAX_NS) wait = SR_SERVICE_HINT_MAX_NS;
-            if (wait < SR_SERVICE_HINT_FLOOR_NS) wait = SR_SERVICE_HINT_FLOOR_NS;
-        }
-        SDL_DelayNS(wait);
+        ServiceHintStep step = service_hint_step(
+            SDL_GetTicksNS(),
+            atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed),
+            atomic_load_explicit(&sr_service_request, memory_order_relaxed) != 0);
+        if (step.request) sr_sched_request_service();
+        SDL_DelayNS(step.wait_ns);
     }
     return 0;
 }
 
+static SDL_Thread *service_hint_spawn(void) {
+    if (s_service_hint_create_fn)
+        return s_service_hint_create_fn(service_hint_worker, "sr-service-hint", NULL);
+    return SDL_CreateThread(service_hint_worker, "sr-service-hint", NULL);
+}
+
+static void service_hint_join(SDL_Thread *thread) {
+    if (s_service_hint_join_fn) { s_service_hint_join_fn(thread, NULL); return; }
+    SDL_WaitThread(thread, NULL);
+}
+
 /* Created exactly once, by sched_run() before the first guest thread is resumed. The
- * s_service_hint_thread guard makes a repeated start a no-op, so no reset/re-init path
- * can produce a duplicate worker. Failure to create is not fatal: the runtime simply
- * keeps the pre-#70 timeslice-only service cadence. */
-static void service_hint_start(void) {
-    if (s_service_hint_thread) return;
-    if (!sched_vbl_paced()) return;                  /* turbo: no host anchor, no advisory */
+ * s_service_hint_thread guard makes a repeated start a no-op, so no reset/re-init path can
+ * produce a duplicate worker. The advisory deadline is deliberately NOT published here:
+ * arming is owned by the rational source (see the startup contract above). */
+static ServiceHintStatus service_hint_start(void) {
+    if (s_service_hint_thread) return SR_SERVICE_HINT_STARTED;
+    if (!sched_vbl_paced()) return SR_SERVICE_HINT_NOT_APPLICABLE;
     if (s_service_hint_disabled < 0)
         s_service_hint_disabled = getenv("SR_NOSERVICEHINT") ? 1 : 0;
-    if (s_service_hint_disabled) return;
+    if (s_service_hint_disabled) return SR_SERVICE_HINT_EXPLICITLY_DISABLED;
     atomic_store_explicit(&s_service_hint_stop, 0, memory_order_relaxed);
-    publish_service_deadline();                      /* never let the worker read an unset deadline */
-    s_service_hint_thread = SDL_CreateThread(service_hint_worker, "sr-service-hint", NULL);
-    if (!s_service_hint_thread)
-        fprintf(stderr, "sched: service-request advisory unavailable (%s); "
-                        "falling back to timeslice-only service\n", SDL_GetError());
+    s_service_hint_thread = service_hint_spawn();
+    if (!s_service_hint_thread) {
+        fprintf(stderr, "sched: cannot create the host service-request advisory thread: %s\n",
+                SDL_GetError());
+        fflush(stderr);
+        return SR_SERVICE_HINT_FAILED;
+    }
+    return SR_SERVICE_HINT_STARTED;
+}
+
+/* The runtime must FAIL CLOSED rather than silently degrade. Paced mode without the
+ * advisory is the known-bad #70 service cadence; the only acceptable way to run it is the
+ * explicit temporary A/B switch, which is a separate status. Turbo does not want the
+ * advisory at all. So exactly one status is fatal. */
+static int service_hint_start_is_fatal(ServiceHintStatus status) {
+    return status == SR_SERVICE_HINT_FAILED;
 }
 
 /* Stop and JOIN before sched_run() returns, i.e. before the driver runs any teardown and
- * long before sdl3vk_shutdown()/SDL_Quit(). After the join no further request can be
- * raised, so the flag is cleared here and the runtime is left exactly as it would be if
- * the advisory had never existed. */
+ * long before sdl3vk_shutdown()/SDL_Quit(). The order matters and is asserted: stop is
+ * published, then the worker is joined, and only after the join -- when no further request
+ * can possibly be raised -- is the flag cleared. Clearing before the join could drop a
+ * request the worker raised on its way out. A second stop is harmless: the NULL handle
+ * check means no join is ever attempted on a thread that does not exist. */
 static void service_hint_stop(void) {
     if (!s_service_hint_thread) return;
     atomic_store_explicit(&s_service_hint_stop, 1, memory_order_relaxed);
-    SDL_WaitThread(s_service_hint_thread, NULL);
+    service_hint_join(s_service_hint_thread);
     s_service_hint_thread = NULL;
     atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
 }
@@ -2987,8 +3094,19 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
      * first act is sched_vbl_paced(), which resolves the profile through pace_setup();
      * turbo declines the worker outright. The process may still exit from inside a guest
      * thread (an unimplemented import), in which case the worker is torn down with the
-     * process -- safe, because everything it touches is process-lifetime static storage. */
-    service_hint_start();
+     * process -- safe, because everything it touches is process-lifetime static storage.
+     *
+     * FAIL CLOSED. If the advisory was wanted and could not be created, paced mode would
+     * silently run the known-bad pre-#70 timeslice-only service cadence and every later
+     * measurement would be quietly invalid. Refuse to start the guest instead. */
+    if (service_hint_start_is_fatal(service_hint_start())) {
+        fprintf(stderr,
+                "FATAL: the host service-request advisory could not be started; paced mode "
+                "would fall back to the known-bad timeslice-only service cadence (#70). "
+                "Refusing to run the guest.\n");
+        fflush(stderr);
+        abort();
+    }
     uint32_t uid = sched_create_thread(entry, 32, 0);
     TCB *t0 = tcb_by_uid(uid);
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args

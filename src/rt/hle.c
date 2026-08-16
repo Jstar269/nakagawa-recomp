@@ -8195,6 +8195,28 @@ static uint32_t h_GeSetCallback(CpuState *s) {
     return 0xffffffffu;
 }
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* White-box entries onto the REAL nested guest-call bridge, for the #70/#73 safe-boundary
+ * preemption regression in hle_thread_selftest.c.
+ *
+ * Both call the production functions unchanged. sr_hle_test_ge_set_callback() stores the
+ * callback in the same s_ge_cb slot the sceGeSetCallback NID writes, and
+ * sr_hle_test_ge_finish_callback() is the production caller that enters ge_call_guest()
+ * with its temporary 20000-yield timeslice, its full CpuState save/restore, and its
+ * 0x00331b80 frame-ready latch accounting. Nothing here reimplements the bridge.
+ *
+ * The alternative -- driving sceGeListEnQueue through sr_syscall -- would additionally
+ * require linking ge.c's display-list runner and its rasterization statistics counters
+ * into a scheduler regression that has nothing to do with rasterization, and this build
+ * deliberately registers only a narrow NID set. These two entries reach the identical
+ * bridge with none of that. */
+uint32_t sr_hle_test_ge_set_callback(CpuState *s) { return h_GeSetCallback(s); }
+void sr_hle_test_ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id,
+                                    uint32_t user_arg) {
+    ge_finish_callback(s, cbid, list_id, user_arg);
+}
+#endif /* SR_HLE_THREAD_SELFTEST */
+
 /* ---- sceSasCore: bounded, stateful voice mixer -------------------------------------
  *
  * The real PSP keeps a 3616-byte SceSasCore object in guest memory.  The native

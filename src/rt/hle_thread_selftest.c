@@ -98,6 +98,11 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         unsigned long *latched, unsigned long *rejected,
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
+/* White-box entries onto hle.c's REAL nested guest-call bridge (#70/#73). Both call the
+ * production functions unchanged; see their definitions in hle.c. */
+extern uint32_t sr_hle_test_ge_set_callback(CpuState *s);
+extern void sr_hle_test_ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id,
+                                           uint32_t user_arg);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -232,12 +237,11 @@ int gegpu_sync_guest_fb(const struct GeGpuFbDescriptor *desc) {
     return 2; /* GEGPU_SYNC_NO_TARGET */
 }
 void sr_profile_dump(void) {}
-#ifdef SR_PSP_ORACLE_SMOKE
-/* The smoke translation retains the production SR_YIELD instrumentation hook,
- * but this focused executable does not link the full profiler object. */
+/* The smoke translation retains the production SR_YIELD instrumentation hook, and the
+ * #70/#73 nested-bridge regression expands the real SR_YIELD macro directly, but this
+ * focused executable does not link the full profiler object. */
 int g_prof_enabled;
 void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
-#endif
 void ge_set_frame(uint32_t frame) { (void)frame; }
 uint32_t ge_framebuffer(void) { return 0u; }
 int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
@@ -317,6 +321,28 @@ static int s_oracle_callback_calls;
 static uint32_t s_oracle_callback_arg1;
 static uint32_t s_oracle_callback_arg2;
 
+/* ---- #70/#73 nested production-bridge preemption regression ------------------------
+ *
+ * The guest body the REAL ge_call_guest() bridge dispatches to. Everything it observes is
+ * recorded into these file-scope slots rather than asserted inline, because expect() is
+ * defined below dispatch(). */
+#define GEBR_NESTED_ENTRY 0x0800ce00u
+#define GEBR_YIELD_PC     0x0000c0deu
+#define GEBR_FRAME_LATCH  0x00331b80u
+
+static int      s_gebr_active;                 /* only this test intercepts the entry */
+static int      s_gebr_arm_preemption;         /* raise the request from inside the bridge */
+static int      s_gebr_nested_calls;
+static int32_t  s_gebr_slice_in_nested;
+static int      s_gebr_scur_in_nested;
+static int      s_gebr_hle_depth_in_nested;
+static CpuState s_gebr_nested_entry_state;     /* what the bridge handed the nested guest */
+static int      s_gebr_nested_resumed;
+static int      s_gebr_scur_after_resume;
+static int      s_gebr_nested_frame_intact;    /* the synthetic frame survived the switch */
+static int      s_gebr_hle_depth_after_resume;
+static void     gebr_set_host_us(uint64_t us);
+
 /* Defined in intr_conformance.h (included below, once the fixture helpers it
  * builds on exist). Returns non-zero when `target` is the synthetic VBLANK
  * sub-interrupt handler entry that the #88 conformance harness registered; in
@@ -325,6 +351,48 @@ static int ic_dispatch_intercept(uint32_t target);
 
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
+    if (s_gebr_active && target == GEBR_NESTED_ENTRY) {
+        s_gebr_nested_calls++;
+        s_gebr_slice_in_nested = (int32_t)atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+        s_gebr_scur_in_nested = s_cur;
+        s_gebr_hle_depth_in_nested = g_hle_depth;
+        memcpy(&s_gebr_nested_entry_state, cpu, sizeof(*cpu));
+
+        /* The nested guest's real production-visible work: advance the frame-ready latch
+         * that ge_finish_callback() reads before and after the bridge call. */
+        MEM_W32(GEBR_FRAME_LATCH, MEM_R32(GEBR_FRAME_LATCH) - 1u);
+
+        /* Mutate the synthetic register file the way any guest body would. These values
+         * must survive the preemption below (they belong to the nested frame) and must
+         * NOT survive the bridge's own restore (they are not the caller's state). */
+        cpu->r[16] = 0xdeadbeefu;
+        cpu->r[31] = 0x00c0ffeeu;
+        cpu->pc    = 0x0badf00du;
+        cpu->hi    = 0x55556666u;
+        cpu->lo    = 0x77778888u;
+        cpu->fi[3] = 0x11112222u;
+        cpu->vi[7] = 0x33334444u;
+        cpu->vfpuCtrl[2] = 0x99990000u;
+
+        if (s_gebr_arm_preemption) {
+            s_gebr_arm_preemption = 0;
+            /* Host time crosses the stronger thread's deadline, and a service request
+             * becomes due -- from INSIDE the bridge's 20000-yield protected window. */
+            gebr_set_host_us(5000u);
+            sr_sched_request_service();
+            SR_YIELD(cpu, GEBR_YIELD_PC);
+            s_gebr_nested_resumed = 1;
+            s_gebr_scur_after_resume = s_cur;
+            s_gebr_hle_depth_after_resume = g_hle_depth;
+            s_gebr_nested_frame_intact =
+                cpu->r[16] == 0xdeadbeefu && cpu->r[31] == 0x00c0ffeeu &&
+                cpu->pc == 0x0badf00du && cpu->hi == 0x55556666u &&
+                cpu->lo == 0x77778888u && cpu->fi[3] == 0x11112222u &&
+                cpu->vi[7] == 0x33334444u && cpu->vfpuCtrl[2] == 0x99990000u;
+        }
+        cpu->r[2] = 0x600d0000u;   /* v0 as the guest body would leave it */
+        return;
+    }
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
@@ -5800,6 +5868,261 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
 }
 
+/* ---- #70/#73 blocker 3: strict-priority preemption inside a REAL nested guest bridge
+ *
+ * hle.c has production bridges that call back into guest code from inside an HLE handler:
+ * ge_call_guest()/ge_call_guest_rv() (GE finish/signal callbacks, sceFont alloc/free) and
+ * mpeg.c's call_guest3(). Each one saves the whole CpuState, zeroes it, builds a synthetic
+ * PSP ABI frame, temporarily raises sr_timeslice to 20000, dispatches the guest function,
+ * then restores both the CpuState and the caller's timeslice.
+ *
+ * WHY the 20000: the bridge is a nested call on the SAME guest thread, and the inflated
+ * quantum makes an ordinary sr_yield() rotation inside that window practically impossible.
+ * It is a preference, not a correctness requirement -- preemption there was always
+ * reachable through sched_resume_interrupts() -- but #73 makes an eligible boundary
+ * reachable inside that window far more often, so the guarantee has to be measured rather
+ * than argued.
+ *
+ * This exercises the REAL bridge, on a REAL scheduler coroutine, through its REAL
+ * production caller (ge_finish_callback, entered with a callback registered by the real
+ * h_GeSetCallback). The GE display-list runner is not involved: the smallest faithful
+ * entry onto the bridge is the finish callback itself.
+ *
+ * FAILING-BEFORE control: with the service-only fast path removed from SR_YIELD, the
+ * expired stronger-priority thread does NOT preempt inside the 20000-yield window and the
+ * outer coroutine runs the bridge to completion uninterrupted. */
+static uint64_t s_gebr_host_ns;
+static uint64_t gebr_host_ns(void) { return s_gebr_host_ns; }
+static void gebr_set_host_us(uint64_t us) { s_gebr_host_ns = us * 1000ull; }
+
+static CpuState s_gebr_planted;        /* the outer caller's register file */
+static CpuState s_gebr_state_after;    /* what the bridge restored */
+static int      s_gebr_bridge_returned;
+static int32_t  s_gebr_slice_before_bridge;
+static int32_t  s_gebr_slice_after_bridge;
+static int      s_gebr_hle_depth_after_bridge;
+static uint32_t s_gebr_latch_after_bridge;
+static uint32_t s_gebr_cbid;
+static int      s_gebr_strong_ran;
+static int      s_gebr_strong_scur;
+
+#define GEBR_OUTER_SLICE 777
+
+static void gebr_fill_sentinels(CpuState *c) {
+    memset(c, 0, sizeof(*c));
+    for (int i = 1; i < 32; i++) c->r[i] = 0xA0000000u | (uint32_t)i;
+    c->hi = 0xA1A1A1A1u;
+    c->lo = 0xA2A2A2A2u;
+    c->pc = 0x00abcdefu;
+    for (int i = 0; i < 32; i++) c->fi[i] = 0xB0000000u | (uint32_t)i;
+    c->fcr31 = 0xB1B1B1B1u;
+    c->fpcond = 1u;
+    for (int i = 0; i < 128; i++) c->vi[i] = 0xC0000000u | (uint32_t)i;
+    for (int i = 0; i < 16; i++) c->vfpuCtrl[i] = 0xD0000000u | (uint32_t)i;
+    c->status = 0xE1E1E1E1u;
+    c->next_pc = 0xE2E2E2E2u;
+    c->in_delay_slot = 0u;
+}
+
+static void gebr_outer_body(void *arg) {
+    (void)arg;
+    gebr_fill_sentinels(&s_gebr_planted);
+    memcpy(s_cpu, &s_gebr_planted, sizeof(CpuState));
+    g_hle_depth = 1;                    /* ge_finish_callback runs inside an HLE handler */
+    atomic_store_explicit(&sr_timeslice, GEBR_OUTER_SLICE, memory_order_relaxed);
+    s_gebr_slice_before_bridge =
+        (int32_t)atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+
+    sr_hle_test_ge_finish_callback(s_cpu, s_gebr_cbid, 0x35000001u, 0x0000a11cu);
+
+    s_gebr_bridge_returned = 1;
+    s_gebr_slice_after_bridge =
+        (int32_t)atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+    s_gebr_hle_depth_after_bridge = g_hle_depth;
+    s_gebr_latch_after_bridge = MEM_R32(GEBR_FRAME_LATCH);
+    memcpy(&s_gebr_state_after, s_cpu, sizeof(CpuState));
+
+    s_tcb[s_cur].state = TH_DORMANT;
+    sr_coro_switch(s_sched_coro);
+}
+
+static void gebr_strong_body(void *arg) {
+    (void)arg;
+    s_gebr_strong_ran = 1;
+    s_gebr_strong_scur = s_cur;
+    s_tcb[s_cur].state = TH_DORMANT;
+    sr_coro_switch(s_sched_coro);
+}
+
+/* Mirror of sched_run's resume block, so the timeslice reset, hle_depth hand-off and
+ * register reload are the production ones rather than a convenient shortcut. */
+static void gebr_resume(TCB *t, void (*body)(void *)) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    if (!t->started) {
+        t->started = 1;
+        t->coro = sr_coro_create(body, NULL, (size_t)4 << 20);
+    }
+    g_hle_depth = t->hle_depth;
+    if (t->coro) sr_coro_switch(t->coro);
+    t->hle_depth = g_hle_depth;
+    g_hle_depth = 0;
+    s_cur = -1;
+}
+
+static void test_service_only_preempts_inside_nested_ge_bridge(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    /* Paced profile on a controlled host clock; the VBLANK source is silenced so the only
+     * thing service-only can do here is promote and preempt. */
+    s_pace_on = 1;
+    s_host_ns_fn = gebr_host_ns;
+    gebr_set_host_us(0u);
+    s_clock_epoch_ns = 0;
+    s_vtime_us = 0;
+    s_vbl_next_us = (uint64_t)-1;
+    s_vblank_q_us = 0x7fffffff;
+    publish_service_deadline();
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+
+    s_gebr_active = 1;
+    s_gebr_arm_preemption = 1;
+    s_gebr_nested_calls = 0;
+    s_gebr_nested_resumed = 0;
+    s_gebr_nested_frame_intact = 0;
+    s_gebr_bridge_returned = 0;
+    s_gebr_strong_ran = 0;
+    s_gebr_slice_in_nested = 0;
+
+    TCB *outer  = fixture_thread(0x300u, TH_RUNNING, 40);
+    TCB *strong = fixture_thread(0x301u, TH_WAIT_DELAY, 16);
+    TCB *equal  = fixture_thread(0x302u, TH_READY, 40);
+    TCB *lower  = fixture_thread(0x303u, TH_READY, 60);
+    strong->wake = 1000u;                       /* due once host time reaches 1 ms */
+    const int outer_idx = (int)(outer - s_tcb);
+    const int strong_idx = (int)(strong - s_tcb);
+
+    /* Register the finish callback through the REAL production handler. */
+    enum { GEBR_CB_INFO = 0x00240400u };
+    MEM_W32(GEBR_CB_INFO + 0u, 0u);                  /* signal_func */
+    MEM_W32(GEBR_CB_INFO + 4u, 0u);                  /* signal_arg  */
+    MEM_W32(GEBR_CB_INFO + 8u, GEBR_NESTED_ENTRY);   /* finish_func */
+    MEM_W32(GEBR_CB_INFO + 12u, 0u);                 /* finish_arg  */
+    CpuState reg;
+    memset(&reg, 0, sizeof reg);
+    reg.r[4] = GEBR_CB_INFO;
+    s_gebr_cbid = sr_hle_test_ge_set_callback(&reg);
+    expect(s_gebr_cbid != 0xffffffffu,
+           "GE bridge: the production sceGeSetCallback handler registered the finish callback");
+
+    /* pre=2 so the nested guest's own decrement is distinguishable from
+     * ge_finish_callback's fallback assist-decrement. */
+    MEM_W32(GEBR_FRAME_LATCH, 2u);
+
+    /* 1-3. Outer thread runs on its coroutine and enters the real bridge, which inflates
+     * the quantum.  4-7. The nested guest reaches SR_YIELD with a request due and the
+     * stronger thread expired, and service-only preempts from inside the bridge. */
+    gebr_resume(outer, gebr_outer_body);
+
+    expect(s_gebr_nested_calls == 1,
+           "GE bridge: the production finish callback entered the nested guest exactly once");
+    expect(s_gebr_slice_in_nested == 20000,
+           "GE bridge: the nested guest really did run under the bridge's inflated quantum");
+    expect(s_gebr_scur_in_nested == outer_idx,
+           "GE bridge: the nested guest runs on the outer guest thread, not in interrupt context");
+    expect(s_gebr_hle_depth_in_nested == 1,
+           "GE bridge: the nested guest runs at the caller's HLE depth");
+    expect(s_gebr_nested_entry_state.r[4] == 0x35000001u &&
+           s_gebr_nested_entry_state.r[5] == 0x0000a11cu &&
+           s_gebr_nested_entry_state.r[6] == s_gebr_cbid &&
+           s_gebr_nested_entry_state.r[31] == 0u &&
+           s_gebr_nested_entry_state.r[29] == 0x09df8000u,
+           "GE bridge: the nested guest receives the production PSP ABI frame");
+    expect(s_gebr_bridge_returned == 0,
+           "GE bridge: service-only preempted from INSIDE the bridge, before it returned");
+    expect(strong->state == TH_READY,
+           "GE bridge: the expired stronger-priority thread was promoted at the nested boundary");
+    expect(outer->state == TH_READY,
+           "GE bridge: the weaker outer thread was preempted rather than left RUNNING");
+    expect(equal->state == TH_READY && lower->state == TH_READY,
+           "GE bridge: equal- and lower-priority peers were not run by the service boundary");
+    expect(pick_next() == strong_idx,
+           "GE bridge: the promoted stronger thread wins strict-priority selection");
+    expect(outer->coro != NULL,
+           "GE bridge: the preempted coroutine, with the nested bridge frame on it, is still live");
+    expect(outer->hle_depth == 1,
+           "GE bridge: the outgoing thread's HLE depth was banked on its TCB");
+
+    /* 8. The stronger guest runs and finishes, then the outer coroutine resumes. */
+    gebr_resume(strong, gebr_strong_body);
+    expect(s_gebr_strong_ran == 1 && s_gebr_strong_scur == strong_idx,
+           "GE bridge: the stronger thread actually ran on its own coroutine");
+    expect(s_gebr_nested_resumed == 0,
+           "GE bridge: the outer coroutine stayed parked while the stronger thread ran");
+
+    gebr_resume(outer, gebr_outer_body);
+
+    /* The nested frame, and then the bridge's restoration of the caller's frame. */
+    expect(s_gebr_nested_resumed == 1,
+           "GE bridge: the nested guest resumed inside the bridge after the preemption");
+    expect(s_gebr_scur_after_resume == outer_idx,
+           "GE bridge: it resumed as the outer guest thread");
+    expect(s_gebr_nested_frame_intact,
+           "GE bridge: the nested synthetic frame (pc/ra/hi/lo/gpr/fpu/vfpu) survived the switch");
+    expect(s_gebr_hle_depth_after_resume == 1,
+           "GE bridge: HLE depth was restored on resume");
+    expect(s_gebr_bridge_returned == 1,
+           "GE bridge: the nested bridge returned normally after the preemption");
+
+    /* 9. Everything the bridge owns. ge_call_guest saves and restores the WHOLE CpuState,
+     * so the strongest available assertion is exact equality; the named checks below exist
+     * so a regression reports which field moved. */
+    expect(memcmp(&s_gebr_state_after, &s_gebr_planted, sizeof(CpuState)) == 0,
+           "GE bridge: the complete caller CpuState was restored byte-for-byte");
+    expect(s_gebr_state_after.pc == s_gebr_planted.pc, "GE bridge: pc restored");
+    expect(s_gebr_state_after.r[31] == s_gebr_planted.r[31], "GE bridge: ra (r31) restored");
+    expect(s_gebr_state_after.hi == s_gebr_planted.hi, "GE bridge: HI restored");
+    expect(s_gebr_state_after.lo == s_gebr_planted.lo, "GE bridge: LO restored");
+    expect(s_gebr_state_after.r[16] == s_gebr_planted.r[16] &&
+           s_gebr_state_after.r[29] == s_gebr_planted.r[29] &&
+           s_gebr_state_after.r[2] == s_gebr_planted.r[2],
+           "GE bridge: representative GPRs restored (the nested v0 does not leak out)");
+    expect(s_gebr_state_after.fi[3] == s_gebr_planted.fi[3] &&
+           s_gebr_state_after.fcr31 == s_gebr_planted.fcr31,
+           "GE bridge: FPU register file and control restored");
+    expect(s_gebr_state_after.vi[7] == s_gebr_planted.vi[7] &&
+           s_gebr_state_after.vfpuCtrl[2] == s_gebr_planted.vfpuCtrl[2],
+           "GE bridge: VFPU lanes and control restored");
+    expect(s_gebr_slice_before_bridge == GEBR_OUTER_SLICE &&
+           s_gebr_slice_after_bridge == GEBR_OUTER_SLICE,
+           "GE bridge: the caller's timeslice is restored even though a preemption reset it "
+           "to a fresh quantum in between");
+    expect(s_gebr_hle_depth_after_bridge == 1,
+           "GE bridge: g_hle_depth is unchanged across the bridge");
+    expect(outer->hle_depth == 0 || outer->hle_depth == 1,
+           "GE bridge: the TCB HLE depth stays consistent with the running depth");
+    expect(s_gebr_latch_after_bridge == 1u,
+           "GE bridge: the nested guest's own frame-latch decrement survived the preemption, "
+           "so ge_finish_callback did not apply its fallback assist-decrement");
+    expect(equal->state == TH_READY && lower->state == TH_READY,
+           "GE bridge: no equal- or lower-priority peer ever ran");
+    expect(s_gebr_state_after.pc != 0u,
+           "GE bridge: dispatch's pc==0 guard cannot be tripped by the restored frame");
+    expect(s_gebr_state_after.pc != 0x00000f98u && s_gebr_state_after.pc != 0x00000fdcu,
+           "GE bridge: the restored pc does not accidentally select dispatch's init-walker guard");
+
+    s_gebr_active = 0;
+    if (outer->coro)  { sr_coro_destroy(outer->coro);  outer->coro = NULL; }
+    if (strong->coro) { sr_coro_destroy(strong->coro); strong->coro = NULL; }
+    s_host_ns_fn = NULL;
+    s_pace_on = 0;
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    disarm_service_deadline();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -5854,6 +6177,7 @@ int main(int argc, char **argv) {
     test_can_not_wait_semantics();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
+    test_service_only_preempts_inside_nested_ge_bridge();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();

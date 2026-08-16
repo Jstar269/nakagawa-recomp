@@ -189,8 +189,15 @@ static void reset_sched(void) {
     g_test_handler_raise_ge = 0;
     g_test_handler_requests_service = 0;
     atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
-    atomic_store_explicit(&s_service_deadline_ns, 0, memory_order_relaxed);
+    disarm_service_deadline();
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    /* Advisory lifecycle statics: no test may inherit another test's worker, seam, or
+     * latched SR_NOSERVICEHINT decision. */
+    s_service_hint_thread = NULL;
+    s_service_hint_disabled = -1;
+    s_service_hint_create_fn = NULL;
+    s_service_hint_join_fn = NULL;
+    atomic_store_explicit(&s_service_hint_stop, 0, memory_order_relaxed);
     memset(&g_test_handler_seen, 0, sizeof(g_test_handler_seen));
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
@@ -230,7 +237,9 @@ static void begin_clock_fixture(int paced, uint64_t host_us_now) {
     s_pending_interrupts = 0;
     s_vblank_q_us = 16000;
     s_last_vblank_ns = g_test_host_ns;
-    publish_service_deadline();
+    /* Same state pace_setup() leaves in production: the origin deadline is due at the
+     * epoch, so the advisory is NOT_ARMED until the rational source moves forward. */
+    disarm_service_deadline();
     atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
 }
@@ -253,6 +262,7 @@ static int test_service_requested(void) {
 static void disable_vblank_sources(void) {
     s_vbl_next_us = (uint64_t)-1;
     s_vblank_q_us = 0x7fffffff;
+    publish_service_deadline();   /* a saturated source leaves the advisory NOT_ARMED */
 }
 
 /* Fabricate a bare TCB for pure pick_next() decision tests (no stack, no coroutine). */
@@ -1927,7 +1937,8 @@ static void test_turbo_has_no_service_advisory(void) {
     s_cur = runner;
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
 
-    service_hint_start();
+    expect(service_hint_start() == SR_SERVICE_HINT_NOT_APPLICABLE,
+           "turbo reports the advisory as not applicable, not as a failure");
     expect(s_service_hint_thread == NULL,
            "turbo does not start a host service-request advisory");
 
@@ -1942,11 +1953,294 @@ static void test_turbo_has_no_service_advisory(void) {
     /* Paced, but explicitly disabled: still no worker, and still no request producer. */
     s_pace_on = 1;
     s_service_hint_disabled = 1;
-    service_hint_start();
+    expect(service_hint_start() == SR_SERVICE_HINT_EXPLICITLY_DISABLED,
+           "SR_NOSERVICEHINT is reported as an explicit disable, not as a failure");
     expect(s_service_hint_thread == NULL,
            "SR_NOSERVICEHINT keeps the advisory out of paced mode too");
     expect(!test_service_requested(),
            "no advisory means nothing sets the request: the selftest stays deterministic");
+    s_host_ns_fn = NULL;
+}
+
+/* ---- #73 blocker 2: the advisory must not move the FIRST VBLANK -------------------
+ *
+ * pace_setup() leaves the rational source deadline at 0 -- "due at the clock epoch".
+ * Publishing that to the advisory would let the worker request service at the very first
+ * generated safe boundary, and the origin VBLANK would then be produced by a boundary
+ * that pre-#73 main never serviced. The origin must stay where main puts it: at the first
+ * ORDINARY scheduler service (quantum expiry, sched_run's idle branch, or a resume).
+ *
+ * The oracle here is old main's behaviour, restated directly: with no request set, the
+ * safe boundaries are inert and the origin arrives only when the quantum expires. */
+static void test_advisory_does_not_move_the_first_vblank(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x270u, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    uint64_t vbl0 = s_vbl_count;
+
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           SR_SERVICE_DEADLINE_NOT_ARMED,
+           "paced setup begins with the advisory NOT_ARMED");
+    expect(s_vbl_next_us == 0u,
+           "the rational source starts on the origin, i.e. due at the clock epoch");
+
+    /* A NOT_ARMED deadline can never make the worker ask for anything, at any host time. */
+    for (uint64_t t = 0; t <= 200000000ull; t += 7000000ull) {
+        ServiceHintStep step = service_hint_step(t, SR_SERVICE_DEADLINE_NOT_ARMED, 0);
+        expect(step.request == 0 && step.wait_ns == SR_SERVICE_HINT_MAX_NS,
+               "a NOT_ARMED advisory never requests and never polls at high frequency");
+    }
+
+    /* Host time crosses several rational deadlines while the guest stays runnable. Every
+     * safe boundary before the first ordinary service must change nothing. */
+    set_host_us(60000u);
+    for (int i = 0; i < TIMESLICE - 1; i++) TEST_SAFE_BOUNDARY(0x0000a000u);
+    expect(s_vbl_count == vbl0,
+           "no VBLANK is produced by safe boundaries before the first ordinary service");
+    expect(!test_service_requested(),
+           "nothing requested service: the advisory was never armed at the origin");
+    expect(s_vtime_us == 0u && s_vbl_next_us == 0u,
+           "the rational source is untouched before the first ordinary service");
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           SR_SERVICE_DEADLINE_NOT_ARMED,
+           "the advisory is still NOT_ARMED right up to the pre-#73 origin boundary");
+
+    /* The quantum expires: this is exactly the boundary old main delivered the origin on. */
+    TEST_SAFE_BOUNDARY(0x0000a000u);
+    expect(s_vbl_count - vbl0 == 1u,
+           "the origin VBLANK arrives at the ordinary quantum-expiry boundary, as on main");
+    expect(s_vbl_next_us == 66733u,
+           "the origin service advances the source past every elapsed period");
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           s_clock_epoch_ns + 66733000ull,
+           "only now, on a real future deadline, does the rational source arm the advisory");
+
+    /* From here on the advisory is the thing that keeps delivery dense -- and it still
+     * cannot create an event the source did not schedule. */
+    set_host_us(66733u);
+    ServiceHintStep due = service_hint_step(
+        66733000ull, atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed), 0);
+    expect(due.request == 1, "the armed advisory requests service at its published deadline");
+    sr_sched_request_service();
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    TEST_SAFE_BOUNDARY(0x0000a000u);
+    expect(s_vbl_count - vbl0 == 2u,
+           "the next due deadline delivers exactly one further VBLANK");
+    s_host_ns_fn = NULL;
+}
+
+/* ---- #73 blocker 4: deterministic worker wake policy ------------------------------
+ *
+ * service_hint_step() is the whole of the worker's decision-making, and the real SDL
+ * worker calls this exact function, so these assertions pin production behaviour with no
+ * host thread, no host clock, and no timing tolerance anywhere. */
+static void test_service_hint_wake_policy(void) {
+    reset_sched();
+    const uint64_t deadline = 1000000000ull;   /* 1 s on the host monotonic clock */
+
+    ServiceHintStep early = service_hint_step(deadline - 5000000ull, deadline, 0);
+    expect(early.request == 0 && early.wait_ns == 5000000ull,
+           "before the deadline the worker sleeps exactly the remaining time and asks nothing");
+
+    ServiceHintStep far = service_hint_step(0u, deadline, 0);
+    expect(far.request == 0 && far.wait_ns == SR_SERVICE_HINT_MAX_NS,
+           "a distant deadline is capped, never slept through in one go");
+
+    ServiceHintStep imminent = service_hint_step(deadline - 1000ull, deadline, 0);
+    expect(imminent.request == 0 && imminent.wait_ns == SR_SERVICE_HINT_MIN_NS,
+           "an almost-due deadline is floored so the worker can never spin");
+
+    ServiceHintStep exact = service_hint_step(deadline, deadline, 0);
+    expect(exact.request == 1 && exact.wait_ns == SR_SERVICE_HINT_MIN_NS,
+           "exactly at the deadline the worker raises one request and re-observes promptly");
+
+    ServiceHintStep late = service_hint_step(deadline + 10ull * 16683000ull, deadline, 0);
+    expect(late.request == 1 && late.wait_ns == SR_SERVICE_HINT_MIN_NS,
+           "ten periods late is still exactly one request");
+
+    ServiceHintStep outstanding = service_hint_step(deadline + 60000000ull, deadline, 1);
+    expect(outstanding.request == 0 && outstanding.wait_ns == SR_SERVICE_HINT_BACKOFF_NS,
+           "a due deadline with an unserviced request backs off instead of spinning");
+
+    ServiceHintStep idle = service_hint_step(deadline, SR_SERVICE_DEADLINE_NOT_ARMED, 0);
+    expect(idle.request == 0 && idle.wait_ns == SR_SERVICE_HINT_MAX_NS,
+           "NOT_ARMED never requests and never polls at high frequency");
+    ServiceHintStep idle_outstanding =
+        service_hint_step(deadline, SR_SERVICE_DEADLINE_NOT_ARMED, 1);
+    expect(idle_outstanding.request == 0,
+           "NOT_ARMED does not re-raise an outstanding request either");
+
+    /* The cap cannot become the cadence limiter: one paced period is shorter than it, so
+     * the worker always sleeps to the real deadline in steady state. */
+    expect(SR_SERVICE_HINT_MAX_NS > 16683333ull,
+           "the sleep cap is longer than one 60000/1001 period, so it never truncates a "
+           "steady-state sleep and cannot cap delivered cadence");
+    /* No branch can ever return a zero wait: the worker cannot busy-loop. */
+    expect(early.wait_ns && far.wait_ns && imminent.wait_ns && exact.wait_ns &&
+           late.wait_ns && outstanding.wait_ns && idle.wait_ns,
+           "every worker iteration sleeps");
+
+    /* The worker's own action -- raising the flag -- touches no scheduler state at all. */
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x271u, TH_RUNNING, 40);
+    s_cur = runner;
+    uint64_t vtime0 = s_vtime_us, next0 = s_vbl_next_us, vbl0 = s_vbl_count;
+    uint32_t pend0 = s_pending_interrupts;
+    int cur0 = s_cur, ntcb0 = s_ntcb, pick0 = s_last_pick;
+    int32_t slice0 = test_slice();
+    for (int i = 0; i < 32; i++) sr_sched_request_service();
+    expect(s_vtime_us == vtime0 && s_vbl_next_us == next0 && s_vbl_count == vbl0 &&
+           s_pending_interrupts == pend0 && s_cur == cur0 && s_ntcb == ntcb0 &&
+           s_last_pick == pick0 && test_slice() == slice0,
+           "raising the request mutates no scheduler, TCB, source or quantum state");
+    atomic_store_explicit(&sr_service_request, 0, memory_order_relaxed);
+    s_host_ns_fn = NULL;
+}
+
+/* ---- #73 blockers 1 and 4: production worker lifecycle ----------------------------
+ *
+ * Driven through the real service_hint_start()/service_hint_stop() with the host-thread
+ * seams redirected, so start, duplicate start, join ordering, duplicate stop and creation
+ * failure are all exercised on the production code path without spawning a thread. */
+static SDL_Thread *const TEST_FAKE_THREAD = (SDL_Thread *)(uintptr_t)0x5ee1d000u;
+static int g_fake_create_calls;
+static int g_fake_create_fails;
+static int g_fake_join_calls;
+static int g_fake_join_saw_stop;
+static int g_fake_join_saw_request;
+
+static SDL_Thread *fake_service_hint_create(SDL_ThreadFunction fn, const char *name, void *data) {
+    (void)fn; (void)name; (void)data;
+    g_fake_create_calls++;
+    return g_fake_create_fails ? NULL : TEST_FAKE_THREAD;
+}
+static void fake_service_hint_join(SDL_Thread *thread, int *status) {
+    (void)status;
+    g_fake_join_calls++;
+    /* Ordering proof: stop must already be published when the join begins, and the
+     * request must NOT have been cleared yet -- a worker can still be raising one. */
+    g_fake_join_saw_stop = atomic_load_explicit(&s_service_hint_stop, memory_order_relaxed) != 0;
+    g_fake_join_saw_request = atomic_load_explicit(&sr_service_request, memory_order_relaxed) != 0;
+    expect(thread == TEST_FAKE_THREAD, "the join receives exactly the handle that was created");
+}
+static void install_fake_service_hint_seams(void) {
+    s_service_hint_create_fn = fake_service_hint_create;
+    s_service_hint_join_fn = fake_service_hint_join;
+    g_fake_create_calls = g_fake_create_fails = 0;
+    g_fake_join_calls = g_fake_join_saw_stop = g_fake_join_saw_request = 0;
+}
+
+static void test_service_hint_lifecycle(void) {
+    /* START: paced and enabled starts exactly once. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    install_fake_service_hint_seams();
+    s_service_hint_disabled = 0;
+    expect(service_hint_start() == SR_SERVICE_HINT_STARTED, "paced + enabled starts the advisory");
+    expect(g_fake_create_calls == 1 && s_service_hint_thread == TEST_FAKE_THREAD,
+           "exactly one host thread is created and its handle is retained");
+    expect(atomic_load_explicit(&s_service_hint_stop, memory_order_relaxed) == 0,
+           "the worker starts with a clear stop flag");
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           SR_SERVICE_DEADLINE_NOT_ARMED,
+           "starting the worker does not arm the advisory deadline");
+
+    /* DUPLICATE START cannot create a second worker. */
+    expect(service_hint_start() == SR_SERVICE_HINT_STARTED, "a repeated start is idempotent");
+    expect(g_fake_create_calls == 1, "a repeated start creates no duplicate worker");
+
+    /* STOP: publish stop, join once, then clear the request. */
+    sr_sched_request_service();
+    service_hint_stop();
+    expect(g_fake_join_calls == 1, "stop joins the worker exactly once");
+    expect(g_fake_join_saw_stop, "the stop flag is published before the join begins");
+    expect(g_fake_join_saw_request,
+           "the request is still intact during the join: it is cleared only after the "
+           "worker can no longer write it");
+    expect(s_service_hint_thread == NULL, "stop clears the retained handle");
+    expect(!test_service_requested(), "stop clears the request once the worker is gone");
+
+    /* DUPLICATE STOP is harmless and never joins a nonexistent thread. */
+    service_hint_stop();
+    expect(g_fake_join_calls == 1, "a second stop performs no second join");
+
+    /* CREATION FAILURE is FAILED, retains nothing, and is fatal for the production caller. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    install_fake_service_hint_seams();
+    s_service_hint_disabled = 0;
+    g_fake_create_fails = 1;
+    ServiceHintStatus failed = service_hint_start();
+    expect(failed == SR_SERVICE_HINT_FAILED, "a failed thread create is reported as FAILED");
+    expect(failed != SR_SERVICE_HINT_EXPLICITLY_DISABLED &&
+           failed != SR_SERVICE_HINT_NOT_APPLICABLE,
+           "a failure cannot masquerade as a deliberate disable");
+    expect(s_service_hint_thread == NULL, "no thread handle is retained after a failed create");
+    service_hint_stop();
+    expect(g_fake_join_calls == 0, "no join is attempted on a thread that was never created");
+
+    /* The production caller's decision itself: only FAILED refuses to run the guest. */
+    expect(service_hint_start_is_fatal(SR_SERVICE_HINT_FAILED),
+           "sched_run refuses to start the guest when the advisory failed");
+    expect(!service_hint_start_is_fatal(SR_SERVICE_HINT_STARTED) &&
+           !service_hint_start_is_fatal(SR_SERVICE_HINT_NOT_APPLICABLE) &&
+           !service_hint_start_is_fatal(SR_SERVICE_HINT_EXPLICITLY_DISABLED),
+           "turbo and the explicit A/B disable proceed; only a real failure is fatal");
+
+    reset_sched();
+    s_host_ns_fn = NULL;
+}
+
+/* Boundary coverage for the published deadline itself: the value the worker reads is
+ * either NOT_ARMED or a real future instant derived from the single rational producer,
+ * and a stale read in either direction cannot change how many events exist. */
+static void test_service_deadline_publication_boundaries(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int runner = mk(0x272u, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* A saturated source timeline disarms rather than publishing UINT64_MAX-as-an-instant. */
+    disable_vblank_sources();
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) ==
+           SR_SERVICE_DEADLINE_NOT_ARMED,
+           "a saturated source deadline leaves the advisory NOT_ARMED");
+
+    /* Normal arming, then a stale read in each direction. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    runner = mk(0x273u, TH_RUNNING, 40);
+    s_cur = runner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    sr_yield(&g_cpu_store);                            /* origin service arms the advisory */
+    uint64_t armed = atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed);
+    expect(armed == s_clock_epoch_ns + 16683000ull,
+           "the armed deadline is the rational source deadline in host nanoseconds");
+
+    uint64_t vbl0 = s_vbl_count;
+    s_tcb[runner].state = TH_RUNNING; s_cur = runner;
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+
+    /* Stale EARLIER deadline: the worker asks too soon, the runtime finds nothing due. */
+    ServiceHintStep stale_early = service_hint_step(1000000ull, armed, 0);
+    expect(stale_early.request == 0, "a deadline still in the future is not requested early");
+    set_host_us(1000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x0000b000u);
+    expect(s_vbl_count == vbl0, "an early request creates no event");
+
+    /* Stale LATER read across a long host gap: still exactly one event. */
+    set_host_us(1000000u);
+    sr_sched_request_service();
+    TEST_SAFE_BOUNDARY(0x0000b000u);
+    expect(s_vbl_count - vbl0 == 1u,
+           "a one-second host gap maps to one delivered VBLANK, not to an event count");
+    expect(atomic_load_explicit(&s_service_deadline_ns, memory_order_relaxed) >
+           s_clock_epoch_ns + 1000000000ull,
+           "the republished deadline is still a real future instant after the gap");
     s_host_ns_fn = NULL;
 }
 
@@ -2015,6 +2309,10 @@ int main(void) {
     test_service_request_cannot_recurse_into_delivery();
     test_service_only_delivers_an_already_pending_bit();
     test_turbo_has_no_service_advisory();
+    test_advisory_does_not_move_the_first_vblank();
+    test_service_hint_wake_policy();
+    test_service_hint_lifecycle();
+    test_service_deadline_publication_boundaries();
 
     expect(s_service_hint_thread == NULL,
            "the scheduler selftest never creates a host advisory thread");
