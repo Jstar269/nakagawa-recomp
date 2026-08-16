@@ -263,6 +263,101 @@ Test-Case "verdict rejects an unreadable exit code" {
     Assert-True (-not $v.Complete) "an unverifiable exit must not be read as success"
 }
 
+# --- state-qualified routes (issue #64) ---------------------------------------------
+# The defect: seven replays of one pad script from one restored save baseline reached two
+# different menu depths, and both the divergent runs reported complete=true. "Reached
+# vblank N" is not "reached the intended screen", so the verdict has to read the reached
+# state, and a run that did not reach it must be inadmissible rather than merely odd.
+Test-Case "verdict rejects a run whose route reached the wrong state" {
+    $v = Get-OracleVerdict -ReachedExit $true -TimedOut $false -ExitCode 86 `
+             -CaptureCount 18 -RequestedVblank 44000 -ObservedVblank 44000 `
+             -RouteKind "failed" -RouteFailReason "line 12: EXPECT EXHIBITION_SETUP at vblank 9600, but the screen is SINGLE_PLAYER_MENU d=2"
+    Assert-True (-not $v.Complete) "a route that reached the wrong screen must not be admissible"
+    Assert-True (($v.Reasons -join ' ') -match "expected state") "reason should name the reached-state failure"
+    Assert-True (($v.Reasons -join ' ') -match "SINGLE_PLAYER_MENU") "reason should carry the runtime's diagnosis"
+}
+
+Test-Case "verdict rejects a route program that never completed its steps" {
+    $v = Get-OracleVerdict -ReachedExit $true -TimedOut $false -ExitCode 0 `
+             -CaptureCount 18 -RequestedVblank 44000 -ObservedVblank 44000 `
+             -RouteKind "incomplete"
+    Assert-True (-not $v.Complete) "a route that never finished its program is not the route it claims"
+}
+
+Test-Case "verdict accepts a completed state-qualified route" {
+    $v = Get-OracleVerdict -ReachedExit $true -TimedOut $false -ExitCode 0 `
+             -CaptureCount 18 -RequestedVblank 44000 -ObservedVblank 44000 -RouteKind "ok"
+    Assert-True ($v.Complete) "a completed route rejected: $($v.Reasons -join '; ')"
+}
+
+Test-Case "verdict of a legacy pad script is unchanged" {
+    $v = Get-OracleVerdict -ReachedExit $true -TimedOut $false -ExitCode 0 `
+             -CaptureCount 18 -RequestedVblank 44000 -ObservedVblank 44000 -RouteKind "none"
+    Assert-True ($v.Complete) "an unqualified route is unproven, not failed"
+}
+
+$routeTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("routeout_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $routeTmp -Force | Out-Null
+try {
+    Test-Case "route outcome records every reached checkpoint in order" {
+        $log = Join-Path $routeTmp "ok.log"
+        @(
+            "ROUTE: program loaded from C:\r.pad (9 steps, 4 checkpoints, grid 12x8, sample_every=20, tolerance=12)",
+            "ROUTE: reached MAIN_MENU at vblank 8220 (step 0, d=3)",
+            "ROUTE: reached SINGLE_PLAYER_MENU at vblank 8760 (step 2, d=1)",
+            "ROUTE: confirmed EXHIBITION_SETUP at vblank 9640 (step 5, d=2)",
+            "ROUTE_OK: 9 steps completed by vblank 44100"
+        ) | Set-Content -LiteralPath $log
+        $o = Read-RouteOutcome -StderrPath $log
+        Assert-True ($o.Kind -eq "ok") "a completed program should read as ok, got $($o.Kind)"
+        Assert-True ($o.Checkpoints.Count -eq 3) "expected 3 checkpoints, got $($o.Checkpoints.Count)"
+        Assert-True ($o.Checkpoints[0] -eq "MAIN_MENU@8220") "first checkpoint should carry its vblank"
+    }
+
+    Test-Case "route outcome reports a failed assertion with its reason" {
+        $log = Join-Path $routeTmp "fail.log"
+        @(
+            "ROUTE: program loaded from C:\r.pad (9 steps, 4 checkpoints, grid 12x8, sample_every=20, tolerance=12)",
+            "ROUTE: reached MAIN_MENU at vblank 8220 (step 0, d=3)",
+            "ROUTE_FAIL: line 12: EXPECT EXHIBITION_SETUP at vblank 9600, but the screen is SINGLE_PLAYER_MENU d=2 (EXHIBITION_SETUP d=41, match needs d<=12)"
+        ) | Set-Content -LiteralPath $log
+        $o = Read-RouteOutcome -StderrPath $log
+        Assert-True ($o.Kind -eq "failed") "a failed route should read as failed, got $($o.Kind)"
+        Assert-True ($o.FailReason -match "SINGLE_PLAYER_MENU") "the reason should be preserved verbatim"
+    }
+
+    Test-Case "route outcome distinguishes a program that stopped mid-route" {
+        $log = Join-Path $routeTmp "partial.log"
+        @(
+            "ROUTE: program loaded from C:\r.pad (9 steps, 4 checkpoints, grid 12x8, sample_every=20, tolerance=12)",
+            "ROUTE: reached MAIN_MENU at vblank 8220 (step 0, d=3)"
+        ) | Set-Content -LiteralPath $log
+        $o = Read-RouteOutcome -StderrPath $log
+        Assert-True ($o.Kind -eq "incomplete") "a program with no ROUTE_OK is incomplete, got $($o.Kind)"
+    }
+
+    Test-Case "route outcome of a legacy pad script is none" {
+        $log = Join-Path $routeTmp "legacy.log"
+        @("BOOT_EVENT phase=display_flip vcount=180 buffer=0x04000000 stride=512 format=3",
+          "BOOT_EVENT phase=exit_at_vblank vblanks=44000 (SR_EXIT_AT_VBLANK=44000)") |
+            Set-Content -LiteralPath $log
+        $o = Read-RouteOutcome -StderrPath $log
+        Assert-True ($o.Kind -eq "none") "a run with no route narration is unqualified, got $($o.Kind)"
+        Assert-True ($o.Checkpoints.Count -eq 0) "an unqualified run reaches no recorded checkpoints"
+    }
+
+    Test-Case "route outcome reports a refused route file" {
+        $log = Join-Path $routeTmp "parse.log"
+        @("ROUTE_PARSE: C:\r.pad:7: no CHECKPOINT defines 'EXHIBITION_SETUP'",
+          "ROUTE_FAIL: route file 'C:\r.pad' names undefined checkpoints") |
+            Set-Content -LiteralPath $log
+        $o = Read-RouteOutcome -StderrPath $log
+        Assert-True ($o.Kind -eq "failed") "an unusable route file must fail the run, got $($o.Kind)"
+    }
+} finally {
+    Remove-Item -LiteralPath $routeTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if ($script:Failures -gt 0) {
     Write-Host "$($script:Failures) failure(s)"
     exit 1

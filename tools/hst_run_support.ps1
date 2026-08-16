@@ -16,6 +16,7 @@
                             and refuse to clear anything outside the approved logs root.
       Sync-SaveBase         transactional save-state hold-still with manifest identity,
                             containment and rollback.
+      Read-RouteOutcome     recover which screens a state-qualified route actually reached.
       Get-OracleVerdict     decide whether a finished run's captures may be trusted.
 
     Dot-source this file; it defines functions and returns nothing.
@@ -470,6 +471,53 @@ function Sync-SaveBase {
     }
 }
 
+# Read-RouteOutcome: recover what a state-qualified route (issue #64) actually reached.
+#
+# A fixed-vblank pad script produces no record of the screens it passed through, so a run
+# that entered the wrong mode was indistinguishable from one that took the intended route
+# and both were archived as complete. A route program narrates itself: the runtime prints
+# one ROUTE line per reached checkpoint, ROUTE_OK when the program completes, and
+# ROUTE_FAIL with the reason when a reached state is not the expected one. This turns that
+# stderr narration into manifest fields so the reached state is part of the evidence rather
+# than something a human has to reconstruct from captures.
+#
+# Kind values: "none" (a legacy pad script -- no state qualification at all),
+# "ok" (program completed), "incomplete" (program loaded but never reached END),
+# "failed" (a checkpoint assertion failed and the runtime terminated the route).
+function Read-RouteOutcome {
+    param([string]$StderrPath)
+
+    $outcome = [pscustomobject]@{
+        Kind        = "none"
+        Checkpoints = @()
+        FailReason  = $null
+    }
+    if (-not $StderrPath -or -not (Test-Path -LiteralPath $StderrPath)) { return $outcome }
+
+    $reached = [System.Collections.Generic.List[string]]::new()
+    $loaded = $false
+    foreach ($line in [System.IO.File]::ReadLines((Resolve-Path -LiteralPath $StderrPath).Path)) {
+        if ($line -match '^ROUTE: program loaded from ') { $loaded = $true; continue }
+        if ($line -match '^ROUTE: (?:reached|confirmed) (\S+) at vblank (\d+)') {
+            $reached.Add("$($Matches[1])@$($Matches[2])")
+            continue
+        }
+        if ($line -match '^ROUTE_FAIL: (.+)$') {
+            $outcome.Kind = "failed"
+            $outcome.FailReason = $Matches[1].Trim()
+            continue
+        }
+        if ($line -match '^ROUTE_PARSE: (.+)$' -and -not $outcome.FailReason) {
+            $outcome.FailReason = "parse: $($Matches[1].Trim())"
+            continue
+        }
+        if ($line -match '^ROUTE_OK:') { if ($outcome.Kind -ne "failed") { $outcome.Kind = "ok" }; continue }
+    }
+    $outcome.Checkpoints = $reached.ToArray()
+    if ($outcome.Kind -eq "none" -and ($loaded -or $reached.Count -gt 0)) { $outcome.Kind = "incomplete" }
+    return $outcome
+}
+
 # Get-OracleVerdict: decide whether a completed run's captures are admissible evidence.
 #
 # A run that was killed at its backstop, exited nonzero, never reported reaching its
@@ -477,6 +525,12 @@ function Sync-SaveBase {
 # like a good run's -- just shorter. Earlier in this investigation a truncated capture set
 # was read as a complete one and cost two full replays, so the verdict is computed here
 # and recorded, rather than left to whoever opens the directory.
+#
+# RouteKind extends that to the reached state (issue #64): a route program that failed a
+# checkpoint assertion, or that never completed, is not admissible evidence for the route
+# it claims to be, however many vblanks and captures it produced. "none" preserves the
+# legacy pad-script verdict exactly -- an unqualified route is not failed here, it is
+# simply unproven, and the manifest says so.
 function Get-OracleVerdict {
     param(
         [bool]$ReachedExit,
@@ -484,10 +538,19 @@ function Get-OracleVerdict {
         [Nullable[int]]$ExitCode,
         [int]$CaptureCount,
         [int]$RequestedVblank,
-        [int]$ObservedVblank
+        [int]$ObservedVblank,
+        [ValidateSet("none", "ok", "incomplete", "failed")]
+        [string]$RouteKind = "none",
+        [string]$RouteFailReason
     )
 
     $reasons = @()
+    if ($RouteKind -eq "failed") {
+        $detail = if ($RouteFailReason) { ": $RouteFailReason" } else { "" }
+        $reasons += "the route did not reach its expected state$detail"
+    } elseif ($RouteKind -eq "incomplete") {
+        $reasons += "the route program never reported ROUTE_OK (its steps did not all complete)"
+    }
     if ($TimedOut) {
         $reasons += "killed at the backstop deadline instead of exiting on its own"
     }
