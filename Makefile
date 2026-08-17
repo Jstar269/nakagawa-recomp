@@ -25,6 +25,8 @@ GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 # value from the validated manifest plan; a command-line/environment value overrides
 # this default. Keep in sync with assets/titles/hst-ucus98701.json (the source of truth).
 HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
+RUNTIME_OPT ?= -O2
+RECOMP_OPT  ?= -O1
 endif
 
 CODEGEN_PROFILE_ARG ?=
@@ -56,9 +58,11 @@ VULKAN_SDK ?=
 VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 # glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
 GLSLC ?= glslc
-# Native runtime code is host-side C and can be tested independently at -O2. The
-# generated guest translation has its own RECOMP_OPT below and remains at -O0.
-# Keep O0 as the default until a scene-identical live benchmark proves O2's benefit.
+# Native runtime code is host-side C and can be tested independently.
+# HST now has measured -O2 runtime / -O1 generated defaults. Generic/unqualified
+# titles remain conservative -O0/-O0. Explicit overrides remain supported.
+# Generated -O2 is NOT being adopted; -O1's measured build cost is higher but
+# acceptable for HST.
 RUNTIME_OPT ?= -O0
 CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree is a concrete 56,672-file input contract.  The
@@ -325,7 +329,8 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
 # Optimization and memory-saving flags for massive machine-generated files.
-# -O0: Set to -O0 to prevent compiler OOM / hangs on massive files.
+# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
+# -O1: Measured and qualified default for HST.
 # -fno-var-tracking: Saves significant memory on huge functions.
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0

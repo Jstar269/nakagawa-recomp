@@ -212,9 +212,11 @@ The `all` target intentionally invokes Make twice:
 
 The live Makefile currently uses:
 
-- **Generated translation units:** `-O0 -w -fno-var-tracking -ftrack-macro-expansion=0`.
-- **General runtime objects:** `$(CFLAGS)`, whose repository default begins with `-O0` plus
-  `-fno-strict-aliasing`, include paths, feature defines, and warnings.
+- **Generated translation units:** `-O1 -w -fno-var-tracking -ftrack-macro-expansion=0` by default
+  for HST based on measured and qualified acceptance; `-O0` remains the conservative default for
+  generic/unqualified titles.
+- **General runtime objects:** `$(CFLAGS)`, whose default begins with `-O2` for HST and `-O0` for
+  generic titles, plus `-fno-strict-aliasing`, include paths, feature defines, and warnings.
 - **`ge.c`:** a dedicated `-O2 -fno-math-errno` compile rule for software-rasterizer speed.
 - **Portable-core objects:** a separate host-neutral `PORTABLE_CORE_CFLAGS` set, currently `-O0`.
 
@@ -224,9 +226,10 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-`RUNTIME_OPT=-O2` selects the separately verified native optimization experiment without changing
-generated game code. It is not the default because the current input replay does not hold the live
-scene constant across differently paced builds.
+HST defaults to `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`, while generic/unqualified titles remain
+conservative `-O0/-O0`. Explicit overrides (e.g. `RUNTIME_OPT=-O0 RECOMP_OPT=-O0`) remain fully
+supported on both direct Make and `hst_manager.ps1`. Generated `-O2` is not being adopted; `-O1`'s
+measured build cost is higher but acceptable for HST.
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
 The [`Makefile`](../Makefile) is the source of truth for the current optimization split and

@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "d2f3f61f4e2491572891b678f5525d8fdbfa5286fcc5ea636ed871262682cd2d"
+      "sha256": "dc9063427de7f25d32dff4be67766cbe9c3d5fbf42a217cd2228dba8d8a02590"
     },
     {
       "path": "NOTICE.md",
@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e39e8857471cd1fc5a29aafaff0720a0fe326654a3a9c774a91e0b9e0b541c2a"
+      "sha256": "890db2a84fe619a615e2eaa5b5f0ad8aa633199a9e1941bc72619f8e9f7c8301"
     },
     {
       "path": "docs/CI.md",
@@ -1131,7 +1131,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "f4e8ecc64b44eb39b1565082834cdcbf941edab2ecd0987b9804e4f2c32c1f77"
+      "sha256": "2c7b87ff3d33438a9cc48eeb4ebe0aa57bde448fa8bacb1d6b4f6b62c7f8d2e8"
     },
     {
       "path": "interface/.env.example",
@@ -6034,7 +6034,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "387da9687e91993b39fbaccdb22cc0535c2fc905e9685a0441e4005c77d51bce"
+      "sha256": "4d12370211f0029f98ad56811772e25efaf3a0bd887b13a798d0ba27c8e9a219"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -6466,7 +6466,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e5b9e2e714a8d5541fe32df71025658806b86904a83274d7fd4192a96ad9a46"
+      "sha256": "e68dadbba18070cf348981f73f380ed32404bf75d59b826ee361f13cd583316e"
     },
     {
       "path": "tools/test_hst_title_manifest.py",

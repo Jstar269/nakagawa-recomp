@@ -118,6 +118,8 @@ class HstManagerManifestTests(unittest.TestCase):
                 CODEGEN_PROFILE_ARG ?= --profile=hst
                 GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000 place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868
                 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
+                RUNTIME_OPT ?= -O2
+                RECOMP_OPT ?= -O1
                 endif
                 CODEGEN_PROFILE_ARG ?=
                 GAME_EXTRA_ELFS ?=
@@ -343,6 +345,8 @@ class HstManagerManifestTests(unittest.TestCase):
             "build_dir", "funcs", "runtime", "recomp", "sdk",
         ):
             self.assertEqual(first[field], second[field], field)
+        self.assertEqual(first["runtime"], "-O2")
+        self.assertEqual(first["recomp"], "-O1")
         self.assertEqual(first["hst_extra_spans"] or "0x00303194,0x00306e24", "0x00303194,0x00306e24")
         self.assertEqual(second["hst_extra_spans"], "0x00303194,0x00306e24")
         planner = subprocess.run(
@@ -393,6 +397,8 @@ class HstManagerManifestTests(unittest.TestCase):
                     "profile", "build_dir", "funcs", "runtime", "recomp", "sdk",
                 ):
                     self.assertEqual(first[field], second[field], field)
+                self.assertEqual(first["runtime"], "-O2")
+                self.assertEqual(first["recomp"], "-O1")
                 self.assertIsNone(first["hst_extra_spans"])
                 self.assertEqual(second["hst_extra_spans"], spans)
 
@@ -421,14 +427,14 @@ class HstManagerManifestTests(unittest.TestCase):
         proc = self.run_manager(
             "BuildFast",
             MANIFEST,
-            RuntimeOpt="O2",
-            RecompOpt="O1",
+            RuntimeOpt="O0",
+            RecompOpt="O0",
             FuncsPerChunk=64,
         )
         self.assert_manager_success(proc)
         record = [item for item in self.records() if item["target"] == "all"][-1]
-        self.assertEqual(record["runtime"], "-O2")
-        self.assertEqual(record["recomp"], "-O1")
+        self.assertEqual(record["runtime"], "-O0")
+        self.assertEqual(record["recomp"], "-O0")
         self.assertEqual(record["funcs"], "64")
         self.assertEqual(MANIFEST.read_bytes(), before)
 

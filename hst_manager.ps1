@@ -113,8 +113,8 @@ Param(
     [Parameter(Mandatory=$false)]
     [string]$VulkanSdk = "",
 
-    # Optional compile-profile overrides. The Makefile defaults both native runtime
-    # and generated game code to O0; native O2 is verified but not the default.
+    # Optional compile-profile overrides. The Makefile defaults HST to native runtime
+    # O2 and generated game code O1 (generic/unqualified titles remain O0/O0).
     [Parameter(Mandatory=$false)]
     [ValidateSet("O0", "O1", "O2")]
     [string]$RuntimeOpt,
