@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e24a11419cc3b4f534e1f424fc76a2071951600a896ffca6dec87001f0c26ad4"
+      "sha256": "b26132b2fc73e50ae35f2c7a93496b40d96540bca5156b4d47655ef8131ed662"
     },
     {
       "path": "assets/release_manifest.json",
@@ -4955,6 +4955,18 @@
       "sha256": "84ba76be7b69439091248dd244b46d17c2d1735fff5ae8fb6e89b6b1e1ceecb2"
     },
     {
+      "path": "tools/build_graph_snapshot.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "80332d6f2f54b563932a5f1b94e83283e10b6c02f22c8caf9fc2fdff209b2626"
+    },
+    {
       "path": "tools/build_profile.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5299,6 +5311,18 @@
       "sha256": "8c9afb9c185cd22c0bd0e1cbbb28825ce7727923309e574fdfb22d4255668d08"
     },
     {
+      "path": "tools/hle_census.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6cd0b1df58fa72ab2fac0069155fcf18acba9b9f41a5a57a1cd850e4839b11ae"
+    },
+    {
       "path": "tools/hle_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5612,6 +5636,18 @@
         "upstream_attribution": null
       },
       "sha256": "251b982db8956266e75d8d389419e44b95391be37ec2f0635f0c37b125a85f5c"
+    },
+    {
+      "path": "tools/portability_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8371a82181486d0864db3982ce49d2948d238187fa793e0655ebaaa63b028312"
     },
     {
       "path": "tools/ppm2png.py",
@@ -6034,6 +6070,15 @@
       "sha256": "a8e4d080f6008610ed9305ba5bdba7281e917baed6a1121c276704ecdf21fea0"
     },
     {
+      "path": "tools/test_build_graph_snapshot.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "c210f7561d8b520d40431dc7e64de47dcf5e6c48a84e3d75a667fec02f17ee4e"
+    },
+    {
       "path": "tools/test_build_truth.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6418,6 +6463,15 @@
       "sha256": "9079a1232777f244cbce8436efe017e27d6db42785ea46156c7cf72f5d3edf4a"
     },
     {
+      "path": "tools/test_hle_census.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "2eb41c468c50c2edd9d33dea919f5beb677eaec6175545b1d6063c2c5acc5a5c"
+    },
+    {
       "path": "tools/test_hle_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6725,6 +6779,15 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e81d45c760cfaf9829fafbe9311d607b80ef5a36cba8f5653ba2a818007e5e2c"
+    },
+    {
+      "path": "tools/test_portability_inventory.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "3db58eaab49792f092978b3fa00a0753b5e37e82bf92c7f9332eb78c565e2712"
     },
     {
       "path": "tools/test_progress_evidence.py",
