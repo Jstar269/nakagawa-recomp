@@ -7,10 +7,11 @@ import subprocess
 import tempfile
 import unittest
 
-from tools import publication_policy, public_export
+from tools import history_audit, publication_policy, public_export
 from tools.build_public_export import (
     check_unresolved_legal_blockers,
     export_sanitized_public_tree,
+    history_audit_gate_result,
     is_public_safe_export_tree,
     run_all_publication_gates,
     run_history_audit,
@@ -22,12 +23,39 @@ from tools.build_public_export import (
 # candidate. Profile-excluded files are asserted by path/policy using synthetic
 # conditions; publication-security coverage must not disappear behind skips.
 _PUBLIC_SAFE_TREE = is_public_safe_export_tree()
-_FRESH_CANDIDATE = subprocess.run(
-    ["git", "rev-list", "--count", "--all"],
-    capture_output=True,
-    text=True,
-    check=False,
-).stdout.strip() == "1"
+
+
+def _git(argv: list[str], cwd: Path) -> None:
+    subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True)
+
+
+def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
+    """Build a small multi-commit git repository in *root*.
+
+    ``sensitive=True`` drops a DEFINITE_SECRET token into one commit so the
+    history audit must fail closed; ``sensitive=False`` produces a sanitized
+    multi-commit history that must pass.  The repo is deliberately tiny and
+    synthetic: no private bytes, no network, no shared refs.
+    """
+    for argv in (
+        ("init", "-q"),
+        ("config", "user.email", "t@example.invalid"),
+        ("config", "user.name", "history-audit-test"),
+    ):
+        _git(argv, root)
+    (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+    _git(["add", "safe.txt"], root)
+    _git(["commit", "-qm", "safe base"], root)
+    (root / "second.txt").write_text("also safe\n", encoding="utf-8")
+    _git(["add", "second.txt"], root)
+    _git(["commit", "-qm", "second commit"], root)
+    if sensitive:
+        (root / "legacy_keys.txt").write_text(
+            "legacy token " + "ghp_" + "012345678901234567890123456789012345" + "\n",
+            encoding="utf-8",
+        )
+        _git(["add", "legacy_keys.txt"], root)
+        _git(["commit", "-qm", "legacy artifact"], root)
 
 
 class TestPublicExport(unittest.TestCase):
@@ -65,12 +93,34 @@ class TestPublicExport(unittest.TestCase):
         self.assertTrue(res.passed, f"publish_audit gate failed: {res.detail}")
 
     def test_history_audit_gate_fails_closed_on_legacy_history(self):
-        res = run_history_audit()
-        if _PUBLIC_SAFE_TREE and _FRESH_CANDIDATE:
-            self.assertTrue(res.passed, f"fresh public candidate history must be clean: {res.detail}")
-        else:
-            self.assertFalse(res.passed, "an inherited multi-commit history must fail closed")
+        # A legacy/dirty history must fail closed regardless of the ambient
+        # checkout's own refs: build a synthetic repo whose history contains a
+        # definite secret and prove the audit and the publication gate reject it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_synthetic_repo(root, sensitive=True)
+            report = history_audit.generate_full_history_audit_report(root)
+            self.assertEqual(report["status"], "FAIL")
+            self.assertGreater(report["summary"]["total_findings"], 0)
+            self.assertEqual(report["summary"]["category_counts"].get("DEFINITE_SECRET", 0), 1)
+            res = history_audit_gate_result(report)
+            self.assertFalse(res.passed, "legacy dirty history must fail closed")
             self.assertIn("SENSITIVE FINDINGS DETECTED", res.detail)
+
+    def test_history_audit_gate_passes_on_sanitized_history(self):
+        # A sanitized multi-commit history must pass: the gate criterion is the
+        # audit state (zero findings), never the commit count. This is the
+        # current intended public baseline (sanitized main plus fresh export).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_synthetic_repo(root, sensitive=False)
+            report = history_audit.generate_full_history_audit_report(root)
+            self.assertEqual(report["status"], "OK")
+            self.assertEqual(report["summary"]["total_findings"], 0)
+            self.assertGreater(report["baseline"]["total_commits"], 1)
+            res = history_audit_gate_result(report)
+            self.assertTrue(res.passed, "sanitized multi-commit history must pass")
+            self.assertIn("0 sensitive findings", res.detail)
 
     def test_sbom_verification_gate(self):
         res = run_sbom_verification()
@@ -79,13 +129,20 @@ class TestPublicExport(unittest.TestCase):
     def test_run_all_publication_gates(self):
         results = run_all_publication_gates(public_safe_profile=True)
         self.assertEqual(len(results), 4)
-        if _FRESH_CANDIDATE:
+        history = results[2]
+        if history.passed:
+            # Sanitized history: the intended public baseline is fully green.
             for gate in results:
                 self.assertTrue(gate.passed, f"Gate '{gate.name}' failed: {gate.detail}")
         else:
-            self.assertFalse(results[2].passed, "inherited source history must remain visibly failed")
-            self.assertFalse(results[2].blocking, "old history is non-blocking only because it is not exported")
-            self.assertIn("not exported", results[2].name)
+            # Dirty legacy ancestry present in this checkout: the history gate
+            # must stay visibly failed, but non-blocking because the legacy
+            # ancestry is not exported into the fresh sanitized root. The other
+            # gates must still pass under the public-safe profile.
+            self.assertFalse(history.blocking, "old history is non-blocking only because it is not exported")
+            self.assertIn("not exported", history.name)
+            for gate in results[:2] + results[3:]:
+                self.assertTrue(gate.passed, f"Gate '{gate.name}' failed: {gate.detail}")
 
     def test_dry_run_export(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -152,6 +152,33 @@ def run_publish_audit(repo_root: Path = ROOT) -> GateResult:
     return GateResult("Publication Audit", False, res.stdout.strip() or res.stderr.strip())
 
 
+def history_audit_gate_result(data: dict) -> GateResult:
+    """Map a ``history_audit --json`` report to the publication-gate verdict.
+
+    The gate is state-based, never commit-count-based: a history is clean only
+    when the audit reports zero findings across every reachable commit, and any
+    finding (including a single legacy dirty commit) fails closed.  A sanitized
+    multi-commit public history legitimately passes; a fresh single-commit
+    candidate with a finding must still fail.
+    """
+    summary = data.get("summary", {})
+    categories = summary.get("category_counts", {})
+    definite = categories.get("DEFINITE_SECRET", 0)
+    credentials = categories.get("POSSIBLE_CREDENTIAL", 0)
+    total = summary.get("total_findings", 0)
+    if total == 0 and definite == 0 and credentials == 0:
+        return GateResult(
+            "Full-History Audit",
+            True,
+            f"0 sensitive findings across {data.get('baseline', {}).get('total_commits', 0)} commits and {data.get('baseline', {}).get('total_objects', 0)} objects",
+        )
+    return GateResult(
+        "Full-History Audit",
+        False,
+        f"SENSITIVE FINDINGS DETECTED: {summary.get('total_findings', 0)} findings; {definite} secrets, {credentials} credentials",
+    )
+
+
 def run_history_audit(repo_root: Path = ROOT) -> GateResult:
     """Run tools/history_audit.py --json."""
     audit_script = ROOT / "tools" / "history_audit.py"
@@ -169,22 +196,7 @@ def run_history_audit(repo_root: Path = ROOT) -> GateResult:
         data = json.loads(res.stdout) if res.stdout.strip() else None
         if data is None:
             return GateResult("Full-History Audit", False, res.stderr.strip() or "history_audit failed")
-        summary = data.get("summary", {})
-        categories = summary.get("category_counts", {})
-        definite = categories.get("DEFINITE_SECRET", 0)
-        credentials = categories.get("POSSIBLE_CREDENTIAL", 0)
-        total = summary.get("total_findings", 0)
-        if total == 0 and definite == 0 and credentials == 0:
-            return GateResult(
-                "Full-History Audit",
-                True,
-                f"0 sensitive findings across {data.get('baseline', {}).get('total_commits', 0)} commits and {data.get('baseline', {}).get('total_objects', 0)} objects",
-            )
-        return GateResult(
-            "Full-History Audit",
-            False,
-            f"SENSITIVE FINDINGS DETECTED: {summary.get('total_findings', 0)} findings; {definite} secrets, {credentials} credentials",
-        )
+        return history_audit_gate_result(data)
     except Exception as exc:
         return GateResult("Full-History Audit", False, f"failed to parse history_audit output: {exc}")
 
