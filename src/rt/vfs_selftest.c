@@ -96,6 +96,105 @@ int main(void) {
     ASSERT_INT_EQ(len, 11);
     ASSERT_STR_EQ(out, "fs/..bashrc");
 
+    /* ---- hostile-path containment matrix (security lane) ----
+     * Both host-path mappings must keep every guest-controlled string inside
+     * the root: sr_vfs_host_dir_path (read-only enumeration) rejects ".."
+     * components; sr_vfs_host_flat_path (writable storage) flattens each
+     * input into exactly one filename and rejects the directory references
+     * "", "." and "..". The checkers below re-derive the invariant from the
+     * OUTPUT so a broken mapping fails the test, not just a changed fixture. */
+
+    static const char *flat_contained[] = {
+        "../..", "..\\..", "../../etc/passwd", "..\\..\\Windows\\System32\\evil.exe",
+        "C:/Windows/System32/evil.exe", "C:\\Windows\\System32", "/etc/passwd",
+        "\\etc\\passwd", "//server/share", "\\\\server\\share",
+        "\\\\.\\PhysicalDrive0", "\\\\?\\C:\\foo",
+        "ms0:/PSP/../x", "ms0:..", "ms0:.", "foo:bar", "foo bar",
+        "a/b\\c:d e", "*", "?", "<", ">", "\"", "|", "~",
+        "ms0:/PSP/SAVEDATA", "data/menu/text/x.to", "disc0:/PSP_GAME/USRDIR/x.dat",
+        "\xd0\xbf\xd1\x83\xd1\x82\xd1\x8c/\xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",
+        "foo.", "foo ", "CON", "NUL", "...", ".hidden", "..bashrc", "a..b",
+        "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+    };
+    for (size_t i = 0; i < sizeof(flat_contained) / sizeof(flat_contained[0]); i++) {
+        len = sr_vfs_host_flat_path("fs", flat_contained[i], out, sizeof(out));
+        ASSERT_INT_EQ(len > 0, 1);
+        if (len > 0) {
+            const char *p = out + 3;
+            if (strncmp(out, "fs/", 3) != 0 && strncmp(out, "fs\\", 3) != 0) {
+                fprintf(stderr, "FAIL L%d: '%s' -> '%s' escapes the root\n",
+                        __LINE__, flat_contained[i], out);
+                g_failed = 1;
+            }
+            for (const char *q = p; *q; q++) {
+                if (*q == '/' || *q == '\\' || *q == ':') {
+                    fprintf(stderr, "FAIL L%d: '%s' -> '%s' contains a path metacharacter\n",
+                            __LINE__, flat_contained[i], out);
+                    g_failed = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* The three directory-reference forms are rejected outright. */
+    len = sr_vfs_host_flat_path("fs", "", out, sizeof(out));
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_flat_path("fs", ".", out, sizeof(out));
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_flat_path("fs", "..", out, sizeof(out));
+    ASSERT_INT_EQ(len, 0);
+
+    /* Exact mapping contract (byte-for-byte, same as hle.c's old inline loop). */
+    len = sr_vfs_host_flat_path("fs", "ms0:/PSP/SAVEDATA", out, sizeof(out));
+    ASSERT_INT_EQ(len, 20);
+    ASSERT_STR_EQ(out, "fs/ms0__PSP_SAVEDATA");
+    len = sr_vfs_host_flat_path("fs", "foo:bar", out, sizeof(out));
+    ASSERT_INT_EQ(len, 10);
+    ASSERT_STR_EQ(out, "fs/foo_bar");
+    len = sr_vfs_host_flat_path("fs", "a b", out, sizeof(out));
+    ASSERT_INT_EQ(len, 6);
+    ASSERT_STR_EQ(out, "fs/a_b");
+    len = sr_vfs_host_flat_path("fs", "C:/x", out, sizeof(out));
+    ASSERT_INT_EQ(len, 7);
+    ASSERT_STR_EQ(out, "fs/C__x");
+    len = sr_vfs_host_flat_path("fs/", "x", out, sizeof(out));
+    ASSERT_INT_EQ(len, 4);
+    ASSERT_STR_EQ(out, "fs/x");
+    len = sr_vfs_host_flat_path("fs", "a b", out, 5);
+    ASSERT_INT_EQ(len, 0);
+
+    /* sr_vfs_host_dir_path: hostile device/UNC/wildcard/Unicode inputs must
+     * either be rejected ("..") or produce a result that stays under root. */
+    static const char *dir_hostile[] = {
+        "../..", "../../x", "C:/Windows", "C:\\Windows", "\\\\.\\PhysicalDrive0",
+        "\\\\server\\share", "//etc/passwd", "C:", "ms0:C:/x", "ms0:foo:bar",
+        "ms0:a*b", "ms0:a?b", "ms0:/PSP/../x", "ms0:/a/..", "ms0:..\\x", "ms0:.",
+        "\xd0\xbf\xd1\x83\xd1\x82\xd1\x8c/\xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",
+        "a\\b/c", "ms0:/", "ms0:"
+    };
+    for (size_t i = 0; i < sizeof(dir_hostile) / sizeof(dir_hostile[0]); i++) {
+        len = sr_vfs_host_dir_path("fs", dir_hostile[i], out, sizeof(out), '\\');
+        if (len == 0) continue;
+        if (strcmp(out, "fs") != 0 && strncmp(out, "fs\\", 3) != 0) {
+            fprintf(stderr, "FAIL L%d: '%s' -> '%s' escapes the root\n",
+                    __LINE__, dir_hostile[i], out);
+            g_failed = 1;
+        }
+        for (const char *q = out + 3; ; ) {
+            const char *start = q;
+            while (*q && *q != '\\') q++;
+            if (q - start == 2 && start[0] == '.' && start[1] == '.') {
+                fprintf(stderr, "FAIL L%d: '%s' -> '%s' contains a '..' component\n",
+                        __LINE__, dir_hostile[i], out);
+                g_failed = 1;
+                break;
+            }
+            if (!*q) break;
+            q++;
+        }
+    }
+
     if (g_failed) {
         fprintf(stderr, "vfs_selftest: FAILED\n");
         return 1;

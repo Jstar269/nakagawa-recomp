@@ -2263,25 +2263,24 @@ static char *host_path_alloc(const char *guest) {
         free(configured);
         return NULL;
     }
-    size_t root_len = strlen(dir), guest_len = strlen(guest), safe_len = 0;
-    for (size_t i = 0; i < guest_len; i++) safe_len++;
-    if (root_len > SIZE_MAX - 2u || safe_len > SIZE_MAX - root_len - 2u) {
+    size_t root_len = strlen(dir), guest_len = strlen(guest);
+    if (guest_len == 0 || root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) {
         free(configured);
         return NULL;
     }
-    char *path = (char *)malloc(root_len + safe_len + 2u);
+    char *path = (char *)malloc(root_len + guest_len + 2u);
     if (!path) {
         free(configured);
         return NULL;
     }
-    size_t at = 0;
-    memcpy(path + at, dir, root_len); at += root_len;
-    if (at && path[at - 1] != '/' && path[at - 1] != '\\') path[at++] = '/';
-    for (size_t i = 0; i < guest_len; i++) {
-        char c = guest[i];
-        path[at++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    /* Flatten the guest string into a single filename beneath the fs root
+     * (sr_vfs_host_flat_path); "." and ".." are rejected as directory
+     * references. See vfs_path.h for the containment contract. */
+    if (!sr_vfs_host_flat_path(dir, guest, path, root_len + guest_len + 2u)) {
+        free(path);
+        free(configured);
+        return NULL;
     }
-    path[at] = '\0';
     free(configured);
     return path;
 }

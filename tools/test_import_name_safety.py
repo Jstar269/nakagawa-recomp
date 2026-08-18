@@ -174,6 +174,22 @@ class FakeElf:
 
 
 class TestImportNameSafety(unittest.TestCase):
+    def test_missing_module_info_section_is_valueerror_not_systemexit(self):
+        # Found by tools/test_parse_fuzz.py: a PRX without .rodata.sceModuleInfo
+        # used to raise SystemExit from the library path, killing any host
+        # process that consumed parse_imports (analyze.py/codegen.py).
+        class NoModuleInfoElf:
+            base = 0
+
+            def sec(self, name):  # noqa: ARG002
+                return None
+
+            def read_at_vaddr(self, addr, n):  # noqa: ARG002
+                return None
+
+        with self.assertRaisesRegex(ValueError, "no .rodata.sceModuleInfo"):
+            imports_tool.parse_imports(NoModuleInfoElf())
+
     def test_normal_library_name_is_unchanged(self):
         parsed = imports_tool.parse_imports(FakeElf(b"sceDisplay"))
         self.assertEqual(parsed[FakeElf.FIRST_SYM], ("sceDisplay", 0x12345678))
