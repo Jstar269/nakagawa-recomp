@@ -405,7 +405,7 @@ endif
 -include $(DEP_FILES)
 
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(GAME_NAME).exe \
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
 		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(CHUNK_OBJS) \
 		$(RT_GE_O) \
