@@ -4904,7 +4904,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b68176b8e9ee5c84dcaa6d2ee612b3543cc6c8c23410bf913795f48b902a66ec"
+      "sha256": "8237ec8b9b7ca1126977d6689e1520c72484dfd3b53ef76d39bce7a4ecfbf991"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5082,7 +5082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d94fff4eb8fb4759071cd51ec9da8c3086d133904fb3bf7e1e89a70fc4f687d"
+      "sha256": "5cf3d2ddd96c08d3b06d92e0403f113aa39afcac7b195870cb24522727868c9f"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -5686,7 +5686,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "720adee78d55ec2ee5161a803b26560a80b5efd130d1f6a1091c451540f10511"
+      "sha256": "4de49a46eadbaf234a856e0b7f362f78cddb5b30bbbe9e42c51d7cfddf156d58"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -6262,7 +6262,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3533cc6eaa771cca2358c52e28acd4b6daf37b1a76d686244b75b904e53694ea"
+      "sha256": "b39317ff7e3fdcb7ab715b8967f6b2d1499c3c8c768bd273c92287c13e122323"
     },
     {
       "path": "tools/test_entry_frame_balance.py",

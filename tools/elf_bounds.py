@@ -58,7 +58,7 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
     if data[4] != 1 or data[5] != 1:
         raise ValueError(f"{path}: only little-endian ELF32 input is supported")
 
-    e_type, = struct.unpack_from("<H", data, 16)
+    e_type, machine = struct.unpack_from("<HH", data, 16)
     entry, phoff, shoff = struct.unpack_from("<III", data, 24)
     phentsize, phnum, shentsize, shnum, shstrndx = struct.unpack_from(
         "<HHHHH", data, 42
@@ -78,8 +78,11 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
             p_type, p_off, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = fields
             if p_type == 1 and p_filesz > p_memsz:
                 raise ValueError(f"{path}: PT_LOAD filesz exceeds memsz")
-            if p_filesz:
-                checked_span(total, p_off, p_filesz, f"program segment {i}")
+            # Validate the complete source span even when it is empty.  An empty
+            # segment still carries a file offset; accepting an offset past EOF
+            # lets one consumer accept a structurally impossible envelope while
+            # another consumer rejects it later.
+            checked_span(total, p_off, p_filesz, f"program segment {i}")
             phdrs.append(
                 dict(
                     type=p_type,
@@ -144,6 +147,7 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
 
     return dict(
         e_type=e_type,
+        machine=machine,
         entry=entry,
         phoff=phoff,
         shoff=shoff,
