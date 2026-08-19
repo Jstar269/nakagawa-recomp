@@ -112,6 +112,19 @@ class TestElfBounds(unittest.TestCase):
         self.assertEqual(image.image_start, legacy.lo)
         self.assertEqual(image.entry_point, legacy.entry)
 
+    def test_cfg_entry_set_compares_with_the_legacy_analyzer(self) -> None:
+        blob = make_elf([
+            (0, [0x0C000040, 0, 0x03E00008, 0], 16, 5, 4),
+        ], entry=0)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "legacy-compare.elf"
+            path.write_bytes(blob)
+            image = prxload.load_program_image(path, base=0)
+            legacy = analyze.Elf(str(path))
+            legacy_entries, legacy_ranges = analyze.analyze(legacy)
+        report = analyze.canonical_cfg_report(image, ranges=legacy_ranges, entries=legacy_entries)
+        self.assertEqual(analyze.cfg_compatibility_findings(report, legacy_entries), [])
+
     def test_legacy_readers_cap_hostile_input_before_parsing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "too-large-for-test.elf"
@@ -197,6 +210,9 @@ class ProgramImageTests(unittest.TestCase):
         self.assertIsNone(image.read_at_vaddr(0x1008, 1))
         self.assertIsNone(image.read_at_vaddr(None, 0))
         self.assertIsNone(image.read_at_vaddr(0, 0))
+        cfg = analyze.canonical_cfg_report(image, entries=[image.entry_point])
+        self.assertEqual(cfg["executable_intervals"], [{"start": 0x1000, "end": 0x1008}])
+        self.assertEqual(cfg["instructions"][0]["address"], 0x1000)
         with self.assertRaises((AttributeError, TypeError)):
             image.flat_bytes[0] = 1
         with self.assertRaises((AttributeError, TypeError)):
@@ -331,6 +347,243 @@ class ProgramImageTests(unittest.TestCase):
             ), ""
         )
         self.assertIn("string-overlong", {finding.code for finding in long_findings})
+
+
+class FakeCodeImage:
+    def __init__(self, words, data=b""):
+        self.words = dict(words)
+        self.data = data
+        self.reloc = None
+        self.sections = []
+        self.executable_intervals = ()
+
+    def read_at_vaddr(self, address, size):
+        if size == 0:
+            return b""
+        raw = bytearray()
+        for offset in range(size):
+            byte_address = address + offset
+            word_address = byte_address & ~3
+            if word_address not in self.words:
+                return None
+            raw.append((self.words[word_address] >> ((byte_address & 3) * 8)) & 0xFF)
+        return bytes(raw)
+
+
+class DenseCfgScaleImage:
+    """Deterministic source-owned CFG scale fixture with no retail data."""
+
+    def __init__(self, *, node_count=200_000, owner_count=5_000, base=0x00100000):
+        if node_count % owner_count:
+            raise ValueError("node_count must divide evenly by owner_count")
+        block_size = node_count // owner_count
+        if block_size < 24:
+            raise ValueError("fixture blocks need room for control-flow cases")
+        self.base = base
+        self.node_count = node_count
+        self.owner_count = owner_count
+        self.shared_target = base + 10 * 4
+        words = [0] * node_count
+        self.entries = [base + owner * block_size * 4 for owner in range(owner_count)]
+        for owner in range(owner_count):
+            start = owner * block_size
+            address = base + start * 4
+            # Every block has a branch-likely edge and delay slot.  The target
+            # and not-taken paths both remain inside the block.
+            words[start + 2] = branch(20, 1, 2, address + 8, address + 32)
+            # Two direct jumps converge on a non-entry node to force owner
+            # conflicts without making the shared node a new callable owner.
+            if owner in (1, owner_count // 2):
+                words[start + 6] = j(self.shared_target)
+            elif owner == 2:
+                words[start + 6] = j(self.entries[-1])
+            elif owner == 3:
+                words[start + 6] = branch(4, 0, 0, address + 24, self.shared_target)
+            else:
+                words[start + 12] = jal(self.entries[(owner + 1) % owner_count])
+            # A computed jump leaves the remainder unowned in selected blocks.
+            if owner % 400 == 0:
+                words[start + 16] = jr(8)
+                words[start + 18] = 0x012A4020  # nonzero unowned executable word
+            # Every 250th block intentionally falls through into the next
+            # callable entry, producing continuation/interior-entry evidence.
+            elif owner % 250 != 0:
+                words[start + 18] = jr(31)
+            # All other blocks terminate at index 18 with a delay-slot NOP.
+            words[start + 19] = 0
+
+        self._blob = bytearray(node_count * 4 + 2)
+        for index, word in enumerate(words):
+            struct.pack_into("<I", self._blob, index * 4, word & 0xFFFFFFFF)
+        self.data = struct.pack("<I", self.shared_target)
+        self.reloc = None
+        self.sections = [
+            {
+                "nm": ".rodata",
+                "typ": 1,
+                "flags": 0,
+                "addr": 0x90000000,
+                "off": 0,
+                "size": 4,
+            }
+        ]
+        self.executable_intervals = (
+            (base, base + node_count * 4 + 2),
+        )
+
+    def read_at_vaddr(self, address, size):
+        if not isinstance(address, int) or not isinstance(size, int) or size < 0:
+            return None
+        offset = address - self.base
+        if offset < 0 or offset > len(self._blob):
+            return None
+        if size == 0:
+            return b""
+        if offset + size > len(self._blob):
+            return None
+        return bytes(self._blob[offset:offset + size])
+
+
+def j(target):
+    return 0x08000000 | ((target >> 2) & 0x03FFFFFF)
+
+
+def jal(target):
+    return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
+
+
+def branch(op, rs, rt, source, target):
+    displacement = ((target - (source + 4)) >> 2) & 0xFFFF
+    return (op << 26) | (rs << 21) | (rt << 16) | displacement
+
+
+def jr(register):
+    return (register << 21) | 8
+
+
+class CanonicalCfgTests(unittest.TestCase):
+    def test_cfg_requires_a_mapped_image_reader(self):
+        with self.assertRaisesRegex(ValueError, "read_at_vaddr"):
+            analyze.canonical_cfg_report(None)
+
+    def test_cfg_preserves_calls_tail_likely_delay_and_unresolved_edges(self):
+        words = {
+            0x1000: jal(0x1100), 0x1004: 0,
+            0x1008: 0, 0x100C: j(0x1200), 0x1010: 0,
+            0x1014: jr(31), 0x1018: 0,
+            0x1100: jr(31), 0x1104: 0,
+            0x1200: jr(31), 0x1204: 0,
+            0x1250: jr(8), 0x1254: 0,
+            0x1300: branch(20, 1, 2, 0x1300, 0x130C),
+            0x1304: 0, 0x1308: 0, 0x130C: jr(31), 0x1310: 0,
+            0x1400: j(0x1600), 0x1404: 0,
+            0x1500: j(0x1600), 0x1504: 0,
+            0x1600: jr(31), 0x1604: 0,
+            0x1700: 0, 0x1704: jr(31), 0x1708: 0,
+            0x1800: 0,
+            0x1900: branch(4, 0, 0, 0x1900, 0x1A00), 0x1904: 0,
+            0x1A00: jr(31), 0x1A04: 0,
+        }
+        image = FakeCodeImage(words, struct.pack("<I", 0x1200))
+        image.sections = [
+            {"nm": ".rodata", "typ": 1, "flags": 0, "addr": 0x2000, "off": 0, "size": 4},
+            {"nm": ".init", "typ": 1, "flags": 4, "addr": 0x2100, "off": 0, "size": 4},
+        ]
+        report = analyze.canonical_cfg_report(
+            image,
+            ranges=[(0x1000, 0x1A08)],
+            entries=[0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0x1500, 0x1700, 0x1704, 0x1900, 0x1A00],
+        )
+        self.assertEqual(
+            report,
+            analyze._canonical_cfg_report_reference(
+                image,
+                ranges=[(0x1000, 0x1A08)],
+                entries=[0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0x1500, 0x1700, 0x1704, 0x1900, 0x1A00],
+            ),
+        )
+        by_address = {node["address"]: node for node in report["instructions"]}
+        self.assertEqual(report["schema_version"], 1)
+        self.assertTrue(any(edge["kind"] == "call" and edge["target"] == 0x1100 for edge in report["call_edges"]))
+        self.assertTrue(any(edge["kind"] == "tail-call" and edge["target"] == 0x1200 for edge in report["tail_call_edges"]))
+        self.assertTrue(any(edge["kind"] == "tail-call" and edge["target"] == 0x1A00 for edge in report["tail_call_edges"]))
+        self.assertEqual(by_address[0x1300]["branch_likely"], True)
+        self.assertEqual(by_address[0x1304]["delay_slot_of"], 0x1300)
+        self.assertEqual(by_address[0x1304]["delay_slot_annulled_when_not_taken"], True)
+        self.assertTrue(any(edge["source"] == 0x1250 and edge["target"] is None for edge in report["unresolved_indirect_edges"]))
+        self.assertTrue(any(edge["source"] == 0x1700 and edge["target"] == 0x1704 for edge in report["continuation_edges"]))
+        self.assertTrue(any(conflict["address"] == 0x1600 for conflict in report["ownership_conflicts"]))
+        self.assertIn(0x1800, [item["start"] for item in report["byte_classification"] if item["classification"] == "padding"])
+        self.assertEqual(report["jump_table_ownership"][0]["target"], 0x1200)
+        self.assertEqual([span["section"] for span in report["data_spans"]], [".rodata"])
+        self.assertEqual(analyze.verify_canonical_cfg_report(report), [])
+        self.assertEqual(
+            analyze.cfg_compatibility_findings(report, report["entries"]), []
+        )
+        self.assertEqual(analyze.canonical_cfg_json(report), analyze.canonical_cfg_json(json.loads(analyze.canonical_cfg_json(report))))
+
+    def test_cfg_compact_scale_fixture_is_deterministic_and_verified(self):
+        image = DenseCfgScaleImage()
+        ranges = image.executable_intervals
+        first = analyze.canonical_cfg_state(image, ranges=ranges, entries=image.entries)
+        first_summary = first.summary()
+        self.assertEqual(analyze.verify_canonical_cfg_state(first), [])
+        self.assertEqual(first_summary["instruction_count"], 200_000)
+        self.assertEqual(first_summary["node_count"], 200_000)
+        self.assertEqual(first_summary["owner_count"], 5_000)
+        self.assertGreater(first_summary["edge_count"], 200_000)
+        self.assertGreater(first_summary["edges_by_class"]["delay-slot"], 5_000)
+        self.assertGreaterEqual(first_summary["edges_by_class"]["branch"], 5_000)
+        self.assertGreaterEqual(first_summary["edges_by_class"]["call"], 4_000)
+        self.assertGreaterEqual(first_summary["edges_by_class"]["direct-jump"], 1)
+        self.assertGreaterEqual(first_summary["edges_by_class"]["direct-branch"], 1)
+        self.assertGreaterEqual(first_summary["edges_by_class"]["tail-call"], 1)
+        self.assertGreater(first_summary["edges_by_class"]["unresolved-indirect"], 1)
+        self.assertGreater(first_summary["continuation_count"], 1)
+        self.assertGreater(first_summary["conflict_count"], 1)
+        self.assertEqual(first_summary["unreadable_span_count"], 1)
+        self.assertEqual(first_summary["data_span_count"], 1)
+        self.assertGreaterEqual(first_summary["jump_table_count"], 1)
+        self.assertGreater(
+            sum(first._classification(index) == "unowned-executable" for index in range(first.node_count)),
+            1,
+        )
+
+        second_summary = analyze.canonical_cfg_summary(
+            image, ranges=ranges, entries=image.entries
+        )
+        self.assertEqual(second_summary, first_summary)
+
+    def test_cfg_verifier_rejects_malformed_and_out_of_sync_reports(self):
+        malformed = [
+            {"schema_version": 1, "executable_intervals": None},
+            {"schema_version": 1, "executable_intervals": [None]},
+            {"schema_version": 1, "executable_intervals": [], "instructions": [None]},
+            {"schema_version": 1, "executable_intervals": [], "byte_classification": None},
+            {"schema_version": 1, "executable_intervals": [], "edges": [None]},
+        ]
+        for candidate in malformed:
+            with self.subTest(candidate=candidate):
+                findings = analyze.verify_canonical_cfg_report(candidate)
+                self.assertIsInstance(findings, list)
+                self.assertTrue(findings)
+
+        image = FakeCodeImage({0x2000: jr(31), 0x2004: 0})
+        report = analyze.canonical_cfg_report(image, ranges=[(0x2000, 0x2008)], entries=[0x2000])
+        report["byte_classification"][0]["end"] -= 1
+        codes = {finding["code"] for finding in analyze.verify_canonical_cfg_report(report)}
+        self.assertIn("byte-classification-span-mismatch", codes)
+
+        clean = analyze.canonical_cfg_report(
+            image, ranges=[(0x2000, 0x2008)], entries=[0x2000]
+        )
+        clean["call_edges"].append({
+            "source": 0x2000, "target": 0xDEAD, "kind": "call", "detail": "tampered"
+        })
+        self.assertIn(
+            "call_edges-projection-mismatch",
+            {finding["code"] for finding in analyze.verify_canonical_cfg_report(clean)},
+        )
 
 
 if __name__ == "__main__":
