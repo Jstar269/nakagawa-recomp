@@ -78,6 +78,17 @@ LIBS       ?= -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lole32 -lwinmm
 
 BUILD_DIR  ?= build/$(GAME_NAME)
 FUNCS_PER_CHUNK ?= 2000
+# Optional deterministic size-aware chunking: greedy contiguous fill toward a
+# per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
+# caps chunk size). Empty keeps the legacy count-based partition byte-for-byte.
+CHUNK_TARGET_BYTES ?=
+ifeq ($(strip $(CHUNK_TARGET_BYTES)),)
+CHUNK_BYTES_ARG :=
+CHUNK_TARGET_ENTRY :=
+else
+CHUNK_BYTES_ARG := --target-chunk-bytes=$(CHUNK_TARGET_BYTES)
+CHUNK_TARGET_ENTRY := --entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)"
+endif
 
 # Production-HLE PSP oracle stream. The target reuses hle_thread_selftest.exe, so the
 # binary_sha256 in its record is the hash of the executable that actually emits stdout.
@@ -285,6 +296,7 @@ compiler-info:
 	@echo RECOMP_OPT=$(RECOMP_OPT)
 	@echo RECOMP_FLAGS=$(RECOMP_FLAGS)
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
+	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
 
 public-safe-verify:
@@ -299,11 +311,11 @@ all:
 	$(MAKE) pipeline
 	$(MAKE) compile
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)")
+CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 pipeline: $(BUILD_DIR)/$(GAME_NAME)_image.bin $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_imports.toml
 
@@ -311,7 +323,7 @@ $(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_ELF) tools/prxload.py $(GAME_PSP_HEA
 	$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE) $(PSP_HEADER_ARG) --out=$@
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_ELF) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) tools/codegen.py $(GAME_ELF) $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ARGS) --funcs-per-chunk=$(FUNCS_PER_CHUNK)
+	$(PYTHON) tools/codegen.py $(GAME_ELF) $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ARGS) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG)
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_ELF) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py $(GAME_ELF) $(GAME_BASE) --toml=$@
