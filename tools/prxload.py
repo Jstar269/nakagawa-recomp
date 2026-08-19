@@ -11,10 +11,13 @@
 # Usage: prxload.py <prx-elf> <base-hex> [--psp-header EBOOT.BIN]
 #                   [--out image.bin] [--verify pc=word ...]
 
+import hashlib
 import struct
 import sys
+from dataclasses import dataclass
 
 from elf_bounds import (
+    MAX_ELF_FILE_BYTES,
     MAX_ELF_IMAGE_BYTES,
     checked_span,
     image_extent,
@@ -24,6 +27,1025 @@ from elf_bounds import (
 R_MIPS_NONE, R_MIPS_16, R_MIPS_32, R_MIPS_26 = 0, 1, 2, 4
 R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16 = 5, 6, 7
 SHT_PRX_RELOC = 0x700000A0
+SHT_PRX_RELOC_PACKED = 0x700000A1
+PROGRAM_IMAGE_SCHEMA_VERSION = 1
+UINT32_END = 0x1_0000_0000
+MAX_PROGRAM_IMAGE_TABLE_BYTES = 16 * 1024 * 1024
+MAX_PROGRAM_IMAGE_STRING_BYTES = 1024
+
+
+@dataclass(frozen=True)
+class ProgramImageSpan:
+    """An immutable half-open guest or file span."""
+
+    start: int
+    end: int
+
+    def __post_init__(self):
+        if type(self.start) is not int or type(self.end) is not int:
+            raise TypeError("program-image spans require integer endpoints")
+        if self.start < 0 or self.end < self.start or self.end > UINT32_END:
+            raise ValueError("program-image span is outside the 32-bit address space")
+
+    @property
+    def size(self):
+        return self.end - self.start
+
+    def as_dict(self):
+        return {"start": self.start, "end": self.end}
+
+
+@dataclass(frozen=True)
+class ProgramImageFinding:
+    """Structured validation or informational finding attached to an image."""
+
+    code: str
+    severity: str
+    path: str
+    message: str
+
+    def as_dict(self):
+        return {
+            "code": self.code,
+            "message": self.message,
+            "path": self.path,
+            "severity": self.severity,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageSegment:
+    index: int
+    source_offset: int
+    file_size: int
+    memory_size: int
+    virtual_address: int
+    guest_start: int
+    guest_end: int
+    permissions: str
+    alignment: int
+    file_span: ProgramImageSpan
+    memory_span: ProgramImageSpan
+    zero_fill: ProgramImageSpan | None
+
+    def as_dict(self):
+        return {
+            "alignment": self.alignment,
+            "file_size": self.file_size,
+            "file_span": self.file_span.as_dict(),
+            "guest_end": self.guest_end,
+            "guest_start": self.guest_start,
+            "index": self.index,
+            "memory_size": self.memory_size,
+            "memory_span": self.memory_span.as_dict(),
+            "permissions": self.permissions,
+            "source_offset": self.source_offset,
+            "virtual_address": self.virtual_address,
+            "zero_fill": self.zero_fill.as_dict() if self.zero_fill else None,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageSection:
+    index: int
+    name: str
+    section_type: int
+    flags: int
+    address: int
+    size: int
+    source_offset: int
+    entry_size: int
+
+    def as_dict(self):
+        return {
+            "address": self.address,
+            "entry_size": self.entry_size,
+            "flags": self.flags,
+            "index": self.index,
+            "name": self.name,
+            "section_type": self.section_type,
+            "size": self.size,
+            "source_offset": self.source_offset,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageImport:
+    library: str
+    address: int
+    function_count: int
+    nid_table: int
+    stub_table: int
+    nids: tuple[int, ...]
+
+    def as_dict(self):
+        return {
+            "address": self.address,
+            "function_count": self.function_count,
+            "library": self.library,
+            "nid_table": self.nid_table,
+            "nids": list(self.nids),
+            "stub_table": self.stub_table,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageExport:
+    library: str
+    address: int
+    function_count: int
+    variable_count: int
+    function_table: int
+    variable_table: int
+    functions: tuple[int, ...]
+    variables: tuple[int, ...]
+
+    def as_dict(self):
+        return {
+            "address": self.address,
+            "function_count": self.function_count,
+            "function_table": self.function_table,
+            "functions": list(self.functions),
+            "library": self.library,
+            "variable_count": self.variable_count,
+            "variable_table": self.variable_table,
+            "variables": list(self.variables),
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageRelocation:
+    section_index: int
+    source_offset: int
+    relocation_type: int
+    offset: int
+    info: int
+    target_address: int | None
+
+    def as_dict(self):
+        return {
+            "info": self.info,
+            "offset": self.offset,
+            "relocation_type": self.relocation_type,
+            "section_index": self.section_index,
+            "source_offset": self.source_offset,
+            "target_address": self.target_address,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramImageModule:
+    name: str
+    attributes: int
+    version: int
+    gp: int
+    export_start: int
+    export_end: int
+    import_start: int
+    import_end: int
+
+    def as_dict(self):
+        return {
+            "attributes": self.attributes,
+            "export": {"end": self.export_end, "start": self.export_start},
+            "gp": self.gp,
+            "import": {"end": self.import_end, "start": self.import_start},
+            "name": self.name,
+            "version": self.version,
+        }
+
+
+class ProgramImageValidationError(ValueError):
+    """Raised when a hostile input cannot form a structurally valid ProgramImage."""
+
+    def __init__(self, findings):
+        self.findings = tuple(findings)
+        detail = "; ".join(f"{item.code}: {item.message}" for item in self.findings)
+        super().__init__(detail or "program image validation failed")
+
+
+@dataclass(frozen=True)
+class ProgramImage:
+    """Versioned, immutable truth shared by future analysis backends.
+
+    ``source_bytes`` and ``flat_bytes`` are ``bytes`` rather than bytearrays.  A
+    caller can therefore inspect or compare an image but cannot mutate the bytes
+    that validation and downstream reports describe.  Relocation application is
+    intentionally outside this object; the legacy :class:`Prx` remains the
+    authoritative HST rebase/relocation path until a later migration proves the
+    read-only representation against it.
+    """
+
+    schema_version: int
+    source_name: str
+    source_sha256: str
+    source_size: int
+    elf_type: int
+    machine: int
+    load_base: int
+    entry_point: int
+    segments: tuple[ProgramImageSegment, ...]
+    executable_intervals: tuple[ProgramImageSpan, ...]
+    sections: tuple[ProgramImageSection, ...]
+    imports: tuple[ProgramImageImport, ...]
+    exports: tuple[ProgramImageExport, ...]
+    relocations: tuple[ProgramImageRelocation, ...]
+    module: ProgramImageModule | None
+    findings: tuple[ProgramImageFinding, ...]
+    image_start: int
+    image_end: int
+    source_bytes: bytes
+    flat_bytes: bytes
+
+    def __post_init__(self):
+        if self.schema_version != PROGRAM_IMAGE_SCHEMA_VERSION:
+            raise ValueError("unsupported ProgramImage schema version")
+        if not isinstance(self.source_bytes, bytes) or not isinstance(self.flat_bytes, bytes):
+            raise TypeError("ProgramImage payloads must be immutable bytes")
+        if not isinstance(self.segments, tuple) or not isinstance(self.executable_intervals, tuple):
+            raise TypeError("ProgramImage collections must be tuples")
+        if not isinstance(self.sections, tuple) or not isinstance(self.imports, tuple):
+            raise TypeError("ProgramImage collections must be tuples")
+        if not isinstance(self.exports, tuple) or not isinstance(self.relocations, tuple):
+            raise TypeError("ProgramImage collections must be tuples")
+        if not isinstance(self.findings, tuple):
+            raise TypeError("ProgramImage findings must be a tuple")
+        if self.source_size != len(self.source_bytes):
+            raise ValueError("ProgramImage source size is inconsistent")
+        if hashlib.sha256(self.source_bytes).hexdigest() != self.source_sha256:
+            raise ValueError("ProgramImage source identity is inconsistent")
+        if self.image_start < 0 or self.image_end < self.image_start or self.image_end > UINT32_END:
+            raise ValueError("ProgramImage image extent is outside the 32-bit address space")
+        if len(self.flat_bytes) != self.image_end - self.image_start:
+            raise ValueError("ProgramImage flat image extent is inconsistent")
+
+    @property
+    def image_size(self):
+        return self.image_end - self.image_start
+
+    def _segment_for(self, address, size):
+        if type(address) is not int or type(size) is not int or address < 0 or size < 0:
+            return None
+        end = address + size
+        if end < address or end > UINT32_END:
+            return None
+        for segment in self.segments:
+            if segment.guest_start <= address and end <= segment.guest_end:
+                return segment
+        return None
+
+    def read_at_vaddr(self, address, size):
+        """Read a wholly mapped segment span without exposing mutable storage."""
+        segment = self._segment_for(address, size)
+        if segment is None:
+            return None
+        if size == 0:
+            return b""
+        start = address - self.image_start
+        return self.flat_bytes[start:start + size]
+
+    def section(self, name):
+        return next((section for section in self.sections if section.name == name), None)
+
+    def as_dict(self):
+        """Return deterministic JSON-shaped metadata without raw payload bytes."""
+        return {
+            "entry_point": self.entry_point,
+            "elf_type": self.elf_type,
+            "executable_intervals": [span.as_dict() for span in self.executable_intervals],
+            "exports": [item.as_dict() for item in self.exports],
+            "findings": [item.as_dict() for item in self.findings],
+            "image_end": self.image_end,
+            "image_start": self.image_start,
+            "imports": [item.as_dict() for item in self.imports],
+            "load_base": self.load_base,
+            "machine": self.machine,
+            "module": self.module.as_dict() if self.module else None,
+            "relocations": [item.as_dict() for item in self.relocations],
+            "schema_version": self.schema_version,
+            "sections": [item.as_dict() for item in self.sections],
+            "segments": [item.as_dict() for item in self.segments],
+            "source": {
+                "name": self.source_name,
+                "sha256": self.source_sha256,
+                "size": self.source_size,
+            },
+        }
+
+
+def canonical_program_image_json(image):
+    """Serialize image metadata deterministically without raw payload bytes."""
+    if not isinstance(image, ProgramImage):
+        raise TypeError("canonical_program_image_json requires a ProgramImage")
+    import json
+    return json.dumps(image.as_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+# ``Span`` is a short compatibility spelling useful to callers constructing
+# observation reports without importing an implementation-specific name.
+Span = ProgramImageSpan
+
+
+def _program_image_name(path):
+    rendered = str(path).replace("\\", "/")
+    return rendered.rsplit("/", 1)[-1] or "<memory>"
+
+
+def _program_image_permissions(flags):
+    return "".join(letter for bit, letter in ((4, "r"), (2, "w"), (1, "x")) if flags & bit)
+
+
+def _program_image_address_kind(value, loads, *, endpoint=False):
+    raw = False
+    guest = False
+    for segment in loads or ():
+        raw_end = segment["vaddr"] + segment["memsz"]
+        guest_end = segment["guest_end"]
+        if endpoint:
+            raw = raw or segment["vaddr"] <= value <= raw_end
+            guest = guest or segment["guest_start"] <= value <= guest_end
+        else:
+            raw = raw or segment["vaddr"] <= value < raw_end
+            guest = guest or segment["guest_start"] <= value < guest_end
+    return raw, guest
+
+
+def _program_image_ptr(value, base, loads=None):
+    """Normalize a link-time or already-rebased guest pointer.
+
+    PSP metadata is encountered in both forms: relocatable ELF fields contain
+    link-time offsets, while some stripped/synthetic PRX inputs already carry
+    absolute guest pointers. Prefer the validated raw/guest segment domains when
+    available and retain the existing below-base fallback for external pointers.
+    """
+    if type(value) is not int or type(base) is not int or value < 0 or base < 0:
+        return None
+    if base:
+        raw, guest = _program_image_address_kind(value, loads)
+        if (raw and not guest) or (not raw and not guest and value < base):
+            if value > UINT32_END - base:
+                return None
+            value += base
+    if value >= UINT32_END:
+        return None
+    return value
+
+
+def _program_image_end_ptr(value, base, loads=None):
+    """Normalize an exclusive metadata endpoint, allowing UINT32_END."""
+    if type(value) is not int or type(base) is not int or value < 0 or base < 0:
+        return None
+    if base:
+        raw, guest = _program_image_address_kind(value, loads, endpoint=True)
+        if (raw and not guest) or (not raw and not guest and value < base):
+            if value > UINT32_END - base:
+                return None
+            value += base
+    return value if value <= UINT32_END else None
+
+
+def _program_image_rebased_range(start, end, base, label, findings, loads=None):
+    if start == 0 and end == 0:
+        return 0, 0
+    if (start == 0) != (end == 0):
+        findings.append(ProgramImageFinding(
+            "module-range-invalid", "error", label,
+            f"module range 0x{start:08x}..0x{end:08x} has only one null endpoint",
+        ))
+        return 0, 0
+    rebased_start = _program_image_ptr(start, base, loads)
+    rebased_end = _program_image_end_ptr(end, base, loads)
+    if rebased_start is None or rebased_end is None or rebased_end < rebased_start:
+        findings.append(ProgramImageFinding(
+            "module-range-invalid", "error", label,
+            f"module range 0x{start:08x}..0x{end:08x} is invalid",
+        ))
+        return 0, 0
+    return rebased_start, rebased_end
+
+
+def _program_image_raw_read(data, loads, address, size):
+    """Read a guest span from validated raw segments, including BSS zeros."""
+    if type(address) is not int or type(size) is not int or address < 0 or size < 0:
+        return None
+    end = address + size
+    if end < address or end > UINT32_END:
+        return None
+    for segment in loads:
+        start, finish = segment["guest_start"], segment["guest_end"]
+        if start <= address and end <= finish:
+            file_end = start + segment["filesz"]
+            if end <= file_end:
+                offset = segment["off"] + (address - start)
+                return data[offset:offset + size]
+            if address >= file_end:
+                return bytes(size)
+            first = data[segment["off"] + (address - start):segment["off"] + segment["filesz"]]
+            return first + bytes(size - len(first))
+    return None
+
+
+def _program_image_cstr(data, loads, address, label, findings):
+    if address == 0:
+        return ""
+    out = bytearray()
+    for offset in range(MAX_PROGRAM_IMAGE_STRING_BYTES + 1):
+        raw = _program_image_raw_read(data, loads, address + offset, 1)
+        if raw is None or len(raw) != 1:
+            findings.append(ProgramImageFinding(
+                "string-oob", "error", label,
+                f"guest string at 0x{address:08x} leaves a validated segment",
+            ))
+            return ""
+        if raw[0] == 0:
+            try:
+                return bytes(out).decode("ascii")
+            except UnicodeDecodeError:
+                return bytes(out).decode("ascii", "backslashreplace")
+        out.append(raw[0])
+    findings.append(ProgramImageFinding(
+        "string-overlong", "error", label,
+        f"guest string at 0x{address:08x} exceeds {MAX_PROGRAM_IMAGE_STRING_BYTES} bytes without NUL",
+    ))
+    return ""
+
+
+def _program_image_table(data, loads, start, end, label, findings, base=0, mode="export"):
+    """Read a bounded PSP library-entry table without mutating the image."""
+    if start == 0 and end == 0:
+        return []
+    if start < 0 or end < start or end > UINT32_END or end - start > MAX_PROGRAM_IMAGE_TABLE_BYTES:
+        findings.append(ProgramImageFinding(
+            "table-span-invalid", "error", label,
+            f"table span 0x{start:08x}..0x{end:08x} is reversed or exceeds the table bound",
+        ))
+        return []
+    entries = []
+    position = start
+    while position < end:
+        raw = _program_image_raw_read(data, loads, position, 20)
+        if raw is None or len(raw) != 20:
+            findings.append(ProgramImageFinding(
+                "table-entry-oob", "error", label,
+                f"table entry at 0x{position:08x} is not wholly mapped",
+            ))
+            break
+        name_ptr, version, flags, size_words, num_vars, num_funcs, table_a, table_b = struct.unpack(
+            "<IHHBBHII", raw
+        )
+        entry_size = size_words * 4
+        if size_words == 0 or entry_size < 20 or position + entry_size > end:
+            findings.append(ProgramImageFinding(
+                "table-entry-size-invalid", "error", label,
+                f"table entry at 0x{position:08x} has invalid size {size_words} words",
+            ))
+            break
+        if name_ptr:
+            name_address = _program_image_ptr(name_ptr, base, loads)
+            if name_address is None:
+                findings.append(ProgramImageFinding(
+                    "pointer-value-oob", "error", f"{label}.name",
+                    f"library-name pointer 0x{name_ptr:08x} cannot be represented",
+                ))
+                name = "(invalid)"
+            else:
+                name = _program_image_cstr(data, loads, name_address, f"{label}.name", findings)
+        else:
+            name = "(null)"
+
+        def rebase_table_pointer(pointer, pointer_label):
+            if not pointer:
+                return 0
+            rebased = _program_image_ptr(pointer, base, loads)
+            if rebased is None:
+                findings.append(ProgramImageFinding(
+                    "pointer-value-oob", "error", pointer_label,
+                    f"pointer value 0x{pointer:08x} cannot be represented",
+                ))
+                return 0
+            return rebased
+
+        table_a = rebase_table_pointer(table_a, f"{label}.table_a")
+        table_b = rebase_table_pointer(table_b, f"{label}.table_b")
+        if num_funcs:
+            count_bytes = num_funcs * 4
+            if not table_a or _program_image_raw_read(data, loads, table_a, count_bytes) is None:
+                findings.append(ProgramImageFinding(
+                    "table-function-oob", "error", label,
+                    f"function/NID table at 0x{table_a:08x} has {num_funcs} entries outside a segment",
+                ))
+            if mode == "import" and (not table_b or _program_image_raw_read(data, loads, table_b, count_bytes) is None):
+                findings.append(ProgramImageFinding(
+                    "table-stub-oob", "error", label,
+                    f"stub table at 0x{table_b:08x} has {num_funcs} entries outside a segment",
+                ))
+        if mode == "export" and num_vars:
+            count_bytes = num_vars * 4
+            if not table_b or _program_image_raw_read(data, loads, table_b, count_bytes) is None:
+                findings.append(ProgramImageFinding(
+                    "table-variable-oob", "error", label,
+                    f"variable table at 0x{table_b:08x} has {num_vars} entries outside a segment",
+                ))
+        entries.append((position, name, version, flags, num_vars, num_funcs, table_a, table_b))
+        position += entry_size
+    return entries
+
+
+def _program_image_u32_table(data, loads, address, count, label, findings):
+    if count == 0:
+        return ()
+    if not address or count > MAX_PROGRAM_IMAGE_TABLE_BYTES // 4:
+        findings.append(ProgramImageFinding(
+            "pointer-table-invalid", "error", label,
+            f"pointer table at 0x{address:08x} has invalid count {count}",
+        ))
+        return ()
+    raw = _program_image_raw_read(data, loads, address, count * 4)
+    if raw is None or len(raw) != count * 4:
+        findings.append(ProgramImageFinding(
+            "pointer-table-oob", "error", label,
+            f"pointer table at 0x{address:08x} is not wholly mapped",
+        ))
+        return ()
+    return struct.unpack(f"<{count}I", raw)
+
+
+def _program_image_validate_packed_relocation(data, envelope, loads, section, label, findings):
+    """Run the legacy packed-relocation decoder against a non-mutating probe.
+
+    Packed PSP relocation streams are retained opaquely in ProgramImage v1, but
+    their command/table bounds still need validation before future consumers can
+    trust the image. The probe reuses the established decoder while making reads
+    checked against the validated segments and making writes no-ops.
+    """
+    segment_index = next(
+        (
+            program["idx"]
+            for program in envelope["phdrs"]
+            if program["type"] == 1
+            and program["off"] <= section["off"] < program["off"] + program["filesz"]
+        ),
+        None,
+    )
+    if segment_index is None:
+        findings.append(ProgramImageFinding(
+            "relocation-packed-invalid", "error", label,
+            "packed relocation section is not associated with a load segment",
+        ))
+        return
+
+    class _PackedProbe:
+        def __init__(self):
+            self.data = data
+            self.segments = envelope["phdrs"]
+            self.seg_vaddr = [item["guest_start"] for item in loads]
+
+        def r32(self, address):
+            raw = _program_image_raw_read(data, loads, address, 4)
+            if raw is None or len(raw) != 4:
+                raise ValueError(f"packed relocation target 0x{address:08x} is unmapped")
+            return struct.unpack("<I", raw)[0]
+
+        def w32(self, _address, _value):
+            return None
+
+    try:
+        Prx._apply_packed(_PackedProbe(), {
+            "seg_idx": segment_index,
+            "off": section["off"],
+            "size": section["size"],
+        })
+    except (IndexError, struct.error, ValueError) as exc:
+        findings.append(ProgramImageFinding(
+            "relocation-packed-invalid", "error", label, str(exc)
+        ))
+
+
+def _program_image_validate_relocations(data, envelope, loads, base, findings):
+    """Validate relocation records and retain them without applying them."""
+    records = []
+    load_starts = [segment["guest_start"] for segment in loads]
+    for section in envelope["shdrs"]:
+        section_type = section["typ"]
+        if section_type not in (4, 9, SHT_PRX_RELOC, SHT_PRX_RELOC_PACKED):
+            continue
+        size = section["size"]
+        label = f"section[{section['idx']}]"
+        if size > MAX_PROGRAM_IMAGE_TABLE_BYTES:
+            findings.append(ProgramImageFinding(
+                "relocation-table-too-large", "error", label,
+                f"relocation table is larger than {MAX_PROGRAM_IMAGE_TABLE_BYTES} bytes",
+            ))
+            continue
+        if section_type == SHT_PRX_RELOC_PACKED:
+            if size < 4:
+                findings.append(ProgramImageFinding(
+                    "relocation-table-truncated", "error", label,
+                    "packed relocation table is shorter than its header",
+                ))
+            else:
+                _program_image_validate_packed_relocation(
+                    data, envelope, loads, section, label, findings
+                )
+            # The packed PSP stream remains opaque in the canonical record until
+            # the legacy relocation representation is migrated. Its bounded file
+            # span and decoder validation are still represented explicitly.
+            records.append(ProgramImageRelocation(
+                section["idx"], section["off"], section_type, 0, 0, None
+            ))
+            continue
+        expected = 12 if section_type == 4 else 8
+        entry_size = section["entsz"] or expected
+        if entry_size < expected or size % entry_size:
+            findings.append(ProgramImageFinding(
+                "relocation-table-shape", "error", label,
+                f"relocation section size 0x{size:x} is not a multiple of entry size {entry_size}",
+            ))
+            continue
+        for index in range(size // entry_size):
+            source_offset = section["off"] + index * entry_size
+            if section_type == 4:
+                offset, info, _addend = struct.unpack_from("<IIi", data, source_offset)
+            else:
+                offset, info = struct.unpack_from("<II", data, source_offset)
+            target = None
+            target_segment_valid = True
+            if section_type == SHT_PRX_RELOC:
+                offset_segment = (info >> 8) & 0xFF
+                target_segment = (info >> 16) & 0xFF
+                if offset_segment >= len(load_starts):
+                    target_segment_valid = False
+                    findings.append(ProgramImageFinding(
+                        "relocation-segment-oob", "error", f"{label}.relocation[{index}]",
+                        f"relocation offset segment {offset_segment} is outside the load-segment table",
+                    ))
+                if target_segment >= len(load_starts):
+                    target_segment_valid = False
+                    findings.append(ProgramImageFinding(
+                        "relocation-segment-oob", "error", f"{label}.relocation[{index}]",
+                        f"relocation target segment {target_segment} is outside the load-segment table",
+                    ))
+                if target_segment_valid and offset > UINT32_END - load_starts[offset_segment]:
+                    findings.append(ProgramImageFinding(
+                        "relocation-target-oob", "error", f"{label}.relocation[{index}]",
+                        f"relocation offset 0x{offset:08x} wraps the guest address space",
+                    ))
+                elif target_segment_valid:
+                    target = load_starts[offset_segment] + offset
+            else:
+                target = _program_image_ptr(offset, base, loads)
+            if target_segment_valid and (
+                target is None or _program_image_raw_read(data, loads, target, 4) is None
+            ):
+                findings.append(ProgramImageFinding(
+                    "relocation-target-oob", "error", f"{label}.relocation[{index}]",
+                    f"relocation target 0x{offset:08x} is outside validated load segments",
+                ))
+                target = None
+            records.append(ProgramImageRelocation(
+                section["idx"], source_offset, info & 0xFF, offset, info, target
+            ))
+    return records
+
+
+def _program_image_section_name(data, envelope, section):
+    shstr = envelope["shdrs"][envelope["shstrndx"]]
+    start = shstr["off"] + section["name"]
+    finish = data.find(b"\0", start, shstr["off"] + shstr["size"])
+    return data[start:finish].decode("ascii", "replace") if finish >= 0 else ""
+
+
+def _program_image_rebased_values(values, base, label, findings, loads=None, data=None):
+    result = []
+    for index, value in enumerate(values):
+        if value == 0:
+            result.append(0)
+            continue
+        address = _program_image_ptr(value, base, loads)
+        if address is None:
+            findings.append(ProgramImageFinding(
+                "pointer-value-oob", "error", f"{label}[{index}]",
+                f"pointer value 0x{value:08x} cannot be represented in the guest address space",
+            ))
+            result.append(0)
+        elif data is not None and _program_image_raw_read(data, loads, address, 1) is None:
+            findings.append(ProgramImageFinding(
+                "pointer-target-oob", "error", f"{label}[{index}]",
+                f"pointer value 0x{value:08x} resolves to unmapped guest address 0x{address:08x}",
+            ))
+            result.append(0)
+        else:
+            result.append(address)
+    return tuple(result)
+
+
+def load_program_image(path, base=0, psp_header=None):
+    """Validate one ELF/PRX and return an immutable :class:`ProgramImage`.
+
+    This adapter performs no relocation or HST-specific code-generation work.
+    Structural validation, including metadata table bounds, completes before
+    the flat image is allocated or filled. Invalid input raises a structured
+    :class:`ProgramImageValidationError` containing every finding collected.
+    """
+    try:
+        with open(path, "rb") as source:
+            data = source.read(MAX_ELF_FILE_BYTES + 1)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ProgramImageValidationError((ProgramImageFinding(
+            "source-read", "error", str(path), str(exc)
+        ),)) from exc
+    if len(data) > MAX_ELF_FILE_BYTES:
+        raise ProgramImageValidationError((ProgramImageFinding(
+            "source-too-large", "error", str(path),
+            f"ELF input exceeds the {MAX_ELF_FILE_BYTES}-byte bound",
+        ),))
+
+    findings = []
+    try:
+        envelope = validate_elf32_envelope(data, str(path))
+    except (OSError, ValueError, struct.error) as exc:
+        raise ProgramImageValidationError((ProgramImageFinding(
+            "elf-envelope", "error", str(path), str(exc)
+        ),)) from exc
+
+    valid_base = type(base) is int and 0 <= base < UINT32_END
+    effective_base = base if valid_base else 0
+    if not valid_base:
+        findings.append(ProgramImageFinding(
+            "load-base-invalid", "error", "load_base",
+            "load base is outside the 32-bit address space",
+        ))
+
+    load_specs = []
+    for program in envelope["phdrs"]:
+        if program["type"] != 1:
+            continue
+        spec = dict(program)
+        align = spec["align"]
+        if align not in (0, 1) and (align & (align - 1)) != 0:
+            findings.append(ProgramImageFinding(
+                "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
+                f"alignment 0x{align:x} is not a power of two",
+            ))
+        if align > 1 and (spec["off"] - spec["vaddr"]) % align:
+            findings.append(ProgramImageFinding(
+                "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
+                "file offset and virtual address are not congruent at p_align",
+            ))
+        try:
+            checked_span(len(data), spec["off"], spec["filesz"], f"PT_LOAD[{spec['idx']}] source")
+        except ValueError as exc:
+            findings.append(ProgramImageFinding(
+                "segment-source-oob", "error", f"PT_LOAD[{spec['idx']}].p_offset", str(exc)
+            ))
+
+        load_specs.append(spec)
+
+    if not load_specs:
+        findings.append(ProgramImageFinding(
+            "no-load-segments", "error", "program_headers", "ELF has no PT_LOAD segments"
+        ))
+
+    psp_sizes = None
+    psp_bss_size = 0
+    if psp_header is not None and load_specs:
+        try:
+            psp_sizes, psp_bss_size = read_psp_segment_sizes(psp_header, len(load_specs))
+        except (OSError, ValueError, struct.error) as exc:
+            findings.append(ProgramImageFinding(
+                "psp-header-invalid", "error", "psp_header", str(exc)
+            ))
+
+    if psp_sizes is not None:
+        declared_extra = 0
+        for spec, declared_size in zip(load_specs, psp_sizes):
+            if declared_size < spec["filesz"]:
+                findings.append(ProgramImageFinding(
+                    "psp-segment-size-invalid", "error", f"PT_LOAD[{spec['idx']}].memsz",
+                    "PSP header declares less memory than the ELF file payload",
+                ))
+            spec["memsz"] = max(spec["memsz"], declared_size)
+            declared_extra += max(0, declared_size - spec["filesz"])
+        if declared_extra < psp_bss_size:
+            findings.append(ProgramImageFinding(
+                "psp-bss-invalid", "error", "psp_header.bss_size",
+                "PSP segment declarations do not cover the declared BSS extent",
+            ))
+
+    loads = []
+    for spec in load_specs:
+        try:
+            start, end = image_extent(
+                effective_base, spec["vaddr"], spec["memsz"], f"PT_LOAD {spec['idx']}"
+            )
+        except ValueError as exc:
+            findings.append(ProgramImageFinding(
+                "guest-destination-oob", "error", f"PT_LOAD[{spec['idx']}].p_vaddr", str(exc)
+            ))
+            continue
+        loads.append({**spec, "guest_start": start, "guest_end": end})
+
+    by_guest = sorted(loads, key=lambda item: (item["guest_start"], item["guest_end"], item["idx"]))
+    for left, right in zip(by_guest, by_guest[1:]):
+        if right["guest_start"] < left["guest_end"]:
+            findings.append(ProgramImageFinding(
+                "segment-overlap", "error", "program_headers",
+                f"PT_LOAD[{left['idx']}] overlaps PT_LOAD[{right['idx']}] in guest memory",
+            ))
+    by_file = sorted(
+        (item for item in loads if item["filesz"]),
+        key=lambda item: (item["off"], item["off"] + item["filesz"], item["idx"]),
+    )
+    for left, right in zip(by_file, by_file[1:]):
+        if right["off"] < left["off"] + left["filesz"]:
+            findings.append(ProgramImageFinding(
+                "segment-file-overlap", "error", "program_headers",
+                f"PT_LOAD[{left['idx']}] overlaps PT_LOAD[{right['idx']}] in source bytes",
+            ))
+
+    executable_intervals = []
+    for segment in loads:
+        if segment["flags"] & 1 and segment["guest_end"] > segment["guest_start"]:
+            executable_intervals.append((segment["guest_start"], segment["guest_end"]))
+    executable_intervals.sort()
+    merged_exec = []
+    for start, end in executable_intervals:
+        if merged_exec and start <= merged_exec[-1][1]:
+            merged_exec[-1] = (merged_exec[-1][0], max(merged_exec[-1][1], end))
+        else:
+            merged_exec.append((start, end))
+
+    image_start = min((item["guest_start"] for item in loads), default=0)
+    image_end = max((item["guest_end"] for item in loads), default=0)
+    if image_end < image_start or image_end - image_start > MAX_ELF_IMAGE_BYTES:
+        findings.append(ProgramImageFinding(
+            "image-extent-invalid", "error", "program_headers",
+            "the flat image extent exceeds the supported bound",
+        ))
+
+    sections = []
+    section_by_name = {}
+    if envelope["shnum"]:
+        for raw_section in envelope["shdrs"]:
+            name = _program_image_section_name(data, envelope, raw_section)
+            address = (
+                0 if raw_section["idx"] == 0
+                else _program_image_ptr(raw_section["addr"], effective_base, loads)
+            )
+            if address is None:
+                findings.append(ProgramImageFinding(
+                    "section-address-oob", "error", f"section[{raw_section['idx']}].sh_addr",
+                    f"section address 0x{raw_section['addr']:08x} cannot be represented",
+                ))
+                address = 0
+            if raw_section["size"] and address > UINT32_END - raw_section["size"]:
+                findings.append(ProgramImageFinding(
+                    "section-address-span-oob", "error", f"section[{raw_section['idx']}].sh_addr",
+                    f"section address span 0x{address:08x}..0x{address + raw_section['size']:x} "
+                    "exceeds the 32-bit address space",
+                ))
+            section = ProgramImageSection(
+                raw_section["idx"], name, raw_section["typ"], raw_section["flags"],
+                address, raw_section["size"], raw_section["off"], raw_section["entsz"],
+            )
+            sections.append(section)
+            section_by_name[name] = section
+
+    entry_point = _program_image_ptr(envelope["entry"], effective_base, loads)
+    if entry_point is None:
+        findings.append(ProgramImageFinding(
+            "entry-point-oob", "error", "e_entry",
+            f"entry point 0x{envelope['entry']:08x} cannot be represented",
+        ))
+        entry_point = 0
+    elif entry_point & 3:
+        findings.append(ProgramImageFinding(
+            "entry-point-unaligned", "error", "e_entry",
+            f"entry point 0x{entry_point:08x} is not instruction aligned",
+        ))
+    elif not any(segment["guest_start"] <= entry_point < segment["guest_end"] for segment in loads):
+        findings.append(ProgramImageFinding(
+            "entry-point-unmapped", "error", "e_entry",
+            f"entry point 0x{entry_point:08x} is outside every load segment",
+        ))
+    elif not any(
+        segment["guest_start"] <= entry_point < segment["guest_end"] and segment["flags"] & 1
+        for segment in loads
+    ):
+        findings.append(ProgramImageFinding(
+            "entry-point-nonexec", "error", "e_entry",
+            f"entry point 0x{entry_point:08x} is not in an executable segment",
+        ))
+
+    module = None
+    imports = []
+    exports = []
+    module_section = section_by_name.get(".rodata.sceModuleInfo")
+    if module_section is not None:
+        raw_module = _program_image_raw_read(data, loads, module_section.address, 52)
+        if raw_module is None or len(raw_module) != 52:
+            findings.append(ProgramImageFinding(
+                "module-info-oob", "error", ".rodata.sceModuleInfo",
+                "module metadata is not wholly mapped by a validated load segment",
+            ))
+        else:
+            attr, version, name_bytes, gp, ent_start_raw, ent_end_raw, stub_start_raw, stub_end_raw = struct.unpack(
+                "<HH28s5I", raw_module
+            )
+            nul = name_bytes.find(b"\0")
+            if nul < 0:
+                findings.append(ProgramImageFinding(
+                    "module-name-overlong", "error", ".rodata.sceModuleInfo.modname",
+                    "module name has no NUL terminator in its fixed-width field",
+                ))
+                module_name = name_bytes.decode("ascii", "backslashreplace")
+            else:
+                module_name = name_bytes[:nul].decode("ascii", "backslashreplace")
+
+            ent_start, ent_end = _program_image_rebased_range(
+                ent_start_raw, ent_end_raw, effective_base, "module.exports", findings, loads
+            )
+            stub_start, stub_end = _program_image_rebased_range(
+                stub_start_raw, stub_end_raw, effective_base, "module.imports", findings, loads
+            )
+            module_gp = _program_image_ptr(gp, effective_base, loads) if gp else 0
+            if module_gp is None or (
+                module_gp and _program_image_raw_read(data, loads, module_gp, 1) is None
+            ):
+                findings.append(ProgramImageFinding(
+                    "module-gp-oob", "error", ".rodata.sceModuleInfo.gp",
+                    f"module GP pointer 0x{gp:08x} is outside validated load segments",
+                ))
+                module_gp = 0
+            module = ProgramImageModule(
+                module_name, attr, version, module_gp,
+                ent_start, ent_end, stub_start, stub_end,
+            )
+            export_entries = _program_image_table(
+                data, loads, ent_start, ent_end, "module.exports", findings, effective_base, "export"
+            )
+            import_entries = _program_image_table(
+                data, loads, stub_start, stub_end, "module.imports", findings, effective_base, "import"
+            )
+            for position, libname, version, flags, num_vars, num_funcs, table_a, table_b in export_entries:
+                function_values = _program_image_u32_table(
+                    data, loads, table_a, num_funcs, f"module.exports[0x{position:08x}].functions", findings
+                )
+                variable_values = _program_image_u32_table(
+                    data, loads, table_b, num_vars, f"module.exports[0x{position:08x}].variables", findings
+                )
+                exports.append(ProgramImageExport(
+                    libname, position, num_funcs, num_vars, table_a, table_b,
+                    _program_image_rebased_values(
+                        function_values, effective_base, "export.functions", findings, loads, data
+                    ),
+                    _program_image_rebased_values(
+                        variable_values, effective_base, "export.variables", findings, loads, data
+                    ),
+                ))
+            for position, libname, version, flags, num_vars, num_funcs, table_a, table_b in import_entries:
+                nids = _program_image_u32_table(
+                    data, loads, table_a, num_funcs, f"module.imports[0x{position:08x}].nids", findings
+                )
+                imports.append(ProgramImageImport(
+                    libname, position, num_funcs, table_a, table_b, tuple(nids)
+                ))
+
+    relocations = _program_image_validate_relocations(data, envelope, loads, effective_base, findings)
+    errors = tuple(item for item in findings if item.severity == "error")
+    if errors:
+        raise ProgramImageValidationError(tuple(findings))
+
+    segment_models = []
+    image = bytearray(image_end - image_start)
+    for segment in loads:
+        source_end = segment["off"] + segment["filesz"]
+        destination = segment["guest_start"] - image_start
+        payload = data[segment["off"]:source_end]
+        image[destination:destination + len(payload)] = payload
+        zero_start = segment["guest_start"] + segment["filesz"]
+        zero_fill = (
+            ProgramImageSpan(zero_start, segment["guest_end"])
+            if zero_start < segment["guest_end"] else None
+        )
+        segment_models.append(ProgramImageSegment(
+            segment["idx"], segment["off"], segment["filesz"], segment["memsz"],
+            segment["vaddr"], segment["guest_start"], segment["guest_end"],
+            _program_image_permissions(segment["flags"]), segment["align"],
+            ProgramImageSpan(segment["off"], source_end),
+            ProgramImageSpan(segment["guest_start"], segment["guest_end"]),
+            zero_fill,
+        ))
+
+    return ProgramImage(
+        PROGRAM_IMAGE_SCHEMA_VERSION, _program_image_name(path),
+        hashlib.sha256(data).hexdigest(), len(data), envelope["e_type"],
+        envelope.get("machine", struct.unpack_from("<H", data, 18)[0]), effective_base,
+        entry_point, tuple(segment_models),
+        tuple(ProgramImageSpan(start, end) for start, end in merged_exec),
+        tuple(sections), tuple(imports), tuple(exports), tuple(relocations), module,
+        tuple(findings), image_start, image_end, bytes(data), bytes(image),
+    )
 
 
 def read_psp_segment_sizes(path, expected_segments):
@@ -59,7 +1081,9 @@ class Prx:
         if not isinstance(base, int) or base < 0 or base > 0xFFFFFFFF:
             raise ValueError(f"{path}: load base is outside the 32-bit address space")
         with open(path, "rb") as f:
-            self.data = f.read()
+            self.data = f.read(MAX_ELF_FILE_BYTES + 1)
+        if len(self.data) > MAX_ELF_FILE_BYTES:
+            raise ValueError(f"{path}: ELF file exceeds the 256 MiB input bound")
         d = self.data
         envelope = validate_elf32_envelope(d, path)
         self.entry = envelope["entry"]

@@ -24,7 +24,7 @@ import sys
 
 import tomllib
 
-from elf_bounds import validate_elf32_envelope
+from elf_bounds import MAX_ELF_FILE_BYTES, validate_elf32_envelope
 
 # Input classes supported by the Prx rebase/relocate path. Only genuinely
 # relocatable images are routed there: PSP PRX-format ELFs (ET_SCE_PRX),
@@ -46,7 +46,9 @@ SHT_PSP_REL = 0x700000A1
 class Elf:
     def __init__(self, path, base=None):
         with open(path, "rb") as source:
-            self.data = source.read()
+            self.data = source.read(MAX_ELF_FILE_BYTES + 1)
+        if len(self.data) > MAX_ELF_FILE_BYTES:
+            raise ValueError(f"{path}: ELF file exceeds the 256 MiB input bound")
         self.base = base
         d = self.data
         self.reloc = None
