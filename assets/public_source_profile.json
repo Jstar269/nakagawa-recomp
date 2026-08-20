@@ -643,6 +643,7 @@
     "tools/test_codegen_gate_b_encoding.py",
     "tools/test_codegen_madd_msub.py",
     "tools/test_codegen_no_shadow_stubs.py",
+    "tools/test_codegen_profile_isolation.py",
     "tools/test_codegen_retail_allocator.py",
     "tools/test_codegen_static_verify.py",
     "tools/test_codegen_vfpu_fallback.py",

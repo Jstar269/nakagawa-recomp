@@ -322,7 +322,7 @@ NULL_BASE_WORD_LOADS = {
 }
 
 # Effect of a non-control instruction -> (c_statement, store_addr_expr_or_None, store_size).
-def effect(addr, w):
+def effect(addr, w, hst_profile=False):
     op = w >> 26
     if op == 0:
         fn = funct(w)
@@ -400,7 +400,7 @@ def effect(addr, w):
     if op == 0x20: return wr(rt(w), f"((uint32_t)(int32_t)(int8_t)MEM_R8({R(rs(w))} + {simm(w)}))"), None, 0   # lb
     if op == 0x21: return wr(rt(w), f"((uint32_t)(int32_t)(int16_t)MEM_R16({R(rs(w))} + {simm(w)}))"), None, 0  # lh
     if op == 0x23:
-        if addr in NULL_BASE_WORD_LOADS:
+        if hst_profile and addr in NULL_BASE_WORD_LOADS:
             return wr(rt(w), f"({R(rs(w))} == 0u ? 0u : MEM_R32({R(rs(w))} + {simm(w)}))"), None, 0
         return wr(rt(w), f"MEM_R32({R(rs(w))} + {simm(w)})"), None, 0   # lw
     if op == 0x24: return wr(rt(w), f"MEM_R8({R(rs(w))} + {simm(w)})"), None, 0    # lbu
@@ -1113,9 +1113,9 @@ def function_flow(elf, start, ranges, known, resume_owners=None):
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w):
+def normal_line(addr, w, hst_profile=False):
     try:
-        eff, saddr, ssize = effect(addr, w)
+        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile)
     except Unsupported:
         # Keep the owning function translatable when the static emitter does not know a
         # VFPU form. Invoke the single-step interpreter with the ELF opcode literal;
@@ -1328,7 +1328,8 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
-def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False):
+def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False, profile=None):
+    hst_profile = profile == "hst"
     resume_owners = resume_owners or {}
     host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
@@ -1359,7 +1360,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels = set(labels) | set(dup_slot_skips.values())
     out = []
     out.append(f"void {entry_symbol(start, resume_owners)}(CpuState *s) {{")
-    if start in {0x0003D828, 0x0003DFD0, 0x000705B0, 0x001026B8, 0x001039D8}:
+    if hst_profile and start in {0x0003D828, 0x0003DFD0, 0x000705B0, 0x001026B8, 0x001039D8}:
         out.append(f"    sr_boot_probe(s, 0x{start:08x}u);")
     out.append(f"    SR_YIELD(s, 0x{start:08x}u);")   # preemption point (no-op unless scheduler active)
     # Callable entries own an o32 frame contract. Resume entries begin with an
@@ -1445,12 +1446,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # The strtol parser can expose an unterminated asset token only after thousands
         # of characters. Keep this read-only probe compiled in; sr_boot_probe is a
         # production no-op unless SR_BOOT_DIAG is explicitly enabled.
-        if addr == 0x000160e8:
+        if hst_profile and addr == 0x000160e8:
             out.append("    sr_boot_probe(s, 0x000160e8u);")
         # Job-queue drain instrumentation. The boot watchdog often interrupts
         # inside the queue's sync callbacks, obscuring the outer queue state.
         # This read-only probe records count/index progress at the actual loop.
-        if addr == 0x000705e4:
+        if hst_profile and addr == 0x000705e4:
             out.append("    sr_boot_probe(s, 0x000705e4u);")
         # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
         # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
@@ -1464,7 +1465,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # (struct unchanging while the counter climbs without ever hitting the count bound =
         # runaway / correctness bug upstream). Prints the first 24 hits, then every ~1M-th,
         # so it can neither miss the opening nor flood a long run. REMOVE once characterised.
-        if EMIT_DIAG_PROBES and addr == 0x0010433c:
+        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0010433c:
             out.append(
                 "    { static unsigned long long _ts_it = 0; static int _ts_pr = 0;\n"
                 "      unsigned long long _ts_n = ++_ts_it;\n"
@@ -1479,7 +1480,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # F3G ENTRY PROBE (temporary): dump f_0006e9bc's incoming object (r4) and count (r5)
         # to resolve the static-vs-runtime disconnect — statically r5 should be 96 and r4 a
         # valid heap object, but at runtime the memset reads garbage. Prints once. Remove after.
-        if EMIT_DIAG_PROBES and addr == 0x0006e9bc:
+        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0006e9bc:
             out.append(
                 "    { static int _e9_n = 0; if (_e9_n++ < 4) fprintf(stderr, "
                 "\"F3G_ENTRY f_0006e9bc: r4(obj)=0x%08x r5(count)=0x%08x ra=0x%08x sp=0x%08x\\n\", "
@@ -1503,7 +1504,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # fast path now rejects a non-contiguous/overflowing span before any host pointer
         # is formed; the >1MB warning exists to flag malformed counts without attempting
         # an unbounded scalar fallback.
-        if addr == 0x0006ea1c:
+        if hst_profile and addr == 0x0006ea1c:
             out.append(f"    sr_begin(s, 0x0006ea1cu, 0x{w:08x}u); s->r[3] = MEM_R32(s->r[16] + 0x00000000u); sr_end(s, 0u, 0);")
             out.append(
                 "    { uint32_t _mf_cnt = s->r[3]; uint32_t _mf_base = MEM_R32(s->r[16] + 0x00000008u);\n"
@@ -1553,7 +1554,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # it would require the dest range to span across address 0, which cannot happen
         # for a legitimate guest-RAM pointer -- but the bounds-checked fallback below
         # still reproduces it exactly if it ever did.
-        if addr == 0x00108630:
+        if hst_profile and addr == 0x00108630:
             out.append(f"    sr_begin(s, 0x00108630u, 0x{w:08x}u); s->r[4] = MEM_R32(s->r[19] + 0x00000004u); sr_end(s, 0u, 0);")
             out.append(
                 "    { uint32_t _as_n = s->r[4];\n"
@@ -1616,7 +1617,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # instead, mirroring the existing unimplemented-HLE-NID convention in hle.c
         # (search "_Exit(7)" there) with a distinct, reserved exit code so the two
         # fatal classes are distinguishable from the process exit status alone.
-        if addr == 0x00000a1c:
+        if hst_profile and addr == 0x00000a1c:
             out.append(
                 "    fprintf(stderr, \"GUEST_ABORT: game called abort() (f_00000a1c), "
                 "called from ra=0x%08x arg0=0x%08x -- terminating instead of silent infinite hang\\n\", "
@@ -1624,7 +1625,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w))
+            out.append(normal_line(addr, w, hst_profile=hst_profile))
             if addr in sv_points:
                 for _sv_r, _sv_v in sv_points[addr]:
                     out.append(f"    sr_sv_check(s, 0x{addr:08x}u, {_sv_r}, 0x{_sv_v:08x}u);")
@@ -1641,7 +1642,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); s->r[31] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw))
+            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
             if target in host_entries:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
             else:
@@ -1655,7 +1656,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             d, a = rd(w), rs(w)
             link = f"s->r[{d}] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; " if d != 0 else ""
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw))
+            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
             out.append(f"    {{ uint32_t _t = {R(a)}; dispatch(s, _t); }}")
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
@@ -1670,7 +1671,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
                 out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable)}")
             else:
-                out.append(normal_line(ds, dsw))
+                out.append(normal_line(ds, dsw, hst_profile=hst_profile))
                 if a == 31:
                     out.append(f"    {emit_host_return(resumable)}")
                 else:
@@ -1679,7 +1680,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw))
+            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
             if target in host_entries and not (target in resume_owners and target in labels):
                 out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable)}")
             elif target in labels:
@@ -1694,7 +1695,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         link = f"s->r[31] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; " if is_link(w) else ""
         cond = cond_expr(w)
         inject_stmt = ""
-        if addr in GUEST_PATCHES:
+        if hst_profile and addr in GUEST_PATCHES:
             p = GUEST_PATCHES[addr]
             if p["kind"] == "cond":
                 cond = p["value"]
@@ -1707,15 +1708,15 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
         if target in labels:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {normal_line(ds, dsw).strip()} {y}goto L_{target:08x}; }} }}")
+                out.append(f"      if (_c) {{ {normal_line(ds, dsw, hst_profile=hst_profile).strip()} {y}goto L_{target:08x}; }} }}")
             else:
-                out.append(f"   {normal_line(ds, dsw)}")
+                out.append(f"   {normal_line(ds, dsw, hst_profile=hst_profile)}")
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {normal_line(ds, dsw).strip()} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {normal_line(ds, dsw, hst_profile=hst_profile).strip()} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
             else:
-                out.append(f"   {normal_line(ds, dsw)}")
+                out.append(f"   {normal_line(ds, dsw, hst_profile=hst_profile)}")
                 out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
@@ -1815,23 +1816,24 @@ def main(argv):
     # host_stubs.HST_SIMPLE_STUBS: addr -> (name, retflag). retflag=1 means the
     # stub returns a meaningful value (r2=1); retflag=0 means it returns success
     # (r2=0) and otherwise does nothing.
-    SIMPLE_STUBS = HST_SIMPLE_STUBS if profile == "hst" else {}
+    hst_profile = profile == "hst"
+    SIMPLE_STUBS = HST_SIMPLE_STUBS if hst_profile else {}
 
     for a in sorted(catalog):
         # --- CUSTOM STUBS START ---
-        if a == 0x000011b0:
+        if hst_profile and a == 0x000011b0:
             text = """void f_000011b0(CpuState *s) {  /* custom stub: __register_frame_info bypass */
     s->pc = s->r[31];
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x0000260c:
+        if hst_profile and a == 0x0000260c:
             text = """void f_0000260c(CpuState *s) {  /* custom stub: exception helper bypass */
     s->pc = s->r[31];
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x0000fe3c:
+        if hst_profile and a == 0x0000fe3c:
             text = """void f_0000fe3c(CpuState *s) {  /* custom stub: _getmodreent / FileIO_GetState */
     if (s->r[31] == 0x000104c4u || s->r[31] == 0x000104f4u) {
         /* Allocator calls always use the main thread's global impure reent */
@@ -1848,7 +1850,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x00010738:
+        if hst_profile and a == 0x00010738:
             text = """void f_00010738(CpuState *s) {  /* custom stub: _malloc_r(reent, size) -> sr_newlib_malloc bridge
      * This runtime owns the arena metadata. Retail _memalign_r/_realloc_r edit dlmalloc
      * headers directly, where bit 0 means PREV_INUSE; the host header uses bit 0 for the
@@ -1867,7 +1869,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x0000f538:
+        if hst_profile and a == 0x0000f538:
             text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
      * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment and ISSUES.md P0. */
     uint32_t owner_ra = s->r[31] == 0x00010500u
@@ -1879,7 +1881,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x000101c4:
+        if hst_profile and a == 0x000101c4:
             text = """void f_000101c4(CpuState *s) {  /* custom stub: _memalign_r(reent, alignment, size)
      * The translated retail body carves dlmalloc chunks and writes PREV_INUSE into the
      * following header. That bit is incompatible with the host arena's current-block flag. */
@@ -1888,7 +1890,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x00013524:
+        if hst_profile and a == 0x00013524:
             text = """void f_00013524(CpuState *s) {  /* custom stub: _realloc_r(reent, ptr, size)
      * Retail realloc also walks, unlinks, and rewrites dlmalloc headers, so it must use
      * the same host-owned metadata ABI as malloc/free/memalign. */
@@ -1897,7 +1899,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x00015ea0:
+        if hst_profile and a == 0x00015ea0:
             text = """void f_00015ea0(CpuState *s) {
     /* Host-side tokenizer matching FUN_00015ea0 (EBOOT.BIN.dec.c:22965).
      * str is the CSV buffer pointer; delim is the delimiter string. First
@@ -1939,13 +1941,13 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x000143b0:
+        if hst_profile and a == 0x000143b0:
             text = r'''void f_000143b0(CpuState *s) {  /* custom stub: guest sprintf */
     sr_guest_sprintf(s);
 }'''
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x00046d14:
+        if hst_profile and a == 0x00046d14:
             text = """void f_00046d14(CpuState *s) {  /* game loop entry trace */
     fprintf(stderr, "GAMELOOP: entered L_00046d14 pc=0x%08x\\n", s->pc);
     fflush(stderr);
@@ -1953,7 +1955,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x0001034c:
+        if hst_profile and a == 0x0001034c:
             text = """void f_0001034c(CpuState *s) {  /* custom stub: skip corrupted heap-statistics walk */
     /* This routine only accumulates mallinfo-style counters. The guest free-list can be
      * incomplete during bring-up; walking it must not block game initialization. */
@@ -1979,10 +1981,10 @@ def main(argv):
         # point reached via .data pointer tables. Both are discovered entries and
         # translate faithfully; tools/test_codegen_no_shadow_stubs.py keeps them so.
 
-        if a == 0x000468c8:
+        if hst_profile and a == 0x000468c8:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable)))
+                resumable=catalog[a].resumable, profile=profile)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
             text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
     for (;;) {
@@ -1992,7 +1994,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x001d9eb0:
+        if hst_profile and a == 0x001d9eb0:
             # This retail chooser supplies the NN in both menu/095_titleNN.xb and
             # data/menu/title/title_cNN.gim.  Every shipped title archive is numbered
             # from 01 upward; 00 does not exist.  Preserve the original selection
@@ -2003,7 +2005,7 @@ def main(argv):
             # chooser or a VFS alias that would conceal bad resource paths globally.
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable)))
+                resumable=catalog[a].resumable, profile=profile)))
             func_texts[-1] = func_texts[-1].replace(
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
@@ -2021,7 +2023,7 @@ def main(argv):
 }"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a in (0x00011090, 0x000110dc):
+        if hst_profile and a in (0x00011090, 0x000110dc):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: memcpy native */
     uint32_t dest = s->r[4], src = s->r[5], size = s->r[6];
     if (size > 0 && size < 0x04000000u &&
@@ -2036,7 +2038,7 @@ def main(argv):
 }}"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a in (0x000114c0, 0x000114a8):
+        if hst_profile and a in (0x000114c0, 0x000114a8):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: sceKernelMemset native */
     uint32_t dest = s->r[4], size = s->r[6];
     uint8_t val = (uint8_t)(s->r[5] & 0xFF);
@@ -2051,7 +2053,7 @@ def main(argv):
 }}"""
             func_texts.append(text); emitted.append(a); continue
 
-        if a == 0x000149a8:
+        if hst_profile and a == 0x000149a8:
             text = """void f_000149a8(CpuState *s) {  /* custom stub: strcpy native */
     /* Boot's file-open wrapper copies its source path here before adding the
      * host0: prefix.  Treating this routine as strcmp left the destination
@@ -2087,7 +2089,7 @@ def main(argv):
         try:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable)))
+                resumable=catalog[a].resumable, profile=profile)))
             emitted.append(a)
         except Unsupported as e:
             reason = str(e).replace('"', "'")
@@ -2135,7 +2137,7 @@ def main(argv):
                 emitted.append(a)
                 continue
             try:
-                func_texts.append("\n".join(emit_function(extra_elf, a, extra_ranges, extra_known)))
+                func_texts.append("\n".join(emit_function(extra_elf, a, extra_ranges, extra_known, profile=profile)))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")

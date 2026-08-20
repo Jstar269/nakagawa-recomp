@@ -98,6 +98,16 @@ Current fail-closed limits are deliberate:
 - an explicit span cannot yet be combined with a nonzero executable base; and
 - only the generator's current `hst` and `none` profile choices are accepted.
 
+Codegen enforces profile isolation: `codegen.py`'s HST-specific translations
+(address-specific stubs, GUEST_PATCHES, MEMSET/ARRSHIFT fastpaths,
+`GUEST_ABORT`, null-base loads, boot probes and the `EMIT_DIAG_PROBES`
+diagnostics) are gated behind `profile == "hst"`. With `--profile=none` the
+translator is faithful — no HST numeric address alone implies HST semantics.
+`tools/test_codegen_profile_isolation.py` proves `profile=none` emits no
+`sr_newlib_*`, native `memcpy`/`memset`, `MEMSET`/`ARRSHIFT` fastpaths,
+`GUEST_ABORT`, `sr_boot_probe` or `GUEST_PATCHES` text, while `--profile=hst`
+preserves the legacy HST behaviours on the same synthetic specimen.
+
 The manager adapter is deliberately fail-closed: this slice accepts only the
 checked-in HST manifest for HST manager actions, and it rejects unsupported plan
 versions, unknown plan fields, malformed digests, projections that disagree with

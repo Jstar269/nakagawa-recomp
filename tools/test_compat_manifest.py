@@ -49,7 +49,7 @@ def extract_codegen_custom_stub_addresses() -> set[int]:
     assert m, "codegen.py: CUSTOM STUBS START/END markers not found (did the driver loop move?)"
     block = m.group(1)
     addrs: set[int] = set()
-    for stmt in re.finditer(r"if a (?:==|in) \(?(0x[0-9a-fA-F]+(?:\s*,\s*0x[0-9a-fA-F]+)*)\)?:", block):
+    for stmt in re.finditer(r"if (?:hst_profile and )?a (?:==|in) \(?(0x[0-9a-fA-F]+(?:\s*,\s*0x[0-9a-fA-F]+)*)\)?:", block):
         group1 = stmt.group(1)
         if not group1:
             continue
