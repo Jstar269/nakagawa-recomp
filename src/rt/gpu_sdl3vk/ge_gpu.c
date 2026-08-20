@@ -2496,8 +2496,15 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
         v1 = p1->v / (p1->rw != 0.0f ? p1->rw : 1.0f);
     }
     float uw = (u1 - u0) / (xb - xa), vw = (v1 - v0) / (yb - ya);
-    float ua = u0 - 0.5f * uw, ub = u1 - 0.5f * uw;
-    float va = v0 - 0.5f * vw, vb = v1 - 0.5f * vw;
+    /* Readback selects the top-left device sample of each scaled guest pixel.  Bias
+     * texture endpoints so that sample observes the same UV as the software path. */
+    float sample_offset = 0.5f / (float)s_scale;
+    float u_bias = ((p0->x <= p1->x) ? sample_offset : 1.0f - sample_offset) * uw;
+    float v_bias = ((p0->y <= p1->y) ? sample_offset : 1.0f - sample_offset) * vw;
+    float ua = ((p0->x <= p1->x) ? u0 : u1) - u_bias;
+    float ub = ((p0->x <= p1->x) ? u1 : u0) - u_bias;
+    float va = ((p0->y <= p1->y) ? v0 : v1) - v_bias;
+    float vb = ((p0->y <= p1->y) ? v1 : v0) - v_bias;
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;
@@ -3166,6 +3173,257 @@ static int coherence_run_overlap_case(void) {
     return ok;
 }
 
+typedef struct SpriteEndpoint {
+    float x, y, u, v;
+} SpriteEndpoint;
+
+typedef struct SpriteExpected {
+    const char *name;
+    SpriteEndpoint p0, p1;
+    int x, y, w, h;
+    int u, v, du, dv;
+} SpriteExpected;
+
+typedef struct RawSpriteVtx {
+    float u, v;
+    float x, y, z;
+} RawSpriteVtx;
+
+/* Synthetic through-mode sprites.  The expected table is deliberately independent of
+ * the interpolation code: it names the complete texel sequence at the screen-space
+ * minimum corner, including the endpoint-exclusive correction for reversed axes. */
+static const SpriteExpected k_sprite_expected[] = {
+    { "normal",               { 10.0f,  10.0f, 0.0f, 0.0f }, { 14.0f,  14.0f, 4.0f, 4.0f },
+      10,  10, 4, 4, 0, 0,  1,  1 },
+    { "reverse-x",            { 14.0f,  20.0f, 0.0f, 0.0f }, { 10.0f,  24.0f, 4.0f, 4.0f },
+      10,  20, 4, 4, 3, 0, -1,  1 },
+    { "reverse-y",            { 10.0f,  34.0f, 0.0f, 0.0f }, { 14.0f,  30.0f, 4.0f, 4.0f },
+      10,  30, 4, 4, 0, 3,  1, -1 },
+    { "reverse-xy",           { 14.0f,  44.0f, 0.0f, 0.0f }, { 10.0f,  40.0f, 4.0f, 4.0f },
+      10,  40, 4, 4, 3, 3, -1, -1 },
+    { "one-pixel",            { 20.0f,  50.0f, 2.0f, 2.0f }, { 21.0f,  51.0f, 3.0f, 3.0f },
+      20,  50, 1, 1, 2, 2,  0,  0 },
+    { "one-pixel-reverse-x",  { 21.0f,  52.0f, 2.0f, 2.0f }, { 20.0f,  53.0f, 3.0f, 3.0f },
+      20,  52, 1, 1, 2, 2,  0,  0 },
+    { "reverse-x-offset",     { 14.0f,  60.0f, 2.0f, 3.0f }, { 10.0f,  64.0f, 6.0f, 7.0f },
+      10,  60, 4, 4, 5, 3, -1,  1 },
+    { "reverse-x-scaled",     { 14.0f,  70.0f, 0.0f, 0.0f }, { 10.0f,  74.0f, 8.0f, 4.0f },
+      10,  70, 4, 4, 6, 0, -2,  1 },
+    { "reverse-x-subpixel",   { 14.75f, 80.75f, 0.0f, 0.0f }, { 10.75f, 84.75f, 4.0f, 4.0f },
+      10,  80, 4, 4, 3, 0, -1,  1 },
+    { "reverse-x-far-edge",   { 38.0f,  90.0f, 0.0f, 0.0f }, { 30.0f,  92.0f, 8.0f, 2.0f },
+      30,  90, 8, 2, 7, 0, -1,  1 },
+    { "one-high-reverse-y",   { 40.0f, 101.0f, 1.0f, 2.0f }, { 44.0f, 100.0f, 5.0f, 3.0f },
+      40, 100, 4, 1, 1, 2,  1,  0 },
+    { "one-pixel-reverse-xy", { 51.0f, 111.0f, 2.0f, 2.0f }, { 50.0f, 110.0f, 3.0f, 3.0f },
+      50, 110, 1, 1, 2, 2,  0,  0 },
+};
+
+static uint32_t *s_sprite_gpu_pixels;
+static size_t s_sprite_gpu_bytes;
+
+static uint32_t coherence_sprite_texel(int u, int v) {
+    uint32_t r = (uint32_t)(u + 1) * 25u;
+    uint32_t g = (uint32_t)(v + 1) * 25u;
+    /* Default GE alpha write state keeps the destination alpha byte at zero. */
+    return 0x00640000u | (g << 8) | r;
+}
+
+static int coherence_verify_sprite_output(const char *path, const uint32_t *fb,
+                                          uint32_t stride) {
+    for (size_t i = 0; i < sizeof(k_sprite_expected) / sizeof(k_sprite_expected[0]); i++) {
+        const SpriteExpected *tc = &k_sprite_expected[i];
+        for (int dy = 0; dy < tc->h; dy++) {
+            for (int dx = 0; dx < tc->w; dx++) {
+                int u = tc->u + dx * tc->du;
+                int v = tc->v + dy * tc->dv;
+                uint32_t want = coherence_sprite_texel(u, v);
+                uint32_t got = fb[(tc->y + dy) * stride + tc->x + dx];
+                if (got != want) {
+                    fprintf(stderr,
+                            "gpu coherence selftest [sprite-%s/%s]: pixel=(%d,%d) "
+                            "texel=(%d,%d) expected=%08x actual=%08x\n",
+                            path, tc->name, tc->x + dx, tc->y + dy, u, v, want, got);
+                    return 0;
+                }
+            }
+        }
+        /* Prove the rectangle is endpoint-exclusive on all four sides. */
+        for (int dx = 0; dx < tc->w; dx++) {
+            if (fb[(tc->y - 1) * stride + tc->x + dx] != 0 ||
+                fb[(tc->y + tc->h) * stride + tc->x + dx] != 0) {
+                fprintf(stderr, "gpu coherence selftest [sprite-%s/%s]: y edge leaked\n",
+                        path, tc->name);
+                return 0;
+            }
+        }
+        for (int dy = 0; dy < tc->h; dy++) {
+            if (fb[(tc->y + dy) * stride + tc->x - 1] != 0 ||
+                fb[(tc->y + dy) * stride + tc->x + tc->w] != 0) {
+                fprintf(stderr, "gpu coherence selftest [sprite-%s/%s]: x edge leaked\n",
+                        path, tc->name);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static uint32_t coherence_prepare_sprite_fixture(uint32_t base, uint32_t tex_base,
+                                                 uint32_t stride) {
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+    for (int v = 0; v < 8; v++) {
+        for (int u = 0; u < 8; u++) {
+            uint32_t r = (uint32_t)(u + 1) * 25u;
+            uint32_t g = (uint32_t)(v + 1) * 25u;
+            tex[v * 8 + u] = 0xff640000u | (g << 8) | r;
+        }
+    }
+    sr_gpu_vram_dirty(tex_base, 8u * 8u * 4u);
+
+    const uint32_t vaddr = 0x00101000u;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(vaddr);
+    uint32_t sprite_count = (uint32_t)(sizeof(k_sprite_expected) /
+                                       sizeof(k_sprite_expected[0]));
+    for (uint32_t i = 0; i < sprite_count; i++) {
+        const SpriteExpected *tc = &k_sprite_expected[i];
+        vtx[i * 2] = (RawSpriteVtx){ tc->p0.u, tc->p0.v, tc->p0.x, tc->p0.y, 0.0f };
+        vtx[i * 2 + 1] =
+            (RawSpriteVtx){ tc->p1.u, tc->p1.v, tc->p1.x, tc->p1.y, 0.0f };
+    }
+
+    const uint32_t list_addr = 0x00100000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x9C, base & 0x00FFFFFFu);
+    DL_EMIT(0x9D, stride | ((base & 0xFF000000u) >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, tex_base & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 8 | ((tex_base & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (3 << 8) | 3);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0xC9, 3 | (1 << 8));
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3 << 0) | (3 << 7) | (1 << 23));
+    DL_EMIT(0x01, vaddr & 0x00FFFFFFu);
+    DL_EMIT(0x04, (6 << 16) | (sprite_count * 2u));
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+    return list_addr;
+}
+
+static int coherence_run_sprite_semantics(void) {
+    const uint32_t fba = 0x00160000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+
+    uint64_t spr_before = s_cnt_spr;
+    size_t sprite_count = sizeof(k_sprite_expected) / sizeof(k_sprite_expected[0]);
+    uint32_t list_addr = coherence_prepare_sprite_fixture(base, tex_base, stride);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(list_addr, 0);
+
+    if (s_cnt_spr != spr_before + sprite_count) {
+        fprintf(stderr, "gpu coherence selftest [sprite-semantics]: hook_sprite call count mismatch\n");
+        return 0;
+    }
+
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride, .width = 480, .height = 272 };
+    if (!gegpu_sync_guest_fb(&desc)) {
+        fprintf(stderr, "gpu coherence selftest [sprite-semantics]: gegpu_sync_guest_fb failed\n");
+        return 0;
+    }
+
+    uint32_t *fb = (uint32_t *)guest;
+    if (!coherence_verify_sprite_output("gpu", fb, stride)) return 0;
+
+    s_sprite_gpu_bytes = stride * FB_H * sizeof(*fb);
+    free(s_sprite_gpu_pixels);
+    s_sprite_gpu_pixels = (uint32_t *)malloc(s_sprite_gpu_bytes);
+    if (!s_sprite_gpu_pixels) {
+        s_sprite_gpu_bytes = 0;
+        return 0;
+    }
+    memcpy(s_sprite_gpu_pixels, fb, s_sprite_gpu_bytes);
+
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n",
+           "sprite-exact-gpu", stride, s_scale);
+    return 1;
+}
+
+static int coherence_run_software_sprite_semantics(void) {
+    const uint32_t fba = 0x00160000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+
+    uint32_t list_addr = coherence_prepare_sprite_fixture(base, tex_base, stride);
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(list_addr, 0);
+    ge_set_gpu_hooks(&k_hooks);
+
+    uint32_t *fb = (uint32_t *)guest;
+    if (!coherence_verify_sprite_output("software", fb, stride)) {
+        free(s_sprite_gpu_pixels);
+        s_sprite_gpu_pixels = NULL;
+        s_sprite_gpu_bytes = 0;
+        return 0;
+    }
+    size_t bytes = stride * FB_H * sizeof(*fb);
+    if (!s_sprite_gpu_pixels || s_sprite_gpu_bytes != bytes) {
+        fprintf(stderr, "gpu coherence selftest [sprite-parity]: missing GPU reference\n");
+        free(s_sprite_gpu_pixels);
+        s_sprite_gpu_pixels = NULL;
+        s_sprite_gpu_bytes = 0;
+        return 0;
+    }
+    size_t mismatch = 0;
+    while (mismatch < bytes && ((const uint8_t *)s_sprite_gpu_pixels)[mismatch] == guest[mismatch])
+        mismatch++;
+    if (mismatch != bytes) {
+        fprintf(stderr,
+                "gpu coherence selftest [sprite-parity]: byte=%zu gpu=%02x software=%02x\n",
+                mismatch, ((const uint8_t *)s_sprite_gpu_pixels)[mismatch], guest[mismatch]);
+        free(s_sprite_gpu_pixels);
+        s_sprite_gpu_pixels = NULL;
+        s_sprite_gpu_bytes = 0;
+        return 0;
+    }
+    free(s_sprite_gpu_pixels);
+    s_sprite_gpu_pixels = NULL;
+    s_sprite_gpu_bytes = 0;
+
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n",
+           "sprite-exact-software", stride, s_scale);
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n",
+           "sprite-sw-gpu-parity", stride, s_scale);
+    return 1;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -3189,6 +3447,8 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clean_case("clean-unaligned", 3, 512, (51u * 512u + 21u) * 4u + 1u, 5)) ok = 0;
     if (!coherence_run_full_cover_case()) ok = 0;
     if (!coherence_run_overlap_case()) ok = 0;
+    if (!coherence_run_sprite_semantics()) ok = 0;
+    if (!coherence_run_software_sprite_semantics()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

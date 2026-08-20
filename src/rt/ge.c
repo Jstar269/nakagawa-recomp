@@ -2297,15 +2297,25 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     int fog = (persp && ge.fog_enable) ? (int)(clampf01(p1->fog)*256.0f) : 256;
     s_in3d = persp;
     if (persp) s_stat.spr3d++; else s_stat.spr2d++;
-    float uw =(xb>xa)?(u1-u0)/(float)(xb-xa):0;
-    float uvv=(yb>ya)?(v1-v0)/(float)(yb-ya):0;
-    for (int y=ya; y<yb; y++) {
-        float fv = v0 + (y-ya)*uvv;
-        for (int x=xa; x<xb; x++) {
-            float u = u0 + (x-xa)*uw;
-            int r,g,b,a;
-            if (!shade(u,fv,fog,p1->r,p1->g,p1->b,p1->a,&r,&g,&b,&a)) continue;
-            put_px_rgba_tested(x,y,pz,use_z,r,g,b,a);
+    float step_u = (xb > xa) ? (u1 - u0) / (float)(xb - xa) : 0.0f;
+    float step_v = (yb > ya) ? (v1 - v0) / (float)(yb - ya) : 0.0f;
+    /* Sprite endpoints describe opposite rectangle corners.  When screen order is
+     * reversed, the second endpoint is the exclusive left/top texture edge, so the
+     * first covered pixel starts one texel step back.  Use the same floored rectangle
+     * span as the GPU hook; carrying the discarded subpixel fraction into UV would make
+     * the software and Vulkan paths disagree for otherwise identical sprites. */
+    float u_start = (p0->x <= p1->x) ? u0 : u1 - step_u;
+    float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
+    float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
+    float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
+
+    for (int y = ya; y < yb; y++) {
+        float fv = v_start + (float)(y - ya) * v_dir;
+        for (int x = xa; x < xb; x++) {
+            float u = u_start + (float)(x - xa) * u_dir;
+            int r, g, b, a;
+            if (!shade(u, fv, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
 }
