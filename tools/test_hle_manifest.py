@@ -18,6 +18,7 @@ import unittest
 
 import hle_manifest
 import hle_registry_meta as meta
+import nid_name_proof
 from hle_manifest import (
     DEFAULT_BASELINE,
     ManifestError,
@@ -449,6 +450,203 @@ class MpegDirtyNotificationContractTests(unittest.TestCase):
                       "convert_frame must emit a single dirty call only for a representable contiguous span")
         self.assertIn("sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
                       "convert_frame must emit exact per-row dirty calls when w < frameWidth")
+
+
+
+CHAIN_SOURCE = """
+static uint32_t h_Prod(CpuState *s) { (void)s; return 0; }
+static uint32_t h_Shared(CpuState *s) { (void)s; return 0; }
+static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
+void sr_hle_register(uint32_t nid, const char *name, HleFn fn) { }
+
+static void register_shared(void) {
+    sr_hle_register(0x00000050u, "synthShared", h_Shared);
+}
+
+void sr_hle_init(void) {
+#ifdef SR_HLE_THREAD_SELFTEST
+    register_shared();
+    sr_hle_register(0x00000060u, "synthTestOnly", h_ok);
+#else
+    register_shared();
+    sr_hle_register(0x00000070u, "synthProdOnly", h_Prod);
+#endif
+    sr_hle_register(0x00000080u, "synthAlways", h_Prod);
+}
+"""
+
+
+class RegistrationScopeTests(unittest.TestCase):
+    """Production reachability is what makes a registration production evidence."""
+
+    def setUp(self) -> None:
+        self.scopes = hle_manifest.registration_scopes(CHAIN_SOURCE)
+
+    def test_helper_called_from_both_branches_is_reachable_from_production(self) -> None:
+        entry = self.scopes[0x50]
+        self.assertEqual(entry["declared_in"], "register_shared")
+        self.assertEqual(entry["reachable_from"], ["production", "selftest"])
+
+    def test_registration_only_under_the_selftest_macro_is_not_production(self) -> None:
+        self.assertEqual(self.scopes[0x60]["reachable_from"], ["selftest"])
+
+    def test_registration_in_the_else_branch_is_production_only(self) -> None:
+        self.assertEqual(self.scopes[0x70]["reachable_from"], ["production"])
+
+    def test_registration_outside_any_conditional_is_reachable_from_both(self) -> None:
+        self.assertEqual(self.scopes[0x80]["reachable_from"], ["production", "selftest"])
+
+    def test_unrelated_conditionals_do_not_narrow_production_reachability(self) -> None:
+        source = CHAIN_SOURCE.replace(
+            'sr_hle_register(0x00000080u, "synthAlways", h_Prod);',
+            "#ifdef SR_SOME_OTHER_FEATURE\n"
+            '    sr_hle_register(0x00000080u, "synthAlways", h_Prod);\n'
+            "#endif",
+        )
+        self.assertEqual(
+            hle_manifest.registration_scopes(source)[0x80]["reachable_from"],
+            ["production", "selftest"],
+            "a registration guarded by an unrelated #ifdef still ships; treating it "
+            "as selftest-only would understate production reachability",
+        )
+
+
+class ConformanceJoinTests(unittest.TestCase):
+    def test_probe_rows_group_by_dispatched_nid(self) -> None:
+        header = (
+            "static const IcProbe kIcMatrix[] = {\n"
+            '{ "sceKernelWaitSema", 0x4e3a1105u, "Bad sema", ICG_SEMA, 0,\n'
+            "  {0, 1, 2, 3}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW}},\n"
+            '{ "sceKernelWaitSema", 0x4e3a1105u, "Valid sema", ICG_SEMA, 2,\n'
+            "  {0, 4, 5, 6}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW}},\n"
+            "};\n"
+        )
+        cells = hle_manifest.conformance_cells(header)
+        self.assertEqual(
+            cells[0x4E3A1105],
+            [
+                {"api": "sceKernelWaitSema", "scenario": "Bad sema"},
+                {"api": "sceKernelWaitSema", "scenario": "Valid sema"},
+            ],
+        )
+
+    def test_text_before_the_matrix_is_not_scanned(self) -> None:
+        self.assertEqual(hle_manifest.conformance_cells('{ "notAProbe", 0x1u, "" }'), {})
+
+    def test_selftest_dispatch_needs_the_define_to_be_used(self) -> None:
+        used = "#define NID_USED 0x11111111u\n" "  x = sr_syscall(&cpu, NID_USED);\n"
+        unused = "#define NID_UNUSED 0x22222222u\n"
+        found = hle_manifest.selftest_dispatched_nids(used + unused)
+        self.assertIn(0x11111111, found)
+        self.assertNotIn(
+            0x22222222, found, "an unreferenced NID define is not an exercise"
+        )
+
+    def test_selftest_dispatch_sees_a_bare_literal(self) -> None:
+        self.assertIn(
+            0x05572A5F,
+            hle_manifest.selftest_dispatched_nids("(void)sr_syscall(&cpu, 0x05572a5fu);"),
+        )
+
+
+class EvidenceTierTests(unittest.TestCase):
+    @staticmethod
+    def _entry(classification="dedicated", cells=(), selftest=False, oracle=(),
+               reach=("production", "selftest")):
+        return {
+            "registration": {"classification": classification, "reachable_from": list(reach)},
+            "exercised": {
+                "conformance_cells": list(cells),
+                "hle_selftest_dispatch": selftest,
+                "psp_oracle_probes": list(oracle),
+            },
+        }
+
+    def test_a_hardware_probe_outranks_host_coverage(self) -> None:
+        tier, _ = hle_manifest.evidence_tier(self._entry(oracle=["PSP-SMOKE-001"]))
+        self.assertEqual(tier, "HARDWARE_MEASURED")
+
+    def test_executable_coverage_of_a_dedicated_handler_is_host_tested(self) -> None:
+        tier, _ = hle_manifest.evidence_tier(self._entry(selftest=True))
+        self.assertEqual(tier, "HOST_TESTED")
+
+    def test_exercising_a_generic_stub_is_not_evidence(self) -> None:
+        tier, why = hle_manifest.evidence_tier(
+            self._entry(classification="fake_success", cells=[{"api": "x", "scenario": ""}])
+        )
+        self.assertEqual(
+            tier, "NOT_EVIDENCE",
+            "entering h_ok proves the registry resolves, not that the API behaves",
+        )
+        self.assertIn("stub", why)
+
+    def test_a_dedicated_handler_with_no_coverage_is_only_static(self) -> None:
+        tier, _ = hle_manifest.evidence_tier(self._entry())
+        self.assertEqual(tier, "STATICALLY_SUPPORTED")
+
+    def test_every_tier_is_in_the_declared_vocabulary(self) -> None:
+        for entry in (
+            self._entry(oracle=["p"]), self._entry(selftest=True),
+            self._entry(classification="fake_success"), self._entry(),
+        ):
+            self.assertIn(hle_manifest.evidence_tier(entry)[0], hle_manifest.EVIDENCE_TIERS)
+
+
+class LiveEvidenceChainTests(unittest.TestCase):
+    """The chain over the real tree, checked for shape rather than for a count."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.chain = hle_manifest.build_evidence_chain()
+        cls.by_nid = {e["nid"]: e for e in cls.chain["entries"]}
+
+    def test_every_registration_appears_exactly_once(self) -> None:
+        self.assertEqual(len(self.chain["entries"]), self.chain["registrations"])
+        self.assertEqual(len(self.by_nid), self.chain["registrations"])
+
+    def test_every_registration_is_reachable_from_the_production_runtime(self) -> None:
+        self.assertEqual(
+            self.chain["summary"]["not_reachable_from_production"], [],
+            "a registration the shipping runtime cannot reach is either dead or a "
+            "test-only registration masquerading as production evidence",
+        )
+
+    def test_tier_counts_cover_every_entry(self) -> None:
+        self.assertEqual(
+            sum(self.chain["summary"]["by_tier"].values()), len(self.chain["entries"])
+        )
+
+    def test_a_label_whose_nid_is_not_reproducible_carries_a_shape(self) -> None:
+        for entry in self.chain["entries"]:
+            if entry["nid_derivation"]["independently_derived"]:
+                self.assertIsNone(entry["nid_derivation"]["shape"])
+            else:
+                shape = entry["nid_derivation"]["shape"]
+                self.assertIsNotNone(shape, entry["nid"])
+                self.assertIn(shape["classification"], nid_name_proof.CLASSIFICATIONS)
+
+    def test_the_imported_link_is_unknown_without_an_import_manifest(self) -> None:
+        sample = next(iter(self.chain["entries"]))
+        self.assertEqual(
+            sample["imported"], "unknown: no import manifest supplied",
+            "the retail import manifest is a private input; its absence must never "
+            "be reported as 'this NID is not imported'",
+        )
+
+    def test_exercised_stubs_are_reported_rather_than_counted_as_coverage(self) -> None:
+        for stub in self.chain["summary"]["exercised_stubs"]:
+            entry = self.by_nid[stub["nid"]]
+            self.assertTrue(entry["exercised_stub"])
+            self.assertEqual(entry["evidence_tier"], "NOT_EVIDENCE")
+
+    def test_a_hardware_probe_api_reaches_its_registration(self) -> None:
+        manifest = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        apis = hle_manifest.oracle_exercised_apis(manifest)
+        registered = {e["canonical_name"] for e in self.chain["entries"]}
+        for api, probes in apis.items():
+            if api in registered:
+                entry = next(e for e in self.chain["entries"] if e["canonical_name"] == api)
+                self.assertEqual(entry["exercised"]["psp_oracle_probes"], probes)
 
 
 if __name__ == "__main__":
