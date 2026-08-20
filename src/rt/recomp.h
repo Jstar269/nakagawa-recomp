@@ -531,6 +531,11 @@ void     sched_vtime_refresh(void);
 uint32_t sched_display_current_hcount(void);
 uint32_t sched_display_accumulated_hcount(void);
 int      sched_display_is_vblank(void);
+/* Advance guest-visible VCOUNT by the number of elapsed display periods the
+ * scheduler source just latched.  This is display-period accounting, deliberately
+ * separate from deliver_vblank()/sr_vblank_tick(), which runs once per serviced
+ * source event and owns framebuffer/interrupt/callback side effects. */
+void     sr_display_advance_vcount(uint32_t elapsed_periods);
 void     sched_set_current_cb_wait(int cb_wait);    /* mark running thread as callback-waiting */
 void     sched_wake_callbacks(uint32_t thread_uid); /* wake thread waiting in CB-wait */
 void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wakeup-count) */

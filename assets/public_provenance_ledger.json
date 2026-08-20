@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "890db2a84fe619a615e2eaa5b5f0ad8aa633199a9e1941bc72619f8e9f7c8301"
+      "sha256": "97787d7c0d539ca4b501e09dfe711686715cf2e1caf6ae355863cd5692771ad3"
     },
     {
       "path": "docs/CI.md",
@@ -4364,7 +4364,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b693fa233f30846d5f6280b227578cbb956d3992fce17f402220d56004211d21"
+      "sha256": "54ab0f649af47443f53f0890e5710ad1dd521c25a79ec6dc1d28f0c44dcadcb1"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4376,7 +4376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37f743a5d5bc61bce9ebf5f0053d99de47e11b090358f7a46ba6ec58a484b347"
+      "sha256": "d9ad7ba665e435e55b2c9d9784999811e1fefbc6d89b88dc61092af71b8efe08"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4581,7 +4581,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "10ecea5de80af3fecc77fb3dd08cf27387cebc0940ad824cd8474d12d10bd2e2"
+      "sha256": "30b5e15e5a60f8147f45e710af4e925a6dfa340527a3f33d66b80bf02e58b64b"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4614,7 +4614,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "72eefaf0adf5d760c0cd402d0621cd2acae90b8ac05daeeb361e66025d2b5e35"
+      "sha256": "a54f8f8de9f5f0163eb18a1573373083b83b3730814ed1c0ac54c8aafcec1e94"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4626,7 +4626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b26386b7dea6eb64d96d406c1e569b54691ba2720509f12152b012b1be0eb4f6"
+      "sha256": "cf94b3868afff444fa992ed97e1a314f196fae31b8be0d15ce1062cc70843149"
     },
     {
       "path": "src/rt/sdkver.h",
