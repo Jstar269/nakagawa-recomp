@@ -98,16 +98,6 @@ Current fail-closed limits are deliberate:
 - an explicit span cannot yet be combined with a nonzero executable base; and
 - only the generator's current `hst` and `none` profile choices are accepted.
 
-Codegen enforces profile isolation: `codegen.py`'s HST-specific translations
-(address-specific stubs, GUEST_PATCHES, MEMSET/ARRSHIFT fastpaths,
-`GUEST_ABORT`, null-base loads, boot probes and the `EMIT_DIAG_PROBES`
-diagnostics) are gated behind `profile == "hst"`. With `--profile=none` the
-translator is faithful — no HST numeric address alone implies HST semantics.
-`tools/test_codegen_profile_isolation.py` proves `profile=none` emits no
-`sr_newlib_*`, native `memcpy`/`memset`, `MEMSET`/`ARRSHIFT` fastpaths,
-`GUEST_ABORT`, `sr_boot_probe` or `GUEST_PATCHES` text, while `--profile=hst`
-preserves the legacy HST behaviours on the same synthetic specimen.
-
 The manager adapter is deliberately fail-closed: this slice accepts only the
 checked-in HST manifest for HST manager actions, and it rejects unsupported plan
 versions, unknown plan fields, malformed digests, projections that disagree with
@@ -121,3 +111,29 @@ fixture (PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) driven through the s
 planner; see `tools/test_title_pspdev_phase5.py`. The adapter's own contract is
 covered by `tools/test_title_manager_adapter.py` and the digest by
 `tools/test_title_protected_digest.py`, all using public manifests only.
+
+## Profile isolation
+
+The generator's invariant is that **a guest address must never change what
+`--profile=none` emits**. Generic implementation may be core; the binding of a
+numeric address to a semantic is title-owned. Every HST-specific translation in
+`tools/codegen.py` — the address-specific custom stubs, `HST_SIMPLE_STUBS`,
+`GUEST_PATCHES`, `NULL_BASE_WORD_LOADS`, the MEMSET/ARRSHIFT fastpaths,
+`GUEST_ABORT`, the boot and inline probes, the `EMIT_DIAG_PROBES` diagnostics,
+the `HST_MANUAL_CALLABLES`/`HST_RESUME_OWNERS` entry roles, and the `_SV_SPECIAL`
+`--static-verify` exclusion — is therefore reachable only when
+`profile == "hst"`.
+
+`tools/test_codegen_profile_isolation.py` proves this differentially rather than
+by sampling output strings. Its synthetic ET_EXEC carries two byte-identical
+copies of every body: one at the HST guest address and one at a control address
+outside every HST table. Under `--profile=none` the two emitted functions must
+be identical after normalising each against its own start address, so any
+surviving address-coupled site — named in that file or not — makes the pair
+diverge. The same run under `--profile=hst` must make every pair *differ*, which
+is what keeps the equality above from passing vacuously. A static pass
+re-derives the gate inventory from `codegen.py`'s AST, so a newly added address
+literal cannot be introduced without either a profile gate or a specimen body.
+
+Entry-role and `--static-verify` couplings do not appear in function text and
+are asserted directly against `build_entry_catalog` and `sv_plan`.

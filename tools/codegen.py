@@ -1157,6 +1157,10 @@ EMIT_DIAG_PROBES = False
 
 # Functions carrying hand-injected code (fastpaths, probes, condition
 # overrides) execute semantics the simulator does not model; exclude them.
+# The exclusion is a consequence of that injected code, so it is title-owned:
+# under a profile that emits none of it there is nothing unmodelled to exclude,
+# and suppressing the checks on a numeric-address collision alone would be an
+# HST behavior leak (see sv_plan's hst_profile parameter).
 _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 
 # GUEST_PATCHES -- reviewed, traceable per-guest instruction overrides.
@@ -1262,9 +1266,11 @@ def _sv_step(w, regs, written):
         for i in range(1, 32):
             regs[i] = None
 
-def sv_plan(elf, insns, labels):
+def sv_plan(elf, insns, labels, hst_profile=False):
     """Pre-compute {flush_addr: [(reg, expected_value), ...]} for one function."""
-    if not (insns and SV_ENABLED) or (insns & _SV_SPECIAL):
+    if not (insns and SV_ENABLED):
+        return {}
+    if hst_profile and (insns & _SV_SPECIAL):
         return {}
     points, total = {}, 0
     regs: list[int | None] = [None] * 32
@@ -1334,7 +1340,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
         elf, start, ranges, known, resume_owners=resume_owners)
-    sv_points = sv_plan(elf, insns, labels)
+    sv_points = sv_plan(elf, insns, labels, hst_profile=hst_profile)
     # A delay slot that is itself a branch target is emitted twice: inline at its
     # owning control instruction (where it must execute as the slot) and again
     # under its own label (so branches can land on it).  On fall-through past the
