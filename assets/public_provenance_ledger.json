@@ -1194,7 +1194,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3212d008e68583b992106c81ae37e1508c37f5269dbb4c566003eed846697fc3"
+      "sha256": "35a94dfba18c4aba80b55c31a841d2555334376494ed7c7da059aa505decf743"
     },
     {
       "path": "interface/package.json",
@@ -1203,7 +1203,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ca491bf61c10a6fc0a5e81ad38848215216764c0779250050de917cc2c1d86ec"
+      "sha256": "3a074cfb2ac666b4bdeb73d43f6c82fad27b4a08e19cfdbad86a30b04dd918bc"
     },
     {
       "path": "interface/postcss.config.mjs",
