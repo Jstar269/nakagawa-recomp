@@ -377,6 +377,328 @@ def dump_json(obj: dict, path: Path) -> None:
         f.write("\n")
 
 
+
+
+# ---------------------------------------------------------------------------
+# Evidence chain
+# ---------------------------------------------------------------------------
+# The chain re-derives nothing another tool already owns.  It joins, per NID:
+#
+#   canonical name -> independently derived NID   tools/nid_name_proof.py
+#   imported NID                                  --imports (private retail
+#                                                 manifests stay opt-in)
+#   registered handler + classification           this module's extraction
+#   production dispatch reachability              this module's scope analysis
+#   conformance cell / exercised                  src/rt/intr_conformance.h,
+#                                                 src/rt/hle_thread_selftest.c
+#   hardware exercise                             tools/psp_oracle/manifest.json
+#
+# Each consumed fact keeps the tier of the tool that produced it.  The chain
+# invents no tier of its own, and a link it cannot establish is recorded as
+# absent rather than assumed.
+
+CHAIN_SCHEMA = 1
+
+INTR_CONFORMANCE_H = ROOT / "src" / "rt" / "intr_conformance.h"
+SELFTEST_C = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+PSP_ORACLE_MANIFEST = ROOT / "tools" / "psp_oracle" / "manifest.json"
+
+SELFTEST_MACRO = "SR_HLE_THREAD_SELFTEST"
+
+EVIDENCE_TIERS = (
+    "HARDWARE_MEASURED",
+    "HOST_TESTED",
+    "STATICALLY_SUPPORTED",
+    "NOT_EVIDENCE",
+)
+
+#: The leading fields of one ``IcProbe`` row: `{ "api", 0xnid, "scenario", ...`
+_IC_PROBE_RE = re.compile(
+    r'\{\s*"(?P<api>[A-Za-z0-9_]+)"\s*,\s*0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?\s*,\s*"(?P<scenario>[^"]*)"'
+)
+#: `#define NID_SCE_AUDIO_CH_RESERVE 0x5ec81c55u`
+_SELFTEST_NID_DEFINE_RE = re.compile(
+    r"^#define[ \t]+(?P<sym>NID_[A-Za-z0-9_]+)[ \t]+0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?[ \t]*$",
+    re.MULTILINE,
+)
+#: `sr_syscall(&cpu, 0x05572a5fu)` -- a NID dispatched as a bare literal.
+_SELFTEST_LITERAL_DISPATCH_RE = re.compile(
+    r"sr_syscall\s*\([^;)]*,\s*0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?\s*\)"
+)
+_FUNC_HEAD_RE = re.compile(
+    r"^(?:static[ \t]+)?(?:void|int|uint32_t)[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^;{]*\)[ \t]*\{",
+    re.MULTILINE,
+)
+_HELPER_CALL_RE = re.compile(r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\([ \t]*\)[ \t]*;[ \t]*$")
+
+
+def _read_optional(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def selftest_scope_map(source: str) -> list[str]:
+    """Per-line ``SR_HLE_THREAD_SELFTEST`` scope: ``both``/``selftest``/``production``.
+
+    Only a conditional that actually tests the selftest macro narrows the scope.
+    Every other conditional leaves it alone, because a registration guarded by an
+    unrelated ``#if`` is still compiled into the shipping runtime, and treating
+    it as selftest-only would understate production reachability.
+    """
+    scopes: list[str] = []
+    outer: list[str] = []      # scope in effect before each open conditional
+    tests_macro: list[bool] = []
+    current = "both"
+    for line in source.split("\n"):
+        m = _PP_IF_RE.match(line)
+        if m:
+            kind, cond = m.group(1), m.group(2)
+            if kind in ("if", "ifdef", "ifndef"):
+                macro = SELFTEST_MACRO in cond
+                tests_macro.append(macro)
+                outer.append(current)
+                if macro and current == "both":
+                    current = "production" if kind == "ifndef" or cond.lstrip().startswith("!") else "selftest"
+            elif kind in ("else", "elif") and tests_macro:
+                if tests_macro[-1] and outer[-1] == "both":
+                    current = "production" if current == "selftest" else "selftest"
+            elif kind == "endif" and tests_macro:
+                tests_macro.pop()
+                current = outer.pop()
+        scopes.append(current)
+    return scopes
+
+
+def enclosing_functions(source: str) -> list[str | None]:
+    """Per-line name of the enclosing top-level function, or ``None``."""
+    lines = source.split("\n")
+    owner: list[str | None] = [None] * len(lines)
+    for m in _FUNC_HEAD_RE.finditer(source):
+        first = source.count("\n", 0, m.start())
+        depth = 0
+        for i in range(first, len(lines)):
+            owner[i] = m.group("name")
+            depth += lines[i].count("{") - lines[i].count("}")
+            if depth <= 0:
+                break
+    return owner
+
+
+def registration_scopes(raw_source: str) -> dict[int, dict]:
+    """Where each registered NID is reachable from: production, selftest, or both.
+
+    A registration inside a helper inherits the scopes of that helper's call
+    sites, which is what turns a shared ``hle_register_*_handlers()`` helper into
+    evidence that ``sr_hle_init()``'s production branch really reaches it,
+    instead of merely evidence that the text exists in the file.
+    """
+    source = active_source(raw_source)
+    # active_source() blanks preprocessor directives, so the conditional scope
+    # has to be read from the comment-stripped source, which keeps them. Both
+    # views preserve every offset, so line indices agree between them.
+    scopes = selftest_scope_map(_strip_comments(raw_source))
+    owners = enclosing_functions(source)
+    lines = source.split("\n")
+
+    call_scopes: dict[str, set[str]] = {}
+    for idx, line in enumerate(lines):
+        m = _HELPER_CALL_RE.match(line)
+        if m:
+            call_scopes.setdefault(m.group("name"), set()).add(scopes[idx])
+
+    def expand(scope: str) -> set[str]:
+        return {"production", "selftest"} if scope == "both" else {scope}
+
+    out: dict[int, dict] = {}
+    for m in _LITERAL_RE.finditer(source):
+        idx = source.count("\n", 0, m.start())
+        owner, own_scope = owners[idx], scopes[idx]
+        if own_scope != "both" or owner in (None, "sr_hle_init"):
+            reach = expand(own_scope)
+        else:
+            sites = call_scopes.get(owner, set())
+            reach = set().union(*(expand(s) for s in sites)) if sites else expand(own_scope)
+        out[int(m.group(1), 16)] = {
+            "declared_in": owner,
+            "reachable_from": sorted(reach),
+        }
+    return out
+
+
+def conformance_cells(header_text: str) -> dict[int, list[dict]]:
+    """``kIcMatrix`` probe rows grouped by the NID each row dispatches."""
+    cells: dict[int, list[dict]] = {}
+    parts = header_text.split("static const IcProbe kIcMatrix[]", 1)
+    if len(parts) != 2:
+        return cells
+    for m in _IC_PROBE_RE.finditer(parts[1]):
+        cells.setdefault(int(m.group("nid"), 16), []).append(
+            {"api": m.group("api"), "scenario": m.group("scenario")}
+        )
+    return cells
+
+
+def selftest_dispatched_nids(selftest_text: str) -> set[int]:
+    """NIDs the executable HLE selftest enters through ``sr_syscall``.
+
+    Both spellings the file uses are collected: a ``NID_*`` define that is
+    referenced elsewhere in the file, and a bare literal handed to sr_syscall.
+    A define that is never referenced is deliberately not counted.
+    """
+    nids: set[int] = set()
+    for m in _SELFTEST_NID_DEFINE_RE.finditer(selftest_text):
+        if selftest_text.count(m.group("sym")) > 1:
+            nids.add(int(m.group("nid"), 16))
+    for m in _SELFTEST_LITERAL_DISPATCH_RE.finditer(selftest_text):
+        nids.add(int(m.group("nid"), 16))
+    return nids
+
+
+def oracle_exercised_apis(manifest: dict) -> dict[str, list[str]]:
+    """API name -> ids of implemented source-owned PSP probes that call it."""
+    out: dict[str, list[str]] = {}
+    for test in manifest.get("tests", []):
+        if test.get("status") != "implemented":
+            continue
+        for api in test.get("apis", []):
+            out.setdefault(api, []).append(test.get("id", "?"))
+    return out
+
+
+def evidence_tier(entry: dict) -> tuple[str, str]:
+    """The strongest tier this NID's own links justify, plus the reason.
+
+    Deliberately conservative.  Hardware truth transcribed into the conformance
+    matrix describes the PSP, not this runtime, so a conformance cell alone never
+    promotes a registration past HOST_TESTED.  Only a source-owned probe that
+    actually ran on hardware carries HARDWARE_MEASURED, and that tier describes
+    the API exercise, not the correctness of this handler.
+    """
+    reach = entry["registration"]["reachable_from"]
+    ex = entry["exercised"]
+    if ex["psp_oracle_probes"]:
+        return "HARDWARE_MEASURED", "a source-owned PSP probe calls this API on hardware"
+    if ex["conformance_cells"] or ex["hle_selftest_dispatch"]:
+        if entry["registration"]["classification"] == "fake_success":
+            return "NOT_EVIDENCE", (
+                "an executable test enters this NID, but the registered handler is a "
+                "generic success stub, so the exercise asserts nothing about the API"
+            )
+        if "production" in reach:
+            return "HOST_TESTED", "an executable test enters the production registration"
+        return "HOST_TESTED", "an executable test enters it, but only the selftest build registers it"
+    if entry["registration"]["classification"] == "fake_success":
+        return "NOT_EVIDENCE", "generic success handler with no executable coverage"
+    return "STATICALLY_SUPPORTED", "dedicated handler registered; no executable coverage"
+
+
+def load_imports(path: Path | None) -> dict[int, str]:
+    """Optional imported-NID side of the chain.
+
+    The retail import manifest is a private input, so this is opt-in and absent
+    by default; the chain then records the imported link as unknown rather than
+    claiming the NID is unimported.
+    """
+    if path is None:
+        return {}
+    text = path.read_text(encoding="utf-8")
+    found: dict[int, str] = {}
+    for m in re.finditer(r'nid\s*=\s*0x([0-9a-fA-F]{1,8}).*?name\s*=\s*"([^"]+)"', text, re.DOTALL):
+        found[int(m.group(1), 16)] = m.group(2)
+    if not found:
+        for m in _LITERAL_RE.finditer(text):
+            found[int(m.group(1), 16)] = m.group(2)
+    return found
+
+
+def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None = None) -> dict:
+    """Join every registration to the evidence that does, or does not, back it."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import nid_name_proof
+
+    if manifest is None:
+        manifest = build_manifest()
+    scopes = registration_scopes(HLE_C.read_text(encoding="utf-8"))
+    cells = conformance_cells(_read_optional(INTR_CONFORMANCE_H))
+    dispatched = selftest_dispatched_nids(_read_optional(SELFTEST_C))
+    try:
+        oracle = oracle_exercised_apis(json.loads(_read_optional(PSP_ORACLE_MANIFEST) or "{}"))
+    except json.JSONDecodeError:
+        oracle = {}
+    imports = load_imports(imports_path)
+    verified_names = {
+        r["name"] for r in manifest["registrations"]
+        if nid_name_proof.nid_of(r["name"]) == int(r["nid"], 16)
+    }
+
+    entries = []
+    for reg in manifest["registrations"]:
+        nid = int(reg["nid"], 16)
+        derived = nid_name_proof.nid_of(reg["name"])
+        scope = scopes.get(nid, {"declared_in": None, "reachable_from": []})
+        entry = {
+            "nid": reg["nid"],
+            "canonical_name": reg["name"],
+            "nid_derivation": {
+                "independently_derived": derived == nid,
+                "method": "nid == sha1(name)[0:4] little-endian",
+                "derived_nid": f"0x{derived:08x}",
+                # For a label whose NID is not reproducible, defer to
+                # nid_name_proof's own shape classification instead of merely
+                # flagging it: most are editorial aliases or firmware-suffixed
+                # composites, which is a different fact from "wrong".
+                "shape": (
+                    None if derived == nid
+                    else nid_name_proof.classify(nid, reg["name"], verified_names)._asdict()
+                ),
+            },
+            "imported": (
+                {"name": imports[nid]} if nid in imports
+                else (None if imports else "unknown: no import manifest supplied")
+            ),
+            "registration": {
+                "handler": reg["handler"],
+                "origin": reg["origin"],
+                "classification": reg["classification"],
+                "status": reg["status"],
+                "declared_in": scope["declared_in"],
+                "reachable_from": scope["reachable_from"],
+            },
+            "exercised": {
+                "conformance_cells": cells.get(nid, []),
+                "hle_selftest_dispatch": nid in dispatched,
+                "psp_oracle_probes": oracle.get(reg["name"], []),
+            },
+        }
+        entry["exercised_stub"] = bool(
+            (entry["exercised"]["conformance_cells"] or entry["exercised"]["hle_selftest_dispatch"])
+            and reg["classification"] == "fake_success"
+        )
+        tier, why = evidence_tier(entry)
+        entry["evidence_tier"] = tier
+        entry["evidence_rationale"] = why
+        entries.append(entry)
+
+    return {
+        "schema": CHAIN_SCHEMA,
+        "source": manifest["source"],
+        "registrations": len(entries),
+        "summary": {
+            "by_tier": {t: sum(1 for e in entries if e["evidence_tier"] == t) for t in EVIDENCE_TIERS},
+            "nid_not_independently_derived": [
+                e["nid"] for e in entries if not e["nid_derivation"]["independently_derived"]
+            ],
+            "not_reachable_from_production": [
+                e["nid"] for e in entries if "production" not in e["registration"]["reachable_from"]
+            ],
+            "exercised_stubs": [
+                {"nid": e["nid"], "name": e["canonical_name"], "handler": e["registration"]["handler"]}
+                for e in entries if e["exercised_stub"]
+            ],
+        },
+        "entries": entries,
+    }
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=ROOT / "build" / "hle_manifest.json")
@@ -388,6 +710,22 @@ def main(argv: list[str]) -> int:
         default=None,
         help="refresh the committed classification baseline (review the diff for downgrades)",
     )
+    ap.add_argument(
+        "--evidence-chain",
+        nargs="?",
+        const=ROOT / "build" / "hle_evidence_chain.json",
+        type=Path,
+        default=None,
+        help="also emit the per-NID evidence chain (name -> NID -> registration -> "
+             "production reachability -> exercise -> tier)",
+    )
+    ap.add_argument(
+        "--imports",
+        type=Path,
+        default=None,
+        help="optional import manifest supplying the imported-NID link; retail "
+             "manifests are private inputs, so the link is unknown without it",
+    )
     args = ap.parse_args(argv)
     try:
         manifest = build_manifest()
@@ -396,6 +734,11 @@ def main(argv: list[str]) -> int:
         return 1
     dump_json(manifest, args.out)
     print(f"hle_manifest: {len(manifest['registrations'])} registrations -> {args.out}")
+    if args.evidence_chain is not None:
+        chain = build_evidence_chain(manifest, args.imports)
+        dump_json(chain, args.evidence_chain)
+        tiers = ", ".join(f"{k}={v}" for k, v in chain["summary"]["by_tier"].items())
+        print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")
     if args.write_baseline is not None:
         dump_json(manifest_to_baseline(manifest), args.write_baseline)
         print(f"hle_manifest: baseline -> {args.write_baseline}")
