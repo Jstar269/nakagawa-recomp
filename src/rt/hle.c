@@ -1419,10 +1419,18 @@ static uint32_t h_IoDevctl(CpuState *s) {
  *      is a host-process _exit. Thread-context ExitGame stays a thread sleep so the
  *      worker / launcher can be observed across subsequent yields. */
 static uint32_t h_ExitGame(CpuState *s) {
-    int code = (int)A0;
+    /* sceKernelExitGame takes no argument (PSPSDK psploadexec.h declares
+     * `void sceKernelExitGame(void)`; PPSSPP registers NID 0x05572a5f with the
+     * empty argument signature, and PSPAutotests tests/modules/loadexec-imports.S
+     * imports it as an export distinct from sceKernelExitGameWithStatus
+     * 0x2ac9954b, which is the one that does take a status). $a0 therefore holds
+     * whatever the caller last left in it and must never become the host process
+     * result -- a caller with a stale register would otherwise pick the runtime
+     * exit status. Guest termination is unconditionally a successful host exit. */
+    const int code = 0;
     int cur = sched_current_uid();
-    fprintf(stderr, "GAMELOG: Guest requested exit (sceKernelExitGame(%d)) uid=0x%x ra=0x%08x pc=0x%08x sp=0x%08x\n",
-            code, cur, s->r[31], s->pc, s->r[29]);
+    fprintf(stderr, "GAMELOG: Guest requested exit (sceKernelExitGame()) uid=0x%x ra=0x%08x pc=0x%08x sp=0x%08x\n",
+            cur, s->r[31], s->pc, s->r[29]);
     fprintf(stderr, "  regs: gp=%08x fp=%08x s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x s5=%08x s6=%08x s7=%08x\n",
             s->r[28], s->r[30], s->r[16], s->r[17], s->r[18], s->r[19], s->r[20], s->r[21], s->r[22], s->r[23]);
     fprintf(stderr, "  stack[%08x..%08x]:", s->r[29], s->r[29] + 0x3cu);
@@ -10032,6 +10040,14 @@ static void hle_register_bulk_memory_handlers(void) {
     sr_hle_register(0x1839852a, "sceKernelMemcpy", h_Memcpy);
 }
 
+/* Single definition called by both sr_hle_init() branches so the executable
+ * regression dispatches the exact production sceKernelExitGame registration.
+ * Terminating the host process is what stops the guest libc reentrancy guard
+ * from looping. */
+static void hle_register_exit_game_handler(void) {
+    sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -10055,6 +10071,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_regular_audio_handlers();
+    hle_register_exit_game_handler();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -10278,7 +10295,7 @@ void sr_hle_init(void) {
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
      * which silently killed every .PMD model lookup, e.g. the hangar aircraft). */
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_ok);
-    sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);   /* terminate the host process so the libc reentrancy guard can't loop */
+    hle_register_exit_game_handler();
     /* InterruptManager: record the VBLANK handler; the scheduler delivers it per frame. */
     sr_hle_register(0xd61e6961, "sceKernelReleaseSubIntrHandler", h_ok);
     sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_ok);
