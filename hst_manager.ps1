@@ -127,6 +127,14 @@ Param(
     [ValidateRange(1, 1000000)]
     [int]$FuncsPerChunk = 0,
 
+    # Parallel make jobs for build actions. 0 preserves the legacy single-job
+    # invocation; when set, BuildFast and BuildFull pass -j<N> to Make. There is
+    # no universal best value: it depends on core count and RAM, and the generated
+    # chunk compilers are the heavy consumers.
+    [Parameter(Mandatory=$false)]
+    [ValidateRange(0, 1024)]
+    [int]$Jobs = 0,
+
     # Opt-in public title configuration. The legacy HST path remains the default.
     [Parameter(Mandatory=$false)]
     [string]$TitleManifest = ""
@@ -142,6 +150,9 @@ $ErrorActionPreference = "Stop"
 # cleanup the way a mid-body `exit 1` would.
 $script:ManagerExitCode = 0
 $script:OriginalLocation = $null
+
+# -Jobs 0 (unset) must preserve the legacy single-job invocation exactly.
+$script:EffectiveJobs = if ($Jobs -gt 0) { $Jobs } else { 1 }
 
 $script:TitleManagerPlan = $null
 $script:TitleManagerMakeArgs = $null
@@ -1005,7 +1016,7 @@ try {
                 }
 
                 Write-Host "Running dependency/profile-aware incremental build..." -ForegroundColor Green
-                $args = $baseArgs + @("--no-print-directory", "-j1", "all")
+                $args = $baseArgs + @("--no-print-directory", "-j$($script:EffectiveJobs)", "all")
                 $proc = Start-ScopedMake -StartProcess @{
                     FilePath = $makeExe; ArgumentList = $args
                     PassThru = $true; NoNewWindow = $true; Wait = $true
@@ -1036,7 +1047,7 @@ try {
                     return $false
                 }
 
-                $args = $baseArgs + @("--no-print-directory", "-j1", "all")
+                $args = $baseArgs + @("--no-print-directory", "-j$($script:EffectiveJobs)", "all")
                 $outLog = "$LogDir/build_out_recomp.log"
                 $errLog = "$LogDir/build_err_recomp.log"
                 Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
