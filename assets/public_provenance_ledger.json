@@ -748,7 +748,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4277c7d9b3d0a6bedb1124a784be2d9a99db4f49235613f59974b2569e25176a"
+      "sha256": "5cbb06c087a5ceb7f2d7d911a9c73f1b0ea7f38475149d3c98a510262dd514a2"
     },
     {
       "path": "docs/ISSUE196_DIRECT_XB.md",
@@ -5308,7 +5308,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "67ed6deae051e7f531378c641821eb8a70a5491b466d36a1285c47e81836faeb"
+      "sha256": "66b404b4ca5df0daf304a687c7dc0e116bdd5d8a1b8534e785864caad9558d6c"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -6427,7 +6427,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b9765ce6610214789ea77ca73aed9ee4bfd6e2c49ec2309d714a334c2db3371"
+      "sha256": "580ff4fb38dd5f4c0401633668eb3b6b509d05f9bf78892f6699cb5d19ab39ee"
     },
     {
       "path": "tools/test_hle_umd_wakeup.py",

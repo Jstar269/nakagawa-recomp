@@ -106,6 +106,32 @@ Without `--imports` the imported link records
 `"unknown: no import manifest supplied"`. It is never reported as "this NID is
 not imported" — an absent private input is not a negative result.
 
+### Triage
+
+The chain leaves a large `STATICALLY_SUPPORTED` population, and a flat list of a
+few hundred NIDs is not actionable. `--triage-top N` (default 30) ranks the
+registrations that carry **no** executable evidence:
+
+```bash
+python tools/hle_manifest.py --evidence-chain build/hle_evidence_chain.json --triage-top 20
+```
+
+Every score component is emitted alongside the score, so a ranking can be argued
+with rather than merely accepted: module family size, how many public test files
+mention the name or NID (saturating at three, so one chatty API cannot dominate),
+and whether the registration is an unexercised generic stub. A stub nothing
+exercises outranks a dedicated handler nothing exercises, because it silently
+reports success.
+
+A public test *mentioning* a NID is a reference, not a test of the API. It ranks
+attention and never promotes a tier; the chain's `exercised` links are what carry
+coverage, and they are computed separately.
+
+This reincorporates the census concept from PR #76 into already-tracked tooling,
+**minus** that proposal's curated per-module weight table. Those weights are
+unsourced editorial judgement, and an unattested judgement is exactly what a
+provenance-blocked tool should not carry into the tree.
+
 ## Auditing a private EBOOT locally
 
 Reports for a real title stay on your machine: write them under `build/`

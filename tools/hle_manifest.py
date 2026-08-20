@@ -610,7 +610,100 @@ def load_imports(path: Path | None) -> dict[int, str]:
     return found
 
 
-def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None = None) -> dict:
+
+# ---------------------------------------------------------------------------
+# Triage
+# ---------------------------------------------------------------------------
+# Reincorporated from the census concept in PR #76, minus its curated
+# per-module weight table. That table is unsourced editorial judgement, and an
+# unattested judgement is exactly what a provenance-blocked tool should not
+# smuggle in. What survives is the part the chain can already measure: which
+# registrations have no executable coverage, how large their module family is,
+# and which public tests already name them.
+
+#: `sceKernelFoo` / `__sceSasBar` -> the owning PSP module bucket.
+_MODULE_RE = re.compile(r"^(?:__)?(sce[A-Z][a-z0-9]*)")
+
+#: A NID or registered name mentioned by a public test.
+PUBLIC_TEST_GLOBS = ("tools/test_*.py", "src/rt/*_selftest.c")
+
+
+def derive_module(name: str) -> str:
+    """Best-effort PSP module bucket. Grouping only -- never a support claim."""
+    m = _MODULE_RE.match(name)
+    if m:
+        return m.group(1)
+    if "newlib" in name:
+        return "newlib"
+    return "other"
+
+
+def public_test_references(names: set[str], nids: set[str]) -> dict[str, list[str]]:
+    """Public test files that mention each registered name or NID literal.
+
+    A mention is a reference, not a test of the API. It is used to rank
+    attention, never to claim coverage -- the chain's exercise links are what
+    carry that, and they are computed separately.
+    """
+    refs: dict[str, list[str]] = {}
+    for pattern in PUBLIC_TEST_GLOBS:
+        for path in sorted(ROOT.glob(pattern)):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            for key in names | nids:
+                if key in text:
+                    refs.setdefault(key, []).append(rel)
+    return refs
+
+
+def triage_candidates(entries: list[dict], top: int) -> list[dict]:
+    """Rank registrations that carry no executable evidence.
+
+    Every component is derived from something already in the chain, and each
+    one is emitted alongside the score, so a ranking can be argued with rather
+    than merely accepted.
+    """
+    module_counts: dict[str, int] = {}
+    for e in entries:
+        module_counts[e["module"]] = module_counts.get(e["module"], 0) + 1
+
+    ranked = []
+    for e in entries:
+        if e["evidence_tier"] not in ("STATICALLY_SUPPORTED", "NOT_EVIDENCE"):
+            continue
+        family = module_counts.get(e["module"], 0)
+        family_norm = min(family / 20.0, 1.0)
+        mentions = min(len(e["public_test_references"]), 3)
+        # A stub that nothing exercises is worth more attention than a
+        # dedicated handler that nothing exercises: it silently reports success.
+        stub = 1.0 if e["registration"]["classification"] == "fake_success" else 0.0
+        score = family_norm + 0.5 * mentions + stub
+        ranked.append({
+            "nid": e["nid"],
+            "name": e["canonical_name"],
+            "handler": e["registration"]["handler"],
+            "module": e["module"],
+            "evidence_tier": e["evidence_tier"],
+            "score": round(score, 3),
+            "score_components": {
+                "module_family_size": family,
+                "family_norm": round(family_norm, 3),
+                "public_test_mentions": mentions,
+                "unexercised_stub": stub,
+            },
+            "public_test_references": e["public_test_references"],
+        })
+    ranked.sort(key=lambda t: (-t["score"], t["nid"]))
+    for i, t in enumerate(ranked[:top], start=1):
+        t["rank"] = i
+    return ranked[:top]
+
+
+def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None = None,
+                         top: int = 30) -> dict:
     """Join every registration to the evidence that does, or does not, back it."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import nid_name_proof
@@ -625,6 +718,10 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
     except json.JSONDecodeError:
         oracle = {}
     imports = load_imports(imports_path)
+    test_refs = public_test_references(
+        {r["name"] for r in manifest["registrations"]},
+        {r["nid"] for r in manifest["registrations"]},
+    )
     verified_names = {
         r["name"] for r in manifest["registrations"]
         if nid_name_proof.nid_of(r["name"]) == int(r["nid"], 16)
@@ -638,6 +735,10 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
         entry = {
             "nid": reg["nid"],
             "canonical_name": reg["name"],
+            "module": derive_module(reg["name"]),
+            "public_test_references": sorted(
+                set(test_refs.get(reg["name"], [])) | set(test_refs.get(reg["nid"], []))
+            ),
             "nid_derivation": {
                 "independently_derived": derived == nid,
                 "method": "nid == sha1(name)[0:4] little-endian",
@@ -687,6 +788,10 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
             "nid_not_independently_derived": [
                 e["nid"] for e in entries if not e["nid_derivation"]["independently_derived"]
             ],
+            "by_module": {
+                m: sum(1 for e in entries if e["module"] == m)
+                for m in sorted({e["module"] for e in entries})
+            },
             "not_reachable_from_production": [
                 e["nid"] for e in entries if "production" not in e["registration"]["reachable_from"]
             ],
@@ -695,6 +800,7 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
                 for e in entries if e["exercised_stub"]
             ],
         },
+        "triage": triage_candidates(entries, top),
         "entries": entries,
     }
 
@@ -720,6 +826,12 @@ def main(argv: list[str]) -> int:
              "production reachability -> exercise -> tier)",
     )
     ap.add_argument(
+        "--triage-top",
+        type=int,
+        default=30,
+        help="how many unexercised registrations to rank in the chain triage list",
+    )
+    ap.add_argument(
         "--imports",
         type=Path,
         default=None,
@@ -735,7 +847,7 @@ def main(argv: list[str]) -> int:
     dump_json(manifest, args.out)
     print(f"hle_manifest: {len(manifest['registrations'])} registrations -> {args.out}")
     if args.evidence_chain is not None:
-        chain = build_evidence_chain(manifest, args.imports)
+        chain = build_evidence_chain(manifest, args.imports, args.triage_top)
         dump_json(chain, args.evidence_chain)
         tiers = ", ".join(f"{k}={v}" for k, v in chain["summary"]["by_tier"].items())
         print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")

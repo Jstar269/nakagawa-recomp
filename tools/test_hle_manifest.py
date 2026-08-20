@@ -649,5 +649,116 @@ class LiveEvidenceChainTests(unittest.TestCase):
                 self.assertEqual(entry["exercised"]["psp_oracle_probes"], probes)
 
 
+
+class ModuleBucketTests(unittest.TestCase):
+    def test_sce_prefix_becomes_the_module_bucket(self) -> None:
+        self.assertEqual(hle_manifest.derive_module("sceKernelWaitSema"), "sceKernel")
+        self.assertEqual(hle_manifest.derive_module("sceAudioChReserve"), "sceAudio")
+
+    def test_a_reserved_prefix_does_not_hide_the_module(self) -> None:
+        self.assertEqual(hle_manifest.derive_module("__sceSasCore"), "sceSas")
+
+    def test_newlib_and_unknown_shapes_are_named_not_guessed(self) -> None:
+        self.assertEqual(hle_manifest.derive_module("newlibModuleStreamWrite"), "newlib")
+        self.assertEqual(hle_manifest.derive_module("SomethingElse"), "other")
+
+
+class TriageTests(unittest.TestCase):
+    @staticmethod
+    def _entry(nid, name, tier="STATICALLY_SUPPORTED", classification="dedicated",
+               module="sceKernel", refs=()):
+        return {
+            "nid": nid,
+            "canonical_name": name,
+            "module": module,
+            "evidence_tier": tier,
+            "public_test_references": list(refs),
+            "registration": {"handler": "h_X", "classification": classification},
+        }
+
+    def test_registrations_with_executable_evidence_are_not_ranked(self) -> None:
+        entries = [
+            self._entry("0x1", "a", tier="HOST_TESTED"),
+            self._entry("0x2", "b", tier="HARDWARE_MEASURED"),
+            self._entry("0x3", "c"),
+        ]
+        ranked = hle_manifest.triage_candidates(entries, 10)
+        self.assertEqual([t["nid"] for t in ranked], ["0x3"],
+                         "triage exists to rank what has no evidence yet")
+
+    def test_an_unexercised_stub_outranks_an_unexercised_dedicated_handler(self) -> None:
+        entries = [
+            self._entry("0x1", "dedicated", classification="dedicated"),
+            self._entry("0x2", "stub", tier="NOT_EVIDENCE", classification="fake_success"),
+        ]
+        ranked = hle_manifest.triage_candidates(entries, 10)
+        self.assertEqual(
+            ranked[0]["nid"], "0x2",
+            "a stub nothing exercises silently reports success, which is worse than "
+            "a dedicated handler nothing exercises",
+        )
+
+    def test_ranking_is_deterministic_for_equal_scores(self) -> None:
+        entries = [self._entry("0x2", "b"), self._entry("0x1", "a")]
+        ranked = hle_manifest.triage_candidates(entries, 10)
+        self.assertEqual([t["nid"] for t in ranked], ["0x1", "0x2"])
+
+    def test_every_score_component_is_published_with_the_score(self) -> None:
+        ranked = hle_manifest.triage_candidates([self._entry("0x1", "a", refs=["t.py"])], 10)
+        components = ranked[0]["score_components"]
+        self.assertEqual(
+            set(components),
+            {"module_family_size", "family_norm", "public_test_mentions", "unexercised_stub"},
+            "a ranking that cannot be argued with is editorial judgement in disguise",
+        )
+        self.assertEqual(ranked[0]["rank"], 1)
+
+    def test_top_bounds_the_ranked_list(self) -> None:
+        entries = [self._entry(f"0x{i}", f"n{i}") for i in range(1, 6)]
+        self.assertEqual(len(hle_manifest.triage_candidates(entries, 2)), 2)
+
+    def test_test_mentions_saturate_so_one_api_cannot_dominate(self) -> None:
+        many = hle_manifest.triage_candidates(
+            [self._entry("0x1", "a", refs=[f"t{i}.py" for i in range(10)])], 10
+        )
+        capped = hle_manifest.triage_candidates(
+            [self._entry("0x1", "a", refs=["t0.py", "t1.py", "t2.py"])], 10
+        )
+        self.assertEqual(many[0]["score"], capped[0]["score"])
+
+
+class LiveTriageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.chain = hle_manifest.build_evidence_chain(top=5)
+
+    def test_triage_is_bounded_and_ranked(self) -> None:
+        triage = self.chain["triage"]
+        self.assertLessEqual(len(triage), 5)
+        self.assertEqual([t["rank"] for t in triage], list(range(1, len(triage) + 1)))
+        self.assertEqual(sorted(triage, key=lambda t: -t["score"]), triage)
+
+    def test_nothing_already_exercised_is_ranked(self) -> None:
+        for candidate in self.chain["triage"]:
+            self.assertIn(candidate["evidence_tier"], ("STATICALLY_SUPPORTED", "NOT_EVIDENCE"))
+
+    def test_module_counts_cover_every_registration(self) -> None:
+        self.assertEqual(
+            sum(self.chain["summary"]["by_module"].values()), len(self.chain["entries"])
+        )
+
+    def test_a_public_test_mention_is_not_reported_as_coverage(self) -> None:
+        mentioned = [
+            e for e in self.chain["entries"]
+            if e["public_test_references"] and e["evidence_tier"] == "STATICALLY_SUPPORTED"
+        ]
+        self.assertTrue(
+            mentioned,
+            "a test file naming a NID must not by itself promote it out of "
+            "STATICALLY_SUPPORTED; if nothing is left in that state the mention "
+            "signal has silently become a coverage claim",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
