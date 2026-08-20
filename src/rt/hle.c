@@ -7980,6 +7980,15 @@ typedef struct {
 static GeCallback s_ge_cb[16];
 static uint32_t s_ge_list_next = 0;
 
+/* Every nested guest call this runtime makes -- GE callbacks here and the MPEG
+ * ring-refill callback in mpeg.c -- runs on this single hard-coded guest stack
+ * address rather than on the calling thread's stack.  Naming it does not change
+ * that; it makes the shared-stack property greppable and gives the executable
+ * regression one place to read the value from.  Whether the PSP shares a stack
+ * across nested guest calls is NOT established: see the callback-ABI regression
+ * in hle_thread_selftest.c, which measures what this runtime does today. */
+#define SR_CALL_GUEST_STACK 0x09df8000u
+
 static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST: fn=0x0 (null, skipping)\n"); return; }
     if (ge_log_on())
@@ -7993,7 +8002,7 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = 0x09df8000u;
+    s->r[29] = SR_CALL_GUEST_STACK;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8021,7 +8030,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = 0x09df8000u;
+    s->r[29] = SR_CALL_GUEST_STACK;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8034,6 +8043,23 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     return rv;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Reach the production nested-guest-call marshalling from the executable
+ * selftest.  ge_call_guest_rv() is static and its callers all need real GE or
+ * MPEG state, so without this hook the only way to characterise the callback
+ * ABI would be to re-implement it in the test -- which would measure the copy,
+ * not the contract.  This adds no production behaviour: it is a call-through,
+ * compiled only into the test executable. */
+uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
+                                uint32_t a0, uint32_t a1, uint32_t a2) {
+    return ge_call_guest_rv(s, fn, a0, a1, a2);
+}
+/* The nested-call scratch stack is a single hard-coded guest address shared by
+ * every such call.  Expose it so the regression states the measured value once
+ * instead of duplicating the literal. */
+uint32_t sr_hle_test_call_guest_stack(void) { return SR_CALL_GUEST_STACK; }
+#endif /* SR_HLE_THREAD_SELFTEST */
 
 /* sceDisplaySetMode: on the real PSP this triggers the display driver to
  * initialise the vblank device (written to MEM[0x34B328]) and the render

@@ -382,9 +382,13 @@ static uint32_t s_oracle_callback_arg2;
  * sub-interrupt handler entry that the #88 conformance harness registered; in
  * that case it has already run its probe, in real interrupt context. */
 static int ic_dispatch_intercept(uint32_t target);
+/* Synthetic guest bodies for the nested-guest-call ABI specimen; defined
+ * further down, next to the regression that reads what they recorded. */
+static int cbabi_dispatch(CpuState *cpu, uint32_t target);
 
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
+    if (cbabi_dispatch(cpu, target)) return;
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
@@ -4106,6 +4110,253 @@ static void test_ctrl_read_buffer_contract(void) {
     ctrl_drain(&cpu);
 }
 
+/* ---------------------------------------------------------------------------
+ * Nested guest-call (callback) ABI specimen.
+ *
+ * WHAT THIS IS.  Every nested guest call this runtime makes goes through the
+ * same marshalling policy: ge_call_guest() and ge_call_guest_rv() in hle.c, and
+ * call_guest3() in mpeg.c.  Before this regression existed nothing recorded what
+ * that policy actually preserves, so any argument about the MPEG callback stack
+ * was an argument about unmeasured behaviour.  These cases enter the production
+ * marshalling through sr_hle_test_call_guest() -- a call-through to
+ * ge_call_guest_rv(), not a copy of it -- and pin every observable.
+ *
+ * WHAT IT IS NOT.  This is HOST_TESTED: it states what Nakagawa does today.  It
+ * is NOT a PSP contract and must never be read as one.  Public PSP ABI/source
+ * material is consistent with callbacks using an ordinary guest calling-thread
+ * stack under the normal MIPS o32 ABI (where the callee preserves $s0-$s7, $sp
+ * and $gp and may freely clobber the argument, result and temporary registers),
+ * but the exact PSP callback-stack contract relevant to this runtime is
+ * unmeasured here and remains CORROBORATIVE_ONLY / NOT_ESTABLISHED.
+ * This runtime instead zeroes the whole CpuState, hands the callee one fixed
+ * scratch stack, and restores the caller's entire state afterwards.  Those are
+ * different models.  Which one the PSP requires is NOT ESTABLISHED and cannot be
+ * settled from source; it needs a hardware probe.  Until then this regression's
+ * job is to make the current model impossible to change by accident.
+ *
+ * The guest bodies below are synthetic and source-owned.  Only the body is
+ * synthetic: the state marshalling under test is production code.
+ * --------------------------------------------------------------------------- */
+extern uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
+                                       uint32_t a0, uint32_t a1, uint32_t a2);
+extern uint32_t sr_hle_test_call_guest_stack(void);
+
+#define CBABI_ENTRY        0x0800ab00u  /* records its incoming state, then mutates everything */
+#define CBABI_NESTED_ENTRY 0x0800ab40u  /* records, makes one nested call, records again */
+#define CBABI_STORE_ENTRY  0x0800ab80u  /* writes one word below $sp and returns */
+#define CBABI_NEG_ENTRY    0x0800abc0u  /* returns a value with the sign bit set */
+#define CBABI_RETURN_VALUE  0xfeedbac1u
+#define CBABI_NESTED_RETURN 0x0000002au
+#define CBABI_STORE_RETURN  0x00000007u
+#define CBABI_NEG_RETURN    0xffffffffu
+/* A word the outer body parks below its own stack pointer, standing in for any
+ * guest local a translated function spills to the guest stack. */
+#define CBABI_LOCAL_OFFSET 16u
+#define CBABI_OUTER_LOCAL  0x0a7e5710u
+#define CBABI_INNER_LOCAL  0xdeadbeefu
+
+static CpuState s_cbabi_seen[4];     /* incoming state, per invocation */
+static unsigned s_cbabi_calls;
+static int s_cbabi_depth;
+static int s_cbabi_max_depth;
+static uint32_t s_cbabi_outer_sp;
+static uint32_t s_cbabi_inner_sp;
+static uint32_t s_cbabi_outer_local_after_nested;
+
+/* Mutate every architectural class a real guest body could touch, so anything
+ * the caller-side restore misses shows up as a difference after the call. */
+static void cbabi_scribble(CpuState *cpu, uint32_t tag) {
+    for (int i = 1; i < 32; i++) cpu->r[i] = tag + (uint32_t)i;
+    cpu->hi = tag ^ 0x11111111u;
+    cpu->lo = tag ^ 0x22222222u;
+    for (int i = 0; i < 32; i++) cpu->fi[i] = tag + 0x100u + (uint32_t)i;
+    for (int i = 0; i < 128; i++) cpu->vi[i] = tag + 0x200u + (uint32_t)i;
+    for (int i = 0; i < 16; i++) cpu->vfpuCtrl[i] = tag + 0x300u + (uint32_t)i;
+    cpu->fcr31 = tag ^ 0x33333333u;
+    cpu->fpcond = tag & 1u;
+    cpu->status = tag ^ 0x44444444u;
+}
+
+/* Called from the selftest's dispatch() for the synthetic guest entries above.
+ * Returns non-zero when it owned the target. */
+static int cbabi_dispatch(CpuState *cpu, uint32_t target) {
+    if (target != CBABI_ENTRY && target != CBABI_NESTED_ENTRY &&
+        target != CBABI_STORE_ENTRY && target != CBABI_NEG_ENTRY)
+        return 0;
+
+    if (s_cbabi_calls < sizeof(s_cbabi_seen) / sizeof(s_cbabi_seen[0]))
+        memcpy(&s_cbabi_seen[s_cbabi_calls], cpu, sizeof(CpuState));
+    s_cbabi_calls++;
+    if (++s_cbabi_depth > s_cbabi_max_depth) s_cbabi_max_depth = s_cbabi_depth;
+
+    if (target == CBABI_STORE_ENTRY) {
+        s_cbabi_inner_sp = cpu->r[29];
+        /* Exactly what a translated body does with a guest local: store below $sp. */
+        MEM_W32(cpu->r[29] - CBABI_LOCAL_OFFSET, CBABI_INNER_LOCAL);
+        cbabi_scribble(cpu, 0x77000000u);
+        cpu->r[2] = CBABI_STORE_RETURN;
+    } else if (target == CBABI_NEG_ENTRY) {
+        cpu->r[2] = CBABI_NEG_RETURN;
+    } else if (target == CBABI_NESTED_ENTRY) {
+        s_cbabi_outer_sp = cpu->r[29];
+        MEM_W32(cpu->r[29] - CBABI_LOCAL_OFFSET, CBABI_OUTER_LOCAL);
+        /* Re-enter the production marshalling from inside a guest body: the
+         * nested-callback shape, driven through the same entry point. */
+        uint32_t inner = sr_hle_test_call_guest(cpu, CBABI_STORE_ENTRY, 1u, 2u, 3u);
+        s_cbabi_outer_local_after_nested = MEM_R32(cpu->r[29] - CBABI_LOCAL_OFFSET);
+        cpu->r[2] = inner == CBABI_STORE_RETURN ? CBABI_NESTED_RETURN : 0xbadbad00u;
+    } else {
+        cbabi_scribble(cpu, 0x55000000u);
+        cpu->r[2] = CBABI_RETURN_VALUE;
+    }
+
+    s_cbabi_depth--;
+    return 1;
+}
+
+static void cbabi_reset(void) {
+    memset(s_cbabi_seen, 0, sizeof(s_cbabi_seen));
+    s_cbabi_calls = 0;
+    s_cbabi_depth = 0;
+    s_cbabi_max_depth = 0;
+    s_cbabi_outer_sp = 0;
+    s_cbabi_inner_sp = 0;
+    s_cbabi_outer_local_after_nested = 0;
+}
+
+/* Every GPR except the ones the marshalling deliberately populates: the three
+ * argument registers, $gp and $sp.  Those four are asserted individually. */
+static int cbabi_other_gprs_zero(const CpuState *seen) {
+    for (int i = 0; i < 32; i++) {
+        if (i == 4 || i == 5 || i == 6 || i == 28 || i == 29) continue;
+        if (seen->r[i] != 0u) return 0;
+    }
+    return 1;
+}
+
+static void test_nested_guest_call_abi(void) {
+    CpuState caller, before;
+    const uint32_t scratch = sr_hle_test_call_guest_stack();
+    const uint32_t local_addr = scratch - CBABI_LOCAL_OFFSET;
+
+    reset_fixture();
+    sr_hle_init();
+    cbabi_reset();
+
+    /* A caller state with every class set to something distinctive, so "restored"
+     * is a real claim rather than "was zero and stayed zero". */
+    memset(&caller, 0, sizeof(caller));
+    cbabi_scribble(&caller, 0x33000000u);
+    caller.r[0] = 0u;                     /* $zero is architecturally fixed */
+    caller.r[28] = 0x08800000u;           /* $gp */
+    caller.r[29] = 0x09c00000u;           /* the caller's own stack, distinct from the scratch one */
+    caller.r[31] = 0x08123456u;           /* $ra */
+    caller.pc = 0x08001000u;
+    memcpy(&before, &caller, sizeof(caller));
+
+    uint32_t rv = sr_hle_test_call_guest(&caller, CBABI_ENTRY,
+                                         0xa0a0a0a0u, 0xb1b1b1b1u, 0xc2c2c2c2u);
+
+    expect(s_cbabi_calls == 1u, "the synthetic guest body was entered exactly once");
+    expect(rv == CBABI_RETURN_VALUE, "the nested call returns the callee's $v0 to its HLE caller");
+
+    /* ---- what the callee is handed ---------------------------------------- */
+    {
+        const CpuState *seen = &s_cbabi_seen[0];
+        expect(seen->r[4] == 0xa0a0a0a0u && seen->r[5] == 0xb1b1b1b1u &&
+                   seen->r[6] == 0xc2c2c2c2u,
+               "the three call arguments arrive in $a0/$a1/$a2");
+        expect(seen->r[28] == before.r[28], "$gp is inherited from the calling state");
+        expect(seen->r[29] == scratch,
+               "the callee runs on the fixed scratch stack, not the caller's $sp");
+        expect(seen->r[29] != before.r[29],
+               "the scratch stack is genuinely a different stack from the caller's");
+        expect(seen->r[31] == 0u, "$ra is zero: the callee has no guest return address to jump to");
+        expect(seen->pc == CBABI_ENTRY, "$pc names the guest entry being dispatched");
+        expect(cbabi_other_gprs_zero(seen),
+               "every GPR the call does not populate is zeroed: no caller state leaks in");
+        expect(seen->hi == 0u && seen->lo == 0u, "HI/LO are zeroed for the callee");
+        expect(seen->fcr31 == 0u && seen->fpcond == 0u && seen->status == 0u,
+               "FPU control, FP condition and COP0 status are zeroed for the callee");
+        {
+            int fpu_clear = 1, vfpu_clear = 1;
+            for (int i = 0; i < 32; i++) if (seen->fi[i] != 0u) fpu_clear = 0;
+            for (int i = 0; i < 128; i++) if (seen->vi[i] != 0u) vfpu_clear = 0;
+            expect(fpu_clear, "all 32 FPU registers are zeroed for the callee");
+            expect(vfpu_clear, "all 128 VFPU registers are zeroed for the callee");
+        }
+        expect(seen->vfpuCtrl[0] == 0xe4u && seen->vfpuCtrl[1] == 0xe4u,
+               "the two VFPU prefix control words are seeded to the identity value 0xe4");
+        {
+            int rest_clear = 1;
+            for (int i = 2; i < 16; i++) if (seen->vfpuCtrl[i] != 0u) rest_clear = 0;
+            expect(rest_clear, "the remaining VFPU control words are zeroed for the callee");
+        }
+    }
+
+    /* ---- what the caller gets back ---------------------------------------- *
+     * The callee scribbled over every architectural class before returning, so a
+     * byte-identical CpuState here is a real restoration claim.  Note what that
+     * implies, and what is easy to get wrong: $v0 is restored too, so a callee's
+     * result reaches the HLE caller ONLY through the C return value, never
+     * through the guest register file. */
+    expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
+           "the entire caller CpuState is restored byte-for-byte across the call");
+    expect(caller.r[2] == before.r[2],
+           "$v0 is restored as well: the callee's result is not left in the caller's registers");
+
+    /* ---- guest memory is NOT part of that restoration ---------------------- */
+    cbabi_reset();
+    MEM_W32(local_addr, 0u);
+    (void)sr_hle_test_call_guest(&caller, CBABI_STORE_ENTRY, 0u, 0u, 0u);
+    expect(MEM_R32(local_addr) == CBABI_INNER_LOCAL,
+           "guest memory written by the callee persists after the call returns");
+
+    /* ---- repeated calls do not leak state between invocations -------------- */
+    cbabi_reset();
+    (void)sr_hle_test_call_guest(&caller, CBABI_ENTRY, 1u, 0u, 0u);
+    (void)sr_hle_test_call_guest(&caller, CBABI_ENTRY, 2u, 0u, 0u);
+    expect(s_cbabi_calls == 2u, "the guest body is entered once per call");
+    expect(s_cbabi_seen[1].r[4] == 2u && cbabi_other_gprs_zero(&s_cbabi_seen[1]),
+           "the second invocation starts from a freshly zeroed state, not the first one's");
+
+    /* ---- a sign-bit result survives unchanged ------------------------------ *
+     * The marshalling returns uint32_t, so a guest error code must arrive with
+     * its top bit intact rather than being clamped or reinterpreted. */
+    cbabi_reset();
+    expect(sr_hle_test_call_guest(&caller, CBABI_NEG_ENTRY, 0u, 0u, 0u) == CBABI_NEG_RETURN,
+           "a callback result with the sign bit set is returned verbatim");
+
+    /* ---- a null entry is refused without dispatching ----------------------- */
+    cbabi_reset();
+    expect(sr_hle_test_call_guest(&caller, 0u, 1u, 2u, 3u) == 0u,
+           "a null guest entry returns zero");
+    expect(s_cbabi_calls == 0u, "a null guest entry dispatches nothing");
+
+    /* ---- nested call: the measured shared-stack hazard --------------------- *
+     * This is the concrete mechanism behind the MPEG scratch-stack question.  The
+     * inner call is handed the SAME fixed stack address as the outer one, so a
+     * word the outer body parked below its own $sp is overwritten by the inner
+     * body before the outer body resumes.  Recorded as a measurement of THIS
+     * runtime, not as a claim about the PSP: whether hardware shares a stack
+     * across nested guest calls is NOT ESTABLISHED, and no production behaviour
+     * is changed on the strength of this test. */
+    cbabi_reset();
+    memcpy(&caller, &before, sizeof(caller));
+    uint32_t nested_rv = sr_hle_test_call_guest(&caller, CBABI_NESTED_ENTRY, 0u, 0u, 0u);
+    expect(nested_rv == CBABI_NESTED_RETURN, "a callback may itself perform a nested guest call");
+    expect(s_cbabi_calls == 2u && s_cbabi_max_depth == 2,
+           "the nested call really re-entered the marshalling two levels deep");
+    expect(s_cbabi_outer_sp == s_cbabi_inner_sp && s_cbabi_outer_sp == scratch,
+           "outer and inner nested calls are handed the identical scratch stack address");
+    expect(s_cbabi_outer_local_after_nested == CBABI_INNER_LOCAL,
+           "MEASURED HAZARD: the inner call overwrites the outer body's guest stack local");
+    expect(s_cbabi_outer_local_after_nested != CBABI_OUTER_LOCAL,
+           "MEASURED HAZARD: the outer body cannot rely on its guest stack across a nested call");
+    expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
+           "the outermost caller state is still restored despite the nested re-entry");
+}
+
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
     sr_hle_init();
@@ -6657,6 +6908,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
     test_ctrl_read_buffer_contract();
+    test_nested_guest_call_abi();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();
