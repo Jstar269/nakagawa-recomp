@@ -284,10 +284,30 @@ Clock ownership:
   `sched_block_on_timeout` plumbing. No wait object or interrupt/precedence semantics are duplicated
   in the clock layer.
 - **Display domain** — VCOUNT/HCOUNT/VBLANK phase are a separate display timeline derived from
-  `s_vtime_us` through the rational 60000/1001 Hz model (286 scanlines/frame) plus delivered VBLANK
-  source events. Display reads never deliver vblanks or move the counters; VCOUNT advances only in
-  `sr_vblank_tick` when a vblank is delivered. Controller sample timestamps and audio pacing use the
-  same vblank counter, matching the PSP's vblank-unit pad timestamps.
+  `s_vtime_us` through the rational 60000/1001 Hz model (286 scanlines/frame). Display reads never
+  deliver vblanks or move the counters. Guest-visible VCOUNT is modelled as an interrupt-gated
+  display-source counter. It advances only when the scheduler observes and latches an elapsed source
+  period, so it is not a strictly free-running register and is not a count of serviced episodes:
+  - **CPU interrupts enabled.** The scheduler source latch
+    (`scheduler_latch_due_events` -> `sr_display_advance_vcount`) advances VCOUNT by the number of
+    elapsed display periods even when VBLANK *service* is starved, while the serviced episode
+    (`deliver_vblank` -> `sr_vblank_tick`) stays coalesced to one and performs
+    framebuffer/interrupt/callback work without re-incrementing VCOUNT.
+  - **CPU interrupts masked** (`sceKernelCpuSuspendIntr`). VCOUNT stops, and VBLANK delivery stops
+    with it; elapsed periods are consumed into the single coalesced pending bit rather than replayed.
+    Resume delivers exactly one episode and applies no catch-up increment; VCOUNT counts again from
+    the next period that elapses with interrupts enabled.
+
+  The masked-window behavior is `HARDWARE_MEASURED`: qualified PSP runs found system time advancing
+  while VCOUNT and VBLANK handler calls remained frozen, followed by one coalesced delivery on
+  resume. The enabled/service-starved multi-period behavior is `CORROBORATIVE_ONLY` until an
+  acceptance-eligible PSP probe artifact is retained; the checked-in production-path regression is
+  `HOST_TESTED`. The host model therefore does not claim that its exact 60000/1001 rate is itself a
+  PSP hardware measurement. The accepted masked-window record did not sample VCOUNT immediately
+  after `CpuResumeIntr`, so the runtime conservatively applies no catch-up increment.
+
+  Controller sample timestamps and audio pacing use the same vblank counter,
+  matching the PSP's vblank-unit pad timestamps.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
   tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
   timezone. The retained, settable system-profile owner for timezone/daylight does not exist yet:
