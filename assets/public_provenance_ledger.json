@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "dc9063427de7f25d32dff4be67766cbe9c3d5fbf42a217cd2228dba8d8a02590"
+      "sha256": "ac778627594710907e4c8689a60f000238208b963821f24100237c64c1d45935"
     },
     {
       "path": "NOTICE.md",
@@ -5017,7 +5017,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "25b64967b672464e74ff0edb856dceae085096422f45787b2bff18a929d604d3"
+      "sha256": "38b68b2956a465e870597a17a675a9e40a9ee8589f7bdd5b77d15cadb7864162"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -5995,7 +5995,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a477e8a795e4ece94b81c4724351d0f55dd01518e788da2aa3838c9b8ec03bc"
+      "sha256": "e7c17a770407ab2ff2f3dc4ff32458c7e82242a71247b669e27a112f2b6a09fc"
     },
     {
       "path": "tools/test_asset_index_c.py",

@@ -295,6 +295,108 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn(str(out_c), proc.stdout)
         self.assertFalse(any(self.root.glob("uid=*")))
 
+    # --- deterministic byte-budget chunking ------------------------------
+
+    @staticmethod
+    def _run_codegen(elf: Path, out_c: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(elf), str(out_c),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", *extra,
+            ],
+            cwd=ROOT, env=None, capture_output=True, text=True, check=False,
+        )
+
+    @staticmethod
+    def _chunk_names(root: Path, stem: str) -> list[list[str]]:
+        import re
+
+        chunks = sorted(root.glob(f"{stem}_[0-9]*.c"))
+        names = []
+        for chunk in chunks:
+            names.append(re.findall(r"void (f_[0-9a-f]{8})", chunk.read_text(encoding="ascii")))
+        return names
+
+    def test_byte_budget_splits_contiguously_in_order_without_duplicates(self) -> None:
+        # Six uniform reachable 8-byte functions. The byte budget must close a chunk
+        # only on a function boundary, preserve emission order, and never move or
+        # duplicate a function across chunks.
+        words: list[int] = []
+        for i in range(6):
+            words.append(0x0C000000 | (((0x1000 + (i + 1) * 8) >> 2) & 0x3FFFFFF) if i < 5 else 0x03E00008)
+            words.append(0x00000000)
+        elf = self.root / "budget.elf"
+        write_elf(elf, words=words)
+
+        legacy = self.root / "budget_legacy.c"
+        proc = self._run_codegen(elf, legacy)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        legacy_text = (self.root / "budget_legacy_0.c").read_text(encoding="ascii")
+        per_func = (len(legacy_text) - legacy_text.index("void f_")) // 6
+        self.assertEqual(
+            self._chunk_names(self.root, "budget_legacy"),
+            [[f"f_{0x1000 + i * 8:08x}" for i in range(6)]],
+        )
+
+        # A budget of three function emissions plus a little slack must yield 2
+        # contiguous chunks of exactly 3 functions each.
+        budget = per_func * 3 + 64
+        split = self.root / "budget_split.c"
+        proc = self._run_codegen(elf, split, f"--target-chunk-bytes={budget}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(
+            self._chunk_names(self.root, "budget_split"),
+            [
+                [f"f_{0x1000 + i * 8:08x}" for i in range(3)],
+                [f"f_{0x1000 + (i + 3) * 8:08x}" for i in range(3)],
+            ],
+        )
+
+    def test_byte_budget_still_respects_the_function_cap(self) -> None:
+        # A huge budget must not turn the cap off: the legacy count bound still
+        # applies, so 6 functions with a cap of 2 become 3 chunks of 2.
+        words: list[int] = []
+        for i in range(6):
+            words.append(0x0C000000 | (((0x1000 + (i + 1) * 8) >> 2) & 0x3FFFFFF) if i < 5 else 0x03E00008)
+            words.append(0x00000000)
+        elf = self.root / "cap.elf"
+        write_elf(elf, words=words)
+
+        out_c = self.root / "cap_split.c"
+        proc = self._run_codegen(elf, out_c, "--funcs-per-chunk=2", "--target-chunk-bytes=1073741824")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(
+            self._chunk_names(self.root, "cap_split"),
+            [
+                [f"f_{0x1000 + i * 8:08x}" for i in range(2)],
+                [f"f_{0x1000 + (i + 2) * 8:08x}" for i in range(2)],
+                [f"f_{0x1000 + (i + 4) * 8:08x}" for i in range(2)],
+            ],
+        )
+
+    def test_absent_byte_budget_keeps_the_legacy_count_partition(self) -> None:
+        # Without the flag the emitted partition must stay purely count-based, so a
+        # cap of 2 still yields 3 chunks of 2 -- the byte budget must not leak into
+        # the default path.
+        words: list[int] = []
+        for i in range(6):
+            words.append(0x0C000000 | (((0x1000 + (i + 1) * 8) >> 2) & 0x3FFFFFF) if i < 5 else 0x03E00008)
+            words.append(0x00000000)
+        elf = self.root / "legacy.elf"
+        write_elf(elf, words=words)
+
+        out_c = self.root / "legacy_split.c"
+        proc = self._run_codegen(elf, out_c, "--funcs-per-chunk=2")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(
+            self._chunk_names(self.root, "legacy_split"),
+            [
+                [f"f_{0x1000 + i * 8:08x}" for i in range(2)],
+                [f"f_{0x1000 + (i + 2) * 8:08x}" for i in range(2)],
+                [f"f_{0x1000 + (i + 4) * 8:08x}" for i in range(2)],
+            ],
+        )
+
 
 class MakefileSpanBindingTests(unittest.TestCase):
     """The direct-Make path must bind a span explicitly, not rely on a default."""
