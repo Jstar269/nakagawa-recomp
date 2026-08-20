@@ -131,9 +131,22 @@ outside every HST table. Under `--profile=none` the two emitted functions must
 be identical after normalising each against its own start address, so any
 surviving address-coupled site — named in that file or not — makes the pair
 diverge. The same run under `--profile=hst` must make every pair *differ*, which
-is what keeps the equality above from passing vacuously. A static pass
-re-derives the gate inventory from `codegen.py`'s AST, so a newly added address
-literal cannot be introduced without either a profile gate or a specimen body.
+is what keeps the equality above from passing vacuously.
 
 Entry-role and `--static-verify` couplings do not appear in function text and
 are asserted directly against `build_entry_catalog` and `sv_plan`.
+
+A static census re-derives the gate inventory from `codegen.py`'s AST. Its scope
+is one declared grammar: inside an emitter function, an `if` comparing
+`addr`/`a`/`start` with `==` or `in` against either an integer literal or a bare
+name. Within that grammar it is complete — a literal of any magnitude must be
+`hst_profile`-gated and must have a specimen body, and a named comparator must be
+declared either as a title-owned address table or as an image-derived set, with
+an undeclared name failing. Mutation tests hold both halves down, including a
+sub-`0x1000` literal, since `GUEST_ABORT` already sits at `0x00000a1c`.
+
+The census is a source-shape check over that grammar, not a proof about arbitrary
+Python. A coupling written some other way is invisible to it — the
+`insns & _SV_SPECIAL` set intersection this slice had to fix is the worked
+example, and only the differential catches that shape. The differential is the
+load-bearing proof; the census exists so it cannot quietly go out of date.

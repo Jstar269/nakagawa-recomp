@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "71c10f11ae261429776f7b710c5cfbe35e66761d57afb94c7f7fd25397c769e9"
+      "sha256": "6c0104dfdd2c2c0e92faf787a021374cd82c739299558d3d74cb55867a9eef06"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -6160,7 +6160,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1508ac3062e449325fa6559cc16f40f116464c79bcb7f7ae231b5a5ad6c1e28a"
+      "sha256": "ac77a66a41c7075cbfd41dd13df1e5c6dcbb3b21bfb4e5872eb2ff13d8e4a1e9"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",

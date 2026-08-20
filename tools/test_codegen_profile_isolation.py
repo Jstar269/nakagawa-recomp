@@ -33,10 +33,14 @@ unit tests instead:
 * ``_SV_SPECIAL`` suppresses ``--static-verify`` emission
   (:func:`codegen.sv_plan`) -- the differential covers it too, because the
   differential runs with ``--static-verify`` enabled;
-* the address literals themselves, which
-  :meth:`GateInventoryTests.test_every_constant_address_gate_is_profile_gated`
-  re-derives from ``tools/codegen.py``'s AST so a newly added site cannot be
-  introduced without either a gate or a specimen body.
+* the address literals and named address tables themselves, which
+  :class:`GateInventoryTests` re-derives from ``tools/codegen.py``'s AST.  That
+  census is scoped to the comparison grammar :func:`scan_address_gates`
+  supports, and within that grammar a new address literal must be gated and
+  covered and a new named table must be declared.  It says nothing about a
+  coupling written some other way -- the ``insns & _SV_SPECIAL`` set
+  intersection this slice had to fix is the worked example, and only the
+  differential above catches that shape.
 
 Evidence tier: production helper / white-box.  ``codegen.main`` runs unmodified
 through its real profile plumbing, but on a synthetic image -- no private
@@ -52,6 +56,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
@@ -551,104 +556,253 @@ class _FakeElf:
 
 
 # ---------------------------------------------------------------------------
-# 5. Inventory completeness, re-derived from codegen.py itself
+# 5. Inventory census over the supported AST shapes, re-derived from
+#    codegen.py itself
 # ---------------------------------------------------------------------------
+
+
+#: Local names that hold a guest address inside codegen's emitters.
+ADDR_OPERANDS = frozenset({"addr", "a", "start"})
+
+#: Functions whose bodies decide what translated C is emitted.
+EMITTERS = frozenset({"effect", "normal_line", "emit_function", "main", "sv_plan"})
+
+#: Title-owned address tables, and how each one's profile gate is enforced.
+#: A membership test against one of these binds guest addresses to HST
+#: semantics, so it must be reachable only under the hst profile.
+ADDRESS_TABLES = {
+    "NULL_BASE_WORD_LOADS": "hst_profile",
+    "GUEST_PATCHES": "hst_profile",
+    "_SV_SPECIAL": "hst_profile",
+    "SIMPLE_STUBS": "empty-under-none",
+    "HST_MANUAL_CALLABLES": "catalog-early-return",
+    "HST_RESUME_OWNERS": "catalog-early-return",
+}
+
+#: Names holding sets recovered from the image being translated.  A membership
+#: test against one of these is not an address binding -- the contents come from
+#: the input, so they carry no title address of their own.  Declared explicitly
+#: rather than allow-by-default: an undeclared name fails the census, because a
+#: future ``if a in NEW_HST_TABLE:`` would otherwise pass unnoticed.
+IMAGE_DERIVED_TABLES = {
+    "labels": "branch targets recovered from this function's own instructions",
+    "consumed": "instructions already emitted by an earlier site in this function",
+    "continuations": "resume points recovered by function_flow",
+    "dup_slot_skips": "delay slots that are also branch targets, found per function",
+    "sv_points": "static-verify predictions computed from this same function",
+    "impmap": "import table parsed from the primary ELF",
+    "extra_impmap": "import table parsed from an extra ELF",
+}
+
+#: Integer constants that reach a supported comparison shape but are *not*
+#: guest addresses, declared per (function, operand, value).
+#:
+#: This registry replaced a blanket ``value >= 0x1000`` filter.  A numeric
+#: threshold cannot tell an address from a register number, and it silently
+#: excused every future site below 0x1000 -- ``GUEST_ABORT`` already lives at
+#: 0x00000a1c, well inside the range that threshold discarded.
+NON_ADDRESS_CONSTANTS = {
+    ("emit_function", "a", 31):
+        "`a` is rebound to rs(w) for the jr/jalr form; 31 is register $ra",
+}
+
+
+class Gate(NamedTuple):
+    """One supported address-comparison site in codegen's emitters."""
+
+    func: str
+    lineno: int
+    operand: str
+    gated: bool
+    constants: tuple[int, ...]
+    table: str | None
+
+
+def _name_ids(node) -> set[str]:
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def scan_address_gates(tree: ast.AST) -> list[Gate]:
+    """Collect every supported address-comparison shape in `tree`.
+
+    Supported shapes, and *only* these:
+
+    * inside a function named in :data:`EMITTERS`,
+    * an ``if`` whose test contains a ``Compare``,
+    * whose left operand is a bare name in :data:`ADDR_OPERANDS`,
+    * with an ``==`` or ``in`` operator.
+
+    Integer literals in the comparator are reported at any magnitude; a bare
+    name comparator is reported as ``table``.
+    """
+    gates: list[Gate] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef) or fn.name not in EMITTERS:
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.If):
+                continue
+            gated = "hst_profile" in _name_ids(node.test)
+            for cmp_ in [n for n in ast.walk(node.test)
+                         if isinstance(n, ast.Compare)]:
+                left = cmp_.left
+                if not (isinstance(left, ast.Name) and left.id in ADDR_OPERANDS):
+                    continue
+                if not isinstance(cmp_.ops[0], (ast.Eq, ast.In)):
+                    continue
+                comparator = cmp_.comparators[0]
+                constants = tuple(
+                    n.value for n in ast.walk(comparator)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, int)
+                    and not isinstance(n.value, bool)
+                )
+                gates.append(Gate(
+                    func=fn.name,
+                    lineno=node.lineno,
+                    operand=left.id,
+                    gated=gated,
+                    constants=constants,
+                    table=comparator.id if isinstance(comparator, ast.Name) else None,
+                ))
+    return gates
+
+
+def address_constants(gate: Gate) -> list[int]:
+    """`gate`'s integer literals, minus the reviewed non-address exemptions."""
+    return [c for c in gate.constants
+            if (gate.func, gate.operand, c) not in NON_ADDRESS_CONSTANTS]
+
+
+def ungated_address_constants(tree: ast.AST) -> list[str]:
+    return [
+        f"{g.func}:{g.lineno} -> {[hex(c) for c in address_constants(g)]}"
+        for g in scan_address_gates(tree)
+        if address_constants(g) and not g.gated
+    ]
+
+
+def uncovered_gated_addresses(tree: ast.AST, covered) -> list[int]:
+    return sorted({
+        c
+        for g in scan_address_gates(tree) if g.gated
+        for c in address_constants(g)
+        if c not in covered
+    })
+
+
+def undeclared_tables(tree: ast.AST) -> list[str]:
+    """Named comparators that are in no reviewed registry."""
+    return sorted({
+        f"{g.table} at {g.func}:{g.lineno}"
+        for g in scan_address_gates(tree)
+        if g.table is not None
+        and g.table not in ADDRESS_TABLES
+        and g.table not in IMAGE_DERIVED_TABLES
+    })
+
+
+def ungated_address_tables(tree: ast.AST) -> list[str]:
+    return sorted({
+        f"{g.table} at {g.func}:{g.lineno}"
+        for g in scan_address_gates(tree)
+        if g.table in ADDRESS_TABLES
+        and ADDRESS_TABLES[g.table] == "hst_profile"
+        and not g.gated
+    })
+
+
+# Synthetic sources for the mutation tests below.  Each one is a *supported*
+# shape carrying a defect the census must catch.
+_MUTANT_LOW_ADDRESS_UNGATED = """
+def emit_function(elf, start, ranges, known, profile=None):
+    hst_profile = profile == "hst"
+    for addr in insns:
+        if addr == 0x40:
+            out.append("    sr_title_specific(s);")
+"""
+
+_MUTANT_LOW_ADDRESS_GATED = """
+def emit_function(elf, start, ranges, known, profile=None):
+    hst_profile = profile == "hst"
+    for addr in insns:
+        if hst_profile and addr == 0x40:
+            out.append("    sr_title_specific(s);")
+"""
+
+_MUTANT_UNKNOWN_TABLE = """
+def main(argv):
+    hst_profile = profile == "hst"
+    for a in sorted(catalog):
+        if hst_profile and a in NEW_HST_TABLE:
+            out.append("    sr_title_specific(s);")
+"""
 
 
 class GateInventoryTests(unittest.TestCase):
     """A new address-keyed site cannot be added without a gate or a body.
 
-    Evidence tier: source-shape / static.  This does not execute codegen; it
-    exists so the executable differential above cannot go quietly out of date.
+    Evidence tier: source-shape / static.  This does not execute codegen.  Its
+    scope is exactly the grammar :func:`scan_address_gates` supports -- a direct
+    ``addr``/``a``/``start`` comparison against an integer literal or a named
+    table, inside an emitter function.  Within that grammar it is complete and
+    the mutation tests below prove it.  It is **not** a proof about arbitrary
+    Python: a coupling expressed some other way (the ``insns & _SV_SPECIAL`` set
+    intersection that this slice had to fix is the worked example) is invisible
+    here, and only the executable differential above catches it.
     """
-
-    # Comparisons whose left-hand side is a guest address in codegen's emitters.
-    ADDR_OPERANDS = {"addr", "a", "start"}
-    # Address tables that gate emission.  Value = how the gate is enforced.
-    ADDRESS_TABLES = {
-        "NULL_BASE_WORD_LOADS": "hst_profile",
-        "GUEST_PATCHES": "hst_profile",
-        "SIMPLE_STUBS": "empty-under-none",
-        "HST_MANUAL_CALLABLES": "catalog-early-return",
-        "HST_RESUME_OWNERS": "catalog-early-return",
-        "_SV_SPECIAL": "hst_profile",
-    }
-    EMITTERS = {"effect", "normal_line", "emit_function", "main", "sv_plan"}
 
     @classmethod
     def setUpClass(cls):
-        cls.source = (TOOLS / "codegen.py").read_text(encoding="utf-8")
-        cls.tree = ast.parse(cls.source)
+        cls.tree = ast.parse((TOOLS / "codegen.py").read_text(encoding="utf-8"))
 
-    @staticmethod
-    def _names(node):
-        return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-
-    def _address_gates(self):
-        """Yield (func, lineno, gated, constants) for every address comparison."""
-        for fn in ast.walk(self.tree):
-            if not isinstance(fn, ast.FunctionDef) or fn.name not in self.EMITTERS:
-                continue
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.If):
-                    continue
-                gated = "hst_profile" in self._names(node.test)
-                for cmp_ in [n for n in ast.walk(node.test)
-                             if isinstance(n, ast.Compare)]:
-                    left = cmp_.left
-                    if not (isinstance(left, ast.Name)
-                            and left.id in self.ADDR_OPERANDS):
-                        continue
-                    if not isinstance(cmp_.ops[0], (ast.Eq, ast.In)):
-                        continue
-                    consts = [
-                        n.value for n in ast.walk(cmp_.comparators[0])
-                        if isinstance(n, ast.Constant) and isinstance(n.value, int)
-                        and n.value >= 0x1000
-                    ]
-                    yield fn.name, node.lineno, gated, consts, cmp_.comparators[0]
+    # --- the real inventory ------------------------------------------------
 
     def test_every_constant_address_gate_is_profile_gated(self):
-        ungated = [
-            f"{fn}:{line} -> {[hex(c) for c in consts]}"
-            for fn, line, gated, consts, _ in self._address_gates()
-            if consts and not gated
-        ]
         self.assertEqual(
-            ungated, [],
+            ungated_address_constants(self.tree), [],
             "codegen compares a guest address against a literal without an "
             "hst_profile guard; that binds a numeric address to HST semantics "
             "for every profile",
         )
 
     def test_every_gated_address_has_a_specimen_body(self):
-        uncovered = sorted({
-            c
-            for _, _, gated, consts, _ in self._address_gates()
-            if gated
-            for c in consts
-            if c not in COVERED
-        })
+        uncovered = uncovered_gated_addresses(self.tree, COVERED)
         self.assertEqual(
             [hex(c) for c in uncovered], [],
             "these gated addresses are not in this test's specimen, so nothing "
             "proves their gate works; add a body for them to BODY_COUPLED",
         )
 
-    def test_every_address_table_gate_is_accounted_for(self):
-        """No address table may be consulted from an unreviewed place."""
-        unknown = []
-        for fn, line, gated, _consts, comparator in self._address_gates():
-            if not isinstance(comparator, ast.Name):
-                continue
-            table = comparator.id
-            if table not in self.ADDRESS_TABLES:
-                continue
-            how = self.ADDRESS_TABLES[table]
-            if how == "hst_profile" and not gated:
-                unknown.append(f"{table} at {fn}:{line} is consulted ungated")
-        self.assertEqual(unknown, [])
+    def test_every_named_comparator_is_declared(self):
+        self.assertEqual(
+            undeclared_tables(self.tree), [],
+            "an emitter tests membership against a name that is in neither "
+            "ADDRESS_TABLES nor IMAGE_DERIVED_TABLES; declare it (and gate it, "
+            "if it holds guest addresses) rather than letting it default to "
+            "allowed",
+        )
 
+    def test_declared_address_tables_are_consulted_under_a_gate(self):
+        self.assertEqual(ungated_address_tables(self.tree), [])
+
+    def test_image_derived_registry_has_no_stale_entries(self):
+        """A dead entry here would silently excuse a future name reusing it."""
+        observed = {g.table for g in scan_address_gates(self.tree) if g.table}
+        stale = sorted(set(IMAGE_DERIVED_TABLES) - observed)
+        self.assertEqual(stale, [], "IMAGE_DERIVED_TABLES names nothing in codegen")
+
+    def test_non_address_exemptions_are_live_and_minimal(self):
+        """Every declared exemption must still exist, with its stated shape."""
+        live = {(g.func, g.operand, c)
+                for g in scan_address_gates(self.tree) for c in g.constants}
+        stale = sorted(set(NON_ADDRESS_CONSTANTS) - live)
+        self.assertEqual(
+            [f"{f}:{o}=={hex(c)}" for f, o, c in stale], [],
+            "NON_ADDRESS_CONSTANTS excuses a comparison that no longer exists; "
+            "a later site reusing that shape would inherit the exemption",
+        )
+
+    def test_simple_stubs_binding_stays_profile_conditional(self):
         # SIMPLE_STUBS is gated by construction rather than by an `if`: it is
         # bound to {} for every non-hst profile.  Assert that binding directly.
         binding = [
@@ -662,14 +816,14 @@ class GateInventoryTests(unittest.TestCase):
             binding[0].value, ast.IfExp,
             "SIMPLE_STUBS must stay conditional on the profile",
         )
-        self.assertIn("hst_profile", self._names(binding[0].value.test))
+        self.assertIn("hst_profile", _name_ids(binding[0].value.test))
 
-        # _SV_SPECIAL must only ever be consulted through sv_plan's guarded arm.
+    def test_sv_special_is_read_only_by_sv_plan(self):
         readers = {
             fn.name
             for fn in ast.walk(self.tree)
             if isinstance(fn, ast.FunctionDef)
-            and "_SV_SPECIAL" in self._names(fn)
+            and "_SV_SPECIAL" in _name_ids(fn)
         }
         self.assertEqual(readers, {"sv_plan"})
 
@@ -686,6 +840,44 @@ class GateInventoryTests(unittest.TestCase):
         for resume, owner in codegen.HST_RESUME_OWNERS.items():
             self.assertIn(resume, COVERED)
             self.assertIn(owner, COVERED)
+
+    # --- mutants: the census must actually catch these ---------------------
+
+    def test_a_low_address_gate_cannot_escape_the_census(self):
+        """0x40 is far below the 0x1000 threshold this scanner used to apply."""
+        tree = ast.parse(_MUTANT_LOW_ADDRESS_UNGATED)
+        self.assertEqual(
+            ungated_address_constants(tree), ["emit_function:5 -> ['0x40']"],
+            "a sub-0x1000 address literal escaped the ungated-gate census",
+        )
+
+    def test_a_low_address_body_gap_cannot_escape_the_census(self):
+        tree = ast.parse(_MUTANT_LOW_ADDRESS_GATED)
+        self.assertEqual(
+            uncovered_gated_addresses(tree, COVERED), [0x40],
+            "a gated sub-0x1000 address with no specimen body was not reported",
+        )
+
+    def test_an_undeclared_address_table_cannot_escape_the_census(self):
+        tree = ast.parse(_MUTANT_UNKNOWN_TABLE)
+        self.assertEqual(
+            undeclared_tables(tree), ["NEW_HST_TABLE at main:5"],
+            "a membership test against an undeclared name was allowed through",
+        )
+        # It carries no integer literal, so the constant census cannot see it --
+        # which is exactly why the named-comparator check has to exist.
+        self.assertEqual(ungated_address_constants(tree), [])
+
+    def test_the_register_number_exemption_is_the_only_one_needed(self):
+        """Guards the exemption registry against quietly absorbing addresses."""
+        self.assertEqual(len(NON_ADDRESS_CONSTANTS), 1)
+        exempted = {
+            c
+            for g in scan_address_gates(self.tree)
+            for c in g.constants
+            if (g.func, g.operand, c) in NON_ADDRESS_CONSTANTS
+        }
+        self.assertEqual(exempted, {31})
 
 
 if __name__ == "__main__":
