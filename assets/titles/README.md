@@ -32,6 +32,10 @@ python tools/title_manifest.py assets/titles/synthetic.json --print-normalized
 ## Checked-in manifests
 
 - `synthetic.json` is a source-owned public fixture for schema and tool testing.
+  It also carries the Wave-1 `psp-core-v1` / `profile-zero-v1` contract,
+  source-program/build binding, and an acceptance scaffold. The scaffold marks
+  the full runtime route as planned rather than claiming a runnable end-to-end
+  product path.
 - `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live
   in `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
   is deliberately configured *differently* from `synthetic.json` — the canonical

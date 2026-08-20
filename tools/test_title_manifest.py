@@ -45,6 +45,50 @@ class TitleManifestTests(unittest.TestCase):
                 "verification_profile",
             },
         )
+        self.assertEqual(len(schema["allOf"]), 2)
+        self.assertEqual(
+            schema["$defs"]["profileZero"]["properties"]["source_program"]["properties"]["entry_symbol"]["pattern"],
+            "^[A-Za-z_][A-Za-z0-9_]*$",
+        )
+
+    def test_schema_enums_equal_the_python_vocabularies(self) -> None:
+        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        contract = schema["$defs"]["runtimeContract"]["properties"]
+        profile_zero_case = (
+            schema["$defs"]["profileZero"]["properties"]["acceptance"]
+            ["properties"]["cases"]["items"]["properties"]
+        )
+        pairs = (
+            (
+                "runtimeContract.capability_requirements",
+                contract["capability_requirements"]["items"]["enum"],
+                title_manifest.CORE_CONTRACT_CAPABILITIES,
+            ),
+            (
+                "runtimeContract.hle_overrides[].evidence_class",
+                contract["hle_overrides"]["items"]["properties"]["evidence_class"]["enum"],
+                title_manifest.EVIDENCE_CLASSES,
+            ),
+            (
+                "profileZero.acceptance.cases[].evidence_class",
+                profile_zero_case["evidence_class"]["enum"],
+                title_manifest.PROFILE_ZERO_EVIDENCE_CLASSES,
+            ),
+        )
+        for name, published, authoritative in pairs:
+            with self.subTest(enum=name):
+                self.assertEqual(len(published), len(set(published)), "schema enum has duplicate members")
+                self.assertEqual(
+                    set(published),
+                    set(authoritative),
+                    f"schema enum {name} drifted from the Python vocabulary",
+                )
+        self.assertEqual(
+            title_manifest.EVIDENCE_CLASSES - title_manifest.PROFILE_ZERO_EVIDENCE_CLASSES,
+            title_manifest.PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES,
+        )
+        self.assertIn("PRIVATE_TITLE_ACCEPTANCE", title_manifest.PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES)
+        self.assertNotIn("PRIVATE_TITLE_ACCEPTANCE", profile_zero_case["evidence_class"]["enum"])
 
     def test_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON object key"):
@@ -64,6 +108,8 @@ class TitleManifestTests(unittest.TestCase):
     def test_retail_disc_policy_is_explicit(self) -> None:
         retail = copy.deepcopy(self.fixture)
         retail["kind"] = "retail"
+        retail.pop("profile_zero", None)
+        retail.pop("runtime_contract", None)
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "require disc"):
             title_manifest.validate_manifest(retail)
 
@@ -188,6 +234,10 @@ class TitleManifestTests(unittest.TestCase):
             title_manifest.validate_manifest(value)
 
     def test_input_size_limit_and_symlink_policy(self) -> None:
+        with self.assertRaises(title_manifest.TitleManifestError):
+            title_manifest.load_manifest(None)
+        with self.assertRaises(ValueError):
+            title_manifest.load_manifest(self.fixture_path, max_bytes=None)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             oversized = root / "oversized.json"
@@ -224,6 +274,80 @@ class TitleManifestTests(unittest.TestCase):
         value = copy.deepcopy(self.fixture)
         value["codegen_profile"] = "unknown"
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "unsupported codegen profile"):
+            title_manifest.validate_manifest(value)
+
+    def test_profile_zero_contract_is_versioned_and_fail_closed(self) -> None:
+        normalized = title_manifest.validate_manifest(self.fixture)
+        contract = normalized["runtime_contract"]
+        self.assertEqual(contract["core_contract"], "psp-core-v1")
+        self.assertEqual(contract["unknown_capability_policy"], "fail-closed")
+        self.assertEqual(contract["profile_id"], "profile-zero-v1")
+        self.assertFalse(normalized["profile_zero"]["acceptance"]["private_inputs_allowed"])
+        self.assertEqual(normalized["profile_zero"]["build"]["makefile"], "fixtures/pspdev_phase5/Makefile")
+
+        value = copy.deepcopy(self.fixture)
+        value["runtime_contract"]["capability_requirements"].append("unknown-host-fastmem")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "unknown core capability"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["runtime_contract"]["hle_overrides"] = [{
+            "capability": "audio",
+            "disposition": "explicit-override",
+            "reason": "implicit title behavior",
+            "evidence_class": "SOURCE_SHAPE",
+        }]
+        self.assertEqual(
+            title_manifest.validate_manifest(value)["runtime_contract"]["hle_overrides"][0]["capability"],
+            "audio",
+        )
+
+    def test_profile_zero_cannot_smuggle_private_build_or_input_metadata(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["build"]["working_directory"] = "C:/private/game"
+        with self.assertRaises(title_manifest.TitleManifestError):
+            title_manifest.validate_manifest(value)
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["build"]["toolchain"] = "C:/private/pspdev"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "toolchain label"):
+            title_manifest.validate_manifest(value)
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["acceptance"]["private_inputs_allowed"] = True
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "cannot require private"):
+            title_manifest.validate_manifest(value)
+
+    def test_profile_zero_rejects_duplicate_sources_private_evidence_and_unsafe_names(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["source_program"]["source_files"].append(
+            value["profile_zero"]["source_program"]["source_files"][0].upper()
+        )
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate source file"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["source_program"]["entry_symbol"] = "main;unsafe"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "portable C symbol"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["build"]["target"] = "all;unsafe"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "build target name"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["acceptance"]["cases"][0]["evidence_class"] = "PRIVATE_TITLE_ACCEPTANCE"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "private-title evidence"):
+            title_manifest.validate_manifest(value)
+
+    def test_profile_zero_runnable_claim_matches_acceptance_state(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["runnable"] = True
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["acceptance"]["status"] = "ready"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
             title_manifest.validate_manifest(value)
 
 

@@ -39,6 +39,73 @@ Private decrypted PSP ELF/PRXs
 The repository does not contain the retail game executable, ISO, decrypted game PRXs, or private
 oracle traces. Those remain local inputs.
 
+## PSP core, title profile, and backend boundary
+
+Wave 1 introduces a narrow, versioned contract without changing the HST production path:
+
+```text
+validated ProgramImage (tools/prxload.py)
+        -> canonical CFG / ownership observation (tools/analyze.py)
+        -> psp-core-v1 semantic capabilities
+        -> title profile (boot/resources/explicit HLE declarations/input labels)
+        -> host backend contracts and optional enhancements
+```
+
+The core contract owns Allegrex/VFPU semantics, guest memory, scheduling,
+interrupts/callbacks, generic HLE, GE/display/audio semantics, I/O capability
+interfaces, backend contracts, and evidence schemas. A title profile may select
+boot policy, public resource locators, input labels, and explicit HLE capability
+dispositions. Unknown capabilities fail closed; a profile cannot add an implicit
+PSP-semantic replacement, and enhancements are disabled by default in the public
+profile-zero contract. HST remains an existing manager/build profile and is not
+switched to the new adapter wholesale in this wave.
+
+### ProgramImage v1 and CFG ownership observation v1
+
+**Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
+reachable from the production pipeline. Nothing in `tools/codegen.py`,
+`tools/imports.py`, the `Makefile`, or `hst_manager.ps1` imports or constructs
+either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
+their unit tests. That is a checkable property, not an intention, and it is the
+reason this wave makes no production-wiring claim.
+
+**Precondition for any later production wiring.** Before either type may replace a
+production path, it must first be shown *equivalent* to the path it replaces on
+real inputs -- not merely self-consistent. `cfg_compatibility_findings()` exists
+for exactly this: it reports differences against a legacy entry set and
+deliberately does not pick a winner. Wiring either type in without that
+equivalence evidence would convert an observation tool into an unverified
+reimplementation of the analysis the pipeline already depends on.
+
+`tools.prxload.load_program_image()` is the read-only Wave-1 adapter. It validates the
+ELF32 envelope, checked load/file/guest spans, permissions, zero-fill extents, entry,
+imports/exports, module metadata, and relocation records before allocating a flat image.
+The immutable object carries source name/size/SHA-256, fixed-width guest spans, and
+`bytes` payloads; `canonical_program_image_json()` serializes metadata deterministically
+and omits raw payload bytes. It deliberately does not apply relocations or replace the
+legacy `Prx` loader, so the current HST path remains authoritative while synthetic tests
+compare both representations.
+
+`tools.analyze.canonical_cfg_report()` emits schema version 1 as an observation-only
+ownership report. Its instruction rows carry address, raw word, opcode identity,
+delay-slot attachment, branch-likely annulment, owners and reasons. Edge rows distinguish
+direct branches/jumps, calls, tail transfers, fallthrough, delay slots, and unresolved
+computed transfers. The report also records interior entries, continuations, ownership
+conflicts, jump-table candidates, data spans, padding, unowned executable words, partial/unreadable executable
+spans, and explicitly unmapped entry candidates. `verify_canonical_cfg_report()` checks coverage and
+structural consistency; `cfg_compatibility_findings()` reports differences from a legacy
+entry set without silently selecting a winner. `canonical_cfg_json()` is stable for
+fixtures and build-cache comparisons. Neither report is an optimizing IR or a production
+HST switch.
+
+`assets/titles/synthetic.json` carries the source-owned `psp-core-v1` /
+`profile-zero-v1` contract and its acceptance scaffold. Its source program and
+build path point to `fixtures/pspdev_phase5`; the acceptance cases deliberately
+separate `SOURCE_SHAPE`, `PRODUCTION_DISPATCH`, and `PRODUCTION_HELPER` evidence.
+The scaffold is not a claim that the complete profile-zero route is runnable yet.
+Generated output from a source-owned profile may be public in principle, but retail
+or private-input-derived AOT remains local, ignored, and outside publication.
+
 ## Directory Layout
 
 ```text

@@ -77,6 +77,21 @@ authoritative and an optional `--profile` must match it. A manifest without that
 field still requires an explicit `--profile`. Optional guest PRXs are excluded
 unless selected with `--include-optional-module=<name>`.
 
+The optional `runtime_contract` is the Wave-1 core/profile boundary. Version
+`psp-core-v1` owns PSP semantic capabilities; `profile_id` selects title policy;
+all HLE dispositions require an explicit reason and evidence class; and
+`unknown_capability_policy` is fixed to `fail-closed`. The profile cannot add a
+silent semantic override, and `enhancements.enabled_by_default` is separate from
+core acceptance. Existing HST manifests remain valid without this field while the
+manager continues to use its legacy, privately bound path; migration is additive,
+not a production switch.
+
+The public synthetic manifest additionally carries `profile_zero`, which points to
+source-owned PSPDEV/PSPSDK input and a portable Make build path. Its acceptance
+cases distinguish planned production-dispatch/helper evidence from the currently
+implemented source-shape ProgramImage test. `runnable: false` is intentional until
+the actual end-to-end AOT/runtime route is wired and asserted.
+
 Current fail-closed limits are deliberate:
 
 - the analyzer accepts at most one explicit extra executable span;

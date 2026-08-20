@@ -405,7 +405,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0ae886d4ee9de04fca6916d297ad4ed6eb7ff1bc7e6cb85e630078392667c8c5"
+      "sha256": "4bacce730e0314ed04d0709b6af09e75f44d3df5b158f3731d216227116e4fab"
     },
     {
       "path": "assets/titles/README.md",
@@ -414,7 +414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d0f6020bb1967bbb9045aa388587ccf00570c8e966b1750a5749e60f80e67d80"
+      "sha256": "2a080793a62559d84731771adc440adbf53ede1e95ea408432cd0cfee19e4f4a"
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
@@ -432,7 +432,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "07e59db170d5afb08ad7bc4d73cfbdd043c2301c942ea6b0118356de38b3b048"
+      "sha256": "816fcce1b074af1e58c2af46a2a895508250117e704b7282a772089e6c97a89d"
     },
     {
       "path": "assets/upstream/pspdev.NOTICE.md",
@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "97787d7c0d539ca4b501e09dfe711686715cf2e1caf6ae355863cd5692771ad3"
+      "sha256": "4cb0ee650b43e539b919d82e3f15d6cdb966bf82e533c9d36957cb9c75b88008"
     },
     {
       "path": "docs/CI.md",
@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bb9736279f34f61a22eef34d5be78628089dcab7ec97bc964ea87a18712687f3"
+      "sha256": "d20774ce01394acc49a78ef0bfbf8532716e9418db70d9b564a1abce095ac1d0"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -4904,7 +4904,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a79748ed4b89dcfe1031c2884915101044d1e80d5a83fa6778bfd39145ecf30b"
+      "sha256": "1d68cd8330140a40e51c266ffc2e320c9e7fc5125d44eee68cf2bf3d8f5b94d3"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5082,7 +5082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d94fff4eb8fb4759071cd51ec9da8c3086d133904fb3bf7e1e89a70fc4f687d"
+      "sha256": "5cf3d2ddd96c08d3b06d92e0403f113aa39afcac7b195870cb24522727868c9f"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -5686,7 +5686,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "720adee78d55ec2ee5161a803b26560a80b5efd130d1f6a1091c451540f10511"
+      "sha256": "4de49a46eadbaf234a856e0b7f362f78cddb5b30bbbe9e42c51d7cfddf156d58"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -6271,7 +6271,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88d9c248953570f97f30fa7ba2c25e603fd270df118ae84fb8ea6c086db5ae62"
+      "sha256": "c4b878575b6a79f173a51f91d0f6f33daa5128649fcd3adccb5c6078a4a637f4"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
@@ -7093,7 +7093,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a06f9585d6681d42367387b74c0562ea6475a7c1458d03cc835cd5a97d5eefb"
+      "sha256": "7b2ee99a926b87cccb8e2a7e44b894b92905a2ee26bfaa98dc6af6c6248ff0ad"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -7306,7 +7306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44f3d3cab809cf2335bc7b62c802d5a3a562492d37797d7ea3d0c0bcd0fc02d6"
+      "sha256": "ee35241172b58cdb8a72bb1e5c10223f691f6feff4b7017efb438b9f460193ae"
     },
     {
       "path": "tools/tracediff.py",

@@ -26,5 +26,106 @@
   "codegen_profile": "none",
   "feature_requirements": ["allegrex-core", "host-filesystem"],
   "verification_profile": "synthetic-public",
-  "notes": "Source-owned fixture configuration only; no retail bytes or derived metadata."
+  "runtime_contract": {
+    "schema_version": 1,
+    "core_contract": "psp-core-v1",
+    "profile_id": "profile-zero-v1",
+    "capability_requirements": [
+      "allegrex",
+      "audio",
+      "backend-contracts",
+      "evidence",
+      "generic-hle",
+      "ge-display",
+      "guest-memory",
+      "io",
+      "scheduler",
+      "vfpu"
+    ],
+    "unknown_capability_policy": "fail-closed",
+    "boot": {
+      "entry_policy": "image-entry",
+      "thread_policy": "profile-default",
+      "arguments": []
+    },
+    "resources": {
+      "mode": "manifest-filesystem",
+      "locators": ["fixtures/pspdev_phase5"]
+    },
+    "hle_overrides": [],
+    "input_mapping": {
+      "labels": ["analog", "circle", "cross", "start"],
+      "replay": "deterministic"
+    },
+    "enhancements": {
+      "enabled_by_default": false,
+      "capabilities": []
+    },
+    "evidence_profile": "profile-zero-public"
+  },
+  "profile_zero": {
+    "schema_version": 1,
+    "runnable": false,
+    "source_program": {
+      "source_files": ["fixtures/pspdev_phase5/main.c"],
+      "entry_symbol": "main",
+      "ownership": "project-authored-public"
+    },
+    "build": {
+      "makefile": "fixtures/pspdev_phase5/Makefile",
+      "working_directory": "fixtures/pspdev_phase5",
+      "target": "EBOOT.PBP",
+      "toolchain": "PSPDEV/PSPSDK (locally installed)"
+    },
+    "acceptance": {
+      "schema_version": 1,
+      "status": "scaffold",
+      "private_inputs_allowed": false,
+      "cases": [
+        {
+          "id": "program-image",
+          "status": "implemented",
+          "evidence_class": "SOURCE_SHAPE",
+          "assertion": "A source-owned ELF fixture produces a validated immutable ProgramImage with stable source identity and checked spans."
+        },
+        {
+          "id": "aot-generation",
+          "status": "planned",
+          "evidence_class": "SOURCE_SHAPE",
+          "assertion": "The public source program is accepted by the existing analyzer and AOT generator without selecting an HST profile."
+        },
+        {
+          "id": "runtime-dispatch",
+          "status": "planned",
+          "evidence_class": "PRODUCTION_DISPATCH",
+          "assertion": "The profile-zero entry executes through the production runtime and exits with an asserted return state."
+        },
+        {
+          "id": "scheduler-vblank-input",
+          "status": "planned",
+          "evidence_class": "PRODUCTION_DISPATCH",
+          "assertion": "A public route asserts one thread, deterministic VBLANK progression, and a controller sample without private title state."
+        },
+        {
+          "id": "ge-presentation",
+          "status": "planned",
+          "evidence_class": "PRODUCTION_DISPATCH",
+          "assertion": "A source-owned clear and primitive reach the backend and presentation seam with a truthful public capture result."
+        },
+        {
+          "id": "audio-helper",
+          "status": "planned",
+          "evidence_class": "PRODUCTION_HELPER",
+          "assertion": "A source-owned audio sample reaches the selected public audio capability or fails closed as unavailable."
+        },
+        {
+          "id": "savedata-roundtrip",
+          "status": "planned",
+          "evidence_class": "PRODUCTION_DISPATCH",
+          "assertion": "A source-owned save operation is confined to the declared writable root and its bytes round-trip deterministically."
+        }
+      ]
+    }
+  },
+  "notes": "Source-owned fixture configuration and Wave-1 profile-zero scaffold only; no retail bytes or derived metadata."
 }
