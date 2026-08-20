@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "21ac9eaa8b0f73574ffd519ada01e1313f1ff84428c8fe7aca480c55a05da72f"
+      "sha256": "3532153c69d3a87e0b9f89a66ad00c1fecb1e7a50314b0a09287f61fe6883769"
     },
     {
       "path": "NOTICE.md",
@@ -4364,7 +4364,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2eace14370017010d93187d76f90d20f73d059a5de3ca4239df5ddad794e8c76"
+      "sha256": "a185b5c5e6b930100d2ed9f38529ff02d80f7f2d213013a2c1253e2d1b8be075"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4376,7 +4376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f70e7f8fdc693232a22444e3533c19370f7738a7de2f61dc8b6dac2271f16ca3"
+      "sha256": "0017f84d759c612e3c3a1e311712936abe66bed090a9597742fef22a6eae9499"
     },
     {
       "path": "src/rt/intr_conformance.h",

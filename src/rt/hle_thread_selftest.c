@@ -36,6 +36,7 @@
 instrumentation is this test's protection against the historical RAM runaway."
 #endif
 
+#include "ge_shared.h"
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 
 #include <stdint.h>
@@ -60,16 +61,21 @@ static unsigned long s_gpu_dirty_calls;
 static uint32_t s_gpu_dirty_addr;
 static uint32_t s_gpu_dirty_bytes;
 
-void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
+static void selftest_vram_dirty_hook(uint32_t addr, uint32_t bytes) {
     s_gpu_dirty_calls++;
     s_gpu_dirty_addr = addr;
     s_gpu_dirty_bytes = bytes;
 }
 
+static const GeGpuHooks s_selftest_gpu_hooks = {
+    .vram_dirty = selftest_vram_dirty_hook,
+};
+
 static void gpu_dirty_reset(void) {
     s_gpu_dirty_calls = 0;
     s_gpu_dirty_addr = 0;
     s_gpu_dirty_bytes = 0;
+    ge_set_gpu_hooks(&s_selftest_gpu_hooks);
 }
 
 /* Test-build-only production IoFileMgr entry points and descriptor identity
@@ -271,7 +277,6 @@ static void audio_fixture_reset(void) {
     s_audio_queue_seq_len = 0;
 }
 
-uint32_t g_frame_prims;
 int gui_on(void) { return 0; }
 void gui_pump(void) {}
 uint32_t gui_buttons(void) { return 0u; }
@@ -298,16 +303,12 @@ void sr_profile_dump(void) {}
 int g_prof_enabled;
 void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 #endif
-void ge_set_frame(uint32_t frame) { (void)frame; }
-uint32_t ge_framebuffer(void) { return 0u; }
+uint64_t SDL_GetTicksNS(void) { return 0; }
 int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
 int sdl3vk_capture_result(void) { return 0; }
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sdl3vk_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
-unsigned long g_ge_pixels;
-unsigned long g_tex_samples;
-unsigned long g_tex_nonzero;
 unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
@@ -4357,6 +4358,412 @@ static void test_nested_guest_call_abi(void) {
            "the outermost caller state is still restored despite the nested re-entry");
 }
 
+/* =========================================================================
+ * Guest-Authored GE Sentinel (Issue generic sentinel stage)
+ *
+ * Full production pipeline under test:
+ *   source-owned guest command list
+ *   -> production HLE / GE submission (sceGeListEnQueue / sr_syscall)
+ *   -> production GE command execution (h_GeListEnQueue / ge_run_list)
+ *   -> actual render backend (ge.c software rasterizer)
+ *   -> framebuffer result (guest VRAM at 0x04000000)
+ *   -> deterministic pixel, boundary, anti-symmetry, and region hash assertions
+ * ========================================================================= */
+
+#define NID_SCE_GE_EDRAM_GET_ADDR           0xe47e40e4u
+#define NID_SCE_GE_EDRAM_GET_SIZE           0x1f6752adu
+#define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
+#define NID_SCE_GE_LIST_SYNC                0x03444eb4u
+#define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
+#define NID_SCE_GE_DRAW_SYNC                0xb287bd61u
+#define NID_SCE_GE_SET_CALLBACK             0xa4fc06a4u
+#define NID_SCE_GE_UNSET_CALLBACK           0x05db22ceu
+
+static uint64_t ge_sentinel_hash64_region(uint32_t fb_base, uint32_t stride,
+                                          uint32_t x0, uint32_t y0,
+                                          uint32_t w, uint32_t h) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (uint32_t y = y0; y < y0 + h; y++) {
+        for (uint32_t x = x0; x < x0 + w; x++) {
+            uint32_t addr = fb_base + (y * stride + x) * 4u;
+            /* Canonical Little-Endian byte order: byte 0 (R), byte 1 (G), byte 2 (B), byte 3 (A) */
+            for (uint32_t b = 0; b < 4u; b++) {
+                uint8_t byte = MEM_R8(addr + b);
+                hash ^= (uint64_t)byte;
+                hash *= 0x100000001b3ULL;
+            }
+        }
+    }
+    return hash;
+}
+
+static void test_ge_guest_sentinel(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+
+    /* 1. Prove all GE NIDs are explicitly registered in this build */
+    expect(sr_hle_test_is_registered(NID_SCE_GE_EDRAM_GET_ADDR),
+           "sceGeEdramGetAddr is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_EDRAM_GET_SIZE),
+           "sceGeEdramGetSize is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_ENQUEUE),
+           "sceGeListEnQueue is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_SYNC),
+           "sceGeListSync is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_UPDATE_STALL_ADDR),
+           "sceGeListUpdateStallAddr is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_DRAW_SYNC),
+           "sceGeDrawSync is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_SET_CALLBACK),
+           "sceGeSetCallback is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_UNSET_CALLBACK),
+           "sceGeUnsetCallback is registered in this build");
+
+    /* 2. eDRAM query contracts */
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_GE_EDRAM_GET_ADDR) == 0x04000000u,
+           "sceGeEdramGetAddr returns canonical eDRAM base 0x04000000");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_GE_EDRAM_GET_SIZE) == 0x00200000u,
+           "sceGeEdramGetSize returns 2 MiB eDRAM size (0x00200000)");
+
+    /* 3. Setup guest workload layout */
+    const uint32_t fb_base = 0x04000000u;
+    const uint32_t fb_stride = 512u;
+    const uint32_t fb_w = 480u;
+    const uint32_t fb_h = 272u;
+    const uint32_t tex_base = 0x04100000u; /* in guest VRAM */
+    const uint32_t dl_base = 0x08900000u;  /* in guest RAM */
+    const uint32_t vtx_base = 0x08904000u; /* in guest RAM */
+
+    /* Colors (RGBA8888 formatted as 0xAABBGGRR in LE memory) */
+    const uint32_t bg_color = 0xFF281E14u; /* Dark slate blue background */
+    const uint32_t r1_color = 0xFF2233EEu; /* Vibrant red */
+    const uint32_t r2_color = 0xFF44DD33u; /* Lime green */
+    const uint32_t r4_color = 0xFFDD8822u; /* Orange triangle */
+
+    /* Setup 8x8 asymmetric texture at tex_base */
+    for (uint32_t v = 0; v < 8u; v++) {
+        for (uint32_t u = 0; u < 8u; u++) {
+            uint32_t r = 30u + u * 28u;
+            uint32_t g = 20u + v * 30u;
+            uint32_t b = 150u + (u ^ v) * 12u;
+            uint32_t color = 0xFF000000u | (b << 16) | (g << 8) | r;
+            MEM_W32(tex_base + (v * 8u + u) * 4u, color);
+        }
+    }
+
+    /* Setup vertices in guest memory:
+     * vtx_base + 0x000: Clear sprite (0,0) to (480, 272)
+     * vtx_base + 0x040: Region 1 rect (20,15) to (60,40) [40x25]
+     * vtx_base + 0x080: Region 2 rect (260,140) to (380,220) [120x80]
+     * vtx_base + 0x0C0: Region 3 textured rect (380,20) to (444,84) [64x64]
+     * vtx_base + 0x100: Region 4 triangle (100,180)-(180,180)-(100,240)
+     */
+    #define W_FLOAT(addr, val) do { float _f = (val); uint32_t _u; memcpy(&_u, &_f, 4); MEM_W32((addr), _u); } while(0)
+
+    /* Clear sprite */
+    MEM_W32(vtx_base + 0x00, bg_color);
+    W_FLOAT(vtx_base + 0x04, 0.0f); W_FLOAT(vtx_base + 0x08, 0.0f); W_FLOAT(vtx_base + 0x0C, 0.0f);
+    MEM_W32(vtx_base + 0x10, bg_color);
+    W_FLOAT(vtx_base + 0x14, 480.0f); W_FLOAT(vtx_base + 0x18, 272.0f); W_FLOAT(vtx_base + 0x1C, 0.0f);
+
+    /* Region 1: ColorVtx */
+    MEM_W32(vtx_base + 0x40, r1_color);
+    W_FLOAT(vtx_base + 0x44, 20.0f); W_FLOAT(vtx_base + 0x48, 15.0f); W_FLOAT(vtx_base + 0x4C, 0.0f);
+    MEM_W32(vtx_base + 0x50, r1_color);
+    W_FLOAT(vtx_base + 0x54, 60.0f); W_FLOAT(vtx_base + 0x58, 40.0f); W_FLOAT(vtx_base + 0x5C, 0.0f);
+
+    /* Region 2: ColorVtx */
+    MEM_W32(vtx_base + 0x80, r2_color);
+    W_FLOAT(vtx_base + 0x84, 260.0f); W_FLOAT(vtx_base + 0x88, 140.0f); W_FLOAT(vtx_base + 0x8C, 0.0f);
+    MEM_W32(vtx_base + 0x90, r2_color);
+    W_FLOAT(vtx_base + 0x94, 380.0f); W_FLOAT(vtx_base + 0x98, 220.0f); W_FLOAT(vtx_base + 0x9C, 0.0f);
+
+    /* Region 3: TexVtx */
+    W_FLOAT(vtx_base + 0xC0, 0.0f); W_FLOAT(vtx_base + 0xC4, 0.0f);
+    W_FLOAT(vtx_base + 0xC8, 380.0f); W_FLOAT(vtx_base + 0xCC, 20.0f); W_FLOAT(vtx_base + 0xD0, 0.0f);
+    W_FLOAT(vtx_base + 0xD4, 8.0f); W_FLOAT(vtx_base + 0xD8, 8.0f);
+    W_FLOAT(vtx_base + 0xDC, 444.0f); W_FLOAT(vtx_base + 0xE0, 84.0f); W_FLOAT(vtx_base + 0xE4, 0.0f);
+
+    /* Region 4: Triangles ColorVtx */
+    MEM_W32(vtx_base + 0x100, r4_color);
+    W_FLOAT(vtx_base + 0x104, 100.0f); W_FLOAT(vtx_base + 0x108, 180.0f); W_FLOAT(vtx_base + 0x10C, 0.0f);
+    MEM_W32(vtx_base + 0x110, r4_color);
+    W_FLOAT(vtx_base + 0x114, 180.0f); W_FLOAT(vtx_base + 0x118, 180.0f); W_FLOAT(vtx_base + 0x11C, 0.0f);
+    MEM_W32(vtx_base + 0x120, r4_color);
+    W_FLOAT(vtx_base + 0x124, 100.0f); W_FLOAT(vtx_base + 0x128, 240.0f); W_FLOAT(vtx_base + 0x12C, 0.0f);
+    #undef W_FLOAT
+
+    /* Build display list */
+    uint32_t *dl = (uint32_t *)SR_HOST(dl_base);
+    int p = 0;
+    #define DL_CMD(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+
+    DL_CMD(0x10, (vtx_base >> 8) & 0x000F0000u);   /* GE_BASE = high 4 bits of vtx_base (0x00080000) */
+    DL_CMD(0x13, 0);                               /* GE_OFFSETADDR = 0 */
+    DL_CMD(0x4C, 0);                               /* GE_OFFSETX = 0 */
+    DL_CMD(0x4D, 0);                               /* GE_OFFSETY = 0 */
+    DL_CMD(0x9C, fb_base & 0x00FFFFFFu);           /* GE_FRAMEBUFPTR */
+    DL_CMD(0x9D, fb_stride | ((fb_base & 0xFF000000u) >> 8)); /* GE_FRAMEBUFWIDTH */
+    DL_CMD(0xD2, 3);                               /* GE_FRAMEBUFPIXFORMAT = RGBA8888 */
+    DL_CMD(0x15, 0);                               /* GE_REGION1 = (0,0) */
+    DL_CMD(0x16, ((fb_h - 1) << 10) | (fb_w - 1)); /* GE_REGION2 */
+    DL_CMD(0xD4, 0);                               /* GE_SCISSOR1 = (0,0) */
+    DL_CMD(0xD5, ((fb_h - 1) << 10) | (fb_w - 1)); /* GE_SCISSOR2 */
+    DL_CMD(0x23, 0);                               /* GE_ZTESTENABLE = 0 */
+    DL_CMD(0x22, 0);                               /* GE_ALPHATESTENABLE = 0 */
+    DL_CMD(0x21, 0);                               /* GE_ALPHABLENDENABLE = 0 */
+    DL_CMD(0x1E, 0);                               /* GE_TEXTUREMAPENABLE = 0 */
+
+    /* Step A: Clear screen via clear-mode sprite */
+    DL_CMD(0xD3, 0x301);                           /* GE_CLEARMODE = 0x301 (color+alpha clear) */
+    DL_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23)); /* GE_VERTEXTYPE = color + float pos + through */
+    DL_CMD(0x01, vtx_base & 0x00FFFFFFu);          /* GE_VADDR */
+    DL_CMD(0x04, (6 << 16) | 2);                   /* GE_PRIM = SPRITES (6), count = 2 */
+    DL_CMD(0xD3, 0);                               /* GE_CLEARMODE = 0 (disable clear mode) */
+
+    /* Step B: Draw Region 1 (Top-Left solid red rectangle) */
+    DL_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23)); /* GE_VERTEXTYPE */
+    DL_CMD(0x01, (vtx_base + 0x040) & 0x00FFFFFFu);/* GE_VADDR */
+    DL_CMD(0x04, (6 << 16) | 2);                   /* GE_PRIM = SPRITES, count = 2 */
+
+    /* Step C: Draw Region 2 (Bottom-Right solid green rectangle) */
+    DL_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23)); /* GE_VERTEXTYPE */
+    DL_CMD(0x01, (vtx_base + 0x080) & 0x00FFFFFFu);/* GE_VADDR */
+    DL_CMD(0x04, (6 << 16) | 2);                   /* GE_PRIM = SPRITES, count = 2 */
+
+    /* Step D: Draw Region 3 (Top-Right textured sprite) */
+    DL_CMD(0xA0, tex_base & 0x00FFFFFFu);          /* GE_TEXADDR0 */
+    DL_CMD(0xA8, 8 | ((tex_base & 0xFF000000u) >> 8)); /* GE_TEXBUFWIDTH0 = 8 */
+    DL_CMD(0xB8, (3 << 8) | 3);                    /* GE_TEXSIZE0 = 8x8 */
+    DL_CMD(0xC0, 0);                               /* GE_TEXMAPMODE = UV coordinates */
+    DL_CMD(0xC3, 3);                               /* GE_TEXFORMAT = RGBA8888 */
+    DL_CMD(0xC6, 0);                               /* GE_TEXFILTER = NEAREST */
+    DL_CMD(0xC7, 0);                               /* GE_TEXWRAP = CLAMP */
+    DL_CMD(0xC9, (1 << 8) | 3);                    /* GE_TEXFUNC = REPLACE with RGBA */
+    DL_CMD(0x1E, 1);                               /* GE_TEXTUREMAPENABLE = 1 */
+    DL_CMD(0x12, (3 << 0) | (3 << 7) | (1 << 23)); /* GE_VERTEXTYPE = UV + float pos + through */
+    DL_CMD(0x01, (vtx_base + 0x0C0) & 0x00FFFFFFu);/* GE_VADDR */
+    DL_CMD(0x04, (6 << 16) | 2);                   /* GE_PRIM = SPRITES, count = 2 */
+    DL_CMD(0x1E, 0);                               /* GE_TEXTUREMAPENABLE = 0 */
+
+    /* Step E: Draw Region 4 (Bottom-Left solid triangle) */
+    DL_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23)); /* GE_VERTEXTYPE */
+    DL_CMD(0x01, (vtx_base + 0x100) & 0x00FFFFFFu);/* GE_VADDR */
+    DL_CMD(0x04, (3 << 16) | 3);                   /* GE_PRIM = TRIANGLES, count = 3 */
+
+    /* Step F: Finish & End */
+    DL_CMD(0x0F, 0);                               /* GE_FINISH */
+    DL_CMD(0x0C, 0);                               /* GE_END */
+    #undef DL_CMD
+
+    /* Poison entire framebuffer with 0x5A */
+    memset(SR_HOST(fb_base), 0x5A, fb_stride * fb_h * 4u);
+
+    /* 4. Production Submission via sr_syscall(NID_SCE_GE_LIST_ENQUEUE) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = 0;       /* stall = 0 (run to completion) */
+    cpu.r[6] = 0;       /* cbid = 0 */
+    cpu.r[7] = 0;       /* cbarg = 0 */
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xFF000000u) == 0x35000000u,
+           "sceGeListEnQueue returns valid queue id (0x35xxxxxx)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "sceGeListSync confirms completed list status");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "sceGeDrawSync reports drawing complete");
+
+    /* 5. Pixel & Boundary assertions */
+    uint32_t *fb = (uint32_t *)SR_HOST(fb_base);
+
+    /* Check clear background at all 4 corners */
+    expect(fb[0 * fb_stride + 0] == bg_color, "framebuffer top-left corner is background color");
+    expect(fb[0 * fb_stride + (fb_w - 1)] == bg_color, "framebuffer top-right corner is background color");
+    expect(fb[(fb_h - 1) * fb_stride + 0] == bg_color, "framebuffer bottom-left corner is background color");
+    expect(fb[(fb_h - 1) * fb_stride + (fb_w - 1)] == bg_color, "framebuffer bottom-right corner is background color");
+
+    /* Region 1: (20,15) to (59,39) */
+    expect(fb[15 * fb_stride + 20] == r1_color, "Region 1 top-left pixel matches expected color");
+    expect(fb[27 * fb_stride + 35] == r1_color, "Region 1 interior pixel matches expected color");
+    expect(fb[39 * fb_stride + 59] == r1_color, "Region 1 bottom-right pixel matches expected color");
+    /* Region 1 boundary exclusivity */
+    expect(fb[15 * fb_stride + 19] == bg_color, "Region 1 left edge is bounded (background)");
+    expect(fb[15 * fb_stride + 60] == bg_color, "Region 1 right edge is bounded (background)");
+    expect(fb[14 * fb_stride + 20] == bg_color, "Region 1 top edge is bounded (background)");
+    expect(fb[40 * fb_stride + 20] == bg_color, "Region 1 bottom edge is bounded (background)");
+
+    /* Region 2: (260,140) to (379,219) */
+    expect(fb[140 * fb_stride + 260] == r2_color, "Region 2 top-left pixel matches expected color");
+    expect(fb[180 * fb_stride + 320] == r2_color, "Region 2 interior pixel matches expected color");
+    expect(fb[219 * fb_stride + 379] == r2_color, "Region 2 bottom-right pixel matches expected color");
+    /* Region 2 boundary exclusivity */
+    expect(fb[140 * fb_stride + 259] == bg_color, "Region 2 left edge is bounded (background)");
+    expect(fb[140 * fb_stride + 380] == bg_color, "Region 2 right edge is bounded (background)");
+    expect(fb[139 * fb_stride + 260] == bg_color, "Region 2 top edge is bounded (background)");
+    expect(fb[220 * fb_stride + 260] == bg_color, "Region 2 bottom edge is bounded (background)");
+
+    /* Region 3: Textured (380,20) to (443,83) */
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+    expect(fb[(20 + 2) * fb_stride + (380 + 2)] == tex[0 * 8 + 0],
+           "Region 3 textured texel (0,0) center matches source texture");
+    expect(fb[(20 + 7 * 8 + 2) * fb_stride + (380 + 7 * 8 + 2)] == tex[7 * 8 + 7],
+           "Region 3 textured texel (7,7) center matches source texture");
+    expect(fb[20 * fb_stride + 379] == bg_color, "Region 3 left edge is bounded (background)");
+    expect(fb[20 * fb_stride + 444] == bg_color, "Region 3 right edge is bounded (background)");
+
+    /* Region 4: Triangle (100,180)-(180,180)-(100,240) */
+    expect(fb[190 * fb_stride + 110] == r4_color, "Region 4 triangle interior pixel matches color");
+    expect(fb[230 * fb_stride + 160] == bg_color, "Region 4 outside hypotenuse is background color");
+
+    /* Anti-symmetry / Anti-mirror checks */
+    expect(fb[27 * fb_stride + (fb_w - 1 - 35)] == bg_color,
+           "Horizontally mirrored Region 1 is not mutated (anti-mirror pass)");
+    expect(fb[(fb_h - 1 - 27) * fb_stride + 35] == bg_color,
+           "Vertically mirrored Region 1 is not mutated (anti-mirror pass)");
+    expect(fb[150 * fb_stride + (fb_w - 1 - 320)] == bg_color,
+           "Horizontally mirrored Region 2 is not mutated (anti-mirror pass)");
+    expect(fb[(fb_h - 1 - 150) * fb_stride + 320] == bg_color,
+           "Vertically mirrored Region 2 is not mutated (anti-mirror pass)");
+
+    /* 6. Deterministic Canonical Region & Framebuffer Hashes */
+    uint64_t r1_hash = ge_sentinel_hash64_region(fb_base, fb_stride, 20, 15, 40, 25);
+    uint64_t r2_hash = ge_sentinel_hash64_region(fb_base, fb_stride, 260, 140, 120, 80);
+    uint64_t r3_hash = ge_sentinel_hash64_region(fb_base, fb_stride, 380, 20, 64, 64);
+    uint64_t r4_hash = ge_sentinel_hash64_region(fb_base, fb_stride, 100, 180, 80, 60);
+    uint64_t fb_hash = ge_sentinel_hash64_region(fb_base, fb_stride, 0, 0, fb_w, fb_h);
+
+    expect(r1_hash == 0x0eb6697557c1d045ULL,
+           "Region 1 matches canonical 64-bit FNV-1a hash (0x0eb6697557c1d045)");
+    expect(r2_hash == 0xbf1aca308f0c0a25ULL,
+           "Region 2 matches canonical 64-bit FNV-1a hash (0xbf1aca308f0c0a25)");
+    expect(r3_hash == 0x2158c050396fe725ULL,
+           "Region 3 matches canonical 64-bit FNV-1a hash (0x2158c050396fe725)");
+    expect(r4_hash == 0x04cfd0712d0f88e5ULL,
+           "Region 4 triangle matches canonical 64-bit FNV-1a hash (0x04cfd0712d0f88e5)");
+    expect(fb_hash == 0x6b749d6fd93580c5ULL,
+           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0x6b749d6fd93580c5)");
+
+    /* 7. Callback registration lifecycle */
+    const uint32_t cb_struct = 0x08920000u;
+    MEM_W32(cb_struct + 0, 0);  /* signal_func */
+    MEM_W32(cb_struct + 4, 0);  /* signal_arg */
+    MEM_W32(cb_struct + 8, 0);  /* finish_func */
+    MEM_W32(cb_struct + 12, 0); /* finish_arg */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb_struct;
+    uint32_t cbid = sr_syscall(&cpu, NID_SCE_GE_SET_CALLBACK);
+    expect(cbid < 16u, "sceGeSetCallback returns valid callback ID (< 16)");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_SCE_GE_UNSET_CALLBACK) == 0u,
+           "sceGeUnsetCallback unregisters callback successfully");
+
+    /* 8. Stalled list and sceGeListUpdateStallAddr test */
+    const uint32_t dl2_base = 0x08910000u;
+    uint32_t *dl2 = (uint32_t *)SR_HOST(dl2_base);
+    int p2 = 0;
+    #define DL2_CMD(cmd, val) dl2[p2++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    #define W_FLOAT2(addr, val) do { float _f = (val); uint32_t _u; memcpy(&_u, &_f, 4); MEM_W32((addr), _u); } while(0)
+
+    const uint32_t white_color = 0xFFFFFFFFu;
+    const uint32_t purple_color = 0xFF880088u;
+
+    /* Setup clear-to-white vertices at vtx_base + 0x180 */
+    MEM_W32(vtx_base + 0x180, white_color);
+    W_FLOAT2(vtx_base + 0x184, 0.0f); W_FLOAT2(vtx_base + 0x188, 0.0f); W_FLOAT2(vtx_base + 0x18C, 0.0f);
+    MEM_W32(vtx_base + 0x190, white_color);
+    W_FLOAT2(vtx_base + 0x194, 480.0f); W_FLOAT2(vtx_base + 0x198, 272.0f); W_FLOAT2(vtx_base + 0x19C, 0.0f);
+
+    /* Setup purple rectangle vertices at vtx_base + 0x140 */
+    MEM_W32(vtx_base + 0x140, purple_color);
+    W_FLOAT2(vtx_base + 0x144, 50.0f); W_FLOAT2(vtx_base + 0x148, 50.0f); W_FLOAT2(vtx_base + 0x14C, 0.0f);
+    MEM_W32(vtx_base + 0x150, purple_color);
+    W_FLOAT2(vtx_base + 0x154, 90.0f); W_FLOAT2(vtx_base + 0x158, 90.0f); W_FLOAT2(vtx_base + 0x15C, 0.0f);
+
+    DL2_CMD(0x10, (vtx_base >> 8) & 0x000F0000u);
+    DL2_CMD(0x13, 0);
+    DL2_CMD(0x4C, 0);
+    DL2_CMD(0x4D, 0);
+    DL2_CMD(0x9C, fb_base & 0x00FFFFFFu);
+    DL2_CMD(0x9D, fb_stride | ((fb_base & 0xFF000000u) >> 8));
+    DL2_CMD(0xD2, 3);
+    DL2_CMD(0x15, 0);
+    DL2_CMD(0x16, ((fb_h - 1) << 10) | (fb_w - 1));
+    DL2_CMD(0xD4, 0);
+    DL2_CMD(0xD5, ((fb_h - 1) << 10) | (fb_w - 1));
+    DL2_CMD(0x23, 0); DL2_CMD(0x22, 0); DL2_CMD(0x21, 0); DL2_CMD(0x1E, 0);
+
+    /* Clear to white */
+    DL2_CMD(0xD3, 0x301);
+    DL2_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23));
+    DL2_CMD(0x01, (vtx_base + 0x180) & 0x00FFFFFFu);
+    DL2_CMD(0x04, (6 << 16) | 2);
+    DL2_CMD(0xD3, 0);
+
+    /* Part 1 end (stall here): address dl2_base + p2*4 */
+    uint32_t stall_point = dl2_base + (uint32_t)(p2 * 4);
+
+    /* Part 2: Draw purple rectangle */
+    DL2_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23));
+    DL2_CMD(0x01, (vtx_base + 0x140) & 0x00FFFFFFu);
+    DL2_CMD(0x04, (6 << 16) | 2);
+    DL2_CMD(0x0F, 0);
+    DL2_CMD(0x0C, 0);
+    uint32_t end_point = dl2_base + (uint32_t)(p2 * 4);
+    #undef W_FLOAT2
+    #undef DL2_CMD
+
+    /* Submit with stall at stall_point */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl2_base;
+    cpu.r[5] = stall_point;
+    cpu.r[6] = 0;
+    cpu.r[7] = 0;
+    uint32_t qid2 = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid2 & 0xFF000000u) == 0x35000000u,
+           "sceGeListEnQueue with stall returns valid queue id");
+
+    /* Stalled list sync with syncType=1 returns 1 (stalled) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid2;
+    cpu.r[5] = 1;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
+           "sceGeListSync(syncType=1) reports list is currently stalled");
+
+    /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
+    expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
+    expect(fb[60 * fb_stride + 60] == white_color, "purple rect not yet rendered before stall advance");
+
+    /* Advance stall to end_point via sceGeListUpdateStallAddr */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid2;
+    cpu.r[5] = end_point;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "sceGeListUpdateStallAddr advances stall address and resumes execution");
+
+    /* Now list is completed */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid2;
+    cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "sceGeListSync confirms completed list after stall advance");
+
+    /* Purple rectangle is now rendered */
+    expect(fb[60 * fb_stride + 60] == purple_color,
+           "resumed list rendered purple rectangle to completion");
+}
+
+
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
     sr_hle_init();
@@ -6909,6 +7316,7 @@ int main(int argc, char **argv) {
     test_audio_regular_contract_safety();
     test_ctrl_read_buffer_contract();
     test_nested_guest_call_abi();
+    test_ge_guest_sentinel();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();
