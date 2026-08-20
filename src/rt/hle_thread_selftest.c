@@ -43,6 +43,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <process.h>
 
 extern void sr_vblank_tick(void);
 
@@ -6359,9 +6360,58 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
 }
 
+/* sceKernelExitGame is `void sceKernelExitGame(void)`:
+ *   - PSPSDK psp/sdk/include/psploadexec.h declares it with no parameter, and
+ *     every psp/sdk/samples call site invokes it with no argument.
+ *   - PPSSPP registers NID 0x05572a5f as WrapV_V with the empty argument
+ *     signature "" (Core/HLE/sceKernel.cpp).
+ * Both are CORROBORATIVE_ONLY inputs; the executable check below is the host
+ * evidence. Because the call takes no argument, $a0 at entry holds whatever the
+ * caller last left there, so the host process result must not be derived from
+ * it. The child mode poisons all four argument registers and the parent asserts
+ * the observed process result. */
+#define EXITGAME_POISON 0xDEADBEEFu
+#define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
+
+static int run_exit_game_poisoned(void) {
+    CpuState cpu;
+    g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
+    if (!g_mem_base) return 2;
+    g_mem = g_mem_base + 0x08000000u;
+    s_cpu = &s_cpu_store;
+    sched_init(&s_cpu_store);
+    sr_hle_init();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = EXITGAME_POISON;   /* $a0 */
+    cpu.r[5] = EXITGAME_POISON;   /* $a1 */
+    cpu.r[6] = EXITGAME_POISON;   /* $a2 */
+    cpu.r[7] = EXITGAME_POISON;   /* $a3 */
+    (void)sr_syscall(&cpu, 0x05572a5fu);
+    return EXITGAME_RETURNED;
+}
+
+static void test_exit_game_ignores_argument_registers(const char *self) {
+    intptr_t rc;
+    if (!self) {
+        expect(0, "exit-game regression knows its own executable path");
+        return;
+    }
+    rc = _spawnl(_P_WAIT, self, self, "--exit-game-poisoned", (const char *)NULL);
+    expect(rc != -1, "exit-game child process starts");
+    if (rc == -1) return;
+    expect(rc != (intptr_t)EXITGAME_RETURNED,
+           "dispatching sceKernelExitGame terminates the process instead of returning");
+    expect(((unsigned long long)rc & 0xffffffffull) != (unsigned long long)EXITGAME_POISON,
+           "sceKernelExitGame does not adopt a poisoned $a0 as the process result");
+    expect(rc == 0,
+           "a no-argument sceKernelExitGame yields a zero host process result");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
+    if (argc > 1 && strcmp(argv[1], "--exit-game-poisoned") == 0)
+        return run_exit_game_poisoned();
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) {
         fprintf(stderr, "hle_thread_selftest: cannot allocate guest arena\n");
@@ -6395,6 +6445,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();
     test_display_framebuf_latch();
