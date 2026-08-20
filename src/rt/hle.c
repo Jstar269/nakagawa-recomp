@@ -5934,18 +5934,57 @@ static uint32_t h_IoGetstat(CpuState *s) {
 extern void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR);
 /* Slots 0..7 are the regular hardware channels. Slot 8 models the separate
  * sceAudioOutput2 channel, which has its own reservation and queue. */
-static int s_audio_ch[9], s_audio_fmt[9];   /* fmt: 0=stereo, 1=mono */
+static int s_audio_ch[9], s_audio_fmt[9];   /* regular fmt: 0=stereo, 0x10=mono */
 static uint32_t s_audio_len[9];
+
+/* Public contract vocabulary pinned to PSPSDK src/audio/pspaudio.h at
+ * 314b2083f2e1eaf145fc5de342736336fe1f0148 and PSPAutotests
+ * tests/audio/sceaudio/{reserve,datalen}.{c,expected} at
+ * ea71108f00933712c4662276261b39cd42249b1e. Those sources are corroborative
+ * inputs; the executable checks in this tree are host evidence. */
+#define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
+#define SCE_AUDIO_ERROR_OUTPUT_BUSY     0x80260002u
+#define SCE_AUDIO_ERROR_INVALID_CH      0x80260003u
+#define SCE_AUDIO_ERROR_NOT_FOUND       0x80260005u
+#define SCE_AUDIO_ERROR_INVALID_SIZE    0x80260006u
+#define SCE_AUDIO_ERROR_INVALID_FORMAT  0x80260007u
+#define SCE_AUDIO_ERROR_NOT_RESERVED    0x80260008u
+#define SCE_AUDIO_ERROR_INVALID_VOL     0x8026000bu
+#define PSP_AUDIO_FORMAT_STEREO         0u
+#define PSP_AUDIO_FORMAT_MONO           0x10u
+#define PSP_AUDIO_SAMPLE_MIN            64u
+#define PSP_AUDIO_SAMPLE_MAX            65472u
+
+static int audio_regular_sample_count_valid(uint32_t frames) {
+    return frames >= PSP_AUDIO_SAMPLE_MIN && frames <= PSP_AUDIO_SAMPLE_MAX &&
+           (frames & 63u) == 0u;
+}
+
 static uint32_t h_AudioChReserve(CpuState *s) {
-    int ch = (int)A0;
-    if (ch < 0) { for (int i = 0; i < 8; i++) if (!s_audio_ch[i]) { ch = i; break; } }
-    if (ch < 0 || ch >= 8) return 0xFFFFFFFF;
-    s_audio_ch[ch] = 1; s_audio_len[ch] = A1; s_audio_fmt[ch] = (int)A2 & 1;
+    int32_t ch = (int32_t)A0;
+    if (ch < 0) {
+        ch = -1;
+        for (int32_t i = 0; i < 8; i++) {
+            if (!s_audio_ch[i]) { ch = i; break; }
+        }
+        if (ch < 0) return SCE_AUDIO_ERROR_NOT_FOUND;
+    }
+    if (ch >= 8) return SCE_AUDIO_ERROR_INVALID_CH;
+    if (!audio_regular_sample_count_valid(A1)) return SCE_AUDIO_ERROR_INVALID_SIZE;
+    if (A2 != PSP_AUDIO_FORMAT_STEREO && A2 != PSP_AUDIO_FORMAT_MONO)
+        return SCE_AUDIO_ERROR_INVALID_FORMAT;
+    if (s_audio_ch[ch]) return SCE_AUDIO_ERROR_INVALID_CH;
+    s_audio_ch[ch] = 1;
+    s_audio_len[ch] = A1;
+    s_audio_fmt[ch] = (int)A2;
     return (uint32_t)ch;
 }
 static uint32_t h_AudioChRelease(CpuState *s) { if (A0 < 8) s_audio_ch[A0] = 0; return 0; }
 static uint32_t h_AudioSetChannelDataLen(CpuState *s) {
-    if (A0 < 8 && A1 > 0 && A1 <= 65536) s_audio_len[A0] = A1;
+    if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
+    if (!s_audio_ch[A0]) return SCE_AUDIO_ERROR_NOT_INITIALIZED;
+    if (!audio_regular_sample_count_valid(A1)) return SCE_AUDIO_ERROR_INVALID_SIZE;
+    s_audio_len[A0] = A1;
     return 0;
 }
 /* Read a guest sample buffer, expand mono to stereo, hand to the backend, then block until
@@ -5979,13 +6018,46 @@ static void audio_note_buf(uint32_t ch, uint32_t buf) {
     if (g_audio_nbufs[ch] < 4) g_audio_bufs[ch][g_audio_nbufs[ch]++] = buf;
 }
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Read-only regular-audio state for production-dispatch contract regressions.
+ * The reset is test-build-only because sr_hle_init() is process-global while the
+ * executable harness deliberately runs many isolated synthetic fixtures. */
+void sr_hle_test_audio_reset(void) {
+    memset(s_audio_ch, 0, sizeof(s_audio_ch));
+    memset(s_audio_fmt, 0, sizeof(s_audio_fmt));
+    memset(s_audio_len, 0, sizeof(s_audio_len));
+    memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
+    memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
+    memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
+}
+
+int sr_hle_test_audio_state(uint32_t ch, int *reserved, uint32_t *frames, int *format) {
+    if (ch >= 8u) return 0;
+    if (reserved) *reserved = s_audio_ch[ch];
+    if (frames)   *frames   = s_audio_len[ch];
+    if (format)   *format   = s_audio_fmt[ch];
+    return 1;
+}
+#endif
+
 static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, int volr) {
     (void)s;
     uint32_t n = ch < 9 ? s_audio_len[ch] : 1024;
+    int mono = ch < 9 && s_audio_fmt[ch] == (int)PSP_AUDIO_FORMAT_MONO;
+    uint32_t bytes = 0;
+
+    /* Validate the complete source span before telemetry, scalar reads, backend
+     * submission, host-queue observation, or scheduler delay. A null buffer is
+     * intentionally preserved: public PSPAutotests show it is accepted by the
+     * regular blocking API, and this path has never dereferenced it. */
+    if (buf && n > 0u &&
+        (!sr_size_mul_ok(n, mono ? 2u : 4u, &bytes) ||
+         !sr_guest_span_readable(buf, bytes)))
+        return 0x80000103u; /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+
     if (audio_stat_on()) audio_note_buf(ch, buf);
     if (buf && n > 0 && n <= 65536) {
         static int16_t lr[65536 * 2];
-        int mono = ch < 9 ? s_audio_fmt[ch] : 0;
         for (uint32_t i = 0; i < n; i++) {
             if (mono) { int16_t v = (int16_t)MEM_R16(buf + i * 2); lr[i*2] = v; lr[i*2+1] = v; }
             else { lr[i*2] = (int16_t)MEM_R16(buf + i * 4); lr[i*2+1] = (int16_t)MEM_R16(buf + i * 4 + 2); }
@@ -5997,8 +6069,14 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
         sched_delay_current(n ? audio_frames_to_us(ch, n) : 1000u);
         return n;
     }
-    while ((q = sr_audio_queued((int)ch)) > (int)n)
-        sched_delay_current(audio_frames_to_us(ch, (uint32_t)(q - (int)n)));
+    /* sr_audio_queued() is signed only so the backend can report -1. Once that
+     * sentinel is excluded, keep the frame comparison/subtraction unsigned;
+     * never narrow the guest-derived frame count into the signed queue domain.
+     * This form is defense in depth, not a repaired defect: with the reserve and
+     * SetChannelDataLen size contracts above, n can no longer exceed INT_MAX, so
+     * no production dispatch distinguishes it and it has no failing-before. */
+    while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > n)
+        sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - n));
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {
@@ -6011,10 +6089,20 @@ static uint32_t h_AudioOutputPannedBlocking(CpuState *s) {
 }
 static uint32_t h_AudioRestLen(CpuState *s) { (void)s; return 0; }         /* never backed up */
 
-#define SCE_AUDIO_ERROR_OUTPUT_BUSY  0x80260002u
-#define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
-#define SCE_AUDIO_ERROR_NOT_RESERVED 0x80260008u
-#define SCE_AUDIO_ERROR_INVALID_VOL  0x8026000bu
+/* Keep the executable audio contract harness on the exact production NID
+ * mapping without exposing the separate Output2 family to that focused test. */
+static void hle_register_regular_audio_handlers(void) {
+    sr_hle_register(0x5ec81c55, "sceAudioChReserve", h_AudioChReserve);
+    sr_hle_register(0x6fc46853, "sceAudioChRelease", h_AudioChRelease);
+    sr_hle_register(0x136caf51, "sceAudioOutputBlocking", h_AudioOutputBlocking);
+    sr_hle_register(0x13f592bc, "sceAudioOutputPannedBlocking", h_AudioOutputPannedBlocking);
+    sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
+    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_ok);
+    sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
+    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
+    sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
+}
+
 #define AUDIO_OUTPUT2_CHANNEL 8u
 
 static uint32_t h_AudioOutput2Reserve(CpuState *s) {
@@ -9966,6 +10054,7 @@ void sr_hle_init(void) {
     /* Wait/blocking APIs the issue #88 conformance matrix enters -- the same
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
+    hle_register_regular_audio_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -10120,16 +10209,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoWaitAsync);
     sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
     sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
-    /* sceAudio */
-    sr_hle_register(0x5ec81c55, "sceAudioChReserve", h_AudioChReserve);
-    sr_hle_register(0x6fc46853, "sceAudioChRelease", h_AudioChRelease);
-    sr_hle_register(0x136caf51, "sceAudioOutputBlocking", h_AudioOutputBlocking);
-    sr_hle_register(0x13f592bc, "sceAudioOutputPannedBlocking", h_AudioOutputPannedBlocking);
-    sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
-    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_ok);
-    sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
-    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
-    sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
+    /* sceAudio regular channels share one production mapping with the executable
+     * contract harness. Output2 remains production-only and otherwise unchanged. */
+    hle_register_regular_audio_handlers();
     sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
     sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
     sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
