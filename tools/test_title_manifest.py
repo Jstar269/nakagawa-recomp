@@ -51,6 +51,45 @@ class TitleManifestTests(unittest.TestCase):
             "^[A-Za-z_][A-Za-z0-9_]*$",
         )
 
+    def test_schema_enums_equal_the_python_vocabularies(self) -> None:
+        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        contract = schema["$defs"]["runtimeContract"]["properties"]
+        profile_zero_case = (
+            schema["$defs"]["profileZero"]["properties"]["acceptance"]
+            ["properties"]["cases"]["items"]["properties"]
+        )
+        pairs = (
+            (
+                "runtimeContract.capability_requirements",
+                contract["capability_requirements"]["items"]["enum"],
+                title_manifest.CORE_CONTRACT_CAPABILITIES,
+            ),
+            (
+                "runtimeContract.hle_overrides[].evidence_class",
+                contract["hle_overrides"]["items"]["properties"]["evidence_class"]["enum"],
+                title_manifest.EVIDENCE_CLASSES,
+            ),
+            (
+                "profileZero.acceptance.cases[].evidence_class",
+                profile_zero_case["evidence_class"]["enum"],
+                title_manifest.PROFILE_ZERO_EVIDENCE_CLASSES,
+            ),
+        )
+        for name, published, authoritative in pairs:
+            with self.subTest(enum=name):
+                self.assertEqual(len(published), len(set(published)), "schema enum has duplicate members")
+                self.assertEqual(
+                    set(published),
+                    set(authoritative),
+                    f"schema enum {name} drifted from the Python vocabulary",
+                )
+        self.assertEqual(
+            title_manifest.EVIDENCE_CLASSES - title_manifest.PROFILE_ZERO_EVIDENCE_CLASSES,
+            title_manifest.PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES,
+        )
+        self.assertIn("PRIVATE_TITLE_ACCEPTANCE", title_manifest.PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES)
+        self.assertNotIn("PRIVATE_TITLE_ACCEPTANCE", profile_zero_case["evidence_class"]["enum"])
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON object key"):
             title_manifest.loads_manifest('{"schema_version":1,"schema_version":1}')

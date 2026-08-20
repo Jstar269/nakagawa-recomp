@@ -318,7 +318,7 @@
                 "properties": {
                   "id": {"$ref": "#/$defs/identifier"},
                   "status": {"enum": ["planned", "implemented", "blocked"]},
-                  "evidence_class": {"enum": ["PSP_HARDWARE", "PRODUCTION_DISPATCH", "PRODUCTION_HELPER", "MODEL_REFERENCE", "HOST_DIFFERENTIAL", "SOURCE_SHAPE", "PRIVATE_TITLE_ACCEPTANCE"]},
+                  "evidence_class": {"enum": ["PSP_HARDWARE", "PRODUCTION_DISPATCH", "PRODUCTION_HELPER", "MODEL_REFERENCE", "HOST_DIFFERENTIAL", "SOURCE_SHAPE"]},
                   "assertion": {"type": "string", "minLength": 1, "maxLength": 512}
                 }
               }

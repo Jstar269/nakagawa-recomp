@@ -53,6 +53,12 @@ EVIDENCE_CLASSES = frozenset({
     "PSP_HARDWARE", "PRODUCTION_DISPATCH", "PRODUCTION_HELPER", "MODEL_REFERENCE",
     "HOST_DIFFERENTIAL", "SOURCE_SHAPE", "PRIVATE_TITLE_ACCEPTANCE",
 })
+# Profile zero is the public synthetic surface: it may never cite evidence that
+# only a private title run can produce. These two names are the authoritative
+# vocabulary; assets/title_manifest.schema.json must publish exactly the same
+# set, and tools/test_title_manifest.py asserts that mechanically.
+PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES = frozenset({"PRIVATE_TITLE_ACCEPTANCE"})
+PROFILE_ZERO_EVIDENCE_CLASSES = EVIDENCE_CLASSES - PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES
 
 
 class TitleManifestError(ValueError):
@@ -438,7 +444,7 @@ def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
         evidence_class = text(item["evidence_class"], f"{item_path}.evidence_class", 32)
         if evidence_class not in EVIDENCE_CLASSES:
             fail(f"{item_path}.evidence_class", "unknown evidence class")
-        if evidence_class == "PRIVATE_TITLE_ACCEPTANCE":
+        if evidence_class in PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES:
             fail(f"{item_path}.evidence_class", "profile zero cannot contain private-title evidence")
         cases.append({
             "id": case_id,
