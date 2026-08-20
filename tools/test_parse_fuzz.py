@@ -140,6 +140,8 @@ class TestParseFuzz(unittest.TestCase):
     def test_seed_mutation_stream_reports_reached_stages(self) -> None:
         rng = random.Random(0x51F7)
         seed = bytearray(valid_seed_prx())
+        reached_analyze = 0
+        reached_imports = 0
         for _ in range(1500):
             data = bytearray(seed)
             ops = rng.randint(1, 12)
@@ -160,11 +162,15 @@ class TestParseFuzz(unittest.TestCase):
                     pos = rng.randrange(len(data) - 3)
                     struct.pack_into("<I", data, pos, rng.randrange(0x100000000))
             report = exercise(bytes(data), rng.choice([0, SEED_BASE]), self.path)
+            reached_analyze += report["analyze"] != "not_reached"
+            reached_imports += report["imports"] != "not_reached"
             if report["prx"] == "rejected":
                 self.assertEqual(report["analyze"], "not_reached")
                 self.assertEqual(report["imports"], "not_reached")
             elif report["analyze"] == "rejected":
                 self.assertEqual(report["imports"], "not_reached")
+        self.assertGreater(reached_analyze, 0, "mutations never reached analyze.Elf")
+        self.assertGreater(reached_imports, 0, "mutations never reached parse_imports")
 
     def test_valid_seed_is_accepted(self) -> None:
         report = exercise(valid_seed_prx(), SEED_BASE, self.path)
