@@ -4364,7 +4364,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "54ab0f649af47443f53f0890e5710ad1dd521c25a79ec6dc1d28f0c44dcadcb1"
+      "sha256": "510ffcccc9ce7564ac83b5b3d2f9025cec4436a69773bfdd0ebf44132df7a662"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4376,7 +4376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d9ad7ba665e435e55b2c9d9784999811e1fefbc6d89b88dc61092af71b8efe08"
+      "sha256": "b003adcfb43fe889d8a5620931b2f55bd55f4533a01a7b1d1c6cc54f0a402736"
     },
     {
       "path": "src/rt/intr_conformance.h",
