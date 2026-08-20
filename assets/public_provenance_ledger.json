@@ -4827,7 +4827,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "196ace4849072ec1a92f82d7b11b138741c0cd0c6cf2f085b5136ce0f9e07684"
+      "sha256": "8288d93f6ee63e6646739845f3d14a3b9275bc60d64169e60d2b09af5022f693"
     },
     {
       "path": "src/rt/watchpoints_file.c",
@@ -4904,7 +4904,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4520b5079ae1d3e7cb510fa96e3edffb1626c608b3456ec360b1ae3c9ae00fee"
+      "sha256": "a79748ed4b89dcfe1031c2884915101044d1e80d5a83fa6778bfd39145ecf30b"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5983,7 +5983,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "77570a7815c04d4b127eabbb5b3b46e8e2a9596f9e91344c27a9685dd336b844"
+      "sha256": "1c8025e0a229b7de7a0ef912776718782e34946df7a012fd2be2ecdd09773988"
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
@@ -6724,7 +6724,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e81d45c760cfaf9829fafbe9311d607b80ef5a36cba8f5653ba2a818007e5e2c"
+      "sha256": "424524a98e7238c44f616c4efcb127063c3c89b48e1f6c4937aeb0b2c00270ed"
     },
     {
       "path": "tools/test_progress_evidence.py",

@@ -96,6 +96,30 @@ int main(void) {
     ASSERT_INT_EQ(len, 11);
     ASSERT_STR_EQ(out, "fs/..bashrc");
 
+    /* Test 16: a root-only result must not inspect poisoned bytes beyond the
+     * returned length. The canary also proves the helper respected max. */
+    struct {
+        char out[32];
+        unsigned char canary[16];
+    } poisoned;
+    memset(&poisoned, 0xA5, sizeof(poisoned));
+    poisoned.out[3] = '.';
+    poisoned.out[4] = '.';
+    poisoned.out[5] = '\\';
+    len = sr_vfs_host_dir_path("fs", "ms0:/", poisoned.out,
+                               sizeof(poisoned.out), '\\');
+    ASSERT_INT_EQ(len, 2);
+    ASSERT_STR_EQ(poisoned.out, "fs");
+    ASSERT_INT_EQ((unsigned char)poisoned.out[3], (unsigned char)'.');
+    ASSERT_INT_EQ((unsigned char)poisoned.out[4], (unsigned char)'.');
+    for (size_t i = 0; i < sizeof(poisoned.canary); i++) {
+        if (poisoned.canary[i] != 0xA5) {
+            fprintf(stderr, "FAIL L%d: output overran canary at %zu\n", __LINE__, i);
+            g_failed = 1;
+            break;
+        }
+    }
+
     /* ---- hostile-path containment matrix (security lane) ----
      * Both host-path mappings must keep every guest-controlled string inside
      * the root: sr_vfs_host_dir_path (read-only enumeration) rejects ".."
@@ -120,14 +144,13 @@ int main(void) {
         len = sr_vfs_host_flat_path("fs", flat_contained[i], out, sizeof(out));
         ASSERT_INT_EQ(len > 0, 1);
         if (len > 0) {
-            const char *p = out + 3;
-            if (strncmp(out, "fs/", 3) != 0 && strncmp(out, "fs\\", 3) != 0) {
+            if (len < 3 || (strncmp(out, "fs/", 3) != 0 && strncmp(out, "fs\\", 3) != 0)) {
                 fprintf(stderr, "FAIL L%d: '%s' -> '%s' escapes the root\n",
                         __LINE__, flat_contained[i], out);
                 g_failed = 1;
             }
-            for (const char *q = p; *q; q++) {
-                if (*q == '/' || *q == '\\' || *q == ':') {
+            for (size_t pos = len >= 3 ? 3u : (size_t)len; pos < (size_t)len; pos++) {
+                if (out[pos] == '/' || out[pos] == '\\' || out[pos] == ':') {
                     fprintf(stderr, "FAIL L%d: '%s' -> '%s' contains a path metacharacter\n",
                             __LINE__, flat_contained[i], out);
                     g_failed = 1;
@@ -181,17 +204,16 @@ int main(void) {
                     __LINE__, dir_hostile[i], out);
             g_failed = 1;
         }
-        for (const char *q = out + 3; ; ) {
-            const char *start = q;
-            while (*q && *q != '\\') q++;
-            if (q - start == 2 && start[0] == '.' && start[1] == '.') {
+        for (size_t pos = len >= 3 ? 3u : (size_t)len; pos < (size_t)len; ) {
+            size_t start = pos;
+            while (pos < (size_t)len && out[pos] != '\\') pos++;
+            if (pos - start == 2u && out[start] == '.' && out[start + 1] == '.') {
                 fprintf(stderr, "FAIL L%d: '%s' -> '%s' contains a '..' component\n",
                         __LINE__, dir_hostile[i], out);
                 g_failed = 1;
                 break;
             }
-            if (!*q) break;
-            q++;
+            if (pos < (size_t)len) pos++;
         }
     }
 

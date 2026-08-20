@@ -1054,7 +1054,7 @@ def _fmt_value(key, val):
     if isinstance(val, int):
         return str(val)
     text = str(val)
-    if any(ord(c) < 0x20 for c in text):
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         raise ValueError(f"cannot emit control characters into TOML: {key!r}")
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 

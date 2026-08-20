@@ -13,6 +13,7 @@ control characters fail closed instead of being emitted raw.
 from __future__ import annotations
 
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -36,9 +37,15 @@ class TestTomlEmit(unittest.TestCase):
         self.assertEqual(_fmt_value("size", 42), "42")
 
     def test_control_characters_are_rejected_fail_closed(self):
-        for hostile in ("a\nb", "a\rb", "a\tb", "a\x01b", "\x00", "a\x1fb"):
+        for hostile in ("a\nb", "a\rb", "a\tb", "a\x01b", "\x00", "a\x1fb", "a\x7fb"):
             with self.assertRaisesRegex(ValueError, "control"):
                 _fmt_value("note", hostile)
+
+    def test_printable_unicode_output_is_toml_parseable(self):
+        value = "café π 🙂"
+        rendered = _fmt_value("note", value)
+        parsed = tomllib.loads(f"note = {rendered}\n")
+        self.assertEqual(parsed["note"], value)
 
 
 if __name__ == "__main__":

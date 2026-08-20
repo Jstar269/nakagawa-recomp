@@ -33,49 +33,85 @@ sys.path.insert(0, str(ROOT / "tools"))
 import analyze  # noqa: E402
 import imports  # noqa: E402
 import prxload  # noqa: E402
+from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 
 
-def valid_seed_elf() -> bytes:
-    """A minimal but structurally complete ELF: header, PT_LOAD, and one
-    type-A relocation section so mutations can reach the relocation code."""
-    phoff = 52
-    blob = bytearray(phoff + 32 * 2 + 64)  # 2 phdrs + payload
-    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
-    struct.pack_into("<H", blob, 16, 2)  # ET_EXEC
-    struct.pack_into("<III", blob, 24, 0, phoff, 0)
-    struct.pack_into("<HHHHH", blob, 42, 32, 2, 0, 0, 0)
-    # PT_LOAD at vaddr 0x08000000 with a 64-byte payload.
-    struct.pack_into("<8I", blob, phoff, 1, phoff + 64, 0x08000000, 0, 64, 64, 5, 4)
-    # A relocation-type program header (the analyzer's section fallback).
-    struct.pack_into("<8I", blob, phoff + 32, 0x700000A0, phoff + 64, 0, 0, 64, 64, 3, 4)
-    # All-zero reloc payload: (offset=0, info=0) pairs are benign (R_MIPS_NONE),
-    # so the seed passes prxload.relocate() and mutations can reach deep paths.
-    blob[phoff + 64:] = b"\x00" * 64
-    return bytes(blob)
+SEED_BASE = 0x08804000
 
 
-def exercise(data: bytes, base: int, path: Path) -> str:
-    """Run every parser over one input; ValueError is the only acceptable
-    failure mode. Returns 'rejected' or 'accepted'."""
-    path.write_bytes(data)
+def valid_seed_prx() -> bytes:
+    """A deterministic synthetic PRX with module-info and one import stub.
+
+    The shared builder is deliberately public/synthetic and gives the fuzz
+    stream a seed that passes the PRX loader, analyzer, and import parser.
+    """
+    blob, _ = build_synthetic_import_prx(b"sceDisplay", SEED_BASE)
+    return blob
+
+
+def _run_stage(stage: str, action, data: bytes):
+    """Run one parser stage, allowing only its documented malformed-input error.
+
+    A library ``SystemExit`` is converted to an assertion failure with the
+    stage and input summary. Other exception types are deliberately not caught:
+    unittest must expose them as parser escapes rather than hiding them.
+    """
     try:
+        return "accepted", action()
+    except ValueError as exc:
+        return "rejected", str(exc)
+    except SystemExit as exc:
+        raise AssertionError(
+            f"{stage} raised SystemExit for {describe(data)}: {exc!r}"
+        ) from exc
+
+
+def exercise(data: bytes, base: int, path: Path) -> dict[str, object]:
+    """Run the parser pipeline and report the stage reached by the input.
+
+    A rejected stage stops the dependent stages and marks them ``not_reached``;
+    it is not reported as if every parser had consumed the same bytes.
+    """
+    path.write_bytes(data)
+    report = {
+        "prx": "not_reached",
+        "analyze": "not_reached",
+        "imports": "not_reached",
+        "module_info": False,
+        "import_count": None,
+    }
+
+    def load_prx():
         prx = prxload.Prx(str(path), base)
         prx.relocate()
-    except ValueError:
-        return "rejected"
-    try:
-        elf = analyze.Elf(str(path))
-        imports.parse_imports(elf)
-    except ValueError:
-        pass
-    return "accepted"
+        return prx
+
+    status, _ = _run_stage("prx", load_prx, data)
+    report["prx"] = status
+    if status == "rejected":
+        return report
+
+    status, elf = _run_stage(
+        "analyze", lambda: analyze.Elf(str(path), base), data
+    )
+    report["analyze"] = status
+    if status == "rejected":
+        return report
+
+    report["module_info"] = elf.sec(".rodata.sceModuleInfo") is not None
+    status, parsed = _run_stage(
+        "imports", lambda: imports.parse_imports(elf), data
+    )
+    report["imports"] = status
+    if status == "accepted":
+        report["import_count"] = len(parsed)
+    return report
 
 
 def describe(data: bytes) -> str:
-    head = data[:32].hex()
     import hashlib
 
-    return f"len={len(data)} sha256={hashlib.sha256(data).hexdigest()[:16]} head={head}"
+    return f"len={len(data)} sha256={hashlib.sha256(data).hexdigest()[:16]} bytes={data.hex()}"
 
 
 class TestParseFuzz(unittest.TestCase):
@@ -88,20 +124,22 @@ class TestParseFuzz(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def test_random_blob_stream_never_escapes_valueerror(self) -> None:
+    def test_random_blob_stream_reports_reached_stages(self) -> None:
         rng = random.Random(0x5EE7)
         for _ in range(1500):
             n = rng.randint(1, 2048)
             data = rng.randbytes(n)
             base = rng.choice([0, 0x08000000, 0x08004000, 0xFFFFFFFF])
-            try:
-                exercise(data, base, self.path)
-            except Exception as exc:  # noqa: BLE001 - any escape is the bug
-                self.fail(f"parser escaped ValueError as {exc!r} for {describe(data)}")
+            report = exercise(data, base, self.path)
+            if report["prx"] == "rejected":
+                self.assertEqual(report["analyze"], "not_reached")
+                self.assertEqual(report["imports"], "not_reached")
+            elif report["analyze"] == "rejected":
+                self.assertEqual(report["imports"], "not_reached")
 
-    def test_seed_mutation_stream_never_escapes_valueerror(self) -> None:
+    def test_seed_mutation_stream_reports_reached_stages(self) -> None:
         rng = random.Random(0x51F7)
-        seed = bytearray(valid_seed_elf())
+        seed = bytearray(valid_seed_prx())
         for _ in range(1500):
             data = bytearray(seed)
             ops = rng.randint(1, 12)
@@ -121,14 +159,39 @@ class TestParseFuzz(unittest.TestCase):
                 elif kind == 4 and data:  # header word scribble
                     pos = rng.randrange(len(data) - 3)
                     struct.pack_into("<I", data, pos, rng.randrange(0x100000000))
-            base = rng.choice([0, 0x08000000])
-            try:
-                exercise(bytes(data), base, self.path)
-            except Exception as exc:  # noqa: BLE001 - any escape is the bug
-                self.fail(f"parser escaped ValueError as {exc!r} for {describe(bytes(data))}")
+            report = exercise(bytes(data), rng.choice([0, SEED_BASE]), self.path)
+            if report["prx"] == "rejected":
+                self.assertEqual(report["analyze"], "not_reached")
+                self.assertEqual(report["imports"], "not_reached")
+            elif report["analyze"] == "rejected":
+                self.assertEqual(report["imports"], "not_reached")
 
     def test_valid_seed_is_accepted(self) -> None:
-        self.assertEqual(exercise(valid_seed_elf(), 0x08000000, self.path), "accepted")
+        report = exercise(valid_seed_prx(), SEED_BASE, self.path)
+        self.assertEqual(report["prx"], "accepted")
+        self.assertEqual(report["analyze"], "accepted")
+        self.assertTrue(report["module_info"])
+        self.assertEqual(report["imports"], "accepted")
+        self.assertEqual(report["import_count"], 1)
+
+    def test_prx_rejection_does_not_claim_downstream_stages(self) -> None:
+        report = exercise(b"not an ELF", SEED_BASE, self.path)
+        self.assertEqual(report["prx"], "rejected")
+        self.assertEqual(report["analyze"], "not_reached")
+        self.assertEqual(report["imports"], "not_reached")
+
+    def test_systemexit_is_an_explicit_test_failure(self) -> None:
+        original = imports.parse_imports
+
+        def raise_system_exit(_elf):
+            raise SystemExit("library escape")
+
+        imports.parse_imports = raise_system_exit
+        try:
+            with self.assertRaisesRegex(AssertionError, "imports raised SystemExit"):
+                exercise(valid_seed_prx(), SEED_BASE, self.path)
+        finally:
+            imports.parse_imports = original
 
 
 if __name__ == "__main__":
