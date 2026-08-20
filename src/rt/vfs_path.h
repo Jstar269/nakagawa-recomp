@@ -64,4 +64,48 @@ static inline int sr_vfs_host_dir_path(const char *root, const char *guest, char
     return (int)n;
 }
 
+/* Host-neutral flat-name mapping for the writable host-backed IoFileMgr route
+ * (hle.c host_path_alloc; counterpart to sr_vfs_host_dir_path).
+ *
+ * The writable storage route does not mirror the guest directory tree: every
+ * guest path is flattened into ONE host filename directly beneath `root`, so
+ * no guest byte can select a host directory, drive, or device. The mapping is
+ * exactly '/' '\\' ':' and ' ' -> '_'; every other byte passes through.
+ *
+ * The only guest strings whose flattened form is still a directory reference
+ * are "", "." and ".." (they contain no mappable byte, so their flat form
+ * would name the root itself or its parent). Those are rejected outright;
+ * any other input yields a single component that cannot traverse above root.
+ *
+ * Returns the resulting length on success (> 0), or 0 on rejection / overflow.
+ */
+static inline int sr_vfs_host_flat_path(const char *root, const char *guest, char *out, size_t max) {
+    if (!root || !guest || !out || max == 0) return 0;
+    size_t guest_len = strlen(guest);
+    if (guest_len == 0) return 0;
+    if (guest_len == 1u && guest[0] == '.') return 0;
+    if (guest_len == 2u && guest[0] == '.' && guest[1] == '.') return 0;
+
+    size_t root_len = strlen(root);
+    if (root_len >= max) return 0;
+    memcpy(out, root, root_len);
+    size_t n = root_len;
+
+    if (n > 0 && n < max - 1) {
+        char last = out[n - 1];
+        if (last != '/' && last != '\\') out[n++] = '/';
+    }
+
+    for (size_t i = 0; i < guest_len; i++) {
+        if (n >= max - 1) {
+            out[0] = '\0';
+            return 0;
+        }
+        char c = guest[i];
+        out[n++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    }
+    out[n] = '\0';
+    return (int)n;
+}
+
 #endif /* SR_VFS_PATH_H */

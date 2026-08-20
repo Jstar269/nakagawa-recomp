@@ -118,7 +118,7 @@ def _import_model(elf):
     """
     mi = elf.sec(".rodata.sceModuleInfo")
     if not mi:
-        raise SystemExit("no .rodata.sceModuleInfo section")
+        raise ValueError("no .rodata.sceModuleInfo section")
     b = elf.read_at_vaddr(mi["addr"], 52)
     if b is None or len(b) != 52:
         raise ValueError("truncated .rodata.sceModuleInfo")
@@ -294,7 +294,11 @@ def main(argv):
         sys.stderr.write("usage: imports.py <prx-elf> <base-hex> [--toml out.toml]\n")
         return 2
     elf = Elf(args[0], base=int(args[1], 16))
-    stubs, findings = _import_model(elf)
+    try:
+        stubs, findings = _import_model(elf)
+    except ValueError as exc:
+        sys.stderr.write(f"imports: {exc}\n")
+        return 2
 
     by_lib = {}
     for addr, (lib, nid) in stubs.items():
