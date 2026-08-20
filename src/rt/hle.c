@@ -4446,7 +4446,7 @@ static uint32_t h_EnableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 1; retur
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
 uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
 
-static uint32_t s_vcount_fwd;  /* mirror of s_vcount for clock/input timing (set in sr_vblank_tick) */
+static uint32_t s_vcount_fwd;  /* mirror of s_vcount for clock/input timing (set in sr_display_advance_vcount) */
 uint32_t sr_audio_vbl(void) { return s_vcount_fwd; }
 
 /* All guest clock APIs observe the scheduler's single monotonic microsecond
@@ -6855,6 +6855,14 @@ static struct {
  * counter only says how often the threshold was crossed. File-local: the
  * selftest reads it through the accessor below, nothing else consumes it. */
 static unsigned long s_watchdog_fires = 0;
+/* Highest 600-period bucket already reported for the current no-flip stretch.
+ * VCOUNT advances by whole elapsed display periods at the scheduler source
+ * latch (sr_display_advance_vcount), so a single serviced tick can carry the
+ * no-flip distance across a 600 boundary without ever landing on a multiple of
+ * 600 -- 598 -> 602 must still report exactly once.  Comparing bucket indices
+ * detects the crossing; an exact-modulus test cannot.  Reset wherever
+ * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
+static uint32_t s_watchdog_bucket = 0;
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* White-box view of the flip accounting for the conformance harness. The counters are
@@ -7398,6 +7406,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_latched_pending = 0;
         s_framebuf = addr;
         s_last_flip_vcount = s_vcount;
+        s_watchdog_bucket = 0;
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
@@ -7629,13 +7638,26 @@ static uint32_t h_DisplayGetFramePerSec(CpuState *s) {
 void sr_ctrl_sample(void);
 void ge_set_frame(uint32_t frame);
 void ge_finish_latch_assist(void);   /* defined below (ge_finish_callback area) */
+
+/* Guest-visible VCOUNT advances by elapsed display periods at scheduler
+ * source-latch boundaries, decoupled from VBLANK service -- it is not the count
+ * of delivered/serviced VBLANK episodes.  Reads remain observational: this is
+ * deliberately not described as a strictly free-running register.  The source
+ * latch advances the counter by the number of periods it just coalesced.
+ * deliver_vblank() keeps calling sr_vblank_tick() exactly once per serviced
+ * event; that service path must not also increment VCOUNT or a coalesced burst
+ * would be double-counted. */
+void sr_display_advance_vcount(uint32_t elapsed_periods) {
+    s_vcount += elapsed_periods;
+    s_vcount_fwd = s_vcount;
+}
 void sr_vblank_tick(void) {
-    s_vcount++; s_vcount_fwd = s_vcount;
     if (s_display_latched_pending) {
         s_display_active = s_display_latched;
         s_display_latched_pending = 0;
         s_framebuf = s_display_active.addr;
         s_last_flip_vcount = s_vcount;
+        s_watchdog_bucket = 0;
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
@@ -7684,7 +7706,13 @@ void sr_vblank_tick(void) {
      * the stretch.
      * SR_WATCHDOG_EXIT=<N>: abort after N vblanks with no new frame (default: no abort). */
     uint32_t diff = s_vcount - s_last_flip_vcount;
-    if (diff > 0 && (diff % 600) == 0) {
+    /* s_vcount is monotonic for the life of the process and s_last_flip_vcount
+     * is only ever assigned from it, so this unsigned difference is a true
+     * elapsed-period count (it cannot wrap short of 2^32 periods, ~2.2 years at
+     * 60 Hz) and the bucket index below is monotonic within a stretch. */
+    uint32_t bucket = diff / 600u;
+    if (bucket > s_watchdog_bucket) {
+        s_watchdog_bucket = bucket;
         s_watchdog_fires++;
         fprintf(stderr,
                 "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "

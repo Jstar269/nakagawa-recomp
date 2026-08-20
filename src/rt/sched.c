@@ -312,13 +312,28 @@ void sched_resume_interrupts(uint32_t state) {
      * the CPU disabled for an invalid token such as 0xDEADBEEF, and ignoring
      * that malformed restore avoids manufacturing an interrupt transition. */
     if (state > 1u) return;
-    s_interrupts_enabled = state ? 1 : 0;
-    if (!s_interrupts_enabled || s_servicing_interrupts) return;
+    if (!state) {
+        s_interrupts_enabled = 0;
+        return;
+    }
+    if (s_servicing_interrupts) {
+        s_interrupts_enabled = 1;
+        return;
+    }
 
     /* Resume is a scheduler boundary: host time is sampled, elapsed source
      * events are latched, eligible handlers run in priority order, and a
-     * higher-priority waiter may preempt the interrupted thread. */
-    scheduler_progress_time();
+     * higher-priority waiter may preempt the interrupted thread.  When this is
+     * the disabled->enabled transition, account the elapsed interval before
+     * restoring the I-bit.  Otherwise a period first discovered by ResumeIntr
+     * would be misclassified as enabled time and spuriously advance VCOUNT even
+     * though the complete interval elapsed under the mask. */
+    int was_enabled = s_interrupts_enabled;
+    if (!was_enabled)
+        scheduler_progress_time();
+    s_interrupts_enabled = 1;
+    if (was_enabled)
+        scheduler_progress_time();
     scheduler_latch_due_events();
     scheduler_service_pending();
     sched_preempt();
@@ -605,8 +620,10 @@ static void vtime_refresh(void) {
 }
 
 /* Advance guest time at a scheduler boundary, then latch every elapsed source
- * event.  The VBLANK source is intentionally coalescing: a long interrupt
- * suspension advances all deadlines but leaves one pending bit for delivery. */
+ * event.  The VBLANK source is intentionally coalescing on the delivery side: a
+ * long suspension advances all deadlines but leaves one pending bit for the
+ * interrupt/service path.  Display-period accounting (guest-visible VCOUNT) is
+ * separate and tracks the total elapsed periods, not the delivered episodes. */
 static void scheduler_progress_time(void) {
     pace_setup();
     if (s_pace_on) {
@@ -667,6 +684,27 @@ static void scheduler_latch_due_events(void) {
         while (count > 1u &&
                scheduler_vblank_delta(count - 1u, s_vbl_event_period_rem, NULL) > distance)
             count--;
+        /* Separate the two concepts the source owns: the elapsed display period
+         * count (guest-visible VCOUNT, advanced at source-latch boundaries)
+         * advances by `count`, while
+         * the serviced VBLANK event stays coalesced into the single pending bit
+         * raised above and delivered once by scheduler_service_pending().
+         *
+         * CPU interrupt masking is a third, distinct state, and it gates this
+         * accounting.  Qualified PSP measurements show that system time advances
+         * across a CpuSuspendIntr window while guest VCOUNT and VBLANK handler
+         * calls remain frozen.  Guest-visible VCOUNT therefore is not modelled as
+         * a raw free-running display register: with interrupts enabled it advances
+         * by elapsed source periods even when service is starved, and while the
+         * CPU interrupt bit is clear it stops.
+         *
+         * Deadlines still advance below, so the periods that elapse under a mask
+         * are consumed rather than replayed: on resume the coalesced pending bit
+         * delivers exactly one episode, and VCOUNT resumes counting from the next
+         * period that elapses with interrupts enabled.  No synthetic catch-up
+         * increment is applied at resume. */
+        if (s_interrupts_enabled)
+            sr_display_advance_vcount((uint32_t)count);
         scheduler_advance_vblank_deadlines(count);
     }
 }

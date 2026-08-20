@@ -1251,11 +1251,11 @@ static void test_bulk_clock_reads_are_side_effect_free(void) {
 }
 
 /* #80 display-domain independence: display progression is owned by display
- * state (the scheduler's rational scan phase plus delivered VBLANK source
- * events), never by the number of queries.  1000 reads of every display clock
- * at one unchanged emulated timestamp must return identical values, leave
- * s_vtime_us untouched, and not deliver a vblank; VCOUNT advances exactly
- * once per delivered vblank, and only then. */
+ * state (the scheduler's rational scan phase plus elapsed display periods),
+ * never by the number of queries.  1000 reads of every display clock at one
+ * unchanged emulated timestamp must return identical values, leave s_vtime_us
+ * untouched, and not deliver a vblank; VCOUNT advances through the source
+ * accounting seam as periods elapse, not per delivered vblank. */
 static void test_display_queries_do_not_progress_display(void) {
     enum {
         NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
@@ -1300,13 +1300,21 @@ static void test_display_queries_do_not_progress_display(void) {
     expect(s_vbl_count == 0u,
            "no VBLANK source event was latched by the reads");
 
-    /* Display progression: one delivered vblank advances VCOUNT exactly once,
-     * and HCOUNT moves with the elapsed rational scan phase, not with reads. */
-    s_vtime_us += 8342u;             /* one half frame on the rational scale */
+    /* Display progression: VCOUNT is source-driven, not delivery-driven.  The
+     * service tick performs framebuffer/interrupt work but does not move VCOUNT;
+     * only the scheduler source latch advances it by the crossed periods. */
     sr_vblank_tick();
     cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+           "a delivered service tick does not advance VCOUNT");
+
+    s_vbl_next_us = s_vtime_us;      /* place the next boundary at the current instant */
+    s_vbl_event_period_rem = 0;
+    s_vtime_us = 15000u;             /* 10 ms later: still inside the first period */
+    scheduler_latch_due_events();
+    cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
-           "VCOUNT advances exactly once per delivered vblank");
+           "crossing one period boundary advances VCOUNT through the source seam");
     cpu.r[4] = 0;
     uint32_t hc1 = sr_syscall(&cpu, NID_DISPLAY_CURRENT_HCOUNT);
     expect(hc1 != hc0,
@@ -1320,14 +1328,148 @@ static void test_display_queries_do_not_progress_display(void) {
     }
 }
 
-/* #80/5 display-domain freeze during interrupt-disable: system time is the
- * scheduler's microsecond timeline and keeps running while an interrupt-
- * disabled period prevents VBLANK delivery -- the latched source stays pending
- * and VCOUNT does not advance.  VCOUNT is therefore a delivered-event counter,
- * never floor(system_time / frame_period).  The production service path
- * (scheduler_latch_due_events / scheduler_service_pending) is exercised
- * unchanged; no #88 interrupt/wait precedence rule is modified here. */
-static void test_vcount_freezes_during_interrupt_disable(void) {
+/* Guest-visible VCOUNT advances by elapsed display periods at scheduler
+ * source-latch boundaries, decoupled from VBLANK service -- it is not a count
+ * of delivered/serviced VBLANK episodes and is not described as strictly
+ * free-running.  A provisional PSP observation corroborates the service-
+ * independence direction, but it does not establish the runtime's exact rate;
+ * this checked-in regression is HOST_TESTED source-contract evidence.
+ *
+ * This is the public failing-before regression for that boundary, exercised
+ * through the production scheduler_latch_due_events / scheduler_service_pending
+ * path (not HST, not the hardware probe).  For each N the source deadline is
+ * advanced across exactly N periods before service; VCOUNT must reflect V+N,
+ * while delivered episodes stay at most one. */
+static void test_vcount_tracks_elapsed_source_periods(void) {
+    enum {
+        NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
+    };
+    const unsigned periods[] = { 1u, 2u, 3u, 10u };
+    for (unsigned pi = 0; pi < sizeof(periods) / sizeof(periods[0]); pi++) {
+        const unsigned N = periods[pi];
+        reset_fixture();
+        sr_hle_init();
+        s_pace_on = 0;
+        s_vbl_next_us = 0;
+        s_vbl_event_period_rem = 0;
+        s_vbl_count = 0;
+        s_interrupts_enabled = 1;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+
+        cpu.r[4] = 0;
+        uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+        /* Reach the boundary of N-1 completed periods from the origin, so the
+         * latch's exact rational carry math advances exactly N period
+         * boundaries before any service. */
+        s_vtime_us = (uint64_t)scheduler_vblank_delta(N - 1u, 0u, NULL);
+        scheduler_latch_due_events();
+
+        char msg[96];
+        snprintf(msg, sizeof msg, "N=%u: VCOUNT advances by the elapsed source periods", N);
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N, msg);
+        snprintf(msg, sizeof msg, "N=%u: no delivery before the eligible service phase", N);
+        expect(s_vbl_count == 0u, msg);
+        expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
+               "a burst of periods coalesces into one pending source bit");
+
+        /* Service once: one delivered episode, VCOUNT unchanged. */
+        scheduler_service_pending();
+        snprintf(msg, sizeof msg, "N=%u: one serviced episode regardless of the burst", N);
+        expect(s_vbl_count == 1u, msg);
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N,
+               "service does not re-advance guest VCOUNT");
+        expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
+               "service clears the coalesced source bit");
+    }
+
+    /* Pending bit already set before the latch: the latch must not manufacture
+     * a second episode; VCOUNT still advances by the crossed periods. */
+    {
+        reset_fixture();
+        sr_hle_init();
+        s_pace_on = 0;
+        s_vbl_next_us = 0;
+        s_vbl_event_period_rem = 0;
+        s_vbl_count = 0;
+        s_interrupts_enabled = 1;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0;
+        uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+        sched_raise_interrupt(SCHED_INTR_VBLANK);  /* already pending */
+        s_vtime_us = (uint64_t)scheduler_vblank_delta(2u, 0u, NULL);
+        scheduler_latch_due_events();
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 3u,
+               "a pre-set pending bit still lets VCOUNT track the crossed periods");
+        expect(s_vbl_count == 0u, "a pre-set pending bit adds no delivery before service");
+        scheduler_service_pending();
+        expect(s_vbl_count == 1u, "a pre-set pending bit still coalesces to one episode");
+    }
+
+    /* Multiple deadline-latch calls before service: each latch contributes its
+     * own period burst to VCOUNT and the delivery stays one episode. */
+    {
+        reset_fixture();
+        sr_hle_init();
+        s_pace_on = 0;
+        s_vbl_next_us = 0;
+        s_vbl_event_period_rem = 0;
+        s_vbl_count = 0;
+        s_interrupts_enabled = 1;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0;
+        uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+        s_vtime_us = (uint64_t)scheduler_vblank_delta(1u, 0u, NULL);  /* 2 periods */
+        scheduler_latch_due_events();
+        s_vtime_us = (uint64_t)scheduler_vblank_delta(4u, 0u, NULL);  /* 3 more */
+        scheduler_latch_due_events();
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
+               "multiple latches accumulate VCOUNT (2 + 3 periods)");
+        expect(s_vbl_count == 0u, "no delivery yet across multiple latches");
+        expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
+               "multiple latches still coalesce into one pending source");
+        scheduler_service_pending();
+        expect(s_vbl_count == 1u, "one delivery after multiple latches");
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
+               "service leaves the accumulated VCOUNT alone");
+    }
+}
+
+/* Guest VCOUNT and VBLANK delivery both freeze while the CPU interrupt bit is
+ * clear.
+ *
+ * This is the second of the two regimes the runtime must represent. Qualified
+ * PSP measurements held `sceKernelCpuSuspendIntr` across a long spin and found:
+ *
+ *   - "display vcount does NOT advance during suspension (vc_during == vc_before)"
+ *   - "VBLANK handler calls freeze during CpuSuspendIntr window"
+ *   - "system time DOES advance during suspension"
+ *   - "exactly ONE pending VBLANK is delivered on CpuResumeIntr"
+ *   - "one further VBLANK delivery occurs at the next real boundary after resume"
+ *
+ * The sibling test_vcount_tracks_elapsed_source_periods() covers the other
+ * regime -- interrupts ENABLED, guest service starved -- where VCOUNT does
+ * advance by elapsed periods.  Neither observation may be extrapolated onto the
+ * other.  The single model that
+ * satisfies both is that guest-visible VCOUNT is maintained by the VBLANK
+ * interrupt path: it ticks per elapsed display period whenever interrupts are
+ * enabled (independently of whether a guest thread ever services the episode),
+ * and stops while they are masked.
+ *
+ * The hardware record does not sample VCOUNT immediately after CpuResumeIntr.
+ * The runtime therefore takes the conservative policy that resumed delivery
+ * does not manufacture an increment of its own. */
+static void test_vcount_freezes_while_cpu_interrupts_are_masked(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
     };
@@ -1345,6 +1487,7 @@ static void test_vcount_freezes_during_interrupt_disable(void) {
     cpu.r[4] = 0;
     uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
     uint32_t sys0 = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW);
+    uint64_t vbl_next_before_mask = s_vbl_next_us;
 
     /* Cross the VBLANK source deadline while interrupts are disabled. */
     s_vtime_us = 30000u;
@@ -1352,22 +1495,79 @@ static void test_vcount_freezes_during_interrupt_disable(void) {
     scheduler_service_pending();   /* no-op: delivery is interrupt-gated */
 
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW) == 30000u,
-           "system time continued through the interrupt-disabled period");
+           "system time continued through the interrupt-disabled period (#88: st_during != st_before)");
+    /* #88: vc_during == vc_before.  A period boundary was crossed and the source
+     * bit was latched, but the interrupt path that maintains guest VCOUNT never
+     * ran, so the guest-visible counter is unchanged. */
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
-           "VCOUNT is frozen while interrupt-disable defers delivery");
+           "guest VCOUNT freezes while the CPU interrupt bit is clear");
+    expect(s_vbl_count == 0u,
+           "VBLANK handler calls freeze while interrupts are disabled");
     expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
            "the VBLANK source stays latched/pending for the eligible phase");
 
-    /* Re-enabling interrupts delivers the pending source: VCOUNT advances by
-     * exactly one delivery, proving it is a delivered-event counter whose
-     * scheduling derives from the same monotonic timeline but whose observable
-     * state keeps interrupt semantics. */
-    s_interrupts_enabled = 1;
-    scheduler_service_pending();
+    /* Several more periods elapse, still masked: they must coalesce, not
+     * accumulate into VCOUNT, and must not queue N separate deliveries. */
+    s_vtime_us = 30000u + 5u * 16683u;
+    scheduler_latch_due_events();
     cpu.r[4] = 0;
-    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
-           "VCOUNT advances exactly once when the deferred vblank delivers");
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+           "further masked periods still do not advance guest VCOUNT");
+    expect(s_vbl_count == 0u,
+           "no delivery accrues for the additional masked periods");
+
+    /* Re-enable through the production resume boundary.  That boundary samples
+     * time before restoring the I-bit, so even a period first discovered here is
+     * still classified as masked time.  Exactly one coalesced episode is
+     * delivered and no synthetic VCOUNT catch-up is applied. */
+    sched_resume_interrupts(1u);
+    expect(s_vbl_count == 1u,
+           "resume delivers exactly one coalesced VBLANK episode");
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+           "the resumed delivery does not manufacture a VCOUNT increment of its own");
+
+    /* SOURCE-PHASE CONTINUITY. Freezing the guest-visible counter must not corrupt
+     * the display source underneath it. The deadline was advanced for every
+     * masked period, so after resume the next boundary remains in the future and
+     * no more than one period away. */
+    expect(s_vbl_next_us > vbl_next_before_mask,
+           "the display source deadline advanced across the masked window (phase not stalled)");
+    /* The deadline must name the NEXT boundary exactly: still in the future (not stale, which
+     * would fabricate frames on the next latch) and no more than one period ahead (not
+     * over-advanced, which would swallow one). This is checked against absolute time, so it
+     * cannot be satisfied by a wrong deadline the way a s_vbl_next_us-relative check could. */
+    expect(s_vbl_next_us > s_vtime_us,
+           "the masked latch left the source deadline in the future, not stale");
+    expect(s_vbl_next_us - s_vtime_us <= 16684u,
+           "the masked latch advanced the source deadline by no more than one period");
+    uint32_t vc_resume = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+    uint64_t next_boundary = s_vbl_next_us;
+
+    /* (a) one microsecond short of the next boundary: nothing is due yet. */
+    s_vtime_us = next_boundary - 1u;
+    scheduler_latch_due_events();
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc_resume,
+           "a sub-period step after resume crosses no boundary and does not advance VCOUNT");
+    expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
+           "a sub-period step after resume raises no source event");
+    scheduler_service_pending();
+    expect(s_vbl_count == 1u,
+           "a sub-period step after resume delivers nothing further");
+
+    /* (b) exactly at the boundary: exactly one advance and one delivery. */
+    s_vtime_us = next_boundary;
+    scheduler_latch_due_events();
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc_resume + 1u,
+           "the next genuine display-source boundary advances VCOUNT by exactly one");
+    expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
+           "the next genuine boundary raises exactly one source event");
+    scheduler_service_pending();
+    expect(s_vbl_count == 2u,
+           "the next real boundary after resume delivers exactly one further episode");
     (void)sys0;
 }
 
@@ -1448,9 +1648,11 @@ static void test_display_setframebuf_flip_accounting(void) {
  * scene (e.g. a save-confirmation modal waiting for user input) also produces.
  * The contract asserted here is the clock itself, through production
  * sr_vblank_tick:
- *   - exactly one observation is emitted per 600-vblank boundary while no new
- *     frame is presented (never a burst, never a miss), regardless of the
- *     initial phase residue;
+ *   - at one-period service cadence, entering each new 600-period bucket emits
+ *     one observation;
+ *   - a multi-period service that crosses one or more bucket boundaries emits
+ *     one current-state observation and records the newest bucket, never a
+ *     replay burst;
  *   - an accepted immediate flip resets the clock: the next observation needs a
  *     fresh 600-vblank stretch;
  *   - a refused request is not a new frame, so it must not reset the clock.
@@ -1467,18 +1669,18 @@ static void test_watchdog_no_new_frame_observation(void) {
     uint32_t d0;
     sr_watchdog_test_state(&f0, &d0);
 
-    /* 600 delivered vblanks with no flip: exactly one observation fires. */
-    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    /* 600 display periods with no flip: exactly one observation fires. */
+    for (unsigned i = 0; i < 600u; i++) { sr_display_advance_vcount(1u); sr_vblank_tick(); }
     unsigned long f1;
     uint32_t d1;
     sr_watchdog_test_state(&f1, &d1);
     expect(f1 == f0 + 1ul,
            "no-new-frame observation fires exactly once per 600 vblanks");
     expect(d1 == d0 + 600u,
-           "the vblanks-since-flip clock advanced by the delivered ticks");
+           "the vblanks-since-flip clock advanced by the elapsed periods");
 
     /* Another 600 with still no flip: the next boundary fires once more. */
-    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    for (unsigned i = 0; i < 600u; i++) { sr_display_advance_vcount(1u); sr_vblank_tick(); }
     unsigned long f2;
     sr_watchdog_test_state(&f2, NULL);
     expect(f2 == f1 + 1ul,
@@ -1493,7 +1695,7 @@ static void test_watchdog_no_new_frame_observation(void) {
     sr_watchdog_test_state(NULL, &d_after_flip);
     expect(d_after_flip == 0u,
            "an accepted flip resets the vblanks-since-flip clock");
-    for (unsigned i = 0; i < 600u; i++) sr_vblank_tick();
+    for (unsigned i = 0; i < 600u; i++) { sr_display_advance_vcount(1u); sr_vblank_tick(); }
     unsigned long f3;
     sr_watchdog_test_state(&f3, NULL);
     expect(f3 == f2 + 1ul,
@@ -1506,6 +1708,122 @@ static void test_watchdog_no_new_frame_observation(void) {
     sr_watchdog_test_state(NULL, &d_after_refusal);
     expect(d_after_refusal == 600u,
            "a refused request does not reset the no-frame clock");
+}
+
+/* #77 watchdog boundary semantics under coalesced VCOUNT advance.
+ *
+ * VCOUNT advances by whole elapsed display periods at the scheduler source
+ * latch, while sr_vblank_tick() runs once per *serviced* episode.  A single
+ * service can therefore observe the no-flip distance jump across a 600 boundary
+ * without ever landing on a multiple of 600.  The contract is a boundary
+ * CROSSING, not an exact modulus:
+ *   - 598 -> 602 in one service emits exactly one observation;
+ *   - further services inside the same bucket emit nothing;
+ *   - crossing the next bucket emits exactly one more;
+ *   - an accepted flip resets the bucket, so a fresh stretch reports again.
+ *
+ * This test drives the real scheduler source latch and pending-service path in
+ * multi-period jumps. Driving the accounting helper directly, or one period per
+ * tick, would fail to prove the production boundary this regression protects. */
+static void test_watchdog_fires_on_boundary_crossing_not_exact_multiple(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM_B = 0x04044000u;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    s_vbl_next_us = 0;
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    /* Zero the no-flip clock deterministically through the production path. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "watchdog crossing probe: accepted immediate flip zeroes the clock");
+    uint32_t d;
+    unsigned long f_base;
+    sr_watchdog_test_state(&f_base, &d);
+    expect(d == 0u, "watchdog crossing probe: no-flip clock starts at zero");
+
+    /* The source latch discovers 598 elapsed periods in one production batch;
+     * the single pending episode is then serviced once. */
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(597u, 0u, NULL);
+    scheduler_latch_due_events();
+    expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
+           "598-period source batch raises one pending VBLANK");
+    scheduler_service_pending();
+    unsigned long f;
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 598u, "no-flip clock reached 598 in one coalesced advance");
+    expect(f == f_base, "no observation before the first boundary is crossed");
+
+    /* The next source latch discovers four periods at once.  The serviced
+     * distance moves 598 -> 602 without ever equalling a multiple of 600, so an
+     * exact-modulus watchdog reports nothing and a crossing watchdog reports
+     * exactly once. */
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(601u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 602u, "no-flip clock crossed the 600 boundary to 602");
+    expect(f == f_base + 1ul,
+           "crossing 600 without landing on it reports exactly once");
+
+    /* A later eight-period source batch stays in the same bucket and must not
+     * duplicate the observation. */
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(609u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 610u, "no-flip clock advanced within the same bucket");
+    expect(f == f_base + 1ul,
+           "additional services inside the same bucket report nothing further");
+
+    /* Cross the next bucket (1200) in another production source batch. */
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(1204u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 1205u, "no-flip clock crossed the second boundary to 1205");
+    expect(f == f_base + 2ul,
+           "crossing the next bucket reports exactly once more");
+
+    /* A single source batch may cross several buckets after a long host stall.
+     * Emit one current-state observation, record the newest bucket, and do not
+     * replay one diagnostic per missed threshold. */
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(3004u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 3005u, "no-flip clock crossed several buckets in one source batch");
+    expect(f == f_base + 3ul,
+           "a multi-bucket source batch emits one current-state observation");
+
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(3009u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 3010u, "no-flip clock advanced within the newest bucket");
+    expect(f == f_base + 3ul,
+           "recording the newest crossed bucket prevents a replay on the next service");
+
+    /* An accepted flip resets the bucket: a fresh stretch reports again. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "watchdog crossing probe: second accepted flip");
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 0u, "an accepted flip resets the no-flip clock");
+    expect(f == f_base + 3ul, "the reset itself reports nothing");
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(3611u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+    sr_watchdog_test_state(&f, &d);
+    expect(d == 602u, "fresh stretch reached 602 in one coalesced advance");
+    expect(f == f_base + 4ul,
+           "after a reset the next crossing reports exactly once");
 }
 
 static void test_interrupt_nid_semantics(void) {
@@ -5845,9 +6163,11 @@ int main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
-    test_vcount_freezes_during_interrupt_disable();
+    test_vcount_tracks_elapsed_source_periods();
+    test_vcount_freezes_while_cpu_interrupts_are_masked();
     test_display_setframebuf_flip_accounting();
     test_watchdog_no_new_frame_observation();
+    test_watchdog_fires_on_boundary_crossing_not_exact_multiple();
     test_interrupt_nid_semantics();
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();
