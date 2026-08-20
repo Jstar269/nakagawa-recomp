@@ -1053,7 +1053,10 @@ def _fmt_value(key, val):
         return "true" if val else "false"
     if isinstance(val, int):
         return str(val)
-    return '"' + str(val).replace('\\', '\\\\').replace('"', '\\"') + '"'
+    text = str(val)
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+        raise ValueError(f"cannot emit control characters into TOML: {key!r}")
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def emit_toml(model, path):
