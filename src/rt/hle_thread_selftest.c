@@ -3895,6 +3895,217 @@ static uint32_t bulk_call(uint32_t nid, uint32_t dst, uint32_t src_or_value, uin
     return sr_syscall(s_cpu, nid);
 }
 
+/* ---------------------------------------------------------------------------
+ * Generic PSP input contract: sceCtrlReadBufferPositive.
+ *
+ * PRODUCTION_DISPATCH.  0x1f803938 is registered by
+ * hle_register_wait_conformance_handlers(), the single helper that BOTH
+ * sr_hle_init() branches call, so this enters the same h_CtrlReadBuffer the game
+ * build uses.  The first assertion checks registry membership rather than
+ * assuming it: an unregistered NID reaches the unimplemented path in
+ * sr_syscall(), which is exactly how a test passes for the wrong reason.
+ *
+ * PSP contract inputs are CORROBORATIVE_ONLY -- prior art read as source, not a
+ * local hardware measurement:
+ *
+ *  - PPSSPP Core/HLE/sceCtrl.cpp, __CtrlReadBuffer(): a request for more than
+ *    NUM_CTRL_BUFFERS (64) buffers returns SCE_KERNEL_ERROR_INVALID_SIZE rather
+ *    than being clamped, and the returned value is the number of buffers
+ *    actually written -- __CtrlReadSingleBuffer() contributes 0 for a pointer it
+ *    cannot write, so a call that stores nothing reports 0.  With nBufs == 0 the
+ *    available count is min(fresh, 0) == 0, so it writes nothing and returns 0.
+ *  - pspautotests tests/ctrl/ctrl.expected records that the blocking read really
+ *    does wait and that the peek form does not.  Only the blocking form is
+ *    registered by this runtime, so that is background, not an assertion here.
+ *
+ * The whole-span requirement does not depend on the PSP contract at all.  The
+ * scalar accessors reject an out-of-range store one word at a time, so with no
+ * preflight this handler can write PART of the requested history, or -- once
+ * buf + i*16 wraps uint32_t -- write into an unrelated but in-range guest
+ * address, and still report the full count back to the guest.  That is the
+ * defect class #86 closed for sceAudio, reached here through a different API.
+ *
+ * Deliberately NOT asserted, and left visible rather than quietly changed: when
+ * no fresh sample is available this runtime still returns one stale sample
+ * ("always give at least the latest") where PPSSPP returns 0.  That sits on the
+ * per-frame hot path of every run rather than on an error path, so it is a
+ * separate behavioural question needing its own evidence.
+ * --------------------------------------------------------------------------- */
+#define NID_SCE_CTRL_READ_BUFFER_POSITIVE 0x1f803938u
+#define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
+#define CTRL_SAMPLE_BYTES 16u
+#define CTRL_BTN_START 0x0008u
+
+/* Guest scratch well inside RAM, and a base whose 16-byte first sample fits the
+ * arena exactly so that a second sample must cross the end. */
+#define CTRL_OK_BUF   0x08a00000u
+#define CTRL_TAIL_BUF 0x0bfffff0u
+/* phys(0xfffffff0) is past the arena, so sample 0 is dropped -- but every later
+ * sample address wraps uint32_t down into guest 0x00000000.., which IS in range. */
+#define CTRL_WRAP_BUF 0xfffffff0u
+#define CTRL_WRAP_LANDING 0x00000000u
+#define CTRL_WRAP_LANDING_BYTES 0x400u
+
+void sr_route_reset(void);   /* also declared beside the issue #64 route tests */
+
+static uint32_t ctrl_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = buf;
+    cpu->r[5] = nbufs;
+    return sr_syscall(cpu, NID_SCE_CTRL_READ_BUFFER_POSITIVE);
+}
+
+/* Deliver n whole vblanks through the production path: sr_vblank_tick() is what
+ * latches a controller sample, so input history here is produced the same way a
+ * run produces it. */
+static void ctrl_tick(unsigned n) {
+    for (unsigned i = 0; i < n; i++) {
+        sr_display_advance_vcount(1u);
+        sr_vblank_tick();
+    }
+}
+
+static void ctrl_fill_guest(uint32_t addr, uint32_t bytes, uint32_t word) {
+    for (uint32_t off = 0; off < bytes; off += 4u) MEM_W32(addr + off, word);
+}
+
+static int ctrl_guest_all(uint32_t addr, uint32_t bytes, uint32_t word) {
+    for (uint32_t off = 0; off < bytes; off += 4u)
+        if (MEM_R32(addr + off) != word) return 0;
+    return 1;
+}
+
+/* Drop whatever history is pending so each case starts from a known ring. */
+static void ctrl_drain(CpuState *cpu) {
+    (void)ctrl_dispatch(cpu, CTRL_OK_BUF, 64u);
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0u);
+}
+
+static void ctrl_env(const char *noinput, const char *pad,
+                     const char *period, const char *width) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "SR_NOINPUT=%s", noinput);  _putenv(buf);
+    snprintf(buf, sizeof buf, "SR_PAD=%s", pad);          _putenv(buf);
+    snprintf(buf, sizeof buf, "SR_PADPERIOD=%s", period); _putenv(buf);
+    snprintf(buf, sizeof buf, "SR_PADWIDTH=%s", width);   _putenv(buf);
+    _putenv("SR_PADSTART=");
+    _putenv("SR_PADSCRIPT=");
+    _putenv("SR_INLOG=");
+}
+
+static void test_ctrl_read_buffer_contract(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();   /* no route program: the env pulse below is the only input source */
+
+    expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_POSITIVE),
+           "sceCtrlReadBufferPositive is a registered NID in this build");
+
+    /* --- no input -------------------------------------------------------- */
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+    ctrl_tick(8u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 8u) == 8u,
+           "a drained ring plus eight vblanks yields eight fresh samples");
+    {
+        int any_button = 0;
+        uint32_t prev_ts = 0;
+        int monotonic = 1;
+        for (unsigned i = 0; i < 8u; i++) {
+            uint32_t e = CTRL_OK_BUF + i * CTRL_SAMPLE_BYTES;
+            if (MEM_R32(e + 4u) != 0u) any_button = 1;
+            if (i && MEM_R32(e) <= prev_ts) monotonic = 0;
+            prev_ts = MEM_R32(e);
+        }
+        expect(!any_button, "SR_NOINPUT reports a neutral pad through production dispatch");
+        expect(monotonic, "each delivered sample carries a strictly newer timestamp");
+        expect(MEM_R8(CTRL_OK_BUF + 8u) == 128u && MEM_R8(CTRL_OK_BUF + 9u) == 128u,
+               "a neutral pad reports both analog axes centred");
+    }
+
+    /* --- held button ----------------------------------------------------- */
+    ctrl_env("", "0008", "1", "1");
+    ctrl_drain(&cpu);
+    ctrl_tick(8u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 8u) == 8u, "held-button read returns eight samples");
+    {
+        unsigned set = 0;
+        for (unsigned i = 0; i < 8u; i++)
+            if (MEM_R32(CTRL_OK_BUF + i * CTRL_SAMPLE_BYTES + 4u) & CTRL_BTN_START) set++;
+        expect(set == 8u, "a continuously held button is set in every delivered sample");
+    }
+
+    /* --- press transition ------------------------------------------------ *
+     * Two frames pressed, two released, so eight consecutive vblanks carry
+     * exactly four of each and at least one rising edge whatever the starting
+     * phase.  A flat "current state" fill cannot produce that, which is the
+     * distinction this case exists to make. */
+    ctrl_env("", "0008", "4", "2");
+    ctrl_drain(&cpu);
+    ctrl_tick(8u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 8u) == 8u, "press-transition read returns eight samples");
+    {
+        unsigned set = 0, rising = 0;
+        int prev = -1;
+        for (unsigned i = 0; i < 8u; i++) {
+            int cur = (MEM_R32(CTRL_OK_BUF + i * CTRL_SAMPLE_BYTES + 4u) & CTRL_BTN_START) ? 1 : 0;
+            if (cur) set++;
+            if (prev == 0 && cur == 1) rising++;
+            prev = cur;
+        }
+        expect(set == 4u, "a two-on/two-off pulse delivers exactly four pressed samples in eight");
+        expect(rising >= 1u, "delivered history contains a real press edge, not a flat state fill");
+    }
+
+    /* --- oversized request ------------------------------------------------ */
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+    ctrl_tick(63u);
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 65u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a request for more than the 64-entry ring is rejected, not clamped");
+    expect(ctrl_guest_all(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "a rejected oversized request writes no guest byte");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 63u) == 63u,
+           "a rejected oversized request leaves the sample ring unconsumed");
+
+    /* --- zero-count request ----------------------------------------------- */
+    ctrl_drain(&cpu);
+    ctrl_tick(4u);
+    ctrl_fill_guest(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
+           "a zero-buffer request reports zero buffers written");
+    expect(ctrl_guest_all(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "a zero-buffer request writes no guest byte");
+
+    /* --- span crossing the end of the arena -------------------------------- *
+     * The base is writable and its first sample fits exactly; the second cannot.
+     * Without a whole-span preflight the handler writes sample 0, silently drops
+     * sample 1, and still reports two. */
+    ctrl_drain(&cpu);
+    ctrl_tick(4u);
+    ctrl_fill_guest(CTRL_TAIL_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_dispatch(&cpu, CTRL_TAIL_BUF, 2u) == 0u,
+           "a span crossing the end of the guest arena reports nothing written");
+    expect(ctrl_guest_all(CTRL_TAIL_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "a rejected tail span leaves even its writable leading sample untouched");
+
+    /* --- span whose element addresses wrap uint32_t ------------------------ */
+    ctrl_drain(&cpu);
+    ctrl_tick(63u);
+    ctrl_fill_guest(CTRL_WRAP_LANDING, CTRL_WRAP_LANDING_BYTES, 0x5a5a5a5au);
+    expect(ctrl_dispatch(&cpu, CTRL_WRAP_BUF, 64u) == 0u,
+           "a base past the arena reports nothing written even when later elements wrap into it");
+    expect(ctrl_guest_all(CTRL_WRAP_LANDING, CTRL_WRAP_LANDING_BYTES, 0x5a5a5a5au),
+           "wrapped sample addresses do not scribble over unrelated guest memory");
+    ctrl_fill_guest(CTRL_WRAP_LANDING, CTRL_WRAP_LANDING_BYTES, 0u);
+
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
     sr_hle_init();
@@ -6445,6 +6656,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_ctrl_read_buffer_contract();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();

@@ -6169,8 +6169,21 @@ static void sr_dump_calls(void) {
  * edge detection across these samples, so a flat fill makes a button look permanently held and a
  * press is never seen -- which is why the title/attract loop never advanced on START. */
 #define CTRL_RING 64
-typedef struct { uint32_t btn; uint8_t lx, ly; } CtrlSample;
-static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 128, 128 } };
+/* One guest SceCtrlData record: timestamp, button field, two analog axes, then
+ * reserved bytes this runtime does not populate. */
+#define CTRL_SAMPLE_BYTES 16u
+/* A request larger than the sample ring is refused rather than clamped.
+ * CORROBORATIVE_ONLY: PPSSPP Core/HLE/sceCtrl.cpp __CtrlReadBuffer() returns
+ * SCE_KERNEL_ERROR_INVALID_SIZE for nBufs > NUM_CTRL_BUFFERS. Not measured here. */
+#define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
+/* `ts` is stamped when the sample is latched, not when it is read. Every delivered
+ * record used to carry the READ-time counter, so a guest doing timing across pad
+ * history saw zero elapsed between frames -- the same flat-fill defect the button
+ * field above was already fixed for. The unit (this runtime's frame counter) is
+ * unchanged and is NOT an established PSP contract: PSPSDK documents the field
+ * only as "the current read frame" and PPSSPP stores microseconds there. */
+typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; } CtrlSample;
+static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
@@ -6861,6 +6874,7 @@ void sr_ctrl_sample(void) {
         }
     }
     s_ctrl_ring[s_ctrl_w].btn = buttons;
+    s_ctrl_ring[s_ctrl_w].ts = s_vcount_fwd;   /* stamped at latch, delivered verbatim */
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
     if (gui_on()) gui_consume_button_pulses();
@@ -6873,8 +6887,12 @@ void sr_ctrl_sample(void) {
  * PSP semantics), giving the game genuine per-frame history for edge/latch detection. Negative
  * reports inverted buttons. peek does not consume or block. */
 static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) {
-    if (nbufs == 0) nbufs = 1;
-    if (nbufs > CTRL_RING) nbufs = CTRL_RING;
+    /* Contract order: an out-of-contract request is refused before the ring is
+     * consulted, so a rejected call can neither consume history nor write a byte.
+     * Clamping an oversized request the way this used to is a fabricated success:
+     * the guest asked for something the API cannot do and was told it worked. */
+    if (nbufs > CTRL_RING) return SCE_CTRL_ERROR_INVALID_SIZE;
+    if (nbufs == 0) return 0;                      /* zero requested, zero written */
     int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
     /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */
     if (!peek) {
@@ -6884,15 +6902,33 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
             avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
         }
     }
+    /* Divergence kept deliberately visible rather than quietly changed: PPSSPP
+     * returns 0 here, this runtime hands back one stale sample. That sits on the
+     * per-frame hot path of every run, not on an error path, so retiring it needs
+     * its own evidence rather than riding along with the contract fixes above. */
     if (avail < 1) avail = 1;                      /* always give at least the latest */
     if (avail > (int)nbufs) avail = (int)nbufs;
-    int start = peek ? (s_ctrl_w - avail + CTRL_RING) % CTRL_RING
-                     : (s_ctrl_w - avail + CTRL_RING) % CTRL_RING;
+    /* Whole-span preflight with checked arithmetic. The scalar accessors reject an
+     * out-of-range store one word at a time, so without this a partially valid
+     * destination gets part of the history written -- and a base near the top of
+     * the address space wraps buf + i*16 down into an unrelated but IN-range guest
+     * address -- while the return value still claims every sample landed.
+     *
+     * avail is bounded by CTRL_RING above, so the multiply cannot currently wrap and
+     * that leg has NO failing-before -- it is defence in depth against a later ring
+     * resize, not a repaired defect. The span check itself does have one. */
+    uint32_t span = 0;
+    if (!sr_size_mul_ok((uint32_t)avail, CTRL_SAMPLE_BYTES, &span) ||
+        !sr_guest_span_writable(buf, span))
+        return 0;
+    /* Oldest of the delivered samples first; peek differs only in blocking and in
+     * whether the read cursor is advanced below, not in where the window starts. */
+    int start = (s_ctrl_w - avail + CTRL_RING) % CTRL_RING;
     for (int i = 0; i < avail; i++) {
         CtrlSample smp = s_ctrl_ring[(start + i) % CTRL_RING];
         uint32_t field = negate ? ~smp.btn : smp.btn;   /* negative mode inverts buttons only */
-        uint32_t e = buf + (uint32_t)i * 16;
-        MEM_W32(e + 0, s_vcount_fwd);  /* timestamp (monotonic) */
+        uint32_t e = buf + (uint32_t)i * CTRL_SAMPLE_BYTES;
+        MEM_W32(e + 0, smp.ts);        /* stamped when the sample was latched */
         MEM_W32(e + 4, field);
         MEM_W8(e + 8, smp.lx); MEM_W8(e + 9, smp.ly); MEM_W8(e + 10, 128); MEM_W8(e + 11, 128);
     }
