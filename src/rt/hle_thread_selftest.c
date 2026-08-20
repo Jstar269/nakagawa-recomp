@@ -98,6 +98,9 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         unsigned long *latched, unsigned long *rejected,
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
+extern void sr_hle_test_audio_reset(void);
+extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
+                                   uint32_t *frames, int *format);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -120,6 +123,14 @@ extern void sr_hle_test_sas_reset(void);
 #define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
 #define NID_DISPLAY_FRAME_PER_SEC 0xdba6c4c4u
 #define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
+#define NID_SCE_AUDIO_CH_RESERVE 0x5ec81c55u
+#define NID_SCE_AUDIO_CH_RELEASE 0x6fc46853u
+#define NID_SCE_AUDIO_OUTPUT_BLOCKING 0x136caf51u
+#define NID_SCE_AUDIO_SET_DATA_LEN 0xcb2e439eu
+#define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
+#define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
+#define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
+#define SCE_AUDIO_ERROR_INVALID_FORMAT 0x80260007u
 
 /* White-box fixture hook defined in hle.c under SR_HLE_THREAD_SELFTEST. */
 extern void sr_hle_test_reset_rtc_epoch(void);
@@ -207,8 +218,56 @@ void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t 
 void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
     (void)addr; (void)width; (void)pc;
 }
+static unsigned long s_oor_calls;
 void sr_oor(uint32_t addr, uint32_t value, int store) {
     (void)addr; (void)value; (void)store;
+    s_oor_calls++;
+}
+
+static unsigned long s_audio_push_calls;
+static unsigned long s_audio_queue_calls;
+static int s_audio_push_frames;
+static int16_t s_audio_push_first_l, s_audio_push_first_r;
+static int16_t s_audio_push_last_l, s_audio_push_last_r;
+static int s_audio_queue_result;
+static int s_audio_queue_seq[4];
+static int s_audio_queue_seq_len;
+
+void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
+    (void)ch; (void)volL; (void)volR;
+    s_audio_push_calls++;
+    s_audio_push_frames = nframes;
+    if (lr && nframes > 0) {
+        s_audio_push_first_l = lr[0];
+        s_audio_push_first_r = lr[1];
+        s_audio_push_last_l = lr[(nframes - 1) * 2];
+        s_audio_push_last_r = lr[(nframes - 1) * 2 + 1];
+    }
+}
+
+int sr_audio_queued(int ch) {
+    (void)ch;
+    if (s_audio_queue_seq_len > 0) {
+        int i = (int)s_audio_queue_calls;
+        if (i >= s_audio_queue_seq_len) i = s_audio_queue_seq_len - 1;
+        s_audio_queue_calls++;
+        return s_audio_queue_seq[i];
+    }
+    s_audio_queue_calls++;
+    return s_audio_queue_result;
+}
+
+static void audio_fixture_reset(void) {
+    s_oor_calls = 0;
+    s_audio_push_calls = 0;
+    s_audio_queue_calls = 0;
+    s_audio_push_frames = 0;
+    s_audio_push_first_l = 0;
+    s_audio_push_first_r = 0;
+    s_audio_push_last_l = 0;
+    s_audio_push_last_r = 0;
+    s_audio_queue_result = 0;
+    s_audio_queue_seq_len = 0;
 }
 
 uint32_t g_frame_prims;
@@ -786,6 +845,188 @@ static void reset_fixture(void) {
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
+                               uint32_t a0, uint32_t a1, uint32_t a2) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    return sr_syscall(cpu, nid);
+}
+
+/* PRODUCTION_DISPATCH host regression, with CORROBORATIVE_ONLY PSP contract
+ * inputs pinned to public sources (not a local hardware claim):
+ *
+ * - PSPSDK src/audio/pspaudio.h @
+ *   314b2083f2e1eaf145fc5de342736336fe1f0148: regular samples are 64..65472
+ *   aligned to 64; stereo is 0 and mono is 0x10.
+ * - PSPAutotests tests/audio/sceaudio/{reserve,datalen}.{c,expected} @
+ *   ea71108f00933712c4662276261b39cd42249b1e records the corresponding
+ *   INVALID_SIZE / INVALID_FORMAT / INVALID_CH / NOT_INITIALIZED results.
+ *
+ * The guest-span case is a host memory-safety contract: a rejected buffer must
+ * be atomic before scalar reads, telemetry/backend submission, queue queries,
+ * or scheduler-time changes. It is HOST_TESTED, not PSP_HARDWARE evidence. */
+static void test_audio_regular_contract_safety(void) {
+    enum {
+        MONO_EDGE = 0x0bffff80u,  /* exactly 64 mono frames fit in the arena */
+        STEREO_BUF = 0x08a00000u, /* 64 stereo frames, well inside the arena */
+    };
+    CpuState cpu;
+    int reserved = -1, format = -1;
+    uint32_t frames = 0xffffffffu;
+
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 0 && frames == 0u && format == 0,
+           "audio fixture starts with an unreserved regular channel");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 0xffffffffu, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_SIZE,
+           "AudioChReserve rejects an unsigned-oversized sample count");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 0 && frames == 0u && format == 0,
+           "oversized reservation rejection does not mutate channel state");
+    (void)audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u);
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 96u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_SIZE,
+           "AudioChReserve rejects a sample count not aligned to 64");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 0 && frames == 0u && format == 0,
+           "misaligned reservation rejection does not mutate channel state");
+    (void)audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u);
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 65536u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_SIZE,
+           "AudioChReserve rejects the first aligned count above the public maximum");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 0 && frames == 0u && format == 0,
+           "above-maximum reservation rejection does not mutate channel state");
+    (void)audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u);
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 65472u, 0u) == 0u,
+           "AudioChReserve accepts the aligned public maximum sample count");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 1 && frames == 65472u && format == 0,
+           "maximum-size reservation records the accepted sample count");
+    (void)audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u);
+    sr_hle_test_audio_reset();
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 1u) ==
+               SCE_AUDIO_ERROR_INVALID_FORMAT,
+           "AudioChReserve rejects format 1 rather than treating it as mono");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 0 && frames == 0u && format == 0,
+           "invalid-format reservation rejection does not mutate channel state");
+    (void)audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u);
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0x10u) == 0u,
+           "AudioChReserve accepts the public mono format value 0x10");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 1 && frames == 64u && format == 0x10,
+           "mono reservation retains the 0x10 format identity");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 128u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioChReserve rejects an already-reserved channel");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) &&
+               reserved == 1 && frames == 64u && format == 0x10,
+           "duplicate reservation rejection preserves length and format");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0u, 96u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_SIZE,
+           "AudioSetChannelDataLen rejects a misaligned sample count");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) && frames == 64u,
+           "invalid SetChannelDataLen does not mutate the prior length");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0u, 65536u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_SIZE,
+           "AudioSetChannelDataLen rejects the first aligned count above the maximum");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) && frames == 64u,
+           "above-maximum SetChannelDataLen rejection preserves the prior length");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0u, 128u, 0u) == 0u,
+           "AudioSetChannelDataLen accepts an aligned in-range sample count");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) && frames == 128u,
+           "valid SetChannelDataLen mutates the reserved channel length");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0u, 64u, 0u) == 0u,
+           "AudioSetChannelDataLen restores the 64-frame mono fixture");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 1u, 64u, 0u) ==
+               SCE_AUDIO_ERROR_NOT_INITIALIZED,
+           "AudioSetChannelDataLen rejects an unreserved regular channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0xffffffffu, 64u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioSetChannelDataLen rejects an invalid channel before mutation");
+
+    for (uint32_t i = 0; i < 64u; i++)
+        MEM_W16(MONO_EDGE + i * 2u, (uint16_t)(i + 1u));
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING,
+                          0u, 0x8000u, MONO_EDGE) == 64u,
+           "AudioOutputBlocking accepts a whole-span-valid mono edge buffer");
+    expect(s_oor_calls == 0u,
+           "mono 0x10 reads exactly two bytes per frame without crossing the arena");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 64,
+           "valid mono output reaches the host backend once with 64 frames");
+    expect(s_audio_push_first_l == 1 && s_audio_push_first_r == 1 &&
+               s_audio_push_last_l == 64 && s_audio_push_last_r == 64,
+           "mono 0x10 expands each source sample to equal left/right samples");
+    expect(s_audio_queue_calls == 2u,
+           "a zero-lead queue is observed once before and once inside the wait");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "mono fixture channel releases before the stereo span case");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "stereo span fixture reserves a 64-frame channel");
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING,
+                          0u, 0x8000u, MONO_EDGE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "AudioOutputBlocking rejects a stereo buffer whose whole span is invalid");
+    expect(s_oor_calls == 0u,
+           "whole-span rejection occurs before any scalar guest sample read");
+    expect(s_audio_push_calls == 0u,
+           "whole-span rejection occurs before any backend submission");
+    expect(s_audio_queue_calls == 0u,
+           "whole-span rejection occurs before any host queue query or wait");
+
+    /* Drain path. The blocking output re-reads the host queue while the backend
+     * still holds more than one channel period, then returns. Wait duration is
+     * deliberately not asserted here: sched_delay_current() is inert without a
+     * current scheduler thread, so this fixture can only witness loop shape. */
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "queue-drain fixture reserves a 64-frame stereo channel");
+    for (uint32_t i = 0; i < 64u * 2u; i++)
+        MEM_W16(STEREO_BUF + i * 2u, (uint16_t)(i + 1u));
+    s_audio_queue_seq[0] = 192;
+    s_audio_queue_seq[1] = 128;
+    s_audio_queue_seq[2] = 64;
+    s_audio_queue_seq_len = 3;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING,
+                          0u, 0x8000u, STEREO_BUF) == 64u,
+           "AudioOutputBlocking returns the channel frame count after draining");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 64,
+           "the drain path submits the buffer once before waiting");
+    expect(s_audio_queue_calls == 3u,
+           "the drain loop re-reads the host queue until the lead is one period");
+
+
+    /* The backend reports -1 when it has no queue. That sentinel must end the
+     * wait rather than being compared as a frame count. */
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "queue-sentinel fixture reserves a 64-frame stereo channel");
+    s_audio_queue_result = -1;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING,
+                          0u, 0x8000u, STEREO_BUF) == 64u,
+           "a negative queue report ends the wait instead of looping");
+    expect(s_audio_queue_calls == 1u,
+           "the negative queue sentinel takes the open-loop path after one query");
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -6153,6 +6394,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_already_ended();
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
+    test_audio_regular_contract_safety();
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();
     test_display_framebuf_latch();
