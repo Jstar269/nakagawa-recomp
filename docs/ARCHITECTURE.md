@@ -62,6 +62,21 @@ switched to the new adapter wholesale in this wave.
 
 ### ProgramImage v1 and CFG ownership observation v1
 
+**Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
+reachable from the production pipeline. Nothing in `tools/codegen.py`,
+`tools/imports.py`, the `Makefile`, or `hst_manager.ps1` imports or constructs
+either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
+their unit tests. That is a checkable property, not an intention, and it is the
+reason this wave makes no production-wiring claim.
+
+**Precondition for any later production wiring.** Before either type may replace a
+production path, it must first be shown *equivalent* to the path it replaces on
+real inputs -- not merely self-consistent. `cfg_compatibility_findings()` exists
+for exactly this: it reports differences against a legacy entry set and
+deliberately does not pick a winner. Wiring either type in without that
+equivalence evidence would convert an observation tool into an unverified
+reimplementation of the analysis the pipeline already depends on.
+
 `tools.prxload.load_program_image()` is the read-only Wave-1 adapter. It validates the
 ELF32 envelope, checked load/file/guest spans, permissions, zero-fill extents, entry,
 imports/exports, module metadata, and relocation records before allocating a flat image.
