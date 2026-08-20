@@ -26,6 +26,8 @@ PUBLIC_MANIFEST_MAX_BYTES = 256 * 1024
 MAX_JSON_DEPTH = 16
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+C_SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+BUILD_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DISC_ID_RE = re.compile(r"^[A-Z]{4}[0-9]{5}$")
 FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -40,7 +42,23 @@ ROOT_KEYS = {
     "schema_version", "id", "display_name", "kind", "disc", "executable",
     "modules", "filesystem", "hle_profile", "feature_requirements",
     "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
+    "runtime_contract", "profile_zero",
 }
+
+CORE_CONTRACT_CAPABILITIES = frozenset({
+    "allegrex", "vfpu", "guest-memory", "scheduler", "interrupts", "callbacks",
+    "generic-hle", "ge-display", "audio", "io", "backend-contracts", "evidence",
+})
+EVIDENCE_CLASSES = frozenset({
+    "PSP_HARDWARE", "PRODUCTION_DISPATCH", "PRODUCTION_HELPER", "MODEL_REFERENCE",
+    "HOST_DIFFERENTIAL", "SOURCE_SHAPE", "PRIVATE_TITLE_ACCEPTANCE",
+})
+# Profile zero is the public synthetic surface: it may never cite evidence that
+# only a private title run can produce. These two names are the authoritative
+# vocabulary; assets/title_manifest.schema.json must publish exactly the same
+# set, and tools/test_title_manifest.py asserts that mechanically.
+PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES = frozenset({"PRIVATE_TITLE_ACCEPTANCE"})
+PROFILE_ZERO_EVIDENCE_CLASSES = EVIDENCE_CLASSES - PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES
 
 
 class TitleManifestError(ValueError):
@@ -158,8 +176,10 @@ def loads_manifest(raw: str) -> dict[str, Any]:
 
 
 def load_manifest(path: Path, *, max_bytes: int = PUBLIC_MANIFEST_MAX_BYTES) -> dict[str, Any]:
-    if max_bytes <= 0:
-        raise ValueError("max_bytes must be positive")
+    if not isinstance(path, Path):
+        raise TitleManifestError(f"{path!r}: manifest path must be a pathlib.Path")
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
     if path.is_symlink():
         raise TitleManifestError(f"{path}: symbolic links are not accepted")
     if not path.is_file():
@@ -237,6 +257,226 @@ def validate_executable(value: Any, path: str) -> dict[str, Any]:
         "entry": uint(value["entry"], f"{path}.entry"),
         "bss_metadata_source": source,
         "extra_executable_spans": spans,
+    }
+
+
+def validate_runtime_contract(value: Any, path: str) -> dict[str, Any]:
+    """Validate the versioned core/profile boundary.
+
+    The core capability vocabulary is intentionally closed. A profile may select
+    capabilities and explicitly document HLE overrides, but it cannot introduce
+    an unknown capability or an implicit PSP-semantic replacement. Runtime code
+    should apply the same fail-closed rule when loading a contract.
+    """
+    value = obj(value, path, {
+        "schema_version", "core_contract", "profile_id", "capability_requirements",
+        "unknown_capability_policy", "boot", "resources", "hle_overrides",
+        "input_mapping", "enhancements", "evidence_profile",
+    })
+    require(value, path, "schema_version", "core_contract", "profile_id", "capability_requirements",
+            "unknown_capability_policy", "boot", "resources", "hle_overrides",
+            "input_mapping", "enhancements", "evidence_profile")
+    if uint(value["schema_version"], f"{path}.schema_version") != 1:
+        fail(f"{path}.schema_version", "only contract version 1 is supported")
+    core = identifier(value["core_contract"], f"{path}.core_contract")
+    if core != "psp-core-v1":
+        fail(f"{path}.core_contract", "unsupported PSP core contract")
+    profile_id = identifier(value["profile_id"], f"{path}.profile_id")
+    policy = text(value["unknown_capability_policy"], f"{path}.unknown_capability_policy", 32)
+    if policy != "fail-closed":
+        fail(f"{path}.unknown_capability_policy", "must be fail-closed")
+
+    capabilities: set[str] = set()
+    for index, capability in enumerate(array(value["capability_requirements"], f"{path}.capability_requirements", 32)):
+        capability = identifier(capability, f"{path}.capability_requirements[{index}]")
+        if capability not in CORE_CONTRACT_CAPABILITIES:
+            fail(f"{path}.capability_requirements[{index}]", "unknown core capability; contracts fail closed")
+        if capability in capabilities:
+            fail(f"{path}.capability_requirements[{index}]", "duplicate capability")
+        capabilities.add(capability)
+
+    boot = obj(value["boot"], f"{path}.boot", {"entry_policy", "thread_policy", "arguments"})
+    require(boot, f"{path}.boot", "entry_policy", "thread_policy", "arguments")
+    entry_policy = text(boot["entry_policy"], f"{path}.boot.entry_policy", 32)
+    if entry_policy not in {"image-entry", "manifest-entry"}:
+        fail(f"{path}.boot.entry_policy", "unsupported entry policy")
+    thread_policy = text(boot["thread_policy"], f"{path}.boot.thread_policy", 32)
+    if thread_policy not in {"profile-default", "no-main-thread"}:
+        fail(f"{path}.boot.thread_policy", "unsupported thread policy")
+    arguments = [
+        text(argument, f"{path}.boot.arguments[{index}]", 128, 0)
+        for index, argument in enumerate(array(boot["arguments"], f"{path}.boot.arguments", 16))
+    ]
+
+    resources = obj(value["resources"], f"{path}.resources", {"mode", "locators"})
+    require(resources, f"{path}.resources", "mode", "locators")
+    resource_mode = text(resources["mode"], f"{path}.resources.mode", 32)
+    if resource_mode not in {"none", "manifest-filesystem"}:
+        fail(f"{path}.resources.mode", "unsupported resource mode")
+    locators = [
+        portable_path(locator, f"{path}.resources.locators[{index}]")
+        for index, locator in enumerate(array(resources["locators"], f"{path}.resources.locators", 32))
+    ]
+    if resource_mode == "none" and locators:
+        fail(f"{path}.resources.locators", "must be empty when resource mode is none")
+
+    overrides = []
+    override_names: set[str] = set()
+    for index, item in enumerate(array(value["hle_overrides"], f"{path}.hle_overrides", 32)):
+        item_path = f"{path}.hle_overrides[{index}]"
+        item = obj(item, item_path, {"capability", "disposition", "reason", "evidence_class"})
+        require(item, item_path, "capability", "disposition", "reason", "evidence_class")
+        capability = identifier(item["capability"], f"{item_path}.capability")
+        if capability not in CORE_CONTRACT_CAPABILITIES:
+            fail(f"{item_path}.capability", "unknown capability; HLE overrides fail closed")
+        if capability in override_names:
+            fail(f"{item_path}.capability", "duplicate HLE override")
+        override_names.add(capability)
+        disposition = text(item["disposition"], f"{item_path}.disposition", 32)
+        if disposition not in {"core", "explicit-override", "unavailable"}:
+            fail(f"{item_path}.disposition", "unsupported HLE disposition")
+        evidence_class = text(item["evidence_class"], f"{item_path}.evidence_class", 32)
+        if evidence_class not in EVIDENCE_CLASSES:
+            fail(f"{item_path}.evidence_class", "unknown evidence class")
+        overrides.append({
+            "capability": capability,
+            "disposition": disposition,
+            "reason": text(item["reason"], f"{item_path}.reason", 512),
+            "evidence_class": evidence_class,
+        })
+    overrides.sort(key=lambda item: item["capability"])
+
+    mapping = obj(value["input_mapping"], f"{path}.input_mapping", {"labels", "replay"})
+    require(mapping, f"{path}.input_mapping", "labels", "replay")
+    labels = []
+    for index, label in enumerate(array(mapping["labels"], f"{path}.input_mapping.labels", 32)):
+        label = identifier(label, f"{path}.input_mapping.labels[{index}]")
+        if label in labels:
+            fail(f"{path}.input_mapping.labels[{index}]", "duplicate input label")
+        labels.append(label)
+    replay = text(mapping["replay"], f"{path}.input_mapping.replay", 32)
+    if replay not in {"none", "deterministic"}:
+        fail(f"{path}.input_mapping.replay", "unsupported input replay policy")
+
+    enhancements = obj(value["enhancements"], f"{path}.enhancements", {"enabled_by_default", "capabilities"})
+    require(enhancements, f"{path}.enhancements", "enabled_by_default", "capabilities")
+    enhancement_capabilities = []
+    for index, capability in enumerate(array(enhancements["capabilities"], f"{path}.enhancements.capabilities", 16)):
+        capability = identifier(capability, f"{path}.enhancements.capabilities[{index}]")
+        if capability in enhancement_capabilities:
+            fail(f"{path}.enhancements.capabilities[{index}]", "duplicate enhancement capability")
+        enhancement_capabilities.append(capability)
+    return {
+        "schema_version": 1,
+        "core_contract": core,
+        "profile_id": profile_id,
+        "capability_requirements": sorted(capabilities),
+        "unknown_capability_policy": policy,
+        "boot": {"entry_policy": entry_policy, "thread_policy": thread_policy, "arguments": arguments},
+        "resources": {"mode": resource_mode, "locators": sorted(locators)},
+        "hle_overrides": overrides,
+        "input_mapping": {"labels": sorted(labels), "replay": replay},
+        "enhancements": {
+            "enabled_by_default": boolean(enhancements["enabled_by_default"], f"{path}.enhancements.enabled_by_default"),
+            "capabilities": sorted(enhancement_capabilities),
+        },
+        "evidence_profile": identifier(value["evidence_profile"], f"{path}.evidence_profile"),
+    }
+
+
+def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
+    """Validate the source-owned Wave-1 profile-zero scaffold."""
+    value = obj(value, path, {"schema_version", "runnable", "source_program", "build", "acceptance"})
+    require(value, path, "schema_version", "runnable", "source_program", "build", "acceptance")
+    if uint(value["schema_version"], f"{path}.schema_version") != 1:
+        fail(f"{path}.schema_version", "only profile-zero schema version 1 is supported")
+    source = obj(value["source_program"], f"{path}.source_program", {"source_files", "entry_symbol", "ownership"})
+    require(source, f"{path}.source_program", "source_files", "entry_symbol", "ownership")
+    source_files = [
+        portable_path(item, f"{path}.source_program.source_files[{index}]")
+        for index, item in enumerate(array(source["source_files"], f"{path}.source_program.source_files", 16))
+    ]
+    if not source_files:
+        fail(f"{path}.source_program.source_files", "must not be empty")
+    source_file_keys = [item.casefold() for item in source_files]
+    if len(source_file_keys) != len(set(source_file_keys)):
+        fail(f"{path}.source_program.source_files", "duplicate source file")
+    ownership = text(source["ownership"], f"{path}.source_program.ownership", 64)
+    entry_symbol = text(source["entry_symbol"], f"{path}.source_program.entry_symbol", 128)
+    if not C_SYMBOL_RE.fullmatch(entry_symbol):
+        fail(f"{path}.source_program.entry_symbol", "must be a portable C symbol")
+    if ownership != "project-authored-public":
+        fail(f"{path}.source_program.ownership", "profile zero requires project-authored source")
+    build = obj(value["build"], f"{path}.build", {"makefile", "working_directory", "target", "toolchain"})
+    require(build, f"{path}.build", "makefile", "working_directory", "target", "toolchain")
+    toolchain = text(build["toolchain"], f"{path}.build.toolchain", 128)
+    if toolchain.startswith(("/", "\\")) or "\\" in toolchain or ":" in toolchain:
+        fail(f"{path}.build.toolchain", "must be a portable toolchain label, not a host path")
+    build_target = text(build["target"], f"{path}.build.target", 64)
+    if not BUILD_TARGET_RE.fullmatch(build_target):
+        fail(f"{path}.build.target", "must be a portable build target name")
+    build_normalized = {
+        "makefile": portable_path(build["makefile"], f"{path}.build.makefile"),
+        "working_directory": portable_path(build["working_directory"], f"{path}.build.working_directory"),
+        "target": build_target,
+        "toolchain": toolchain,
+    }
+    acceptance = obj(value["acceptance"], f"{path}.acceptance", {"schema_version", "status", "private_inputs_allowed", "cases"})
+    require(acceptance, f"{path}.acceptance", "schema_version", "status", "private_inputs_allowed", "cases")
+    if uint(acceptance["schema_version"], f"{path}.acceptance.schema_version") != 1:
+        fail(f"{path}.acceptance.schema_version", "only acceptance schema version 1 is supported")
+    status = text(acceptance["status"], f"{path}.acceptance.status", 32)
+    if status not in {"scaffold", "ready", "blocked"}:
+        fail(f"{path}.acceptance.status", "unsupported profile-zero acceptance status")
+    cases = []
+    case_ids: set[str] = set()
+    for index, item in enumerate(array(acceptance["cases"], f"{path}.acceptance.cases", 32)):
+        item_path = f"{path}.acceptance.cases[{index}]"
+        item = obj(item, item_path, {"id", "status", "evidence_class", "assertion"})
+        require(item, item_path, "id", "status", "evidence_class", "assertion")
+        case_id = identifier(item["id"], f"{item_path}.id")
+        if case_id in case_ids:
+            fail(f"{item_path}.id", "duplicate acceptance case")
+        case_ids.add(case_id)
+        case_status = text(item["status"], f"{item_path}.status", 32)
+        if case_status not in {"planned", "implemented", "blocked"}:
+            fail(f"{item_path}.status", "unsupported acceptance case status")
+        evidence_class = text(item["evidence_class"], f"{item_path}.evidence_class", 32)
+        if evidence_class not in EVIDENCE_CLASSES:
+            fail(f"{item_path}.evidence_class", "unknown evidence class")
+        if evidence_class in PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES:
+            fail(f"{item_path}.evidence_class", "profile zero cannot contain private-title evidence")
+        cases.append({
+            "id": case_id,
+            "status": case_status,
+            "evidence_class": evidence_class,
+            "assertion": text(item["assertion"], f"{item_path}.assertion", 512),
+        })
+    if not cases:
+        fail(f"{path}.acceptance.cases", "must contain at least one case")
+    cases.sort(key=lambda item: item["id"])
+    runnable = boolean(value["runnable"], f"{path}.runnable")
+    if runnable != (status == "ready"):
+        fail(f"{path}.runnable", "must be true exactly when acceptance status is ready")
+    if status == "ready" and any(item["status"] != "implemented" for item in cases):
+        fail(f"{path}.acceptance.cases", "ready profile zero requires every case to be implemented")
+    if boolean(acceptance["private_inputs_allowed"], f"{path}.acceptance.private_inputs_allowed"):
+        fail(f"{path}.acceptance.private_inputs_allowed", "profile zero cannot require private inputs")
+    return {
+        "schema_version": 1,
+        "runnable": runnable,
+        "source_program": {
+            "source_files": sorted(source_files),
+            "entry_symbol": entry_symbol,
+            "ownership": ownership,
+        },
+        "build": build_normalized,
+        "acceptance": {
+            "schema_version": 1,
+            "status": status,
+            "private_inputs_allowed": False,
+            "cases": cases,
+        },
     }
 
 
@@ -335,6 +575,14 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     if "compatibility_manifest" in value:
         result["compatibility_manifest"] = portable_path(value["compatibility_manifest"], "$.compatibility_manifest")
     result["verification_profile"] = identifier(value["verification_profile"], "$.verification_profile")
+    if "runtime_contract" in value:
+        result["runtime_contract"] = validate_runtime_contract(value["runtime_contract"], "$.runtime_contract")
+    if "profile_zero" in value:
+        if kind != "synthetic":
+            fail("$.profile_zero", "is permitted only for synthetic manifests")
+        if "runtime_contract" not in result or result["runtime_contract"]["profile_id"] != "profile-zero-v1":
+            fail("$.profile_zero", "requires runtime_contract.profile_id=profile-zero-v1")
+        result["profile_zero"] = validate_profile_zero(value["profile_zero"], "$.profile_zero")
     if "notes" in value:
         result["notes"] = text(value["notes"], "$.notes", 2048, 0)
     return result
