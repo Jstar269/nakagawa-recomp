@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "422009976b79bf1b26baf584a577f64eddef26ab560d138e56552948547c46bb"
+      "sha256": "9ba79d66f6324a36b9e0bc5efa4879145fafd8f81ae9244c88b87ced49e74e32"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",

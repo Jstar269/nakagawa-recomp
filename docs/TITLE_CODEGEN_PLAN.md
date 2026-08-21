@@ -199,6 +199,34 @@ sits **after** the exact-hook table, so runtime policy hooks keep precedence ove
 redirect, and before the lookup fixups, so an aliased target reaches the same code a
 direct target would.
 
+#### The core dispatch reservation
+
+That ordering has a converse the validator enforces. Because `dispatch()` claims every
+target matching `SR_DISPATCH_VFPU_TAG` under `SR_DISPATCH_VFPU_MASK`
+(`src/rt/recomp.h`) for the per-instruction VFPU fallback *before* any title binding is
+consulted, a binding whose own match value falls in that window could never fire. A
+manifest naming one is rejected, with the exact window in the message:
+
+- `dispatch_aliases[].from` and `callback_terminators[].sentinel` are compared against a
+  dispatch target, so both are subject to the reservation;
+- `dispatch_aliases[].to` is only ever handed to `sr_lookup()`, and
+  `callback_terminators[].pc` / `.ra` are compared against `CpuState` fields at the call
+  site, so none of those three is.
+
+Without the rule such a manifest validates, generates, compiles, and then takes the
+configured target into the VFPU interpreter — a private title manifest is never part of
+the public matrix, so the first symptom would be a route misbehaving rather than a build
+error. The JSON schema publishes the same window as `$defs/coreReservedDispatchTarget`,
+and a test reads both macros back out of `src/rt/recomp.h` so the Python mirror cannot
+drift from the runtime it describes.
+
+`src/rt/title_config.c` sizes both generated arrays from the list rather than from the
+declared count, and `_Static_assert`s the two against each other. A count larger than its
+list would otherwise zero-pad the array, and a zero-filled terminator entry reads as
+`{sentinel 0, no pc constraint, no ra constraint}` — exactly the program-wide match the
+validator refuses to accept. Deriving the size from the initializer makes that
+disagreement a compile error instead.
+
 ### The generic runtime interface
 
 `src/rt/title_config.h` declares one small typed interface:
