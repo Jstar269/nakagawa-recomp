@@ -58,9 +58,22 @@ int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
 void    sr_yield(CpuState *s) { (void)s; }
 uint32_t sched_current_uid(void) { return 0u; }
-uint32_t sched_root_uid(void)     { return 0x110u; }
-uint32_t sched_worker_uid(void)   { return 0x114u; }
-uint32_t sched_launcher_uid(void) { return 0x111u; }
+/* The headless gate has no scheduler, so no thread role is ever captured. Reporting the
+ * historical HST UIDs here would hand the gate a role identity it cannot have earned.
+ * This file deliberately declares its own symbols instead of including recomp.h, so the
+ * marker is restated here; tools/test_title_runtime_config.py asserts the two agree. */
+#ifndef SR_ROLE_UID_NONE
+#define SR_ROLE_UID_NONE 0xFFFFFFFFu
+#endif
+uint32_t sched_root_uid(void)     { return SR_ROLE_UID_NONE; }
+uint32_t sched_worker_uid(void)   { return SR_ROLE_UID_NONE; }
+uint32_t sched_launcher_uid(void) { return SR_ROLE_UID_NONE; }
+int      sched_role_uid_captured(uint32_t role_uid) { (void)role_uid; return 0; }
+int      sched_uid_is_root(uint32_t uid)     { (void)uid; return 0; }
+int      sched_uid_is_worker(uint32_t uid)   { (void)uid; return 0; }
+int      sched_uid_is_launcher(uint32_t uid) { (void)uid; return 0; }
+int      sched_current_is_worker(void)   { return 0; }
+int      sched_current_is_launcher(void) { return 0; }
 void    sched_init(CpuState *cpu) { (void)cpu; }
 uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
 void    sched_exit_current(int32_t status) { (void)status; }

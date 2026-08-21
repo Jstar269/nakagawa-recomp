@@ -7,8 +7,12 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import title_runtime_config  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -306,8 +310,19 @@ int main(int argc, char **argv) {{
             zero_file.write_bytes(b"")
             sample_img.write_bytes(b"\x00" * 256)
 
+            # driver.c reads its fallback entry from the generic title configuration.
+            # Build against the generic (no-title) configuration so this harness keeps
+            # asserting the unconfigured driver behavior and nothing title-specific.
+            title_runtime_config.write_if_changed(
+                tmpdir / "sr_title_config.h",
+                title_runtime_config.render_header(
+                    title_runtime_config.bindings_from_manifest(None)
+                ),
+            )
+
             compiled = subprocess.run(
-                [CC, "-std=c11", "-O2", f"-I{RT_DIR}", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)],
+                [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
+                 str(src), str(RT_DIR / "title_config.c"), "-o", str(exe)],
                 capture_output=True, text=True,
             )
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

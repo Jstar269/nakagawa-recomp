@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "3532153c69d3a87e0b9f89a66ad00c1fecb1e7a50314b0a09287f61fe6883769"
+      "sha256": "4e64e32582059ca805e9ce7fa9fc36db58f14a0896d49dd7de9b19d37a16ada8"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "8478d620e122b69bd7d9ea8683c9d90f00d2a4cbd91fbbfa67644789e7fe8535"
+      "sha256": "5d23102803c20295d945a287925b33caead753ea38d8222fc7dcb44381ed0892"
     },
     {
       "path": "assets/release_manifest.json",
@@ -405,7 +405,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "4bacce730e0314ed04d0709b6af09e75f44d3df5b158f3731d216227116e4fab"
+      "sha256": "7e32fac71e4cf287024a708cc684fdf0a3f0ef4e67417cc3246ce9e09a58c05d"
     },
     {
       "path": "assets/titles/README.md",
@@ -414,7 +414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2a080793a62559d84731771adc440adbf53ede1e95ea408432cd0cfee19e4f4a"
+      "sha256": "46c5a282bb05a77b9c4bbcfa4a005f08abed57f7b40484857c991ba0f46f6590"
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
@@ -423,7 +423,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "31e59fac363094f67b9f67f26be3a8a42291624be260967be494e426135a823f"
+      "sha256": "dcbe1a63d4fe5d3841fe98fec01ad7b7555b864d7ee9c469e4066cf0485539c0"
     },
     {
       "path": "assets/titles/synthetic.json",
@@ -432,7 +432,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "816fcce1b074af1e58c2af46a2a895508250117e704b7282a772089e6c97a89d"
+      "sha256": "cfb7c22b633a47eb5b5924356461ba30cb8beb910536cc083b96c976fe49d7a6"
     },
     {
       "path": "assets/upstream/pspdev.NOTICE.md",
@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6c0104dfdd2c2c0e92faf787a021374cd82c739299558d3d74cb55867a9eef06"
+      "sha256": "6e34c7962c2651677478acb072dace06dc9dff3708c93497c084e122faff61c6"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -1131,7 +1131,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "09a222bba8df1bf69e1b0716266afbb870a65fc2822a2a1fa9c0d4f06b261939"
+      "sha256": "11e410ba308be7976ba7dec9e08770ee2bd3bb94c1133b4f8f7573939ae83d38"
     },
     {
       "path": "interface/.env.example",
@@ -3872,7 +3872,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "54b8103cfbe1578b0c3980d9bc1ba3bc2cc3a061edf32ffb66ea039a70b4ff94"
+      "sha256": "d7f927a447704adeb94a441067666a7ee8085c4a65fd6539338fc7bfc0c0fa4c"
     },
     {
       "path": "src/rt/evf.h",
@@ -4364,7 +4364,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a185b5c5e6b930100d2ed9f38529ff02d80f7f2d213013a2c1253e2d1b8be075"
+      "sha256": "59cae7a12e6b1135f722e092588338742d15864c28aa3dba73e005fb76dd2c08"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4376,7 +4376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0017f84d759c612e3c3a1e311712936abe66bed090a9597742fef22a6eae9499"
+      "sha256": "541d2a3d5061c8ea330ed41adac4f34fd50b6c7be8dd3764a2066dbe41b1b860"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4581,7 +4581,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "30b5e15e5a60f8147f45e710af4e925a6dfa340527a3f33d66b80bf02e58b64b"
+      "sha256": "86fea76ee26602b8ebc956625273c28e1b4f099be9e6f35605dfdf4b574ed80d"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4614,7 +4614,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a54f8f8de9f5f0163eb18a1573373083b83b3730814ed1c0ac54c8aafcec1e94"
+      "sha256": "8a2e916ecc9553d2800b6716f4032fb5a3b1afd56416f3e9eac31b8fbf9b2a08"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4626,7 +4626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cf94b3868afff444fa992ed97e1a314f196fae31b8be0d15ce1062cc70843149"
+      "sha256": "e00cbb06819811f10c2603f4767fef80dd9835f4eab2cb8611e00e56cdc0490e"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -4699,6 +4699,26 @@
         "upstream_attribution": null
       },
       "sha256": "c268d0b3087e57138dec2a4ee227b5c2c69bc92fdd975d241a3aca143314de48"
+    },
+    {
+      "path": "src/rt/title_config.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "82c9c725556fbf8e117e6f4c9d830b5b930d0bdfc5fff60b87574c5feb85cb5d"
+    },
+    {
+      "path": "src/rt/title_config.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "a065d0d285789cd30f1c6a771a628a3e8711f0a60462b98c9c44d3dd8c4da8fe"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -5034,7 +5054,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "80421317e9684d2bbf847afb56430b74a49f554028be8ae207e631c3e1c25879"
+      "sha256": "a4c06ae82d0ad57ebd9411d54baad322fe3652dface8264704f962b81b37df9d"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -5046,7 +5066,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72689566ca7006d65712e260a4cb4139bbcf537195df2dfa1a63de667e939cda"
+      "sha256": "32015fa6d4b63fcf9287f534bb9e11adcd27f90316d4173220fc27cd0d4acbd3"
     },
     {
       "path": "tools/decompme_export.py",
@@ -5147,7 +5167,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1fd85d967fe28177c4b47d46ab1bfb19b33afcb728a14b62a84c043b2839a65e"
+      "sha256": "8e8d4a1988b99a2ffcfde12ce029cc6304245f8aac3bf128c6cadfc8db124e54"
     },
     {
       "path": "tools/ge_replay_metrics.py",
@@ -6688,7 +6708,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7049f9ba963e9a657dd8aaa4b6e77d97328e3584392529f4a8278734aa1000e5"
+      "sha256": "1a203ad220ac3fd8559dc1f481948ee67e5a9fd1bbdd0fe75a326e2cf06d9d32"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -6700,7 +6720,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967f94737f6fa4b179de4ef67fb7ab47470fa8b0027179828a8767fee9da5c6d"
+      "sha256": "8d1f8851599bc1f3e866247cd5a174d2fbf5797196aa74a91cad42a917edc4af"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -6994,7 +7014,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e7cfcfefd2f122841637878bfa624d67b5fcd5007ef81770dbe9b95c7506b46"
+      "sha256": "de9d1f684ef12ba7b6079a77cb139021d81b210ae590ae926c9fd85a3a07690f"
     },
     {
       "path": "tools/test_sdkver_c.py",
@@ -7127,6 +7147,16 @@
         "upstream_attribution": null
       },
       "sha256": "66e40b578d1ca510d30b92f6ccc407dc6fb038b6c25a12b065cd9eb5da408a19"
+    },
+    {
+      "path": "tools/test_title_runtime_config.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "0b00f3cdd76c30a9e3bb3a77eda924613d9ca1535e8d15471ab9d657e21cee55"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -7303,7 +7333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "feae1ede8157bf1a459e4d4b4c9a17a351c580b70f37cf25f33e4813c2d40d91"
+      "sha256": "1cd587cb2f8e5178f2907e82477b241255912e4fd43397ad4fdd83737129d353"
     },
     {
       "path": "tools/title_manifest.py",
@@ -7315,7 +7345,17 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee35241172b58cdb8a72bb1e5c10223f691f6feff4b7017efb438b9f460193ae"
+      "sha256": "a6e65a5325a9f6c84eb9ee0265e095aef328a1fcf3779e23e1641d455b6f3e8d"
+    },
+    {
+      "path": "tools/title_runtime_config.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "8699d52e2e49724c454e957b4f208208887cbb50a2aa525680b663760aed6802"
     },
     {
       "path": "tools/tracediff.py",

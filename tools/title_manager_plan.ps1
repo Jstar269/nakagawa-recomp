@@ -249,7 +249,8 @@ function Get-HstManifestMakeArgs {
         [Parameter(Mandatory = $true)][string]$PspHeaderForMake,
         [Parameter(Mandatory = $true)][string]$VulkanSdkForMake,
         [Parameter(Mandatory = $true)][string]$BuildDir,
-        [Parameter(Mandatory = $true)][int]$FuncsPerChunk
+        [Parameter(Mandatory = $true)][int]$FuncsPerChunk,
+        [Parameter(Mandatory = $true)][string]$TitleManifestForMake
     )
     Assert-TitleManagerPlan $Plan | Out-Null
     # Every build-facing value below is consumed from the plan. The manager re-derives
@@ -297,7 +298,7 @@ function Get-HstManifestMakeArgs {
     if ($Plan.make.build_dir -ne ($BuildDir -replace '\\', '/') -or $Plan.make.funcs_per_chunk -ne $FuncsPerChunk) {
         throw 'HST manager plan Make mapping conflicts with the operational inputs'
     }
-    foreach ($binding in @($GameElfForMake, $ModuleDirForMake, $PspHeaderForMake, $VulkanSdkForMake)) {
+    foreach ($binding in @($GameElfForMake, $ModuleDirForMake, $PspHeaderForMake, $VulkanSdkForMake, $TitleManifestForMake)) {
         Assert-TitlePlanString $binding 'private binding' | Out-Null
     }
     $gameElf = $GameElfForMake -replace '\\', '/'
@@ -315,7 +316,11 @@ function Get-HstManifestMakeArgs {
         "CODEGEN_PROFILE_ARG=$($Plan.make.codegen_profile_arg)",
         "GAME_EXTRA_ELFS=`"$extra`"",
         "GAME_PSP_HEADER=$pspHeader",
-        "FUNCS_PER_CHUNK=$($Plan.make.funcs_per_chunk)"
+        "FUNCS_PER_CHUNK=$($Plan.make.funcs_per_chunk)",
+        # The same validated manifest also supplies the compiled runtime's title
+        # bindings. Without it the runtime objects build generically, so this is the
+        # only path by which a title's addresses reach src/rt.
+        "TITLE_MANIFEST=$($TitleManifestForMake -replace '\\', '/')"
     )
     return [pscustomobject]@{ MakeArgs = $args; Environment = $Plan.environment }
 }

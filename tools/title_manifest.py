@@ -42,8 +42,20 @@ ROOT_KEYS = {
     "schema_version", "id", "display_name", "kind", "disc", "executable",
     "modules", "filesystem", "hle_profile", "feature_requirements",
     "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
-    "runtime_contract", "profile_zero",
+    "runtime_contract", "profile_zero", "runtime_bindings",
 }
+
+#: Optional title bindings the compiled runtime may consume. Every field is
+#: individually optional so a generic build has none of them; the paired VBLANK
+#: counters are the one exception because a half-configured pair has no meaning.
+RUNTIME_BINDING_FIELDS = (
+    "fallback_entry",
+    "worker_thread_entry",
+    "launcher_thread_entry",
+    "vblank_frame_counter_addr",
+    "vblank_vsync_counter_addr",
+)
+RUNTIME_BINDING_PAIRS = (("vblank_frame_counter_addr", "vblank_vsync_counter_addr"),)
 
 CORE_CONTRACT_CAPABILITIES = frozenset({
     "allegrex", "vfpu", "guest-memory", "scheduler", "interrupts", "callbacks",
@@ -480,6 +492,57 @@ def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
     }
 
 
+def guest_address(value: Any, path: str) -> int:
+    """Validate one guest address used as a runtime binding.
+
+    Zero is the runtime's "not configured" sentinel, so an explicitly configured
+    zero is rejected rather than silently disabling a binding. Every binding is
+    either a MIPS entry point or a 32-bit guest counter, so a misaligned address
+    is a malformed binding, not a supported one.
+    """
+    value = uint(value, path)
+    if value == 0:
+        fail(path, "must not be zero; omit the field to leave the binding unconfigured")
+    if value % 4 != 0:
+        fail(path, "must be 4-byte aligned")
+    return value
+
+
+def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
+    """Validate the optional, strictly-checked title bindings the runtime consumes.
+
+    This block carries title-specific *addresses and roles* only. It cannot redefine
+    generic PSP scheduler/kernel/GE semantics: the runtime decides what a worker
+    entry or a VBLANK counter means, and this block decides only whether -- and at
+    which address -- that meaning applies. A manifest without the block, or without
+    a given field, leaves the corresponding runtime behavior disabled.
+    """
+    value = obj(value, path, {"schema_version", *RUNTIME_BINDING_FIELDS})
+    require(value, path, "schema_version")
+    if uint(value["schema_version"], f"{path}.schema_version") != 1:
+        fail(f"{path}.schema_version", "only runtime-binding schema version 1 is supported")
+    result: dict[str, Any] = {"schema_version": 1}
+    for name in RUNTIME_BINDING_FIELDS:
+        if name in value:
+            result[name] = guest_address(value[name], f"{path}.{name}")
+    if len(result) == 1:
+        fail(path, "must configure at least one binding; omit the block instead")
+    for left, right in RUNTIME_BINDING_PAIRS:
+        present = [name for name in (left, right) if name in result]
+        if len(present) == 1:
+            fail(
+                f"{path}.{present[0]}",
+                f"is paired with {left if present[0] == right else right}; configure both or neither",
+            )
+        if len(present) == 2 and result[left] == result[right]:
+            fail(path, f"{left} and {right} must be distinct addresses")
+    worker = result.get("worker_thread_entry")
+    launcher = result.get("launcher_thread_entry")
+    if worker is not None and worker == launcher:
+        fail(path, "worker_thread_entry and launcher_thread_entry must be distinct roles")
+    return result
+
+
 def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     names: set[str] = set()
@@ -577,6 +640,8 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     result["verification_profile"] = identifier(value["verification_profile"], "$.verification_profile")
     if "runtime_contract" in value:
         result["runtime_contract"] = validate_runtime_contract(value["runtime_contract"], "$.runtime_contract")
+    if "runtime_bindings" in value:
+        result["runtime_bindings"] = validate_runtime_bindings(value["runtime_bindings"], "$.runtime_bindings")
     if "profile_zero" in value:
         if kind != "synthetic":
             fail("$.profile_zero", "is permitted only for synthetic manifests")

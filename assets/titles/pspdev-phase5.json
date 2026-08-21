@@ -19,5 +19,13 @@
   "codegen_profile": "none",
   "feature_requirements": ["allegrex-core", "host-filesystem", "psp-hle"],
   "verification_profile": "synthetic-public",
+  "runtime_bindings": {
+    "schema_version": 1,
+    "fallback_entry": 142622976,
+    "worker_thread_entry": 142623232,
+    "launcher_thread_entry": 142623488,
+    "vblank_frame_counter_addr": 142737408,
+    "vblank_vsync_counter_addr": 142737412
+  },
   "notes": "Source-owned PSPDEV/PSPSDK compiled Phase 5 fixture (fixtures/pspdev_phase5). Deliberately configured differently from synthetic-allegrex-v1: the canonical PSP user-module load base 0x08804000 instead of the user-memory region start, no guest PRX of any kind, and an HLE-dependent feature set. No retail bytes or derived metadata."
 }

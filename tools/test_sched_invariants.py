@@ -142,13 +142,56 @@ class ThreadLifecycleTests(unittest.TestCase):
                 f"{name} must not compare thread UIDs against historical literals",
             )
 
-    def test_register_libc_thread_uses_role_accessors(self):
+    def test_register_libc_thread_uses_role_validity_not_uid_numbers(self):
+        """Role treatment must follow a captured role, never a UID's numeric value.
+
+        UIDs are allocated from 0x110 upward, so any role UID is also an ordinary UID.
+        A bare ``uid == g_launcher_uid`` therefore grants launcher-only treatment --
+        master-reent seeding and a skipped guest reent registration -- to whichever
+        thread happens to be allocated that number in a build with no launcher binding.
+        """
         body = strip_comments(function_body(SCHED, "register_libc_thread"))
-        self.assertIn("g_launcher_uid", body)
+        self.assertIn("sched_uid_is_launcher(uid)", body)
         self.assertIn("init_guest_reent", body)
+        self.assertNotRegex(
+            body,
+            r"uid\s*[!=]=\s*g_(launcher|worker|root)_uid",
+            "register_libc_thread must ask sched_uid_is_*(), not compare UID numbers",
+        )
 
         reent_body = strip_comments(function_body(SCHED, "init_guest_reent"))
-        self.assertIn("g_root_uid", reent_body)
+        self.assertIn("sched_uid_is_root(uid)", reent_body)
+        self.assertIn("sched_uid_is_launcher(uid)", reent_body)
+        self.assertNotRegex(
+            reent_body,
+            r"uid\s*[!=]=\s*g_(launcher|worker|root)_uid",
+            "init_guest_reent must ask sched_uid_is_*(), not compare UID numbers",
+        )
+
+    def test_role_uids_start_uncaptured(self):
+        """No role global may be seeded with a value the UID allocator can hand out."""
+        stripped = strip_comments(SCHED)
+        for role in ("g_root_uid", "g_worker_uid", "g_launcher_uid"):
+            self.assertRegex(
+                stripped,
+                rf"(?m)^uint32_t\s+{role}\s*=\s*SR_ROLE_UID_NONE;",
+                f"{role} must start uncaptured, not at a historical allocation",
+            )
+
+    def test_no_source_compares_a_uid_against_a_role_global(self):
+        """Every role question in the runtime goes through a fail-closed predicate."""
+        for name, source in (("sched.c", SCHED), ("hle.c", HLE)):
+            stripped = strip_comments(source)
+            self.assertNotRegex(
+                stripped,
+                r"[!=]=\s*g_(root|worker|launcher)_uid\b",
+                f"{name} must not compare a UID against a role global directly",
+            )
+            self.assertNotRegex(
+                stripped,
+                r"[!=]=\s*sched_(root|worker|launcher)_uid\s*\(\s*\)",
+                f"{name} must not compare a UID against a role accessor directly",
+            )
 
 
 class CoroutineFallbackTests(unittest.TestCase):

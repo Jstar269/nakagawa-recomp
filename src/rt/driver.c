@@ -17,6 +17,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
 #include "debug.h"
+#include "title_config.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -375,10 +376,15 @@ have_image:;
     if (!fn) {
         /* Entry point not compiled — the codegen likely skipped it (e.g. a module-start
          * wrapper whose first instruction is a syscall the analyzer treats as a HLE boundary).
-         * Try the known HST module_start address (from psp_game.ld / ELF entry point).
-         * If that also fails, abort. */
-        uint32_t fallback = 0x0029a060u;
-        fprintf(stderr, "entry 0x%08x not compiled, trying fallback 0x%08x\n", entry, fallback);
+         * A title configuration may name that module-start address; with no configured
+         * fallback there is nothing generic to try, so the existing failure path stands. */
+        uint32_t fallback = sr_title_config_fallback_entry();
+        if (!fallback) {
+            fprintf(stderr, "no recompiled function at entry 0x%08x "
+                            "(no title fallback entry is configured)\n", entry);
+            return 2;
+        }
+        fprintf(stderr, "entry 0x%08x not compiled, trying configured fallback 0x%08x\n", entry, fallback);
         fn = sr_lookup(fallback);
         if (!fn) { fprintf(stderr, "no recompiled function at entry 0x%08x (fallback also missing)\n", entry); return 2; }
         entry = fallback;

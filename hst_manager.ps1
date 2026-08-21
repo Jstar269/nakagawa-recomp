@@ -274,7 +274,8 @@ try {
             -PspHeaderForMake $PspHeaderForMake `
             -VulkanSdkForMake $VulkanSdkForMake `
             -BuildDir $BuildDirForMake `
-            -FuncsPerChunk $effectiveFuncsPerChunk
+            -FuncsPerChunk $effectiveFuncsPerChunk `
+            -TitleManifestForMake $TitleManifest
         $script:TitleManagerMakeArgs = @($boundPlan.MakeArgs)
         # The analyzer reads this protected title semantic from its environment. It is
         # deliberately recorded (not exported) here: Start-ScopedMake applies it across the
