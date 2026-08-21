@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "558408fbf818782b87c1a510bd4272c4d8e6d17de4c8508866378eb82c2b67ed"
+      "sha256": "e43d3e74d52e211506a3f5a4810199cb1ba91d93a2e0490fb701538c5a48b6d1"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "4e64e32582059ca805e9ce7fa9fc36db58f14a0896d49dd7de9b19d37a16ada8"
+      "sha256": "b285c49a4b44a06d203d5a6b57b262020c1a2747dbecb519642eb5ab6256ce05"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "5d23102803c20295d945a287925b33caead753ea38d8222fc7dcb44381ed0892"
+      "sha256": "2bf48c8ae3e76eaf283b69106489ce80d2eb9f4678a06b63f289f9c318011cdb"
     },
     {
       "path": "assets/release_manifest.json",
@@ -405,7 +405,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7e32fac71e4cf287024a708cc684fdf0a3f0ef4e67417cc3246ce9e09a58c05d"
+      "sha256": "b7368f9cadd626f05f3a90dc1f103a76be88d1c12c8c4ed3220c83d4c2cb0dad"
     },
     {
       "path": "assets/titles/README.md",
@@ -423,7 +423,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "dcbe1a63d4fe5d3841fe98fec01ad7b7555b864d7ee9c469e4066cf0485539c0"
+      "sha256": "4a2979fff1c03a3e5d29ce7e053f070b3fccd9ccbfd3330ab6eb1041a150818e"
     },
     {
       "path": "assets/titles/synthetic.json",
@@ -432,7 +432,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cfb7c22b633a47eb5b5924356461ba30cb8beb910536cc083b96c976fe49d7a6"
+      "sha256": "0253047413322cf990f74d57ca1b4194b66b0f81948221497110eb7dc9ae31fd"
     },
     {
       "path": "assets/upstream/pspdev.NOTICE.md",
@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6e34c7962c2651677478acb072dace06dc9dff3708c93497c084e122faff61c6"
+      "sha256": "9ba79d66f6324a36b9e0bc5efa4879145fafd8f81ae9244c88b87ced49e74e32"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -3836,6 +3836,18 @@
       "sha256": "b7267c1325ae4ec611ba1a9500fec9460e2b012b19be3573272c64530a9ffb35"
     },
     {
+      "path": "src/rt/dispatch_isolation_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-runtime-configuration",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "678f3d3d160de72e95b403aacc280f50e5cfbf967c9384537707ffc3a690542a"
+    },
+    {
       "path": "src/rt/dispatch_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -4561,7 +4573,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "1cd5ec292ef92f1659b76199b0c0d4420eae920e1476df5b9f3366e076f72494"
+      "sha256": "9b24ef5111476f29b74a219d2189f8e07bd97876371f6ea418bb09cad6c568e2"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4704,21 +4716,25 @@
       "path": "src/rt/title_config.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-runtime-configuration",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "82c9c725556fbf8e117e6f4c9d830b5b930d0bdfc5fff60b87574c5feb85cb5d"
+      "sha256": "c2a01e61ba0eff8abbffb5a1fcb6514ce0d791756bb9aa1147c3c89abc81b379"
     },
     {
       "path": "src/rt/title_config.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-runtime-configuration",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "a065d0d285789cd30f1c6a771a628a3e8711f0a60462b98c9c44d3dd8c4da8fe"
+      "sha256": "20ed432601b59eb5255acb9f44cdb4bc6aa2d4ad00ca6e7b83ead33d5e34bdaa"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -5066,7 +5082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "32015fa6d4b63fcf9287f534bb9e11adcd27f90316d4173220fc27cd0d4acbd3"
+      "sha256": "3610a4c33b283cfba0ab7f284b2e421342b77c0ce3611f1fd31fdf71e6869068"
     },
     {
       "path": "tools/decompme_export.py",
@@ -7156,7 +7172,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "0b00f3cdd76c30a9e3bb3a77eda924613d9ca1535e8d15471ab9d657e21cee55"
+      "sha256": "4987e4225535ebc4dba539413c4dd1551fd8915dca7fb67d34e060db07f7800b"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -7345,7 +7361,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6e65a5325a9f6c84eb9ee0265e095aef328a1fcf3779e23e1641d455b6f3e8d"
+      "sha256": "52ef2f24612f642749c6f5826631742d01997a7270ea7ac82a76eedcf61dee2e"
     },
     {
       "path": "tools/title_runtime_config.py",
@@ -7355,7 +7371,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "8699d52e2e49724c454e957b4f208208887cbb50a2aa525680b663760aed6802"
+      "sha256": "f28e7d16b40bbc5983a71c2ee3ec7aa76993fcfbd4c2af1bdf3a20028411393a"
     },
     {
       "path": "tools/tracediff.py",
