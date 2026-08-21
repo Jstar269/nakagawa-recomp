@@ -546,8 +546,8 @@ uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread 
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
 uint32_t sched_root_uid(void);                      /* dynamic root UID (first created thread) */
-uint32_t sched_worker_uid(void);                    /* dynamic worker UID (entry 0x000468c8) */
-uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (entry 0x0029a174) */
+uint32_t sched_worker_uid(void);                    /* dynamic worker UID (configured worker entry) */
+uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (configured launcher entry) */
 typedef struct SrThreadRunStatus {
     uint32_t size;
     uint32_t status;
@@ -569,8 +569,8 @@ int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);
 int      sched_current_priority(void);
 int      sched_is_dormant(uint32_t uid);
 uint32_t sched_current_uid(void);
-uint32_t sched_worker_uid(void);                    /* dynamic worker UID (entry 0x000468c8) */
-uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (entry 0x0029a174) */
+uint32_t sched_worker_uid(void);                    /* dynamic worker UID (configured worker entry) */
+uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (configured launcher entry) */
 void     sched_run(uint32_t entry, uint32_t arglen, uint32_t argp);  /* run from the entry thread */
 
 /* PSP callback ABI: SceKernelCallbackFunction(int count, int arg, void *common).

@@ -44,6 +44,13 @@ python tools/title_manifest.py assets/titles/synthetic.json --print-normalized
   planner is proven genuinely multi-title rather than parameterized for one game.
   It contains synthetic addresses and build paths only, and no retail metadata.
 
+Both checked-in fixtures also carry an optional `runtime_bindings` block, with
+deliberately **disjoint** source-owned addresses. That block is the only way a title
+address reaches the compiled runtime (`src/rt/title_config.h`); `make sched-selftest`
+builds one scheduler source against a generic configuration and against each of these
+two, so behavior bound to one fixture's addresses cannot pass as generic. Neither
+fixture reuses any address the runtime previously hardcoded.
+
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
 span is manifest data, and it reaches `analyze`/`codegen` only through an explicit

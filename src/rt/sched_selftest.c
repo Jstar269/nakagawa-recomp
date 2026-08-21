@@ -555,24 +555,173 @@ static void test_delete_and_terminate_delete_contract(void) {
                             "replacement object deletes after range reuse");
 }
 
+/* ---- title-configuration binding tests ----------------------------------------------
+ * The scheduler owns every PSP semantic here; a validated title configuration owns only
+ * WHICH guest addresses those semantics apply to (src/rt/title_config.h). The Makefile
+ * builds this one source once per configuration -- generic (no bindings), fixture A, and
+ * fixture B -- so a binding that leaked back into generic code fails at least one build.
+ *
+ * The two address sets below are the source-owned values carried by the checked-in public
+ * synthetic manifests (assets/titles/pspdev-phase5.json and assets/titles/synthetic.json).
+ * Neither set is any title's real address.
+ */
+#define FIXTURE_A_WORKER    0x08804200u
+#define FIXTURE_A_LAUNCHER  0x08804300u
+#define FIXTURE_A_FRAME     0x08820000u
+#define FIXTURE_A_VSYNC     0x08820004u
+#define FIXTURE_B_WORKER    0x08802000u
+#define FIXTURE_B_LAUNCHER  0x08803000u
+#define FIXTURE_B_FRAME     0x08810000u
+#define FIXTURE_B_VSYNC     0x08810040u
+
+/* Values this scheduler hardcoded before title configuration existed. They are asserted
+ * inert in every build that does not configure them, so a reintroduced literal fails. */
+#define RETIRED_WORKER      0x000468c8u
+#define RETIRED_LAUNCHER    0x0029a174u
+#define RETIRED_FRAME       0x0031101cu
+#define RETIRED_VSYNC       0x0031105cu
+
+static int cfg_has(unsigned bit) { return (sr_title_config()->valid & bit) != 0u; }
+static uint32_t cfg_worker_entry(void) { return sr_title_config()->worker_thread_entry; }
+static uint32_t cfg_launcher_entry(void) { return sr_title_config()->launcher_thread_entry; }
+
+/* The configured entry for a role, or a neutral unconfigured entry when this build has
+ * no such binding. Tests that only need *a* thread use this so they stay meaningful in
+ * the generic build without asserting a role that cannot exist there. */
+static uint32_t cfg_role_entry(unsigned bit, uint32_t unconfigured) {
+    if (!cfg_has(bit)) return unconfigured;
+    return (bit == SR_TITLE_CFG_WORKER_ENTRY) ? cfg_worker_entry() : cfg_launcher_entry();
+}
+
+/* Every candidate entry, so each build can check the ones it does NOT configure. */
+static const uint32_t k_candidate_entries[] = {
+    FIXTURE_A_WORKER, FIXTURE_A_LAUNCHER, FIXTURE_B_WORKER, FIXTURE_B_LAUNCHER,
+    RETIRED_WORKER, RETIRED_LAUNCHER,
+};
+static const uint32_t k_candidate_counters[] = {
+    FIXTURE_A_FRAME, FIXTURE_A_VSYNC, FIXTURE_B_FRAME, FIXTURE_B_VSYNC,
+    RETIRED_FRAME, RETIRED_VSYNC,
+};
+
+/* An entry that carries no role in THIS build must behave like any other entry: it
+ * claims neither role uid, is never reused, and is never priority-demoted. */
+static void test_title_config_foreign_entries_are_inert(void) {
+    for (size_t i = 0; i < sizeof(k_candidate_entries) / sizeof(k_candidate_entries[0]); i++) {
+        uint32_t entry = k_candidate_entries[i];
+        if (sr_title_config_is_worker_entry(entry) || sr_title_config_is_launcher_entry(entry)) {
+            continue;   /* this build configures the address; covered by the tests below */
+        }
+        expect(!sr_title_config_is_worker_entry(entry),
+               "an unconfigured entry is not the worker entry");
+        expect(!sr_title_config_is_launcher_entry(entry),
+               "an unconfigured entry is not the launcher entry");
+        reset_sched();
+        uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+        expect(root != 0, "root create succeeds");
+        /* Sentinels no allocated uid can take, so "the role globals did not move" is a
+         * real observation rather than a collision with their historical defaults. */
+        g_worker_uid = 0xDEAD0001u;
+        g_launcher_uid = 0xDEAD0002u;
+        uint32_t first = sched_create_thread(entry, 32, 0x1000u);
+        expect(first != 0, "unconfigured-entry create succeeds");
+        expect(g_worker_uid == 0xDEAD0001u, "unconfigured entry does not claim the worker uid");
+        expect(g_launcher_uid == 0xDEAD0002u, "unconfigured entry does not claim the launcher uid");
+        TCB *t = tcb_by_uid(first);
+        expect(t && t->priority == 32, "unconfigured entry is not priority-demoted");
+        uint32_t second = sched_create_thread(entry, 32, 0x1000u);
+        expect(second != 0 && second != first,
+               "unconfigured entry creates a second thread instead of reusing the first");
+    }
+}
+
+/* A configured role acts, and acts only at its own address. */
+static void test_title_config_configured_roles_act(void) {
+    if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
+        reset_sched();
+        uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+        expect(root != 0, "root create succeeds");
+        uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        expect(worker != 0 && g_worker_uid == worker,
+               "the configured worker entry claims the worker uid");
+        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker,
+               "a repeat create at the configured worker entry reuses the worker thread");
+    }
+    if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        reset_sched();
+        uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+        expect(root != 0, "root create succeeds");
+        uint32_t launcher = sched_create_thread(cfg_launcher_entry(), 32, 0x1000u);
+        expect(launcher != 0 && g_launcher_uid == launcher,
+               "the configured launcher entry claims the launcher uid");
+        TCB *lt = tcb_by_uid(launcher);
+        expect(lt && lt->priority == 50,
+               "the configured launcher is demoted out of the worker's way");
+    }
+    if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        /* Generic build: no address anywhere can claim a role. */
+        reset_sched();
+        uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+        expect(root != 0 && g_root_uid == root,
+               "the generic build still captures the root thread");
+        for (size_t i = 0; i < sizeof(k_candidate_entries) / sizeof(k_candidate_entries[0]); i++) {
+            expect(!sr_title_config_is_worker_entry(k_candidate_entries[i]) &&
+                   !sr_title_config_is_launcher_entry(k_candidate_entries[i]),
+                   "the generic build recognizes no worker or launcher entry");
+        }
+        expect(sr_title_config_fallback_entry() == 0u,
+               "the generic build offers no fallback entry");
+    }
+}
+
+/* One delivered VBLANK increments exactly the configured counter pair, and touches no
+ * other candidate word. A generic build must write neither. */
+static void test_title_config_vblank_counters(void) {
+    reset_sched();
+    uint32_t frame = 0, vsync = 0;
+    int configured = sr_title_config_vblank_counters(&frame, &vsync);
+    expect(configured == (cfg_has(SR_TITLE_CFG_VBLANK_COUNTERS) ? 1 : 0),
+           "vblank counter availability matches the configured validity bit");
+    for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
+        MEM_W32(k_candidate_counters[i], 0u);
+    }
+    if (configured) { MEM_W32(frame, 0u); MEM_W32(vsync, 0u); }
+    deliver_vblank();
+    if (configured) {
+        expect(MEM_R32(frame) == 1u, "the configured frame counter advanced once");
+        expect(MEM_R32(vsync) == 1u, "the configured vsync counter advanced once");
+    }
+    for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
+        uint32_t addr = k_candidate_counters[i];
+        if (configured && (addr == frame || addr == vsync)) continue;
+        expect(MEM_R32(addr) == 0u,
+               "an unconfigured counter word is untouched by a delivered VBLANK");
+    }
+}
+
 /* ---- role-UID capture tests -------------------------------------------------------- */
 
 static void test_role_uid_capture(void) {
+    if (!cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY) || !cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
+        /* Without configured role bindings there is no entry that can claim a role, so
+         * this contract does not exist for this build. The unconfigured build asserts the
+         * complementary property in test_title_config_foreign_entries_are_inert(). */
+        return;
+    }
     reset_sched();
     uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
     expect(root != 0 && g_root_uid == root, "first created thread is captured as root");
-    uint32_t launcher = sched_create_thread(0x0029a174u, 32, 0x1000u);
+    uint32_t launcher = sched_create_thread(cfg_launcher_entry(), 32, 0x1000u);
     expect(launcher != 0 && g_launcher_uid == launcher,
-           "launcher entry 0x0029a174 captures the launcher uid");
+           "the configured launcher entry captures the launcher uid");
     TCB *lt = tcb_by_uid(launcher);
     expect(lt && g_master_reent == lt->k0_init + 0x10u,
            "launcher registration captures the master reent");
     /* Seed a recognizable master-reent word, then create a worker: workers clone the
      * master reent; root/launcher must not. */
     MEM_W32(g_master_reent + 0u, 0xABCD1234u);
-    uint32_t worker = sched_create_thread(0x000468c8u, 36, 0x1000u);
+    uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
     expect(worker != 0 && g_worker_uid == worker,
-           "worker entry 0x000468c8 captures the worker uid");
+           "the configured worker entry captures the worker uid");
     TCB *wt = tcb_by_uid(worker);
     expect(wt && MEM_R32(wt->k0_init + 0x10u) == 0xABCD1234u,
            "worker reent is cloned from the master reent");
@@ -641,11 +790,11 @@ static void test_libc_thread_relocation(void) {
     expect(root_uid != 0, "root create succeeds");
 
     // The second thread is launcher
-    uint32_t launcher_uid = sched_create_thread(0x0029a174u, 32, 0x1000u);
+    uint32_t launcher_uid = sched_create_thread(cfg_role_entry(SR_TITLE_CFG_LAUNCHER_ENTRY, 0x00002000u), 32, 0x1000u);
     expect(launcher_uid != 0, "launcher create succeeds");
 
     // The third thread is worker
-    uint32_t worker_uid = sched_create_thread(0x000468c8u, 36, 0x1000u);
+    uint32_t worker_uid = sched_create_thread(cfg_role_entry(SR_TITLE_CFG_WORKER_ENTRY, 0x00003000u), 36, 0x1000u);
     expect(worker_uid != 0, "worker create succeeds");
 
     // Proves: Host libc-thread registration does not modify 0x0030a040..0x0030a0bf
@@ -1601,6 +1750,9 @@ int main(void) {
     test_terminate_thread_excluded_after();
     test_delete_and_terminate_delete_contract();
     test_role_uid_capture();
+    test_title_config_foreign_entries_are_inert();
+    test_title_config_configured_roles_act();
+    test_title_config_vblank_counters();
     test_stack_exhaustion_fails_create();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
@@ -1619,6 +1771,8 @@ int main(void) {
     test_paced_vblank_has_one_authority();
     test_expired_timed_wait_enters_strict_priority();
 
+    fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
+            sr_title_config()->source_id, sr_title_config()->valid);
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

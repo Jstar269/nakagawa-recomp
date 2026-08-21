@@ -22,6 +22,7 @@
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
+#include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
 
 #include <SDL3/SDL_timer.h>
 #include <stdio.h>
@@ -126,9 +127,10 @@ static int s_stack_free_count;
 static int s_stack_allocator_ready;
 
 /* Dynamic role-UID capture. Populated by sched_create_thread: the ROOT thread is the
- * first thread ever created (sched_run's module_start thread); the WORKER is the thread
- * created with entry 0x000468c8u (main_RunGameLoop); the LAUNCHER is the boot thread at
- * entry 0x0029a174u. Defaults match the historical UID assignment (0x110 / 0x114 / 0x111)
+ * first thread ever created (sched_run's module_start thread); the WORKER and LAUNCHER
+ * are the threads whose entry matches the build's configured worker/launcher binding
+ * (see title_config.h). With no title configuration neither role is ever claimed.
+ * Defaults match the historical UID assignment (0x110 / 0x114 / 0x111)
  * so that pre-init code paths and one-off diagnostics continue to behave. They are
  * read-only to the rest of the runtime via sched_root_uid() / sched_worker_uid() /
  * sched_launcher_uid(); UID allocation has drifted between runs before (worker 0x115 ->
@@ -855,9 +857,16 @@ static void deliver_vblank(void) {
     s_vbl_count++;
     sr_perf_vblank();
 
-    /* Increment guest-side counters (OpenGrip: 0x0031101c=FrameCounter, 0x0031105c=VSyncCounter) */
-    MEM_W32(0x0031105cu, MEM_R32(0x0031105cu) + 1);
-    MEM_W32(0x0031101cu, MEM_R32(0x0031101cu) + 1);
+    /* Increment the guest-side frame/vsync counter words when -- and only when -- the
+     * build's title configuration names them. An unconfigured build touches no guest
+     * memory here; there is no generic address for these words. */
+    {
+        uint32_t frame_addr = 0, vsync_addr = 0;
+        if (sr_title_config_vblank_counters(&frame_addr, &vsync_addr)) {
+            MEM_W32(vsync_addr, MEM_R32(vsync_addr) + 1);
+            MEM_W32(frame_addr, MEM_R32(frame_addr) + 1);
+        }
+    }
 
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
@@ -1215,7 +1224,7 @@ static void sched_release_thread_stack(TCB *t) {
 }
 
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
-    if (entry == 0x000468c8u && !getenv("SR_NO_THREAD_REUSE")) {
+    if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
         TCB *existing = tcb_by_entry(entry);
         if (existing) {
             static int n_reuse_log = 0;
@@ -1332,8 +1341,9 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         return 0;
     }
     /* Capture the role UIDs dynamically. The root is the first thread ever created
-     * (sched_run's module_start thread); the worker is the thread whose entry is
-     * main_RunGameLoop (0x000468c8u); the launcher is the boot thread at 0x0029a174u.
+     * (sched_run's module_start thread); the worker and launcher are the threads whose
+     * entry matches the build's configured worker/launcher binding, and neither role is
+     * claimed at all when the build has no title configuration.
      * UID allocation has drifted once already (worker moved from 0x115 to 0x114) and
      * silently broke every hardcoded check in hle.c/recomp.c — recording the actual
      * assigned UIDs here lets those checks use sched_root_uid()/sched_worker_uid()/
@@ -1343,22 +1353,21 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         g_root_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "ROOT_UID_CAPTURE: root uid=0x%x\n", t->uid);
     }
-    if (entry == 0x000468c8u) {
+    if (sr_title_config_is_worker_entry(entry)) {
         g_worker_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "WORKER_UID_CAPTURE: worker uid=0x%x\n", t->uid);
-    } else if (entry == 0x0029a174u) {
+    } else if (sr_title_config_is_launcher_entry(entry)) {
         g_launcher_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_UID_CAPTURE: launcher uid=0x%x\n", t->uid);
     }
-    /* Priority-inversion guard: HST's launcher (entry 0x0029a174) runs an unconditional
-     * recompiled `j L_0029a27c` loop in module_start that calls f_0000ef40 (modtable walk)
-     * with thousands of SR_YIELD escapes per second. The launcher thread is normally the
-     * highest-priority user thread (32 < worker pri ~38-40), so the scheduler always
-     * schedules it, starving the worker thread (entry 0x468c8 / main_RunGameLoop)
-     * that needs to drive SetFrameBuf / WaitVblank. Once the launcher uid is known, demote
-     * it below any probable worker priority so worker can run. Disable with
-     * SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour). */
-    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && entry == 0x0029a174u) {
+    /* Priority-inversion guard, applied only to a configured launcher role. A launcher
+     * that spins in a module_start loop with thousands of SR_YIELD escapes per second is
+     * normally the highest-priority user thread (32 < worker pri ~38-40), so the scheduler
+     * always schedules it and starves the worker that drives SetFrameBuf / WaitVblank.
+     * Once the launcher uid is known, demote it below any probable worker priority so the
+     * worker can run. Disable with SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour).
+     * A build with no configured launcher binding never reaches this. */
+    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
         const int demoted_priority = 50;
         t->priority = demoted_priority;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",

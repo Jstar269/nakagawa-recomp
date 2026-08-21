@@ -136,6 +136,34 @@ endif
 include mk/build_common.mk
 
 BUILD_PROFILE_TOOL := tools/build_profile.py
+
+# Runtime title configuration. The compiled runtime carries no title identity of its
+# own: tools/title_runtime_config.py turns a *validated* title manifest's optional
+# runtime_bindings block into a build-local header that only src/rt/title_config.c
+# includes. With TITLE_MANIFEST empty the generator emits the generic configuration in
+# which every optional binding is disabled -- so `make runtime-objects` needs no game
+# input at all, and no default build inherits any title's addresses.
+#
+# HST binds its real values through the local, Git-ignored title manifest
+# (assets/titles/hst-ucus98701.json, supplied by hst_manager.ps1 -TitleManifest or by
+# TITLE_MANIFEST= on a direct Make command line). They are deliberately not encoded here.
+TITLE_MANIFEST ?=
+TITLE_CONFIG_TOOL := tools/title_runtime_config.py
+TITLE_CONFIG_DIR ?= $(BUILD_DIR)
+TITLE_CONFIG_HEADER := $(TITLE_CONFIG_DIR)/sr_title_config.h
+TITLE_CONFIG_ARG := $(if $(strip $(TITLE_MANIFEST)),--manifest $(strip $(TITLE_MANIFEST)),)
+# Identity of the effective configuration. Bound into RUNTIME_PROFILE_HASH below so a
+# changed title binding invalidates stale runtime objects instead of relinking silently.
+TITLE_CONFIG_DIGEST := $(shell $(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
+# An unreadable or invalid manifest prints nothing. Refusing here keeps a rejected title
+# configuration from becoming an empty profile entry that hashes like some other build.
+ifeq ($(strip $(TITLE_CONFIG_DIGEST)),)
+$(error title runtime configuration could not be resolved; run "$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest" for the reason)
+endif
+
+$(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(strip $(TITLE_MANIFEST))
+	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
+
 RUNTIME_PROFILE_MANIFEST := $(BUILD_DIR)/runtime_profile.json
 RECOMP_PROFILE_MANIFEST := $(BUILD_DIR)/recomp_profile.json
 CODEGEN_PROFILE_MANIFEST := $(BUILD_DIR)/codegen_profile.json
@@ -207,6 +235,7 @@ endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/title_config.c \
               src/rt/vfpu_tables.c \
               src/rt/debug.c \
               src/rt/watchpoints_file.c \
@@ -267,6 +296,7 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
                       src/rt/debug.c \
                       src/rt/watchpoints_file.c \
@@ -283,7 +313,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -330,12 +360,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_ELF) tools/imports.py tools/analy
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -378,6 +408,15 @@ $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 
 $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# The one translation unit that reads the build-local generated configuration. Every
+# other runtime source consumes the generic accessors in src/rt/title_config.h, so the
+# generated include path stops here rather than leaking into CFLAGS.
+$(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER) $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) $(DEPFLAGS) -c $< -o $@
+
+$(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER)
+	$(CC) $(PORTABLE_CORE_CFLAGS) -I$(TITLE_CONFIG_DIR) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
@@ -430,10 +469,33 @@ distclean:
 # rotation, non-runnable exclusion, implicit thread exit on entry return, role-UID
 # capture, stack-exhaustion create failure, and sr_coro self-switch/park guards.
 # Exit code 0 = all invariants hold.
+# Title-configuration matrix. The SAME scheduler source is built three times against
+# three generated runtime title configurations, so a title binding that leaked back into
+# generic scheduler code fails at least one of them:
+#   generic  -- no title configuration; every optional binding disabled
+#   fixture-a -- assets/titles/pspdev-phase5.json (source-owned synthetic addresses)
+#   fixture-b -- assets/titles/synthetic.json (a different source-owned address set)
+# Each generated header lands in its own directory so the three builds cannot share one.
+SCHED_SELFTEST_CONFIGS := generic fixture-a fixture-b
+SCHED_SELFTEST_MANIFEST_generic :=
+SCHED_SELFTEST_MANIFEST_fixture-a := assets/titles/pspdev-phase5.json
+SCHED_SELFTEST_MANIFEST_fixture-b := assets/titles/synthetic.json
+
 sched-selftest:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest.exe \
-		src/rt/sched_selftest.c src/rt/sr_coro.c $(LIBS)
-	$(BUILD_DIR)/sched_selftest.exe
+	@$(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(MAKE) --no-print-directory sched-selftest-one SCHED_SELFTEST_CONFIG=$(cfg) &&) true
+
+# One configuration of the matrix. SCHED_SELFTEST_CONFIG names the flavour; the title
+# configuration is generated fresh into build/<game>/title-config/<flavour>/.
+SCHED_SELFTEST_CONFIG ?= generic
+SCHED_SELFTEST_DIR := $(BUILD_DIR)/title-config/$(SCHED_SELFTEST_CONFIG)
+SCHED_SELFTEST_MANIFEST := $(SCHED_SELFTEST_MANIFEST_$(SCHED_SELFTEST_CONFIG))
+SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest $(strip $(SCHED_SELFTEST_MANIFEST)),)
+
+sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
+	$(PYTHON) $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
+	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
+		src/rt/sched_selftest.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
+	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
 # coalescing (src/rt/heap_selftest.c). No game inputs needed; #includes recomp.c for
@@ -581,13 +643,13 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O)
-	$(CC) $(CFLAGS) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
+hle-thread-selftest-build: $(RT_GE_O) $(TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -615,12 +677,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O)
-	$(CC) $(CFLAGS) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)

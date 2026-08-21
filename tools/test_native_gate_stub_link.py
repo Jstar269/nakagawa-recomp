@@ -9,8 +9,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import title_runtime_config  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +42,15 @@ class TestGateStubLink(unittest.TestCase):
                 "void sr_register_chunk_0(void) {}\n",
                 encoding="ascii",
             )
+            # driver.c takes its fallback entry from the generic title configuration;
+            # the headless link therefore needs the configuration TU and a generated
+            # generic (no-title) artifact for it to compile against.
+            title_runtime_config.write_if_changed(
+                work / "sr_title_config.h",
+                title_runtime_config.render_header(
+                    title_runtime_config.bindings_from_manifest(None)
+                ),
+            )
             command = [
                 CC,
                 "-O0",
@@ -48,6 +61,8 @@ class TestGateStubLink(unittest.TestCase):
                 "-DSR_GATE_BUILD",
                 "-I",
                 str(RT),
+                "-I",
+                str(work),
                 "-o",
                 str(driver),
                 str(generated),
@@ -55,6 +70,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "recomp.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
+                str(RT / "title_config.c"),
                 str(GATE_STUB),
                 "-lm",
             ]
