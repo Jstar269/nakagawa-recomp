@@ -894,6 +894,65 @@ class DispatchAddressCensus(unittest.TestCase):
                 self.assertRegex(recipe, r"-I\$\((GENERIC_TITLE_CONFIG_DIR|DISPATCH_ISO_DIR)\)")
 
 
+    def test_ci_compiles_dispatch_the_same_way_the_makefile_does(self) -> None:
+        """The Makefile is not the only place that compiles these translation units.
+
+        .github/workflows/ci.yml re-states some of the same compile commands by hand,
+        and the assertion above knows nothing about them -- so #97 updated the Makefile
+        target, CI kept its stale copy, and the hosted run failed to link:
+
+            undefined reference to `sr_title_config_is_callback_terminator'
+            undefined reference to `sr_title_config_dispatch_alias'
+
+        The invariant is the same wherever it is written down: a compile command whose
+        translation unit pulls in recomp.c must also supply title_config.c and a
+        generated artifact to compile it against.
+        """
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        # Join shell line continuations so one compile command is one logical line.
+        logical = workflow.replace("\\\n", " ")
+        pulls_in_dispatch = {
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / "src" / "rt").glob("*.c")
+            if '#include "recomp.c"' in path.read_text(encoding="utf-8", errors="replace")
+        } | {"src/rt/recomp.c"}
+
+        checked = 0
+        for line in logical.splitlines():
+            stripped = line.strip()
+            if not re.match(r"^(gcc|cc|clang|\$\{?CC)\b", stripped):
+                continue
+            operands = set(re.findall(r"src/rt/[\w./-]+\.c", stripped))
+            if not operands & pulls_in_dispatch:
+                continue
+            checked += 1
+            with self.subTest(command=stripped[:80]):
+                self.assertIn(
+                    "src/rt/title_config.c", operands,
+                    "a CI compile command builds a translation unit that pulls in "
+                    "recomp.c but does not link src/rt/title_config.c; it will fail to "
+                    f"resolve the generic accessors:\n  {stripped}")
+                self.assertRegex(
+                    stripped, r"-I\s*\S*title-config\S*",
+                    "a CI compile command links title_config.c without an include path "
+                    f"for the generated artifact it needs:\n  {stripped}")
+        self.assertGreater(
+            checked, 0,
+            "no CI compile command was examined -- either ci.yml stopped compiling these "
+            "translation units directly, or the parser stopped recognising them; either "
+            "way this assertion has become vacuous and must be re-aimed")
+
+    def test_ci_runs_the_dispatch_isolation_matrix(self) -> None:
+        """A gate that only ever runs on a developer's machine is not a gate. The
+        isolation matrix is the executable half of this whole migration's claim, so
+        hosted CI has to run it."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "dispatch-isolation-selftest", workflow,
+            ".github/workflows/ci.yml does not run make dispatch-isolation-selftest, so "
+            "nothing enforces the isolation claim on a pull request")
+
+
 class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
     def test_generic_runtime_sources_name_no_retired_address(self) -> None:
         for relative in GENERIC_RUNTIME_SOURCES:

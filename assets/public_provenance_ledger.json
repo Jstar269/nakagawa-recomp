@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "558408fbf818782b87c1a510bd4272c4d8e6d17de4c8508866378eb82c2b67ed"
+      "sha256": "e43d3e74d52e211506a3f5a4810199cb1ba91d93a2e0490fb701538c5a48b6d1"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -7172,7 +7172,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "326accf81b3fdce25885f47fdf0f0f171c1c665d411640314b8a6284882714f7"
+      "sha256": "4987e4225535ebc4dba539413c4dd1551fd8915dca7fb67d34e060db07f7800b"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
