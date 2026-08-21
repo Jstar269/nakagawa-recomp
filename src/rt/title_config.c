@@ -17,9 +17,27 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 1
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 2
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
+
+/* The generated artifact states the collections as X-macro lists; this file owns the C
+ * types they expand into. A generic build expands both lists to nothing, so the arrays
+ * below hold only their unused placeholder element and both counts are 0. */
+#define SR_TITLE_CFG_ALIAS(from_addr, to_addr) { (from_addr), (to_addr) },
+static const SrTitleDispatchAlias s_dispatch_aliases[SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT + 1] = {
+    SR_TITLE_CONFIG_DISPATCH_ALIAS_LIST
+    { 0u, 0u }  /* placeholder: C has no zero-length array, and it is never read */
+};
+#undef SR_TITLE_CFG_ALIAS
+
+#define SR_TITLE_CFG_TERMINATOR(s, hp, p, hr, r) { (s), (hp), (p), (hr), (r) },
+static const SrTitleCallbackTerminator
+s_callback_terminators[SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1] = {
+    SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST
+    { 0u, 0u, 0u, 0u, 0u }  /* placeholder: never read; the count is the authority */
+};
+#undef SR_TITLE_CFG_TERMINATOR
 
 static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_VALID,
@@ -29,6 +47,10 @@ static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_VBLANK_FRAME_COUNTER_ADDR,
     SR_TITLE_CONFIG_VBLANK_VSYNC_COUNTER_ADDR,
     SR_TITLE_CONFIG_SOURCE_ID,
+    s_dispatch_aliases,
+    (unsigned)SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT,
+    s_callback_terminators,
+    (unsigned)SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT,
 };
 
 const SrTitleRuntimeConfig *sr_title_config(void) { return &s_config; }
@@ -52,4 +74,32 @@ int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) 
     if (frame_addr) *frame_addr = s_config.vblank_frame_counter_addr;
     if (vsync_addr) *vsync_addr = s_config.vblank_vsync_counter_addr;
     return 1;
+}
+
+int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
+    /* The validity bit is checked first so an unconfigured build returns without
+     * examining the placeholder element at all. */
+    if (!(s_config.valid & SR_TITLE_CFG_DISPATCH_ALIASES)) return 0;
+    for (unsigned i = 0; i < s_config.dispatch_alias_count; i++) {
+        /* Exact match only: the validator guarantees `from` is unique across the
+         * collection, so the first hit is the only hit. */
+        if (s_config.dispatch_aliases[i].from != from) continue;
+        if (to_addr) *to_addr = s_config.dispatch_aliases[i].to;
+        return 1;
+    }
+    return 0;
+}
+
+int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra) {
+    if (!(s_config.valid & SR_TITLE_CFG_CALLBACK_TERMINATORS)) return 0;
+    for (unsigned i = 0; i < s_config.callback_terminator_count; i++) {
+        const SrTitleCallbackTerminator *t = &s_config.callback_terminators[i];
+        if (t->sentinel != sentinel) continue;
+        /* A constraint that was not configured is not compared -- never compared
+         * against 0, which would silently narrow the site the title actually named. */
+        if (t->has_pc && t->pc != pc) continue;
+        if (t->has_ra && t->ra != ra) continue;
+        return 1;
+    }
+    return 0;
 }

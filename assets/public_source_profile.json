@@ -466,6 +466,7 @@
     "src/rt/debug.c",
     "src/rt/debug.h",
     "src/rt/debug_selftest.c",
+    "src/rt/dispatch_isolation_selftest.c",
     "src/rt/dispatch_selftest.c",
     "src/rt/dispatch_table.h",
     "src/rt/driver.c",

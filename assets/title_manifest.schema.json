@@ -287,6 +287,27 @@
       "maximum": 4294967292,
       "multipleOf": 4
     },
+    "dispatchAlias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {"$ref": "#/$defs/guestAddress"},
+        "to": {"$ref": "#/$defs/guestAddress"}
+      }
+    },
+    "callbackTerminator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sentinel"],
+      "minProperties": 2,
+      "properties": {
+        "sentinel": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "pc": {"$ref": "#/$defs/guestAddress"},
+        "ra": {"$ref": "#/$defs/guestAddress"}
+      },
+      "anyOf": [{"required": ["pc"]}, {"required": ["ra"]}]
+    },
     "runtimeBindings": {
       "type": "object",
       "additionalProperties": false,
@@ -298,7 +319,15 @@
         "worker_thread_entry": {"$ref": "#/$defs/guestAddress"},
         "launcher_thread_entry": {"$ref": "#/$defs/guestAddress"},
         "vblank_frame_counter_addr": {"$ref": "#/$defs/guestAddress"},
-        "vblank_vsync_counter_addr": {"$ref": "#/$defs/guestAddress"}
+        "vblank_vsync_counter_addr": {"$ref": "#/$defs/guestAddress"},
+        "dispatch_aliases": {
+          "type": "array", "minItems": 1, "maxItems": 32,
+          "items": {"$ref": "#/$defs/dispatchAlias"}
+        },
+        "callback_terminators": {
+          "type": "array", "minItems": 1, "maxItems": 32,
+          "items": {"$ref": "#/$defs/callbackTerminator"}
+        }
       },
       "dependentRequired": {
         "vblank_frame_counter_addr": ["vblank_vsync_counter_addr"],

@@ -305,11 +305,6 @@ DISPATCH_HOOKS = [
     dict(address=0x000104e0, category="diagnostic", name="FREE_REQ",
          reason="SR_ALLOC_TRACE-gated log of free requests; always falls through unchanged",
          test="none"),
-    dict(address=0x00030950, category="faithful_abi_bridge", name="TC30950",
-         reason="a tail-call target lands at a callee's +8 entry point (past its prologue) "
-                "that codegen does not separately register; redirects to the real registered "
-                "entry with an equivalent net stack delta",
-         test="none"),
     dict(address=0x0001b6c4, category="temporary_compatibility_patch", name="HINSERT",
          reason="guards a linear-probe hash insert against an infinite wrap when the table's "
                 "capacity is 0, returning early instead of letting the real routine spin",
@@ -437,17 +432,55 @@ SCHEDULER_HOOKS = [
                 "by deleting the default, which would silently change the inheritance of "
                 "every thread created before the launcher registers.",
          test="none"),
-    dict(address=0x00292fa0, category="temporary_compatibility_patch", name="callback-list walker terminal miss",
-         source="src/rt/recomp.c:dispatch (target==UINT32_MAX && s->pc==0x00292fa0 && ra==0x00047a0c)",
-         reason="a circular callback-list walker's -1 terminal target is reported as complete "
-                "for this exact inner call site only, instead of being treated as a permissive "
-                "miss that would loop the outer walker forever",
-         test="none"),
+]
+
+# --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
+# These three used to be numeric literals compiled into generic dispatch. They are
+# now typed entries in a validated title manifest's runtime_bindings block
+# (dispatch_aliases / callback_terminators), so the addresses below no longer exist
+# anywhere in generic runtime code: they reach dispatch() only as configuration, and
+# an unconfigured build applies none of them.
+#
+# They stay inventoried because the SEMANTIC DEBT did not go away -- moving an
+# override behind configuration makes it honest, not absent. Each entry names the
+# generic mechanism, the executable test that proves it acts only where configured,
+# and what would retire the binding for good.
+TITLE_CONFIGURED_DISPATCH = [
+    dict(address=0x00030950, category="faithful_abi_bridge", name="TC30950",
+         source="src/rt/recomp.c:dispatch (runtime_bindings.dispatch_aliases)",
+         reason="a tail-call target lands at a callee's +8 entry point (past its prologue) "
+                "that codegen does not separately register; the configured alias enters the "
+                "real registered entry instead, with an equivalent net stack delta. The "
+                "mechanism is generic (enter a registered body); only the address pair is "
+                "configured, and an unconfigured build treats this address as an ordinary "
+                "dispatch miss. Retire by registering the mid-function entry point in "
+                "codegen, which removes the need for any alias.",
+         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
+    dict(address=0x0003e06c, category="temporary_compatibility_patch",
+         name="callback-list walker null terminator",
+         source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
+         reason="a circular callback-list walker reaches its terminal entry with target 0; "
+                "reported as COMPLETE at this exact return site instead of as a permissive "
+                "miss, which the walker reads as \"continue\" and loops on forever. Was an "
+                "uninventoried literal in generic dispatch until 2026-08-21. Retire by "
+                "modelling the guest's list terminator faithfully so the walk ends on its "
+                "own. This site constrains ra only, which is the constraint the original "
+                "hardcoded check applied; narrowing it to a pc as well would be a behavior "
+                "change, not a migration.",
+         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
+    dict(address=0x00292fa0, category="temporary_compatibility_patch",
+         name="callback-list walker terminal miss",
+         source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
+         reason="the same walker's -1 terminal target, reported as complete for this exact "
+                "inner call site (pc plus ra) only. Retire together with the null terminator "
+                "above: both are surrogates for a faithfully-modelled list end.",
+         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
 ]
 
 OVERRIDES = (
     GUEST_PATCHES + CODEGEN_CUSTOM_STUBS + HST_SIMPLE_STUBS +
-    DISPATCH_HOOKS + DISPATCH_RANGE_HOOKS + SCHEDULER_HOOKS
+    DISPATCH_HOOKS + DISPATCH_RANGE_HOOKS + SCHEDULER_HOOKS +
+    TITLE_CONFIGURED_DISPATCH
 )
 
 # --- purely diagnostic hook GROUPS -------------------------------------------

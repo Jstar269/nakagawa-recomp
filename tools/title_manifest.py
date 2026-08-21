@@ -57,6 +57,19 @@ RUNTIME_BINDING_FIELDS = (
 )
 RUNTIME_BINDING_PAIRS = (("vblank_frame_counter_addr", "vblank_vsync_counter_addr"),)
 
+#: Optional *typed collections* of title bindings. Unlike the scalar fields above, each
+#: names a set of semantic sites rather than one address, so the runtime carries a table
+#: instead of a single value. Both are individually optional and both are empty in a
+#: generic build.
+RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
+
+#: Per-collection ceilings. These are semantic-debt inventories, not general relocation
+#: tables: a manifest needing dozens of entries is describing a codegen or analysis gap
+#: that should be fixed upstream, and the bound keeps a malformed manifest from turning
+#: into an unbounded runtime table.
+MAX_DISPATCH_ALIASES = 32
+MAX_CALLBACK_TERMINATORS = 32
+
 CORE_CONTRACT_CAPABILITIES = frozenset({
     "allegrex", "vfpu", "guest-memory", "scheduler", "interrupts", "callbacks",
     "generic-hle", "ge-display", "audio", "io", "backend-contracts", "evidence",
@@ -508,6 +521,118 @@ def guest_address(value: Any, path: str) -> int:
     return value
 
 
+def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:
+    """Validate the dispatch-alias collection.
+
+    An alias says "a computed call to `from` must enter the body registered at `to`".
+    It exists for a *registration* gap -- a tail-call landing past a callee's prologue,
+    for instance -- and never invents behavior: the runtime still executes the ordinary
+    registered function, and an unaliased target is still an ordinary dispatch miss.
+
+    The runtime resolves exactly one step, so the rules below make one step sufficient:
+    no self-alias, no duplicate source, and no alias whose target is itself aliased.
+    """
+    items = array(value, path, MAX_DISPATCH_ALIASES)
+    if not items:
+        fail(path, "must not be empty; omit the field instead")
+    result: list[dict[str, int]] = []
+    sources: dict[int, int] = {}
+    for index, item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        item = obj(item, item_path, {"from", "to"})
+        require(item, item_path, "from", "to")
+        source = guest_address(item["from"], f"{item_path}.from")
+        destination = guest_address(item["to"], f"{item_path}.to")
+        if source == destination:
+            fail(item_path, "from and to must differ; an alias to itself redirects nothing")
+        if source in sources:
+            fail(
+                f"{item_path}.from",
+                f"duplicates the alias source already declared at {path}[{sources[source]}]; "
+                "one source cannot redirect to two bodies",
+            )
+        sources[source] = index
+        result.append({"from": source, "to": destination})
+    for index, entry in enumerate(result):
+        if entry["to"] in sources:
+            fail(
+                f"{path}[{index}].to",
+                f"is itself an alias source (declared at {path}[{sources[entry['to']]}]); "
+                "the runtime resolves one step, so a chained alias would silently stop short",
+            )
+    result.sort(key=lambda entry: entry["from"])
+    return result
+
+
+def _terminator_context(entry: dict[str, int]) -> tuple[int, int]:
+    """Sort/compare key for one terminator: absent pc/ra sort as 0 (never a valid value)."""
+    return (entry.get("pc", 0), entry.get("ra", 0))
+
+
+def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]:
+    """Validate the callback-terminator collection.
+
+    A terminator says "at this exact call site, this sentinel target means the guest's
+    callback walk is COMPLETE" -- report completion to the caller instead of treating
+    the sentinel as a permissive dispatch miss, which a circular walker would read as
+    "keep going" and loop forever.
+
+    ``sentinel`` is a raw target value, not an address: the real ones are 0 and
+    0xFFFFFFFF, so neither the non-zero nor the alignment rule for a guest address
+    applies to it. ``pc`` and ``ra`` are genuine guest addresses and *at least one*
+    is required -- an entry with neither would make the sentinel terminate everywhere,
+    which is exactly the address-global behavior this collection exists to avoid.
+    """
+    items = array(value, path, MAX_CALLBACK_TERMINATORS)
+    if not items:
+        fail(path, "must not be empty; omit the field instead")
+    result: list[dict[str, int]] = []
+    for index, item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        item = obj(item, item_path, {"sentinel", "pc", "ra"})
+        require(item, item_path, "sentinel")
+        entry: dict[str, int] = {"sentinel": uint(item["sentinel"], f"{item_path}.sentinel")}
+        for field in ("pc", "ra"):
+            if field in item:
+                entry[field] = guest_address(item[field], f"{item_path}.{field}")
+        if "pc" not in entry and "ra" not in entry:
+            fail(
+                item_path,
+                "must constrain at least one of pc/ra; an unconstrained terminator would "
+                "match this sentinel at every call site in the program",
+            )
+        result.append(entry)
+    for index, entry in enumerate(result):
+        for other_index, other in enumerate(result):
+            if other_index == index:
+                continue
+            if other["sentinel"] != entry["sentinel"]:
+                continue
+            # `other` subsumes `entry` when it constrains a subset of the same context:
+            # every site matching `entry` already matches `other`, so `entry` can never
+            # decide anything. Two identical entries subsume each other; report the
+            # duplicate first because it has the clearer fix.
+            subsumes = all(
+                field not in other or other.get(field) == entry.get(field)
+                for field in ("pc", "ra")
+            )
+            if not subsumes:
+                continue
+            if other == entry and other_index > index:
+                fail(
+                    f"{path}[{other_index}]",
+                    f"duplicates the terminator already declared at {path}[{index}]",
+                )
+            if other != entry:
+                fail(
+                    f"{path}[{index}]",
+                    f"is unreachable behind the broader terminator at {path}[{other_index}], "
+                    "which already matches every site this entry could",
+                )
+    result.sort(key=lambda entry: (entry["sentinel"], *_terminator_context(entry)))
+    return result
+
+
 def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     """Validate the optional, strictly-checked title bindings the runtime consumes.
 
@@ -517,7 +642,8 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     which address -- that meaning applies. A manifest without the block, or without
     a given field, leaves the corresponding runtime behavior disabled.
     """
-    value = obj(value, path, {"schema_version", *RUNTIME_BINDING_FIELDS})
+    value = obj(value, path,
+                {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS})
     require(value, path, "schema_version")
     if uint(value["schema_version"], f"{path}.schema_version") != 1:
         fail(f"{path}.schema_version", "only runtime-binding schema version 1 is supported")
@@ -525,6 +651,12 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     for name in RUNTIME_BINDING_FIELDS:
         if name in value:
             result[name] = guest_address(value[name], f"{path}.{name}")
+    if "dispatch_aliases" in value:
+        result["dispatch_aliases"] = validate_dispatch_aliases(
+            value["dispatch_aliases"], f"{path}.dispatch_aliases")
+    if "callback_terminators" in value:
+        result["callback_terminators"] = validate_callback_terminators(
+            value["callback_terminators"], f"{path}.callback_terminators")
     if len(result) == 1:
         fail(path, "must configure at least one binding; omit the block instead")
     for left, right in RUNTIME_BINDING_PAIRS:

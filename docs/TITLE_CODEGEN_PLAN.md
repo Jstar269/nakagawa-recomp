@@ -158,6 +158,47 @@ The block may name addresses and roles. It cannot redefine a PSP semantic: what 
 worker entry, a launcher demotion, or a counter increment *means* stays in the
 runtime, and a binding only decides whether — and where — that meaning applies.
 
+### Typed collections
+
+Two later bindings name a *set* of semantic sites rather than one address, so they are
+arrays rather than scalars. Both are individually optional and both are empty in a
+generic build.
+
+| Collection | Entry | Consumed by |
+| --- | --- | --- |
+| `dispatch_aliases` | `{from, to}` | `recomp.c` `dispatch()` before the table lookup |
+| `callback_terminators` | `{sentinel, pc?, ra?}` | `recomp.c` `dispatch()` after the VFPU tag check |
+
+A **dispatch alias** says a computed call to `from` must enter the body registered at
+`to`. It covers a *registration* gap — a tail call landing past a callee's prologue at
+an address codegen never registered separately — and invents nothing: the runtime still
+runs an ordinary registered function, and if `to` is unregistered the call falls through
+to the normal miss path. Validation rejects a self-alias, a duplicate source, and an
+alias whose target is itself an alias source, because the runtime resolves exactly one
+step and a chain would silently stop short.
+
+A **callback terminator** says that at one exact call site, `sentinel` as a dispatch
+target means the guest's callback walk is COMPLETE — report `v0 = 1`, return to `$ra` —
+instead of taking the permissive miss path, which answers 0 and which a circular walker
+reads as "continue" and loops on forever. `sentinel` is a raw target value, not an
+address: the real ones are `0` and `0xFFFFFFFF`, so neither the non-zero nor the
+alignment rule for a guest address applies to it. `pc` and `ra` are guest addresses and
+**at least one is required** — an entry constraining neither would make the sentinel
+terminate at every call site in the program, which is precisely the address-global
+behavior this collection exists to prevent. Validation also rejects a duplicate entry
+and an entry that is unreachable behind a broader one for the same sentinel.
+
+Both collections are normalized to a canonical order, so two manifests that mean the
+same thing produce the same digest and are not two different builds.
+
+Ordering inside `dispatch()` is deliberate. The terminator check sits **after** the VFPU
+tag check, because the VFPU dispatch encoding is core vocabulary a title configuration
+must never be able to shadow, and **before** the `pc == 0` corruption guard, because a
+terminal callback is a normal completion rather than a collapsed thread. The alias check
+sits **after** the exact-hook table, so runtime policy hooks keep precedence over a title
+redirect, and before the lookup fixups, so an aliased target reaches the same code a
+direct target would.
+
 ### The generic runtime interface
 
 `src/rt/title_config.h` declares one small typed interface:
@@ -237,7 +278,35 @@ itself needs generated code and is not asserted here.
 
 `tools/test_title_runtime_config.py` covers the validator's fail-closed rules, the
 generator's determinism, and a source-shape check that no generic runtime source still
-names one of the five retired addresses.
+names one of the retired addresses.
+
+`make dispatch-isolation-selftest` is the matching gate for the typed collections, over
+the same three configurations and the same two fixtures. It drives the **real**
+`dispatch()` entry point — `src/rt/dispatch_isolation_selftest.c` includes `recomp.c` —
+and reads its verdict from the resulting `CpuState`, which distinguishes the three
+outcomes cleanly: a termination is `v0 = 1, pc = ra`, the null-call policy hook is
+`v0 = 0, pc = ra`, and an ordinary miss is `v0 = 0, pc = pc + 8`.
+
+Almost every assertion is derived from `sr_title_config()` at run time rather than
+hardcoded, so one source proves "only what THIS build configures acts" for every
+configuration — including the private HST one, where the same binary instead proves the
+migrated bindings do their job. Each build asserts that its own aliases redirect and its
+own terminators fire; that neither matches one address off in either direction; that the
+other fixture's alias sources and terminator sites behave generically; and that the three
+addresses generic dispatch used to hardcode are ordinary traffic. The two fixtures
+deliberately share the *sentinel values* `0` and `0xFFFFFFFF` while placing them at
+disjoint sites, which is what makes "the same sentinel elsewhere follows generic
+behavior" an assertion the matrix can actually fail.
+
+This is production-helper (tier-2) evidence: `dispatch()` is the real function, but the
+`CpuState` and the registered bodies are a test fixture rather than a title route.
+
+The source-shape census in `tools/test_title_runtime_config.py` deliberately excludes the
+selftest, which must name those addresses to prove they are inert, and separately asserts
+that it still does — otherwise the numbers could vanish from the tree along with the
+proof. That census is a literal-text scan over a fixed list of numbers in a fixed list of
+files: it catches a reintroduced literal, which is the realistic regression, and makes no
+claim about arbitrary C.
 
 ### Thread roles are outcomes, not configuration
 
