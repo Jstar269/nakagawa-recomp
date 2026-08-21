@@ -11,15 +11,19 @@ line, or unexplained?"
 Format is a plain Python data module (not TOML/JSON) on purpose: the manifest is
 read directly by the audit and should not depend on a serialization round-trip.
 tools/test_compat_manifest.py imports this module directly and cross-checks
-OVERRIDES against the two authoritative,
-mechanically-extractable sources of hooks in the tree:
+OVERRIDES against the authoritative, mechanically-extractable sources of hooks
+in the tree:
   - tools/codegen.py: GUEST_PATCHES, HST entry-role metadata,
     host_stubs.HST_SIMPLE_STUBS, and the
     per-address custom stubs between the "--- CUSTOM STUBS START/END ---"
     markers in emit_function's driver loop.
   - src/rt/recomp.c: the g_exact_hooks[]/g_range_hooks[] DispatchHook tables.
-CI fails if either source contains an address this manifest does not list, or
-if this manifest lists an address neither source actually contains (stale entry).
+  - src/rt/hle.c: guest addresses used as addresses (MEM_R*/MEM_W*/dispatch/
+    ge_call_guest*), grouped in HLE_GUEST_ADDRESS_GROUPS (added 2026-08-20;
+    before that, hle.c was in neither the automatic extraction nor the manual
+    groups, so its title addresses sat outside this inventory entirely).
+CI fails if any source contains an address this manifest does not list, or
+if this manifest lists an address the source no longer contains (stale entry).
 
 Categories (pick exactly one per entry):
   faithful_abi_bridge         -- reproduces the retail binary's own semantics;
@@ -59,6 +63,80 @@ CATEGORIES = {
     "diagnostic",
     "unexplained",
 }
+
+#: Title-2 readiness census buckets (docs/PORTING.md "Title coupling in the
+#: generic core").  Every HLE_GUEST_ADDRESS_GROUPS group carries exactly one.
+#: GENERIC_PSP_SEMANTIC       -- behavior is a generic PSP fact, not title
+#:                               knowledge; no profile needed.
+#: PROFILE_OWNED_CONFIGURATION -- a per-title value that belongs in the title
+#:                               manifest/profile, not in generic core.
+#: EXPLICIT_COMPATIBILITY_OVERRIDE -- semantic debt: title-specific behavior
+#:                               in generic core; must answer the five
+#:                               questions (why/scope/fallback/evidence/
+#:                               accidental inheritance) in the group dict.
+#: DIAGNOSTIC_ONLY            -- read-only, no control-flow or guest-memory
+#:                               side effects.
+#: PRIVATE_ACCEPTANCE_ONLY    -- exists only to pass a private acceptance
+#:                               route; no public evidence.
+#: FALSE_POSITIVE             -- a shape that looks like a coupling but is not
+#:                               (verified, not assumed).
+#: UNRESOLVED_COUPLING        -- real title coupling with no classification;
+#:                               must fail the gate, never pass silently.
+TITLE2_BUCKETS = {
+    "GENERIC_PSP_SEMANTIC",
+    "PROFILE_OWNED_CONFIGURATION",
+    "EXPLICIT_COMPATIBILITY_OVERRIDE",
+    "DIAGNOSTIC_ONLY",
+    "PRIVATE_ACCEPTANCE_ONLY",
+    "FALSE_POSITIVE",
+    "UNRESOLVED_COUPLING",
+}
+
+#: Narrow, explicit, reviewable SITE rules that keep a generic PSP fact out of
+#: the title-coupling scan.  This REPLACES both the original blanket numeric
+#: ceiling (HLE_GUEST_ADDRESS_CEILING == 0x04000000) and the later whole-region
+#: rule (HLE_GENERIC_ADDRESS_RULES: psp_vram_window 0x04000000..0x041fffff),
+#: which silently classified ANY access into VRAM as generic -- including a
+#: hypothetical title-specific MEM_W32(0x04012340u, v).  A whole-region
+#: exemption is a blind spot by construction: VRAM is hardware geometry, but
+#: an absolute guest address used through MEM_R*/MEM_W* is a guest location
+#: the runtime knows about by number, and a title-specific write into VRAM is
+#: just as much title coupling as one into RAM.
+#:
+#: An address is generic ONLY when an exact site rule here covers it: a rule
+#: names the enclosing hle.c function, the call/return shape, and the exact
+#: literal.  Rules must be narrow (an architectural constant returned by one
+#: named handler, never "everything above X" and never a whole hardware
+#: window), must state the generic PSP fact they stand for, and must never
+#: exempt a memory-access shape (MEM_R*/MEM_W*, sr_r32/sr_w32, dispatch,
+#: ge_call_guest*): a direct fixed MEM_R/MEM_W at an arbitrary VRAM address is
+#: exactly the shape a title-specific coupling takes and must always be
+#: inventoried.  test_compat_manifest.py enforces those properties
+#: mechanically.
+HLE_GENERIC_SITE_RULES = [
+    dict(name="edram_base_return", function="h_GeEdramGetAddr", shape="return",
+         address=0x04000000,
+         reason="sceGeEdramGetAddr returns the architectural EDRAM base "
+                "0x04000000 on every PSP; it is a hardware constant, not "
+                "title knowledge.  The exemption is this one return site only "
+                "-- a MEM_R/MEM_W at 0x04000000 is still inventoried."),
+]
+
+
+def is_generic_site(function: str, shape: str, address: int) -> bool:
+    """True only for a site covered by an explicit generic-site rule.
+
+    A rule matches when the enclosing function, the call/return shape and the
+    exact literal all agree.  This is the only sanctioned way an absolute
+    guest address escapes the title-coupling scan.  There is deliberately no
+    fallback ceiling and no whole-region exemption: a site no rule covers is
+    scanned no matter how high its address is.
+    """
+    for rule in HLE_GENERIC_SITE_RULES:
+        if (rule["function"] == function and rule["shape"] == shape
+                and rule["address"] == address):
+            return True
+    return False
 
 # --- tools/codegen.py: GUEST_PATCHES (instruction-level overrides) ----------
 GUEST_PATCHES = [
@@ -362,6 +440,162 @@ DIAGNOSTIC_GROUPS = [
                 "save/restore is a no-op by construction (restores exactly what it saved)"),
 ]
 
+
+# --- src/rt/hle.c: guest addresses used as addresses ------------------------
+#
+# Until 2026-08-20 this manifest's mechanically-checked sources were
+# tools/codegen.py and src/rt/recomp.c only, and the manually-maintained groups
+# above covered src/rt/sched.c.  src/rt/hle.c was in neither, so 38 distinct
+# HST guest addresses across 50 sites -- including a complete guest
+# display-driver initialisation sequence dispatched from a generic
+# sceDisplaySetMode handler and a read-only umd.ufl head dump reached through
+# a cast-wrapped MEM_R8((uint32_t)(...)) shape -- were entirely outside the
+# semantic-debt inventory.  They are listed here and cross-checked by
+# tools/test_compat_manifest.py, so a new one cannot be added silently.
+#
+# The scan covers every absolute guest address and dispatch/call target
+# regardless of magnitude.  A blanket numeric ceiling originally excluded
+# everything >= 0x04000000; that blind spot is removed.  A later whole-region
+# exemption for the VRAM window (0x04000000..0x041fffff) is also removed: a
+# direct MEM_R/MEM_W at an arbitrary VRAM address must be inventoried, not
+# silently classified generic.  Generic PSP constants are exempted only
+# through the narrow site rules in HLE_GENERIC_SITE_RULES above (exact
+# function + shape + literal), never through magnitude or a hardware window.
+#
+# A "site" is one literal guest address used as an address through one of the
+# small, stable call shapes the extractor recognises (MEM_R*/MEM_W*, dispatch,
+# ge_call_guest*, sr_r32/sr_w32, including cast-wrapped address bases such as
+# MEM_R8((uint32_t)(0x... + off))).  An address used on multiple lines is one
+# distinct address with multiple sites.
+#
+# `title2_bucket` uses the census vocabulary above.  For
+# EXPLICIT_COMPATIBILITY_OVERRIDE groups, `generic_fallback`, `evidence`,
+# `title_scope` and `accidental_inheritance` answer the five review questions;
+# test_compat_manifest.py requires them.
+#
+# This inventories the coupling; it does not retire it.  The three
+# `temporary_compatibility_patch` groups below are the ones that matter for
+# running a second title: they read and write addresses that mean something
+# only in this title's memory map, from handlers named after generic PSP APIs.
+# A different guest executable reaching h_DisplaySetMode would dispatch to
+# whatever happens to live at 0x00000bcc in ITS map.  Retiring them is tracked
+# by issue #20 (compatibility-override surface) and the readiness record in
+# docs/PORTING.md.
+HLE_GUEST_ADDRESS_GROUPS = [
+    dict(name="guest_bss_snapshots", category="diagnostic",
+         title2_bucket="DIAGNOSTIC_ONLY",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:sr_capture_mainthread_diag / sr_dump_mainthread_diag / "
+                "h_ExitThread re-snapshot / guest-printf hook / h_CpuSuspendIntr / "
+                "h_CpuResumeIntr traces",
+         addresses=[0x0030a000, 0x0030a004, 0x0030a008, 0x0030a00c,
+                    0x0030a010, 0x0030a014, 0x0030a018, 0x0030a01c,
+                    0x0030a020, 0x0030a024, 0x0030a028, 0x0030a02c,
+                    0x0030a030, 0x0030a034, 0x0030a038, 0x0030a03c,
+                    0x0030a040, 0x0030a044, 0x0030a048, 0x0030a04c,
+                    0x0030a054, 0x0030a058, 0x0030a05c,
+                    0x0030aa88,
+                    0x0031a03c, 0x0031a040, 0x0031a044],
+         reason="read-only MEM_R32 snapshots of this title's libc/module-registry and "
+                "gp-relative frame-table bss, printed beside a thread-exit, guest-printf, "
+                "or suspend/resume trace. No guest memory or CPU state is written, so on "
+                "another title these print unrelated words rather than changing any decision.",
+         generic_fallback="none needed -- the reads are diagnostic only and the printed "
+                          "words are meaningless on another title, which is harmless",
+         evidence="SOURCE_SHAPE: read-only usage verified at every site; no MEM_W* on "
+                  "these addresses",
+         accidental_inheritance="no -- diagnostic output only, no control-flow or write "
+                                "side effects",
+         test="none"),
+    dict(name="exit_path_context", category="diagnostic",
+         title2_bucket="DIAGNOSTIC_ONLY",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:h_ExitGame / h_ExitThread trailing context dump",
+         addresses=[0x0310a034, 0x002cf6b4],
+         reason="read-only context words appended to the exit traces. 0x0310a034 does not "
+                "match the 0x0031a0xx frame-table block the surrounding code otherwise "
+                "reads and looks like a transposed digit; it is inventoried as written "
+                "rather than silently corrected, because a read-only diagnostic is the "
+                "wrong place to guess.",
+         generic_fallback="none needed -- read-only context words in an exit dump",
+         evidence="SOURCE_SHAPE: read-only usage at lines 1475/1665; env-gated",
+         accidental_inheritance="no -- diagnostic output only",
+         test="none"),
+    dict(name="umd_ufl_head_dump", category="diagnostic",
+         title2_bucket="DIAGNOSTIC_ONLY",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:sr_umd_ufl_head_dump",
+         addresses=[0x0030b8d0],
+         reason="read-only MEM_R8 hex dump of the umd.ufl on-disk header block, reached "
+                "through a cast-wrapped base MEM_R8((uint32_t)(0x0030b8d0u + off + i)) "
+                "behind an SR_UMDDUMP env gate. It reads a diagnostic-only region and "
+                "never writes guest memory.",
+         generic_fallback="none needed -- env-gated diagnostic output only",
+         evidence="SOURCE_SHAPE: read-only usage at lines 5554/5557 behind SR_UMDDUMP; "
+                  "the cast-wrapped shape was previously invisible to the extractor",
+         accidental_inheritance="no -- diagnostic output only",
+         test="none"),
+    dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
+         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:h_LoadModule",
+         addresses=[0x002d132c],
+         reason="loading a path containing 'libfont.prx' writes 1 to a guest word at a "
+                "fixed address. A generic module-load handler writing a title-specific "
+                "global is title coupling: another executable loading a similarly named "
+                "PRX would take an unrelated word to 1.",
+         generic_fallback="h_LoadModule already returns a real UID and populates the "
+                          "module registry without the write; the write is a title-pacing "
+                          "assist only",
+         evidence_tier="PRIVATE_ACCEPTANCE",
+         evidence="private acceptance record; details retained outside public tree",
+         accidental_inheritance="yes -- ANY executable that loads a path containing "
+                                "'libfont.prx' gets an unrelated guest word forced to 1",
+         test="none"),
+    dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
+         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:sr_vblank_tick / ge_finish_callback / ge_finish_latch_assist",
+         addresses=[0x00331b80],
+         reason="the runtime seeds a counter at a fixed guest address, decrements it when "
+                "a display list completes with no registered guest finish callback, and "
+                "after 30 vblanks with it stuck above zero forces it down. Forcing a "
+                "guest latch is precisely the shape the project's no-band-aids rule "
+                "names; it is inventoried here so it stays visible rather than being "
+                "rediscovered.",
+         generic_fallback="without the assist the guest render loop waits on a latch only "
+                          "the guest's own finish callback can clear; the assist covers "
+                          "lists with no registered callback",
+         evidence_tier="PRIVATE_ACCEPTANCE",
+         evidence="private acceptance record; details retained outside public tree",
+         accidental_inheritance="yes -- any title whose render loop happens to read "
+                                "0x00331b80 (or where that address is live memory) sees "
+                                "HLE-driven writes",
+         test="none"),
+    dict(name="display_setmode_guest_init", category="temporary_compatibility_patch",
+         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:h_DisplaySetMode",
+         addresses=[0x00000bcc, 0x0029a8bc, 0x0001dc00,
+                    0x0031fcc0, 0x00311140, 0x002d0738],
+         reason="sceDisplaySetMode replays a display-driver bring-up sequence: it "
+                "calls guest functions at 0x00000bcc, 0x0029a8bc and 0x0001dc00, then "
+                "forces the render-context magic at 0x0031fcc0 and seeds the "
+                "render-command-table ready flag and context word. This is the single "
+                "largest title dependency in the runtime and the clearest blocker to "
+                "running a second executable: the addresses are dispatch targets, so a "
+                "different guest would be called at whatever lives at those offsets in "
+                "its own map.",
+         generic_fallback="the handler's non-bring-up path is the generic PSP contract "
+                          "(mode/width/height registration and vblank cadence); the guest "
+                          "calls replace display-driver init the real title would do itself",
+         evidence_tier="PRIVATE_ACCEPTANCE",
+         evidence="private acceptance record; details retained outside public tree",
+         accidental_inheritance="yes -- and worse than the other groups: three of the six "
+                                "addresses are DISPATCH TARGETS, so a second executable "
+                                "would execute whatever its own map holds at those offsets",
+         test="none"),
+]
 
 def all_documented_addresses() -> "set[int]":
     """Every address this manifest claims to account for (individual entries only;
