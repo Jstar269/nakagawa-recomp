@@ -9994,6 +9994,18 @@ static void hle_register_display_handlers(void) {
     sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_DisplayGetFramePerSec);
 }
 
+static void hle_register_ge_handlers(void) {
+    /* sceGe_user */
+    sr_hle_register(0xab49e76a, "sceGeListEnQueue", h_GeListEnQueue);
+    sr_hle_register(0xb287bd61, "sceGeDrawSync", h_GeDrawSync);
+    sr_hle_register(0xe47e40e4, "sceGeEdramGetAddr", h_GeEdramGetAddr);
+    sr_hle_register(0xa4fc06a4, "sceGeSetCallback", h_GeSetCallback);
+    sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
+    sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
+    sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
+    sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
+}
+
 static void hle_register_atrac_handlers(void) {
     /* sceAtrac3plus (control flow only; silence output). */
     sr_hle_register(0x7a20e7af, "sceAtracSetDataAndGetID", h_AtracSetDataAndGetID);
@@ -10134,6 +10146,7 @@ void sr_hle_init(void) {
     hle_register_wait_conformance_handlers();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
+    hle_register_ge_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -10304,15 +10317,7 @@ void sr_hle_init(void) {
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
     sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
-    /* sceGe_user */
-    sr_hle_register(0xab49e76a, "sceGeListEnQueue", h_GeListEnQueue);
-    sr_hle_register(0xb287bd61, "sceGeDrawSync", h_GeDrawSync);
-    sr_hle_register(0xe47e40e4, "sceGeEdramGetAddr", h_GeEdramGetAddr);
-    sr_hle_register(0xa4fc06a4, "sceGeSetCallback", h_GeSetCallback);
-    sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
-    sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
-    sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
-    sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
+    hle_register_ge_handlers();
     /* Issue #86: the previous numeric NIDs for the four getters below were bogus (absent from
      * the PPSSPP-derived nid_names.h); they are replaced with the canonical NIDs so real title
      * imports route here instead of being unregistered, and 0x478fe6f5 is renamed to its
