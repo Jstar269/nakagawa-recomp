@@ -828,6 +828,10 @@ static void reset_fixture(void) {
     s_cur = -1;
     s_last_pick = -1;
     s_root_seen = 0;
+    /* Deliberately install a CAPTURED-role world: this suite exercises the HLE paths
+     * that only exist once roles are held, and it fabricates matching TCBs for these
+     * exact UIDs below. These are fixture assignments, not defaults -- production
+     * starts every role at SR_ROLE_UID_NONE and captures it from a configured entry. */
     g_root_uid = 0x110u;
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */

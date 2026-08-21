@@ -117,6 +117,15 @@ def main(argv):
         return 1
     rt = os.path.join(ROOT, "src", "rt")
     cc = os.environ.get("CC", "gcc")
+
+    # Generate the generic runtime title configuration (all optional bindings
+    # disabled; no manifest) into a dedicated config directory in workdir.
+    config_dir = os.path.join(workdir, "title-config")
+    os.makedirs(config_dir, exist_ok=True)
+    config_header = os.path.join(config_dir, "sr_title_config.h")
+    if run([sys.executable, os.path.join(ROOT, "tools", "title_runtime_config.py"), "--output", config_header]):
+        return 1
+
     # codegen.py writes the per-chunk registration files gen_0.c, gen_1.c, ...
     # alongside gen.c (each defines sr_register_chunk_i(), called by sr_register_all
     # in gen.c). They must be compiled and linked or the link fails with an
@@ -124,20 +133,20 @@ def main(argv):
     import glob
     base = os.path.splitext(gen)[0]
     chunk_srcs = sorted(glob.glob(base + "_*.c"))
-    rt = os.path.join(ROOT, "src", "rt")
     # The headless microtest link set is: generated chunks + recomp core + the
     # VFPU table loader (vfpu_tables.c, which owns the table globals recomp.c
-    # references) + driver + tools/gate_stub.c.  sched.c / sr_coro.c are
-    # intentionally omitted because the microtest never enters the scheduler
-    # (no --sched / --gui flags), and those TUs would require SDL3 headers on a
-    # headless Linux runner.  gate_stub.c provides the minimal dead-symbol
-    # definitions the linker needs.
+    # references) + driver + title_config.c + tools/gate_stub.c.  sched.c /
+    # sr_coro.c are intentionally omitted because the microtest never enters
+    # the scheduler (no --sched / --gui flags), and those TUs would require
+    # SDL3 headers on a headless Linux runner.  gate_stub.c provides the minimal
+    # dead-symbol definitions the linker needs.
     extra = os.environ.get("CG_EXTRA_OBJS", "").split()
     cflags = os.environ.get("CG_EXTRA_CFLAGS", "").split()
     if run([cc, "-O0", "-w", "-fno-var-tracking", "-D_CRT_SECURE_NO_WARNINGS",
-            "-DSR_INSTRUCTION_TRACE", "-DSR_GATE_BUILD", "-I", rt, *cflags,
+            "-DSR_INSTRUCTION_TRACE", "-DSR_GATE_BUILD", "-I", rt, "-I", config_dir, *cflags,
             "-o", drv, gen, *chunk_srcs, os.path.join(rt, "recomp.c"),
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
+            os.path.join(rt, "title_config.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
         return 1
 

@@ -22,6 +22,7 @@
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
+#include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
 
 #include <SDL3/SDL_timer.h>
 #include <stdio.h>
@@ -126,16 +127,24 @@ static int s_stack_free_count;
 static int s_stack_allocator_ready;
 
 /* Dynamic role-UID capture. Populated by sched_create_thread: the ROOT thread is the
- * first thread ever created (sched_run's module_start thread); the WORKER is the thread
- * created with entry 0x000468c8u (main_RunGameLoop); the LAUNCHER is the boot thread at
- * entry 0x0029a174u. Defaults match the historical UID assignment (0x110 / 0x114 / 0x111)
- * so that pre-init code paths and one-off diagnostics continue to behave. They are
- * read-only to the rest of the runtime via sched_root_uid() / sched_worker_uid() /
- * sched_launcher_uid(); UID allocation has drifted between runs before (worker 0x115 ->
- * 0x114), so behavioral checks must use these accessors, never literal UIDs. */
-uint32_t g_root_uid     = 0x110u;
-uint32_t g_worker_uid   = 0x114u;
-uint32_t g_launcher_uid = 0x111u;
+ * first thread ever created (sched_run's module_start thread); the WORKER and LAUNCHER
+ * are the threads whose entry matches the build's configured worker/launcher binding
+ * (see title_config.h). With no title configuration neither role is ever claimed.
+ *
+ * All three start UNCAPTURED. They previously started at the historical HST allocation
+ * (0x110 / 0x114 / 0x111), which made them live comparison values before any capture:
+ * UIDs are handed out from 0x110 upward, so an ordinary thread in a build with no
+ * launcher binding could be allocated 0x111 and then inherit launcher-only treatment
+ * (master-reent seeding, skipped guest reent registration) purely by its number. A role
+ * UID is an outcome of allocation, never title configuration, so "absent" is represented
+ * structurally instead -- SR_ROLE_UID_NONE, a value sr_alloc_uid() never returns.
+ *
+ * Read them via sched_root_uid() / sched_worker_uid() / sched_launcher_uid() when the
+ * number itself is wanted; ask sched_uid_is_*() when the question is "does this thread
+ * hold the role", because those fail closed while the role is uncaptured. */
+uint32_t g_root_uid     = SR_ROLE_UID_NONE;
+uint32_t g_worker_uid   = SR_ROLE_UID_NONE;
+uint32_t g_launcher_uid = SR_ROLE_UID_NONE;
 static int s_root_seen  = 0;      /* first-created-thread latch (file-scope for the selftest) */
 
 /* Defined below, after the virtual-time service and VBLANK frame are declared. */
@@ -298,6 +307,27 @@ uint32_t sched_current_uid(void) { return s_cur >= 0 ? s_tcb[s_cur].uid : 0; }
 uint32_t sched_root_uid(void)     { return g_root_uid; }
 uint32_t sched_worker_uid(void)    { return g_worker_uid; }
 uint32_t sched_launcher_uid(void) { return g_launcher_uid; }
+
+int sched_role_uid_captured(uint32_t role_uid) { return role_uid != SR_ROLE_UID_NONE; }
+
+/* The one place a role question is answered. Both halves fail closed:
+ *   - an uncaptured role matches no thread at all, so a build with no worker/launcher
+ *     binding can never grant role treatment to an ordinary thread by its number;
+ *   - UID 0 is PSP's "current thread" / "no current thread" value and is never a real
+ *     thread identity, so it can never satisfy a captured-role test either. Without
+ *     that guard, sched_current_is_worker() with no current thread would compare 0
+ *     against 0 the moment any sentinel scheme used zero for "absent". */
+static int role_uid_matches(uint32_t role_uid, uint32_t uid) {
+    if (role_uid == SR_ROLE_UID_NONE) return 0;
+    if (uid == SR_ROLE_UID_NONE || uid == 0u) return 0;
+    return role_uid == uid;
+}
+
+int sched_uid_is_root(uint32_t uid)     { return role_uid_matches(g_root_uid, uid); }
+int sched_uid_is_worker(uint32_t uid)   { return role_uid_matches(g_worker_uid, uid); }
+int sched_uid_is_launcher(uint32_t uid) { return role_uid_matches(g_launcher_uid, uid); }
+int sched_current_is_worker(void)       { return sched_uid_is_worker(sched_current_uid()); }
+int sched_current_is_launcher(void)     { return sched_uid_is_launcher(sched_current_uid()); }
 uint32_t sr_thread_k0(void)        { return s_cur >= 0 ? s_tcb[s_cur].k0_init : 0; }
 
 uint32_t sched_suspend_interrupts(void) {
@@ -855,9 +885,16 @@ static void deliver_vblank(void) {
     s_vbl_count++;
     sr_perf_vblank();
 
-    /* Increment guest-side counters (OpenGrip: 0x0031101c=FrameCounter, 0x0031105c=VSyncCounter) */
-    MEM_W32(0x0031105cu, MEM_R32(0x0031105cu) + 1);
-    MEM_W32(0x0031101cu, MEM_R32(0x0031101cu) + 1);
+    /* Increment the guest-side frame/vsync counter words when -- and only when -- the
+     * build's title configuration names them. An unconfigured build touches no guest
+     * memory here; there is no generic address for these words. */
+    {
+        uint32_t frame_addr = 0, vsync_addr = 0;
+        if (sr_title_config_vblank_counters(&frame_addr, &vsync_addr)) {
+            MEM_W32(vsync_addr, MEM_R32(vsync_addr) + 1);
+            MEM_W32(frame_addr, MEM_R32(frame_addr) + 1);
+        }
+    }
 
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
@@ -925,7 +962,9 @@ static void deliver_vblank(void) {
         if (relaunch_disabled < 0) relaunch_disabled = getenv("SR_NO_RELAUNCH") ? 1 : 0;
         if (!relaunch_disabled) {
             uint32_t wuid = g_worker_uid;
-            TCB *w = tcb_by_uid(wuid);
+            /* No captured worker role means there is nothing to re-arm. Looking the
+             * sentinel up would find no TCB anyway; the explicit guard says why. */
+            TCB *w = sched_role_uid_captured(wuid) ? tcb_by_uid(wuid) : NULL;
             if (w && w->state == TH_DORMANT) {
                 /* A dormant worker means main_RunGameLoop returned for this frame; on real
                  * PSP the GE list-complete callback re-arms it. The previous gate required
@@ -962,16 +1001,16 @@ static void coro_body(void *param) {
         s_cpu->r[4] = t->arglen;
         s_cpu->r[5] = t->argp;
         s_cpu->r[31] = 0;
-        if (t->uid == g_worker_uid) fprintf(stderr, "DISPATCH uid=0x%x entry=0x%08x\n", t->uid, t->entry);
+        if (sched_uid_is_worker(t->uid)) fprintf(stderr, "DISPATCH uid=0x%x entry=0x%08x\n", t->uid, t->entry);
         t->has_unwind_jmp = 1;
         if (setjmp(t->unwind_jmp) == 0) {
             dispatch(s_cpu, t->entry);    /* runs until the thread returns or exits */
         } else {
             /* longjmp path: sched_unwind_current() was called from recomp.c */
-            if (t->uid == g_worker_uid) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
+            if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
         }
         t->has_unwind_jmp = 0;
-        if (t->uid == g_worker_uid) fprintf(stderr, "DISPATCH uid=0x%x returned pc=0x%08x\n", t->uid, s_cpu->pc);
+        if (sched_uid_is_worker(t->uid)) fprintf(stderr, "DISPATCH uid=0x%x returned pc=0x%08x\n", t->uid, s_cpu->pc);
         /* The entry returned (or was longjmp-unwound) without calling sceKernelExitThread.
          * sched_exit_current applies the measured non-delete ThreadMan exit rule: a positive
          * thread-body return is recorded unchanged, while a signed-negative return is latched
@@ -1075,11 +1114,12 @@ static void guest_reent_unregister(uint32_t state_ptr) {
 
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
     /* Copy master thread's reent structure to initialize the new thread's reent.
-     * This inherits the initialized allocator context. The g_root_uid and
-     * g_launcher_uid threads keep their own independently-initialized reent:
-     * root has the CRT-provided master reent; launcher initializes its own via
-     * f_000118a0 in its guest entry (f_0029a174). */
-    if (uid != g_root_uid && uid != g_launcher_uid) {
+     * This inherits the initialized allocator context. A thread holding the ROOT or
+     * LAUNCHER role keeps its own independently-initialized reent: root has the
+     * CRT-provided master reent; a launcher initializes its own from its guest entry.
+     * Both tests are role tests, not UID-number tests -- with no captured role every
+     * thread takes the ordinary inheriting path. */
+    if (!sched_uid_is_root(uid) && !sched_uid_is_launcher(uid)) {
         if (g_master_reent != 0u && sr_inrange(g_master_reent) && sr_inrange(g_master_reent + 1024u) &&
             (MEM_R32(g_master_reent) != 0u || MEM_R32(g_master_reent + 4u) != 0u)) {
             for (uint32_t offset = 0; offset < 1024; offset += 4) {
@@ -1145,16 +1185,21 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
         s_libc_threads[slot].state_ptr = state_ptr;
     }
 
-    if (uid == g_launcher_uid) {
+    /* Only a thread that actually holds the LAUNCHER role seeds the master reent.
+     * This was a UID-number test, so in a build with no launcher binding an ordinary
+     * thread that happened to be allocated the historical launcher UID took over the
+     * master reent for every later thread. */
+    if (sched_uid_is_launcher(uid)) {
         g_master_reent = state_ptr;
     }
 
     init_guest_reent(state_ptr, uid);
 
-    /* Pre-register in the guest per-thread reent/state hash (0x0030aa88) for all
-     * threads except the launcher, which calls f_00011710 (the original registration
-     * function) from its own guest entry f_0029a174 and must find an empty slot. */
-    if (uid != g_launcher_uid) {
+    /* Pre-register in the guest per-thread reent/state hash for every thread except a
+     * launcher, which calls the guest's own registration function from its entry and
+     * must find an empty slot. Role test, not UID number: with no launcher role
+     * captured, every thread is registered. */
+    if (!sched_uid_is_launcher(uid)) {
         guest_reent_register(uid, state_ptr);
     }
 
@@ -1215,7 +1260,7 @@ static void sched_release_thread_stack(TCB *t) {
 }
 
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
-    if (entry == 0x000468c8u && !getenv("SR_NO_THREAD_REUSE")) {
+    if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
         TCB *existing = tcb_by_entry(entry);
         if (existing) {
             static int n_reuse_log = 0;
@@ -1332,8 +1377,9 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         return 0;
     }
     /* Capture the role UIDs dynamically. The root is the first thread ever created
-     * (sched_run's module_start thread); the worker is the thread whose entry is
-     * main_RunGameLoop (0x000468c8u); the launcher is the boot thread at 0x0029a174u.
+     * (sched_run's module_start thread); the worker and launcher are the threads whose
+     * entry matches the build's configured worker/launcher binding, and neither role is
+     * claimed at all when the build has no title configuration.
      * UID allocation has drifted once already (worker moved from 0x115 to 0x114) and
      * silently broke every hardcoded check in hle.c/recomp.c — recording the actual
      * assigned UIDs here lets those checks use sched_root_uid()/sched_worker_uid()/
@@ -1343,22 +1389,21 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         g_root_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "ROOT_UID_CAPTURE: root uid=0x%x\n", t->uid);
     }
-    if (entry == 0x000468c8u) {
+    if (sr_title_config_is_worker_entry(entry)) {
         g_worker_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "WORKER_UID_CAPTURE: worker uid=0x%x\n", t->uid);
-    } else if (entry == 0x0029a174u) {
+    } else if (sr_title_config_is_launcher_entry(entry)) {
         g_launcher_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_UID_CAPTURE: launcher uid=0x%x\n", t->uid);
     }
-    /* Priority-inversion guard: HST's launcher (entry 0x0029a174) runs an unconditional
-     * recompiled `j L_0029a27c` loop in module_start that calls f_0000ef40 (modtable walk)
-     * with thousands of SR_YIELD escapes per second. The launcher thread is normally the
-     * highest-priority user thread (32 < worker pri ~38-40), so the scheduler always
-     * schedules it, starving the worker thread (entry 0x468c8 / main_RunGameLoop)
-     * that needs to drive SetFrameBuf / WaitVblank. Once the launcher uid is known, demote
-     * it below any probable worker priority so worker can run. Disable with
-     * SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour). */
-    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && entry == 0x0029a174u) {
+    /* Priority-inversion guard, applied only to a configured launcher role. A launcher
+     * that spins in a module_start loop with thousands of SR_YIELD escapes per second is
+     * normally the highest-priority user thread (32 < worker pri ~38-40), so the scheduler
+     * always schedules it and starves the worker that drives SetFrameBuf / WaitVblank.
+     * Once the launcher uid is known, demote it below any probable worker priority so the
+     * worker can run. Disable with SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour).
+     * A build with no configured launcher binding never reaches this. */
+    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
         const int demoted_priority = 50;
         t->priority = demoted_priority;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
@@ -1443,7 +1488,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
                 }
                 node_addr = MEM_R32(node_addr);
             }
-            if (t->uid != g_launcher_uid && found_ptr != state_ptr) {
+            if (!sched_uid_is_launcher(t->uid) && found_ptr != state_ptr) {
                 fprintf(stderr, "THREAD_SEED_MISMATCH: uid=0x%x found_ptr=0x%08x expected=0x%08x\n",
                         t->uid, found_ptr, state_ptr);
             } else {
@@ -1642,7 +1687,7 @@ static void boot_diag(CpuState *s) {
         enabled = e && strcmp(e, "0") != 0;
         if (enabled) fprintf(stderr, "BOOT_DIAG enabled (read-only, bounded)\n");
     }
-    if (!enabled || s_cur < 0 || s_tcb[s_cur].uid != g_worker_uid) return;
+    if (!enabled || s_cur < 0 || !sched_uid_is_worker(s_tcb[s_cur].uid)) return;
 
     if (s->pc == 0x001039d8u && guest_ptr_readable(s->r[5]) &&
         MEM_R8(s->r[5]) == 'l' && MEM_R8(s->r[5] + 1u) == 'i' &&
@@ -1930,7 +1975,8 @@ static void audio_trace(CpuState *s) {
  * 0x111 -- the trace keeps its original name) while its PC differs from the last recorded
  * PC; capped at SR_T111PC_MAX (default 256) entries so a long post-worker loop does not
  * flood the trace. Cleared on capture so we can dump a fresh window per bring-up cycle.
- * The uid is resolved via g_launcher_uid so allocation drift cannot silence the trace. */
+ * The uid is resolved via the captured launcher role, so allocation drift cannot
+ * silence the trace -- and a build with no launcher binding traces nothing. */
 static int s_t111_on = -1;
 static int s_t111_max = 256;
 typedef struct { uint32_t pc, ra; uint64_t tick; } T111Rec;
@@ -1948,7 +1994,7 @@ static void t111_trace(CpuState *s) {
     }
     if (!s_t111_on || s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
-    if (t->uid != g_launcher_uid) return;
+    if (!sched_uid_is_launcher(t->uid)) return;
     uint32_t pc = s->pc ? s->pc : t->saved.pc;
     uint32_t ra = s->r[31] ? s->r[31] : t->saved.r[31];
     if (pc == s_t111_last_pc && s_t111_n > 0) return;
@@ -2051,7 +2097,7 @@ void sr_yield(CpuState *s) {
 
     static int s_yieldlog = -1;
     if (s_yieldlog < 0) s_yieldlog = getenv("SR_YIELDLOG") ? 1 : 0;
-    if (s_cur >= 0 && s_tcb[s_cur].uid == g_worker_uid && s_yieldlog) {
+    if (s_cur >= 0 && sched_uid_is_worker(s_tcb[s_cur].uid) && s_yieldlog) {
         static int yield_count = 0;
         if (yield_count < 200) {
             uint32_t k0 = s->r[26];
@@ -2070,7 +2116,7 @@ void sr_yield(CpuState *s) {
      * these are zero the allocator can't satisfy a request and loops. Dump once. */
     static int s_heapspin = -1;
     if (s_heapspin < 0) s_heapspin = getenv("SR_HEAPSPIN") ? 1 : 0;
-    if (s_cur >= 0 && s_tcb[s_cur].uid == g_worker_uid && s_heapspin) {
+    if (s_cur >= 0 && sched_uid_is_worker(s_tcb[s_cur].uid) && s_heapspin) {
         static int workerspin_dumped = 0;
         if (s->pc == 0x000115e8u || s->pc == 0x0000d62cu || s->pc == 0x00000c5cu) {
             fprintf(stderr, "HEAPSPIN: pc=0x%08x tick=%llu ra=0x%08x\n", s->pc, (unsigned long long)s_tick, s->r[31]);
@@ -2136,7 +2182,7 @@ void sr_yield(CpuState *s) {
      *   SR_POSTUMD env (default off). Captures a0..a2 + RA + libc_main_id + last_alloc
      *   so we can see which guest function landed at each yield after the manifest
      *   decode. Bounded at 256 entries so we don't fill the trace. */
-    if (s_cur >= 0 && s_tcb[s_cur].uid == g_worker_uid) {
+    if (s_cur >= 0 && sched_uid_is_worker(s_tcb[s_cur].uid)) {
         static int s_postumd = -1;
         if (s_postumd < 0) { const char *e = getenv("SR_POSTUMD"); s_postumd = (e && strcmp(e, "0") != 0) ? 1 : 0; }
         if (s_postumd) {

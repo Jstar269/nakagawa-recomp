@@ -545,9 +545,29 @@ void     sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThr
 uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
-uint32_t sched_root_uid(void);                      /* dynamic root UID (first created thread) */
-uint32_t sched_worker_uid(void);                    /* dynamic worker UID (entry 0x000468c8) */
-uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (entry 0x0029a174) */
+/* Thread role identity.
+ *
+ * A role UID is an OUTCOME of allocation, never configuration: the scheduler records
+ * whichever UID the allocator happened to give the thread that took the role. UIDs are
+ * handed out from 0x110 upward, so any plausible-looking UID is also an ordinary UID --
+ * which is why "no role" must be represented structurally rather than by a numeric
+ * default. SR_ROLE_UID_NONE is that representation, and sr_alloc_uid() never returns it.
+ *
+ * Read a role UID with the accessors below only when you want the number itself (a
+ * diagnostic label, a table key). To ask "is this thread the worker?", use the
+ * predicates: they fail closed on an uncaptured role, and they never treat UID 0 --
+ * PSP's "current thread" / "no thread" value -- as a captured role. */
+#define SR_ROLE_UID_NONE 0xFFFFFFFFu
+
+uint32_t sched_root_uid(void);                      /* captured root UID, or SR_ROLE_UID_NONE */
+uint32_t sched_worker_uid(void);                    /* captured worker UID, or SR_ROLE_UID_NONE */
+uint32_t sched_launcher_uid(void);                  /* captured launcher UID, or SR_ROLE_UID_NONE */
+int      sched_role_uid_captured(uint32_t role_uid);/* 1 when a role accessor returned a real UID */
+int      sched_uid_is_root(uint32_t uid);           /* fail-closed role tests: 0 when uncaptured */
+int      sched_uid_is_worker(uint32_t uid);
+int      sched_uid_is_launcher(uint32_t uid);
+int      sched_current_is_worker(void);             /* 0 when there is no current thread */
+int      sched_current_is_launcher(void);
 typedef struct SrThreadRunStatus {
     uint32_t size;
     uint32_t status;
@@ -568,9 +588,7 @@ void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);
 int      sched_current_priority(void);
 int      sched_is_dormant(uint32_t uid);
-uint32_t sched_current_uid(void);
-uint32_t sched_worker_uid(void);                    /* dynamic worker UID (entry 0x000468c8) */
-uint32_t sched_launcher_uid(void);                  /* dynamic launcher UID (entry 0x0029a174) */
+uint32_t sched_current_uid(void);                   /* 0 when no thread is current */
 void     sched_run(uint32_t entry, uint32_t arglen, uint32_t argp);  /* run from the entry thread */
 
 /* PSP callback ABI: SceKernelCallbackFunction(int count, int arg, void *common).

@@ -382,10 +382,14 @@ DISPATCH_RANGE_HOOKS = [
 SCHEDULER_HOOKS = [
     dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker thread reuse",
          source="src/rt/sched.c:sched_create_thread/tcb_by_entry",
-         reason="a new sceKernelCreateThread for main_RunGameLoop's entry point reuses an "
+         reason="a new sceKernelCreateThread for the configured worker entry reuses an "
                 "existing dormant TCB instead of creating a fresh thread; opt-out via "
-                "SR_NO_THREAD_REUSE=1",
-         test="none"),
+                "SR_NO_THREAD_REUSE=1. The address above is no longer compiled into the "
+                "runtime: it reaches sched.c only as the runtime_bindings.worker_thread_entry "
+                "of a validated title manifest, so an unconfigured build never applies this "
+                "override at all. Retire by proving the guest's create/exit sequence needs no "
+                "reuse, which retires the binding with it.",
+         test="make sched-selftest (generic/fixture-a/fixture-b matrix)"),
     dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher priority demotion",
          source="src/rt/sched.c:sched_create_thread_finish",
          reason="the launcher thread's declared priority is overridden to 50 (below the "
@@ -393,7 +397,45 @@ SCHEDULER_HOOKS = [
                 "SR_YIELD-heavy loop; opt-out via SR_NO_LAUNCHER_DEMOTE=1. Flagged in "
                 "ISSUES.md P2 as the leading suspect for movement-triggered rendering "
                 "glitches -- capture with SR_THLOG=1 SR_GELOG=1 before changing "
-                "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18).",
+                "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18). The address "
+                "above is no longer compiled into the runtime: it reaches sched.c only as the "
+                "runtime_bindings.launcher_thread_entry of a validated title manifest, so an "
+                "unconfigured build never demotes anything. Retire by fixing the underlying "
+                "scheduling inversion, which retires the binding with it.",
+         test="make sched-selftest (generic/fixture-a/fixture-b matrix)"),
+    dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
+         source="src/rt/sched.c:deliver_vblank",
+         reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
+                "as a host surrogate for the GE list-complete callback that re-arms the "
+                "guest's frame loop on real hardware; opt-out via SR_NO_RELAUNCH=1. Reached "
+                "only through the captured worker role, so a build with no worker binding "
+                "re-arms nothing. Retire by implementing the real list-complete callback "
+                "path, which retires the surrogate.",
+         test="make sched-selftest (generic build asserts no role is captured, so no relaunch)"),
+    dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher reent ownership",
+         source="src/rt/sched.c:register_libc_thread/init_guest_reent",
+         reason="a thread holding the LAUNCHER role seeds g_master_reent for every later "
+                "thread, keeps its own independently-initialized reent instead of inheriting "
+                "the master's, and is skipped by the guest reent-hash pre-registration "
+                "because the guest's own registration function runs from the launcher entry "
+                "and must find an empty slot. Until 2026-08-20 all three were UID-number "
+                "tests against a role global that defaulted to the historical allocation "
+                "0x111, so in a build with NO launcher binding an ordinary thread allocated "
+                "0x111 inherited every one of them. They are role tests now: roles start at "
+                "SR_ROLE_UID_NONE and are captured only from a configured entry, so an "
+                "unconfigured build applies none of this. Retire together with the launcher "
+                "binding once the guest's reent bring-up needs no host participation.",
+         test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)"),
+    dict(address=0x002cf338, category="temporary_compatibility_patch", name="master reent fallback address",
+         source="src/rt/sched.c:g_master_reent initializer",
+         reason="g_master_reent starts at a title guest address so threads created before "
+                "any launcher registration have a reent to inherit. It is guarded by an "
+                "in-range and non-zero-content check, so it is inert in a build without that "
+                "title's data, but it is still a title guest address compiled into generic "
+                "runtime code and is NOT covered by the runtime_bindings surface. Retire by "
+                "making the pre-registration window explicit (or by binding it) rather than "
+                "by deleting the default, which would silently change the inheritance of "
+                "every thread created before the launcher registers.",
          test="none"),
     dict(address=0x00292fa0, category="temporary_compatibility_patch", name="callback-list walker terminal miss",
          source="src/rt/recomp.c:dispatch (target==UINT32_MAX && s->pc==0x00292fa0 && ra==0x00047a0c)",
