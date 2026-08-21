@@ -191,6 +191,110 @@ fabricated success value to cross a frontier. Rebuild the full pipeline after an
 - [ ] First HLE call reached (`codegen_gate.py` can verify this when its required inputs are available)
 - [ ] Graphics: first frame renders and is validated against an appropriate comparison/oracle path
 
+## Title coupling in the generic core
+
+Nakagawa is a generic PSP static recompiler whose first mature profile happens to be
+*Hot Shots Tennis: Get a Grip* (HST). This section records where that distinction does
+not currently hold: where generic core (runtime/tooling) carries knowledge that is true
+only of one title. It is the second-title readiness record; the machine-enforced
+inventory lives in `tools/compat_overrides.py` (`HLE_GUEST_ADDRESS_GROUPS`) and is
+gated by `tools/test_compat_manifest.py`. Retiring these entries is tracked by
+[issue #20](https://github.com/Jstar269/nakagawa-recomp/issues/20).
+
+**Readiness criterion.** A newly supplied, lawfully obtained PSP executable should be
+able to receive a profile, run analysis, produce its target/import/capability census,
+attempt compilation, and expose its first unsupported semantic boundary **without
+title-specific edits to generic core**.
+
+### C-1 — Title guest addresses in `src/rt/hle.c`
+
+Before 2026-08-20 the semantic-debt inventory's checked sources were `tools/codegen.py`
+and `src/rt/recomp.c`, with manual groups covering `src/rt/sched.c`. `src/rt/hle.c` was
+in none of them. A census found 38 distinct guest addresses across 50 sites in it that
+mean something only in this title's memory map, and none were inventoried. They now
+are. Classification summary (census buckets, per group):
+
+| Group | Bucket | Addresses | Sites |
+| --- | --- | --- | --- |
+| `guest_bss_snapshots` | DIAGNOSTIC_ONLY | 27 | 30 |
+| `exit_path_context` | DIAGNOSTIC_ONLY | 2 | 3 |
+| `umd_ufl_head_dump` | DIAGNOSTIC_ONLY | 1 | 2 |
+| `libfont_ready_flag` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 1 |
+| `frame_ready_latch_assist` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 7 |
+| `display_setmode_guest_init` | EXPLICIT_COMPATIBILITY_OVERRIDE | 6 | 7 |
+
+`TOTAL_COUPLINGS`: 38 distinct addresses / 50 sites. By bucket:
+
+- `GENERIC_PSP_SEMANTIC`: 0 (generic PSP constants are exempted only through
+  the narrow, explicit site rules in `HLE_GENERIC_SITE_RULES`: an exact
+  function, shape and literal triple, e.g. the EDRAM base returned by
+  `sceGeEdramGetAddr`).
+  There is no blanket numeric ceiling and no whole-region VRAM exemption: a
+  direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
+  `0x041fffff`) is inventoried like any other absolute guest address.
+- `PROFILE_OWNED_CONFIGURATION`: 0 inside the hle.c gate; two documented build/profile
+  couplings below (C-2, C-3) are this bucket.
+- `EXPLICIT_COMPATIBILITY_OVERRIDE`: 8 addresses / 15 sites (the three groups above;
+  each answers the five review questions in `tools/compat_overrides.py`).
+- `DIAGNOSTIC_ONLY`: 30 addresses / 35 sites (read-only, env-gated).
+- `PRIVATE_ACCEPTANCE_ONLY`: 0.
+- `FALSE_POSITIVE`: 0 (a deliberately injected generic constant never flags; the
+  explicit generic-site rules are regression-tested).
+- `UNRESOLVED_COUPLING`: 0 (all sites classified; the gate fails closed on any new one).
+
+**Why this blocks title #2.** The eight override addresses are not merely wrong for
+another title — three of them are *dispatch targets*. A different guest executable
+reaching `h_DisplaySetMode` is called at whatever lives at `0x00000bcc`, `0x0029a8bc`
+and `0x0001dc00` in its own map. The failure is arbitrary rather than diagnosable,
+which is the opposite of exposing a clean unsupported-semantic boundary.
+
+### Top five title-#2 blockers
+
+1. `display_setmode_guest_init` dispatch targets (`0x00000bcc`, `0x0029a8bc`,
+   `0x0001dc00`) — a generic `sceDisplaySetMode` handler calls three fixed guest
+   functions that only exist in this title's map.
+2. `display_setmode_guest_init` forced globals (`0x0031fcc0`, `0x00311140`,
+   `0x002d0738`) — render-context magic, render-command-table ready flag and context
+   word are seeded to this title's expected values.
+3. `frame_ready_latch_assist` (`0x00331b80`) — the runtime seeds, decrements, and after
+   30 stuck vblanks force-clears this title's frame-ready counter.
+4. `libfont_ready_flag` (`0x002d132c`) — any `libfont.prx` load writes 1 to a title
+   global from a generic module-load handler.
+5. `SR_DATA_EXPECTED_COUNT` in the build driver (`Makefile`, 56672) — a hard-coded
+   extracted-asset count for one specific release; the runtime side already defaults to
+   "unset is safe", so the constant should move into the title manifest.
+
+The minimal generic interface is a per-title manifest section (`tools/title_manifest.py`
+already carries a per-title profile) naming these entry points and globals by role —
+allocator, vblank-device creator, render-context initialiser, frame-ready counter — so
+the handler stays generic and consults the profile, or reports an unsupported boundary
+when the profile is silent. This PR establishes the boundary and evidence; it does not
+retire the sites.
+
+### C-2 — `SR_DATA_EXPECTED_COUNT` in the build driver
+
+`Makefile` hard-codes `-DSR_DATA_EXPECTED_COUNT=56672`, the extracted-asset count of one
+specific release. `src/rt/hle.c` defaults it to 0 (check disabled) when undefined, so
+the runtime side is already generic. Building title #2 requires editing the shared build
+driver, and a stale value silently fails the new title's asset index instead of the old
+one's. `PROFILE_OWNED_CONFIGURATION` — deferred (touches manifest schema and build
+driver together).
+
+### C-3 — Disc ID duplicated outside the manifest
+
+`tools/hst_doctor_core.py` defines `EXPECTED_DISC_ID = "UCUS98701"` while the title
+manifest independently validates `disc.id`. Two sources of truth for the same fact.
+`PROFILE_OWNED_CONFIGURATION` — deferred (doctor must keep working with no manifest).
+
+### C-4 — One shared scratch stack for every nested guest call
+
+`SR_CALL_GUEST_STACK` (`src/rt/hle.c`) and the equivalent literal in `src/rt/mpeg.c`
+give every nested guest call the same fixed guest stack address. Not title-specific by
+address, but it assumes a guest map in which that address is free, and it makes nested
+callbacks unsafe for any title that nests them. The PSP's real nested-call contract is
+`NOT_ESTABLISHED`; a hardware probe is needed before a design can be chosen.
+`GENERIC_PSP_SEMANTIC` (open question) — deferred deliberately.
+
 ## Reference
 
 - `AGENTS.md` — project conventions and file reference
