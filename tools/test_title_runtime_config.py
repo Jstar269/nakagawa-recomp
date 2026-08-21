@@ -30,6 +30,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import compat_overrides  # noqa: E402
 import title_manifest  # noqa: E402
 import title_runtime_config  # noqa: E402
 
@@ -803,6 +804,56 @@ class DispatchAddressCensus(unittest.TestCase):
                 "nothing proves it is inert",
             )
         self.assertIn("test_retired_bindings_are_inert", text)
+
+    def test_the_inventory_and_the_census_police_the_same_addresses(self) -> None:
+        """Two independent hardcoded lists now name these addresses: the
+        compatibility-override inventory in tools/compat_overrides.py, which states the
+        remaining semantic debt and its retirement criterion, and RETIRED_DISPATCH_ADDRESSES
+        above, which enforces their absence from generic runtime code.
+
+        Nothing tied them together. An address could be dropped from the census while the
+        inventory kept claiming a gate that no longer existed, or added to the inventory
+        without ever being policed -- which is exactly the "moved a literal from one
+        hardcoded table into another" failure this whole migration exists to avoid.
+        """
+        inventoried = {int(o["address"]) for o in compat_overrides.TITLE_CONFIGURED_DISPATCH}
+        self.assertTrue(inventoried,
+                        "TITLE_CONFIGURED_DISPATCH is empty; the inventory claims nothing "
+                        "and every assertion below would be vacuous")
+        policed = {int(spellings[0], 16) for spellings in RETIRED_DISPATCH_ADDRESSES.values()}
+        self.assertEqual(
+            inventoried - policed, set(),
+            "tools/compat_overrides.py inventories title-configured dispatch address(es) "
+            "that this census does not police, so nothing enforces their absence from "
+            f"generic runtime code: {sorted(hex(a) for a in inventoried - policed)}")
+
+    def test_every_inventoried_binding_names_a_live_collection_and_accessor(self) -> None:
+        """An inventory entry is prose unless it points at something real. Each one must
+        name a collection the validator actually accepts, and that collection's generic
+        accessor must actually be called from dispatch()."""
+        accessors = {
+            "dispatch_aliases": "sr_title_config_dispatch_alias",
+            "callback_terminators": "sr_title_config_is_callback_terminator",
+        }
+        self.assertEqual(set(accessors), set(title_manifest.RUNTIME_BINDING_COLLECTIONS),
+                         "a runtime-binding collection has no accessor mapping here, so "
+                         "entries naming it would go unchecked")
+        recomp = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
+        for entry in compat_overrides.TITLE_CONFIGURED_DISPATCH:
+            source = entry.get("source", "")
+            named = [c for c in accessors if c in source]
+            self.assertEqual(
+                len(named), 1,
+                f"inventory entry {entry.get('name')!r} must name exactly one runtime "
+                f"binding collection in its source field, got: {source!r}")
+            self.assertIn(
+                accessors[named[0]], recomp,
+                f"inventory entry {entry.get('name')!r} claims to flow through "
+                f"{named[0]}, but dispatch() does not call {accessors[named[0]]}")
+            self.assertNotEqual(
+                entry.get("test", "none"), "none",
+                f"inventory entry {entry.get('name')!r} is title-configured but names no "
+                "executable test; the isolation matrix is what makes the claim checkable")
 
     def test_dispatch_reads_the_collections_only_through_the_generic_accessors(self) -> None:
         recomp = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
