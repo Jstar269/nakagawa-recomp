@@ -405,7 +405,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "93da9d2faecec5321098abfbde18378acb4c222d970c1413a598d5e569396564"
+      "sha256": "b7368f9cadd626f05f3a90dc1f103a76be88d1c12c8c4ed3220c83d4c2cb0dad"
     },
     {
       "path": "assets/titles/README.md",
@@ -3836,12 +3836,15 @@
       "sha256": "b7267c1325ae4ec611ba1a9500fec9460e2b012b19be3573272c64530a9ffb35"
     },
     {
-      "classification": "unresolved",
-      "evidence": {
-        "source": "missing path-specific provenance record",
-        "statement": "no path-specific record exists in the detailed implementation ledger; independent authorship or derivation cannot be attested without one"
-      },
       "path": "src/rt/dispatch_isolation_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-dispatch-table",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
       "sha256": "678f3d3d160de72e95b403aacc280f50e5cfbf967c9384537707ffc3a690542a"
     },
     {
@@ -7165,7 +7168,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "316f22566b5b78533e1aa0639eaf1a54366e5f5c378b6e7f1be3a4399dfa860d"
+      "sha256": "5896e9659e27f77f5ae904c0655b371ec13fe7ff88f0185ee20e6c91858913b6"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -7354,7 +7357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "74bf6000a10d9dda98c81b7c8076d241a1acb64ccf09954be48dea9933a8bb9c"
+      "sha256": "52ef2f24612f642749c6f5826631742d01997a7270ea7ac82a76eedcf61dee2e"
     },
     {
       "path": "tools/title_runtime_config.py",

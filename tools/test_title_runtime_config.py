@@ -229,13 +229,48 @@ class RuntimeBindingValidation(unittest.TestCase):
         self.assertEqual(terminator["required"], ["sentinel"])
         # A sentinel is a raw target value: 0 and 0xFFFFFFFF are the real ones, so it must
         # NOT be published as a guestAddress (which forbids zero and demands alignment).
-        self.assertEqual(terminator["properties"]["sentinel"]["minimum"], 0)
-        self.assertEqual(terminator["properties"]["sentinel"]["maximum"], 0xFFFFFFFF)
+        sentinel_range = terminator["properties"]["sentinel"]["allOf"][0]
+        self.assertEqual(sentinel_range["minimum"], 0)
+        self.assertEqual(sentinel_range["maximum"], 0xFFFFFFFF)
+        self.assertNotIn("$ref", json.dumps(sentinel_range),
+                         "a sentinel must not be published as a guestAddress")
         # At least one context constraint, or the sentinel would terminate everywhere.
         self.assertEqual(
             terminator["anyOf"], [{"required": ["pc"]}, {"required": ["ra"]}],
             "the schema must publish the at-least-one-of-pc/ra rule",
         )
+        # The core dispatch reservation, published with the same bounds the validator
+        # enforces, and applied to exactly the two fields compared against a target.
+        reserved = defs["coreReservedDispatchTarget"]
+        self.assertEqual(reserved["minimum"], title_manifest.SR_DISPATCH_VFPU_TAG)
+        self.assertEqual(
+            reserved["maximum"],
+            title_manifest.SR_DISPATCH_VFPU_TAG | (~title_manifest.SR_DISPATCH_VFPU_MASK
+                                                   & 0xFFFFFFFF),
+        )
+        excluded = {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+        self.assertIn(excluded, alias["properties"]["from"]["allOf"],
+                      "an alias source must publish the core reservation")
+        self.assertIn(excluded, terminator["properties"]["sentinel"]["allOf"],
+                      "a sentinel must publish the core reservation")
+        self.assertNotIn("allOf", alias["properties"]["to"],
+                         "an alias destination is not a dispatch target and must stay free")
+
+    def test_the_core_reservation_mirrors_the_runtime_header(self) -> None:
+        """The reservation only means anything if it names the same window dispatch()
+        actually claims. src/rt/recomp.h is the authority; this reads the two macros
+        back out of it so the Python mirror cannot drift from the C."""
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        found = dict(re.findall(
+            r"^#define\s+(SR_DISPATCH_VFPU_(?:TAG|MASK))\s+0x([0-9A-Fa-f]+)u?\s*$",
+            header, re.MULTILINE))
+        self.assertEqual(set(found), {"SR_DISPATCH_VFPU_TAG", "SR_DISPATCH_VFPU_MASK"},
+                         "src/rt/recomp.h no longer defines the dispatch VFPU macros the "
+                         "manifest validator mirrors")
+        self.assertEqual(int(found["SR_DISPATCH_VFPU_TAG"], 16),
+                         title_manifest.SR_DISPATCH_VFPU_TAG)
+        self.assertEqual(int(found["SR_DISPATCH_VFPU_MASK"], 16),
+                         title_manifest.SR_DISPATCH_VFPU_MASK)
 
 
 class DispatchAliasValidation(unittest.TestCase):
@@ -302,6 +337,45 @@ class DispatchAliasValidation(unittest.TestCase):
         over = [{"from": 0x08808000 + 8 * i, "to": 0x08808004 + 8 * i}
                 for i in range(title_manifest.MAX_DISPATCH_ALIASES + 1)]
         self.assert_rejected(over, "maximum is 32")
+
+    def test_a_source_inside_the_core_dispatch_reservation_is_rejected(self) -> None:
+        """dispatch() reads a target matching the VFPU tag as an instruction address
+        before it consults any title binding, so an alias source in that window could
+        never fire. Accepting one produces a build whose configuration silently does
+        nothing, so it is a manifest error, not a runtime surprise."""
+        for source in (title_manifest.SR_DISPATCH_VFPU_TAG,
+                       title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
+                       0x43FFFFFC):
+            with self.subTest(source=source):
+                self.assert_rejected(
+                    [{"from": source, "to": 0x08808100}],
+                    "core VFPU dispatch-target range",
+                )
+
+    def test_the_reservation_is_exactly_the_window_dispatch_claims(self) -> None:
+        """Both neighbours of the reserved window are ordinary, usable sources; only the
+        window itself is refused. A rule one address too wide would silently forbid a
+        legitimate binding."""
+        for source in (title_manifest.SR_DISPATCH_VFPU_TAG - 4, 0x43FFFFFC + 4):
+            with self.subTest(source=source):
+                manifest = base_manifest(worker_thread_entry=0x08804200)
+                manifest["runtime_bindings"]["dispatch_aliases"] = [
+                    {"from": source, "to": 0x08808100}]
+                normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
+                self.assertEqual(normalized["dispatch_aliases"],
+                                 [{"from": source, "to": 0x08808100}])
+
+    def test_a_destination_inside_the_reservation_is_accepted(self) -> None:
+        """`to` is only ever handed to sr_lookup(); it is never compared against a
+        dispatch target, so the core reservation must not apply to it."""
+        manifest = base_manifest(worker_thread_entry=0x08804200)
+        manifest["runtime_bindings"]["dispatch_aliases"] = [
+            {"from": 0x08808000, "to": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000}]
+        normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
+        self.assertEqual(
+            normalized["dispatch_aliases"],
+            [{"from": 0x08808000, "to": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000}],
+        )
 
 
 class CallbackTerminatorValidation(unittest.TestCase):
@@ -375,6 +449,33 @@ class CallbackTerminatorValidation(unittest.TestCase):
         ):
             with self.subTest(entry=entry):
                 self.assert_rejected([entry], fragment)
+
+    def test_a_sentinel_inside_the_core_dispatch_reservation_is_rejected(self) -> None:
+        """Same reservation as the alias source, and for the same reason: the sentinel
+        is compared against a dispatch target, and dispatch() has already claimed that
+        encoding for the per-instruction VFPU fallback."""
+        for sentinel in (title_manifest.SR_DISPATCH_VFPU_TAG,
+                         title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000,
+                         0x43FFFFFF):
+            with self.subTest(sentinel=sentinel):
+                self.assert_rejected(
+                    [{"sentinel": sentinel, "ra": 0x08808000}],
+                    "core VFPU dispatch-target range",
+                )
+
+    def test_a_context_field_inside_the_reservation_is_accepted(self) -> None:
+        """`pc` and `ra` are compared against CpuState fields at the call site, never
+        against a dispatch target, so the reservation must not reach them."""
+        manifest = base_manifest(worker_thread_entry=0x08804200)
+        manifest["runtime_bindings"]["callback_terminators"] = [
+            {"sentinel": 0, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
+             "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}]
+        normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
+        self.assertEqual(
+            normalized["callback_terminators"],
+            [{"sentinel": 0, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
+              "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}],
+        )
 
     def test_the_ceiling_is_enforced(self) -> None:
         over = [{"sentinel": 0, "ra": 0x08808000 + 4 * i}

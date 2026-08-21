@@ -287,12 +287,23 @@
       "maximum": 4294967292,
       "multipleOf": 4
     },
+    "coreReservedDispatchTarget": {
+      "$comment": "Targets matching SR_DISPATCH_VFPU_TAG under SR_DISPATCH_VFPU_MASK (src/rt/recomp.h). dispatch() consumes these as VFPU instruction addresses before any title binding is consulted, so a binding that matched on one could never fire.",
+      "type": "integer",
+      "minimum": 1073741824,
+      "maximum": 1140850687
+    },
     "dispatchAlias": {
       "type": "object",
       "additionalProperties": false,
       "required": ["from", "to"],
       "properties": {
-        "from": {"$ref": "#/$defs/guestAddress"},
+        "from": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
         "to": {"$ref": "#/$defs/guestAddress"}
       }
     },
@@ -302,7 +313,12 @@
       "required": ["sentinel"],
       "minProperties": 2,
       "properties": {
-        "sentinel": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "sentinel": {
+          "allOf": [
+            {"type": "integer", "minimum": 0, "maximum": 4294967295},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
         "pc": {"$ref": "#/$defs/guestAddress"},
         "ra": {"$ref": "#/$defs/guestAddress"}
       },

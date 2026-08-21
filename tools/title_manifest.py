@@ -70,6 +70,42 @@ RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
 MAX_DISPATCH_ALIASES = 32
 MAX_CALLBACK_TERMINATORS = 32
 
+#: Dispatch-target values the CORE runtime has already claimed, mirroring
+#: ``SR_DISPATCH_VFPU_TAG``/``SR_DISPATCH_VFPU_MASK`` in ``src/rt/recomp.h``. A target
+#: satisfying ``target & MASK == TAG`` encodes a per-instruction VFPU fallback, which
+#: ``dispatch()`` consumes before any title binding is consulted -- deliberately, because
+#: the VFPU encoding is core dispatch vocabulary a title must not be able to shadow.
+#:
+#: The converse needs enforcing too: a title binding whose *own* match value falls in
+#: that window can never be honoured, because dispatch() will have interpreted the value
+#: as a VFPU instruction address first. Accepting one would produce a build whose
+#: configuration silently does nothing (and, when the value is also a plausible guest
+#: address, dispatches into the VFPU interpreter instead). Rejecting it at manifest
+#: validation turns that into a precise build-time error.
+#:
+#: ``tools/test_title_runtime_config.py`` reads the two constants back out of
+#: ``src/rt/recomp.h`` so this mirror cannot drift from the runtime it describes.
+SR_DISPATCH_VFPU_TAG = 0x40000000
+SR_DISPATCH_VFPU_MASK = 0xFC000000
+
+
+def is_core_reserved_target(value: int) -> bool:
+    """True when ``dispatch()`` claims this target value before any title binding."""
+    return value & SR_DISPATCH_VFPU_MASK == SR_DISPATCH_VFPU_TAG
+
+
+def reject_core_reserved_target(value: int, path: str, role: str) -> None:
+    """Fail closed on a match value the core dispatch vocabulary has already claimed."""
+    if is_core_reserved_target(value):
+        fail(
+            path,
+            f"0x{value:08x} is inside the core VFPU dispatch-target range "
+            f"[0x{SR_DISPATCH_VFPU_TAG:08x}, "
+            f"0x{SR_DISPATCH_VFPU_TAG | ~SR_DISPATCH_VFPU_MASK & 0xFFFFFFFF:08x}]; "
+            f"dispatch() consumes such a target as a VFPU instruction address before any "
+            f"title binding is consulted, so this {role} could never match",
+        )
+
 CORE_CONTRACT_CAPABILITIES = frozenset({
     "allegrex", "vfpu", "guest-memory", "scheduler", "interrupts", "callbacks",
     "generic-hle", "ge-display", "audio", "io", "backend-contracts", "evidence",
@@ -531,6 +567,8 @@ def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:
 
     The runtime resolves exactly one step, so the rules below make one step sufficient:
     no self-alias, no duplicate source, and no alias whose target is itself aliased.
+    A source inside the core VFPU dispatch-target range is rejected outright: dispatch()
+    claims that encoding first, so such an alias could never fire.
     """
     items = array(value, path, MAX_DISPATCH_ALIASES)
     if not items:
@@ -542,6 +580,9 @@ def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:
         item = obj(item, item_path, {"from", "to"})
         require(item, item_path, "from", "to")
         source = guest_address(item["from"], f"{item_path}.from")
+        # `from` is compared against a dispatch TARGET, so it is subject to the core
+        # reservation. `to` is not: it is only ever handed to sr_lookup().
+        reject_core_reserved_target(source, f"{item_path}.from", "alias source")
         destination = guest_address(item["to"], f"{item_path}.to")
         if source == destination:
             fail(item_path, "from and to must differ; an alias to itself redirects nothing")
@@ -579,7 +620,8 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
 
     ``sentinel`` is a raw target value, not an address: the real ones are 0 and
     0xFFFFFFFF, so neither the non-zero nor the alignment rule for a guest address
-    applies to it. ``pc`` and ``ra`` are genuine guest addresses and *at least one*
+    applies to it. Being a target value is also what subjects it to the core VFPU
+    reservation, which ``pc``/``ra`` are not subject to. ``pc`` and ``ra`` are genuine guest addresses and *at least one*
     is required -- an entry with neither would make the sentinel terminate everywhere,
     which is exactly the address-global behavior this collection exists to avoid.
     """
@@ -592,6 +634,10 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
         item = obj(item, item_path, {"sentinel", "pc", "ra"})
         require(item, item_path, "sentinel")
         entry: dict[str, int] = {"sentinel": uint(item["sentinel"], f"{item_path}.sentinel")}
+        # The sentinel is compared against a dispatch TARGET. `pc`/`ra` are compared
+        # against CpuState fields at the call site, never against a target, so the core
+        # reservation does not apply to them.
+        reject_core_reserved_target(entry["sentinel"], f"{item_path}.sentinel", "sentinel")
         for field in ("pc", "ra"):
             if field in item:
                 entry[field] = guest_address(item[field], f"{item_path}.{field}")
