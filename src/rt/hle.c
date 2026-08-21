@@ -229,9 +229,15 @@ static uint32_t stack_arg(CpuState *s, int idx) {
 
 /* ---- kernel object UID + user-memory bump allocator ---- */
 
-/* Single shared UID pool matching PPSSPP: uid = 0x110, 0x111, ... incrementing by 1. */
+/* Single shared UID pool matching PPSSPP: uid = 0x110, 0x111, ... incrementing by 1.
+ * Two values are skipped so they can mean something else unambiguously: 0 is PSP's
+ * "current thread" argument value, and SR_ROLE_UID_NONE is the scheduler's "this role
+ * has not been captured" marker (recomp.h). Neither is reachable from 0x110 in any real
+ * session, but the pool wraps in principle and a role marker that could also be a live
+ * thread identity is precisely the defect this skip exists to make impossible. */
 static uint32_t s_uid = 0x110;
 uint32_t sr_alloc_uid(void) {
+    while (s_uid == 0u || s_uid == SR_ROLE_UID_NONE) s_uid++;
     uint32_t uid = s_uid++;
     if (getenv("SR_WAKELOG")) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
     return uid;
@@ -626,12 +632,13 @@ static uint32_t h_ExitThread(CpuState *s) {
      * called from main thread" / "no reent structure"), the dying thread's libc state is
      * already corrupt and its _exit() path is unwinding -- exit the host process instead
      * of scheduling into a broken world. The root and launcher threads are exempt: their
-     * exit is part of normal boot teardown, not a libc failure. Role UIDs are resolved
-     * dynamically (the historical literals 0x110/0x111/0x115 drifted between runs). */
+     * exit is part of normal boot teardown, not a libc failure. The exemption is a ROLE
+     * test, not a UID-number test: a build with no launcher binding exempts nothing, so
+     * an ordinary thread cannot inherit the exemption by its allocated number. */
     extern int sr_libc_death_wish;     /* defined alongside h_ExitGame below */
     int death_wish = sr_libc_death_wish;
     uint32_t uid = sched_current_uid();
-    if (uid == sched_root_uid() || uid == sched_launcher_uid()) {
+    if (sched_uid_is_root(uid) || sched_uid_is_launcher(uid)) {
         death_wish = 0;
     }
     /* Trace call stack via RA chain */
@@ -646,7 +653,7 @@ static uint32_t h_ExitThread(CpuState *s) {
      * shortcut let a short-lived character-resource worker wake the launcher, whose
      * teardown then destroyed the singleton beneath a sibling worker (issue #126).
      * Keep the env-gated primary-worker diagnostics independent of guest scheduling. */
-    if (uid == sched_worker_uid()) {
+    if (sched_uid_is_worker(uid)) {
         sr_exitsnap_capture(s);
         sr_exitsnap_dump_latest("worker-exit-pre");
         sr_postumd_signal_shutdown(sr_postumd_reads());
@@ -1518,7 +1525,7 @@ static int      s_last_worker_exit_count = 0;
 void sr_exitsnap_capture(CpuState *s) {
     if (s_exitsnap_armed < 0) s_exitsnap_armed = getenv("SR_EXITSNAP") ? 1 : 0;
     if (!s_exitsnap_armed) return;
-    if (sched_current_uid() != sched_worker_uid() && sched_current_uid() != sched_launcher_uid()) return;
+    if (!sched_current_is_worker() && !sched_current_is_launcher()) return;
     s_last_worker_exit.pc = s->pc;
     s_last_worker_exit.ra = s->r[31];
     s_last_worker_exit.v0 = s->r[2];
@@ -1658,9 +1665,10 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
         fprintf(stderr, "HLE: sceKernelCpuSuspendIntr called\n");
     }
     if (getenv("SR_DEBUG_THREAD_LOG")) {
-        /* Role-resolved (worker was literal 0x115, launcher 0x111; UID allocation
-         * drifted and left these diagnostics permanently silent). */
-        if (sched_current_uid() == sched_worker_uid()) {
+        /* Role-resolved rather than UID-literal (the historical literals drifted and
+         * left these diagnostics permanently silent). A build with no worker/launcher
+         * binding has no role to report, so both branches stay quiet. */
+        if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, r26 (k0)=0x%x, k0+4=0x%x, MEM(0x002cf6b4)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
                     sched_current_uid(), s->r[16], s->r[26], s->r[26] ? MEM_R32(s->r[26] + 4) : 0, MEM_R32(0x002cf6b4u), s->r[31], s->r[29]);
             for (int i = 0; i < 20; i++) {
@@ -1668,7 +1676,7 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
             }
             fprintf(stderr, "\n");
         }
-        if (sched_current_uid() == sched_launcher_uid()) {
+        if (sched_current_is_launcher()) {
             fprintf(stderr, "DEBUG: CpuSuspendIntr launcher=0x%x: r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x\n",
                     sched_current_uid(), s->r[16], s->r[17], s->r[26], s->r[31]);
         }
@@ -1682,7 +1690,7 @@ static uint32_t h_CpuResumeIntr(CpuState *s) {
     }
     if (getenv("SR_DEBUG_THREAD_LOG")) {
         /* Role-resolved (see h_CpuSuspendIntr). */
-        if (sched_current_uid() == sched_worker_uid()) {
+        if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr worker=0x%x: r2 (v0)=0x%x, r6 (a2)=0x%x, r16 (s0)=0x%x, r26 (k0)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
                     sched_current_uid(), s->r[2], s->r[6], s->r[16], s->r[26], s->r[31], s->r[29]);
             for (int i = 0; i < 20; i++) {
@@ -1690,7 +1698,7 @@ static uint32_t h_CpuResumeIntr(CpuState *s) {
             }
             fprintf(stderr, "\n");
         }
-        if (sched_current_uid() == sched_launcher_uid()) {
+        if (sched_current_is_launcher()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x, MEM(0x0030aa88)=0x%x\n",
                     sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31], MEM_R32(0x0030aa88u));
         }
@@ -5522,7 +5530,7 @@ static uint32_t h_IoRead(CpuState *s) {
      * buffer) arms tracking. We record path+dst for every subsequent Read so we can see
      * if engine_Shutdown pre-empted a missing-file IoOpen. SR_POSTUMD env-gates; default
      * off by default so normal runs don't get spammed. */
-    if (getenv("SR_POSTUMD") && sched_current_uid() == sched_worker_uid()) {
+    if (getenv("SR_POSTUMD") && sched_current_is_worker()) {
         if (dst == 0x0030b8d0u) {
             sr_postumd_advance(1);   /* arm */
             fprintf(stderr, "POSTUMD: armed at first umd.ufl Read fd=%u size=%u dst=0x%08x -> %u\n",

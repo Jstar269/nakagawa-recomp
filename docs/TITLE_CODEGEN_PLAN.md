@@ -204,7 +204,9 @@ version that `title_config.c` refuses to compile against if it does not recognis
 ### Evidence
 
 `make sched-selftest` builds the *same* scheduler source three times, against three
-generated configurations, and runs all three:
+generated configurations, and runs all three. It is deliberately title-neutral: it uses
+its own generated configurations regardless of `GAME_NAME`, so the gate never depends on
+which title the tree happens to be building.
 
 | Flavour | Configuration |
 | --- | --- |
@@ -220,6 +222,15 @@ word written. The generic build asserts that of all of them. This is production-
 (tier-2) evidence: the real `sched_create_thread` and `deliver_vblank` run, but the
 scheduler world is a white-box test fixture rather than a title route.
 
+The same matrix pins the role-UID model. The generic build allocates threads until the
+pool actually produces the historical launcher UID `0x111` and the historical worker UID
+`0x114`, then asserts each is an ordinary thread: it holds no role, does not become
+`g_master_reent`, is registered in the guest reent hash, inherits the master reent, and is
+not reused as a worker. The fixture builds assert the complement — the configured entry
+captures whatever UID the allocator gave it (with the pool deliberately advanced first, so
+the capture cannot be explained by the number), and only that UID receives role treatment.
+Root capture and the "UID 0 is never a role" rule are asserted in every build.
+
 `driver.c`'s use of `sr_title_config_fallback_entry()` is covered by source-shape checks
 plus the generic build's assertion that the accessor returns 0; exercising the fallback
 itself needs generated code and is not asserted here.
@@ -228,14 +239,56 @@ itself needs generated code and is not asserted here.
 generator's determinism, and a source-shape check that no generic runtime source still
 names one of the five retired addresses.
 
+### Thread roles are outcomes, not configuration
+
+A configured *entry* is title configuration. The *UID* a thread receives is not: it comes
+from the kernel object pool, which hands out `0x110`, `0x111`, … in allocation order. The
+scheduler records whichever UID the thread that took a role happened to receive.
+
+That distinction is load-bearing because any role UID is also an ordinary UID. The role
+globals used to start at the historical HST allocation (`0x110` / `0x114` / `0x111`), so
+before any capture they were live comparison values: in a build with **no** launcher
+binding, an ordinary thread allocated `0x111` would match `uid == g_launcher_uid` and
+inherit launcher-only treatment — it would seed `g_master_reent` for every later thread,
+skip guest reent registration, and keep an uninitialized reent. The role bindings this
+document describes did not fix that on their own, because the defect was in the *default*,
+not in the binding.
+
+Roles therefore start **uncaptured**, represented structurally as `SR_ROLE_UID_NONE`
+(`src/rt/recomp.h`), a value `sr_alloc_uid()` never returns:
+
+| Role | Captured when |
+| --- | --- |
+| root | the first thread is created |
+| worker | a thread is created at the configured worker entry |
+| launcher | a thread is created at the configured launcher entry |
+
+Every role *question* goes through a fail-closed predicate — `sched_uid_is_root()`,
+`sched_uid_is_worker()`, `sched_uid_is_launcher()`, `sched_current_is_worker()`,
+`sched_current_is_launcher()`. They answer 0 while the role is uncaptured, and they never
+accept UID `0`, which is PSP's "current thread" / "no current thread" value rather than a
+thread identity. Reading the number itself (a diagnostic label, a table key) still goes
+through `sched_root_uid()` / `sched_worker_uid()` / `sched_launcher_uid()`, which may
+return `SR_ROLE_UID_NONE`; `sched_role_uid_captured()` tests that.
+
+`tools/test_sched_invariants.py` holds the shape down: no role global may be initialized
+to an allocatable value, and neither `sched.c` nor `hle.c` may compare a UID against a
+role global or accessor directly.
+
 ### HST
 
 HST's real values live only in the local, Git-ignored `assets/titles/hst-ucus98701.json`
 and reach the build through `hst_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
 direct Make line). They are deliberately not encoded in the `Makefile`, in `src/rt`, or
-in any checked-in manifest. A direct `GAME_NAME=hst` build with no `TITLE_MANIFEST`
-therefore builds a runtime with no title bindings — the honest generic behavior, not a
-silently inherited one.
+in any checked-in manifest.
+
+A build that explicitly identifies itself as HST (`GAME_NAME=hst`) but supplies no
+`TITLE_MANIFEST` **fails closed** with an actionable message rather than producing an HST
+executable with every binding disabled. The refusal is attached to the generated
+configuration artifact, so it fires exactly when a runtime object would be built and not
+before: `compiler-info`, `clean`, and `distclean` still work, the game-input-free
+selftests build against a title-neutral configuration of their own, and a generic
+`runtime-objects` build still needs no title input at all.
 
 ## Profile isolation
 

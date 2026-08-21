@@ -161,8 +161,33 @@ ifeq ($(strip $(TITLE_CONFIG_DIGEST)),)
 $(error title runtime configuration could not be resolved; run "$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest" for the reason)
 endif
 
+# A build that explicitly identifies itself as HST must say where HST's title
+# configuration comes from. Without it every optional binding is disabled and the build
+# would quietly produce an HST executable with no fallback entry, no worker/launcher role
+# and no VBLANK counters -- a broken runtime that looks like a successful build. This is
+# a build-time refusal, not a title default: generic builds are untouched, and nothing
+# here makes `runtime-objects` require a retail or title input.
+HST_TITLE_MANIFEST := assets/titles/hst-ucus98701.json
+ifeq ($(GAME_NAME),hst)
+ifeq ($(strip $(TITLE_MANIFEST)),)
+TITLE_CONFIG_HST_UNBOUND := 1
+endif
+endif
+
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(strip $(TITLE_MANIFEST))
+ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
+	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local, Git-ignored HST manifest) or build through hst_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
+endif
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
+
+# Title-neutral configuration for the game-input-free selftests. Those targets assert
+# generic PSP behavior and install their own role fixtures, so binding them to a title
+# would make their result depend on which title the tree happens to be building.
+GENERIC_TITLE_CONFIG_DIR := $(BUILD_DIR)/title-config/generic
+GENERIC_TITLE_CONFIG_HEADER := $(GENERIC_TITLE_CONFIG_DIR)/sr_title_config.h
+
+$(GENERIC_TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py
+	$(PYTHON) $(TITLE_CONFIG_TOOL) --output $@
 
 RUNTIME_PROFILE_MANIFEST := $(BUILD_DIR)/runtime_profile.json
 RECOMP_PROFILE_MANIFEST := $(BUILD_DIR)/recomp_profile.json
@@ -643,8 +668,8 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O) $(TITLE_CONFIG_HEADER)
-	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
@@ -677,8 +702,8 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(TITLE_CONFIG_HEADER)
-	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \

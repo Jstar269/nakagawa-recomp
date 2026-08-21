@@ -318,6 +318,85 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
         fixtures = set(re.findall(r"(?m)^SCHED_SELFTEST_MANIFEST_fixture-\w+ := (\S+)$", makefile))
         self.assertEqual(len(fixtures), 2, "the matrix must use two distinct fixtures")
 
+    def test_an_explicit_hst_build_without_a_manifest_fails_closed(self):
+        """GAME_NAME=hst with no title configuration must refuse, not build generically."""
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("TITLE_CONFIG_HST_UNBOUND := 1", makefile)
+        # The refusal is attached to the generated artifact, so it fires exactly when a
+        # runtime object would be produced -- never for diagnostics or cleanup.
+        rule = makefile.split("$(TITLE_CONFIG_HEADER): ", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)", rule)
+        self.assertIn("$(error", rule)
+        self.assertIn("TITLE_MANIFEST=$(HST_TITLE_MANIFEST)", rule)
+        # The game-input-free selftests must not be dragged into that requirement.
+        self.assertIn("GENERIC_TITLE_CONFIG_HEADER", makefile)
+        for target in ("hle-thread-selftest-build:", "$(PSP_ORACLE_SMOKE_EXE):"):
+            recipe = makefile.split(target, 1)[1].split("\n\n", 1)[0]
+            self.assertIn("$(GENERIC_TITLE_CONFIG_DIR)", recipe,
+                          f"{target} must build against a title-neutral configuration")
+
+
+class RoleUidsAreOutcomesNotConfiguration(unittest.TestCase):
+    """The role UIDs must never be title configuration, nor a numeric default."""
+
+    SCHED = ROOT / "src" / "rt" / "sched.c"
+    HLE = ROOT / "src" / "rt" / "hle.c"
+
+    def test_role_uids_are_not_manifest_fields(self):
+        published = set(title_manifest.RUNTIME_BINDING_FIELDS)
+        for forbidden in ("root_uid", "worker_uid", "launcher_uid", "root_thread_uid"):
+            self.assertNotIn(
+                forbidden, published,
+                "a role UID is an outcome of allocation and must not become title configuration",
+            )
+
+    def test_role_globals_start_uncaptured(self):
+        source = self.SCHED.read_text(encoding="utf-8")
+        for role in ("g_root_uid", "g_worker_uid", "g_launcher_uid"):
+            self.assertRegex(
+                source, rf"(?m)^uint32_t\s+{role}\s*=\s*SR_ROLE_UID_NONE;",
+                f"{role} must not be seeded with a UID the allocator can hand out",
+            )
+        for historical in ("0x110u", "0x111u", "0x114u"):
+            self.assertNotRegex(
+                source, rf"(?m)^uint32_t\s+g_\w+_uid\s*=\s*{historical};",
+                "a historical allocation must not be a role default",
+            )
+
+    def test_the_uid_pool_never_produces_the_absent_marker(self):
+        hle = self.HLE.read_text(encoding="utf-8")
+        allocator = hle.split("uint32_t sr_alloc_uid(void) {", 1)[1].split("}", 1)[0]
+        self.assertIn("SR_ROLE_UID_NONE", allocator)
+        self.assertIn("s_uid == 0u", allocator)
+
+    def test_the_headless_gate_stub_reports_no_role_and_agrees_on_the_marker(self):
+        """The gate has no scheduler, so it cannot have earned a role identity."""
+        stub = (ROOT / "tools" / "gate_stub.c").read_text(encoding="utf-8")
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        marker = re.search(r"#define SR_ROLE_UID_NONE (\S+)", header).group(1)
+        self.assertEqual(
+            re.search(r"#define SR_ROLE_UID_NONE (\S+)", stub).group(1), marker,
+            "gate_stub.c restates SR_ROLE_UID_NONE; it must match recomp.h",
+        )
+        for accessor in ("sched_root_uid", "sched_worker_uid", "sched_launcher_uid"):
+            self.assertRegex(
+                stub, rf"uint32_t {accessor}\(void\)\s*{{\s*return SR_ROLE_UID_NONE;",
+                f"{accessor} in the headless gate must report an uncaptured role",
+            )
+
+    def test_role_questions_go_through_failclosed_predicates(self):
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        for name in ("sched_uid_is_root", "sched_uid_is_worker", "sched_uid_is_launcher",
+                     "sched_current_is_worker", "sched_current_is_launcher",
+                     "sched_role_uid_captured", "SR_ROLE_UID_NONE"):
+            self.assertIn(name, header)
+        # UID 0 is PSP's "current thread" value; it must be rejected by the matcher, so a
+        # role question asked with no current thread can never answer yes.
+        matcher = self.SCHED.read_text(encoding="utf-8")
+        matcher = matcher.split("static int role_uid_matches(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("uid == 0u", matcher)
+        self.assertIn("role_uid == SR_ROLE_UID_NONE", matcher)
+
 
 if __name__ == "__main__":
     unittest.main()
