@@ -25,19 +25,32 @@
  * types they expand into. A generic build expands both lists to nothing, so the arrays
  * below hold only their unused placeholder element and both counts are 0. */
 #define SR_TITLE_CFG_ALIAS(from_addr, to_addr) { (from_addr), (to_addr) },
-static const SrTitleDispatchAlias s_dispatch_aliases[SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT + 1] = {
+/* Deliberately UNSIZED: the size then comes from the list itself, which is what makes
+ * the assertion below a proof rather than a restatement. Sizing the array by the count
+ * would zero-pad a short list instead of diagnosing it, and a zero-filled alias entry is
+ * a live entry the lookup would compare against. */
+static const SrTitleDispatchAlias s_dispatch_aliases[] = {
     SR_TITLE_CONFIG_DISPATCH_ALIAS_LIST
     { 0u, 0u }  /* placeholder: C has no zero-length array, and it is never read */
 };
 #undef SR_TITLE_CFG_ALIAS
+_Static_assert(sizeof s_dispatch_aliases / sizeof s_dispatch_aliases[0]
+                   == SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT + 1u,
+               "generated dispatch-alias list does not match its declared count");
 
 #define SR_TITLE_CFG_TERMINATOR(s, hp, p, hr, r) { (s), (hp), (p), (hr), (r) },
-static const SrTitleCallbackTerminator
-s_callback_terminators[SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1] = {
+/* Unsized for the same reason, and here the stakes are higher: a zero-filled terminator
+ * entry reads as {sentinel 0, no pc constraint, no ra constraint}, which is precisely
+ * the program-wide match the manifest validator refuses to accept. The assertion makes a
+ * count/list disagreement a compile error, so that entry can never become reachable. */
+static const SrTitleCallbackTerminator s_callback_terminators[] = {
     SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST
     { 0u, 0u, 0u, 0u, 0u }  /* placeholder: never read; the count is the authority */
 };
 #undef SR_TITLE_CFG_TERMINATOR
+_Static_assert(sizeof s_callback_terminators / sizeof s_callback_terminators[0]
+                   == SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1u,
+               "generated callback-terminator list does not match its declared count");
 
 static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_VALID,

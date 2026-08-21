@@ -18,8 +18,10 @@ generic, a fixture-A, and a fixture-B configuration.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -553,6 +555,47 @@ class GeneratedConfiguration(unittest.TestCase):
             "the runtime schema guard drifted from the generator",
         )
         self.assertIn("#error", source)
+
+    def _compile_title_config(self, header_text: str) -> subprocess.CompletedProcess:
+        """Compile src/rt/title_config.c against a supplied generated artifact."""
+        compiler = shutil.which(os.environ.get("CC") or "") or shutil.which("gcc") or shutil.which("cc")
+        if not compiler:
+            self.skipTest("no C compiler on PATH; the compile-time contract cannot be exercised")
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = Path(tmp) / "sr_title_config.h"
+            gen.write_text(header_text, encoding="utf-8")
+            return subprocess.run(
+                [compiler, "-c", "-std=c11", "-I", str(ROOT / "src" / "rt"), "-I", tmp,
+                 str(ROOT / "src" / "rt" / "title_config.c"), "-o", str(Path(tmp) / "tc.o")],
+                capture_output=True, text=True,
+            )
+
+    def test_a_generated_list_shorter_than_its_count_fails_the_build(self) -> None:
+        """The count is the runtime's authority for both collections, so a generated
+        artifact whose count exceeds its list would zero-pad the arrays -- and a
+        zero-filled TERMINATOR entry reads as {sentinel 0, no pc, no ra}, exactly the
+        program-wide match the manifest validator refuses to accept.
+
+        title_config.c sizes both arrays from the list, so _Static_assert turns that
+        disagreement into a compile error. This asserts the honest build compiles AND
+        that the mutated one does not -- a green result here has to be earned."""
+        good = title_runtime_config.render_header(
+            title_runtime_config.load_config(None))
+        ok = self._compile_title_config(good)
+        self.assertEqual(ok.returncode, 0,
+                         "the generic generated artifact must compile: " + ok.stderr)
+
+        for macro in ("SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT",
+                      "SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT"):
+            with self.subTest(macro=macro):
+                mutated = good.replace(f"#define {macro} 0", f"#define {macro} 1")
+                self.assertNotEqual(mutated, good, "the count macro moved")
+                bad = self._compile_title_config(mutated)
+                self.assertNotEqual(
+                    bad.returncode, 0,
+                    f"{macro} declaring more entries than the list supplies must fail "
+                    "the build, but it compiled")
+                self.assertIn("does not match its declared count", bad.stderr)
 
     def test_rewrite_is_a_no_op_when_the_configuration_is_unchanged(self) -> None:
         config = title_runtime_config.bindings_from_manifest(

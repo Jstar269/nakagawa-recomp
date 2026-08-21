@@ -4720,7 +4720,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "2fa816c6668ac9d51088353a834ebdb13bdfc341ebed11e71951f6cf9d7ec449"
+      "sha256": "c2a01e61ba0eff8abbffb5a1fcb6514ce0d791756bb9aa1147c3c89abc81b379"
     },
     {
       "path": "src/rt/title_config.h",
@@ -7168,7 +7168,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "5896e9659e27f77f5ae904c0655b371ec13fe7ff88f0185ee20e6c91858913b6"
+      "sha256": "20754b50a10eb4fc6d4a2827f0da55d44aab62bb6a6ccc0755ead61751d5c422"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
