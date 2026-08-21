@@ -3840,7 +3840,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "hle-dispatch-table",
+        "record_id": "title-runtime-configuration",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -4716,9 +4716,11 @@
       "path": "src/rt/title_config.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-runtime-configuration",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c2a01e61ba0eff8abbffb5a1fcb6514ce0d791756bb9aa1147c3c89abc81b379"
     },
@@ -4726,9 +4728,11 @@
       "path": "src/rt/title_config.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-runtime-configuration",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "20ed432601b59eb5255acb9f44cdb4bc6aa2d4ad00ca6e7b83ead33d5e34bdaa"
     },
