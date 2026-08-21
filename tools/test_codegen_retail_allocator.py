@@ -29,24 +29,24 @@ class RetailAllocatorTranslationTests(unittest.TestCase):
         malloc/free entry points themselves are bridged.
         """
         source = inspect.getsource(codegen)
-        malloc_stub = require_match(r"if a == 0x00010738:.*?continue", source, re.S)
+        malloc_stub = require_match(r"if hst_profile and a == 0x00010738:.*?continue", source, re.S)
         self.assertIn("s->r[31] == 0x000104d0u", malloc_stub.group(0))
         self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", malloc_stub.group(0))
         self.assertIn("owner_ra == 0x00000bf4u", malloc_stub.group(0))
         self.assertIn("owner_ra == 0x00000c5cu", malloc_stub.group(0))
         self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", malloc_stub.group(0))
         self.assertIn("sr_newlib_malloc(s->r[5], owner_ra)", malloc_stub.group(0))
-        free_stub = require_match(r"if a == 0x0000f538:.*?continue", source, re.S)
+        free_stub = require_match(r"if hst_profile and a == 0x0000f538:.*?continue", source, re.S)
         self.assertIn("s->r[31] == 0x00010500u", free_stub.group(0))
         self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", free_stub.group(0))
         self.assertIn("owner_ra == 0x00000a14u", free_stub.group(0))
         self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", free_stub.group(0))
         self.assertIn("sr_newlib_free(s->r[5], owner_ra)", free_stub.group(0))
-        memalign_stub = require_match(r"if a == 0x000101c4:.*?continue", source, re.S)
+        memalign_stub = require_match(r"if hst_profile and a == 0x000101c4:.*?continue", source, re.S)
         self.assertIn(
             "sr_newlib_memalign(s->r[5], s->r[6], s->r[31])", memalign_stub.group(0)
         )
-        realloc_stub = require_match(r"if a == 0x00013524:.*?continue", source, re.S)
+        realloc_stub = require_match(r"if hst_profile and a == 0x00013524:.*?continue", source, re.S)
         self.assertIn(
             "sr_newlib_realloc(s->r[5], s->r[6], s->r[31])",
             realloc_stub.group(0),

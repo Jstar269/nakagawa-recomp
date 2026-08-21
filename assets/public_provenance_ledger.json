@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e24a11419cc3b4f534e1f424fc76a2071951600a896ffca6dec87001f0c26ad4"
+      "sha256": "8478d620e122b69bd7d9ea8683c9d90f00d2a4cbd91fbbfa67644789e7fe8535"
     },
     {
       "path": "assets/release_manifest.json",
@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d20774ce01394acc49a78ef0bfbf8532716e9418db70d9b564a1abce095ac1d0"
+      "sha256": "6c0104dfdd2c2c0e92faf787a021374cd82c739299558d3d74cb55867a9eef06"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -5017,7 +5017,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "38b68b2956a465e870597a17a675a9e40a9ee8589f7bdd5b77d15cadb7864162"
+      "sha256": "383d292adf6f7a8acb0e20f93ea62437d89f16067f8e4dbe23dbba4044884704"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6154,6 +6154,15 @@
       "sha256": "59739c655cfdaf21e09e175c0612ba80af8f0bb0323c47bd47db59fa9dea9377"
     },
     {
+      "path": "tools/test_codegen_profile_isolation.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "ac77a66a41c7075cbfd41dd13df1e5c6dcbb3b21bfb4e5872eb2ff13d8e4a1e9"
+    },
+    {
       "path": "tools/test_codegen_retail_allocator.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6163,7 +6172,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c0b8640eb1958355b04d3d79fd87b3aeb94ecb41325a6ee3fab3d05366a533f"
+      "sha256": "c4b6eefbe229f259930d051f98da99fa0cc5208bbe4d3098349ea6fee395b53b"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
@@ -6199,7 +6208,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b10e24bd96ea4fd8ef0dd0852389dd329a4db038bcadf90d34b28be82568f24e"
+      "sha256": "50b3bde9595091033724a51a56210c466ea945044ea0910b7621b4e90e5b67da"
     },
     {
       "path": "tools/test_dco_policy.py",

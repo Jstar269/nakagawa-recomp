@@ -111,3 +111,42 @@ fixture (PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) driven through the s
 planner; see `tools/test_title_pspdev_phase5.py`. The adapter's own contract is
 covered by `tools/test_title_manager_adapter.py` and the digest by
 `tools/test_title_protected_digest.py`, all using public manifests only.
+
+## Profile isolation
+
+The generator's invariant is that **a guest address must never change what
+`--profile=none` emits**. Generic implementation may be core; the binding of a
+numeric address to a semantic is title-owned. Every HST-specific translation in
+`tools/codegen.py` — the address-specific custom stubs, `HST_SIMPLE_STUBS`,
+`GUEST_PATCHES`, `NULL_BASE_WORD_LOADS`, the MEMSET/ARRSHIFT fastpaths,
+`GUEST_ABORT`, the boot and inline probes, the `EMIT_DIAG_PROBES` diagnostics,
+the `HST_MANUAL_CALLABLES`/`HST_RESUME_OWNERS` entry roles, and the `_SV_SPECIAL`
+`--static-verify` exclusion — is therefore reachable only when
+`profile == "hst"`.
+
+`tools/test_codegen_profile_isolation.py` proves this differentially rather than
+by sampling output strings. Its synthetic ET_EXEC carries two byte-identical
+copies of every body: one at the HST guest address and one at a control address
+outside every HST table. Under `--profile=none` the two emitted functions must
+be identical after normalising each against its own start address, so any
+surviving address-coupled site — named in that file or not — makes the pair
+diverge. The same run under `--profile=hst` must make every pair *differ*, which
+is what keeps the equality above from passing vacuously.
+
+Entry-role and `--static-verify` couplings do not appear in function text and
+are asserted directly against `build_entry_catalog` and `sv_plan`.
+
+A static census re-derives the gate inventory from `codegen.py`'s AST. Its scope
+is one declared grammar: inside an emitter function, an `if` comparing
+`addr`/`a`/`start` with `==` or `in` against either an integer literal or a bare
+name. Within that grammar it is complete — a literal of any magnitude must be
+`hst_profile`-gated and must have a specimen body, and a named comparator must be
+declared either as a title-owned address table or as an image-derived set, with
+an undeclared name failing. Mutation tests hold both halves down, including a
+sub-`0x1000` literal, since `GUEST_ABORT` already sits at `0x00000a1c`.
+
+The census is a source-shape check over that grammar, not a proof about arbitrary
+Python. A coupling written some other way is invisible to it — the
+`insns & _SV_SPECIAL` set intersection this slice had to fix is the worked
+example, and only the differential catches that shape. The differential is the
+load-bearing proof; the census exists so it cannot quietly go out of date.
