@@ -30,7 +30,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 1
+GENERATED_SCHEMA_VERSION = 2
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -42,7 +42,18 @@ FIELD_BITS: dict[str, str] = {
     "vblank_vsync_counter_addr": "SR_TITLE_CFG_VBLANK_COUNTERS",
 }
 
+#: Emitted collection -> the C validity bit that gates it. A collection counts as
+#: configured exactly when the manifest supplied a non-empty one; the validator
+#: rejects an empty array, so a set bit always means at least one entry.
+COLLECTION_BITS: dict[str, str] = {
+    "dispatch_aliases": "SR_TITLE_CFG_DISPATCH_ALIASES",
+    "callback_terminators": "SR_TITLE_CFG_CALLBACK_TERMINATORS",
+}
+
 GENERIC_SOURCE_ID = "none"
+
+#: Suffix that continues a C macro definition onto the next line.
+CONT = " " + chr(92)
 
 
 class TitleRuntimeConfigError(ValueError):
@@ -56,7 +67,7 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
     normalized = title_manifest.validate_manifest(manifest)
     block = dict(normalized.get("runtime_bindings") or {})
     block.pop("schema_version", None)
-    unknown = sorted(set(block) - set(FIELD_BITS))
+    unknown = sorted(set(block) - set(FIELD_BITS) - set(COLLECTION_BITS))
     if unknown:
         # Unreachable through the validator; a fail-closed guard against a future
         # manifest field silently reaching the runtime without a C binding.
@@ -81,9 +92,29 @@ def config_digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
+def binding_summary(config: dict[str, Any]) -> str:
+    """Human-readable count of what the effective configuration actually binds."""
+    bindings: dict[str, Any] = config["bindings"]
+    parts = [f"{sum(1 for name in bindings if name in FIELD_BITS)} binding(s)"]
+    for name in COLLECTION_BITS:
+        entries = bindings.get(name, [])
+        if entries:
+            parts.append(f"{len(entries)} {name.replace('_', ' ')}")
+    return ", ".join(parts)
+
+
 def render_header(config: dict[str, Any]) -> str:
-    bindings: dict[str, int] = config["bindings"]
-    valid = sorted({FIELD_BITS[name] for name in bindings})
+    bindings: dict[str, Any] = config["bindings"]
+    # Fail closed on a binding with no C representation rather than filtering it out: a
+    # silently dropped field would reach neither the header nor an error, and the build
+    # would look successful while the binding did nothing.
+    unrepresentable = sorted(set(bindings) - set(FIELD_BITS) - set(COLLECTION_BITS))
+    if unrepresentable:
+        raise TitleRuntimeConfigError(
+            "runtime binding(s) have no runtime representation: " + ", ".join(unrepresentable)
+        )
+    valid = sorted({FIELD_BITS[name] for name in bindings if name in FIELD_BITS} |
+                   {COLLECTION_BITS[name] for name in bindings if name in COLLECTION_BITS})
     valid_text = " | ".join(valid) if valid else "0u"
     source_id = config["source_id"]
     if '"' in source_id or "\\" in source_id:
@@ -108,6 +139,30 @@ def render_header(config: dict[str, Any]) -> str:
         macro = "SR_TITLE_CONFIG_" + name.upper()
         value = bindings.get(name, 0)
         lines.append(f"#define {macro} 0x{value:08x}u")
+
+    # Collections are emitted as X-macro lists so title_config.c owns the C type and
+    # the generated artifact stays a pure data statement. An unconfigured collection
+    # emits a zero count and an empty list, which is what a generic build compiles.
+    aliases: list[dict[str, int]] = bindings.get('dispatch_aliases', [])
+    lines += ['', f'#define SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT {len(aliases)}',
+              '#define SR_TITLE_CONFIG_DISPATCH_ALIAS_LIST' + (CONT if aliases else '')]
+    for index, alias in enumerate(aliases):
+        tail = CONT if index + 1 < len(aliases) else ''
+        lines.append(
+            f"    SR_TITLE_CFG_ALIAS(0x{alias['from']:08x}u, 0x{alias['to']:08x}u){tail}")
+
+    terminators: list[dict[str, int]] = bindings.get('callback_terminators', [])
+    lines += ['', f'#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT {len(terminators)}',
+              '#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST' + (CONT if terminators else '')]
+    for index, entry in enumerate(terminators):
+        tail = CONT if index + 1 < len(terminators) else ''
+        # (sentinel, has_pc, pc, has_ra, ra): an absent constraint emits has_*=0, so
+        # the runtime never compares a call site against a placeholder address.
+        lines.append(
+            '    SR_TITLE_CFG_TERMINATOR('
+            f"0x{entry['sentinel']:08x}u, "
+            f"{1 if 'pc' in entry else 0}u, 0x{entry.get('pc', 0):08x}u, "
+            f"{1 if 'ra' in entry else 0}u, 0x{entry.get('ra', 0):08x}u){tail}")
     lines += ["", "#endif /* SR_TITLE_CONFIG_GENERATED_H */", ""]
     return "\n".join(lines)
 
@@ -164,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         changed = write_if_changed(args.output, render_header(config))
         print(
             f"title runtime config: {config['source_id']} "
-            f"({len(config['bindings'])} binding(s), {'written' if changed else 'unchanged'})"
+            f"({binding_summary(config)}, {'written' if changed else 'unchanged'})"
         )
         return 0
     except (title_manifest.TitleManifestError, TitleRuntimeConfigError, OSError, ValueError) as exc:

@@ -269,15 +269,26 @@ jobs:
         # real recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern).
         # The ASan/UBSan build below is the source-owned uninitialized-read and
         # overflow gate the issue asks for; Windows/MinGW cannot run sanitizers.
+        #
+        # This TU #includes recomp.c, whose dispatch() consumes the generic
+        # title-configuration accessors, so it must link src/rt/title_config.c
+        # against a generated artifact exactly as the Makefile target does. The
+        # generic configuration is what CI wants: no manifest, every binding
+        # disabled, both typed collections empty.
         run: |
-          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+          mkdir -p build/title-config/generic
+          python tools/title_runtime_config.py \
+            --output build/title-config/generic/sr_title_config.h
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
+            -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest
-          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
+          gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
+            -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -520,6 +531,17 @@ jobs:
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 sched-selftest
+
+      # The executable proof that a title binding acts only where its own
+      # configuration names it. Same three-configuration shape as
+      # sched-selftest -- generic, fixture-a, fixture-b -- but over dispatch()
+      # rather than the scheduler. Without it in CI, the isolation claim rests
+      # on a gate that only ever ran on a developer's machine.
+      - name: Build and run dispatch isolation selftest matrix
+        shell: msys2 {0}
+        run: >-
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
+          CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
         shell: msys2 {0}

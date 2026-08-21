@@ -13,6 +13,7 @@
 #include <string.h>
 #include "recomp.h"
 #include "dispatch_table.h"   /* guest code-address table + primitives (issue #45) */
+#include "title_config.h"     /* generic title-binding accessors; no title identity here */
 
 uint8_t *g_mem = NULL;
 int sr_hit_hle = 0;
@@ -1331,20 +1332,6 @@ static int hook_log_free_req(CpuState *s, uint32_t target) {
     return 1;  /* fall through */
 }
 
-static int hook_call_0x30948(CpuState *s, uint32_t target) {
-    (void)target;
-    /* Tail-call variants: real PSP code in caller `f_00030874` does `jr $t9` to a function
-     * pointer loaded into `$t9` that targets `f_00030948+8` (= 0x30950). The +8 skips the
-     * prologue `27bdffd0` (sp -= 0x30) on PSP where the SP was already set up. In our recomp,
-     * f_00030948 IS registered but 0x30950 is not. Redirect by entering at the recomp's
-     * function entry; the prologue's sp -= 0x30 is balanced by epilogue sp += 0x30, so net
-     * stack delta is zero. Launcher's f_00030874 has already passed its epilogue so writing
-     * into f_00030948's local region (offsets 0..0x24) does not corrupt live state. */
-    RecompFn fb = sr_lookup(0x00030948u);
-    if (fb) { fb(s); return 0; }
-    return 1;
-}
-
 static int hook_hash_insert_guard(CpuState *s, uint32_t target) {
     /* f_0001b6c4: hash insert (linear probe). a0=hash_struct [+0]=arr [+4]=cap.
      * If cap==0 the probe wraps forever; guard: skip insert and return 0. */
@@ -1708,7 +1695,6 @@ static const DispatchHook g_exact_hooks[] = {
     { 0x00304290u, 0xFFFFFFFFu, "INIT_LANG",        hook_init_lang },
     { 0x000104b0u, 0xFFFFFFFFu, "ALLOC_REQ",        hook_log_alloc_req },
     { 0x000104e0u, 0xFFFFFFFFu, "FREE_REQ",         hook_log_free_req },
-    { 0x00030950u, 0xFFFFFFFFu, "TC30950",          hook_call_0x30948 },
     { 0x0001b6c4u, 0xFFFFFFFFu, "HINSERT",          hook_hash_insert_guard },
     { 0x0001b584u, 0xFFFFFFFFu, "HFILL",            hook_hash_fill_trace },
     { 0x656a6f72u, 0xFFFFFFFFu, "NULL_CALL_A",      hook_null_call },
@@ -1753,14 +1739,6 @@ static void dump_dispatch_misses(void) {
 }
 
 void dispatch(CpuState *s, uint32_t target) {
-    /* A null callback terminates f_0003dfd0's circular callback-list traversal. The
-     * permissive miss path normally returns 0 ("continue"), so handle this call site
-     * before the generic null-PC guard. */
-    if (target == 0u && s->r[31] == 0x0003e06cu) {
-        s->r[2] = 1u;
-        s->pc = s->r[31];
-        return;
-    }
     /* Per-instruction VFPU fallback.  Codegen keeps executing the owning native C
      * function after this returns, so no guest function boundary or host stack frame is
      * introduced.  Keeping the interpreter entry here also gives all computed execution
@@ -1788,11 +1766,22 @@ void dispatch(CpuState *s, uint32_t target) {
         s->pc=pc+4;
         return;
     }
-    /* f_0003dfd0 walks a circular callback list. Its callback reaches the indirect call
-     * at 0x292fa0 with -1 as a terminal target; treating that as a permissive miss
-     * returns 0, which means "continue" to the outer walker and loops at 0x3e06c.
-     * Report completion only for this exact inner call site. */
-    if (target == UINT32_MAX && s->pc == 0x00292fa0u && s->r[31] == 0x00047a0cu) {
+    /* Configured callback terminators.
+     *
+     * A guest that walks a circular callback list reaches its terminal entry with a
+     * sentinel target (0 and -1 are the shapes seen in practice). The permissive miss
+     * path answers 0, which such a walker reads as "continue", so it loops forever.
+     * Where a title's configuration names the exact call site, report COMPLETION to the
+     * caller instead: v0 = 1, return to $ra.
+     *
+     * The semantic is generic and lives here; only the call-site identity is configured,
+     * and it must be configured -- an unconfigured build matches nothing and the same
+     * sentinel at the same site follows ordinary dispatch behavior below. This sits
+     * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
+     * that a title configuration must never be able to shadow. It sits BEFORE the pc==0
+     * corruption guard because a terminal callback is a normal completion, not a
+     * collapsed thread. */
+    if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
         s->r[2] = 1u;
         s->pc = s->r[31];
         return;
@@ -1877,6 +1866,27 @@ void dispatch(CpuState *s, uint32_t target) {
             g_hle_depth--;
             if (rc == 0) return;  /* consumed */
             /* rc == 1: fall through (trace-only hook) */
+        }
+    }
+
+    /* Configured dispatch aliases.
+     *
+     * A computed call can land on an address codegen never registered separately -- a
+     * tail call entering a callee past its prologue, for instance -- while the callee's
+     * real entry IS registered. Where a title's configuration names that pair, enter the
+     * registered body instead of falling through to a miss.
+     *
+     * This invents no behavior: it runs an ordinary registered function, and if the
+     * aliased body is not registered either, the call falls through to the normal miss
+     * path unchanged. An unconfigured build has no aliases, so every such address stays
+     * an ordinary miss. Placed after the exact-hook loop so runtime policy hooks keep
+     * precedence over a title redirect, and before the range hooks and the lookup
+     * fixups so an aliased target reaches the same code the direct target would. */
+    {
+        uint32_t alias_target = 0u;
+        if (sr_title_config_dispatch_alias(target, &alias_target)) {
+            RecompFn aliased = sr_lookup(alias_target);
+            if (aliased) { aliased(s); return; }
         }
     }
 

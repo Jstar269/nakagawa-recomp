@@ -27,6 +27,34 @@
 #define SR_TITLE_CFG_WORKER_ENTRY     0x2u
 #define SR_TITLE_CFG_LAUNCHER_ENTRY   0x4u
 #define SR_TITLE_CFG_VBLANK_COUNTERS  0x8u
+/* Collection bits. Set only when the configuration supplied a NON-EMPTY collection;
+ * the manifest validator rejects an empty one, so a set bit always means >= 1 entry. */
+#define SR_TITLE_CFG_DISPATCH_ALIASES      0x10u
+#define SR_TITLE_CFG_CALLBACK_TERMINATORS  0x20u
+
+/* One dispatch alias: a computed call to `from` must enter the body registered at `to`.
+ * This does not invent behavior -- the runtime still executes an ordinary registered
+ * function -- it only covers a registration gap, such as a tail call that lands past a
+ * callee's prologue at an address codegen never registered separately. */
+typedef struct SrTitleDispatchAlias {
+    uint32_t from;
+    uint32_t to;
+} SrTitleDispatchAlias;
+
+/* One callback terminator: at this exact call site, `sentinel` as a dispatch target
+ * means the guest's callback walk is COMPLETE. Without it the sentinel is an ordinary
+ * permissive miss, which returns "continue" and loops a circular walker forever.
+ *
+ * `has_pc`/`has_ra` distinguish "constrain this to a value" from "do not constrain it".
+ * The validator requires at least one constraint, so a terminator can never match a
+ * sentinel program-wide. An absent constraint is never compared against a placeholder. */
+typedef struct SrTitleCallbackTerminator {
+    uint32_t sentinel;
+    unsigned has_pc;
+    uint32_t pc;
+    unsigned has_ra;
+    uint32_t ra;
+} SrTitleCallbackTerminator;
 
 typedef struct SrTitleRuntimeConfig {
     unsigned    valid;                        /* OR of the SR_TITLE_CFG_* bits above */
@@ -36,6 +64,13 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    vblank_frame_counter_addr;    /* guest word incremented once per delivered VBLANK */
     uint32_t    vblank_vsync_counter_addr;    /* guest word incremented once per delivered VBLANK */
     const char *source_id;                    /* validated title id, or "none" */
+
+    /* Typed collections. Both are empty (count 0) in a generic build. The pointers are
+     * never NULL so a caller cannot dereference one by mistake; count is the authority. */
+    const SrTitleDispatchAlias       *dispatch_aliases;
+    unsigned                          dispatch_alias_count;
+    const SrTitleCallbackTerminator  *callback_terminators;
+    unsigned                          callback_terminator_count;
 } SrTitleRuntimeConfig;
 
 /* The build's configuration. Never NULL; a generic build reports valid == 0. */
@@ -55,5 +90,18 @@ int sr_title_config_is_launcher_entry(uint32_t entry);
 /* Returns 1 and fills both addresses when the paired VBLANK counters are configured,
  * 0 otherwise (leaving the outputs untouched). */
 int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr);
+
+/* Dispatch alias lookup. Returns 1 and writes the aliased body's address to *to_addr
+ * when `from` is a configured alias source, 0 otherwise (leaving *to_addr untouched).
+ * An unconfigured build answers 0 for every address, so a generic runtime inherits no
+ * redirect at all -- an address that a previous release happened to redirect included.
+ * Matching is exact: a neighbouring address is not an alias of anything. */
+int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr);
+
+/* Callback-terminator match. Returns 1 only when some configured terminator names this
+ * sentinel AND every constraint it declares (pc, ra, or both) holds at this call site.
+ * An unconfigured build answers 0 for every triple, so the same sentinel at the same
+ * site follows ordinary generic dispatch behavior instead. */
+int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra);
 
 #endif /* SR_TITLE_CONFIG_H */

@@ -25,7 +25,14 @@
     "worker_thread_entry": 142623232,
     "launcher_thread_entry": 142623488,
     "vblank_frame_counter_addr": 142737408,
-    "vblank_vsync_counter_addr": 142737412
+    "vblank_vsync_counter_addr": 142737412,
+    "dispatch_aliases": [
+      {"from": 142627072, "to": 142627328}
+    ],
+    "callback_terminators": [
+      {"sentinel": 0, "ra": 142627584},
+      {"sentinel": 4294967295, "pc": 142627840, "ra": 142628096}
+    ]
   },
   "notes": "Source-owned PSPDEV/PSPSDK compiled Phase 5 fixture (fixtures/pspdev_phase5). Deliberately configured differently from synthetic-allegrex-v1: the canonical PSP user-module load base 0x08804000 instead of the user-memory region start, no guest PRX of any kind, and an HLE-dependent feature set. No retail bytes or derived metadata."
 }

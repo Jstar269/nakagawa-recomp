@@ -338,7 +338,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -533,18 +533,19 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 # invariants hold. vfpu_tables.c is linked because the inlined recomp.c now calls
 # sr_vfpu_load() and reads the VFPU LUT pointers (issue #187); without it the
 # standalone binary fails to link after the table-loader integration.
-heap-selftest:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/vfpu_tables.c $(LIBS) -lm
+heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
+		src/rt/heap_selftest.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
 # real key and a deliberately saturated 64-probe collision window without game inputs.
-profiler-selftest:
-	$(CC) $(CFLAGS) -DSR_PROFILER_SELFTEST -ffunction-sections -fdata-sections \
+profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_PROFILER_SELFTEST \
+		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -622,9 +623,9 @@ atrac3p-title-accept:
 # overlap scan. The white-box TU includes the real recomp.c/vfpu_tables.c/
 # vfpu_interp.c (heap_selftest pattern); only scheduler/driver plumbing is
 # stubbed. No game inputs or private data required.
-vfpu-interp-selftest:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c $(LIBS)
+vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
+		src/rt/vfpu_interp_selftest.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
@@ -727,6 +728,40 @@ dispatch-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/dispatch_selftest.exe src/rt/dispatch_selftest.c
 	$(BUILD_DIR)/dispatch_selftest.exe
+
+# dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
+# title configuration owns (dispatch aliases, callback terminators) act only where that
+# configuration names them. No game inputs needed; src/rt/dispatch_isolation_selftest.c
+# #includes recomp.c and drives the real dispatch() entry point, asserting its observable
+# effect on CpuState.
+#
+# Same three-configuration matrix as sched-selftest, and for the same reason: the SAME
+# dispatch source is built against a generic, a fixture-A and a fixture-B configuration,
+# so a binding that leaked back into generic dispatch fails at least one of the three.
+# The two fixtures carry deliberately DISJOINT synthetic address families, so neither can
+# satisfy the other's expectations by coincidence. Exit code 0 = all invariants hold.
+DISPATCH_ISO_CONFIGS := generic fixture-a fixture-b
+DISPATCH_ISO_MANIFEST_generic :=
+DISPATCH_ISO_MANIFEST_fixture-a := assets/titles/pspdev-phase5.json
+DISPATCH_ISO_MANIFEST_fixture-b := assets/titles/synthetic.json
+
+dispatch-isolation-selftest:
+	@$(foreach cfg,$(DISPATCH_ISO_CONFIGS),$(MAKE) --no-print-directory dispatch-isolation-selftest-one DISPATCH_ISO_CONFIG=$(cfg) &&) true
+
+# One configuration of the matrix. The generated header lands in its own directory so the
+# three builds cannot share one.
+DISPATCH_ISO_CONFIG ?= generic
+DISPATCH_ISO_DIR := $(BUILD_DIR)/title-config/$(DISPATCH_ISO_CONFIG)
+DISPATCH_ISO_MANIFEST := $(DISPATCH_ISO_MANIFEST_$(DISPATCH_ISO_CONFIG))
+DISPATCH_ISO_CONFIG_ARG := $(if $(strip $(DISPATCH_ISO_MANIFEST)),--manifest $(strip $(DISPATCH_ISO_MANIFEST)),)
+
+dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
+	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
+	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
+		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
+		src/rt/dispatch_isolation_selftest.c src/rt/title_config.c src/rt/vfpu_tables.c \
+		$(LIBS) -lm
+	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the

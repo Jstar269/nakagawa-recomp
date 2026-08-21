@@ -32,7 +32,15 @@
     "worker_thread_entry": 142614528,
     "launcher_thread_entry": 142618624,
     "vblank_frame_counter_addr": 142671872,
-    "vblank_vsync_counter_addr": 142671936
+    "vblank_vsync_counter_addr": 142671936,
+    "dispatch_aliases": [
+      {"from": 142631168, "to": 142631424},
+      {"from": 142631172, "to": 142631428}
+    ],
+    "callback_terminators": [
+      {"sentinel": 0, "ra": 142631680},
+      {"sentinel": 4294967295, "pc": 142631936, "ra": 142632192}
+    ]
   },
   "runtime_contract": {
     "schema_version": 1,
