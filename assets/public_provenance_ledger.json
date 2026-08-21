@@ -5054,7 +5054,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "80421317e9684d2bbf847afb56430b74a49f554028be8ae207e631c3e1c25879"
+      "sha256": "a4c06ae82d0ad57ebd9411d54baad322fe3652dface8264704f962b81b37df9d"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -6720,7 +6720,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c61582c22f63ad5394a3fad24be78b79e8379c667d32616948206423d5f0972a"
+      "sha256": "8d1f8851599bc1f3e866247cd5a174d2fbf5797196aa74a91cad42a917edc4af"
     },
     {
       "path": "tools/test_nid_name_proof.py",
