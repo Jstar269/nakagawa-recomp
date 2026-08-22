@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1872ac616b43fbd9fa67f9713fa758115b842e9b5462c1a92f690afa2db3c469"
+      "sha256": "8bcda01f86abfac12135edec489188dd3808135ffc6cef59c895f0c18b0838a7"
     },
     {
       "path": "LICENSE",
@@ -3793,9 +3793,11 @@
       "path": "src/rt/audio_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "audio-public-safe-seam",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f0bc76b0d868ea79c46e812d49569acd521e4db65c2e320100ef5153547d55e7"
     },
@@ -3938,9 +3940,11 @@
       "path": "src/rt/fp_convert.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "portable-fp-conversion",
+        "evidence_tier": "R",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
       },
       "sha256": "dff5c638a81d5d45005fce292cacf7ddb5a3e99e6462582b90ee4662cee416a8"
     },
@@ -3948,9 +3952,11 @@
       "path": "src/rt/fp_convert_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "portable-fp-conversion",
+        "evidence_tier": "R",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
       },
       "sha256": "026776fd928dc6989c8f6ee6f297aa633222e7ce3a45b199c5286a504ea64cf0"
     },
@@ -4421,9 +4427,11 @@
       "path": "src/rt/iso_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "iso-public-safe-seam",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9e3cbf1d9e4975f27bb375716553233e73900ae3e7d9ce89d083bff7e46c6d95"
     },
