@@ -174,7 +174,39 @@ TITLE_CONFIG_HST_UNBOUND := 1
 endif
 endif
 
-$(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(strip $(TITLE_MANIFEST))
+# Content-addressed identity of the EFFECTIVE title configuration, and the stamp that
+# carries it. This is what the generated header depends on, because none of the header's
+# natural prerequisites can express "the configuration changed":
+#
+#   - The manifest FILE is not a stable prerequisite. Dropping TITLE_MANIFEST removes it
+#     from the prerequisite list entirely, so a bound -> unbound transition presents Make
+#     with a target that is newer than everything left, the recipe does not run, and the
+#     refusal below -- a recipe line -- never fires. The build then compiles a fresh
+#     title_config.o against the PREVIOUS title's header while RUNTIME_PROFILE_HASH
+#     records the generic digest.
+#   - mtime cannot express it in the other direction either: a manifest older than an
+#     existing generic header leaves that header "up to date", so the profile records the
+#     title digest while the compiled configuration binds nothing.
+#
+# TITLE_CONFIG_DIGEST already covers the source id and every binding, so it subsumes the
+# manifest file's content; the HST-unbound state is appended because it shares the generic
+# digest yet must never reuse a header generated for some other configuration.
+#
+# The manifest file is deliberately NOT also a prerequisite. The digest is derived from
+# its content at parse time, so the file adds nothing the identity does not already carry
+# -- while touching it without changing it would make this recipe run on every build (the
+# generator writes only on change, so the header's mtime would never catch up).
+#
+# The stamp DELETES the header rather than relying on being newer than it, and is included
+# below with the other profile stamps so Make restarts and sees that deletion before it
+# judges freshness. A changed identity and a regenerated header can land inside one
+# filesystem timestamp tick, and "newer" cannot decide that; "absent" always can.
+TITLE_CONFIG_IDENTITY := $(TITLE_CONFIG_DIGEST)$(if $(TITLE_CONFIG_HST_UNBOUND),-hst-unbound,)
+TITLE_CONFIG_STAMP := $(TITLE_CONFIG_DIR)/.title-config-$(TITLE_CONFIG_IDENTITY)
+$(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".title-config-*" --value "$(TITLE_CONFIG_IDENTITY)" --invalidate "$(TITLE_CONFIG_HEADER)"
+
+$(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
 	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local, Git-ignored HST manifest) or build through hst_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
 endif
@@ -464,7 +496,7 @@ DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR
 # creating a missing flavour, so objects invalidated by that recipe are absent
 # before target freshness is evaluated (avoiding timestamp-resolution races).
 ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))),)
--include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP)
+-include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP) $(TITLE_CONFIG_STAMP)
 endif
 -include $(DEP_FILES)
 

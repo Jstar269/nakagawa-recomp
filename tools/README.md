@@ -25,7 +25,7 @@ zero base/entry values and preserves the Makefile's two-phase build.
    Drives the two-phase pipeline and compile. Set `VULKAN_SDK` for direct Make invocations; the
    manager discovers and validates it automatically. Do not replace `all` with a single dependency
    line: generated chunk discovery occurs in the second Make process. For HST, use
-   `.\hst_manager.ps1 -Action BuildFull` from the repository root.
+   `.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json` from the repository root.
 
 ## Gates
 
