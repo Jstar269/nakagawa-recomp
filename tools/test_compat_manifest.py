@@ -28,17 +28,61 @@ five documented categories and, for src/rt/hle.c groups, exactly one title-2
 readiness census bucket plus the five review answers for override-classified
 groups.
 
-SCANNER CONTRACT: the extractor is a regex over a fixed set of direct-literal
-shapes (MEM_R*/MEM_W*, sr_r32/sr_w32, dispatch, ge_call_guest*, and VRAM-window
-``return`` literals).  It fails closed for supported direct-literal guest
-memory/dispatch/call shapes.  It does NOT claim universal syntactic
-fail-closedness: a site that does not flow through one of those exact shapes
-(e.g. an address computed at runtime, a struct initializer, or a literal in a
-value position) is outside this gate's proven contract and must be kept
-visible by the other inventory mechanisms.  New absolute guest address sites
-are mechanically enumerable precisely because they must appear through one of
-the supported shapes to be admitted; the census test pins the current count so
-a shape-set change is a deliberate, reviewed act.
+SCANNER CONTRACT.  The extractor recognizes two families of shape.
+
+DIRECT shapes: a guest-address literal written inside the call itself --
+MEM_R*/MEM_W*, sr_r32/sr_w32, dispatch, ge_call_guest*, and VRAM-window
+``return`` literals.
+
+INDIRECT shapes (added 2026-08-21): a guest-address literal bound to a name
+first and reaching guest state through that name.  Before this, an entire
+title coupling was invisible to the gate while the census reported itself
+complete at 38/38: sceDisplaySetMode -> ensure_runtime_sync_callbacks reads and
+writes an HST configuration block through ``const uint32_t config =
+0x00333138u``, may create an HLE semaphore whose name pointer arrives as
+``call.r[4] = 0x002bdf38u``, and installs six guest wrapper entry points that
+are assigned to locals (``enter = 0x000823f0u``) and only then stored into guest
+memory.  Eight title addresses, none of them ever written inside a MEM_* call,
+so the direct regex matched none of them.  Two shapes now cover that family:
+
+  bound_local          [const] uint32_t NAME = <literal>;   (or a later
+                       NAME = <literal>; to a name already bound in the same
+                       function) where NAME is afterwards used, in that same
+                       function, in a guest-coupling position: the ADDRESS
+                       argument of MEM_*/sr_r32/sr_w32/dispatch/ge_call_guest*,
+                       the VALUE argument of a MEM_W* (the name is stored into
+                       guest memory), or the right-hand side of a CpuState
+                       register assignment.
+
+  cpu_state_register   <expr>.r[N] = <literal>;  /  s->r[N] = <literal>;
+                       -- a literal handed directly to guest code.
+
+This is a BOUNDED GRAMMAR, not a C analyzer, and its limits are deliberate:
+
+  * The indirect shapes require the literal to be 4-byte aligned.  A MIPS code
+    address always is, and so is a word-addressed data base; the alignment rule
+    is what keeps ``s->r[3] = 0xFFFFFFFF`` (an errno) and ``s->r[24] =
+    0xDEADBEEFu`` (poison) out of the inventory without resorting to a
+    magnitude heuristic, which this gate rejects on principle.  An unaligned
+    guest byte address reached indirectly is therefore NOT covered -- reached
+    directly through MEM_R8 it still is.
+  * The coupling use must appear in the SAME function body as the binding.  A
+    literal bound in one function and consumed in another is not covered.
+  * Only literal-to-name binding is followed.  An address computed at runtime,
+    assembled from parts, or read out of a table is not covered by either
+    family.
+  * A binding must be the whole statement on its line.  ``if (m) { enter =
+    0x...; }`` is not matched; the .clang-format'd one-statement-per-line shape
+    the real handler uses is.  This limit is measured, not assumed -- the test
+    that first exercised the reassignment shape wrote it inline and did not
+    match.
+  * Struct initializers and array tables are not covered.
+
+New absolute guest address sites are mechanically enumerable precisely because
+they must appear through one of the supported shapes to be admitted; the census
+test pins the current counts so a shape-set change is a deliberate, reviewed
+act.  Anything outside the grammar above must be kept visible by the other
+inventory mechanisms.
 
 Deliberately out of scope: the scattered `s->pc == 0x...`/`entry == 0x...`
 diagnostic trace points across src/rt/sched.c are not mechanically extracted
@@ -133,7 +177,106 @@ VRAM_WINDOW_LAST = 0x041fffff
 
 HLE_ARCH_RETURN_RE = re.compile(r"return\s+(0[xX][0-9a-fA-F]{5,8})u?\s*;")
 
-HLE_FUNCTION_RE = re.compile(r"static [a-zA-Z0-9_ \*]+\b(h_[a-zA-Z0-9_]+)\s*\(\s*CpuState \*s\s*\)")
+#: A function-body opener.  Deliberately broader than the historical
+#: ``h_<name>(CpuState *s)`` pattern: the coupling that motivated the indirect
+#: grammar lives in ``ensure_runtime_sync_callbacks``, a static helper whose name
+#: does not start with ``h_``, so every site inside it was attributed to whichever
+#: h_ handler happened to be defined above it -- or to "" for the sites that
+#: precede the first one.  Widening this changed no address, line or shape in the
+#: existing census; it only replaced 27 wrong or empty attributions with real
+#: ones, and no generic-site exemption flips as a result.
+HLE_FUNCTION_RE = re.compile(r"^static\s+[A-Za-z_][\w\s\*]*?\b([A-Za-z_]\w*)\s*\(")
+
+#: Indirect grammar.  See SCANNER CONTRACT above for the limits these accept.
+HLE_LITERAL = r"0[xX][0-9a-fA-F]{5,8}"
+HLE_BIND_DECL_RE = re.compile(
+    rf"^\s*(?:const\s+)?uint32_t\s+([A-Za-z_]\w*)\s*=\s*({HLE_LITERAL})u?\s*;")
+HLE_BIND_ASSIGN_RE = re.compile(rf"^\s*([A-Za-z_]\w*)\s*=\s*({HLE_LITERAL})u?\s*;")
+HLE_REGISTER_ASSIGN_RE = re.compile(
+    rf"(?:\w+\s*\.|\w+\s*->|s\s*->)\s*r\s*\[\s*\d+\s*\]\s*=\s*({HLE_LITERAL})u?\s*;")
+
+
+def _hle_coupling_use_patterns(name: str) -> list[re.Pattern]:
+    """Positions in which NAME carries a guest address into guest-visible state."""
+    n = re.escape(name)
+    return [
+        # ADDRESS argument of a guest memory access
+        re.compile(rf"(?:MEM_[RW](?:8|16|32)|sr_r32|sr_w32)\s*\(\s*(?:\(uint32_t\)\s*\(\s*)?{n}\b"),
+        # dispatch target / nested guest call target
+        re.compile(rf"(?:dispatch|ge_call_guest(?:_rv)?)\s*\(\s*s\s*,\s*{n}\b"),
+        # VALUE argument of a guest memory WRITE: the name is stored INTO the guest
+        re.compile(rf"MEM_W(?:8|16|32)\s*\([^;]*,\s*{n}\s*\)"),
+        # handed to guest code through a CpuState register
+        re.compile(rf"r\s*\[\s*\d+\s*\]\s*=\s*{n}\s*;"),
+    ]
+
+
+def hle_function_spans(lines: list[str]) -> list[tuple[str, int, int]]:
+    """(name, first_line, last_line) for each static function body, 1-based.
+
+    Brace counting, not parsing: the file is .clang-format'd, so a body opens on
+    the signature line or the one after it and closes at depth zero.
+    """
+    spans: list[tuple[str, int, int]] = []
+    index, total = 0, len(lines)
+    while index < total:
+        stripped = lines[index].rstrip()
+        match = HLE_FUNCTION_RE.match(stripped)
+        # A forward declaration has the same shape as a definition. Treating one as an
+        # opener makes the brace walk below swallow the NEXT function's body and
+        # attribute its sites to the declared name -- which is exactly what happened to
+        # h_DisplaySetMode, defined directly under the ensure_runtime_sync_callbacks
+        # prototype.
+        if not match or stripped.endswith(";"):
+            index += 1
+            continue
+        depth, cursor, opened = 0, index, False
+        while cursor < total:
+            depth += lines[cursor].count("{") - lines[cursor].count("}")
+            if "{" in lines[cursor]:
+                opened = True
+            if opened and depth <= 0:
+                break
+            cursor += 1
+        spans.append((match.group(1), index + 1, cursor + 1))
+        index = cursor + 1
+    return spans
+
+
+def extract_hle_indirect_sites(source: str) -> dict[int, list[tuple[int, str, str]]]:
+    """Guest addresses that reach guest state through a name rather than a call.
+
+    Returns the same address -> (line, function, shape) mapping as the direct
+    scan, with shape ``bound_local`` or ``cpu_state_register``.
+    """
+    lines = source.splitlines()
+    sites: dict[int, list[tuple[int, str, str]]] = {}
+    for name, start, end in hle_function_spans(lines):
+        body = lines[start - 1:end]
+        bound: dict[str, list[tuple[int, int]]] = {}
+        for offset, line in enumerate(body):
+            binding = HLE_BIND_DECL_RE.match(line) or HLE_BIND_ASSIGN_RE.match(line)
+            if binding:
+                bound.setdefault(binding.group(1), []).append(
+                    (start + offset, int(binding.group(2), 16)))
+            register = HLE_REGISTER_ASSIGN_RE.search(line)
+            if register:
+                value = int(register.group(1), 16)
+                if value % 4 == 0 and not compat_overrides.is_generic_site(
+                        name, "cpu_state_register", value):
+                    sites.setdefault(value, []).append(
+                        (start + offset, name, "cpu_state_register"))
+        joined = "\n".join(body)
+        for variable, bindings in bound.items():
+            if not any(p.search(joined) for p in _hle_coupling_use_patterns(variable)):
+                continue
+            for lineno, value in bindings:
+                if value % 4 != 0:
+                    continue
+                if compat_overrides.is_generic_site(name, "bound_local", value):
+                    continue
+                sites.setdefault(value, []).append((lineno, name, "bound_local"))
+    return sites
 
 
 def extract_hle_guest_sites(source: str) -> dict[int, list[tuple[int, str, str]]]:
@@ -148,7 +291,10 @@ def extract_hle_guest_sites(source: str) -> dict[int, list[tuple[int, str, str]]
     current_function = ""
     for lineno, line in enumerate(source.splitlines(), 1):
         fn = HLE_FUNCTION_RE.search(line)
-        if fn:
+        # Same forward-declaration rule as hle_function_spans(): a prototype names a
+        # function whose body is somewhere else, so it must not claim the sites that
+        # follow it.
+        if fn and not line.rstrip().endswith(";"):
             current_function = fn.group(1)
         for m in HLE_GUEST_ADDRESS_RE.finditer(line):
             literal = m.group(1) or m.group(2)
@@ -164,6 +310,12 @@ def extract_hle_guest_sites(source: str) -> dict[int, list[tuple[int, str, str]]
             if compat_overrides.is_generic_site(current_function, "return", address):
                 continue
             found.setdefault(address, []).append((lineno, current_function, "return"))
+    # Indirect shapes are merged into the same result, so every coverage, census
+    # and staleness test below sees one address space rather than two.
+    for address, sites in extract_hle_indirect_sites(source).items():
+        found.setdefault(address, []).extend(sites)
+    for sites in found.values():
+        sites.sort()
     return found
 
 
@@ -383,18 +535,23 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
 
     def test_census_counts_are_reconciled_exactly(self):
         """CENSUS RECONCILIATION (F): the extractor must currently find exactly
-        38 distinct addresses across 50 sites in src/rt/hle.c, with every site
+        46 distinct addresses across 59 sites in src/rt/hle.c, with every site
         inventoried and no stale inventory entries.  If the corrected scanner
         legitimately changes these counts (for example after src/rt/hle.c
         changes land from #91/#92), update the census and this assertion
-        together -- never silently."""
+        together -- never silently.
+
+        38/50 -> 46/59 on 2026-08-21 when the indirect grammar landed: the eight
+        ensure_runtime_sync_callbacks addresses, plus a second (bound_local) site
+        for 0x0030b8d0, which the direct scan already saw through its
+        cast-wrapped MEM_R8 shape."""
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        self.assertEqual(len(found), 38,
-                         "distinct-address census drifted from the reconciled 38; "
+        self.assertEqual(len(found), 46,
+                         "distinct-address census drifted from the reconciled 46; "
                          "recompute the census deliberately if the scanner "
                          "legitimately changed")
-        self.assertEqual(sum(len(v) for v in found.values()), 50,
-                         "site-count census drifted from the reconciled 50; "
+        self.assertEqual(sum(len(v) for v in found.values()), 59,
+                         "site-count census drifted from the reconciled 59; "
                          "recompute the census deliberately if the scanner "
                          "legitimately changed")
         missing = set(found) - hle_inventoried_addresses()
@@ -514,6 +671,250 @@ class CompatManifestCoverageTests(unittest.TestCase):
                           f"tools/compat_overrides.py DISPATCH_HOOKS lists address(es) no longer in "
                           f"src/rt/recomp.c g_exact_hooks[] (stale entry): {sorted(hex(a) for a in stale)}")
 
+
+#: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c
+#: rather than copied from a report. They are pinned here so a silent edit to the
+#: handler shows up as a test failure and not as a quietly shrinking census.
+RUNTIME_SYNC_CALLBACK_SITES = {
+    0x00333138: "configuration block base",
+    0x002BDF38: "semaphore name pointer handed to the guest in $a0",
+    0x000823F0: "mode 0 enter (CpuSuspendIntr wrapper)",
+    0x00082438: "mode 0 leave (CpuResumeIntr wrapper)",
+    0x00082474: "mode 1 enter (semaphore wait wrapper)",
+    0x0008249C: "mode 1 leave (semaphore signal wrapper)",
+    0x000824C0: "mode 2 enter (lightweight mutex lock wrapper)",
+    0x000824E8: "mode 2 leave (lightweight mutex unlock wrapper)",
+}
+
+
+class HleIndirectCouplingGrammar(unittest.TestCase):
+    """The indirect grammar: a guest address bound to a NAME, not written inside
+    the call that uses it.
+
+    This class exists because the census was reporting itself complete at 38/38
+    while an entire title coupling -- a configuration block, a semaphore name
+    pointer and six guest wrapper entry points, all reached from an
+    unconditionally registered sceDisplaySetMode -- was invisible to the gate.
+    Every literal there is bound to a local or assigned into a CpuState register
+    first, so the direct-literal regex matched exactly none of them.
+
+    Evidence tier: SOURCE_SHAPE / STATICALLY_SUPPORTED throughout. These tests
+    read source, they do not run a guest.
+    """
+
+    def setUp(self) -> None:
+        self.source = HLE_C.read_text(encoding="utf-8")
+
+    # ---- A: the real sites ------------------------------------------------
+    def test_the_real_runtime_sync_sites_are_detected(self) -> None:
+        found = extract_hle_guest_sites(self.source)
+        for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
+            with self.subTest(address=hex(address), role=role):
+                self.assertIn(address, found,
+                              f"0x{address:08x} ({role}) is title coupling in a generic "
+                              "PSP handler and must be visible to the gate")
+                shapes = {shape for _line, _fn, shape in found[address]}
+                self.assertTrue(shapes & {"bound_local", "cpu_state_register"},
+                                f"0x{address:08x} was found only through {sorted(shapes)}; "
+                                "this test would then pass without the indirect grammar")
+
+    def test_the_real_runtime_sync_sites_are_inventoried(self) -> None:
+        inventoried = hle_inventoried_addresses()
+        for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
+            with self.subTest(address=hex(address), role=role):
+                self.assertIn(address, inventoried)
+
+    def test_the_sites_are_attributed_to_their_real_enclosing_function(self) -> None:
+        """The historical h_*-only function regex attributed everything in this
+        helper to whichever handler happened to precede it."""
+        found = extract_hle_guest_sites(self.source)
+        for address in RUNTIME_SYNC_CALLBACK_SITES:
+            functions = {fn for _line, fn, _shape in found[address]}
+            self.assertEqual(functions, {"ensure_runtime_sync_callbacks"},
+                             f"0x{address:08x} attributed to {sorted(functions)}")
+
+    def test_the_direct_regex_alone_finds_none_of_them(self) -> None:
+        """FAILING-BEFORE PROOF: run the pre-2026-08-21 direct-literal scan over
+        the same source and show it matched none of the eight. If this ever
+        starts finding them, the indirect grammar is no longer load-bearing and
+        the tests above have become vacuous."""
+        direct = set()
+        for match in HLE_GUEST_ADDRESS_RE.finditer(self.source):
+            direct.add(int(match.group(1) or match.group(2), 16))
+        self.assertEqual(direct & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
+                         "the direct-literal shapes now reach the indirect sites")
+
+    # ---- B: const-local address propagation --------------------------------
+    def test_a_const_local_used_as_an_address_base_is_detected(self) -> None:
+        snippet = (
+            "static void h_Fake(CpuState *s) {\n"
+            "    const uint32_t base = 0x08123400u;\n"
+            "    MEM_W32(base + 0x20u, 1u);\n"
+            "}\n"
+        )
+        found = extract_hle_guest_sites(snippet)
+        self.assertIn(0x08123400, found)
+        self.assertEqual(found[0x08123400][0][2], "bound_local")
+
+    # ---- C: hidden callback stored through guest memory --------------------
+    def test_a_literal_stored_into_guest_memory_as_a_value_is_detected(self) -> None:
+        """The shape that hid the six wrapper entry points: the literal never
+        appears in an ADDRESS position, only as the value being written."""
+        snippet = (
+            "static void h_Fake(CpuState *s) {\n"
+            "    const uint32_t base = 0x08123400u;\n"
+            "    uint32_t cb = 0x00123450u;\n"
+            "    MEM_W32(base + 0x34u, cb);\n"
+            "}\n"
+        )
+        found = extract_hle_guest_sites(snippet)
+        self.assertIn(0x00123450, found)
+        self.assertEqual(found[0x00123450][0][2], "bound_local")
+
+    def test_a_reassigned_local_is_detected_at_each_binding(self) -> None:
+        """The handler binds `enter` once per switch arm; each arm is its own
+        title address and each must be inventoried separately."""
+        snippet = (
+            "static void h_Fake(CpuState *s) {\n"
+            "    uint32_t enter = 0u;\n"
+            "    switch (mode) {\n"
+            "    case 0:\n"
+            "        enter = 0x00123450u;\n"
+            "        break;\n"
+            "    case 1:\n"
+            "        enter = 0x00123460u;\n"
+            "        break;\n"
+            "    }\n"
+            "    MEM_W32(0x08123400u + 0x34u, enter);\n"
+            "}\n"
+        )
+        found = extract_hle_guest_sites(snippet)
+        self.assertIn(0x00123450, found)
+        self.assertIn(0x00123460, found)
+
+    # ---- D: CpuState register assignment -----------------------------------
+    def test_a_literal_assigned_to_a_cpu_state_register_is_detected(self) -> None:
+        for statement in ("    call.r[4] = 0x00123450u;",
+                          "    s->r[4] = 0x00123450u;"):
+            with self.subTest(statement=statement.strip()):
+                snippet = f"static void h_Fake(CpuState *s) {{\n{statement}\n}}\n"
+                found = extract_hle_guest_sites(snippet)
+                self.assertIn(0x00123450, found)
+                self.assertEqual(found[0x00123450][0][2], "cpu_state_register")
+
+    # ---- E/F: inventory drift ----------------------------------------------
+    def test_a_missing_inventory_entry_fails_the_gate(self) -> None:
+        """Drop one of the eight from the inventory and the coverage gate must
+        fail. Asserted through the same set arithmetic the gate uses."""
+        found = set(extract_hle_guest_addresses(self.source))
+        for address in RUNTIME_SYNC_CALLBACK_SITES:
+            with self.subTest(address=hex(address)):
+                thinned = hle_inventoried_addresses() - {address}
+                self.assertEqual(found - thinned, {address},
+                                 "removing an inventory entry must leave exactly that "
+                                 "address uncovered")
+
+    def test_a_stale_inventory_entry_fails_the_gate(self) -> None:
+        found = set(extract_hle_guest_addresses(self.source))
+        invented = 0x08FEDCB0
+        self.assertNotIn(invented, found)
+        stale = (hle_inventoried_addresses() | {invented}) - found
+        self.assertEqual(stale, {invented})
+
+    # ---- G: the grammar itself must not go silently dead --------------------
+    def test_the_indirect_grammar_is_not_vacuous(self) -> None:
+        """BLIND-SPOT REGRESSION: if extract_hle_indirect_sites stops matching --
+        a regex edit, a formatting change in hle.c -- every test above would pass
+        for the wrong reason on an inventory that still lists the addresses."""
+        indirect = extract_hle_indirect_sites(self.source)
+        self.assertGreaterEqual(len(indirect), 8,
+                                "the indirect grammar matched almost nothing; it has "
+                                "probably gone dead and its coverage tests with it")
+        self.assertTrue(set(RUNTIME_SYNC_CALLBACK_SITES) <= set(indirect))
+        shapes = {shape for sites in indirect.values() for _l, _f, shape in sites}
+        self.assertEqual(shapes, {"bound_local", "cpu_state_register"},
+                         "both indirect shapes must still be live")
+
+    def test_function_spans_do_not_collapse(self) -> None:
+        """The grammar is per-function: if span detection degraded to one giant
+        span, a binding in one function would pair with a use in another and the
+        false-positive guard below would stop meaning anything."""
+        spans = hle_function_spans(self.source.splitlines())
+        self.assertGreater(len(spans), 100, "function-span detection collapsed")
+        names = {name for name, _s, _e in spans}
+        self.assertIn("ensure_runtime_sync_callbacks", names)
+        self.assertIn("h_DisplaySetMode", names)
+
+    # ---- H: no false-positive explosion ------------------------------------
+    def test_unrelated_constants_do_not_become_coupling(self) -> None:
+        snippet = (
+            "static void h_Fake(CpuState *s) {\n"
+            "    uint32_t prev = 0xFFFFFFFFu;\n"          # sentinel, unaligned
+            "    s->r[3] = 0xFFFFFFFFu;\n"                # errno, unaligned
+            "    s->r[24] = 0xDEADBEEFu;\n"               # poison, unaligned
+            "    uint32_t len = 0x000646f0u;\n"           # aligned, but never coupled
+            "    uint32_t flags = 0x00081000u;\n"         # aligned, but never coupled
+            "    fprintf(stderr, \"%u %u %u\", prev, len, flags);\n"
+            "}\n"
+        )
+        self.assertEqual(extract_hle_guest_sites(snippet), {},
+                         "a literal that never reaches guest state is not coupling")
+
+    def test_the_real_file_produces_no_unclassified_indirect_address(self) -> None:
+        """The grammar's false-positive rate on the real file is zero: every
+        address it reports is either one of the eight or an address the direct
+        scan already inventoried."""
+        indirect = set(extract_hle_indirect_sites(self.source))
+        unexpected = indirect - set(RUNTIME_SYNC_CALLBACK_SITES) - hle_inventoried_addresses()
+        self.assertEqual(unexpected, set(),
+                         f"unclassified: {sorted(hex(a) for a in unexpected)}")
+
+    def test_the_alignment_rule_is_what_excludes_the_sentinels(self) -> None:
+        """Document the limit honestly: the indirect shapes admit only 4-byte
+        aligned literals, and that -- not a magnitude ceiling, which this gate
+        rejects on principle -- is what keeps errno/poison values out. An
+        UNALIGNED guest address reached indirectly is a known gap."""
+        aligned = ("static void h_Fake(CpuState *s) {\n"
+                   "    s->r[4] = 0x08123400u;\n}\n")
+        unaligned = ("static void h_Fake(CpuState *s) {\n"
+                     "    s->r[4] = 0x08123401u;\n}\n")
+        self.assertIn(0x08123400, extract_hle_guest_sites(aligned))
+        self.assertEqual(extract_hle_guest_sites(unaligned), {})
+
+    # ---- I: a ninth hidden callback must fail the gate ---------------------
+    def test_a_ninth_hidden_callback_literal_fails_the_gate(self) -> None:
+        """MUTATION: add a ninth hidden wrapper target to the real handler the
+        same way the existing six are written, and the coverage gate must refuse
+        it. This is the property the whole slice exists for."""
+        contaminated = self.source.replace(
+            "        enter = 0x000824c0u;",
+            "        enter = 0x000824c0u;\n        leave = 0x0009abc0u;",
+            1,
+        )
+        self.assertNotEqual(contaminated, self.source, "mutation anchor not found")
+        found = extract_hle_guest_addresses(contaminated)
+        self.assertIn(0x0009ABC0, found)
+        missing = set(found) - hle_inventoried_addresses()
+        self.assertEqual(missing, {0x0009ABC0},
+                         "a newly hidden callback literal must be the one thing the "
+                         "coverage gate reports as uninventoried")
+
+    # ---- the inventory entry itself ----------------------------------------
+    def test_the_inventory_entry_states_its_retirement_shape(self) -> None:
+        """The eight are PROFILE_OWNED_CONFIGURATION in shape but are NOT typed
+        configuration today. The entry has to say both, and has to say that the
+        mode-keyed pairs must not be flattened into scalar bindings."""
+        group = next(g for g in compat_overrides.HLE_GUEST_ADDRESS_GROUPS
+                     if g["name"] == "runtime_sync_callback_config")
+        self.assertEqual(group["title2_bucket"], "EXPLICIT_COMPATIBILITY_OVERRIDE")
+        self.assertEqual(set(group["addresses"]), set(RUNTIME_SYNC_CALLBACK_SITES))
+        self.assertIn("PROFILE_OWNED_CONFIGURATION", group["retirement"])
+        self.assertIn("not be flattened", group["retirement"].replace("NOT", "not"))
+        # The claim must stay a source claim: no route was run for it. SOURCE_SHAPE is
+        # the label AGENTS.md section 9 defines for "static structure/text/emission
+        # assertion only" -- the inventory must not invent a competing vocabulary.
+        self.assertEqual(group["evidence_tier"], "SOURCE_SHAPE")
+        self.assertIn("SOURCE_SHAPE", group["evidence"])
 
 if __name__ == "__main__":
     unittest.main()

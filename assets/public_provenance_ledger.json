@@ -793,7 +793,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2201619dc5a4b91582cd570e3b55353fc91f950bec7c096aa6d17720cf5b867b"
+      "sha256": "ebaf7185ac99e515bd1d4fb452f3b8cc957ad39d1cccbee8caee27dfc7d9f7f1"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -5082,7 +5082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3610a4c33b283cfba0ab7f284b2e421342b77c0ce3611f1fd31fdf71e6869068"
+      "sha256": "7d3eebd031a7184080366f8a58426db73de29e5852de02c12c4e7da5be81f5d7"
     },
     {
       "path": "tools/decompme_export.py",
@@ -5517,7 +5517,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "42375c546861fff3b90d0441d958cbacd8277a2d3dddab78dd75568ef6afcc25"
+      "sha256": "16a486a30de468c6832712a2a76b7b4ecad571a7136d6a55152de6a6b67d02d5"
     },
     {
       "path": "tools/mem_debug.py",
@@ -6244,7 +6244,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d2475f585d51e6af2eea2e1e0f772bef235625c192a5e28570c0ec27bad71d4"
+      "sha256": "0e5386c67efc1c99dbd1d23621046ededdf6f7f75d34c5341b6de101318a8889"
     },
     {
       "path": "tools/test_dco_policy.py",
@@ -6616,7 +6616,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a635074e125046cf36cb18272852507f387a7cd158ddfba4fe8dd62d24bc9555"
+      "sha256": "423c16767cb5e63a895336b54c9196cafa571fa2bc602272d9faa8be8295c644"
     },
     {
       "path": "tools/test_manager_safety.ps1",

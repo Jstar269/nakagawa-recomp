@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from tools import lint_docs
 from tools.lint_docs import (
     ROOT,
     get_tracked_markdown_files,
@@ -90,3 +91,42 @@ class TestDocFreshnessLinter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetiredIssueDenylistExpiry(unittest.TestCase):
+    """GitHub numbers issues and PRs from one sequence, so the public repository
+    reallocates the private-era numbers over time. A denylist entry that has been
+    reallocated flags a LIVE object and blocks legitimate work, so the module must
+    refuse to load with one present."""
+
+    def test_no_denylisted_number_is_already_reallocated(self) -> None:
+        self.assertTrue(
+            all(n > lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER
+                for n in lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS),
+            "a denylisted number is at or below the public numbering frontier",
+        )
+
+    def test_the_frontier_guard_is_load_bearing(self) -> None:
+        """MUTATION: reintroduce a reallocated number and the module must refuse to
+        load, rather than silently flagging a live public issue."""
+        source = (ROOT / "tools" / "lint_docs.py").read_text(encoding="utf-8")
+        mutated = source.replace(
+            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    102,",
+            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n"
+            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, 102,",
+            1,
+        )
+        self.assertNotEqual(mutated, source, "mutation anchor not found")
+        namespace = {"__file__": str(ROOT / "tools" / "lint_docs.py"), "__name__": "x"}
+        with self.assertRaises(ValueError) as caught:
+            exec(compile(mutated, "lint_docs", "exec"), namespace)  # noqa: S102
+        self.assertIn("reallocated", str(caught.exception))
+
+    def test_the_denylist_still_catches_a_genuinely_dead_number(self) -> None:
+        """Vacuity guard: the expiry rule must not have emptied the denylist."""
+        self.assertTrue(lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS)
+        dead = lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS[-1]
+        url = f"see github.com/Jstar269/nakagawa-recomp/issues/{dead} for context"
+        self.assertTrue(lint_docs.RETIRED_PRIVATE_ISSUE_URLS.search(url))
+        live = f"see github.com/Jstar269/nakagawa-recomp/issues/{lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}"
+        self.assertIsNone(lint_docs.RETIRED_PRIVATE_ISSUE_URLS.search(live))
