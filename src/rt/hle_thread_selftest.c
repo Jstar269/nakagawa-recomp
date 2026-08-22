@@ -48,6 +48,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <process.h>
 
 extern void sr_vblank_tick(void);
+void sr_ctrl_sample(void);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
 void sr_display_test_reset(void);
@@ -4227,6 +4228,7 @@ static uint32_t ctrl_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
  * run produces it. */
 static void ctrl_tick(unsigned n) {
     for (unsigned i = 0; i < n; i++) {
+        s_vtime_us += 16683u;
         sr_display_advance_vcount(1u);
         sr_vblank_tick();
     }
@@ -4370,6 +4372,120 @@ static void test_ctrl_read_buffer_contract(void) {
     ctrl_fill_guest(CTRL_WRAP_LANDING, CTRL_WRAP_LANDING_BYTES, 0u);
 
     ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
+static void test_ctrl_sample_timestamp_microsecond_contract(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+
+    /* Vector A: SAMPLE OWNERSHIP
+     * SceCtrlData.TimeStamp must contain the low 32 bits of the guest microsecond
+     * clock at sample creation/latch time. With virtual time at 1,000,000 us,
+     * one sample latched and read must report timestamp 1,000,000. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 1000000u;
+    sr_ctrl_sample();
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 1u) == 1u,
+           "Vector A: one sample produced yields one sample read");
+    expect(MEM_R32(CTRL_OK_BUF) == 1000000u,
+           "Vector A: sample timestamp matches guest microsecond clock (1,000,000 us)");
+
+    /* Vector B: EXACT DELTA
+     * Two consecutive samples produced at 1,000,000 us and 1,016,683 us (~1 frame
+     * interval) must report timestamps reflecting the exact 16,683 us delta. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 1000000u;
+    sr_ctrl_sample();
+    s_vtime_us = 1016683u;
+    sr_ctrl_sample();
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u,
+           "Vector B: two produced samples yield two samples read");
+    {
+        uint32_t ts0 = MEM_R32(CTRL_OK_BUF);
+        uint32_t ts1 = MEM_R32(CTRL_OK_BUF + CTRL_SAMPLE_BYTES);
+        expect(ts0 == 1000000u, "Vector B: first sample timestamp is 1,000,000 us");
+        expect(ts1 == 1016683u, "Vector B: second sample timestamp is 1,016,683 us");
+        expect(ts1 - ts0 == 16683u, "Vector B: delta between samples is exactly 16,683 us");
+    }
+
+    /* Vector C: NOT VCOUNT-DERIVED
+     * With VCOUNT held unchanged (no display advance), advance virtual time by
+     * 33,366 us (two frames) and produce a second sample. Timestamp must advance
+     * by 33,366 us even though VCOUNT did not move. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 2000000u;
+    sr_ctrl_sample();
+    s_vtime_us = 2033366u;
+    sr_ctrl_sample();
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u,
+           "Vector C: two produced samples with held VCOUNT yield two samples read");
+    {
+        uint32_t ts0 = MEM_R32(CTRL_OK_BUF);
+        uint32_t ts1 = MEM_R32(CTRL_OK_BUF + CTRL_SAMPLE_BYTES);
+        expect(ts0 == 2000000u, "Vector C: first sample timestamp is 2,000,000 us");
+        expect(ts1 == 2033366u, "Vector C: second sample timestamp is 2,033,366 us");
+        expect(ts1 - ts0 == 33366u, "Vector C: timestamp advances with virtual time when VCOUNT is frozen");
+    }
+
+    /* Vector D: SAMPLE-TIME, NOT READ-TIME
+     * Produce a sample at T1 = 3,000,000 us. Advance virtual time to T2 = 3,500,000 us
+     * WITHOUT producing a new sample. Read the stored sample. Its timestamp must
+     * remain T1 (3,000,000 us), proving timestamp belongs to sample latch time,
+     * not dispatch/read time. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 3000000u;
+    sr_ctrl_sample();
+    s_vtime_us = 3500000u;
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 1u) == 1u,
+           "Vector D: reading stored sample after time advancement yields one sample");
+    expect(MEM_R32(CTRL_OK_BUF) == 3000000u,
+           "Vector D: timestamp reflects latch time (3,000,000 us), not read time (3,500,000 us)");
+
+    /* Vector E: LOW-32 WRAP
+     * Virtual time wraps 32 bits from 0xFFFFFFF0 us (4,294,967,280 us) to
+     * 0x10000000E us (4,294,967,310 us). The stored timestamps must be
+     * 0xFFFFFFF0 and 0x0000000E, yielding an unsigned 32-bit delta of 30. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 0x00000000FFFFFFF0ULL;
+    sr_ctrl_sample();
+    s_vtime_us = 0x000000010000000EULL;
+    sr_ctrl_sample();
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u,
+           "Vector E: two samples across 32-bit wrap yield two samples read");
+    {
+        uint32_t ts0 = MEM_R32(CTRL_OK_BUF);
+        uint32_t ts1 = MEM_R32(CTRL_OK_BUF + CTRL_SAMPLE_BYTES);
+        expect(ts0 == 0xFFFFFFF0u, "Vector E: pre-wrap timestamp is 0xFFFFFFF0");
+        expect(ts1 == 0x0000000Eu, "Vector E: post-wrap timestamp is 0x0000000E");
+        expect(ts1 - ts0 == 30u, "Vector E: unsigned 32-bit delta across wrap is 30 us");
+    }
+
+    /* Vector F: ZERO COUNT
+     * Produce a sample at T = 4,000,000 us. Advance time to 4,500,000 us.
+     * Issue a zero-count read (nbufs = 0). The zero-count read must return 0,
+     * write no bytes, and must NOT create or restamp any sample.
+     * Advance time to 5,000,000 us and read the sample: its timestamp must
+     * still be 4,000,000 us. */
+    ctrl_drain(&cpu);
+    s_vtime_us = 4000000u;
+    sr_ctrl_sample();
+    s_vtime_us = 4500000u;
+    ctrl_fill_guest(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
+           "Vector F: zero-count read reports 0");
+    expect(ctrl_guest_all(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "Vector F: zero-count read writes no guest bytes");
+    s_vtime_us = 5000000u;
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 1u) == 1u,
+           "Vector F: subsequent read yields one stored sample");
+    expect(MEM_R32(CTRL_OK_BUF) == 4000000u,
+           "Vector F: stored sample timestamp remains 4,000,000 us after zero-count read");
+
     ctrl_drain(&cpu);
 }
 
@@ -7577,6 +7693,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
     test_ctrl_read_buffer_contract();
+    test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
     test_ge_guest_sentinel();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
