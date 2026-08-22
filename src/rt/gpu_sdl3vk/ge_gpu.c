@@ -3529,6 +3529,32 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+
+    /* A caller that agrees on the address but disagrees on how the bytes are laid
+     * out would misread the buffer it just synchronised, so the boundary refuses.
+     * These two controls keep that refusal honest.  A real observer defect once
+     * produced exactly this shape -- live target 5551, caller describing 8888 --
+     * and the refusal is what surfaced it.  Any change that makes an observer
+     * quieter must leave these failing closed. */
+    GeGpuFbDescriptor wrong_fmt = d;
+    wrong_fmt.format = fmt == 3u ? 1u : 3u;
+    if (gegpu_sync_guest_fb(&wrong_fmt) != GEGPU_SYNC_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: pixel-format mismatch against a live "
+                        "target was accepted (target fmt=%u, caller fmt=%u)\n",
+                fmt, wrong_fmt.format);
+        coherence_reset_targets();
+        return 0;
+    }
+    GeGpuFbDescriptor wrong_stride = d;
+    wrong_stride.stride = stride + 64u;
+    if (gegpu_sync_guest_fb(&wrong_stride) != GEGPU_SYNC_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: stride mismatch against a live "
+                        "target was accepted (target stride=%u, caller stride=%u)\n",
+                stride, wrong_stride.stride);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: live_target_mismatch_refused fmt and stride\n");
     GeGpuFbDescriptor no_target = d;
     no_target.addr = 0x04010000u;
     if (gegpu_sync_guest_fb(&no_target) != GEGPU_SYNC_NO_TARGET) {
