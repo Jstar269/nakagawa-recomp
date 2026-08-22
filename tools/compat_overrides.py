@@ -554,8 +554,9 @@ DIAGNOSTIC_GROUPS = [
 # only in this title's memory map, from handlers named after generic PSP APIs.
 # A different guest executable reaching h_DisplaySetMode would dispatch to
 # whatever happens to live at 0x00000bcc in ITS map.  Retiring them is tracked
-# by issue #20 (compatibility-override surface) and the readiness record in
-# docs/PORTING.md.
+# by issue #98 (compatibility-override surface) and the readiness record in
+# docs/PORTING.md.  This previously cited #20, which is a merged pull request
+# about sceSasCore routing -- so the surface had no tracker at all.
 HLE_GUEST_ADDRESS_GROUPS = [
     dict(name="guest_bss_snapshots", category="diagnostic",
          title2_bucket="DIAGNOSTIC_ONLY",
@@ -647,6 +648,48 @@ HLE_GUEST_ADDRESS_GROUPS = [
                                 "0x00331b80 (or where that address is live memory) sees "
                                 "HLE-driven writes",
          test="none"),
+    dict(name="runtime_sync_callback_config", category="temporary_compatibility_patch",
+         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title_scope="hst-ucus98701",
+         source="src/rt/hle.c:ensure_runtime_sync_callbacks, reached from h_DisplaySetMode",
+         addresses=[0x00333138, 0x002bdf38,
+                    0x000823f0, 0x00082438,
+                    0x00082474, 0x0008249c,
+                    0x000824c0, 0x000824e8],
+         reason="sceDisplaySetMode installs this title's runtime sync callbacks. It reads "
+                "and writes an HST configuration block based at 0x00333138 (+0x0c sema "
+                "handle, +0x30 mode, +0x34/+0x38 enter/leave, +0x4c0 initializer flag), "
+                "may create an HLE semaphore whose NAME POINTER is handed to the guest as "
+                "0x002bdf38, and then stores one of three pairs of guest wrapper entry "
+                "points into that block. Every one of the eight is a location in HST's map "
+                "and nothing else. This entry exists because none of them were visible to "
+                "the coupling gate before 2026-08-21: not one is written inside a MEM_* "
+                "call, so the direct-literal regex matched none of them while the census "
+                "reported itself complete at 38/38.",
+         generic_fallback="none today, and that is the point -- the handler has no path "
+                          "that installs sync callbacks without these addresses. The "
+                          "generic PSP semantic (register mode/width/height, drive vblank "
+                          "cadence) does not require them; the bring-up replay does.",
+         retirement="the eight values are PROFILE_OWNED_CONFIGURATION in shape: a config "
+                    "base with a fixed field layout, a name pointer, and three MODE-KEYED "
+                    "PAIRS of wrapper entries. They must NOT be flattened into scalar "
+                    "runtime_bindings -- the pairing and the mode that selects it are part "
+                    "of the meaning. The host-side replay and seeding behavior around them "
+                    "stays EXPLICIT_COMPATIBILITY_OVERRIDE until it has a generic "
+                    "mechanism to be configured INTO.",
+         evidence_tier="SOURCE_SHAPE",
+         evidence="SOURCE_SHAPE: the eight literals and their read/write offsets are read "
+                  "out of src/rt/hle.c; h_DisplaySetMode is registered unconditionally in "
+                  "hle_register_display_handlers(), with no title gate, so any guest "
+                  "calling sceDisplaySetMode reaches this code. No route was run for this "
+                  "inventory entry and none is claimed.",
+         accidental_inheritance="yes, and this is the worst shape in the inventory: a "
+                                "second executable that calls sceDisplaySetMode has "
+                                "whatever lives at 0x00333138 in ITS map read AND WRITTEN, "
+                                "gets 0x002bdf38 handed to sceKernelCreateSema as a name "
+                                "pointer, and has two of the six wrapper addresses stored "
+                                "where its own code will later call them.",
+         test="tools/test_compat_manifest.py:HleIndirectCouplingGrammar"),
     dict(name="display_setmode_guest_init", category="temporary_compatibility_patch",
          title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
          title_scope="hst-ucus98701",
