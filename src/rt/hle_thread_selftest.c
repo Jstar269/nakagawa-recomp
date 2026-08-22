@@ -39,6 +39,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
+#include "iso.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -88,7 +89,11 @@ static void gpu_dirty_reset(void) {
 extern uint32_t sr_hle_test_io_open(CpuState *s);
 extern uint32_t sr_hle_test_io_read(CpuState *s);
 extern uint32_t sr_hle_test_io_write(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek(CpuState *s);
 extern uint32_t sr_hle_test_io_lseek32(CpuState *s);
+extern uint32_t sr_hle_test_io_dopen(CpuState *s);
+extern uint32_t sr_hle_test_io_dread(CpuState *s);
+extern uint32_t sr_hle_test_io_dclose(CpuState *s);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
@@ -343,6 +348,10 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     (void)lba; (void)offset; (void)dst; (void)bytes;
     return -1;
 }
+int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
+    (void)guest_path; (void)index; (void)out;
+    return 0;
+}
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
  * APIs, which reach hle.c's user_partition_init(); its only external dependency
@@ -586,7 +595,13 @@ static void fd_set_write(CpuState *cpu, uint32_t fd, uint32_t source, uint32_t c
 }
 
 static void test_fd_namespace(void) {
-    enum { FD_KIND_STD = 1, FD_KIND_FILE = 2, FD_BAD = 0x80010009u };
+    enum {
+        FD_KIND_STD = 1,
+        FD_KIND_FILE = 2,
+        SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR = 0x80020323u,
+        SCE_KERNEL_ERROR_TOO_MANY_OPEN_FILES = 0x80020320u,
+        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u
+    };
     const uint32_t path_addr = 0x09010000u;
     const uint32_t payload_addr = 0x09011000u;
     static const char result_guest[] = "ms0:/NAKAGAWA_MINIMAL_RESULT.TXT";
@@ -623,6 +638,7 @@ static void test_fd_namespace(void) {
     expect(fd_host_bytes_equal(result_host, payload, sizeof(payload) - 1u),
            "Phase-5 payload is persisted byte-for-byte through the ordinary fd");
 
+    /* Standard descriptor operations */
     fd_set_write(&cpu, 1u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
     expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
            "write through stdout's reserved descriptor follows the console path");
@@ -634,48 +650,238 @@ static void test_fd_namespace(void) {
     fd_set_write(&cpu, 2u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
     expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
            "stderr's reserved descriptor follows the standard-stream path");
-    expect(sr_hle_test_io_read(&(CpuState){.r = {0, 0, 0, 0, 1u, 0, 0}}) == FD_BAD,
-           "read on a standard descriptor is rejected as a non-file operation");
+
+    /* Standard descriptor operations outside console write preserve baseline behavior */
+    expect(sr_hle_test_io_read(&(CpuState){.r = {0, 0, 0, 0, 1u, 0, 0}}) == 0x80010009u,
+           "read on a standard descriptor preserves baseline errno 0x80010009");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 0x80010009u,
+           "lseek32 on a standard descriptor preserves baseline errno 0x80010009");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
-           "seek on a standard descriptor is rejected as a non-file operation");
+    uint32_t lseek_std = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_std == 0x80010009u && cpu.r[3] == 0u,
+           "lseek on a standard descriptor preserves baseline errno 0x80010009");
+
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
+    expect(sr_hle_test_io_ioctl(&cpu) == 0x80010009u,
+           "ioctl on a standard descriptor preserves baseline errno 0x80010009");
+
+    /* Scope-negative: Unsupported ioctl command on valid file fd remains 0x80010086 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0x99999999u;
+    expect(sr_hle_test_io_ioctl(&cpu) == 0x80010086u,
+           "unsupported ioctl command returns 0x80010086");
+
+    /* Scope-negative: Non-existent file open remains driver errno (0x80010002) */
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "ms0:/NON_EXISTENT_FILE_12345.TXT");
+    cpu.r[5] = 1u;
+    expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
+           "open non-existent file returns driver errno 0x80010002");
+
+    /* Out-of-range / Negative descriptors (0xFFFFFFFFu = -1) */
+    fd_set_write(&cpu, 0xffffffffu, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "write on negative fd reports manager bad-fd");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_read(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "read on negative fd reports manager bad-fd");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "lseek32 on negative fd reports manager bad-fd");
+    cpu.r[4] = 0xffffffffu;
     cpu.r[29] = 0x09012000u;
     MEM_W32(cpu.r[29] + 16u, 0u);
-    MEM_W32(cpu.r[29] + 20u, 0u);
-    expect(sr_hle_test_io_ioctl(&cpu) == FD_BAD,
-           "ioctl on a standard descriptor is rejected as a non-file operation");
+    uint32_t lseek_neg = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_neg == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek on negative fd reports manager bad-fd with high-word error");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_ioctl(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "ioctl on negative fd reports manager bad-fd");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close on negative fd reports manager bad-fd");
+    cpu.r[4] = 0xffffffffu;
+    expect(sr_hle_test_io_close_async(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close_async on negative fd reports manager bad-fd");
 
-    fd_set_write(&cpu, 0xffffffffu, payload_addr, (uint32_t)(sizeof(payload) - 1u));
-    expect(sr_hle_test_io_write(&cpu) == FD_BAD,
-           "write on an out-of-range descriptor is rejected without table access");
+    /* Unknown out-of-table fd (64u) */
+    fd_set_write(&cpu, 64u, payload_addr, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "write on out-of-table fd 64 reports manager bad-fd");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "read on out-of-table fd 64 reports manager bad-fd");
+    cpu.r[4] = 64u;
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "lseek32 on out-of-table fd 64 reports manager bad-fd");
+    cpu.r[4] = 64u;
+    cpu.r[29] = 0x09012000u;
+    MEM_W32(cpu.r[29] + 16u, 0u);
+    uint32_t lseek_oot = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_oot == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek on out-of-table fd 64 reports manager bad-fd");
+    cpu.r[4] = 64u;
+    expect(sr_hle_test_io_ioctl(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "ioctl on out-of-table fd 64 reports manager bad-fd");
+    cpu.r[4] = 64u;
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close on out-of-table fd 64 reports manager bad-fd");
+    cpu.r[4] = 64u;
+    expect(sr_hle_test_io_close_async(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close_async on out-of-table fd 64 reports manager bad-fd");
+
+    /* Directory descriptor passed to file API (Wrong kind) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x100u;
+    expect(sr_hle_test_io_write(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "write on directory fd reports manager bad-fd");
+    expect(sr_hle_test_io_read(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "read on directory fd reports manager bad-fd");
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "lseek32 on directory fd reports manager bad-fd");
+    cpu.r[29] = 0x09012000u;
+    MEM_W32(cpu.r[29] + 16u, 0u);
+    uint32_t lseek_dir = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_dir == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek on directory fd reports manager bad-fd");
+    expect(sr_hle_test_io_ioctl(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "ioctl on directory fd reports manager bad-fd");
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close on directory fd reports manager bad-fd");
+
+    /* File descriptor passed to directory API (Wrong kind) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = payload_addr;
+    expect(sr_hle_test_io_dread(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dread on file fd reports manager bad-fd");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_dclose(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dclose on file fd reports manager bad-fd");
+
+    /* Invalid directory descriptors */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0xffffffffu;
-    expect(sr_hle_test_io_read(&cpu) == FD_BAD,
-           "read on an out-of-range descriptor is rejected without table access");
-    cpu.r[4] = 0xffffffffu;
-    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
-           "seek on an out-of-range descriptor is rejected without table access");
-    cpu.r[4] = 0xffffffffu;
-    expect(sr_hle_test_io_close(&cpu) == FD_BAD,
-           "close on an out-of-range descriptor is rejected without table access");
+    expect(sr_hle_test_io_dread(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dread on negative dir fd reports manager bad-fd");
+    expect(sr_hle_test_io_dclose(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dclose on negative dir fd reports manager bad-fd");
+    cpu.r[4] = 0x200u;
+    expect(sr_hle_test_io_dread(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dread on out-of-range dir fd reports manager bad-fd");
+    expect(sr_hle_test_io_dclose(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dclose on out-of-range dir fd reports manager bad-fd");
+    cpu.r[4] = 0x100u;
+    expect(sr_hle_test_io_dread(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dread on unallocated dir fd reports manager bad-fd");
+    expect(sr_hle_test_io_dclose(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "dclose on unallocated dir fd reports manager bad-fd");
 
+    /* Valid directory descriptor operations */
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "disc0:/");
+    uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(dir_fd == 0x100u, "dopen on disc0:/ succeeds and returns dir fd 0x100");
+    /* Scope-negative non-regression: valid dir fd with null dirent pointer (de == 0) preserves baseline 0x80010009 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = 0u;
+    expect(sr_hle_test_io_dread(&cpu) == 0x80010009u,
+           "dread on valid dir fd with null pointer preserves baseline errno 0x80010009");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u, "dclose on valid dir fd succeeds");
+
+    /* Whence validation on valid open file */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;     /* offset */
+    cpu.r[6] = 3u;     /* invalid whence */
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_INVALID_ARGUMENT,
+           "lseek32 with whence=3 reports manager invalid-argument");
+    cpu.r[6] = 0xffffffffu;  /* invalid whence negative */
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_INVALID_ARGUMENT,
+           "lseek32 with negative whence reports manager invalid-argument");
+    cpu.r[6] = 100u;   /* invalid whence large */
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_INVALID_ARGUMENT,
+           "lseek32 with whence=100 reports manager invalid-argument");
+
+    /* Valid whence operations on lseek32 */
+    cpu.r[5] = 5u;
+    cpu.r[6] = 0u;     /* SEEK_SET */
+    expect(sr_hle_test_io_lseek32(&cpu) == 5u, "lseek32 SEEK_SET succeeds");
+    cpu.r[5] = 3u;
+    cpu.r[6] = 1u;     /* SEEK_CUR */
+    expect(sr_hle_test_io_lseek32(&cpu) == 8u, "lseek32 SEEK_CUR succeeds");
+    cpu.r[5] = 0u;
+    cpu.r[6] = 2u;     /* SEEK_END */
+    expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u, "lseek32 SEEK_END succeeds");
+
+    /* Whence validation on 64-bit lseek */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = 0u;     /* offset low */
+    cpu.r[7] = 0u;     /* offset high */
+    cpu.r[8] = 3u;     /* whence = 3 */
+    uint32_t lseek_w3 = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_w3 == SCE_KERNEL_ERROR_INVALID_ARGUMENT && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek with whence=3 reports manager invalid-argument with high-word error");
+    cpu.r[8] = 0xffffffffu;  /* whence = -1 */
+    uint32_t lseek_wn = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_wn == SCE_KERNEL_ERROR_INVALID_ARGUMENT && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek with negative whence reports manager invalid-argument with high-word error");
+
+    /* Valid whence on 64-bit lseek */
+    cpu.r[8] = 0u;     /* SEEK_SET */
+    cpu.r[6] = 5u;
+    expect(sr_hle_test_io_lseek(&cpu) == 5u && cpu.r[3] == 0u, "lseek SEEK_SET succeeds");
+    cpu.r[8] = 1u;     /* SEEK_CUR */
+    cpu.r[6] = 3u;
+    expect(sr_hle_test_io_lseek(&cpu) == 8u && cpu.r[3] == 0u, "lseek SEEK_CUR succeeds");
+    cpu.r[8] = 2u;     /* SEEK_END */
+    cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
+
+    /* Closed descriptor behavior */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd;
     expect(sr_hle_test_io_close(&cpu) == 0u, "closing the ordinary descriptor succeeds");
     fd_set_write(&cpu, fd, payload_addr, (uint32_t)(sizeof(payload) - 1u));
-    expect(sr_hle_test_io_write(&cpu) == FD_BAD,
-           "write through a closed ordinary descriptor remains invalid");
+    expect(sr_hle_test_io_write(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "write through a closed ordinary descriptor reports manager bad-fd");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd;
-    expect(sr_hle_test_io_lseek32(&cpu) == FD_BAD,
-           "seek through a closed ordinary descriptor remains invalid");
-    expect(sr_hle_test_io_close(&cpu) == FD_BAD,
-           "closing an already-closed descriptor reports bad fd");
+    expect(sr_hle_test_io_read(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "read through a closed ordinary descriptor reports manager bad-fd");
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "lseek32 through a closed ordinary descriptor reports manager bad-fd");
+    cpu.r[4] = fd;
+    cpu.r[29] = 0x09012000u;
+    MEM_W32(cpu.r[29] + 16u, 0u);
+    uint32_t lseek_closed = sr_hle_test_io_lseek(&cpu);
+    expect(lseek_closed == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR && cpu.r[3] == 0xFFFFFFFFu,
+           "lseek through a closed descriptor reports manager bad-fd");
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_ioctl(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "ioctl through a closed descriptor reports manager bad-fd");
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "closing an already-closed descriptor reports manager bad-fd");
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close_async(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
+           "close_async on an already-closed descriptor reports manager bad-fd");
 
+    /* FD Reuse */
     fd_set_path(&cpu, path_addr, result_guest);
     uint32_t reused = sr_hle_test_io_open(&cpu);
     expect(reused == 3u, "closing an ordinary descriptor releases fd 3 for reuse");
@@ -710,9 +916,23 @@ static void test_fd_namespace(void) {
     }
     snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_OVERFLOW.TXT");
     fd_set_path(&cpu, path_addr, guest_path);
-    expect(sr_hle_test_io_open(&cpu) == 0x80010018u,
-           "ordinary allocation fails closed when fd 3..63 are exhausted");
-    for (uint32_t i = 0; i < 61u; i++) {
+    expect(sr_hle_test_io_open(&cpu) == SCE_KERNEL_ERROR_TOO_MANY_OPEN_FILES,
+           "ordinary allocation reports manager TOO_MANY_OPEN_FILES when fd 3..63 are exhausted");
+
+    /* Release one slot and prove allocation succeeds again immediately */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = open_fds[0];
+    expect(sr_hle_test_io_close(&cpu) == 0u, "closing slot 0 frees it for reallocation");
+    fd_set_path(&cpu, path_addr, "ms0:/NAKAGAWA_FD_REALLOC.TXT");
+    uint32_t realloc_fd = sr_hle_test_io_open(&cpu);
+    expect(realloc_fd == 3u, "allocation immediately reuses the freed slot");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = realloc_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "reallocated descriptor closes cleanly");
+    fd_host_path(host_path, sizeof(host_path), "ms0:/NAKAGAWA_FD_REALLOC.TXT");
+    DeleteFileA(host_path);
+
+    for (uint32_t i = 1; i < 61u; i++) {
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = open_fds[i];
         expect(sr_hle_test_io_close(&cpu) == 0u, "each exhausted-table descriptor closes cleanly");
@@ -720,6 +940,9 @@ static void test_fd_namespace(void) {
         fd_host_path(host_path, sizeof(host_path), guest_path);
         DeleteFileA(host_path);
     }
+    snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_00.TXT");
+    fd_host_path(host_path, sizeof(host_path), guest_path);
+    DeleteFileA(host_path);
 
     /* Closing a standard descriptor makes it invalid for I/O but does not turn
      * its reserved identity into an ordinary allocation slot. */
