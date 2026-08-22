@@ -101,6 +101,16 @@ extern uint32_t sr_hle_test_io_close_async(CpuState *s);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
 
+/* Extracted-data route contract instrumentation (defined in hle.c, selftest-only).
+ * The guest-start marker, cold-census counters, and walk pacing exist only in
+ * this executable; production never compiles them. */
+extern void sr_hle_test_data_reset(void);
+extern unsigned long long sr_hle_test_data_cold_builds(void);
+extern unsigned long long sr_hle_test_data_cold_builds_after_guest_start(void);
+extern void sr_hle_test_data_mark_guest_started(void);
+extern int sr_hle_test_data_route_state(void);
+extern void sr_hle_test_data_set_walk_delay_ms(unsigned ms);
+
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
 typedef struct {
     uint32_t capacity, count, read_pos, write_pos;
@@ -1019,6 +1029,276 @@ static void test_utility_av_module_state(void) {
            "AV-specific duplicate load reports its AV error");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_AV_MODULE, 0u) == 0,
            "AV-specific unload clears the shared AVCODEC state");
+}
+
+/* ---- extracted-data route: cold census must complete before guest start ----
+ *
+ * Root cause of the early-boot stall (#369): the cold SR_DATAROOT census used to
+ * be triggered lazily from the first guest h_IoOpen/h_IoGetstat, running the
+ * whole filesystem walk synchronously on the single guest-scheduler OS thread.
+ * Under filesystem contention every guest thread, tick, VBLANK service, and
+ * audio callback starved for its duration.
+ *
+ * These tests are structural, not wall-clock based:
+ *   - the route reaches a terminal state before a simulated guest-start boundary;
+ *   - guest-time lookups consume that terminal state and never begin a census;
+ *   - an artificially slowed enumeration still finishes entirely before the
+ *     boundary (proving placement, not speed).
+ * The counters and pacing hook are compiled into hle.c only for this executable. */
+
+static const char DATA_FIXTURE_GUEST_PATH[] =
+    "disc0:/USRDIR/data/menu/text/srselftest_common.to";
+
+/* Source-owned two-file fixture tree under build/ (git-ignored). The
+ * configured SR_DATAROOT contract requires an absolute path, so the fixture
+ * root is resolved with GetFullPathNameA exactly like an operator would. */
+static void data_fixture_build(const char *root) {
+    char path[MAX_PATH];
+    CreateDirectoryA("build", NULL);
+    snprintf(path, sizeof(path), "%s", root); CreateDirectoryA(path, NULL);
+    snprintf(path, sizeof(path), "%s\\data", root); CreateDirectoryA(path, NULL);
+    snprintf(path, sizeof(path), "%s\\data\\menu", root); CreateDirectoryA(path, NULL);
+    snprintf(path, sizeof(path), "%s\\data\\menu\\text", root); CreateDirectoryA(path, NULL);
+    snprintf(path, sizeof(path), "%s\\data\\menu\\text\\srselftest_common.to", root);
+    HANDLE f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) { expect(0, "data fixture file is created"); return; }
+    DWORD written = 0;
+    WriteFile(f, "COMMON", 6u, &written, NULL);
+    CloseHandle(f);
+    expect(written == 6u, "data fixture content is written");
+}
+
+/* Resolve a repo-relative fixture path to its absolute form. */
+static void data_fixture_abs_root(const char *relative, char *out, size_t capacity) {
+    DWORD n = GetFullPathNameA(relative, (DWORD)capacity, out, NULL);
+    expect(n > 0 && n < capacity, "data fixture root resolves to an absolute path");
+}
+
+/* Save/copy the current value of an environment variable (NULL when absent). */
+static char *data_env_save(const char *name) {
+    const char *value = getenv(name);
+    if (!value) return NULL;
+    char *copy = (char *)malloc(strlen(value) + 1u);
+    if (copy) memcpy(copy, value, strlen(value) + 1u);
+    return copy;
+}
+static void data_env_restore(const char *name, const char *saved) {
+    if (saved) SetEnvironmentVariableA(name, saved);
+    else SetEnvironmentVariableA(name, NULL);
+}
+
+/* Route state values mirrored from hle.c (selftest sees no internal headers). */
+enum { DATA_STATE_UNINITIALIZED = 0, DATA_STATE_READY = 2, DATA_STATE_FAILED = 3,
+       DATA_STATE_DISABLED = 4 };
+
+/* Open the fixture asset read-only through the production h_IoOpen wrapper.
+ * The ISO stub never matches, so a miss on the host fs path falls through to
+ * host_data_lookup exactly as a real guest open does. Returns the raw result. */
+static uint32_t data_fixture_open_asset(void) {
+    static const uint32_t path_addr = 0x09030000u;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    fd_guest_copy(path_addr, DATA_FIXTURE_GUEST_PATH, sizeof(DATA_FIXTURE_GUEST_PATH));
+    cpu.r[4] = path_addr;
+    cpu.r[5] = 1u; /* PSP_O_RDONLY */
+    return sr_hle_test_io_open(&cpu);
+}
+
+static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(void) {
+    char *old_dataroot = data_env_save("SR_DATAROOT");
+    char *old_fsdir = data_env_save("SR_FSDIR");
+    char dataroot[MAX_PATH];
+    data_fixture_abs_root("build\\hle_dataroot_fixture", dataroot, sizeof(dataroot));
+    data_fixture_build(dataroot);
+    CreateDirectoryA("build\\hle_dataroot_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", "build\\hle_dataroot_fs");
+    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    sr_hle_init();
+    sr_hle_test_data_reset();
+
+    /* Pre-guest preparation: synchronous, terminal before any guest exists. */
+    expect(sr_host_data_prepare() == 1,
+           "an operator-configured extraction root prepares synchronously to READY");
+    expect(sr_hle_test_data_route_state() == DATA_STATE_READY,
+           "preparation leaves the route in the terminal READY state");
+
+    /* The guest-start boundary. */
+    sr_hle_test_data_mark_guest_started();
+
+    uint32_t fd = data_fixture_open_asset();
+    expect(fd >= 3u && fd < 0x80000000u,
+           "a prepared route serves the indexed asset at guest time");
+    expect(fd < 0xffffffffu && sr_hle_test_fd_kind(fd) == 2,
+           "the served asset uses an ordinary file descriptor");
+    {
+        CpuState cpu;
+        static const uint32_t buf_addr = 0x09031000u;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = buf_addr; cpu.r[6] = 6u;
+        expect(sr_hle_test_io_read(&cpu) == 6u,
+               "the served asset reads back its full indexed size");
+        int bytes_ok = 1;
+        for (uint32_t i = 0; i < 6u; i++)
+            if ((char)MEM_R8(buf_addr + i) != "COMMON"[i]) bytes_ok = 0;
+        expect(bytes_ok, "the served asset returns the fixture's own bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        expect(sr_hle_test_io_close(&cpu) == 0, "the served asset closes cleanly");
+    }
+
+    expect(sr_hle_test_data_cold_builds() == 1ull,
+           "exactly one cold census runs: the pre-guest preparation");
+    expect(sr_hle_test_data_cold_builds_after_guest_start() == 0ull,
+           "no cold census begins after the guest-start boundary");
+
+    data_env_restore("SR_FSDIR", old_fsdir);
+    data_env_restore("SR_DATAROOT", old_dataroot);
+    free(old_fsdir);
+    free(old_dataroot);
+    sr_hle_test_data_reset();
+}
+
+/* A guest-time lookup with a never-prepared route must fail closed WITHOUT
+ * constructing anything. Restoring lazy construction inside host_data_lookup
+ * fails this test. */
+static void test_unprepared_route_lookup_fails_closed_without_building(void) {
+    char *old_dataroot = data_env_save("SR_DATAROOT");
+    char *old_fsdir = data_env_save("SR_FSDIR");
+    char dataroot[MAX_PATH];
+    data_fixture_abs_root("build\\hle_dataroot_fixture", dataroot, sizeof(dataroot));
+    data_fixture_build(dataroot);
+    CreateDirectoryA("build\\hle_dataroot_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", "build\\hle_dataroot_fs");
+    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    sr_hle_init();
+    sr_hle_test_data_reset();
+
+    expect(sr_hle_test_data_route_state() == DATA_STATE_UNINITIALIZED,
+           "a reset route starts UNINITIALIZED");
+    sr_hle_test_data_mark_guest_started();
+
+    uint32_t fd = data_fixture_open_asset();
+    expect((int32_t)fd == (int32_t)0x80010002,
+           "a lookup against a non-terminal route fails closed to not-found");
+
+    expect(sr_hle_test_data_cold_builds() == 0ull,
+           "a non-terminal route is consumed without enumerating");
+    expect(sr_hle_test_data_cold_builds_after_guest_start() == 0ull,
+           "guest time never begins a cold census, even an unprepared one");
+
+    data_env_restore("SR_FSDIR", old_fsdir);
+    data_env_restore("SR_DATAROOT", old_dataroot);
+    free(old_fsdir);
+    free(old_dataroot);
+    sr_hle_test_data_reset();
+}
+
+/* A deliberately slowed census must still finish entirely before the
+ * guest-start boundary. This proves placement of the work, independent of how
+ * fast the host filesystem actually is. */
+static void test_slow_enumeration_completes_before_guest_start(void) {
+    char *old_dataroot = data_env_save("SR_DATAROOT");
+    char *old_fsdir = data_env_save("SR_FSDIR");
+    char dataroot[MAX_PATH];
+    data_fixture_abs_root("build\\hle_dataroot_slow", dataroot, sizeof(dataroot));
+    data_fixture_build(dataroot);
+    CreateDirectoryA("build\\hle_dataroot_slow_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", "build\\hle_dataroot_slow_fs");
+    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    sr_hle_init();
+    sr_hle_test_data_reset();
+    sr_hle_test_data_set_walk_delay_ms(20);
+
+    expect(sr_host_data_prepare() == 1,
+           "the slowed census completes synchronously during preparation");
+    sr_hle_test_data_mark_guest_started();
+
+    uint32_t fd = data_fixture_open_asset();
+    expect(fd >= 3u && fd < 0x80000000u,
+           "the slow-prepared route serves the asset at guest time");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        sr_hle_test_io_close(&cpu);
+    }
+    expect(sr_hle_test_data_cold_builds_after_guest_start() == 0ull,
+           "the delayed enumeration finished entirely before the guest-start boundary");
+
+    sr_hle_test_data_set_walk_delay_ms(0);
+    data_env_restore("SR_FSDIR", old_fsdir);
+    data_env_restore("SR_DATAROOT", old_dataroot);
+    free(old_fsdir);
+    free(old_dataroot);
+    sr_hle_test_data_reset();
+}
+
+/* A generic profile with no operator root must terminate DISABLED with zero
+ * scanning, so a tree staged for one title is never enumerated on behalf of
+ * another title or a synthetic guest. */
+static void test_unapplicable_route_disables_without_scanning(void) {
+#if SR_DATA_EXPECTED_COUNT > 0
+    (void)0; /* this profile always declares an applicable census */
+#else
+    char *old_dataroot = data_env_save("SR_DATAROOT");
+    char *old_fsdir = data_env_save("SR_FSDIR");
+    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    sr_hle_init();
+    sr_hle_test_data_reset();
+
+    expect(sr_host_data_prepare() == 0,
+           "a route with neither operator root nor expected census refuses to claim ready");
+    expect(sr_hle_test_data_route_state() == DATA_STATE_DISABLED,
+           "an unapplicable route terminates DISABLED without any scan");
+    sr_hle_test_data_mark_guest_started();
+
+    uint32_t fd = data_fixture_open_asset();
+    expect((int32_t)fd == (int32_t)0x80010002,
+           "a disabled route fails closed at guest time");
+    expect(sr_hle_test_data_cold_builds() == 0ull,
+           "a disabled route never enumerates, not even once");
+
+    data_env_restore("SR_FSDIR", old_fsdir);
+    data_env_restore("SR_DATAROOT", old_dataroot);
+    free(old_fsdir);
+    free(old_dataroot);
+    sr_hle_test_data_reset();
+#endif
+}
+
+/* An applicable route whose configured root is missing terminates FAILED once;
+ * repeated guest-time lookups consume that verdict without rescanning. */
+static void test_missing_root_fails_once_and_stays_failed(void) {
+    char *old_dataroot = data_env_save("SR_DATAROOT");
+    char *old_fsdir = data_env_save("SR_FSDIR");
+    char missing[MAX_PATH];
+    data_fixture_abs_root("build\\hle_dataroot_missing_root", missing, sizeof(missing));
+    SetEnvironmentVariableA("SR_FSDIR", "build\\hle_dataroot_missing_fs");
+    SetEnvironmentVariableA("SR_DATAROOT", missing);
+    sr_hle_init();
+    sr_hle_test_data_reset();
+
+    expect(sr_host_data_prepare() == 0,
+           "a missing configured root is not READY");
+    expect(sr_hle_test_data_route_state() == DATA_STATE_FAILED,
+           "a failed preparation leaves the route terminally FAILED");
+    sr_hle_test_data_mark_guest_started();
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        uint32_t fd = data_fixture_open_asset();
+        expect((int32_t)fd == (int32_t)0x80010002,
+               "a failed route keeps failing closed to the ordinary ISO/VFS outcome");
+    }
+    expect(sr_hle_test_data_cold_builds() == 1ull,
+           "the failed census ran exactly once, during preparation");
+    expect(sr_hle_test_data_cold_builds_after_guest_start() == 0ull,
+           "failed routes are never re-enumerated at guest time");
+
+    data_env_restore("SR_FSDIR", old_fsdir);
+    data_env_restore("SR_DATAROOT", old_dataroot);
+    free(old_fsdir);
+    free(old_dataroot);
+    sr_hle_test_data_reset();
 }
 
 /* ---- coroutine park ------------------------------------------------------------------
@@ -7966,6 +8246,15 @@ int main(int argc, char **argv) {
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
     test_route_legacy_pad_script_is_unchanged();
+
+    /* Extracted-data route contract (#369): the cold SR_DATAROOT census must
+     * complete before guest execution begins, and guest-time lookups must
+     * consume a terminal route state without ever enumerating. */
+    test_extracted_data_prepares_before_guest_and_lookup_never_builds();
+    test_unprepared_route_lookup_fails_closed_without_building();
+    test_slow_enumeration_completes_before_guest_start();
+    test_unapplicable_route_disables_without_scanning();
+    test_missing_root_fails_once_and_stays_failed();
 
     check_coroutine_lifecycle();
 

@@ -3886,7 +3886,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "d7f927a447704adeb94a441067666a7ee8085c4a65fd6539338fc7bfc0c0fa4c"
+      "sha256": "9ef592877ba6a8a68876107bf1f75e571ed008583c572b52e7a571958207bcb9"
     },
     {
       "path": "src/rt/evf.h",
@@ -4382,7 +4382,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4247f99540c784c5360f75ff83682e4c2a335678569f08cc85eedd360c8a9d27"
+      "sha256": "fc74824dd3bd80b87aaed384b0905948c81e884a3a860dd06d9b9dc7e678bf4a"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4394,7 +4394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "71160cf0899eeca3282780809d1307b7c0b409908ac7da6a2177f2ca9ed8c930"
+      "sha256": "02cd5f4e99c646f1b550985e6b0f7f57626b647cd1a14bcc5acdf4c64ef49447"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4601,7 +4601,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "86fea76ee26602b8ebc956625273c28e1b4f099be9e6f35605dfdf4b574ed80d"
+      "sha256": "30863d8df56c5369f0da8b65f0ada9d6b1707f1d07591bbe81505a2f45b81d37"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5191,7 +5191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e8d4a1988b99a2ffcfde12ce029cc6304245f8aac3bf128c6cadfc8db124e54"
+      "sha256": "61093668974f280932194ac80f1d121d09857c394500e9aca128a864abeaf19e"
     },
     {
       "path": "tools/ge_replay_metrics.py",
@@ -6051,7 +6051,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "454cf74fe04897c3b01709540a935017ea8e14f1bd563e5d8135fe6224a428aa"
+      "sha256": "97ba8deddd7ca035fc303f4a220e67fad5818873178b82ca59b05c07def6be00"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
@@ -6732,7 +6732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a203ad220ac3fd8559dc1f481948ee67e5a9fd1bbdd0fe75a326e2cf06d9d32"
+      "sha256": "78bc9027812ca1a283a45f1e4da9c5d7faf6c1fc8a253ba171ab2ed477e699fe"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",

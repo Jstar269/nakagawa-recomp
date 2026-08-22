@@ -391,11 +391,25 @@ have_image:;
         s.pc = entry;
     }
 
-    int use_sched = 0;
+    int use_sched = 0, use_gui = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
-    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) { gui_init(SR_APP_TITLE); use_sched = 1; }
+    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) use_gui = 1;
 
-    if (use_sched) {
+    /* Cold extracted-asset preparation runs HERE -- after image/config load,
+     * generated-function registration, and entry validation, but before any
+     * guest execution can exist: no gui window yet, the scheduler is not
+     * initialized, and the entry function was never invoked directly. Starting
+     * the SR_DATAROOT census from a guest HLE call instead would run the whole
+     * filesystem walk on the single guest-scheduler thread and starve every
+     * guest thread, tick, VBLANK service, and audio callback for as long as a
+     * contended host filesystem call blocks. */
+    fprintf(stderr, "BOOT_EVENT phase=index_prepare_begin\n");
+    int data_ready = sr_host_data_prepare();
+    fprintf(stderr, "BOOT_EVENT phase=index_prepare_end ready=%d\n", data_ready);
+
+    if (use_gui) gui_init(SR_APP_TITLE);
+
+    if (use_sched || use_gui) {
         /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-
          * waits on a sibling). sched_run uses s as the live register file for whichever thread
          * runs; it returns when no thread is runnable, or the process exits at an unimplemented

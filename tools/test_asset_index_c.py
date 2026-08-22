@@ -159,6 +159,34 @@ class TestAssetIndexSelftestC(unittest.TestCase):
             hle,
         )
 
+    def test_cold_census_preparation_precedes_guest_execution(self):
+        """The cold SR_DATAROOT census must not be startable from guest time.
+
+        Structural contract (early-boot stall): the census entry point exists,
+        guest-time lookups consume a terminal route state instead of triggering
+        construction, and production startup calls the preparation seam after
+        image/entry validation but before gui_init, sched_init, and any direct
+        guest entry invocation.
+        """
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.assertIn("int sr_host_data_prepare(void)", hle)
+        self.assertIn("SR_DATA_STATE_DISABLED", hle)
+        self.assertIn("host_data: guest-time lookup found the route non-terminal", hle)
+        # The lazy cold-build trigger must be gone from the lookup path.
+        self.assertNotIn("if (!data_init()) return NULL;", hle)
+
+        driver = (ROOT / "src" / "rt" / "driver.c").read_text(encoding="utf-8")
+        prepare = driver.index("sr_host_data_prepare()")
+        gui = driver.index("gui_init(SR_APP_TITLE)")
+        sched = driver.index("sched_init(&s)")
+        direct = driver.index("fn(&s)")
+        self.assertLess(prepare, gui,
+                        "data preparation must run before gui_init")
+        self.assertLess(prepare, sched,
+                        "data preparation must run before the scheduler starts")
+        self.assertLess(prepare, direct,
+                        "data preparation must run before a direct guest entry")
+
 
 if __name__ == "__main__":
     unittest.main()

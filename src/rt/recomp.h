@@ -492,6 +492,14 @@ uint64_t sr_profile_test_lookup_drops(void);
 #define SCHED_INTR_VBLANK 0x00000001u /* coalescing display source */
 #define SCHED_INTR_GE     0x00000002u /* reserved GE source; retained until its handler lands */
 
+/* Synchronously prepare the extracted-XB data route (hle.c) BEFORE any guest
+ * execution exists. The cold SR_DATAROOT census must never begin from a guest
+ * HLE call: it would run the whole filesystem walk on the single guest-scheduler
+ * thread and starve every guest thread, tick, and VBLANK under contention.
+ * Returns 1 iff the route reached READY; FAILED/DISABLED keep lookups failing
+ * closed to the ordinary ISO/VFS path and are not startup errors. */
+int sr_host_data_prepare(void);
+
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp);

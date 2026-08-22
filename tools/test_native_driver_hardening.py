@@ -60,6 +60,7 @@ void sr_trace_close(void) {{}}
 void gui_init(const char *title) {{ (void)title; }}
 void sched_init(CpuState *cpu) {{ (void)cpu; }}
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {{ (void)entry; (void)arglen; (void)argp; }}
+int sr_host_data_prepare(void) {{ return 0; }}
 
 static void check_all_or_nothing_on_exit(void) {{
     if (g_check_all_or_nothing) {{

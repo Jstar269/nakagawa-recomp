@@ -4997,8 +4997,49 @@ static DirFd s_dirfds[32];
 
 static SrAssetIndex s_data_index;
 static atomic_int s_data_state;
+/* Data-route lifecycle states. Guest-time lookups must only ever observe a
+ * TERMINAL value (READY / FAILED / DISABLED); UNINITIALIZED or INITIALIZING at
+ * lookup time means the pre-guest preparation contract was violated. */
+#define SR_DATA_STATE_UNINITIALIZED 0
+#define SR_DATA_STATE_INITIALIZING  1
+#define SR_DATA_STATE_READY         2
+#define SR_DATA_STATE_FAILED        3
+#define SR_DATA_STATE_DISABLED      4   /* route not applicable: no scan ever ran */
 #ifndef SR_DATA_EXPECTED_COUNT
 #define SR_DATA_EXPECTED_COUNT 0u
+#endif
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Compile-time test instrumentation for the extracted-data route contract.
+ * Compiled ONLY into the focused HLE selftest executable; production targets
+ * never see the counters, the guest-start marker, or the walk pacing hook. */
+static unsigned long long s_sr_test_data_cold_builds;
+static unsigned long long s_sr_test_data_cold_builds_after_guest_start;
+static int s_sr_test_data_guest_started;
+static unsigned s_sr_test_data_walk_delay_ms;
+void sr_hle_test_data_reset(void) {
+    sr_asset_index_destroy(&s_data_index);
+    atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
+    s_sr_test_data_cold_builds = 0;
+    s_sr_test_data_cold_builds_after_guest_start = 0;
+    s_sr_test_data_guest_started = 0;
+    s_sr_test_data_walk_delay_ms = 0;
+}
+unsigned long long sr_hle_test_data_cold_builds(void) {
+    return s_sr_test_data_cold_builds;
+}
+unsigned long long sr_hle_test_data_cold_builds_after_guest_start(void) {
+    return s_sr_test_data_cold_builds_after_guest_start;
+}
+void sr_hle_test_data_mark_guest_started(void) {
+    s_sr_test_data_guest_started = 1;
+}
+int sr_hle_test_data_route_state(void) {
+    return atomic_load_explicit(&s_data_state, memory_order_acquire);
+}
+void sr_hle_test_data_set_walk_delay_ms(unsigned ms) {
+    s_sr_test_data_walk_delay_ms = ms;
+}
 #endif
 
 static char *data_rel_join(const char *prefix, const char *name) {
@@ -5056,6 +5097,13 @@ static int data_walk(const wchar_t *root, const char *relprefix, SrAssetIndex *i
     int ok = 1;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        /* Test-only bounded pacing per enumerated directory: makes a cold
+         * census observable without real antivirus/filesystem contention.
+         * Production never compiles this branch. */
+        if (s_sr_test_data_walk_delay_ms)
+            Sleep((DWORD)s_sr_test_data_walk_delay_ms);
+#endif
         wchar_t *pattern = NULL;
         if (!sr_wide_join_alloc(current.host, L"*", &pattern)) {
             fprintf(stderr, "host_data: failed to construct enumeration pattern\n");
@@ -5210,18 +5258,59 @@ static int data_validate_index(const SrAssetIndex *index) {
     return 1;
 }
 
-static int data_init(void) {
-    int expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(&s_data_state, &expected, 1,
-                                                  memory_order_acq_rel, memory_order_acquire)) {
-        while (atomic_load_explicit(&s_data_state, memory_order_acquire) == 1) { }
-        return atomic_load_explicit(&s_data_state, memory_order_acquire) == 2;
+/* One-shot synchronous preparation of the extracted-XB data route.
+ *
+ * Contract: the cold SR_DATAROOT census must never begin from a guest HLE call
+ * after guest scheduling has started -- a single host filesystem call can block
+ * for many seconds under contention, and running the whole walk on the single
+ * guest-scheduler thread starves every guest thread, tick, VBLANK service, and
+ * audio callback until it finishes (the early-boot stall). Production startup
+ * calls this exactly once from driver main(), after configuration is final and
+ * before any guest execution exists.
+ *
+ * Route applicability is decided WITHOUT touching the filesystem tree:
+ *   - an explicitly configured SR_DATAROOT is operator intent, or
+ *   - the build profile declares an expected extracted census
+ *     (SR_DATA_EXPECTED_COUNT > 0; today only the HST profile sets it).
+ * Any other build -- a generic title or synthetic guest -- terminates the route
+ * as DISABLED without enumerating anything, so a tree staged for one title can
+ * never be scanned on behalf of another and guest-time lookups stay O(1).
+ *
+ * Returns 1 iff the route reached READY. FAILED/DISABLED keep lookups failing
+ * closed to the ordinary ISO/VFS path; neither is a fatal startup error. */
+int sr_host_data_prepare(void) {
+    int expected = SR_DATA_STATE_UNINITIALIZED;
+    if (!atomic_compare_exchange_strong_explicit(&s_data_state, &expected,
+                                                 SR_DATA_STATE_INITIALIZING,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        /* Re-entry before guest start only: production prepares once,
+         * synchronously, on the startup thread, so no guest scheduler exists to
+         * observe this INITIALIZING wait. Guest-time lookups never enter here;
+         * they consume the terminal state in host_data_lookup instead. */
+        while (atomic_load_explicit(&s_data_state, memory_order_acquire) == SR_DATA_STATE_INITIALIZING) { }
+        return atomic_load_explicit(&s_data_state, memory_order_acquire) == SR_DATA_STATE_READY;
     }
     SrAssetIndex temporary;
     sr_asset_index_init(&temporary);
     wchar_t *configured_root = NULL;
     int configured_present = 0;
     int env_ok = sr_wide_env_alloc(L"SR_DATAROOT", &configured_root, &configured_present);
+    int route_applicable = configured_present && configured_root[0] != '\0';
+#if SR_DATA_EXPECTED_COUNT > 0
+    route_applicable = 1;
+#endif
+    if (!route_applicable) {
+        free(configured_root);
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_DISABLED, memory_order_release);
+        return 0;
+    }
+#ifdef SR_HLE_THREAD_SELFTEST
+    /* Counted only for censuses that actually enumerate; a DISABLED verdict
+     * above never touches the filesystem tree. */
+    s_sr_test_data_cold_builds++;
+    if (s_sr_test_data_guest_started)
+        s_sr_test_data_cold_builds_after_guest_start++;
+#endif
     const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
         "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
@@ -5246,17 +5335,17 @@ static int data_init(void) {
         fprintf(stderr, "host_data: index initialization failed; refusing partial index\n");
         free(root_wide);
         sr_asset_index_destroy(&temporary);
-        atomic_store_explicit(&s_data_state, 3, memory_order_release);
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return 0;
     }
     free(root_wide);
     if (!sr_asset_index_publish(&s_data_index, &temporary)) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
-        atomic_store_explicit(&s_data_state, 3, memory_order_release);
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return 0;
     }
-    atomic_store_explicit(&s_data_state, 2, memory_order_release);
+    atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
     return 1;
 }
@@ -5318,7 +5407,22 @@ static char *data_normalize_guest_key(const char *guest_path, int *wanted_varian
 
 /* Case-fold the guest key and binary-search the complete cache. */
 static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
-    if (!data_init()) return NULL;
+    const int state = atomic_load_explicit(&s_data_state, memory_order_acquire);
+    if (state != SR_DATA_STATE_READY) {
+        /* Terminal FAILED/DISABLED states are ordinary "not served from the
+         * extraction tree" outcomes and stay silent. UNINITIALIZED/INITIALIZING
+         * here means the pre-guest preparation contract was violated; fail
+         * closed to "no extracted-data match" with one bounded diagnostic
+         * instead of ever starting (or spinning on) a cold census inside a
+         * guest HLE call. */
+        if (state == SR_DATA_STATE_UNINITIALIZED || state == SR_DATA_STATE_INITIALIZING) {
+            static atomic_int warned_once;
+            if (!atomic_exchange_explicit(&warned_once, 1, memory_order_relaxed))
+                fprintf(stderr, "host_data: guest-time lookup found the route non-terminal (state=%d); refusing\n",
+                        state);
+        }
+        return NULL;
+    }
     int wanted_variant = -2;
     char *key = data_normalize_guest_key(guest_path, &wanted_variant);
     if (!key) return NULL;

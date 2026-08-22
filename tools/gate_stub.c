@@ -105,6 +105,11 @@ CpuState *sr_cpu_for_callbacks(void) { return NULL; }
 void    sr_boot_probe(CpuState *s, uint32_t guest_pc) { (void)s; (void)guest_pc; }
 int     sr_vblank_quantum_due(void) { return 0; }
 void    sr_hle_advance_time(uint32_t us) { (void)us; }
+/* --- Extracted-data preparation stub (hle.c) ---
+ * The headless gate has no extraction tree and never executes a guest HLE call,
+ * so this seam only needs to satisfy the linker; returning 0 keeps every lookup
+ * consuming a non-ready route, which fails closed. */
+int     sr_host_data_prepare(void) { return 0; }
 
 
 /* --- Coroutine stubs (sr_coro.c) --- */
