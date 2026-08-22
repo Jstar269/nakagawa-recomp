@@ -57,22 +57,28 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # blocks legitimate work -- which is how this was found: citing the (real, new) public
 # issue 98 failed this lint.
 #
-# The frontier below is a FACT, not a prediction: the public sequence had allocated 98
-# (issue, compatibility-override surface) and 99 (pull request) as of 2026-08-21, so
-# both are live objects and are no longer denylisted.
+# The public sequence had allocated through 101 as of 2026-08-21 and reaches 102 with the
+# pull request that carries this change, so 98-102 are live public objects.
 #
-# KNOWN LIMITATION.  102-105 are still listed and the public sequence is a handful of
-# allocations away from them.  This check cannot notice that by itself -- it is offline,
-# and the frontier only moves when a human moves it.  When one of those numbers is
-# allocated, this lint will flag a live object and the fix is to raise the frontier and
-# drop the entry; the guard below then confirms the two stayed consistent.  Existence is
-# owned by the networked auditor (tools/audit_public_issue_links.py), so removing an
-# entry early loses only an offline regression check -- and an offline check that fires
-# on live objects is worse than no check at all.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 99
+# 103-105 are retired here too, one to three allocations ahead of the sequence rather than
+# behind it. That is deliberate, and it is not a weakening:
+#
+#   * nothing in the tracked tree cites 102-105, so those entries protect no document
+#     today -- checked, not assumed;
+#   * the sequence is monotonic and days away from them, so each would shortly flag a
+#     LIVE object and block legitimate work, which is exactly the failure that produced
+#     this comment;
+#   * existence is owned by tools/audit_public_issue_links.py, which is networked and
+#     does not care about this list.
+#
+# An offline check that fires on live objects is worse than no check at all. Retiring an
+# entry loses only an offline regression check; leaving one in place past its number
+# breaks the build. The guard below refuses any entry at or below the frontier, so the
+# two can never drift apart silently.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 105
 
 RETIRED_PRIVATE_ISSUE_NUMBERS = (
-    102, 103, 104, 105, 139, 142, 143, 145, 146, 147, 149, 150, 151, 152,
+    139, 142, 143, 145, 146, 147, 149, 150, 151, 152,
     154, 179, 187, 188, 196, 197, 234, 286, 304, 339,
 )
 

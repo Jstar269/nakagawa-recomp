@@ -111,9 +111,9 @@ class RetiredIssueDenylistExpiry(unittest.TestCase):
         load, rather than silently flagging a live public issue."""
         source = (ROOT / "tools" / "lint_docs.py").read_text(encoding="utf-8")
         mutated = source.replace(
-            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    102,",
+            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    139,",
             "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n"
-            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, 102,",
+            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, 139,",
             1,
         )
         self.assertNotEqual(mutated, source, "mutation anchor not found")

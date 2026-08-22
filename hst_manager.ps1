@@ -235,6 +235,28 @@ try {
     # The override must reach Make's compile/link flags, not only glslc (issue #52).
     $VulkanSdkForMake = $VulkanSdk -replace "\\", "/"
 
+    function Get-HstRunEntry {
+        <#
+            The guest address the runtime is started at.
+
+            With a title manifest this is runtime_bindings.fallback_entry, projected by
+            the planner as run_entry -- the same binding src/rt/title_config.c compiles
+            in, so the manager holds no copy of it.
+
+            Without one, this script has no title configuration to read and falls back to
+            the historical HST literal. That literal is the last hardcoded title guest
+            address in this manager and is title coupling in generic tooling; it is kept
+            only so the legacy path keeps behaving as it did, and it is reported when it
+            is used. It cannot simply be replaced by the executable's ELF entry: sr_lookup
+            treats 0 as a first-class key (src/rt/dispatch_table.h -- an image based at 0
+            has a real function at address 0), so an entry of 0 RESOLVES rather than
+            missing and the runtime's configured fallback never fires.
+        #>
+        if ($script:TitleManagerRunEntry) { return $script:TitleManagerRunEntry }
+        Write-Host "[!] No title manifest bound: starting at the manager's legacy HST entry literal. Pass -TitleManifest to take it from validated title configuration." -ForegroundColor Yellow
+        return "0x0029a060"
+    }
+
     function Get-HstMakeBaseArgs {
         if ($null -ne $script:TitleManagerMakeArgs) {
             $args = @($script:TitleManagerMakeArgs)
@@ -282,6 +304,10 @@ try {
         # make spawn only, so the manager never leaves the caller's session mutated. The
         # legacy path is untouched and never sees the variable.
         $script:TitleManagerSpans = $boundPlan.Environment.HST_EXTRA_SPANS
+        # The guest address a run starts at, taken from the validated plan rather than
+        # from a literal in this script. See Get-HstRunEntry below for why the legacy
+        # path still carries one.
+        $script:TitleManagerRunEntry = $boundPlan.RunEntry
         Write-Host "Using opt-in title manifest: $($script:TitleManagerPlan.title_manifest_id)" -ForegroundColor DarkGray
     }
 
@@ -950,7 +976,7 @@ try {
         $addr = $Target -replace '^f_',''
         $outTrace = "diff_${addr}.trace"
         Write-Host "DiffFunc: target=0x$addr oracle=$Oracle step=$Step" -ForegroundColor Cyan
-        $args = @("--image", $imagePath, "0", "0x0029a060", $outTrace, "none",
+        $args = @("--image", $imagePath, "0", (Get-HstRunEntry), $outTrace, "none",
                   "--diff-func=0x$addr", "--diff-oracle=$Oracle", "--diff-step=$Step")
         $proc = Start-Process -FilePath $exePath -ArgumentList $args -PassThru -NoNewWindow -Wait `
             -RedirectStandardError "$LogDir/difffunc_err.log"
@@ -1349,7 +1375,7 @@ try {
             $env:SR_WATCHDOG_EXIT = $null
         }
 
-        $args = @("--image", $imagePath, "0", "0x0029a060", "none", "none")
+        $args = @("--image", $imagePath, "0", (Get-HstRunEntry), "none", "none")
         if (-not $NoGui) {
             $args += "--gui"
         } else {

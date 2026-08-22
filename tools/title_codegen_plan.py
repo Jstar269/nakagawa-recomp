@@ -82,6 +82,26 @@ def _make_address(value: int) -> str:
     return str(value) if value == 0 else _hex(value)
 
 
+def _resolve_run_entry(normalized: dict[str, Any]) -> int:
+    """The guest address a run of this title starts at.
+
+    A title whose real entry is not compiled names a fallback entry in its runtime
+    bindings; the runtime already consumes that same binding through
+    ``sr_title_config_fallback_entry()``. Where one is configured it is what a run must
+    start at, so the manager can read it from here instead of carrying its own copy.
+
+    Note this cannot be replaced by "pass the ELF entry and let the runtime fall back":
+    ``sr_lookup`` treats 0 as a first-class key (``src/rt/dispatch_table.h`` -- an image
+    based at 0 has a real function at address 0), so an entry of 0 resolves rather than
+    missing, and the runtime's fallback never fires.
+    """
+    bindings = normalized.get("runtime_bindings") or {}
+    fallback = bindings.get("fallback_entry")
+    if fallback is not None:
+        return int(fallback)
+    return int(normalized["executable"]["entry"])
+
+
 def _resolve_codegen_profile(
     manifest: dict[str, Any], requested: str | None
 ) -> str:
@@ -323,6 +343,18 @@ def build_manager_plan(
             "module_dir": bool(selected_guest),
             "psp_header": executable["bss_metadata_source"] == "psp-header",
         },
+        # The guest address the RUNTIME is started at, which is not the same question as
+        # the executable's ELF entry. HST's real entry is not compiled -- the analyzer
+        # treats its first instruction as an HLE boundary -- so a run starts at the
+        # title's configured fallback entry instead. That value already has an owner:
+        # runtime_bindings.fallback_entry, the same binding src/rt/title_config.c
+        # compiles in. Projecting it here is what lets the manager stop carrying a
+        # hardcoded copy of it.
+        #
+        # Falling back to executable.entry is NOT a title default: with no
+        # runtime_bindings block there is no configured fallback, and the ELF entry is
+        # the only thing a generic title can be started at.
+        "run_entry": _make_address(_resolve_run_entry(normalized)),
         "environment": codegen_plan["environment"],
         "make": {
             "game_name": game_name,
