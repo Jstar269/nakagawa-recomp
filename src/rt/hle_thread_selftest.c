@@ -37,6 +37,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #endif
 
 #include "ge_shared.h"
+#include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 
 #include <stdint.h>
@@ -47,6 +48,9 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <process.h>
 
 extern void sr_vblank_tick(void);
+int sr_route_sig_bytes(void);
+int sr_route_test_sample(uint8_t *out);
+void sr_display_test_reset(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
  * hle.c: the observation count and the vblanks-since-flip clock. */
@@ -290,10 +294,18 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)fbaddr; (void)fmt; (void)stride;
 }
 /* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
- * a fully validated descriptor is correctly classified as guest-authoritative. */
-struct GeGpuFbDescriptor;
-int gegpu_sync_guest_fb(const struct GeGpuFbDescriptor *desc) {
-    (void)desc;
+ * a fully validated descriptor is correctly classified as guest-authoritative.
+ *
+ * The stub RECORDS what it was asked, because the observer-ownership test asserts
+ * on the descriptor the caller constructs -- specifically that no descriptor is
+ * handed to the coherence boundary at all before the guest owns the scanout.
+ * Whether the boundary itself refuses a genuine mismatch is a different question,
+ * owned by gpu-coherence-selftest against the real Vulkan target. */
+static unsigned long g_sync_calls;
+static GeGpuFbDescriptor g_sync_last;
+int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
+    g_sync_calls++;
+    if (desc) g_sync_last = *desc;
     return 2; /* GEGPU_SYNC_NO_TARGET */
 }
 void sr_profile_dump(void) {}
@@ -821,6 +833,7 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority);
 
 static void reset_fixture(void) {
     memset(g_mem_base, 0, 0x0c000000u);
+    sr_display_test_reset();
     memset(s_tcb, 0, sizeof(s_tcb));
     memset(s_libc_threads, 0, sizeof(s_libc_threads));
     memset(&s_cpu_store, 0, sizeof(s_cpu_store));
@@ -1989,6 +2002,82 @@ static void test_vcount_credits_one_deferred_period_on_resume(void) {
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == base + 2u,
            "resume(0) from an enabled state also consumes the pre-mask periods");
+}
+
+
+/* The route observer must not read the scanout before the guest owns it.
+ *
+ * s_display_active carries compile-time initializers {0x04000000, 512, fmt 3}
+ * from process start.  The GE routinely registers a render target at that same
+ * address, in whatever pixel format the display list asked for, BEFORE the guest
+ * makes its first sceDisplaySetFrameBuf call.  An observer that trusts the
+ * initializer then does two wrong things at once: it would decode the buffer with
+ * a format the guest never selected, and it hands that placeholder descriptor to
+ * gegpu_sync_guest_fb(), whose format cross-check is there to report genuine
+ * disagreements.  On a real boot that produced
+ *
+ *   gegpu: snapshot sync refused: target at 0x04000000 has stride=512 fmt=1
+ *          but caller described stride=512 fmt=3
+ *
+ * which reads exactly like a coherence defect and is not one -- the guest simply
+ * had not configured anything yet.  Its first SetFrameBuf then requested format 1,
+ * agreeing with the target, and no further refusal occurred all run.
+ *
+ * The rule this pins: no observation, and no descriptor handed to the coherence
+ * boundary, until a COMPLETE guest-provided scanout state has been applied.  A
+ * latched (sync=1) request is not enough on its own -- PSP publishes its stride
+ * and format immediately but keeps the previous scanout address until the latch
+ * lands at VBLANK, so between those two moments s_display_active is a mixture of
+ * guest format and placeholder address.
+ *
+ * The coherence boundary itself is deliberately NOT relaxed; that it still refuses
+ * a genuine format or stride mismatch against a live target is asserted separately
+ * by gpu-coherence-selftest, which has the real Vulkan target this build lacks. */
+static void test_route_observer_waits_for_guest_scanout_state(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM_B = 0x04044000u;
+    uint8_t sig[4096];
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_route_sig_bytes() > 0 && (size_t)sr_route_sig_bytes() <= sizeof(sig),
+           "the default observer grid fits the local signature buffer");
+
+    /* (a) Nothing configured yet.  This is the state every run passes through. */
+    g_sync_calls = 0;
+    expect(sr_route_test_sample(sig) == 0,
+           "the observer declines to sample before the guest configures scanout");
+    expect(g_sync_calls == 0,
+           "and never hands the coherence boundary a placeholder descriptor");
+
+    /* (b) A latched request publishes stride and format at once, but the scanout
+     * address is still the placeholder until VBLANK applies the latch.  The
+     * observer must keep declining across that window. */
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 1; cpu.r[7] = 1;   /* sync = 1 */
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "a latched SetFrameBuf that changes format is accepted");
+    expect(sr_route_test_sample(sig) == 0,
+           "a latched request alone does not make the scanout state observable");
+    expect(g_sync_calls == 0,
+           "and still nothing reaches the coherence boundary");
+
+    /* (c) VBLANK applies the latch: address, stride and format are now all the
+     * guest's.  Observation resumes, and synchronises against exactly those. */
+    sr_vblank_tick();
+    expect(sr_route_test_sample(sig) == 1,
+           "observation resumes once the guest owns the complete scanout state");
+    expect(g_sync_calls == 1,
+           "the resumed observation synchronises exactly once");
+    expect(g_sync_last.addr == VRAM_B,
+           "and synchronises the guest's own scanout address");
+    expect(g_sync_last.stride == 512u,
+           "with the guest's own stride");
+    expect(g_sync_last.format == 1u,
+           "with the guest's own pixel format (1), not the initializer's 3");
+    expect(g_sync_last.width == 480u && g_sync_last.height == 272u,
+           "and the full visible extent");
 }
 
 /* sceDisplaySetFrameBuf flip accounting.
@@ -7504,6 +7593,7 @@ int main(int argc, char **argv) {
     test_vcount_tracks_elapsed_source_periods();
     test_vcount_freezes_while_cpu_interrupts_are_masked();
     test_vcount_credits_one_deferred_period_on_resume();
+    test_route_observer_waits_for_guest_scanout_state();
     test_display_setframebuf_flip_accounting();
     test_watchdog_no_new_frame_observation();
     test_watchdog_fires_on_boundary_crossing_not_exact_multiple();
