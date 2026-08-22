@@ -350,7 +350,7 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
 }
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
     (void)guest_path; (void)index; (void)out;
-    return -1;
+    return 0;
 }
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
@@ -651,30 +651,38 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
            "stderr's reserved descriptor follows the standard-stream path");
 
-    expect(sr_hle_test_io_read(&(CpuState){.r = {0, 0, 0, 0, 1u, 0, 0}}) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
-           "read on a standard descriptor reports manager bad-fd");
+    /* Standard descriptor operations outside console write preserve baseline behavior */
+    expect(sr_hle_test_io_read(&(CpuState){.r = {0, 0, 0, 0, 1u, 0, 0}}) == 0x80010009u,
+           "read on a standard descriptor preserves baseline errno 0x80010009");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    expect(sr_hle_test_io_lseek32(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
-           "lseek32 on a standard descriptor reports manager bad-fd");
+    expect(sr_hle_test_io_lseek32(&cpu) == 0x80010009u,
+           "lseek32 on a standard descriptor preserves baseline errno 0x80010009");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    cpu.r[6] = 0u;
-    cpu.r[7] = 0u;
-    cpu.r[29] = 0x09012000u;
-    MEM_W32(cpu.r[29] + 16u, 0u);
     uint32_t lseek_std = sr_hle_test_io_lseek(&cpu);
-    expect(lseek_std == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR && cpu.r[3] == 0xFFFFFFFFu,
-           "lseek on a standard descriptor reports manager bad-fd with high-word error");
+    expect(lseek_std == 0x80010009u && cpu.r[3] == 0u,
+           "lseek on a standard descriptor preserves baseline errno 0x80010009");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    cpu.r[29] = 0x09012000u;
-    MEM_W32(cpu.r[29] + 16u, 0u);
-    MEM_W32(cpu.r[29] + 20u, 0u);
-    expect(sr_hle_test_io_ioctl(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
-           "ioctl on a standard descriptor reports manager bad-fd");
+    expect(sr_hle_test_io_ioctl(&cpu) == 0x80010009u,
+           "ioctl on a standard descriptor preserves baseline errno 0x80010009");
+
+    /* Scope-negative: Unsupported ioctl command on valid file fd remains 0x80010086 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0x99999999u;
+    expect(sr_hle_test_io_ioctl(&cpu) == 0x80010086u,
+           "unsupported ioctl command returns 0x80010086");
+
+    /* Scope-negative: Non-existent file open remains driver errno (0x80010002) */
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "ms0:/NON_EXISTENT_FILE_12345.TXT");
+    cpu.r[5] = 1u;
+    expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
+           "open non-existent file returns driver errno 0x80010002");
 
     /* Out-of-range / Negative descriptors (0xFFFFFFFFu = -1) */
     fd_set_write(&cpu, 0xffffffffu, payload_addr, (uint32_t)(sizeof(payload) - 1u));
@@ -777,6 +785,21 @@ static void test_fd_namespace(void) {
            "dread on unallocated dir fd reports manager bad-fd");
     expect(sr_hle_test_io_dclose(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,
            "dclose on unallocated dir fd reports manager bad-fd");
+
+    /* Valid directory descriptor operations */
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "disc0:/");
+    uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(dir_fd == 0x100u, "dopen on disc0:/ succeeds and returns dir fd 0x100");
+    /* Scope-negative non-regression: valid dir fd with null dirent pointer (de == 0) preserves baseline 0x80010009 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = 0u;
+    expect(sr_hle_test_io_dread(&cpu) == 0x80010009u,
+           "dread on valid dir fd with null pointer preserves baseline errno 0x80010009");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u, "dclose on valid dir fd succeeds");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));

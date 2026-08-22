@@ -472,7 +472,7 @@ static const IcProbe kIcMatrix[] = {
  * which would make the outcome depend on the filesystem rather than on context.
  * BADF wins over both context restrictions in every cell of this group. */
 /* The manager validation layer returns ThreadMan's BADF (0x80020323) for bad
- * descriptors across all contexts, conforming to hardware. */
+ * descriptors across all contexts, matching the corroborative PSPAutotests expected matrix. */
 { "sceIoRead", 0x6a638d83u, "Bad file", ICG_IO_BADFD, 0,
   {0, 258, 401, 259}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)},
   {IC_PREC_NA, IC_PREC_OBJECT, IC_PREC_OBJECT, IC_PREC_OBJECT}, IC_HW_IMMEDIATE},

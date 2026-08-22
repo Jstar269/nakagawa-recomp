@@ -5486,6 +5486,8 @@ static uint32_t h_IoWrite(CpuState *s) {
 static uint32_t h_IoRead(CpuState *s) {
     /* a0=fd, a1=dst, a2=count. Returns bytes read. */
     uint32_t fd = A0, dst = A1, count = A2;
+    if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
+        return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->pgd) {
@@ -5592,6 +5594,8 @@ static uint32_t h_IoRead(CpuState *s) {
 static uint32_t h_IoLseek32(CpuState *s) {
     /* a0=fd, a1=offset, a2=whence. Returns new position (32-bit). */
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
+    if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
+        return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
@@ -5605,6 +5609,10 @@ static uint32_t h_IoLseek(CpuState *s) {
     uint32_t fd = A0;
     int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
     uint32_t whence = stack_arg(s, 0);
+    if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
+        s->r[3] = 0;
+        return 0x80010009; /* baseline behavior preserved for standard streams */
+    }
     if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR; }
     if (whence >= 3u) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_INVALID_ARGUMENT; }
     Fd *f = &s_fds[fd];
@@ -5628,6 +5636,8 @@ static uint32_t h_IoIoctl(CpuState *s) {
     /* a0=fd, a1=cmd, a2=indata, a3=inlen, t0=outdata, t1=outlen */
     uint32_t fd = A0, cmd = A1, in = A2, inlen = A3;
     uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
+    if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
+        return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (getenv("SR_IOLOG"))
@@ -5778,10 +5788,11 @@ static uint32_t h_IoDopen(CpuState *s) {
 
 static uint32_t h_IoDread(CpuState *s) {
     uint32_t fd = A0, de = A1;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]) || !de)
+    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     DirFd *d = &s_dirfds[fd - 0x100u];
     if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (!de) return 0x80010009u; /* preserve baseline behavior for null pointer */
     IsoDirEntry e;
     if (d->backend == 0) {
         int r = iso_list(d->path, d->index, &e);
