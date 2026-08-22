@@ -283,8 +283,8 @@ Before claiming an issue or criterion complete:
 Canonical HST development commands use PowerShell 7.6+:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull
-.\hst_manager.ps1 -Action BuildFast
+.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json
+.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json
 .\hst_manager.ps1 -Action Run
 .\hst_manager.ps1 -Action Test
 .\hst_manager.ps1 -Action Verify
@@ -293,6 +293,9 @@ mingw32-make --no-print-directory compiler-info
 
 Direct Make callers must satisfy the current contract in [`docs/SETUP.md`](docs/SETUP.md).
 Do not copy stale compiler/Vulkan/version assumptions into new docs.
+
+`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](assets/titles/README.md).
+Omitting it is a build refusal, not a fallback -- on a clean tree and on an incremental one.
 
 Run tests proportional to the change. For broad/integration work, use
 `.\hst_manager.ps1 -Action Verify` plus the affected subsystem's native/private route.

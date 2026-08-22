@@ -55,8 +55,8 @@ Run checks proportional to the change:
 
 ```powershell
 .\hst_manager.ps1 -Action Test
-.\hst_manager.ps1 -Action BuildFast  # runtime-only change where valid
-.\hst_manager.ps1 -Action BuildFull  # codegen/pipeline/build change
+.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json  # runtime-only change
+.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json  # codegen/pipeline change
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree
 ```

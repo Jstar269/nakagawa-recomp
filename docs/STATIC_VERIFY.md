@@ -55,7 +55,8 @@ Use private inputs only from Git-ignored paths. For example:
 ```powershell
 python tools/codegen.py place_game_here/EBOOT.elf build/hst/hst_recomp.c --base=0 --static-verify `
     --extra-elf=...
-mingw32-make compile GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0
+mingw32-make compile GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 `
+    TITLE_MANIFEST=assets/titles/hst-ucus98701.json
 build/hst/hst.exe   # inspect stderr for SV_MISMATCH
 ```
 
