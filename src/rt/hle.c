@@ -6822,6 +6822,12 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
 
 int sr_route_status(void) { return s_route_state; }
 int sr_route_sig_bytes(void) { return route_sig_bytes(); }
+/* Test hook: run one observer sample exactly as the periodic sampler does and
+ * report whether it produced an observation.  Exposed so the ownership rule --
+ * the observer does not read the scanout until the guest owns it -- is testable
+ * without a title, a route file or a GPU.  route_sample() is defined later in
+ * this file, so the hook body lives beside it. */
+int sr_route_test_sample(uint8_t *out);
 
 /* sceCtrl: sticks centred. To drive past the skippable intro movie and confirmation prompts
  * without a human, pulse START/CROSS/CIRCLE for a few frames on a periodic cadence (edge presses,
@@ -6969,6 +6975,22 @@ typedef struct {
 static DisplayFrameState s_display_active = { 0x04000000u, 512, 3 };
 static DisplayFrameState s_display_latched = { 0x04000000u, 512, 3 };
 static int s_display_latched_pending;
+/* Has the guest ever established a COMPLETE scanout state -- address, stride and
+ * format all supplied by sceDisplaySetFrameBuf and applied to the active state?
+ *
+ * Until it has, the initializers above are the only thing s_display_active holds,
+ * and they are a placeholder rather than an observation of anything.  The GE can
+ * (and does) register a render target at 0x04000000 before the guest's first
+ * SetFrameBuf, in whatever pixel format the display list asked for -- so a reader
+ * that trusts the initializer's format decodes the buffer wrongly, and a reader
+ * that hands the initializer to the GPU coherence boundary trips a mismatch alarm
+ * that exists to catch genuine disagreements.
+ *
+ * Set only where s_display_active receives a complete guest-provided state: the
+ * immediate (sync=0) path, and the VBLANK that applies a latched request.  A
+ * latched request alone is not enough -- it publishes stride and format at once
+ * but leaves the previous scanout address in place until the latch lands. */
+static int s_display_configured;
 static uint32_t s_framebuf = 0x04000000u, s_vcount = 0;
 static uint32_t s_last_flip_vcount = 0;   /* no-frame watchdog clock (see sr_vblank_tick) */
 
@@ -7015,6 +7037,20 @@ void sr_display_test_flip_counts(unsigned long *calls, unsigned long *immediate,
  * clock for the conformance harness. */
 void sr_watchdog_test_state(unsigned long *fires, uint32_t *vblanks_since_flip);
 #endif
+
+/* Test-only: restore the display statics to the values a fresh process starts
+ * with.  sr_hle_init() latches once per process, so a suite that runs many
+ * cases in one executable has no other way to isolate display state -- and
+ * without it a case that changes the latched pixel format silently rejects the
+ * next case's immediate flip.  Production never calls this. */
+void sr_display_test_reset(void) {
+    DisplayFrameState boot = { 0x04000000u, 512, 3 };
+    s_display_active = boot;
+    s_display_latched = boot;
+    s_display_latched_pending = 0;
+    s_display_configured = 0;
+    s_framebuf = 0x04000000u;
+}
 
 /* Record a refused sceDisplaySetFrameBuf and return the PSP error unchanged, so
  * every rejection path is accounted for in exactly one place. */
@@ -7320,6 +7356,13 @@ static int route_sync_fb(void) {
  * at the default 12x8 grid this reads 1536 pixels, once every SAMPLE_EVERY vblanks, and
  * only while a WAIT or EXPECT is pending. */
 static int route_sample(uint8_t *out) {
+    /* Nothing to observe before the guest owns the scanout state: see
+     * s_display_configured.  This is deliberately checked ahead of
+     * route_sync_fb() so the observer never hands the GPU coherence boundary a
+     * placeholder descriptor -- doing so raised a `snapshot sync refused'
+     * mismatch during ordinary boot, which reads exactly like the genuine
+     * disagreement that check exists to report. */
+    if (!s_display_configured) return 0;
     if (!s_display_active.addr || !display_host_span_valid(&s_display_active)) return 0;
     if (!route_sync_fb()) return 0;
     uint32_t stride = (uint32_t)s_display_active.stride;
@@ -7345,6 +7388,8 @@ static int route_sample(uint8_t *out) {
         }
     return 1;
 }
+
+int sr_route_test_sample(uint8_t *out) { return route_sample(out); }
 
 /* SR_ROUTE_LEARN: print the signature of one frame. Authoring a checkpoint means looking
  * at a captured frame and deciding what screen it is, so the signature has to be emitted
@@ -7544,6 +7589,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_active = requested;
         s_display_latched = requested;
         s_display_latched_pending = 0;
+        s_display_configured = 1;
         s_framebuf = addr;
         s_last_flip_vcount = s_vcount;
         s_watchdog_bucket = 0;
@@ -7795,6 +7841,7 @@ void sr_vblank_tick(void) {
     if (s_display_latched_pending) {
         s_display_active = s_display_latched;
         s_display_latched_pending = 0;
+        s_display_configured = 1;
         s_framebuf = s_display_active.addr;
         s_last_flip_vcount = s_vcount;
         s_watchdog_bucket = 0;
