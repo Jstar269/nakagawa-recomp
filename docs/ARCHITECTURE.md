@@ -362,16 +362,45 @@ Clock ownership:
     framebuffer/interrupt/callback work without re-incrementing VCOUNT.
   - **CPU interrupts masked** (`sceKernelCpuSuspendIntr`). VCOUNT stops, and VBLANK delivery stops
     with it; elapsed periods are consumed into the single coalesced pending bit rather than replayed.
-    Resume delivers exactly one episode and applies no catch-up increment; VCOUNT counts again from
-    the next period that elapses with interrupts enabled.
+    Resume delivers exactly one episode and credits VCOUNT **exactly one** — never `N`, and nothing
+    at all when no period became pending.
+  - **Clearing the interrupt bit is itself a display-timeline boundary.** Source periods are
+    discovered lazily at scheduler boundaries, so `sched_suspend_interrupts()` consumes everything
+    already due *before* clearing the bit. Without that step a period that elapsed with interrupts
+    enabled stays undiscovered until some later latch, and the most frequent later latch is the one
+    `sched_resume_interrupts()` performs before restoring the bit — which would classify it as masked
+    and drop it. This is a discovery-time question, not a residency one: private route measurement
+    found every dropped period had a boundary predating the mask that later discovered it, while the
+    mask itself was held for a negligible fraction of wall time. Per-title rate figures are run
+    evidence and belong with the run that produced them, not here.
 
-  The masked-window behavior is `HARDWARE_MEASURED`: qualified PSP runs found system time advancing
-  while VCOUNT and VBLANK handler calls remained frozen, followed by one coalesced delivery on
-  resume. The enabled/service-starved multi-period behavior is `CORROBORATIVE_ONLY` until an
-  acceptance-eligible PSP probe artifact is retained; the checked-in production-path regression is
-  `HOST_TESTED`. The host model therefore does not claim that its exact 60000/1001 rate is itself a
-  PSP hardware measurement. The accepted masked-window record did not sample VCOUNT immediately
-  after `CpuResumeIntr`, so the runtime conservatively applies no catch-up increment.
+  The masked-window behavior is `HARDWARE_MEASURED`. The original #88 probe found system time
+  advancing while VCOUNT and VBLANK handler calls stayed frozen, followed by one coalesced delivery
+  on resume, but it never sampled VCOUNT immediately after `CpuResumeIntr`. The source-owned
+  `display-mask-vcount` probe (PSP-3001 / 6.61-ARK, 12 trials at each of 4 / 16.7 / 30 / 50 ms) took
+  that sample and settled it: a mask crossing no source period credits `+0`, and a mask crossing one
+  or more credits `+1` — measured across durations from 0.24 to 3.00 display periods, which crossed
+  0, 1, 1 and 2 source boundaries respectively. No trial showed an N-period catch-up. Guest-visible
+  VCOUNT is therefore a count of *delivered* VBLANKs, and the observed behavior is consistent with a
+  single coalesced pending VBLANK delivery. The probe observes the `+0`/`+1` result, not the
+  interrupt controller's internal state, so the coalescing is the model that fits the measurement
+  rather than a claim about hardware internals.
+
+  **The display source and the delivered counter are different quantities.** The same probe measured
+  `sceDisplayGetAccumulatedHcount` running straight through every mask at the full display rate
+  (+69 scanlines over 4 ms, +857 over 50 ms, matching 286 lines per period), so the display
+  controller never stops — only the interrupt-gated counter the guest reads does. That probe also
+  calibrated the device's own period at 16 682 850 ns (59.9418 Hz), which is 0.003% from the
+  60000/1001 model the runtime uses; the rate is now measured rather than assumed. The
+  enabled/service-starved multi-period behavior remains `CORROBORATIVE_ONLY`, and the checked-in
+  production-path regression is `HOST_TESTED`.
+
+  A companion probe, `display-ge-mask`, established that the GE is a separate hardware domain: a
+  stall-gated list released *while interrupts were masked* completed 1 MiB of block transfers in
+  12/12 trials at the same speed as with interrupts enabled, while its interrupt-context finish
+  handler stayed pending until resume (0/12 during, 12/12 immediately after). The CPU interrupt mask
+  blocks interrupt delivery; it does not stop GE execution, and a guest polling GE-written memory
+  under a mask is supposed to observe progress.
 
   Controller sample timestamps and audio pacing use the same vblank counter,
   matching the PSP's vblank-unit pad timestamps.
