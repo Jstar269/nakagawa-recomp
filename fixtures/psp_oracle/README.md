@@ -12,7 +12,9 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-lifecycle`, `CASE=thread-delete-lifecycle`,
 `CASE=thread-delete-followup`, `CASE=thread-delete-explicit`, or
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
-of the four `CASE=dma-invalid-tail-*` cases described below.
+of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
+sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
+`CASE=display-ge-mask`.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove
@@ -129,6 +131,77 @@ python tools/psp_oracle/run_psplink.py `
 Use `RESET` instead only after observing a reset. The annotation command
 rejects any capture that already contains a test record and marks terminal
 outcomes ineligible for scalar-result acceptance.
+
+## Display / interrupt-mask cases (issue #70)
+
+Three cases answer what happens to the display domain while CPU interrupt
+delivery is masked. Build one per launch, as with every other case.
+
+`CASE=display-mask-vcount` holds `sceKernelCpuSuspendIntr` for 4000, 16700,
+30000 and 50000 us — 12 trials each — and samples `sceDisplayGetVcount`
+*immediately after* `sceKernelCpuResumeIntr`. That sample is the one the
+accepted #88 record never took, and it is what separates "the counter catches up
+by every elapsed period" from "exactly one deferred event is credited" from "the
+elapsed periods are gone". The case never assumes a period length: it calibrates
+the device's own vblank period in the same run over 60 `sceDisplayWaitVblankStart`
+intervals and reports it in `result` and `out26`. Every spin is bounded by BOTH
+elapsed system time and an iteration cap, so a stopped clock cannot turn a probe
+into a hang.
+
+One record is emitted per duration, `case_id=display-mask-vcount-<N>us`:
+
+| Field | Meaning |
+| --- | --- |
+| `out0` / `out1` | Trials completed / requested mask microseconds |
+| `out2` / `out3` | Minimum / maximum measured masked span |
+| `out4` / `out5` | Minimum / maximum source periods the span crossed |
+| `out6` / `out7` | Minimum / maximum VCOUNT delta observed *during* the mask |
+| `out8` / `out9` | Minimum / maximum VCOUNT delta immediately *after* resume |
+| `out10` / `out11` | Trials crediting exactly 0 / exactly 1 |
+| `out12` / `out13` | Trials crediting the full period count / a partial catch-up |
+| `out14` / `out15` | Minimum / maximum VCOUNT step at the next WaitVblankStart |
+| `out16`–`out19` | Accumulated-Hcount delta during the mask / immediately after |
+| `out20` / `out21` | Summed credited increments / summed elapsed periods |
+| `out22` / `out23` | Mean span; trials in which system time advanced |
+| `out24` / `out25` | Minimum / maximum current Hcount sampled under the mask |
+| `out26` / `out27` | Calibrated period in nanoseconds; CPU clock in MHz |
+| `out28` | Trials whose next WaitVblankStart advanced VCOUNT by exactly 1 |
+
+`out12` and `out13` are the falsifiers. `PASS` means only that every trial ran
+and the masked window really elapsed; it makes no claim about which semantic the
+numbers show.
+
+`CASE=display-mask-duty` is the same question asked as a sustained duty cycle —
+repeated 33 ms or 66 ms masks separated by 2 ms servicing gaps across a 2 s
+window — where the three candidate semantics separate by a factor of about four
+in accumulated VCOUNT. It is built and warning-free but was not needed once the
+per-trial case came back unanimous, and no result from it is recorded.
+
+`CASE=display-ge-mask` asks whether the GE keeps executing while CPU interrupts
+are masked, and is deliberately stall-gated so that "the GE simply finished
+before the mask opened" cannot produce a false positive. A list of 16 chained
+block transfers (512x32 px at 4 bpp, 1 MiB total) is enqueued **already stalled
+at its first word**; the destination is proven still at its sentinel; only then
+are interrupts suspended and the stall released. Every destination read goes
+through the uncached VRAM mirror, so a stale CPU cache line cannot be misread as
+"the GE did not progress". Three records are emitted:
+
+- `ge-mask-controlB-enabled-release` — released with interrupts enabled; the
+  destination MUST change.
+- `ge-mask-controlA-stall-held` — masked with the stall still held; the
+  destination MUST NOT change.
+- `ge-mask-primary-masked-release` — released while masked; the measurement.
+
+`out4`/`out5`/`out6` count trials in which all tiles / some tiles / no tiles
+changed before resume, and `out13`/`out14` separate a completion callback seen
+*during* the mask from one seen only after resume. Those two are reported as
+distinct facts: GE memory work and GE completion notification are not the same
+hardware domain.
+
+> **Operator note.** Never send the PSPLink shell command `exit` from a capture
+> driver. `exit` terminates PSPLink on the device and returns it to the XMB,
+> which looks exactly like a probe-induced reset and is not one. Close the
+> client's stdin instead.
 
 ## Build and hardware handoff
 

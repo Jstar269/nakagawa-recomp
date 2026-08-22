@@ -113,6 +113,12 @@ static int      s_last_pick = -1;/* rotation cursor (file-scope so the selftest 
  * false, an interrupt-disabled state cannot migrate to another guest thread. */
 static int      s_interrupts_enabled = 1;
 static int      s_dispatch_enabled = 1;
+/* At least one display source period elapsed while the CPU interrupt bit was
+ * clear, and its single coalesced delivery has not been credited yet.  This is
+ * a flag rather than a count on purpose: the PSP interrupt controller latches
+ * one pending VBLANK, so ten masked periods and one masked period are
+ * indistinguishable to the guest.  See sched_resume_interrupts(). */
+static int      s_vblank_masked_pending;
 /* Interrupt state is a gate on delivery, not a gate on the scheduler clock.  A
  * source bit remains latched until the eligible handler consumes it. */
 static uint32_t s_pending_interrupts;
@@ -150,6 +156,7 @@ static int s_root_seen  = 0;      /* first-created-thread latch (file-scope for 
 /* Defined below, after the virtual-time service and VBLANK frame are declared. */
 static void scheduler_progress_time(void);
 static void scheduler_latch_due_events(void);
+static void vtime_refresh(void);
 static void scheduler_service_pending(void);
 static void scheduler_add_time(uint64_t delta);
 static uint64_t scheduler_deadline_after(uint64_t delta);
@@ -291,6 +298,7 @@ void sched_init(CpuState *cpu) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_vblank_masked_pending = 0;
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
 
     memset(s_tcb, 0, sizeof(s_tcb));
@@ -330,8 +338,32 @@ int sched_current_is_worker(void)       { return sched_uid_is_worker(sched_curre
 int sched_current_is_launcher(void)     { return sched_uid_is_launcher(sched_current_uid()); }
 uint32_t sr_thread_k0(void)        { return s_cur >= 0 ? s_tcb[s_cur].k0_init : 0; }
 
+/* Clearing the interrupt bit is a point on the display timeline, and every
+ * period before that point asserted its interrupt with delivery still enabled.
+ * Consume them here, while the bit is still set, so they are credited to the
+ * regime they actually elapsed in.
+ *
+ * Without this the periods stay undiscovered until some later latch, and the
+ * most frequent later latch is the one sched_resume_interrupts() performs
+ * before restoring the bit -- which classifies them as masked and drops them.
+ * A title that brackets its allocator with CpuSuspendIntr/CpuResumeIntr
+ * thousands of times a second therefore loses most of its VCOUNT to a
+ * discovery-time artifact, with the mask itself held for a negligible
+ * fraction of wall time.
+ *
+ * vtime_refresh() rather than scheduler_progress_time(): the latter injects a
+ * fixed deterministic quantum in turbo mode, which at this call frequency
+ * would run the virtual clock away from the run.  This samples the clock (in
+ * paced mode) and latches what is already due, and never services or
+ * schedules -- no guest handler may run from inside CpuSuspendIntr. */
+static void sched_enter_masked(void) {
+    vtime_refresh();
+    s_vblank_masked_pending = 0;
+}
+
 uint32_t sched_suspend_interrupts(void) {
     uint32_t previous = s_interrupts_enabled ? 1u : 0u;
+    if (previous) sched_enter_masked();
     s_interrupts_enabled = 0;
     return previous;
 }
@@ -343,6 +375,7 @@ void sched_resume_interrupts(uint32_t state) {
      * that malformed restore avoids manufacturing an interrupt transition. */
     if (state > 1u) return;
     if (!state) {
+        if (s_interrupts_enabled) sched_enter_masked();
         s_interrupts_enabled = 0;
         return;
     }
@@ -362,6 +395,15 @@ void sched_resume_interrupts(uint32_t state) {
     if (!was_enabled)
         scheduler_progress_time();
     s_interrupts_enabled = 1;
+    if (!was_enabled && s_vblank_masked_pending) {
+        /* HARDWARE_MEASURED (PSP-3001 / 6.61-ARK, 12/12 trials at each of
+         * 4/16.7/30/50 ms): however many source periods coalesced under the
+         * mask, resume credits VCOUNT exactly ONE -- +1 at 16.7 ms (one
+         * period), +1 at 50 ms (three periods), and +0 at 4 ms (none).  Never
+         * N, and never zero when a period did become pending. */
+        sr_display_advance_vcount(1u);
+        s_vblank_masked_pending = 0;
+    }
     if (was_enabled)
         scheduler_progress_time();
     scheduler_latch_due_events();
@@ -730,11 +772,14 @@ static void scheduler_latch_due_events(void) {
          *
          * Deadlines still advance below, so the periods that elapse under a mask
          * are consumed rather than replayed: on resume the coalesced pending bit
-         * delivers exactly one episode, and VCOUNT resumes counting from the next
-         * period that elapses with interrupts enabled.  No synthetic catch-up
-         * increment is applied at resume. */
+         * delivers exactly one episode and credits VCOUNT exactly one, which is
+         * what the hardware probe measured at every mask length from a quarter
+         * of a period to three periods.  No N-period catch-up is applied, and
+         * no increment at all is applied when no period became pending. */
         if (s_interrupts_enabled)
             sr_display_advance_vcount((uint32_t)count);
+        else
+            s_vblank_masked_pending = 1;   /* coalesced; credited once at resume */
         scheduler_advance_vblank_deadlines(count);
     }
 }

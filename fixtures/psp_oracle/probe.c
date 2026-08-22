@@ -2,7 +2,10 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 #include <pspkernel.h>
+#include <pspdisplay.h>
+#include <pspge.h>
 #include <pspdmac.h>
+#include <psppower.h>
 #include <pspiofilemgr.h>
 #include <pspsysmem.h>
 #include <pspthreadman.h>
@@ -32,6 +35,9 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC 10
 #define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST 11
 #define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC 12
+#define PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT 13
+#define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
+#define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -1009,6 +1015,531 @@ static void run_dmac_invalid_tail(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
+
+/* Long-interrupt-mask display accounting.
+ *
+ * The accepted #88 record established the SHORT-window facts: system time keeps
+ * advancing across `sceKernelCpuSuspendIntr`, guest VCOUNT does not, and exactly
+ * one VBLANK handler call is taken on resume.  It never sampled VCOUNT
+ * immediately after `sceKernelCpuResumeIntr`, so it cannot distinguish
+ *
+ *   (A) the counter catches up by every period that elapsed under the mask,
+ *   (B) exactly one deferred period is credited, or
+ *   (C) the elapsed periods are permanently absent from software VCOUNT.
+ *
+ * These two cases measure that difference directly and never assume a period
+ * length: the vblank period is calibrated on the same device in the same run.
+ * Every spin is bounded by BOTH an elapsed-system-time test and an iteration
+ * cap, so a stopped clock cannot turn a probe into a hang. */
+
+#define MASK_TRIALS      12
+#define MASK_SPIN_CAP    40000000u   /* iteration ceiling; never the normal exit */
+#define CALIB_FRAMES     60
+
+/* Spin until `want` microseconds of system time have elapsed since `t0`, or the
+ * iteration cap trips.  Returns the measured elapsed microseconds.  The volatile
+ * sink stops the compiler from discarding the loop. */
+static volatile uint32_t s_spin_sink;
+static uint32_t spin_us(uint32_t t0, uint32_t want, uint32_t *iters_out) {
+    uint32_t i = 0;
+    uint32_t now = t0;
+    for (; i < MASK_SPIN_CAP; i++) {
+        now = sceKernelGetSystemTimeLow();
+        if ((uint32_t)(now - t0) >= want) break;
+        s_spin_sink = i;
+    }
+    if (iters_out) *iters_out = i;
+    return (uint32_t)(now - t0);
+}
+
+/* Measure the device's own vblank period without assuming 60000/1001.  Returns
+ * nanoseconds per period; 0 if the display never advanced. */
+static uint32_t calibrate_period_ns(uint32_t *vc_frames_out) {
+    sceDisplayWaitVblankStart();
+    uint32_t st0 = sceKernelGetSystemTimeLow();
+    uint32_t vc0 = sceDisplayGetVcount();
+    for (int i = 0; i < CALIB_FRAMES; i++) sceDisplayWaitVblankStart();
+    uint32_t st1 = sceKernelGetSystemTimeLow();
+    uint32_t vc1 = sceDisplayGetVcount();
+    uint32_t frames = vc1 - vc0;
+    if (vc_frames_out) *vc_frames_out = frames;
+    if (!frames) return 0;
+    return (uint32_t)(((uint64_t)(uint32_t)(st1 - st0) * 1000ull) / frames);
+}
+
+static uint32_t periods_in(uint32_t span_us, uint32_t period_ns) {
+    if (!period_ns) return 0;
+    return (uint32_t)(((uint64_t)span_us * 1000ull) / period_ns);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT
+static const uint32_t k_mask_us[] = { 4000u, 16700u, 30000u, 50000u };
+#define MASK_DURATIONS ((int)(sizeof(k_mask_us) / sizeof(k_mask_us[0])))
+
+static void run_display_mask_vcount(int emulated) {
+    uint32_t calib_frames = 0;
+    const uint32_t period_ns = calibrate_period_ns(&calib_frames);
+    const uint32_t cpu_mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+
+    for (int d = 0; d < MASK_DURATIONS; d++) {
+        const uint32_t want = k_mask_us[d];
+        uint32_t out[29];
+        uint32_t trials = 0;
+        uint32_t span_min = 0xffffffffu, span_max = 0, span_sum = 0;
+        uint32_t per_min = 0xffffffffu, per_max = 0, per_sum = 0;
+        uint32_t dur_min = 0xffffffffu, dur_max = 0;              /* vcD - vc0 */
+        uint32_t imm_min = 0xffffffffu, imm_max = 0, imm_sum = 0;  /* vcI - vc0 */
+        uint32_t n_zero = 0, n_one = 0, n_full = 0, n_partial = 0;
+        uint32_t nx1_min = 0xffffffffu, nx1_max = 0, n_next_one = 0;
+        uint32_t ahd_min = 0xffffffffu, ahd_max = 0;
+        uint32_t ahi_min = 0xffffffffu, ahi_max = 0;
+        uint32_t hc_min = 0xffffffffu, hc_max = 0;
+        uint32_t n_time_moved = 0;
+
+        for (int k = 0; k < MASK_TRIALS; k++) {
+            sceDisplayWaitVblankStart();          /* phase-align to a boundary */
+            const uint32_t st0 = sceKernelGetSystemTimeLow();
+            const uint32_t vc0 = sceDisplayGetVcount();
+            const uint32_t ah0 = (uint32_t)sceDisplayGetAccumulatedHcount();
+
+            const int tok = sceKernelCpuSuspendIntr();
+            const uint32_t span = spin_us(st0, want, NULL);
+            const uint32_t vcD = sceDisplayGetVcount();
+            const uint32_t ahD = (uint32_t)sceDisplayGetAccumulatedHcount();
+            const uint32_t hcD = (uint32_t)sceDisplayGetCurrentHcount();
+            sceKernelCpuResumeIntr(tok);
+
+            /* The single measurement the accepted record is missing. */
+            const uint32_t vcI = sceDisplayGetVcount();
+            const uint32_t ahI = (uint32_t)sceDisplayGetAccumulatedHcount();
+
+            sceDisplayWaitVblankStart();
+            const uint32_t vcN1 = sceDisplayGetVcount();
+
+            const uint32_t periods = periods_in(span, period_ns);
+            const uint32_t d_dur = vcD - vc0;
+            const uint32_t d_imm = vcI - vc0;
+            const uint32_t d_nx1 = vcN1 - vcI;
+
+            trials++;
+            if (span) n_time_moved++;
+            if (span < span_min) span_min = span;
+            if (span > span_max) span_max = span;
+            span_sum += span;
+            if (periods < per_min) per_min = periods;
+            if (periods > per_max) per_max = periods;
+            per_sum += periods;
+            if (d_dur < dur_min) dur_min = d_dur;
+            if (d_dur > dur_max) dur_max = d_dur;
+            if (d_imm < imm_min) imm_min = d_imm;
+            if (d_imm > imm_max) imm_max = d_imm;
+            imm_sum += d_imm;
+            if (d_imm == 0u) n_zero++;
+            else if (d_imm == 1u) n_one++;
+            if (periods >= 2u && d_imm == periods) n_full++;
+            else if (d_imm > 1u && periods >= 2u && d_imm < periods) n_partial++;
+            if (d_nx1 < nx1_min) nx1_min = d_nx1;
+            if (d_nx1 > nx1_max) nx1_max = d_nx1;
+            if (d_nx1 == 1u) n_next_one++;
+            {
+                const uint32_t dahd = ahD - ah0, dahi = ahI - ah0;
+                if (dahd < ahd_min) ahd_min = dahd;
+                if (dahd > ahd_max) ahd_max = dahd;
+                if (dahi < ahi_min) ahi_min = dahi;
+                if (dahi > ahi_max) ahi_max = dahi;
+            }
+            if (hcD < hc_min) hc_min = hcD;
+            if (hcD > hc_max) hc_max = hcD;
+        }
+
+        out[0]  = trials;
+        out[1]  = want;
+        out[2]  = span_min;
+        out[3]  = span_max;
+        out[4]  = per_min;
+        out[5]  = per_max;
+        out[6]  = dur_min;
+        out[7]  = dur_max;
+        out[8]  = imm_min;
+        out[9]  = imm_max;
+        out[10] = n_zero;
+        out[11] = n_one;
+        out[12] = n_full;
+        out[13] = n_partial;
+        out[14] = nx1_min;
+        out[15] = nx1_max;
+        out[16] = ahd_min;
+        out[17] = ahd_max;
+        out[18] = ahi_min;
+        out[19] = ahi_max;
+        out[20] = imm_sum;
+        out[21] = per_sum;
+        out[22] = trials ? span_sum / trials : 0u;
+        out[23] = n_time_moved;
+        out[24] = hc_min;
+        out[25] = hc_max;
+        out[26] = period_ns;
+        out[27] = cpu_mhz;
+        out[28] = n_next_one;
+
+        {
+            char case_id[64];
+            snprintf(case_id, sizeof(case_id), "display-mask-vcount-%uus", (unsigned int)want);
+            /* PASS states only that every trial ran and the masked window really
+               elapsed; it makes no claim about which semantic the numbers show. */
+            const int ok = (trials == (uint32_t)MASK_TRIALS) &&
+                           (n_time_moved == trials) && (period_ns != 0u) &&
+                           (calib_frames >= (uint32_t)(CALIB_FRAMES - 2));
+            emit_record_extended(emulated, "PSP-DISPLAY-001", case_id,
+                                 ok ? "PASS" : "FAIL", period_ns, out, 29);
+        }
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
+/* Sustained duty cycle.  One resume per mask span, many periods per span: the
+ * three candidate semantics separate by a factor of ~4 in the accumulated
+ * VCOUNT over a fixed wall window, which no single-trial rounding can fake. */
+#define DUTY_WINDOW_US 2000000u
+#define DUTY_GAP_US       2000u
+
+static const uint32_t k_duty_us[] = { 33000u, 66000u };
+#define DUTY_SETTINGS ((int)(sizeof(k_duty_us) / sizeof(k_duty_us[0])))
+
+static void run_display_mask_duty(int emulated) {
+    uint32_t calib_frames = 0;
+    const uint32_t period_ns = calibrate_period_ns(&calib_frames);
+
+    for (int d = 0; d < DUTY_SETTINGS; d++) {
+        const uint32_t want = k_duty_us[d];
+        uint32_t out[13];
+        uint32_t episodes = 0, masked_sum = 0, unmasked_sum = 0;
+        uint32_t span_min = 0xffffffffu, span_max = 0;
+
+        sceDisplayWaitVblankStart();
+        const uint32_t wall0 = sceKernelGetSystemTimeLow();
+        const uint32_t vc0 = sceDisplayGetVcount();
+        const uint32_t ah0 = (uint32_t)sceDisplayGetAccumulatedHcount();
+
+        while ((uint32_t)(sceKernelGetSystemTimeLow() - wall0) < DUTY_WINDOW_US &&
+               episodes < 4096u) {
+            const int tok = sceKernelCpuSuspendIntr();
+            const uint32_t m0 = sceKernelGetSystemTimeLow();
+            const uint32_t span = spin_us(m0, want, NULL);
+            sceKernelCpuResumeIntr(tok);
+            episodes++;
+            masked_sum += span;
+            if (span < span_min) span_min = span;
+            if (span > span_max) span_max = span;
+            /* Unmasked servicing gap: long enough for the deferred delivery and
+               USB/PSPLink to run, short enough that it carries few periods. */
+            const uint32_t g0 = sceKernelGetSystemTimeLow();
+            unmasked_sum += spin_us(g0, DUTY_GAP_US, NULL);
+        }
+
+        const uint32_t wall = (uint32_t)(sceKernelGetSystemTimeLow() - wall0);
+        const uint32_t vcd = sceDisplayGetVcount() - vc0;
+        const uint32_t ahd = (uint32_t)sceDisplayGetAccumulatedHcount() - ah0;
+        const uint32_t expected = periods_in(wall, period_ns);
+
+        out[0]  = wall;
+        out[1]  = want;
+        out[2]  = DUTY_GAP_US;
+        out[3]  = episodes;
+        out[4]  = vcd;
+        out[5]  = expected;
+        out[6]  = ahd;
+        out[7]  = masked_sum;
+        out[8]  = unmasked_sum;
+        out[9]  = expected ? (uint32_t)(((uint64_t)vcd * 1000ull) / expected) : 0u;
+        out[10] = span_min;
+        out[11] = span_max;
+        out[12] = period_ns;
+
+        {
+            char case_id[64];
+            snprintf(case_id, sizeof(case_id), "display-mask-duty-%uus", (unsigned int)want);
+            const int ok = episodes > 8u && period_ns != 0u && wall >= DUTY_WINDOW_US;
+            emit_record_extended(emulated, "PSP-DISPLAY-001", case_id,
+                                 ok ? "PASS" : "FAIL", period_ns, out, 13);
+        }
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
+
+/* Does the PSP GE make forward progress while CPU interrupt delivery is masked?
+ *
+ * The experiment is stall-gated so that "the GE simply finished before the mask
+ * opened" cannot produce a false positive: the list is enqueued already stalled
+ * at its first word, the destination is proven untouched, the CPU mask is taken,
+ * and only then is the stall released.  Any destination change observed before
+ * `sceKernelCpuResumeIntr` is therefore work the GE did with CPU interrupts off.
+ *
+ * The observable is memory the GE itself writes -- a chain of source-owned block
+ * transfers into VRAM tiles -- read back exclusively through the UNCACHED VRAM
+ * mirror, so a stale CPU cache line can never be misread as "the GE did not
+ * progress".  GE completion notification is measured separately, because the
+ * finish handler runs in interrupt context and is expected to stay pending.
+ *
+ * Nothing here touches retail code or data. */
+
+#define GE_TILES        16
+#define GE_TILE_W       512u          /* pixels, 4 bytes each                */
+#define GE_TILE_H        32u
+#define GE_TILE_BYTES   (GE_TILE_W * GE_TILE_H * 4u)
+#define GE_SENTINEL     0xA5A5A5A5u
+#define GE_PAYLOAD      0x5A5A5A5Au
+#define GE_MASK_CAP_US  40000u        /* bounded masked poll window          */
+#define GE_SPIN_CAP     20000000u
+#define GE_TRIALS       12
+
+/* Uncached mirrors.  VRAM 0x04000000 is the cached view, 0x44000000 the
+   uncached one; main RAM 0x08800000 mirrors at 0x48800000. */
+#define UNCACHED(p)  ((volatile uint32_t *)((uintptr_t)(p) | 0x40000000u))
+
+/* GE command words: (cmd << 24) | 24-bit payload. */
+#define GE_CMD_NOP            0x00
+#define GE_CMD_END            0x0C
+#define GE_CMD_FINISH         0x0F
+#define GE_CMD_TRANSFERSRC    0xB2
+#define GE_CMD_TRANSFERSRCW   0xB3
+#define GE_CMD_TRANSFERDST    0xB4
+#define GE_CMD_TRANSFERDSTW   0xB5
+#define GE_CMD_TRANSFERSTART  0xEA
+#define GE_CMD_TRANSFERSRCPOS 0xEB
+#define GE_CMD_TRANSFERDSTPOS 0xEC
+#define GE_CMD_TRANSFERSIZE   0xEE
+
+static uint32_t s_ge_list[GE_TILES * 10 + 8] __attribute__((aligned(64)));
+static uint32_t s_ge_src[GE_TILE_W * GE_TILE_H] __attribute__((aligned(64)));
+static volatile int s_ge_finish_calls;
+static volatile int s_ge_signal_calls;
+
+static void ge_finish_cb(int id, void *arg) { (void)id; (void)arg; s_ge_finish_calls++; }
+static void ge_signal_cb(int id, void *arg) { (void)id; (void)arg; s_ge_signal_calls++; }
+
+static uint32_t ge_cmd(uint32_t cmd, uint32_t payload) {
+    return (cmd << 24) | (payload & 0x00ffffffu);
+}
+
+/* Address is split: low 24 bits in the ADDR command, bits 24..31 in bits 16..23
+   of the companion W command, which also carries the stride in pixels. */
+static void ge_emit_addr(uint32_t **w, uint32_t addr_cmd, uint32_t w_cmd,
+                         uint32_t addr, uint32_t stride_px) {
+    *(*w)++ = ge_cmd(addr_cmd, addr & 0x00fffff0u);
+    *(*w)++ = ge_cmd(w_cmd, ((addr >> 8) & 0x00ff0000u) | (stride_px & 0x7f8u));
+}
+
+static uint32_t ge_build_list(uint32_t src, uint32_t dst_base) {
+    uint32_t *w = s_ge_list;
+    for (int t = 0; t < GE_TILES; t++) {
+        ge_emit_addr(&w, GE_CMD_TRANSFERSRC, GE_CMD_TRANSFERSRCW, src, GE_TILE_W);
+        ge_emit_addr(&w, GE_CMD_TRANSFERDST, GE_CMD_TRANSFERDSTW,
+                     dst_base + (uint32_t)t * GE_TILE_BYTES, GE_TILE_W);
+        *w++ = ge_cmd(GE_CMD_TRANSFERSRCPOS, 0u);
+        *w++ = ge_cmd(GE_CMD_TRANSFERDSTPOS, 0u);
+        *w++ = ge_cmd(GE_CMD_TRANSFERSIZE, ((GE_TILE_H - 1u) << 10) | (GE_TILE_W - 1u));
+        *w++ = ge_cmd(GE_CMD_TRANSFERSTART, 1u);   /* bit0 = 4 bytes per pixel */
+    }
+    *w++ = ge_cmd(GE_CMD_FINISH, 0u);
+    *w++ = ge_cmd(GE_CMD_END, 0u);
+    *w++ = ge_cmd(GE_CMD_NOP, 0u);
+    *w++ = ge_cmd(GE_CMD_NOP, 0u);
+    return (uint32_t)((char *)w - (char *)s_ge_list);
+}
+
+/* Paint every destination tile with the sentinel through the uncached mirror and
+   confirm it reads back, so a failed pre-fill can never look like GE progress. */
+static int ge_prime_dst(uint32_t dst_base) {
+    for (int t = 0; t < GE_TILES; t++) {
+        volatile uint32_t *p = UNCACHED(dst_base + (uint32_t)t * GE_TILE_BYTES);
+        p[0] = GE_SENTINEL;
+        p[(GE_TILE_BYTES / 4u) - 1u] = GE_SENTINEL;
+    }
+    for (int t = 0; t < GE_TILES; t++) {
+        volatile uint32_t *p = UNCACHED(dst_base + (uint32_t)t * GE_TILE_BYTES);
+        if (p[0] != GE_SENTINEL || p[(GE_TILE_BYTES / 4u) - 1u] != GE_SENTINEL) return 0;
+    }
+    return 1;
+}
+
+/* Number of leading tiles whose first AND last word have left the sentinel. */
+static int ge_tiles_done(uint32_t dst_base) {
+    int n = 0;
+    for (int t = 0; t < GE_TILES; t++) {
+        volatile uint32_t *p = UNCACHED(dst_base + (uint32_t)t * GE_TILE_BYTES);
+        if (p[0] == GE_SENTINEL || p[(GE_TILE_BYTES / 4u) - 1u] == GE_SENTINEL) break;
+        n++;
+    }
+    return n;
+}
+
+/* mode 0 = PRIMARY (release the stall while masked)
+   mode 1 = CONTROL A (hold the stall while masked -- must stay untouched)
+   mode 2 = CONTROL B (release the stall with interrupts enabled -- must change) */
+static void ge_run_case(int emulated, int mode, const char *case_id) {
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t dst_base = vram + 0x00100000u;      /* top 1 MiB of eDRAM */
+    const uint32_t src = (uint32_t)(uintptr_t)s_ge_src;
+    const uint32_t list = (uint32_t)(uintptr_t)s_ge_list;
+
+    PspGeCallbackData cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.signal_func = ge_signal_cb;
+    cb.finish_func = ge_finish_cb;
+    const int cbid = sceGeSetCallback(&cb);
+
+    for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) s_ge_src[i] = GE_PAYLOAD;
+
+    uint32_t out[24];
+    memset(out, 0, sizeof(out));
+    uint32_t trials = 0, prefill_ok = 0, pre_clean = 0;
+    uint32_t masked_any = 0, masked_all = 0, masked_none = 0;
+    uint32_t tiles_masked_min = 0xffffffffu, tiles_masked_max = 0;
+    uint32_t first_us_min = 0xffffffffu, first_us_max = 0;
+    uint32_t all_us_min = 0xffffffffu, all_us_max = 0;
+    uint32_t fin_during = 0, fin_after_resume = 0, fin_after_sync = 0;
+    uint32_t release_rc_nonzero = 0, enq_bad = 0;
+    uint32_t span_min = 0xffffffffu, span_max = 0;
+    uint32_t after_resume_all = 0, after_sync_all = 0;
+
+    const uint32_t list_bytes = ge_build_list(src, dst_base);
+
+    for (int k = 0; k < GE_TRIALS; k++) {
+        sceKernelDcacheWritebackAll();
+        if (!ge_prime_dst(dst_base)) continue;
+        prefill_ok++;
+        s_ge_finish_calls = 0;
+        s_ge_signal_calls = 0;
+
+        /* Enqueue already stalled at the first word: nothing may execute yet. */
+        const int qid = sceGeListEnQueue((void *)list, (void *)list, cbid, NULL);
+        if (qid < 0) { enq_bad++; continue; }
+
+        /* Step 4 of the design: the destination is still untouched. */
+        const int before = ge_tiles_done(dst_base);
+        if (before == 0) pre_clean++;
+
+        uint32_t tiles_masked = 0, t_first = 0, t_all = 0, span = 0;
+        int fin_masked = 0;
+
+        if (mode == 2) {
+            /* CONTROL B: identical release, interrupts left enabled. */
+            const uint32_t t0 = sceKernelGetSystemTimeLow();
+            const int rc = sceGeListUpdateStallAddr(qid, (void *)(list + list_bytes));
+            if (rc < 0) release_rc_nonzero++;
+            uint32_t i = 0;
+            for (; i < GE_SPIN_CAP; i++) {
+                tiles_masked = (uint32_t)ge_tiles_done(dst_base);
+                span = (uint32_t)(sceKernelGetSystemTimeLow() - t0);
+                if (tiles_masked && !t_first) t_first = span ? span : 1u;
+                if (tiles_masked >= (uint32_t)GE_TILES) { t_all = span ? span : 1u; break; }
+                if (span >= GE_MASK_CAP_US) break;
+            }
+            fin_masked = s_ge_finish_calls;
+        } else {
+            const int tok = sceKernelCpuSuspendIntr();
+            const uint32_t t0 = sceKernelGetSystemTimeLow();
+            int rc = 0;
+            if (mode == 0)
+                rc = sceGeListUpdateStallAddr(qid, (void *)(list + list_bytes));
+            uint32_t i = 0;
+            for (; i < GE_SPIN_CAP; i++) {
+                tiles_masked = (uint32_t)ge_tiles_done(dst_base);
+                span = (uint32_t)(sceKernelGetSystemTimeLow() - t0);
+                if (tiles_masked && !t_first) t_first = span ? span : 1u;
+                if (tiles_masked >= (uint32_t)GE_TILES) { t_all = span ? span : 1u; break; }
+                if (span >= GE_MASK_CAP_US) break;
+            }
+            fin_masked = s_ge_finish_calls;   /* sampled while still masked */
+            sceKernelCpuResumeIntr(tok);
+            if (rc < 0) release_rc_nonzero++;
+        }
+
+        if (fin_masked) fin_during++;
+        if (ge_tiles_done(dst_base) >= GE_TILES) after_resume_all++;
+        if (s_ge_finish_calls) fin_after_resume++;
+
+        /* Drain: CONTROL A never released the stall, so release it now with
+           interrupts enabled and sync, leaving the GE queue clean either way. */
+        if (mode == 1) sceGeListUpdateStallAddr(qid, (void *)(list + list_bytes));
+        sceGeListSync(qid, 0);
+        sceGeDrawSync(0);
+        if (s_ge_finish_calls) fin_after_sync++;
+        if (ge_tiles_done(dst_base) >= GE_TILES) after_sync_all++;
+
+        trials++;
+        if (mode == 1) {
+            /* For CONTROL A the interesting count is how many tiles moved while
+               the stall was held: it must be zero. */
+            if (tiles_masked) masked_any++; else masked_none++;
+        } else {
+            if (tiles_masked >= (uint32_t)GE_TILES) masked_all++;
+            else if (tiles_masked) masked_any++;
+            else masked_none++;
+        }
+        if (tiles_masked < tiles_masked_min) tiles_masked_min = tiles_masked;
+        if (tiles_masked > tiles_masked_max) tiles_masked_max = tiles_masked;
+        if (t_first) {
+            if (t_first < first_us_min) first_us_min = t_first;
+            if (t_first > first_us_max) first_us_max = t_first;
+        }
+        if (t_all) {
+            if (t_all < all_us_min) all_us_min = t_all;
+            if (t_all > all_us_max) all_us_max = t_all;
+        }
+        if (span < span_min) span_min = span;
+        if (span > span_max) span_max = span;
+    }
+
+    sceGeUnsetCallback(cbid);
+
+    out[0]  = trials;
+    out[1]  = (uint32_t)mode;
+    out[2]  = prefill_ok;
+    out[3]  = pre_clean;
+    out[4]  = masked_all;
+    out[5]  = masked_any;
+    out[6]  = masked_none;
+    out[7]  = tiles_masked_min == 0xffffffffu ? 0u : tiles_masked_min;
+    out[8]  = tiles_masked_max;
+    out[9]  = first_us_min == 0xffffffffu ? 0u : first_us_min;
+    out[10] = first_us_max;
+    out[11] = all_us_min == 0xffffffffu ? 0u : all_us_min;
+    out[12] = all_us_max;
+    out[13] = fin_during;
+    out[14] = fin_after_resume;
+    out[15] = fin_after_sync;
+    out[16] = after_resume_all;
+    out[17] = after_sync_all;
+    out[18] = release_rc_nonzero;
+    out[19] = enq_bad;
+    out[20] = span_min == 0xffffffffu ? 0u : span_min;
+    out[21] = span_max;
+    out[22] = (uint32_t)GE_TILES;
+    out[23] = (uint32_t)scePowerGetCpuClockFrequencyInt();
+
+    /* PASS means the trial machinery ran and the pre-release destination was
+       clean every time.  It asserts nothing about which semantic was observed. */
+    const int ok = (trials == (uint32_t)GE_TRIALS) &&
+                   (prefill_ok == trials) && (pre_clean == trials) && (enq_bad == 0u);
+    emit_record_extended(emulated, "PSP-DISPLAY-001", case_id,
+                         ok ? "PASS" : "FAIL", (uint32_t)trials, out, 24);
+}
+
+static void run_display_ge_mask(int emulated) {
+    ge_run_case(emulated, 2, "ge-mask-controlB-enabled-release");
+    ge_run_case(emulated, 1, "ge-mask-controlA-stall-held");
+    ge_run_case(emulated, 0, "ge-mask-primary-masked-release");
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -1083,6 +1614,12 @@ int main(int argc, char *argv[]) {
 #elif PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
       PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
     run_dmac_invalid_tail(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT
+    run_display_mask_vcount(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
+    run_display_mask_duty(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
+    run_display_ge_mask(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
