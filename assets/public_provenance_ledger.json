@@ -115,7 +115,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4745bff6e591fc1e6a3d15d38fa6fbf62b4b4d782bc7bae1d2626d2a7fc615f2"
+      "sha256": "d6afdfeeb5225b68f8baceb6c4cca1044f368370767e67820b91de7c86fe8eec"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -124,7 +124,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "15c5ea64fd2fb39572fdec98cd471fb0536f814f5cba4abe3eebda8067eb0327"
+      "sha256": "310f40651961365bc0c74b5ebc2ffd52307e4b87297363f08eb02b85496a044a"
     },
     {
       "path": ".github/dependabot.yml",
@@ -206,7 +206,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cc5261d5b07c259b3d51aa5959e4cc455a557026db871bd1679d7eb62c48a8a3"
+      "sha256": "a1ee8095cdbb3e3b2296242cb52eb6f0f5af3e294cd3d3f8fb4b5f0cef8cd123"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -224,7 +224,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "45f961bca75e3d5a5fdcec6d57367af9bb0d67610417efa71b1222a42d4573ca"
+      "sha256": "e9f2e05019a8507e03edf3f83c0e8d50b9aa4f36fba7b52b2446155d49ae1163"
     },
     {
       "path": "CREDITS.md",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "b285c49a4b44a06d203d5a6b57b262020c1a2747dbecb519642eb5ab6256ce05"
+      "sha256": "e77750f3e78635147fa56f66b26712f8633ae4217e26a284c45d677913af224b"
     },
     {
       "path": "NOTICE.md",
@@ -296,7 +296,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "094149c41f4abb038712c4d51689ff11c33c7aca04c1b8cf07c8c1e7d8457bc3"
+      "sha256": "4fc0345b288568eafc274a9c826cf6aad733e0f50226cc99fa23293a6d18fb43"
     },
     {
       "path": "SECURITY.md",
@@ -856,7 +856,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "732769aa99124c2762830e0406b9e64b6bdd6f7335a3de6fc7b73e1f4b00bdd2"
+      "sha256": "bbbd732ad3148f3ea3916d7dcb9320e6e67a35f24c5f491f685d88f6e783a601"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -865,7 +865,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5ecfd7901729e2d0ed855afc1311137d7d7e9b7d499818b9a53b95ad563ea9aa"
+      "sha256": "54fb9d7b179837bd28a2ea22fcff652956e27dc6aef75b646b4fa9dea0f2d451"
     },
     {
       "path": "docs/TITLE_CODEGEN_PLAN.md",
@@ -874,7 +874,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9ba79d66f6324a36b9e0bc5efa4879145fafd8f81ae9244c88b87ced49e74e32"
+      "sha256": "8995c3cf97fefbdd06f2fea4e7134507e47ec940c4830bf12a478f025f3594d8"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -4911,7 +4911,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3439acf25b5f6087d641abacf01fd3b4a8f1e594bc2f2ae7bd3c2c1abe0136cb"
+      "sha256": "460676a629298a0a50d2b9ad14bee0bb222eb5a60a86bbfc1ab221be1a62f4ef"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5000,7 +5000,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4535a963641698dfb90fda755465fd311e1034955a3483812eabe4e7e9bd8246"
+      "sha256": "1c0ee620f5409627ca7081440836c58b266deabacd3cd5b6cf50f0df4aad4582"
     },
     {
       "path": "tools/build_public_export.py",
@@ -7172,7 +7172,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "4987e4225535ebc4dba539413c4dd1551fd8915dca7fb67d34e060db07f7800b"
+      "sha256": "c38fa32faa1c348e07e775fa1f0f1ca1dada2d9cd1154b962d73003298ee24ed"
     },
     {
       "path": "tools/test_vfpu_addressing.py",

@@ -23,8 +23,8 @@ For HST on Windows/MSYS2 UCRT64, prefer the checked-in manager because it suppli
 private-input paths and HST's required `GAME_BASE=0 GAME_ENTRY=0` values:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull
-.\hst_manager.ps1 -Action BuildFast
+.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json
+.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json
 .\hst_manager.ps1 -Action Test
 .\hst_manager.ps1 -Action Run
 ```
@@ -32,8 +32,11 @@ private-input paths and HST's required `GAME_BASE=0 GAME_ENTRY=0` values:
 A direct Make invocation for the canonical HST ELF is:
 
 ```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 all
+mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
+    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
 ```
+
+`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
 Direct Make invocations must export `VULKAN_SDK` (or pass it on the command line); the manager
 discovers and validates the current SDK automatically. Both managers require `pwsh` 7.6+; Windows

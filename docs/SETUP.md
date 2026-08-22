@@ -191,7 +191,7 @@ and never copy game or firmware material into Git history.
 From the repository root:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull
+.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
 This runs the complete pipeline and compilation. Generated C is split into a dynamic number of
@@ -201,18 +201,26 @@ intentionally conservative flags to avoid excessive compiler memory use.
 For runtime-only changes:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFast
+.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
 For a direct Make build:
 
 ```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 all
+mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
+    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
 ```
 
 Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a Make variable when
 using this form. HST requires both address values to be zero. The Makefile's generic defaults are
 intentionally not HST defaults.
+
+`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
+
+The requirement is enforced incrementally, not only on a clean tree: the generated title-config
+header is keyed to a content-addressed identity of the effective configuration, so dropping
+`TITLE_MANIFEST` from a previously bound build directory refuses rather than reusing the header
+that build left behind.
 
 ## 4. Run and test
 

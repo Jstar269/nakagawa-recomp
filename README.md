@@ -79,8 +79,8 @@ The private `place_game_here/` layout is Git-ignored. A complete ISO-only bootst
 Use the HST manager from the repository root. It supplies HST's required `GAME_BASE=0 GAME_ENTRY=0` values and canonical private-input paths.
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull  # pipeline + compile
-.\hst_manager.ps1 -Action BuildFast  # incremental/runtime-focused developer build
+.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json  # pipeline + compile
+.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json  # incremental/runtime build
 .\hst_manager.ps1 -Action Test       # configured project test route
 .\hst_manager.ps1 -Action Run        # launch with the GUI
 ```
@@ -93,11 +93,14 @@ Build duration depends heavily on host CPU, storage, compiler version, and wheth
 Equivalent direct Make invocation for the canonical HST ELF path:
 
 ```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 all
+mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
+    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
 ```
 
 Direct Make invocations must export `VULKAN_SDK` (or pass it on the command line); the manager is
 the canonical path that discovers and validates the current SDK automatically.
+
+`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](assets/titles/README.md).
 
 The Makefile selects PATH-resolved MSYS2 UCRT64 `gcc` when `CC` is otherwise only GNU Make's built-in `cc` default. Environment and command-line overrides remain supported:
 

@@ -20,8 +20,8 @@ Fixes #(issue number)
 ## Testing Performed
 
 - [ ] `python -m unittest discover -s tools -p "test_*.py" -v` passes (generator/tooling changes)
-- [ ] `hst_manager.ps1 -Action BuildFull` succeeds (pipeline/codegen changes)
-- [ ] `hst_manager.ps1 -Action BuildFast` succeeds (runtime-only changes)
+- [ ] `hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json` succeeds (pipeline/codegen changes)
+- [ ] `hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json` succeeds (runtime-only changes)
 - [ ] `hst_manager.ps1 -Action Test` (selftest) passes
 - [ ] `npx --yes markdownlint-cli2@0.23.1` passes (documentation changes)
 - [ ] `npm ci && npm test && npm run lint && npm run typecheck && npm run build` passes in `interface/` (dashboard changes)

@@ -123,13 +123,18 @@ def parse_args() -> argparse.Namespace:
     stamp.add_argument("--output", type=Path, required=True)
     stamp.add_argument("--stale-glob", required=True)
     stamp.add_argument("--value", required=True)
+    # Same contract as `record --invalidate`: a stamp whose flavour changed must be able
+    # to DELETE what that flavour produced. Deletion, not a newer mtime, is what makes a
+    # dependent target unambiguously out of date -- see the note on the -include of the
+    # profile stamps in the Makefile.
+    stamp.add_argument("--invalidate", type=Path, action="append", default=[])
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.action == "stamp":
-        activate_stamp(args.output, args.stale_glob, args.value)
+        activate_stamp(args.output, args.stale_glob, args.value, invalidate=args.invalidate)
         return 0
     payload = profile_payload(args.compiler, args.entry)
     digest = profile_hash(payload)

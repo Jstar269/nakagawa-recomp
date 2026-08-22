@@ -387,6 +387,25 @@ before: `compiler-info`, `clean`, and `distclean` still work, the game-input-fre
 selftests build against a title-neutral configuration of their own, and a generic
 `runtime-objects` build still needs no title input at all.
 
+That refusal is a recipe line, so it only fires when Make decides to run the recipe --
+and until the title-config identity stamp existed, an incremental build often did not.
+Dropping `TITLE_MANIFEST` from a directory that already held a title-bound header left
+that header newer than every remaining prerequisite, so Make reported the artifact up to
+date, skipped the refusal, and recompiled `title_config.o` against the previous title's
+bindings while `RUNTIME_PROFILE_HASH` recorded the generic digest. The reverse transition
+was worse in practice: a manifest older than an existing generic header produced a build
+whose profile claimed the title's digest and whose compiled configuration bound nothing.
+
+The generated header therefore depends on `$(TITLE_CONFIG_STAMP)`, a file named by a
+content-addressed identity of the *effective* configuration -- `TITLE_CONFIG_DIGEST` plus
+the HST-unbound state, which shares the generic digest but must never reuse another
+build's header. The stamp deletes the header it supersedes and is `-include`d with the
+other profile stamps, so Make restarts and sees the deletion before judging freshness;
+"absent" decides what "newer" cannot when a regeneration lands inside one filesystem
+timestamp tick. An unchanged configuration regenerates nothing, and touching a manifest
+without editing it is not a new configuration, because the identity is derived from
+content.
+
 ## Profile isolation
 
 The generator's invariant is that **a guest address must never change what
