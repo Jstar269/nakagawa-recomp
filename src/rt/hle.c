@@ -6184,12 +6184,9 @@ static void sr_dump_calls(void) {
  * CORROBORATIVE_ONLY: PPSSPP Core/HLE/sceCtrl.cpp __CtrlReadBuffer() returns
  * SCE_KERNEL_ERROR_INVALID_SIZE for nBufs > NUM_CTRL_BUFFERS. Not measured here. */
 #define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
-/* `ts` is stamped when the sample is latched, not when it is read. Every delivered
- * record used to carry the READ-time counter, so a guest doing timing across pad
- * history saw zero elapsed between frames -- the same flat-fill defect the button
- * field above was already fixed for. The unit (this runtime's frame counter) is
- * unchanged and is NOT an established PSP contract: PSPSDK documents the field
- * only as "the current read frame" and PPSSPP stores microseconds there. */
+/* `ts` is stamped when the sample is latched, not when it is read. SceCtrlData.TimeStamp
+ * contains the low 32 bits of the guest microsecond system clock at latch time
+ * (corroborated by uOFW sceKernelGetSystemTimeLow, PSPAutotests ctrl/vblank, and emulator consensus). */
 typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
@@ -6888,7 +6885,7 @@ void sr_ctrl_sample(void) {
         }
     }
     s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].ts = s_vcount_fwd;   /* stamped at latch, delivered verbatim */
+    s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
     if (gui_on()) gui_consume_button_pulses();
