@@ -1708,6 +1708,13 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
  *   - "exactly ONE pending VBLANK is delivered on CpuResumeIntr"
  *   - "one further VBLANK delivery occurs at the next real boundary after resume"
  *
+ * A later probe (display-mask-vcount, PSP-3001 / 6.61-ARK, 12 trials at each of
+ * 4 / 16.7 / 30 / 50 ms) took the sample the #88 record was missing -- VCOUNT
+ * IMMEDIATELY after CpuResumeIntr -- and measured a credit of exactly one
+ * whenever at least one source period had become pending.  The conservative
+ * "no increment at resume" policy this test used to assert is therefore
+ * retired; see test_vcount_credits_one_deferred_period_on_resume().
+ *
  * The sibling test_vcount_tracks_elapsed_source_periods() covers the other
  * regime -- interrupts ENABLED, guest service starved -- where VCOUNT does
  * advance by elapsed periods.  Neither observation may be extrapolated onto the
@@ -1717,9 +1724,9 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
  * enabled (independently of whether a guest thread ever services the episode),
  * and stops while they are masked.
  *
- * The hardware record does not sample VCOUNT immediately after CpuResumeIntr.
- * The runtime therefore takes the conservative policy that resumed delivery
- * does not manufacture an increment of its own. */
+ * What this test still owns is the DURING-mask half: VCOUNT must not move while
+ * the bit is clear, however many periods elapse.  The resume credit is asserted
+ * by the sibling test. */
 static void test_vcount_freezes_while_cpu_interrupts_are_masked(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
@@ -1776,8 +1783,10 @@ static void test_vcount_freezes_while_cpu_interrupts_are_masked(void) {
     expect(s_vbl_count == 1u,
            "resume delivers exactly one coalesced VBLANK episode");
     cpu.r[4] = 0;
-    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
-           "the resumed delivery does not manufacture a VCOUNT increment of its own");
+    /* HARDWARE_MEASURED: six masked periods, one credited increment.  The old
+     * expectation here was == vc0, which the display-mask-vcount probe refutes. */
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
+           "resume credits exactly one deferred period, not zero and not six");
 
     /* SOURCE-PHASE CONTINUITY. Freezing the guest-visible counter must not corrupt
      * the display source underneath it. The deadline was advanced for every
@@ -1820,6 +1829,166 @@ static void test_vcount_freezes_while_cpu_interrupts_are_masked(void) {
     expect(s_vbl_count == 2u,
            "the next real boundary after resume delivers exactly one further episode");
     (void)sys0;
+}
+
+
+/* Case-B deferred VCOUNT accounting, and the discovery-time defect behind it.
+ *
+ * HARDWARE_MEASURED, PSP-3001 / 6.61-ARK, source-owned probe display-mask-vcount
+ * (oracle/hardware-results/display-mask-accepted.json), 12 trials per duration:
+ *
+ *      mask     source periods crossed     VCOUNT credited at resume
+ *      4.0 ms            0                          +0
+ *     16.7 ms            1                          +1
+ *     30.0 ms            1                          +1
+ *     50.0 ms            2                          +1
+ *
+ * No trial at any duration showed an N-period catch-up, and none showed a credit
+ * when no period had elapsed.  sceDisplayGetAccumulatedHcount kept advancing at
+ * the full display rate throughout every mask, so the display SOURCE never stops
+ * -- what stops is the interrupt-gated counter the guest reads.
+ *
+ * The fourth case is the host defect that made the first three matter.  Source
+ * periods are discovered lazily at scheduler boundaries, and were classified by
+ * the interrupt bit AT DISCOVERY TIME.  A period that elapsed with interrupts
+ * enabled, but that no latch had noticed yet, was therefore re-classified as
+ * masked by the next latch under a mask -- typically the one CpuResumeIntr runs
+ * before restoring the bit -- and dropped.  Private route measurement found that
+ * every dropped period had a boundary predating the mask that later discovered
+ * it, while the mask itself was held for a negligible fraction of wall time: the
+ * defect is classification at discovery time, not interrupt-mask residency.
+ * (The matched before/after rate table for a specific title and route is run
+ * evidence and lives with that run, not in this comment.)
+ *
+ * Every assertion goes through production NID dispatch on a fixture with a real
+ * current thread, so none of them can pass vacuously. */
+static void test_vcount_credits_one_deferred_period_on_resume(void) {
+    enum { NID_DISPLAY_VCOUNT = 0x9c6eaad7u };
+    const uint64_t PERIOD = 16683u;
+    CpuState cpu;
+
+    /* One masked window crossing `periods` source boundaries; returns the VCOUNT
+     * delta observed across the whole suspend/resume pair, and reports the delta
+     * seen while still masked through `during`. */
+    struct { uint64_t periods; uint32_t expect_credit; const char *what; } cases[] = {
+        { 0u, 0u, "no period crosses the mask: resume credits nothing" },
+        { 1u, 1u, "one period crosses the mask: resume credits exactly one" },
+        { 2u, 1u, "two periods coalesce: resume still credits exactly one" },
+        { 5u, 1u, "five periods coalesce: resume still credits exactly one" },
+    };
+
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        reset_fixture();
+        sr_hle_init();
+        s_pace_on = 0;
+        s_vtime_us = 1000u;
+        s_vbl_next_us = 1000u + PERIOD;
+        s_vbl_event_period_rem = 0;
+        s_vbl_count = 0;
+        s_interrupts_enabled = 1;
+        memset(&cpu, 0, sizeof(cpu));
+
+        cpu.r[4] = 0;
+        uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+        (void)sched_suspend_interrupts();
+        expect(sched_interrupts_enabled() == 0, "the mask is actually held");
+
+        s_vtime_us += cases[c].periods * PERIOD;
+        scheduler_latch_due_events();
+
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0,
+               "VCOUNT does not advance while the CPU interrupt bit is clear");
+
+        sched_resume_interrupts(1u);
+        cpu.r[4] = 0;
+        uint32_t credited = sr_syscall(&cpu, NID_DISPLAY_VCOUNT) - vc0;
+        expect(credited == cases[c].expect_credit, cases[c].what);
+    }
+
+    /* THE HOST DEFECT. A period elapses with interrupts ENABLED but is not
+     * latched yet; the guest then masks and unmasks without any further period
+     * crossing.  That period was delivered on hardware and must survive.
+     *
+     * Before the fix this asserted 0: the pre-restore latch inside
+     * sched_resume_interrupts() discovered the period with the bit still clear
+     * and dropped it. */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = 1000u + PERIOD;
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 1;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    uint32_t base = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+
+    /* Three periods elapse with interrupts enabled.  Advance the clock WITHOUT
+     * latching, exactly as a stretch of guest execution between two scheduler
+     * boundaries does. */
+    s_vtime_us += 3u * PERIOD;
+
+    (void)sched_suspend_interrupts();
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == base + 3u,
+           "periods that elapsed before the mask are credited when the mask is taken");
+    expect(s_vbl_count == 0u,
+           "consuming pre-mask periods does not run a guest handler from inside SuspendIntr");
+
+    sched_resume_interrupts(1u);
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == base + 3u,
+           "and resume adds no credit of its own when no period elapsed under the mask");
+
+    /* The same shape one more time, now with a genuine masked period on top: the
+     * three pre-mask periods and the one masked period must both be counted, and
+     * the masked one exactly once. */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = 1000u + PERIOD;
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 1;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    base = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+    s_vtime_us += 3u * PERIOD;
+    (void)sched_suspend_interrupts();
+    s_vtime_us += 2u * PERIOD;
+    scheduler_latch_due_events();
+    sched_resume_interrupts(1u);
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == base + 4u,
+           "three enabled periods plus two coalesced masked periods credit 3 + 1");
+
+    /* CpuResumeIntr(0) taken from an enabled state is also an enabled->disabled
+     * edge -- the #88 token algebra proves the token is literally the saved
+     * I-bit -- so it must consume pre-mask periods too. */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = 1000u + PERIOD;
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 1;
+    memset(&cpu, 0, sizeof(cpu));
+
+    cpu.r[4] = 0;
+    base = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+    s_vtime_us += 2u * PERIOD;
+    sched_resume_interrupts(0u);
+    expect(sched_interrupts_enabled() == 0, "resume(0) from enabled really masks");
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == base + 2u,
+           "resume(0) from an enabled state also consumes the pre-mask periods");
 }
 
 /* sceDisplaySetFrameBuf flip accounting.
@@ -7334,6 +7503,7 @@ int main(int argc, char **argv) {
     test_display_queries_do_not_progress_display();
     test_vcount_tracks_elapsed_source_periods();
     test_vcount_freezes_while_cpu_interrupts_are_masked();
+    test_vcount_credits_one_deferred_period_on_resume();
     test_display_setframebuf_flip_accounting();
     test_watchdog_no_new_frame_observation();
     test_watchdog_fires_on_boundary_crossing_not_exact_multiple();

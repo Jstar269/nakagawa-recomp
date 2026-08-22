@@ -42,6 +42,12 @@ else ifeq ($(CASE),dma-invalid-tail-try-dst)
 CASE_ID = 11
 else ifeq ($(CASE),dma-invalid-tail-try-src)
 CASE_ID = 12
+else ifeq ($(CASE),display-mask-vcount)
+CASE_ID = 13
+else ifeq ($(CASE),display-mask-duty)
+CASE_ID = 14
+else ifeq ($(CASE),display-ge-mask)
+CASE_ID = 15
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -61,7 +67,7 @@ PSP_LARGE_MEMORY = 0
 endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
-LIBS = -lpspdmac
+LIBS = -lpspdmac -lpsppower -lpspge
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
