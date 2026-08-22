@@ -24,14 +24,29 @@ from elf_bounds import (
     validate_elf32_envelope,
 )
 
-R_MIPS_NONE, R_MIPS_16, R_MIPS_32, R_MIPS_26 = 0, 1, 2, 4
-R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16 = 5, 6, 7
+R_MIPS_NONE, R_MIPS_16, R_MIPS_32, R_MIPS_REL32, R_MIPS_26 = 0, 1, 2, 3, 4
+R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16, R_MIPS_LITERAL = 5, 6, 7, 8
 SHT_PRX_RELOC = 0x700000A0
 SHT_PRX_RELOC_PACKED = 0x700000A1
 PROGRAM_IMAGE_SCHEMA_VERSION = 1
 UINT32_END = 0x1_0000_0000
 MAX_PROGRAM_IMAGE_TABLE_BYTES = 16 * 1024 * 1024
 MAX_PROGRAM_IMAGE_STRING_BYTES = 1024
+
+_TYPE_A_SUPPORTED_TYPES = frozenset(
+    (R_MIPS_16, R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16)
+)
+_TYPE_A_NOOP_TYPES = frozenset((R_MIPS_NONE, R_MIPS_GPREL16))
+_TYPE_A_SPECIAL_TYPES = frozenset((R_MIPS_LITERAL,))
+# R_MIPS_REL32 is part of the MIPS relocation vocabulary and has a distinct
+# packed-stream handler, but the Type-A PSP section path does not support it.
+_TYPE_A_KNOWN_UNSUPPORTED_TYPES = frozenset((R_MIPS_REL32,))
+_TYPE_A_RECOGNIZED_TYPES = (
+    _TYPE_A_SUPPORTED_TYPES
+    | _TYPE_A_NOOP_TYPES
+    | _TYPE_A_SPECIAL_TYPES
+    | _TYPE_A_KNOWN_UNSUPPORTED_TYPES
+)
 
 
 @dataclass(frozen=True)
@@ -1359,11 +1374,25 @@ class Prx:
             addr_seg = (info >> 16) & 0xFF
             if ofs_seg >= nseg or addr_seg >= nseg:
                 raise ValueError("type-A relocation segment index is out of range")
+            if rtype in _TYPE_A_KNOWN_UNSUPPORTED_TYPES or rtype not in _TYPE_A_RECOGNIZED_TYPES:
+                raise ValueError(
+                    f"unsupported Type-A relocation type 0x{rtype:x} "
+                    f"at offset 0x{offset:08x} "
+                    f"(offset segment {ofs_seg}, target segment {addr_seg})"
+                )
             addr = offset + self.seg_vaddr[ofs_seg]
             relocate_to = self.seg_vaddr[addr_seg]
             op = self.r32(addr)
 
-            if rtype == R_MIPS_32:
+            if rtype in _TYPE_A_NOOP_TYPES:
+                # NONE and GPREL16 are deliberate no-ops in this loader.
+                continue
+            elif rtype in _TYPE_A_SPECIAL_TYPES:
+                # The PSP's R_MIPS_LITERAL (8) is a recognized,
+                # diagnostic-only relocation category, not an unknown type to
+                # reject or a value to rewrite in this loader.
+                continue
+            elif rtype == R_MIPS_32:
                 op = (op + relocate_to) & 0xFFFFFFFF
             elif rtype == R_MIPS_26:
                 op = (op & 0xFC000000) | (((op & 0x03FFFFFF) + (relocate_to >> 2)) & 0x03FFFFFF)
@@ -1400,7 +1429,6 @@ class Prx:
                 op = (op & 0xFFFF0000) | (((op & 0xFFFF) + relocate_to) & 0xFFFF)
             elif rtype == R_MIPS_16:
                 op = (op & 0xFFFF0000) | ((((op & 0xFFFF)) + relocate_to) & 0xFFFF)
-            # R_MIPS_GPREL16 / R_MIPS_NONE: nothing.
             self.w32(addr, op)
 
 

@@ -5730,7 +5730,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4de49a46eadbaf234a856e0b7f362f78cddb5b30bbbe9e42c51d7cfddf156d58"
+      "sha256": "18be8b18b9e4ba4e895d24bd082ed5d82fd40cfa2b5f7caa63033a35434735c3"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -6846,7 +6846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "28aed59f68fafa0f49ded46949e73c61018fb10895597a0d63f23483d51f9886"
+      "sha256": "18ee8c66ab76e6a58170204b4a5e7141f7b049431f5bb5059fe39ca49efb3ac7"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",

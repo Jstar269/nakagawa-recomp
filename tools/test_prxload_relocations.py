@@ -16,7 +16,17 @@ import struct
 import unittest
 
 import prxload
-from prxload import R_MIPS_16, R_MIPS_26, R_MIPS_32, R_MIPS_HI16, R_MIPS_LO16
+from prxload import (
+    R_MIPS_16,
+    R_MIPS_26,
+    R_MIPS_32,
+    R_MIPS_GPREL16,
+    R_MIPS_HI16,
+    R_MIPS_LITERAL,
+    R_MIPS_LO16,
+    R_MIPS_NONE,
+    R_MIPS_REL32,
+)
 
 
 def make_prx(words, seg_vaddr):
@@ -37,6 +47,38 @@ def info(rtype, ofs_seg=0, addr_seg=0):
 
 
 class Hi16Lo16PairingTests(unittest.TestCase):
+    def test_unknown_relocation_type_fails_loudly(self):
+        # Type 0xF is outside the recognized Type-A PSP relocation set.  Keep
+        # the fixture minimal so the test reaches the central relocation
+        # dispatcher with a valid segment and target word.
+        prx = make_prx([0xDEADBEEF], seg_vaddr=[0])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"unsupported Type-A relocation type 0xf at offset 0x00000000"
+            r" \(offset segment 0, target segment 0\)",
+        ):
+            prx._apply([(0, info(0xF))])
+
+    def test_known_noop_relocation_types_remain_nonfatal(self):
+        # These values are recognized Type-A categories, not unknown types:
+        # NONE/GPREL16 are deliberate loader no-ops and LITERAL is firmware's
+        # diagnostic-only relocation category.
+        for rtype in (R_MIPS_NONE, R_MIPS_GPREL16, R_MIPS_LITERAL):
+            with self.subTest(rtype=rtype):
+                prx = make_prx([0xDEADBEEF], seg_vaddr=[0])
+                prx._apply([(0, info(rtype))])
+                self.assertEqual(prx.r32(0), 0xDEADBEEF)
+
+    def test_known_but_unsupported_type_a_relocation_fails_loudly(self):
+        # R_MIPS_REL32 is a known MIPS/PSP relocation vocabulary value, but it
+        # is not supported by the Type-A section path (packed streams have a
+        # separate dispatcher).
+        prx = make_prx([0xDEADBEEF], seg_vaddr=[0])
+
+        with self.assertRaisesRegex(ValueError, r"unsupported Type-A relocation type 0x3"):
+            prx._apply([(0, info(R_MIPS_REL32))])
+
     def test_normal_hi16_lo16_pair(self):
         # lui $2,0x0010 ; addiu $2,$2,0x2000 relocated by +0x1000: the classic
         # case, no interference, sanity-checks the carry arithmetic itself.
