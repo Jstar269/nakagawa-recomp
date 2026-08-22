@@ -1853,9 +1853,12 @@ static void test_vcount_freezes_while_cpu_interrupts_are_masked(void) {
  * the interrupt bit AT DISCOVERY TIME.  A period that elapsed with interrupts
  * enabled, but that no latch had noticed yet, was therefore re-classified as
  * masked by the next latch under a mask -- typically the one CpuResumeIntr runs
- * before restoring the bit -- and dropped.  A private HST route measured 51.8
- * of 59.94 source periods per second being dropped that way while the mask was
- * held for 0.045% of wall time, which is not a residency effect at all.
+ * before restoring the bit -- and dropped.  Private route measurement found that
+ * every dropped period had a boundary predating the mask that later discovered
+ * it, while the mask itself was held for a negligible fraction of wall time: the
+ * defect is classification at discovery time, not interrupt-mask residency.
+ * (The matched before/after rate table for a specific title and route is run
+ * evidence and lives with that run, not in this comment.)
  *
  * Every assertion goes through production NID dispatch on a fixture with a real
  * current thread, so none of them can pass vacuously. */

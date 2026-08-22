@@ -369,17 +369,22 @@ Clock ownership:
     already due *before* clearing the bit. Without that step a period that elapsed with interrupts
     enabled stays undiscovered until some later latch, and the most frequent later latch is the one
     `sched_resume_interrupts()` performs before restoring the bit — which would classify it as masked
-    and drop it. This is a discovery-time question, not a residency one: a private HST route measured
-    51.8 of 59.94 source periods per second being dropped that way while the mask was held for 0.045%
-    of wall time, and 100% of the dropped periods had boundaries that predated their mask.
+    and drop it. This is a discovery-time question, not a residency one: private route measurement
+    found every dropped period had a boundary predating the mask that later discovered it, while the
+    mask itself was held for a negligible fraction of wall time. Per-title rate figures are run
+    evidence and belong with the run that produced them, not here.
 
   The masked-window behavior is `HARDWARE_MEASURED`. The original #88 probe found system time
   advancing while VCOUNT and VBLANK handler calls stayed frozen, followed by one coalesced delivery
   on resume, but it never sampled VCOUNT immediately after `CpuResumeIntr`. The source-owned
   `display-mask-vcount` probe (PSP-3001 / 6.61-ARK, 12 trials at each of 4 / 16.7 / 30 / 50 ms) took
-  that sample and settled it: a mask crossing no period credits `+0`, and a mask crossing one, two or
-  three periods credits `+1`. No trial showed an N-period catch-up. Guest-visible VCOUNT is therefore
-  a count of *delivered interrupts*, and the interrupt controller latches one pending VBLANK.
+  that sample and settled it: a mask crossing no source period credits `+0`, and a mask crossing one
+  or more credits `+1` — measured across durations from 0.24 to 3.00 display periods, which crossed
+  0, 1, 1 and 2 source boundaries respectively. No trial showed an N-period catch-up. Guest-visible
+  VCOUNT is therefore a count of *delivered* VBLANKs, and the observed behavior is consistent with a
+  single coalesced pending VBLANK delivery. The probe observes the `+0`/`+1` result, not the
+  interrupt controller's internal state, so the coalescing is the model that fits the measurement
+  rather than a claim about hardware internals.
 
   **The display source and the delivered counter are different quantities.** The same probe measured
   `sceDisplayGetAccumulatedHcount` running straight through every mask at the full display rate

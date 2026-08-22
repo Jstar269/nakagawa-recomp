@@ -115,9 +115,10 @@ static int      s_interrupts_enabled = 1;
 static int      s_dispatch_enabled = 1;
 /* At least one display source period elapsed while the CPU interrupt bit was
  * clear, and its single coalesced delivery has not been credited yet.  This is
- * a flag rather than a count on purpose: the PSP interrupt controller latches
- * one pending VBLANK, so ten masked periods and one masked period are
- * indistinguishable to the guest.  See sched_resume_interrupts(). */
+ * a flag rather than a count on purpose: the measured resume credit is one
+ * whether one period or several elapsed under the mask, so ten masked periods
+ * and one masked period are indistinguishable to the guest.  See
+ * sched_resume_interrupts(). */
 static int      s_vblank_masked_pending;
 /* Interrupt state is a gate on delivery, not a gate on the scheduler clock.  A
  * source bit remains latched until the eligible handler consumes it. */
@@ -397,10 +398,10 @@ void sched_resume_interrupts(uint32_t state) {
     s_interrupts_enabled = 1;
     if (!was_enabled && s_vblank_masked_pending) {
         /* HARDWARE_MEASURED (PSP-3001 / 6.61-ARK, 12/12 trials at each of
-         * 4/16.7/30/50 ms): however many source periods coalesced under the
-         * mask, resume credits VCOUNT exactly ONE -- +1 at 16.7 ms (one
-         * period), +1 at 50 ms (three periods), and +0 at 4 ms (none).  Never
-         * N, and never zero when a period did become pending. */
+         * 4/16.7/30/50 ms): however many source periods elapsed under the mask,
+         * resume credits VCOUNT exactly ONE -- +1 when one period crossed, +1
+         * when multiple crossed, and +0 at 4 ms where none did.  Never N, and
+         * never zero when a period did become pending. */
         sr_display_advance_vcount(1u);
         s_vblank_masked_pending = 0;
     }
@@ -773,9 +774,9 @@ static void scheduler_latch_due_events(void) {
          * Deadlines still advance below, so the periods that elapse under a mask
          * are consumed rather than replayed: on resume the coalesced pending bit
          * delivers exactly one episode and credits VCOUNT exactly one, which is
-         * what the hardware probe measured at every mask length from a quarter
-         * of a period to three periods.  No N-period catch-up is applied, and
-         * no increment at all is applied when no period became pending. */
+         * what the hardware probe measured at every mask length it tested, from
+         * a quarter of a display period up to three.  No N-period catch-up is
+         * applied, and no increment at all when no period became pending. */
         if (s_interrupts_enabled)
             sr_display_advance_vcount((uint32_t)count);
         else
