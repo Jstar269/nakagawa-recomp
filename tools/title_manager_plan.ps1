@@ -85,12 +85,12 @@ function Assert-TitleManagerPlan {
         'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
         'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
         'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
-        'private_binding_requirements', 'environment', 'make'
+        'private_binding_requirements', 'run_entry', 'environment', 'make'
     ) @(
         'plan_version', 'plan_kind', 'protected_digest', 'title_manifest_id', 'title_kind',
         'game_name', 'game_base', 'game_entry', 'codegen_profile', 'bss_metadata_source',
         'disc', 'extra_executable_spans', 'required_guest_modules', 'optional_guest_modules',
-        'private_binding_requirements', 'environment', 'make'
+        'private_binding_requirements', 'run_entry', 'environment', 'make'
     ) | Out-Null
 
     if ((Assert-TitlePlanInteger $Plan.plan_version '$.plan_version') -ne $script:TitleManagerPlanVersion) {
@@ -104,6 +104,13 @@ function Assert-TitleManagerPlan {
     }
     [void](Assert-TitlePlanInteger $Plan.game_base '$.game_base')
     [void](Assert-TitlePlanInteger $Plan.game_entry '$.game_entry')
+    # The address a run starts at, rendered the same way Make renders an address. It is
+    # not game_entry: a title whose real entry is not compiled names a fallback entry in
+    # its runtime bindings, and that is what a run must start at.
+    Assert-TitlePlanString $Plan.run_entry '$.run_entry' | Out-Null
+    if ($Plan.run_entry -cnotmatch '^(0|0x[0-9a-f]{8})$') {
+        throw '$.run_entry must be 0 or a lowercase 0x-prefixed 8-digit guest address'
+    }
 
     $disc = $Plan.disc
     if ($null -ne $disc) {
@@ -322,7 +329,10 @@ function Get-HstManifestMakeArgs {
         # only path by which a title's addresses reach src/rt.
         "TITLE_MANIFEST=$($TitleManifestForMake -replace '\\', '/')"
     )
-    return [pscustomobject]@{ MakeArgs = $args; Environment = $Plan.environment }
+    # RunEntry travels with the Make args because it comes from the same validated
+    # plan: it is the guest address a run of THIS title starts at, so the manager
+    # never needs a copy of it.
+    return [pscustomobject]@{ MakeArgs = $args; Environment = $Plan.environment; RunEntry = $Plan.run_entry }
 }
 
 function Push-TitleAnalyzerEnvironment {

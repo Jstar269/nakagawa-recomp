@@ -239,5 +239,142 @@ class TitleManagerAdapterTests(unittest.TestCase):
         self.assertNotIn("pwned", proc.stdout)
 
 
+class RunEntryIsPlanOwned(unittest.TestCase):
+    """The address a run starts at must come from validated title configuration.
+
+    hst_manager.ps1 carried a bare `0x0029a060` at its Run and DiffFunc call sites --
+    the same value the manifest already owns as runtime_bindings.fallback_entry, and
+    the same one src/rt/title_config.c compiles in. Three copies of one title address,
+    only one of them validated.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shell = shutil.which("pwsh")
+        if cls.shell is None:
+            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
+
+    def build(self, manifest: dict) -> dict:
+        return title_codegen_plan.build_manager_plan(
+            manifest,
+            game_name="synthetic",
+            game_elf=Path("build/fixtures/synthetic.elf"),
+            build_dir=Path("build/synthetic"),
+            funcs_per_chunk=64,
+        )
+
+    def manifest(self) -> dict:
+        return title_manifest.load_manifest(TITLES / "synthetic.json")
+
+    def test_run_entry_is_the_configured_fallback_entry(self) -> None:
+        manifest = self.manifest()
+        fallback = manifest["runtime_bindings"]["fallback_entry"]
+        self.assertNotEqual(fallback, manifest["executable"]["entry"],
+                            "fixture cannot distinguish the two if they are equal")
+        self.assertEqual(self.build(manifest)["run_entry"], f"0x{fallback:08x}")
+
+    def test_without_runtime_bindings_it_is_the_executable_entry(self) -> None:
+        """Not a title default: with no configured fallback the ELF entry is the only
+        thing a generic title can be started at."""
+        manifest = self.manifest()
+        manifest.pop("runtime_bindings", None)
+        entry = manifest["executable"]["entry"]
+        expected = "0" if entry == 0 else f"0x{entry:08x}"
+        self.assertEqual(self.build(manifest)["run_entry"], expected)
+
+    def test_a_changed_fallback_entry_changes_the_run_entry(self) -> None:
+        """Vacuity guard: the projection must track the binding, not a constant."""
+        manifest = self.manifest()
+        manifest["runtime_bindings"]["fallback_entry"] += 8
+        self.assertEqual(self.build(manifest)["run_entry"],
+                         f"0x{manifest['runtime_bindings']['fallback_entry']:08x}")
+
+    def test_the_adapter_accepts_and_surfaces_it(self) -> None:
+        plan = self.build(self.manifest())
+        plan_path = Path(tempfile.mkdtemp(prefix="nakagawa-run-entry-")) / "plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        script = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            f". '{HELPER}'",
+            f"$plan = Get-Content -LiteralPath '{plan_path.as_posix()}' -Raw | ConvertFrom-Json",
+            "Assert-TitleManagerPlan $plan | Out-Null",
+            "Assert-TitlePlanDerivation $plan | Out-Null",
+            "Write-Output \"RUN_ENTRY=$($plan.run_entry)\"",
+        ])
+        proc = subprocess.run([self.shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                              cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(f"RUN_ENTRY={plan['run_entry']}", proc.stdout)
+
+    def test_a_malformed_run_entry_is_rejected(self) -> None:
+        for label, value in (("uppercase", "0X0029A060"), ("short", "0x29a060"),
+                             ("decimal", "2728032"), ("empty", ""), ("garbage", "nope")):
+            with self.subTest(case=label):
+                plan = self.build(self.manifest())
+                plan["run_entry"] = value
+                plan_path = Path(tempfile.mkdtemp(prefix="nakagawa-run-entry-")) / "plan.json"
+                plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                script = "\n".join([
+                    "$ErrorActionPreference = 'Stop'",
+                    f". '{HELPER}'",
+                    f"$plan = Get-Content -LiteralPath '{plan_path.as_posix()}' -Raw | ConvertFrom-Json",
+                    "try { Assert-TitleManagerPlan $plan | Out-Null }",
+                    "catch { Write-Output \"THREW: $($_.Exception.Message)\"; exit 3 }",
+                ])
+                proc = subprocess.run(
+                    [self.shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    cwd=ROOT, capture_output=True, text=True, check=False)
+                self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+                self.assertIn("run_entry", proc.stdout)
+
+    def test_a_missing_run_entry_is_rejected(self) -> None:
+        """The manager must not silently fall back when the planner stops projecting it."""
+        plan = self.build(self.manifest())
+        plan.pop("run_entry")
+        plan_path = Path(tempfile.mkdtemp(prefix="nakagawa-run-entry-")) / "plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        script = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            f". '{HELPER}'",
+            f"$plan = Get-Content -LiteralPath '{plan_path.as_posix()}' -Raw | ConvertFrom-Json",
+            "try { Assert-TitleManagerPlan $plan | Out-Null }",
+            "catch { Write-Output \"THREW: $($_.Exception.Message)\"; exit 3 }",
+        ])
+        proc = subprocess.run([self.shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                              cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertIn("run_entry", proc.stdout)
+
+
+class ManagerHoldsNoRunEntryCopy(unittest.TestCase):
+    """Source-shape guard on hst_manager.ps1. Tier 4, and it does not pretend
+    otherwise -- it asserts where the value comes from, not that a run works."""
+
+    def setUp(self) -> None:
+        self.manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
+
+    def test_the_run_and_difffunc_call_sites_take_it_from_the_plan(self) -> None:
+        sites = [line for line in self.manager.splitlines() if '"--image", $imagePath' in line]
+        self.assertGreaterEqual(len(sites), 2, "the driver invocation sites moved")
+        for line in sites:
+            self.assertIn("(Get-HstRunEntry)", line,
+                          f"driver invocation still carries its own entry: {line.strip()}")
+            self.assertNotIn("0x0029a060", line)
+
+    def test_the_only_remaining_literal_is_the_legacy_fallback(self) -> None:
+        """One copy remains, in one place, and it announces itself when used. Pinning
+        the count is what stops a new one being added quietly."""
+        self.assertEqual(self.manager.count("0x0029a060"), 1)
+        body = self.manager.split("function Get-HstRunEntry", 1)[1].split("\n    function ", 1)[0]
+        self.assertIn("0x0029a060", body)
+        self.assertIn("Write-Host", body, "using the legacy literal must be reported")
+
+    def test_the_plan_supplied_entry_wins_when_a_manifest_is_bound(self) -> None:
+        body = self.manager.split("function Get-HstRunEntry", 1)[1].split("\n    function ", 1)[0]
+        guard = body.index("$script:TitleManagerRunEntry")
+        self.assertLess(guard, body.index("0x0029a060"),
+                        "the literal must only be reached when no plan supplied one")
+        self.assertIn("$script:TitleManagerRunEntry = $boundPlan.RunEntry", self.manager)
+
 if __name__ == "__main__":
     unittest.main()

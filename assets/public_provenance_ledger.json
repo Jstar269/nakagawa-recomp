@@ -1131,7 +1131,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "11e410ba308be7976ba7dec9e08770ee2bd3bb94c1133b4f8f7573939ae83d38"
+      "sha256": "1979605334b3efb3ccce8e406154df01a0d79dc05adc01fab0913b6ef83da6a8"
     },
     {
       "path": "interface/.env.example",
@@ -5525,7 +5525,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16a486a30de468c6832712a2a76b7b4ecad571a7136d6a55152de6a6b67d02d5"
+      "sha256": "0fad08322b3cb1a9f0b5758f30b3ae9058c1cd75883e6b8a7ff5b595768a661b"
     },
     {
       "path": "tools/mem_debug.py",
@@ -6624,7 +6624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "423c16767cb5e63a895336b54c9196cafa571fa2bc602272d9faa8be8295c644"
+      "sha256": "42a5b763a08654a0b0abfedda63925a267cfe97fa5fc429f43574106e67d4add"
     },
     {
       "path": "tools/test_manager_safety.ps1",
@@ -7122,7 +7122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96bbbc9095ced46438771300e25755ff1181756c46cc7b060be0c295883bc168"
+      "sha256": "a9ed93186ff5bc876049715420ce002507ae1e72b66754d052b75dea54ffc95b"
     },
     {
       "path": "tools/test_title_manager_plan.py",
@@ -7345,7 +7345,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1d9f7e5b010ce885b8d068ac5043dd91bde2df386ce5383a841724a2d43783a"
+      "sha256": "d327b6b1dc6624c004169f406dc672af2951ea4e00b296c6eee9627659e48582"
     },
     {
       "path": "tools/title_manager_plan.ps1",
@@ -7357,7 +7357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cd587cb2f8e5178f2907e82477b241255912e4fd43397ad4fdd83737129d353"
+      "sha256": "2f4ce6950192c58db9ccc509a8655a6286b3b431ecab12f9c643ebd8646eac8d"
     },
     {
       "path": "tools/title_manifest.py",
