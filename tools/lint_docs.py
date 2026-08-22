@@ -49,8 +49,48 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 
 # Regression denylist for URLs known to have belonged to pre-export/private-era tracking.
 # This is not a general proof of object existence; the networked auditor owns that question.
+#
+# EXPIRY.  GitHub numbers issues and pull requests from one sequence, so the public
+# repository steadily REALLOCATES these numbers to real objects of its own.  A denylist
+# entry is only meaningful while the public repository has not yet reached it; once it
+# has, the URL resolves to a live public object and flagging it is a false positive that
+# blocks legitimate work -- which is how this was found: citing the (real, new) public
+# issue 98 failed this lint.
+#
+# The frontier below is a FACT, not a prediction: the public sequence had allocated 98
+# (issue, compatibility-override surface) and 99 (pull request) as of 2026-08-21, so
+# both are live objects and are no longer denylisted.
+#
+# KNOWN LIMITATION.  102-105 are still listed and the public sequence is a handful of
+# allocations away from them.  This check cannot notice that by itself -- it is offline,
+# and the frontier only moves when a human moves it.  When one of those numbers is
+# allocated, this lint will flag a live object and the fix is to raise the frontier and
+# drop the entry; the guard below then confirms the two stayed consistent.  Existence is
+# owned by the networked auditor (tools/audit_public_issue_links.py), so removing an
+# entry early loses only an offline regression check -- and an offline check that fires
+# on live objects is worse than no check at all.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 99
+
+RETIRED_PRIVATE_ISSUE_NUMBERS = (
+    102, 103, 104, 105, 139, 142, 143, 145, 146, 147, 149, 150, 151, 152,
+    154, 179, 187, 188, 196, 197, 234, 286, 304, 339,
+)
+
+_reallocated = sorted(n for n in RETIRED_PRIVATE_ISSUE_NUMBERS
+                      if n <= PUBLIC_ISSUE_NUMBER_FRONTIER)
+if _reallocated:
+    # A raise, not an assert: `python -O` strips asserts, and this guard exists to stop
+    # the linter flagging live public objects.
+    raise ValueError(
+        "denylisted issue number(s) already reallocated by the public repository "
+        f"(frontier {PUBLIC_ISSUE_NUMBER_FRONTIER}): {_reallocated}; remove them "
+        "rather than flagging a live object"
+    )
+
 RETIRED_PRIVATE_ISSUE_URLS = re.compile(
-    r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:98|99|102|103|104|105|139|142|143|145|146|147|149|150|151|152|154|179|187|188|196|197|234|286|304|339)\b"
+    r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:"
+    + "|".join(str(n) for n in RETIRED_PRIVATE_ISSUE_NUMBERS)
+    + r")\b"
 )
 
 HISTORICAL_EVIDENCE_DOCS = {

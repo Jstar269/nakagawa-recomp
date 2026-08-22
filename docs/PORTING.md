@@ -199,7 +199,9 @@ not currently hold: where generic core (runtime/tooling) carries knowledge that 
 only of one title. It is the second-title readiness record; the machine-enforced
 inventory lives in `tools/compat_overrides.py` (`HLE_GUEST_ADDRESS_GROUPS`) and is
 gated by `tools/test_compat_manifest.py`. Retiring these entries is tracked by
-[issue #20](https://github.com/Jstar269/nakagawa-recomp/issues/20).
+[issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98). (This previously
+cited #20, which is a merged pull request about `sceSasCore` routing and has no relation
+to this surface — so the surface had no tracker at all.)
 
 **Readiness criterion.** A newly supplied, lawfully obtained PSP executable should be
 able to receive a profile, run analysis, produce its target/import/capability census,
@@ -212,18 +214,30 @@ Before 2026-08-20 the semantic-debt inventory's checked sources were `tools/code
 and `src/rt/recomp.c`, with manual groups covering `src/rt/sched.c`. `src/rt/hle.c` was
 in none of them. A census found 38 distinct guest addresses across 50 sites in it that
 mean something only in this title's memory map, and none were inventoried. They now
-are. Classification summary (census buckets, per group):
+are.
+
+That census was itself incomplete, and said so with confidence: it reported 38/38
+covered while eight further title addresses sat in
+`ensure_runtime_sync_callbacks` — a configuration block base, a semaphore name
+pointer, and six guest wrapper entry points, all reached from an unconditionally
+registered `sceDisplaySetMode`. Not one of them is written inside a `MEM_*` call: each
+is bound to a local or assigned into a `CpuState` register first, so the extractor's
+direct-literal regex matched none of them. The gate now also recognizes those indirect
+shapes (`bound_local`, `cpu_state_register`); its grammar and its explicit limits are
+documented in `tools/test_compat_manifest.py`. Classification summary (census buckets,
+per group):
 
 | Group | Bucket | Addresses | Sites |
 | --- | --- | --- | --- |
 | `guest_bss_snapshots` | DIAGNOSTIC_ONLY | 27 | 30 |
 | `exit_path_context` | DIAGNOSTIC_ONLY | 2 | 3 |
-| `umd_ufl_head_dump` | DIAGNOSTIC_ONLY | 1 | 2 |
+| `umd_ufl_head_dump` | DIAGNOSTIC_ONLY | 1 | 3 |
 | `libfont_ready_flag` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 1 |
 | `frame_ready_latch_assist` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 7 |
+| `runtime_sync_callback_config` | EXPLICIT_COMPATIBILITY_OVERRIDE | 8 | 8 |
 | `display_setmode_guest_init` | EXPLICIT_COMPATIBILITY_OVERRIDE | 6 | 7 |
 
-`TOTAL_COUPLINGS`: 38 distinct addresses / 50 sites. By bucket:
+`TOTAL_COUPLINGS`: 46 distinct addresses / 59 sites. By bucket:
 
 - `GENERIC_PSP_SEMANTIC`: 0 (generic PSP constants are exempted only through
   the narrow, explicit site rules in `HLE_GENERIC_SITE_RULES`: an exact
@@ -233,34 +247,45 @@ are. Classification summary (census buckets, per group):
   direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
   `0x041fffff`) is inventoried like any other absolute guest address.
 - `PROFILE_OWNED_CONFIGURATION`: 0 inside the hle.c gate; two documented build/profile
-  couplings below (C-2, C-3) are this bucket.
-- `EXPLICIT_COMPATIBILITY_OVERRIDE`: 8 addresses / 15 sites (the three groups above;
+  couplings below (C-2, C-3) are this bucket. The eight `runtime_sync_callback_config`
+  addresses are this bucket *in shape* — a config base with a fixed field layout, a
+  name pointer, and three mode-keyed pairs of wrapper entries — but they are not typed
+  configuration today, so they are counted where they actually are.
+- `EXPLICIT_COMPATIBILITY_OVERRIDE`: 16 addresses / 23 sites (the four groups above;
   each answers the five review questions in `tools/compat_overrides.py`).
-- `DIAGNOSTIC_ONLY`: 30 addresses / 35 sites (read-only, env-gated).
+- `DIAGNOSTIC_ONLY`: 30 addresses / 36 sites (read-only, env-gated).
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
 - `FALSE_POSITIVE`: 0 (a deliberately injected generic constant never flags; the
   explicit generic-site rules are regression-tested).
 - `UNRESOLVED_COUPLING`: 0 (all sites classified; the gate fails closed on any new one).
 
-**Why this blocks title #2.** The eight override addresses are not merely wrong for
-another title — three of them are *dispatch targets*. A different guest executable
-reaching `h_DisplaySetMode` is called at whatever lives at `0x00000bcc`, `0x0029a8bc`
-and `0x0001dc00` in its own map. The failure is arbitrary rather than diagnosable,
-which is the opposite of exposing a clean unsupported-semantic boundary.
+**Why this blocks title #2.** The sixteen override addresses are not merely wrong for
+another title — three of them are *dispatch targets*, and eight more are installed as
+guest callback pointers. A different guest executable reaching `h_DisplaySetMode` is
+called at whatever lives at `0x00000bcc`, `0x0029a8bc` and `0x0001dc00` in its own map,
+has whatever lives at `0x00333138` read *and written*, and ends up with two of the six
+wrapper addresses stored where its own code will later call them. The failure is
+arbitrary rather than diagnosable, which is the opposite of exposing a clean
+unsupported-semantic boundary.
 
-### Top five title-#2 blockers
+### Top title-#2 blockers
 
 1. `display_setmode_guest_init` dispatch targets (`0x00000bcc`, `0x0029a8bc`,
    `0x0001dc00`) — a generic `sceDisplaySetMode` handler calls three fixed guest
    functions that only exist in this title's map.
-2. `display_setmode_guest_init` forced globals (`0x0031fcc0`, `0x00311140`,
+2. `runtime_sync_callback_config` (`0x00333138` + seven) — the same handler reads and
+   writes a title configuration block, may create a semaphore named through a title
+   string pointer, and installs one of three mode-keyed pairs of guest wrapper entry
+   points. Newly visible: the coupling gate could not see any of these eight until the
+   indirect-shape grammar landed.
+3. `display_setmode_guest_init` forced globals (`0x0031fcc0`, `0x00311140`,
    `0x002d0738`) — render-context magic, render-command-table ready flag and context
    word are seeded to this title's expected values.
-3. `frame_ready_latch_assist` (`0x00331b80`) — the runtime seeds, decrements, and after
+4. `frame_ready_latch_assist` (`0x00331b80`) — the runtime seeds, decrements, and after
    30 stuck vblanks force-clears this title's frame-ready counter.
-4. `libfont_ready_flag` (`0x002d132c`) — any `libfont.prx` load writes 1 to a title
+5. `libfont_ready_flag` (`0x002d132c`) — any `libfont.prx` load writes 1 to a title
    global from a generic module-load handler.
-5. `SR_DATA_EXPECTED_COUNT` in the build driver (`Makefile`, 56672) — a hard-coded
+6. `SR_DATA_EXPECTED_COUNT` in the build driver (`Makefile`, 56672) — a hard-coded
    extracted-asset count for one specific release; the runtime side already defaults to
    "unset is safe", so the constant should move into the title manifest.
 
