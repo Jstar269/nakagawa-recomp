@@ -4902,6 +4902,10 @@ static uint32_t h_KernelPrintf(CpuState *s) {
     return 0;
 }
 
+#define SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES 0x80020320u
+#define SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR 0x80020323u
+#define SCE_ERROR_KERNEL_INVALID_ARGUMENT    0x80020324u
+
 typedef enum {
     FD_KIND_UNUSED = 0,
     FD_KIND_STD = 1,
@@ -5379,7 +5383,7 @@ static uint32_t h_IoOpen(CpuState *s) {
     int slot = -1;
     for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++)
         if (!s_fds[i].used) { slot = i; break; }
-    if (slot < 0) return 0x80010018;  /* too many open files */
+    if (slot < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;  /* too many open files */
     memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
     s_fds[slot].kind = FD_KIND_FILE;
 
@@ -5453,7 +5457,7 @@ static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
-        return 0x80010009;
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (hle_fd_is_std(fd)) {                          /* std streams: dump to stderr */
         uint8_t buf[1024]; uint32_t n = count < sizeof(buf) ? count : sizeof(buf) - 1;
@@ -5465,7 +5469,7 @@ static uint32_t h_IoWrite(CpuState *s) {
         }
         return count;
     }
-    if (f->kind != FD_KIND_FILE) return 0x80010009;
+    if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
     fseek(f->host, (long)f->off, SEEK_SET);
     uint8_t tmp[4096]; uint32_t done = 0;
@@ -5482,7 +5486,7 @@ static uint32_t h_IoWrite(CpuState *s) {
 static uint32_t h_IoRead(CpuState *s) {
     /* a0=fd, a1=dst, a2=count. Returns bytes read. */
     uint32_t fd = A0, dst = A1, count = A2;
-    if (!hle_fd_is_file(fd)) return 0x80010009;
+    if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->pgd) {
         /* Decrypt-on-read: f->off/f->size are the logical (decrypted) view; the
@@ -5588,7 +5592,8 @@ static uint32_t h_IoRead(CpuState *s) {
 static uint32_t h_IoLseek32(CpuState *s) {
     /* a0=fd, a1=offset, a2=whence. Returns new position (32-bit). */
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
-    if (!hle_fd_is_file(fd)) return 0x80010009;
+    if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
     int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
@@ -5600,7 +5605,8 @@ static uint32_t h_IoLseek(CpuState *s) {
     uint32_t fd = A0;
     int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
     uint32_t whence = stack_arg(s, 0);
-    if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return 0x80010009; }
+    if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR; }
+    if (whence >= 3u) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_INVALID_ARGUMENT; }
     Fd *f = &s_fds[fd];
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
     int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
@@ -5622,7 +5628,7 @@ static uint32_t h_IoIoctl(CpuState *s) {
     /* a0=fd, a1=cmd, a2=indata, a3=inlen, t0=outdata, t1=outlen */
     uint32_t fd = A0, cmd = A1, in = A2, inlen = A3;
     uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
-    if (!hle_fd_is_file(fd)) return 0x80010009;
+    if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "Ioctl fd=%u cmd=0x%08x in=0x%08x/%u out=0x%08x/%u\n",
@@ -5726,7 +5732,7 @@ static uint32_t h_IoIoctl(CpuState *s) {
 static uint32_t h_IoClose(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
-        return 0x80010009;
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     hle_fd_release(&s_fds[fd], s_fds[fd].kind == FD_KIND_STD);
     s_closed_res[fd] = 0;
     return 0;
@@ -5767,15 +5773,15 @@ static uint32_t h_IoDopen(CpuState *s) {
             return 0x100u + i;
         }
     }
-    return 0x80010018u;
+    return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
 }
 
 static uint32_t h_IoDread(CpuState *s) {
     uint32_t fd = A0, de = A1;
     if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]) || !de)
-        return 0x80010009u;
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return 0x80010009u;
+    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     IsoDirEntry e;
     if (d->backend == 0) {
         int r = iso_list(d->path, d->index, &e);
@@ -5822,9 +5828,9 @@ static uint32_t h_IoDread(CpuState *s) {
 
 static uint32_t h_IoDclose(CpuState *s) {
     uint32_t fd = A0;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return 0x80010009u;
+    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return 0x80010009u;
+    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (d->backend == 1 && d->find != NULL && d->find != INVALID_HANDLE_VALUE) FindClose(d->find);
     free(d->path);
     memset(d, 0, sizeof(*d)); return 0;
@@ -5871,7 +5877,7 @@ static uint32_t h_IoWaitAsyncCB(CpuState *s) {
 static uint32_t h_IoCloseAsync(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
-        return 0x80010009;
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     hle_fd_release(&s_fds[fd], s_fds[fd].kind == FD_KIND_STD);
     s_closed_res[fd] = 0;
     return 0;
@@ -5884,7 +5890,11 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
 uint32_t sr_hle_test_io_open(CpuState *s) { return h_IoOpen(s); }
 uint32_t sr_hle_test_io_read(CpuState *s) { return h_IoRead(s); }
 uint32_t sr_hle_test_io_write(CpuState *s) { return h_IoWrite(s); }
+uint32_t sr_hle_test_io_lseek(CpuState *s) { return h_IoLseek(s); }
 uint32_t sr_hle_test_io_lseek32(CpuState *s) { return h_IoLseek32(s); }
+uint32_t sr_hle_test_io_dopen(CpuState *s) { return h_IoDopen(s); }
+uint32_t sr_hle_test_io_dread(CpuState *s) { return h_IoDread(s); }
+uint32_t sr_hle_test_io_dclose(CpuState *s) { return h_IoDclose(s); }
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }

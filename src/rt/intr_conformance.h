@@ -471,15 +471,13 @@ static const IcProbe kIcMatrix[] = {
 /* Only the bad-fd column is exercised: the valid-fd cells need a real host file,
  * which would make the outcome depend on the filesystem rather than on context.
  * BADF wins over both context restrictions in every cell of this group. */
-/* Current main answers the bad-fd cells in the errno error space
- * (0x80010009 = ERRNO_BAD_FILE_DESCRIPTOR) rather than ThreadMan's BADF
- * (0x80020323) that hardware returns. Same class of error, different code --
- * an ordinary known deviation, not a context defect. */
+/* The manager validation layer returns ThreadMan's BADF (0x80020323) for bad
+ * descriptors across all contexts, conforming to hardware. */
 { "sceIoRead", 0x6a638d83u, "Bad file", ICG_IO_BADFD, 0,
-  {0, 258, 401, 259}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0x80010009u), IC_RET(0x80010009u), IC_RET(0x80010009u), IC_RET(0x80010009u)},
+  {0, 258, 401, 259}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)},
   {IC_PREC_NA, IC_PREC_OBJECT, IC_PREC_OBJECT, IC_PREC_OBJECT}, IC_HW_IMMEDIATE},
 { "sceIoWrite", 0x42ec03acu, "Bad file", ICG_IO_BADFD, 0,
-  {0, 264, 403, 265}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0x80010009u), IC_RET(0x80010009u), IC_RET(0x80010009u), IC_RET(0x80010009u)},
+  {0, 264, 403, 265}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)},
   {IC_PREC_NA, IC_PREC_OBJECT, IC_PREC_OBJECT, IC_PREC_OBJECT}, IC_HW_IMMEDIATE},
 { "sceIoWaitAsync", 0xe23eec33u, "Bad file", ICG_IO_BADFD, 1,
   {0, 270, 405, 271}, {ICU, IC_RET(0x80020323u), IC_RET(0x80020323u), IC_RET(0x80020323u)}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
