@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e43d3e74d52e211506a3f5a4810199cb1ba91d93a2e0490fb701538c5a48b6d1"
+      "sha256": "8badd8280db17b427d1527be000204fa34d562a2c8ccdcfa29f28fb6daf55d5f"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -264,13 +264,12 @@
     },
     {
       "path": "Makefile",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e77750f3e78635147fa56f66b26712f8633ae4217e26a284c45d677913af224b"
+      "sha256": "2d7e90617ea5d4b1f57ada5da42fdedf2a5019646405f40fddcbd41253999412"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +386,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2bf48c8ae3e76eaf283b69106489ce80d2eb9f4678a06b63f289f9c318011cdb"
+      "sha256": "75208f1b99a9784f38fa49d9aa0943e3ba2fd53b856d54981be7c0dee7ead5c2"
     },
     {
       "path": "assets/release_manifest.json",
@@ -694,7 +693,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67dbca663dd74dd53e23f35e021c59df35362baff512822eb083f2577cb4e892"
+      "sha256": "4401d1226b9c3a3844fd0e2cd057e7b1cd726a86d72086df1f363d56296925fc"
     },
     {
       "path": "docs/CI.md",
@@ -703,7 +702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "75db7696f408b0e0b3b0852de18426c115ac21d08379c4301c3dbc0f266e8d41"
+      "sha256": "2ca4c93d12b7df50457015700316cf74be5d69dcd87ac817daf3110d003ac404"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -992,6 +991,24 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "9ff4c56ec6ec753127e03d43f3520d1eacf41069e03fe07e199ca332d31bbce4"
+    },
+    {
+      "path": "fixtures/production_smoke/README.md",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "00448aa0d0df35e5404b96a606252f65454af688f06d099b6b008b120f49dc69"
+    },
+    {
+      "path": "fixtures/production_smoke/generate.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "a37a537e7faad6fad09048bfb5e8e36edbc798a195c86f3deb152c18eeaf4af0"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -3886,7 +3903,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "d7f927a447704adeb94a441067666a7ee8085c4a65fd6539338fc7bfc0c0fa4c"
+      "sha256": "610ff3cd70015547cdb9a33f46d8accef408a3299fb7f05eaaeeb075c66ab348"
     },
     {
       "path": "src/rt/evf.h",
@@ -6724,15 +6741,12 @@
     },
     {
       "path": "tools/test_native_driver_hardening.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1a203ad220ac3fd8559dc1f481948ee67e5a9fd1bbdd0fe75a326e2cf06d9d32"
+      "sha256": "8309b53ffef017deef517e168f145d00c53c4f4eba140d9189e0dd74cb51afb0"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -6778,6 +6792,15 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "168bb9e3368b41856e33eef9b6b1673a095677eb50751268fbddd90b6c1c98ab"
+    },
+    {
+      "path": "tools/test_production_smoke.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "cbd2b9415ffd968ada75bcc9d75846b028ceeb670604e9443d50fee02997cf29"
     },
     {
       "path": "tools/test_progress_evidence.py",

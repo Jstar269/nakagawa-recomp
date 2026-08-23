@@ -275,6 +275,26 @@ The `all` target intentionally invokes Make twice:
 `CHUNK_OBJS` is based on `$(wildcard ...)` at parse time, so collapsing the process into a single
 `all: pipeline compile` dependency pass can omit generated chunks on a clean build.
 
+### Source-owned production smoke
+
+`mingw32-make production-smoke` generates a deterministic PSP-shaped ELF/PRX fixture under
+`build/production-smoke/`, then enters the ordinary two-phase `all` target with `PUBLIC_SAFE=1`.
+The fixture is a recipe in [`fixtures/production_smoke/`](../fixtures/production_smoke/); the PRX,
+`~PSP` header, relocated image, generated C, objects, link map, executable, and run logs remain
+ignored build outputs.
+
+This gate covers two load segments, PSP-header BSS recovery, type-A relocation, import discovery,
+entry/helper analysis, multiple generated chunks, the complete public-safe production link, the
+real driver and registration table, scheduler startup, real NID dispatch in `hle.c`, and a checked
+guest-memory sentinel. It is useful before bringing up another title because it catches generic
+pipeline and composition failures without requiring an ISO: dropped production objects, stale or
+missing chunks, entry discovery regressions, bad relocations/imports, broken scheduler startup,
+guest-to-HLE dispatch failures, and public-safe link drift.
+
+It does **not** establish commercial-title compatibility or legality, PSP timing, rendering or
+audio correctness, physical UMD behavior, or title-specific runtime bindings. Those remain separate
+private-title, visual/audio, and hardware evidence domains.
+
 ### Compile flags
 
 The live Makefile currently uses:

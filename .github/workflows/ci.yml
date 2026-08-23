@@ -526,6 +526,16 @@ jobs:
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VULKAN_SDK=/ucrt64 runtime-objects
 
+      # This is the executable production-path gate. It generates a public
+      # PSP-shaped PRX, runs the normal loader/import/analyzer/codegen pipeline,
+      # links every production runtime object with the real driver, and reaches
+      # a real HLE NID through the scheduler before checking the guest sentinel.
+      - name: Build and run full production pipeline smoke
+        shell: msys2 {0}
+        run: >-
+          mingw32-make --no-print-directory
+          CC=gcc VULKAN_SDK=/ucrt64 production-smoke
+
       - name: Build and run scheduler selftest
         shell: msys2 {0}
         run: >-
