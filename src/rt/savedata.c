@@ -20,6 +20,7 @@
  */
 
 #include "recomp.h"
+#include "vfs_path.h"
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
@@ -51,13 +52,8 @@
 #endif
 
 static int path_sanitize(const char *name) {
-    const char *p = name;
-    while (*p) {
-        if (*p == '/' || *p == '\\') return 0;
-        if (*p == '.' && *(p + 1) == '.' && (*(p + 2) == '/' || *(p + 2) == '\\' || *(p + 2) == '\0')) return 0;
-        p++;
-    }
-    return 1;
+    if (!name || !*name) return 0;
+    return sr_vfs_is_safe_component(name, strlen(name));
 }
 
 static int path_join(char *out, size_t cap, const char *dir, const char *name) {
@@ -140,15 +136,30 @@ static const char *ms_root(void) {
 static int mkdirs(const char *path) {
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s", path);
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return 0;
+    size_t ms_len = strlen(ms_root());
+#endif
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/' || *p == '\\') {
             char sep = *p;
             *p = 0;
             if (sd_mkdir(tmp) != 0 && errno != EEXIST) return 0;
+#ifdef _WIN32
+            if ((size_t)(p - tmp) >= ms_len) {
+                if (!sr_vfs_dir_is_contained(tmp, canonical_root)) return 0;
+            }
+#endif
             *p = sep;
         }
     }
-    return sd_mkdir(tmp) == 0 || errno == EEXIST;
+    if (sd_mkdir(tmp) != 0 && errno != EEXIST) return 0;
+#ifdef _WIN32
+    if (!sr_vfs_dir_is_contained(tmp, canonical_root)) return 0;
+#endif
+    return 1;
 }
 
 /* Utility dialogs that do not perform a savedata operation still expect the memory-stick
@@ -182,17 +193,93 @@ static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ?
 static int host_write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return 0;
+    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return 0;
+
+    int need = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (need <= 0) return 0;
+    wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (!wpath) return 0;
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, need);
+    for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
+
+    HANDLE h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+
+    if (!sr_vfs_handle_is_contained(h, canonical_root)) {
+        CloseHandle(h);
+        return 0;
+    }
+
+    SetFilePointer(h, 0, NULL, FILE_BEGIN);
+    SetEndOfFile(h);
+
+    DWORD written = 0;
+    BOOL ok = TRUE;
+    if (n > 0 && data) {
+        ok = WriteFile(h, data, (DWORD)n, &written, NULL) && (written == (DWORD)n);
+    }
+    CloseHandle(h);
+    return ok ? 1 : 0;
+#else
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
     int ok = !n || fwrite(data, 1, n, f) == n;
     fclose(f);
     return ok;
+#endif
 }
 
 static int host_read_file(const char *dir, const char *name, uint8_t *data, uint32_t cap,
                           uint32_t *size) {
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return 0;
+    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return 0;
+
+    int need = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (need <= 0) return 0;
+    wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (!wpath) return 0;
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, need);
+    for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
+
+    HANDLE h = CreateFileW(wpath, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+
+    if (!sr_vfs_handle_is_contained(h, canonical_root)) {
+        CloseHandle(h);
+        return 0;
+    }
+
+    DWORD to_read = cap;
+    DWORD bytes_read = 0;
+    BOOL ok = TRUE;
+    if (data && to_read > 0) {
+        ok = ReadFile(h, data, to_read, &bytes_read, NULL);
+    } else {
+        DWORD sz_high = 0;
+        DWORD sz_low = GetFileSize(h, &sz_high);
+        if (sz_low != INVALID_FILE_SIZE && sz_high == 0) {
+            bytes_read = sz_low;
+        }
+    }
+    CloseHandle(h);
+    if (size) *size = (uint32_t)bytes_read;
+    return ok ? 1 : 0;
+#else
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
     size_t n = data && cap ? fread(data, 1, cap, f) : 0;
@@ -200,6 +287,7 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
     fclose(f);
     if (size) *size = (uint32_t)n;
     return ok;
+#endif
 }
 
 /* Storage boundary: PSP serialization/crypto can be inserted by replacing these operations;
@@ -329,15 +417,17 @@ static void wr_guest_bytes(uint32_t addr, const uint8_t *v, uint32_t len, uint32
 }
 
 static void load_sfo_param(uint32_t param, const char *dir) {
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/PARAM.SFO", dir);
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-    if (n <= 20 || n > (1 << 20)) { fclose(f); return; }
+    uint32_t n = 0;
+    if (!s_storage.read(dir, "PARAM.SFO", NULL, 0, &n)) return;
+    if (n <= 20 || n > (1 << 20)) return;
+
     uint8_t *b = (uint8_t *)malloc((size_t)n);
-    if (!b || fread(b, 1, (size_t)n, f) != (size_t)n) { free(b); fclose(f); return; }
-    fclose(f);
+    if (!b) return;
+    uint32_t actual_read = 0;
+    if (!s_storage.read(dir, "PARAM.SFO", b, n, &actual_read) || actual_read != n) {
+        free(b);
+        return;
+    }
     if (memcmp(b, "\0PSF", 4) != 0) { free(b); return; }
     uint32_t keyStart, dataStart, cnt;
     memcpy(&keyStart, b + 8, 4); memcpy(&dataStart, b + 12, 4); memcpy(&cnt, b + 16, 4);
@@ -381,6 +471,11 @@ static void load_sfo_param(uint32_t param, const char *dir) {
 
 /* ---- modes -------------------------------------------------------------------------------- */
 
+/* Guard helpers: a game that passes an unmapped data/file buffer must receive
+ * SCE_UTILITY_SAVEDATA_ERROR_PARAM (0x80110381) on save or NO_DATA (0x80110307)
+ * on load without crashing the host. An optional FileData slot whose buffer
+ * address is zero is skipped, but a non-zero address with zero or bogus size
+ * is validated against guest memory bounds. */
 static int validate_filedata_readable(uint32_t fd) {
     if (!fd) return 1;
     uint32_t buf = MEM_R32(fd + 0), sz = MEM_R32(fd + 8);
@@ -406,7 +501,8 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
     uint32_t dataBuf = MEM_R32(param + SDP_dataBuf);
     uint32_t dataSize = MEM_R32(param + SDP_dataSize);
 
-    /* Atomic preflight: validate dataBuf and filedata buffers before host directory creation or file writes */
+    if (fileName[0] && !path_sanitize(fileName)) return 0x80110381u;
+
     if (fileName[0] && dataSize) {
         if (!dataBuf || dataSize >= 0x04000000u || !sr_guest_span_readable(dataBuf, dataSize))
             return 0x80110381u;
@@ -422,7 +518,7 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
     if (!s_storage.prepare(dir)) return 0x80110381u;
     if (fileName[0] && dataBuf && dataSize && dataSize < 0x04000000) {
         if (!s_storage.write(dir, fileName, (const uint8_t *)SR_HOST(dataBuf), dataSize))
-            return 0x80110381u;   /* SAVE_NO_MS: couldn't write */
+            return 0x80110381u;
     }
     rd_cstr(param + SDP_sfoTitle, title, sizeof(title));
     rd_cstr(param + SDP_sfoSaveTitle, saveTitle, sizeof(saveTitle));
@@ -438,12 +534,16 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
 }
 
 static int dir_exists(const char *dir) {
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return 0;
+    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return 0;
+#endif
     struct stat st;
     return stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* Read a host file into a guest PspUtilitySavedataFileData block {buf, bufSize, size, unk}.
- * PPSSPP loads ICON0/ICON1/PIC1/SND0 back on every Load; some games require it. */
 static void load_filedata(const char *dir, const char *name, uint32_t fd) {
     uint32_t buf = MEM_R32(fd + 0), cap = MEM_R32(fd + 4);
     if (!buf || !cap) return;
@@ -453,12 +553,13 @@ static void load_filedata(const char *dir, const char *name, uint32_t fd) {
 }
 
 static uint32_t do_load(uint32_t param, const char *game, const char *save) {
-    char dir[PATH_MAX], fileName[16], path[PATH_MAX];
+    char dir[PATH_MAX], fileName[16];
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
     uint32_t dataBuf = MEM_R32(param + SDP_dataBuf);
     uint32_t cap = MEM_R32(param + SDP_dataBufSize);
 
-    /* Atomic preflight: validate output buffers before mutating guest SDP_dataSize or guest registers */
+    if (fileName[0] && !path_sanitize(fileName)) return ERR_LOAD_NOT_FOUND;
+
     if (fileName[0] && (dataBuf || cap)) {
         if (!dataBuf || cap == 0 || cap >= 0x04000000u || !sr_guest_span_writable(dataBuf, cap))
             return ERR_LOAD_NO_DATA;
@@ -475,28 +576,27 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
         if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> no data\n", dir);
         return ERR_LOAD_NO_DATA;
     }
-    MEM_W32(param + SDP_dataSize, 0);      /* forced to zero before loading (PPSSPP) */
-    /* Blank fileName means success without reading data (PPSSPP LoadSaveData); the SFO and
-     * icon blobs are still handed back. */
+    MEM_W32(param + SDP_dataSize, 0);
     if (fileName[0]) {
-        if (!path_join(path, sizeof(path), dir, fileName)) return ERR_LOAD_NOT_FOUND;
-        FILE *f = fopen(path, "rb");
-        if (!f) {
-            if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> file not found\n", path);
+        uint32_t n = 0;
+        if (!s_storage.read(dir, fileName, NULL, 0, &n)) {
+            if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> file not found\n", dir);
             return ERR_LOAD_NOT_FOUND;
         }
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        fseek(f, 0, SEEK_SET);
         size_t to_read = 0;
         if (n > 0) {
             uint64_t sz = (uint64_t)n;
             if (sz > (uint64_t)cap) sz = (uint64_t)cap;
             to_read = (size_t)sz;
         }
-        size_t rd = (dataBuf && to_read > 0) ? fread(SR_HOST(dataBuf), 1, to_read, f) : 0;
-        fclose(f);
-        MEM_W32(param + SDP_dataSize, (uint32_t)rd);
+        uint32_t rd = 0;
+        if (dataBuf && to_read > 0) {
+            if (!s_storage.read(dir, fileName, (uint8_t *)SR_HOST(dataBuf), (uint32_t)to_read, &rd)) {
+                if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> file not found\n", dir);
+                return ERR_LOAD_NOT_FOUND;
+            }
+        }
+        MEM_W32(param + SDP_dataSize, rd);
         if (sdlog()) {
             const uint8_t *p = dataBuf ? (const uint8_t *)SR_HOST(dataBuf) : NULL;
             uint8_t b0 = (p && rd > 0) ? p[0] : 0;
@@ -504,25 +604,30 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
             uint8_t b2 = (p && rd > 2) ? p[2] : 0;
             uint8_t b3 = (p && rd > 3) ? p[3] : 0;
             fprintf(stderr, "savedata: LOAD %s (%u bytes) -> buf=0x%08x cap=%u first=%02x%02x%02x%02x\n",
-                    path, (unsigned)rd, dataBuf, cap, b0, b1, b2, b3);
+                    dir, (unsigned)rd, dataBuf, cap, b0, b1, b2, b3);
         }
     } else if (sdlog()) {
         fprintf(stderr, "savedata: LOAD %s (blank fileName: SFO/icons only)\n", dir);
     }
-    /* copy the resolved save dir name back into the request (PPSSPP) */
     wr_fixed(param + SDP_saveName, save, 20);
-    load_sfo_param(param, dir);            /* hand TITLE/SAVEDATA_TITLE/... back (LoadSFO) */
+    load_sfo_param(param, dir);
     load_filedata(dir, "ICON0.PNG", param + SDP_icon0);
     load_filedata(dir, "ICON1.PMF", param + SDP_icon1);
     load_filedata(dir, "PIC1.PNG", param + SDP_pic1);
     load_filedata(dir, "SND0.AT3", param + SDP_snd0);
-    MEM_W32(param + SDP_bind, 1021);       /* PSP always responds this; unlocks some games */
+    MEM_W32(param + SDP_bind, 1021);
     return 0;
 }
 
 static uint32_t do_delete(const char *game, const char *save) {
     char dir[PATH_MAX], path[PATH_MAX];
     save_dir(dir, sizeof(dir), game, save);
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return ERR_DELETE_NO_DATA;
+    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return ERR_DELETE_NO_DATA;
+#endif
     DIR *d = opendir(dir);
     if (!d) return ERR_DELETE_NO_DATA;
     struct dirent *de;
@@ -530,6 +635,25 @@ static uint32_t do_delete(const char *game, const char *save) {
     while ((de = readdir(d)) != NULL) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
         if (!path_join(path, sizeof(path), dir, de->d_name)) { ok = 0; continue; }
+#ifdef _WIN32
+        int need = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+        if (need <= 0) { ok = 0; continue; }
+        wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+        if (!wpath) { ok = 0; continue; }
+        MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, need);
+        for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
+
+        HANDLE h = CreateFileW(wpath, DELETE | FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        free(wpath);
+        if (h == INVALID_HANDLE_VALUE || !sr_vfs_handle_is_contained(h, canonical_root)) {
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            ok = 0;
+            continue;
+        }
+        CloseHandle(h);
+#endif
         struct stat st;
         if (stat(path, &st) != 0 || S_ISDIR(st.st_mode) || sd_unlink(path) != 0) ok = 0;
     }
@@ -538,18 +662,39 @@ static uint32_t do_delete(const char *game, const char *save) {
     return ok ? 0 : ERR_DELETE_NO_DATA;
 }
 
-/* ERASE/ERASESECURE: remove just the named data file inside the save dir (PPSSPP DeleteData). */
 static uint32_t do_erase(uint32_t param, const char *game, const char *save) {
     char dir[PATH_MAX], fileName[16], path[PATH_MAX];
     save_dir(dir, sizeof(dir), game, save);
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
-    if (!fileName[0]) return ERR_RW_NO_DATA;
+    if (!fileName[0] || !path_sanitize(fileName)) return ERR_RW_NO_DATA;
     if (!path_join(path, sizeof(path), dir, fileName)) return ERR_RW_NO_DATA;
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return ERR_RW_NO_DATA;
+    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return ERR_RW_NO_DATA;
+
+    int need = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (need <= 0) return ERR_RW_NO_DATA;
+    wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (!wpath) return ERR_RW_NO_DATA;
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, need);
+    for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
+
+    HANDLE h = CreateFileW(wpath, DELETE | FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE || !sr_vfs_handle_is_contained(h, canonical_root)) {
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        return ERR_RW_NO_DATA;
+    }
+    CloseHandle(h);
+#endif
     if (sdlog()) fprintf(stderr, "savedata: ERASE %s\n", path);
     return sd_unlink(path) == 0 ? 0 : ERR_RW_NO_DATA;
 }
 
-/* LIST (11): fill idList with this game's save directories. */
 static uint32_t do_list(uint32_t param, const char *game) {
     uint32_t idList = MEM_R32(param + SDP_idList);
     if (!idList) return 0;
@@ -558,29 +703,39 @@ static uint32_t do_list(uint32_t param, const char *game) {
     uint32_t count = 0;
     char root[PATH_MAX], path[PATH_MAX];
     snprintf(root, sizeof(root), "%s/PSP/SAVEDATA", ms_root());
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
+        return 0;
+    if (!sr_vfs_dir_is_contained(root, canonical_root)) return 0;
+#endif
     DIR *d = opendir(root);
     if (d) {
         size_t gl = strlen(game);
         struct dirent *de;
         while ((de = readdir(d)) != NULL) {
             if (de->d_name[0] == '.' || strncmp(de->d_name, game, gl) != 0) continue;
+            if (!path_sanitize(de->d_name)) continue;
             if (!path_join(path, sizeof(path), root, de->d_name)) continue;
+#ifdef _WIN32
+            if (!sr_vfs_dir_is_contained(path, canonical_root)) continue;
+#endif
             struct stat st;
             if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
             if (entries && count < maxCount) {
-                uint32_t e = entries + count * 72u;       /* SceUtilitySavedataIdListEntry */
-                MEM_W32(e + 0, 0x11FF);                   /* st_mode (directory) */
+                uint32_t e = entries + count * 72u;
+                MEM_W32(e + 0, 0x11FF);
                 put_psp_time(e + 4, st.st_ctime);
                 put_psp_time(e + 20, st.st_atime);
                 put_psp_time(e + 36, st.st_mtime);
-                wr_fixed(e + 52, de->d_name + gl, 20);  /* saveName part only */
+                wr_fixed(e + 52, de->d_name + gl, 20);
             }
             count++;
         }
         closedir(d);
     }
     if (count > maxCount) count = maxCount;
-    MEM_W32(idList + 4, count);                           /* resultCount */
+    MEM_W32(idList + 4, count);
     if (sdlog()) fprintf(stderr, "savedata: LIST %s* -> %u saves\n", game, count);
     return 0;
 }
@@ -590,7 +745,6 @@ static int is_system_file(const char *n) {
            !sd_stricmp(n, "PIC1.PNG") || !sd_stricmp(n, "SND0.AT3");
 }
 
-/* FILES (12): list the files inside one save directory. */
 static uint32_t do_files(uint32_t param, const char *game, const char *save) {
     uint32_t fl = MEM_R32(param + SDP_fileList);
     if (!fl) return 0;
@@ -599,25 +753,52 @@ static uint32_t do_files(uint32_t param, const char *game, const char *save) {
     uint32_t nSec = 0, nNorm = 0, nSys = 0;
     char path[PATH_MAX], dir[PATH_MAX];
     save_dir(dir, sizeof(dir), game, save);
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(ms_root(), canonical_root, sizeof(canonical_root)/sizeof(wchar_t)) ||
+        !sr_vfs_dir_is_contained(dir, canonical_root)) {
+        MEM_W32(fl + 12, 0); MEM_W32(fl + 16, 0); MEM_W32(fl + 20, 0);
+        return ERR_LOAD_NO_DATA;
+    }
+#endif
     DIR *d = opendir(dir);
     if (!d) {
         MEM_W32(fl + 12, 0); MEM_W32(fl + 16, 0); MEM_W32(fl + 20, 0);
-        return ERR_LOAD_NO_DATA;                  /* no such save: FILES_NO_DATA semantics */
+        return ERR_LOAD_NO_DATA;
     }
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
+        if (!path_sanitize(de->d_name)) continue;
         if (!path_join(path, sizeof(path), dir, de->d_name)) continue;
+#ifdef _WIN32
+        int need = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+        if (need <= 0) continue;
+        wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+        if (!wpath) continue;
+        MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, need);
+        for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
+
+        HANDLE h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        free(wpath);
+        if (h == INVALID_HANDLE_VALUE || !sr_vfs_handle_is_contained(h, canonical_root)) {
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            continue;
+        }
+        CloseHandle(h);
+#endif
         struct stat st;
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
         int sys = is_system_file(de->d_name);
         uint32_t *cnt = sys ? &nSys : &nNorm;
         uint32_t base = sys ? pSys : pNorm, cap = sys ? maxSys : maxNorm;
         for (int pass = 0; pass < (sys ? 1 : 2); pass++) {
-            if (pass == 1) { cnt = &nSec; base = pSec; cap = maxSec; }   /* data files also "secure" */
+            if (pass == 1) { cnt = &nSec; base = pSec; cap = maxSec; }
             if (base && *cnt < cap) {
-                uint32_t e = base + *cnt * 80u;            /* SceUtilitySavedataFileListEntry */
-                MEM_W32(e + 0, 0x21FF);                    /* st_mode (file) */
+                uint32_t e = base + *cnt * 80u;
+                MEM_W32(e + 0, 0x21FF);
                 MEM_W32(e + 4, 0);
                 MEM_W32(e + 8, (uint32_t)(uint64_t)st.st_size);
                 MEM_W32(e + 12, (uint32_t)((uint64_t)st.st_size >> 32));
@@ -648,7 +829,6 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     int sizes_no_data = 0;
     uint32_t msData = MEM_R32(param + SDP_msData);
     if (msData) {
-        /* info block at +36: used clusters/KB of the named save (0 if absent) */
         char game2[16], save2[24], dir[PATH_MAX], path[PATH_MAX];
         rd_cstr(msData + 0, game2, 14);
         rd_cstr(msData + 16, save2, 21);
@@ -659,6 +839,7 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
             if (d) {
                 struct dirent *de;
                 while ((de = readdir(d)) != NULL) {
+                    if (!path_sanitize(de->d_name)) continue;
                     if (!path_join(path, sizeof(path), dir, de->d_name)) continue;
                     struct stat st;
                     if (stat(path, &st) == 0 && S_ISREG(st.st_mode))
@@ -672,11 +853,6 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
             MEM_W32(msData + 52, (uint32_t)(used / 0x400));
             wr_fixed(msData + 56, "", 8);
         } else {
-            /* PPSSPP SavedataParam::GetSizes: a SIZES query for a save that does NOT exist
-             * zeroes the used-space block and returns SIZES_NO_DATA — that's how the game
-             * learns "this is a brand-new save". Our old code always returned 0 ("it exists"),
-             * so the game treated a freshly-created pilot as an overwrite of existing data and
-             * skipped registering it into a profile slot (menu stayed USER:UNKNOWN). */
             MEM_W32(msData + 36, 0);
             MEM_W32(msData + 40, 0);
             wr_fixed(msData + 44, "", 8);
@@ -687,7 +863,7 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     }
     uint32_t ud = MEM_R32(param + SDP_usedData);
     if (ud) {
-        uint32_t total = CLUSTER + CLUSTER;                 /* directory record + SFO */
+        uint32_t total = CLUSTER + CLUSTER;
         if (MEM_R8(param + SDP_fileName) != 0) {
             uint32_t ds = MEM_R32(param + SDP_dataSize);
             total += ((ds + CLUSTER - 1) / CLUSTER) * CLUSTER;
@@ -704,13 +880,12 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     return sizes_no_data ? ERR_SIZES_NO_DATA : 0;
 }
 
-/* GETSIZE (22): free/needed space for the sizeInfo block. */
 static uint32_t do_getsize(uint32_t param) {
     uint32_t si = MEM_R32(param + SDP_sizeInfo);
     if (!si) return 0;
     uint32_t nSec = MEM_R32(si + 0), nNorm = MEM_R32(si + 4);
     uint32_t pSec = MEM_R32(si + 8), pNorm = MEM_R32(si + 12);
-    uint64_t needed = CLUSTER + CLUSTER;                    /* dir record + SFO */
+    uint64_t needed = CLUSTER + CLUSTER;
     for (uint32_t i = 0; i < nSec && pSec; i++) {
         uint64_t sz = MEM_R32(pSec + i * 24u) | ((uint64_t)MEM_R32(pSec + i * 24u + 4) << 32);
         needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
@@ -719,21 +894,17 @@ static uint32_t do_getsize(uint32_t param) {
         uint64_t sz = MEM_R32(pNorm + i * 24u) | ((uint64_t)MEM_R32(pNorm + i * 24u + 4) << 32);
         needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
     }
-    MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
-    MEM_W32(si + 20, FREE_CLUSTERS);                        /* freeSectors */
-    MEM_W32(si + 24, FREE_CLUSTERS * (CLUSTER / 0x400));    /* freeKB */
+    MEM_W32(si + 16, CLUSTER);
+    MEM_W32(si + 20, FREE_CLUSTERS);
+    MEM_W32(si + 24, FREE_CLUSTERS * (CLUSTER / 0x400));
     wr_fixed(si + 28, "512 MB", 8);
-    MEM_W32(si + 36, (uint32_t)(needed / 0x400));           /* neededKB */
+    MEM_W32(si + 36, (uint32_t)(needed / 0x400));
     wr_fixed(si + 40, "", 8);
-    MEM_W32(si + 48, (uint32_t)(needed / 0x400));           /* overwriteKB */
+    MEM_W32(si + 48, (uint32_t)(needed / 0x400));
     wr_fixed(si + 52, "", 8);
     return 0;
 }
 
-/* Resolve the effective saveName (PPSSPP GetSaveDirName): "<>" is a wildcard meaning "any
- * existing save"; the LIST modes carry a saveNameList the user would normally pick from in
- * the system UI -- headless, auto-select the first entry whose directory exists (falling
- * back to the first entry for a fresh LISTSAVE). */
 static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *save, int cap) {
     rd_cstr(param + SDP_saveName, save, cap);
     int wild = !strcmp(save, "<>");
@@ -752,7 +923,6 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
         if (mode == SD_LISTSAVE && first[0]) { snprintf(save, (size_t)cap, "%s", first); return; }
     }
     if (wild) {
-        /* no list (or none existed): first existing dir matching <game>* */
         char root[PATH_MAX], path[PATH_MAX];
         snprintf(root, sizeof(root), "%s/PSP/SAVEDATA", ms_root());
         DIR *d = opendir(root);
@@ -762,9 +932,9 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
             size_t gl = strlen(game);
             while ((de = readdir(d)) != NULL) {
                 if (strncmp(de->d_name, game, gl) != 0) continue;
+                if (!path_sanitize(de->d_name)) continue;
                 if (!path_join(path, sizeof(path), root, de->d_name)) continue;
-                struct stat st;
-                if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                if (dir_exists(path)) {
                     snprintf(save, (size_t)cap, "%s", de->d_name + gl);
                     break;
                 }
@@ -786,7 +956,6 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_MAKEDATA: case SD_MAKEDATASECURE:
         case SD_WRITEDATA: case SD_WRITEDATASECURE: {
             uint32_t r = do_save(param, game, save);
-            /* PPSSPP: MAKEDATA reports a full stick with the RW error code */
             if (r == 0x80110381u && (mode == SD_MAKEDATA || mode == SD_MAKEDATASECURE))
                 r = ERR_RW_MS_FULL;
             return r;
@@ -794,7 +963,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_AUTOLOAD: case SD_LOAD: case SD_LISTLOAD:
             return do_load(param, game, save);
         case SD_READDATA: case SD_READDATASECURE: {
-            uint32_t r = do_load(param, game, save);             /* PPSSPP error remap */
+            uint32_t r = do_load(param, game, save);
             if (r == ERR_LOAD_NO_DATA) r = ERR_RW_NO_DATA;
             if (r == ERR_LOAD_NOT_FOUND) r = ERR_RW_NOT_FOUND;
             return r;

@@ -217,6 +217,69 @@ int main(void) {
         }
     }
 
+    /* Test 17: DOS device name detector */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NUL", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("PRN", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("AUX", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM1", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("LPT9", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("nul.txt", 7), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON.BIN", 7), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NULL", 4), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONSOLE", 7), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COMMON", 6), 0);
+
+    /* Test 18: Safe component validator */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("DATA.BIN", 8), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("PARAM.SFO", 9), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("UCUS98701", 9), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("0001", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("file..bak", 9), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("..", 2), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component(".", 1), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a/b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a\\b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a:b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("trailing_dot.", 13), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("trailing_space ", 15), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("CON", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL.txt", 7), 0);
+
+    /* Test 19: dir_path rejection of ADS, devices, and wildcards */
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/DATA.BIN:stream", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/NUL", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/wildcard*name", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+
+#ifdef _WIN32
+    /* Test 20: Win32 handle-based containment primitives */
+    char temp_dir[MAX_PATH];
+    GetTempPathA(MAX_PATH, temp_dir);
+    char test_root[512], test_sub[1024];
+    snprintf(test_root, sizeof(test_root), "%snakagawa_selftest_root_%lu", temp_dir, (unsigned long)GetCurrentProcessId());
+    snprintf(test_sub, sizeof(test_sub), "%s\\sub", test_root);
+    CreateDirectoryA(test_root, NULL);
+    CreateDirectoryA(test_sub, NULL);
+
+    wchar_t canonical[MAX_PATH * 2];
+    int canon_ok = sr_vfs_canonical_root(test_root, canonical, sizeof(canonical)/sizeof(wchar_t));
+    ASSERT_INT_EQ(canon_ok, 1);
+    if (canon_ok) {
+        int sub_contained = sr_vfs_dir_is_contained(test_sub, canonical);
+        ASSERT_INT_EQ(sub_contained, 1);
+        int root_contained = sr_vfs_dir_is_contained(test_root, canonical);
+        ASSERT_INT_EQ(root_contained, 1);
+        int outside_contained = sr_vfs_dir_is_contained(temp_dir, canonical);
+        ASSERT_INT_EQ(outside_contained, 0);
+    }
+    RemoveDirectoryA(test_sub);
+    RemoveDirectoryA(test_root);
+#endif
+
     if (g_failed) {
         fprintf(stderr, "vfs_selftest: FAILED\n");
         return 1;

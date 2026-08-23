@@ -5771,6 +5771,25 @@ static uint32_t h_IoDopen(CpuState *s) {
                     free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
                     return 0x80010014u;
                 }
+#ifdef _WIN32
+                char *configured_fs = NULL;
+                int configured_fs_present = 0;
+                sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
+                const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
+                wchar_t canonical_fs[MAX_PATH * 2];
+                int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs, sizeof(canonical_fs)/sizeof(wchar_t));
+                free(configured_fs);
+
+                HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                           NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+                if (h_dir == INVALID_HANDLE_VALUE || !fs_ok || !sr_vfs_handle_is_contained(h_dir, canonical_fs)) {
+                    if (h_dir != INVALID_HANDLE_VALUE) CloseHandle(h_dir);
+                    free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
+                    return 0x80010014u;
+                }
+                CloseHandle(h_dir);
+#endif
                 d->find = FindFirstFileW(pattern, &d->data);
                 DWORD first_error = d->find == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
                 free(hp); free(root); free(pattern);

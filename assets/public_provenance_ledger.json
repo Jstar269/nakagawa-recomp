@@ -287,7 +287,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "684f9109771f07e570d3e00d063e1fcfba42aa83c440a298aa8b5eb490cac959"
     },
     {
       "path": "README.md",
@@ -378,7 +379,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "1e758ffd83aa5e31f90dbc143e00f620bee4a6444b03f1c02687cc785aa1ec2a"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -4382,7 +4384,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4247f99540c784c5360f75ff83682e4c2a335678569f08cc85eedd360c8a9d27"
+      "sha256": "229d1481a4e84987d9a213da91b380aa87dc4c3c19418d1ad8e9826d3ededa9c"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4619,7 +4621,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "82b8a3343323e6efe1fb99db79289146bc8daa8be3202da436eb0992087ce2d1"
+      "sha256": "82a9f60c5bc7370e499c32656c17e4ff9d1bef71f1f7d9bcf783fa0755a8302d"
     },
     {
       "path": "src/rt/sched.c",
@@ -4859,7 +4861,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04d808b971c445fd1bcc8094e70f1e3c4e52c383c2ee277c5fc4e064ff93cf49"
+      "sha256": "2d06ec357308c3cb59109c9f2053466d78b1bc38f736bee57687a7fc5663931c"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -4871,7 +4873,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8288d93f6ee63e6646739845f3d14a3b9275bc60d64169e60d2b09af5022f693"
+      "sha256": "58241b78a42a936cc9b8137004f339e89aec04d75454c40cf55609c5e155b19d"
     },
     {
       "path": "src/rt/watchpoints_file.c",

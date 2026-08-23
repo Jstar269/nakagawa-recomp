@@ -5,15 +5,56 @@
 #define SR_VFS_PATH_H
 
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#define sr_vfs_strnicmp(a, b, n) _strnicmp((a), (b), (n))
+#else
+#include <strings.h>
+#define sr_vfs_strnicmp(a, b, n) strncasecmp((a), (b), (n))
+#endif
+
+static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
+    static const char *const devices[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    };
+    size_t base_len = 0;
+    while (base_len < len && name[base_len] != '.') base_len++;
+    if (base_len < 3 || base_len > 4) return 0;
+    for (size_t i = 0; i < sizeof(devices)/sizeof(devices[0]); i++) {
+        if (sr_vfs_strnicmp(name, devices[i], base_len) == 0 && devices[i][base_len] == '\0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static inline int sr_vfs_is_safe_component(const char *name, size_t len) {
+    if (!name || len == 0) return 0;
+    if (len == 1 && name[0] == '.') return 0;
+    if (len == 2 && name[0] == '.' && name[1] == '.') return 0;
+    if (name[len - 1] == '.' || name[len - 1] == ' ') return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20 || c == '/' || c == '\\' || c == ':' || c == '*' ||
+            c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            return 0;
+        }
+    }
+    if (sr_vfs_is_dos_device_name(name, len)) return 0;
+    return 1;
+}
 
 /* Host-neutral VFS path join helper (Issue #19).
  *
  * Concatenates `root` directory and relative `guest` path:
  * - Strips leading device specifier (e.g. "ms0:") and leading slashes/backslashes from `guest`.
- * - Rejects a ".." path *component* (directory traversal), returning 0. A literal ".."
- *   between separators (or at either end) escapes the root and is refused; ".." embedded
- *   inside a name ("file..bak", "...") is an ordinary filename and is allowed.
+ * - Rejects directory traversal (".."), ADS (":"), DOS device names, wildcards, and trailing dots/spaces.
  * - Ensures exactly one separator ('/' or '\\') between `root` and non-empty `guest`.
  * - Does not introduce doubled separators if `root` already has a trailing slash/backslash.
  * - Converts guest slashes to host separators (`sep`).
@@ -27,15 +68,18 @@ static inline int sr_vfs_host_dir_path(const char *root, const char *guest, char
     else p = guest;
     while (*p == '/' || *p == '\\') p++;
 
-    /* Reject only a ".." *component* -- a maximal run of non-separator characters that
-     * equals exactly "..". This is what escapes the root; "..' embedded in a longer name
-     * (e.g. "file..bak") stays inside the directory and is a legal PSP filename, so an
-     * earlier substring test (strstr(p, "..")) rejected valid names it should have kept.
-     * Both '/' and '\\' delimit components; the guest may use either. */
     for (const char *c = p; *c != '\0'; ) {
         const char *start = c;
         while (*c != '\0' && *c != '/' && *c != '\\') c++;
-        if ((size_t)(c - start) == 2u && start[0] == '.' && start[1] == '.') return 0;
+        size_t comp_len = (size_t)(c - start);
+        if (comp_len == 2u && start[0] == '.' && start[1] == '.') return 0;
+        for (size_t i = 0; i < comp_len; i++) {
+            unsigned char ch = (unsigned char)start[i];
+            if (ch < 0x20 || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') {
+                return 0;
+            }
+        }
+        if (comp_len > 0 && sr_vfs_is_dos_device_name(start, comp_len)) return 0;
         while (*c == '/' || *c == '\\') c++;
     }
 
@@ -53,7 +97,11 @@ static inline int sr_vfs_host_dir_path(const char *root, const char *guest, char
 
     while (*p != '\0' && n < max - 1) {
         char c = *p++;
-        if (c == '/' || c == '\\') c = sep;
+        if (c == '/' || c == '\\') {
+            while (*p == '/' || *p == '\\') p++;
+            if (*p == '\0') break;
+            c = sep;
+        }
         out[n++] = c;
     }
     if (*p != '\0') {
@@ -107,5 +155,71 @@ static inline int sr_vfs_host_flat_path(const char *root, const char *guest, cha
     out[n] = '\0';
     return (int)n;
 }
+
+#ifdef _WIN32
+static inline int sr_vfs_canonical_root(const char *root_utf8, wchar_t *out, size_t cap) {
+    if (!root_utf8 || !out || cap == 0) return 0;
+    int need = MultiByteToWideChar(CP_UTF8, 0, root_utf8, -1, NULL, 0);
+    if (need <= 0 || (size_t)need > cap) return 0;
+    wchar_t *wroot = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (!wroot) return 0;
+    MultiByteToWideChar(CP_UTF8, 0, root_utf8, -1, wroot, need);
+    for (wchar_t *p = wroot; *p; p++) if (*p == L'/') *p = L'\\';
+
+    CreateDirectoryW(wroot, NULL);
+    HANDLE h = CreateFileW(wroot, FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(wroot);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+
+    DWORD len = GetFinalPathNameByHandleW(h, out, (DWORD)cap, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(h);
+    if (len == 0 || len >= cap) return 0;
+
+    if (out[len - 1] != L'\\') {
+        if (len + 2 > cap) return 0;
+        out[len] = L'\\';
+        out[len + 1] = L'\0';
+    }
+    return 1;
+}
+
+static inline int sr_vfs_handle_is_contained(HANDLE h, const wchar_t *canonical_root) {
+    if (h == INVALID_HANDLE_VALUE || !canonical_root) return 0;
+    wchar_t final_path[MAX_PATH * 2];
+    DWORD len = GetFinalPathNameByHandleW(h, final_path, (DWORD)(sizeof(final_path)/sizeof(wchar_t)),
+                                         FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (len == 0) return 0;
+    size_t root_len = wcslen(canonical_root);
+    if (len + 1 == root_len && canonical_root[root_len - 1] == L'\\') {
+        return _wcsnicmp(final_path, canonical_root, len) == 0;
+    }
+    if (len < root_len) return 0;
+    if (_wcsnicmp(final_path, canonical_root, root_len) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static inline int sr_vfs_dir_is_contained(const char *dir_utf8, const wchar_t *canonical_root) {
+    if (!dir_utf8 || !canonical_root) return 0;
+    int need = MultiByteToWideChar(CP_UTF8, 0, dir_utf8, -1, NULL, 0);
+    if (need <= 0) return 0;
+    wchar_t *wdir = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+    if (!wdir) return 0;
+    MultiByteToWideChar(CP_UTF8, 0, dir_utf8, -1, wdir, need);
+    for (wchar_t *p = wdir; *p; p++) if (*p == L'/') *p = L'\\';
+
+    HANDLE h = CreateFileW(wdir, FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(wdir);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int ok = sr_vfs_handle_is_contained(h, canonical_root);
+    CloseHandle(h);
+    return ok;
+}
+#endif
 
 #endif /* SR_VFS_PATH_H */
