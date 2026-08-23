@@ -79,7 +79,8 @@ class TestGeCaptureWiring(unittest.TestCase):
     def test_ge_accesses_are_routed_through_first_touch_tracking(self):
         ge = (RT / "ge.c").read_text(encoding="utf-8")
         self.assertIn("g_ge_capture_active ? ge_capture_r32((a))", ge)
-        self.assertIn("ge_capture_note_memory(so, w * bpp)", ge)
+        self.assertIn("ge_capture_note_memory(so, src.row_bytes)", ge)
+        self.assertIn("ge_capture_note_memory(dofs, dst.row_bytes)", ge)
         self.assertIn("capture_boundary", ge)
         self.assertIn(
             "ge_capture_begin(s_capture_path, s_ge_frame, list_addr, &ge, s_zbuf)",

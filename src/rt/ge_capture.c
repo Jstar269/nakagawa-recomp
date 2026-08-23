@@ -69,7 +69,8 @@ int ge_capture_active(void) { return g_ge_capture_active; }
 int ge_capture_begin(const char *path, uint32_t frame, uint32_t start_list_addr,
                      const GeState *state, const uint16_t *zbuf) {
     if (!path || !path[0] || !state || !zbuf || !g_mem || s_capture.active ||
-        (start_list_addr & 3u) != 0 || SR_PHYS(start_list_addr) >= GE_CAPTURE_ARENA_SIZE)
+        (start_list_addr & 3u) != 0 || SR_PHYS(start_list_addr) >= GE_CAPTURE_ARENA_SIZE ||
+        !sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE))
         return 0;
     memset(&s_capture, 0, sizeof(s_capture));
     if (strlen(path) >= sizeof(s_capture.path)) return 0;
@@ -110,6 +111,7 @@ int ge_capture_add_list(uint32_t list_addr) {
 }
 
 static int append_page(uint32_t page_addr) {
+    if (!sr_guest_span_readable(page_addr, GE_CAPTURE_PAGE_SIZE)) return 0;
     GeCaptureFixture *f = &s_capture.fixture;
     if (f->page_count == s_capture.page_cap) {
         uint32_t next = s_capture.page_cap ? s_capture.page_cap * 2u : 64u;
@@ -247,11 +249,13 @@ int ge_capture_load(const char *path, GeCaptureFixture *out) {
 
 int ge_capture_apply(const GeCaptureFixture *fixture, GeState *state, uint16_t *zbuf) {
     if (!fixture || !state || !zbuf || !g_mem || !fixture->initial_zbuf ||
-        !fixture->initial_vram || (fixture->page_count && !fixture->pages)) return 0;
+        !fixture->initial_vram || (fixture->page_count && !fixture->pages) ||
+        !sr_guest_span_writable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) return 0;
     memcpy(SR_HOST(GE_CAPTURE_VRAM_BASE), fixture->initial_vram, GE_CAPTURE_VRAM_SIZE);
     for (uint32_t i = 0; i < fixture->page_count; i++) {
         uint32_t addr = fixture->pages[i].addr;
-        if ((addr % GE_CAPTURE_PAGE_SIZE) != 0 || addr >= GE_CAPTURE_ARENA_SIZE) return 0;
+        if ((addr % GE_CAPTURE_PAGE_SIZE) != 0 ||
+            !sr_guest_span_writable(addr, GE_CAPTURE_PAGE_SIZE)) return 0;
         memcpy(SR_HOST(addr), fixture->pages[i].data, GE_CAPTURE_PAGE_SIZE);
     }
     *state = fixture->initial_state;
