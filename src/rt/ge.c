@@ -1055,15 +1055,25 @@ static void texdump_maybe(void) {
 void ge_decode_tex_rgba(uint32_t *out) {
     if (!ge.tex_swizzle && ge.tex_fmt <= 3) {
         uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
-        int oob = !sr_inrange(ge.tex_addr);
-        if (oob) { memset(out, 0, (size_t)ge.tex_w * (size_t)ge.tex_h * 4); return; }
+        uint32_t bpp = ge.tex_fmt == 3 ? 4u : 2u;
+        SrGuestRectSpan source;
+        if (ge.tex_w <= 0 || ge.tex_h <= 0 ||
+            !sr_guest_rect_readable(ge.tex_addr, 0u, 0u, stride,
+                                    (uint32_t)ge.tex_w, (uint32_t)ge.tex_h,
+                                    bpp, &source)) {
+            if (ge.tex_w > 0 && ge.tex_h > 0)
+                memset(out, 0, (size_t)ge.tex_w * (size_t)ge.tex_h * 4u);
+            return;
+        }
         for (int v = 0; v < ge.tex_h; v++) {
             uint32_t *dst = out + (uint32_t)v * (uint32_t)ge.tex_w;
             if (ge.tex_fmt == 3) {
-                const uint32_t *src = (const uint32_t *)SR_HOST(ge.tex_addr + (uint32_t)v * stride * 4);
+                const uint32_t *src = (const uint32_t *)SR_HOST(
+                    source.first + (uint32_t)v * source.row_pitch);
                 memcpy(dst, src, (size_t)ge.tex_w * 4);
             } else {
-                const uint16_t *src = (const uint16_t *)SR_HOST(ge.tex_addr + (uint32_t)v * stride * 2);
+                const uint16_t *src = (const uint16_t *)SR_HOST(
+                    source.first + (uint32_t)v * source.row_pitch);
                 for (int u = 0; u < ge.tex_w; u++) {
                     int r, g, b, a;
                     unpack_color(src[u], (int)ge.tex_fmt, &r, &g, &b, &a);
@@ -3182,25 +3192,32 @@ static void ge_block_transfer(uint32_t startdata) {
     uint32_t w = (ge.xf_size & 0x3FFu) + 1, h = ((ge.xf_size >> 10) & 0x3FFu) + 1;
     uint32_t bpp = (startdata & 1) ? 4 : 2;
     if (!srcStride || !dstStride) return;
+
+    /* Validate both complete pitched rectangles before any backend flush, capture,
+     * heap-watch, guest write, or dirty notification.  GE permits width to be greater
+     * than stride, so the generic rectangle contract deliberately allows overlapping
+     * rows; it only proves checked arithmetic and complete arena containment. */
+    SrGuestRectSpan src, dst;
+    if (!sr_guest_rect_readable(srcBase, srcX, srcY, srcStride, w, h, bpp, &src) ||
+        !sr_guest_rect_writable(dstBase, dstX, dstY, dstStride, w, h, bpp, &dst)) {
+        fprintf(stderr,
+                "ge_block_transfer: invalid rectangle src=0x%08x/%u+(%u,%u) "
+                "dst=0x%08x/%u+(%u,%u) size=%ux%u bpp=%u, skipping blit\n",
+                srcBase, srcStride, srcX, srcY, dstBase, dstStride, dstX, dstY,
+                w, h, bpp);
+        return;
+    }
     if (s_gpu && s_gpu->xfer && s_gpu->xfer(startdata)) return;   /* GPU-side blit */
     if (s_gpu && s_gpu->flush) s_gpu->flush("xfersrc");
-    { uint32_t so0 = srcBase + (srcY * srcStride + srcX) * bpp;
-      uint32_t do0 = dstBase + (dstY * dstStride + dstX) * bpp;
-      if (!sr_inrange(so0) || !sr_inrange(do0)) {
-          fprintf(stderr, "ge_block_transfer: OOR src=0x%08x dst=0x%08x, skipping CPU blit\n", so0, do0);
-          goto skip_cpu_blit;
-      }
-    }
     for (uint32_t y = 0; y < h; y++) {
-        uint32_t so = srcBase + ((srcY + y) * srcStride + srcX) * bpp;
-        uint32_t dofs = dstBase + ((dstY + y) * dstStride + dstX) * bpp;
-        ge_capture_note_memory(so, w * bpp);
-        ge_capture_note_memory(dofs, w * bpp);
-        if (g_sr_heap_watch) sr_heap_note_bulk_write(dofs, w * bpp, 0u);
-        memmove(SR_HOST(dofs), SR_HOST(so), (size_t)w * bpp);
-        sr_gpu_vram_dirty(dofs, w * bpp);
+        uint32_t so = src.first + y * src.row_pitch;
+        uint32_t dofs = dst.first + y * dst.row_pitch;
+        ge_capture_note_memory(so, src.row_bytes);
+        ge_capture_note_memory(dofs, dst.row_bytes);
+        if (g_sr_heap_watch) sr_heap_note_bulk_write(dofs, dst.row_bytes, 0u);
+        memmove(SR_HOST(dofs), SR_HOST(so), src.row_bytes);
+        sr_gpu_vram_dirty(dofs, dst.row_bytes);
     }
-  skip_cpu_blit: ;
 }
 
 static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
@@ -3460,11 +3477,17 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 uint64_t profile_started = ge_cpu_profile_begin();
                 /* Copy (data&0x3F) 32-byte blocks from clut_addr into internal CLUT RAM, like
                  * the hardware (PPSSPP TextureCacheCommon::LoadClut). */
+                uint32_t bytes = (data & 0x3F) * 32;
+                if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
+                if (!sr_guest_span_readable(ge.clut_addr, bytes)) {
+                    fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08x bytes=%u\n",
+                            ge.clut_addr, bytes);
+                    ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
+                    break;
+                }
                 /* CLUT sourced from VRAM may read pixels the GPU backend hasn't written back. */
                 if (s_gpu && s_gpu->flush && (ge.clut_addr & 0x0F000000u) == 0x04000000u)
                     s_gpu->flush("loadclut");
-                uint32_t bytes = (data & 0x3F) * 32;
-                if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
                 for (uint32_t i = 0; i < bytes; i += 4) {
                     uint32_t w = MEM_R32(ge.clut_addr + i);
                     memcpy(&ge.clutram[i], &w, 4);

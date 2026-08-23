@@ -5364,6 +5364,216 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
+                                    uint32_t src_x, uint32_t src_y,
+                                    uint32_t dst, uint32_t dst_stride,
+                                    uint32_t dst_x, uint32_t dst_y,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t bytes_per_pixel) {
+    const uint32_t list_addr = 0x08940000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    uint32_t p = 0;
+#define XFER_CMD(cmd, value) \
+    do { dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(value) & 0x00ffffffu); } while (0)
+    XFER_CMD(0xb2, src);
+    XFER_CMD(0xb3, src_stride | ((src & 0xff000000u) >> 8));
+    XFER_CMD(0xb4, dst);
+    XFER_CMD(0xb5, dst_stride | ((dst & 0xff000000u) >> 8));
+    XFER_CMD(0xeb, (src_y << 10) | src_x);
+    XFER_CMD(0xec, (dst_y << 10) | dst_x);
+    XFER_CMD(0xee, ((height - 1u) << 10) | (width - 1u));
+    XFER_CMD(0xea, bytes_per_pixel == 4u ? 1u : 0u);
+    XFER_CMD(0x0f, 0u);
+    XFER_CMD(0x0c, 0u);
+#undef XFER_CMD
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list_addr;
+    return sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+}
+
+static uint32_t ge_clut_enqueue(uint32_t src, uint32_t blocks) {
+    const uint32_t list_addr = 0x08941000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    dl[0] = (0xb0u << 24) | (src & 0x00ffffffu);
+    dl[1] = (0xb1u << 24) | ((src & 0xff000000u) >> 8);
+    dl[2] = (0xc4u << 24) | (blocks & 0x00ffffffu);
+    dl[3] = 0x0f000000u;
+    dl[4] = 0x0c000000u;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list_addr;
+    return sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+}
+
+/* Host-memory safety for the production GE block-transfer command path.  The
+ * temporary arena deliberately commits one complete maximum-transfer window after
+ * the modeled 192 MiB guest arena.  That makes the historical later-row write
+ * observable as a canary mutation rather than an access violation: the regression
+ * fails before the fix, while the host process remains safe and deterministic. */
+static void test_ge_block_transfer_span_atomicity(void) {
+    const size_t arena_bytes = 0x0c000000u;
+    const size_t extra_bytes = 0x00400000u;
+    uint8_t *saved_base = g_mem_base;
+    uint8_t *scratch = (uint8_t *)calloc(1, arena_bytes + extra_bytes);
+    expect(scratch != NULL, "GE transfer regression allocates a guarded canary arena");
+    if (!scratch) return;
+
+    g_mem_base = scratch;
+    g_mem = scratch + 0x08000000u;
+    reset_fixture();
+    sr_hle_init();
+
+    /* Destination first row is valid; row two starts four bytes past the arena. */
+    MEM_W32(0x08010000u, 0x11223344u);
+    MEM_W32(0x08010020u, 0xa1b2c3d4u);
+    MEM_W32(0x0bfff004u, 0x55555555u);
+    memcpy(scratch + arena_bytes + 4u, &(uint32_t){0x66666666u}, 4u);
+    gpu_dirty_reset();
+    uint32_t qid = ge_transfer_enqueue(0x08010000u, 8u, 0u, 0u,
+                                       0x0bfff000u, 1024u, 1u, 0u,
+                                       1u, 2u, 4u);
+    uint32_t outside = 0u;
+    memcpy(&outside, scratch + arena_bytes + 4u, 4u);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "invalid-destination GE list still completes through production dispatch");
+    expect(MEM_R32(0x0bfff004u) == 0x55555555u && outside == 0x66666666u,
+           "a later invalid destination row causes no prefix or native-canary write");
+    expect(s_gpu_dirty_calls == 0u,
+           "a rejected destination rectangle causes no GPU dirty notification");
+
+    /* Mirror the shape: the source tail is outside while both destination rows are valid. */
+    MEM_W32(0x0bfff004u, 0x778899aau);
+    memcpy(scratch + arena_bytes + 4u, &(uint32_t){0xbbccddefu}, 4u);
+    MEM_W32(0x08020000u, 0x13572468u);
+    MEM_W32(0x08020020u, 0x24681357u);
+    gpu_dirty_reset();
+    (void)ge_transfer_enqueue(0x0bfff000u, 1024u, 1u, 0u,
+                              0x08020000u, 8u, 0u, 0u,
+                              1u, 2u, 4u);
+    expect(MEM_R32(0x08020000u) == 0x13572468u &&
+               MEM_R32(0x08020020u) == 0x24681357u,
+           "a later invalid source row causes no partial destination mutation");
+    expect(s_gpu_dirty_calls == 0u,
+           "a rejected source rectangle causes no GPU dirty notification");
+
+    /* The register arithmetic itself must not wrap a high base into physical zero. */
+    MEM_W32(0x00000000u, 0xdeadc0deu);
+    MEM_W32(0x08021000u, 0xabcdef01u);
+    gpu_dirty_reset();
+    (void)ge_transfer_enqueue(0xfffffff0u, 8u, 4u, 0u,
+                              0x08021000u, 8u, 0u, 0u,
+                              1u, 1u, 4u);
+    expect(MEM_R32(0x08021000u) == 0xabcdef01u && s_gpu_dirty_calls == 0u,
+           "overflowing base-plus-origin arithmetic is rejected before any write");
+
+    /* Last byte exactly at the arena end is valid, including on a later row. */
+    MEM_W32(0x08030000u, 0x01020304u);
+    MEM_W32(0x08030020u, 0x11121314u);
+    MEM_W32(0x0bffeffcu, 0u);
+    MEM_W32(0x0bfffffcu, 0u);
+    gpu_dirty_reset();
+    (void)ge_transfer_enqueue(0x08030000u, 8u, 0u, 0u,
+                              0x0bffeff0u, 1024u, 3u, 0u,
+                              1u, 2u, 4u);
+    expect(MEM_R32(0x0bffeffcu) == 0x01020304u &&
+               MEM_R32(0x0bfffffcu) == 0x11121314u,
+           "a complete transfer ending exactly at the arena boundary succeeds");
+    expect(s_gpu_dirty_calls == 2u && s_gpu_dirty_addr == 0x0bfffffcu &&
+               s_gpu_dirty_bytes == 4u,
+           "a valid two-row transfer reports each completed destination row");
+
+    /* PSP transfers permit width greater than stride; the rows overlap in the
+     * bounding span but remain a valid, fully contained memory shape. */
+    for (uint32_t i = 0; i < 48u; i++) {
+        MEM_W8(0x08040000u + i, (uint8_t)(0x20u + i));
+        MEM_W8(0x08050000u + i, 0u);
+    }
+    gpu_dirty_reset();
+    (void)ge_transfer_enqueue(0x08040000u, 8u, 0u, 0u,
+                              0x08050000u, 8u, 0u, 0u,
+                              16u, 2u, 2u);
+    int narrow_pitch_ok = 1;
+    for (uint32_t i = 0; i < 48u; i++)
+        if (MEM_R8(0x08050000u + i) != (uint8_t)(0x20u + i)) narrow_pitch_ok = 0;
+    expect(narrow_pitch_ok, "a valid transfer preserves width-greater-than-stride semantics");
+
+    /* Valid physical aliases and an overlapping row retain the old memmove contract. */
+    MEM_W32(0x08060000u, 0xcafebabeu);
+    MEM_W32(0x08061000u, 0u);
+    (void)ge_transfer_enqueue(0x88060000u, 8u, 0u, 0u,
+                              0xa8061000u, 8u, 0u, 0u,
+                              1u, 1u, 4u);
+    expect(MEM_R32(0x08061000u) == 0xcafebabeu,
+           "kseg aliases remain valid for a completely contained transfer");
+    for (uint32_t i = 0; i < 5u; i++) MEM_W32(0x08070000u + i * 4u, i + 1u);
+    (void)ge_transfer_enqueue(0x08070000u, 8u, 0u, 0u,
+                              0x08070000u, 8u, 1u, 0u,
+                              4u, 1u, 4u);
+    expect(MEM_R32(0x08070004u) == 1u && MEM_R32(0x08070010u) == 4u,
+           "valid source/destination overlap keeps row-wise memmove semantics");
+
+    /* The GPU texture fast path is a production helper over the same native-pointer
+     * boundary.  A valid first texel with row two outside must return a fully zeroed
+     * decode, never read the committed host canary. */
+    GeState *state = ge_state_ptr();
+    state->tex_addr = 0x0bfffffcu;
+    state->tex_bufw = 1u;
+    state->tex_fmt = 3u;
+    state->tex_w = 1;
+    state->tex_h = 2;
+    state->tex_swizzle = 0;
+    MEM_W32(0x0bfffffcu, 0x01020304u);
+    memcpy(scratch + arena_bytes, &(uint32_t){0xaabbccddu}, 4u);
+    uint32_t decoded[2] = { 0x55555555u, 0x66666666u };
+    ge_decode_tex_rgba(decoded);
+    expect(decoded[0] == 0u && decoded[1] == 0u,
+           "linear texture decode rejects the complete invalid rectangle before reading");
+
+    /* Tightest reachable overshoot. TEXADDR0 carries no alignment mask, so a guest
+     * can place a 16-bpp linear texture at an odd address whose final row ends
+     * exactly ONE byte past the arena. Widening the accepted extent by a single
+     * byte is invisible to every other assertion in this file, so pin both sides
+     * of that boundary through the same production decode helper. */
+    state->tex_fmt = 0u;
+    state->tex_bufw = 1u;
+    state->tex_w = 1;
+    state->tex_h = 2;
+    state->tex_addr = 0x0bfffffdu;                 /* last row ends at arena_end + 1 */
+    memcpy(scratch + arena_bytes, &(uint16_t){0x7fffu}, 2u);
+    decoded[0] = 0x55555555u; decoded[1] = 0x66666666u;
+    ge_decode_tex_rgba(decoded);
+    expect(decoded[0] == 0u && decoded[1] == 0u,
+           "a texture rectangle ending one byte past the arena is rejected whole");
+
+    state->tex_addr = 0x0bfffffcu;                 /* last row ends AT arena_end */
+    MEM_W16(0x0bfffffcu, 0xffffu);
+    MEM_W16(0x0bfffffeu, 0xffffu);
+    decoded[0] = 0u; decoded[1] = 0u;
+    ge_decode_tex_rgba(decoded);
+    expect(decoded[0] != 0u && decoded[1] != 0u,
+           "a texture rectangle ending exactly at the arena end still decodes");
+
+    /* LOADCLUT previously updated its internal palette one scalar at a time.  A
+     * rejected complete source span must leave both palette bytes and generation
+     * unchanged. */
+    memset(state->clutram, 0x5au, sizeof(state->clutram));
+    uint32_t clut_generation = state->clut_gen;
+    MEM_W32(0x0bfffffcu, 0x12345678u);
+    (void)ge_clut_enqueue(0x0bfffffcu, 1u);
+    int clut_unchanged = state->clut_gen == clut_generation;
+    for (uint32_t i = 0; i < sizeof(state->clutram); i++)
+        if (state->clutram[i] != 0x5au) clut_unchanged = 0;
+    expect(clut_unchanged,
+           "LOADCLUT rejects an invalid full source span without partial palette state");
+
+    ge_set_gpu_hooks(NULL);
+    g_mem_base = saved_base;
+    g_mem = saved_base + 0x08000000u;
+    free(scratch);
+}
+
 
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
@@ -7919,6 +8129,7 @@ int main(int argc, char **argv) {
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
     test_ge_guest_sentinel();
+    test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_dmac_semantics();

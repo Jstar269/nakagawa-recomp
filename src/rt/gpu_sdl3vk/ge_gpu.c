@@ -712,15 +712,10 @@ int gegpu_validate_guest_fb_descriptor(const GeGpuFbDescriptor *desc,
     if (desc->stride < desc->width) {
         *why = "buffer width narrower than visible width"; return 0;
     }
-    uint32_t row_pitch, last_row, visible_row, total;
-    if (!sr_size_mul_ok(desc->stride, bpp, &row_pitch)) {
-        *why = "row pitch overflows"; return 0;
-    }
-    if (!sr_size_mul_ok(desc->height - 1u, row_pitch, &last_row)) {
-        *why = "final row offset overflows"; return 0;
-    }
-    if (!sr_size_mul_ok(desc->width, bpp, &visible_row) ||
-        !sr_size_add_ok(last_row, visible_row, &total) || total == 0u) {
+    SrGuestRectSpan rect;
+    if (!sr_guest_rect_geometry(desc->addr, 0u, 0u, desc->stride,
+                                desc->width, desc->height, bpp, &rect) ||
+        rect.total_bytes == 0u) {
         *why = "visible span overflows"; return 0;
     }
 
@@ -728,19 +723,19 @@ int gegpu_validate_guest_fb_descriptor(const GeGpuFbDescriptor *desc,
     uint32_t voff = 0u, base = desc->addr;
     if (in_vram) {
         voff = vram_off(desc->addr);
-        if (voff >= GEGPU_VRAM_BYTES || total > GEGPU_VRAM_BYTES - voff) {
+        if (voff >= GEGPU_VRAM_BYTES || rect.total_bytes > GEGPU_VRAM_BYTES - voff) {
             *why = "span crosses the end of the VRAM aperture"; return 0;
         }
         base = 0x04000000u | voff;
     }
-    if (!sr_guest_span_readable(base, total)) {
+    if (!sr_guest_span_readable(base, rect.total_bytes)) {
         *why = "span leaves guest memory"; return 0;
     }
     if (out_span) {
         out_span->base = base;
         out_span->bytes_per_pixel = bpp;
-        out_span->row_pitch = row_pitch;
-        out_span->total_bytes = total;
+        out_span->row_pitch = rect.row_pitch;
+        out_span->total_bytes = rect.total_bytes;
         out_span->in_vram = in_vram;
         out_span->vram_offset = voff;
     }
@@ -1249,6 +1244,14 @@ static int target_prepare_present(Target *t) {
 /* Fill the target's color image from guest VRAM (creation / CPU-dirty reacquire).
  * At scale > 1 each guest pixel is replicated into its scale x scale device cell. */
 static int target_upload(Target *t) {
+    GeGpuFbDescriptor desc = target_descriptor(t->fba, t->stride, t->fmt);
+    GeGpuFbSpan guest_span;
+    const char *why = NULL;
+    if (!gegpu_validate_guest_fb_descriptor(&desc, &guest_span, &why)) {
+        fprintf(stderr, "target_upload: invalid target fba=0x%08x stride=%u fmt=%u: %s\n",
+                t->fba, t->stride, t->fmt, why ? why : "invalid descriptor");
+        return 0;
+    }
     /* CPU VRAM is authoritative on this path.  Never let an older asynchronous copy
      * overwrite it after the upload has begun. */
     readback_discard_target(t);
@@ -1257,17 +1260,15 @@ static int target_upload(Target *t) {
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t *row = s_pxscratch;               /* one guest row of decode scratch */
     uint32_t *dst = (uint32_t *)upload.map;
-    uint32_t base = 0x04000000u | t->fba;
+    uint32_t base = guest_span.base;
     uint32_t drow = SCL_W;
-    int oob = !sr_inrange(base);
-    if (oob) fprintf(stderr, "target_upload: fba 0x%08x out of range, zeroing\n", t->fba);
     for (uint32_t y = 0; y < FB_H; y++) {
-        if (oob) {
-            memset(row, 0, t->stride * 4);
-        } else if (t->fmt == 3) {
-            memcpy(row, (const uint32_t *)SR_HOST(base + y * t->stride * 4), t->stride * 4);
+        if (t->fmt == 3) {
+            memcpy(row, (const uint32_t *)SR_HOST(base + y * guest_span.row_pitch),
+                   t->stride * 4);
         } else {
-            const uint16_t *src = (const uint16_t *)SR_HOST(base + y * t->stride * 2);
+            const uint16_t *src = (const uint16_t *)SR_HOST(
+                base + y * guest_span.row_pitch);
             for (uint32_t x = 0; x < t->stride; x++) row[x] = fb_unpack(src[x], t->fmt);
         }
         for (uint32_t x = t->stride; x < FB_W; x++) row[x] = 0;
@@ -1343,6 +1344,10 @@ static uint32_t target_dirty_edge_rgba(const DirtyEdgePixel *edges, uint32_t cou
  * are decoded from guest generation G2. At scale > 1, each patched guest pixel updates
  * its complete scale x scale device cell, matching target_upload(). */
 static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirty_bytes) {
+    GeGpuFbDescriptor desc = target_descriptor(t->fba, t->stride, t->fmt);
+    GeGpuFbSpan guest_span;
+    const char *why = NULL;
+    if (!gegpu_validate_guest_fb_descriptor(&desc, &guest_span, &why)) return 0;
     uint32_t bpp = t->fmt == 3 ? 4u : 2u;
     uint64_t target0 = t->fba;
     uint64_t target1 = target0 + (uint64_t)t->stride * FB_H * bpp;
@@ -1405,14 +1410,15 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
     VkBufferImageCopy copies[FB_H] = {{0}};
     VkDeviceSize used = 0;
     uint32_t ci = 0;
-    uint32_t base = 0x04000000u | t->fba;
+    uint32_t base = guest_span.base;
     for (uint32_t y = 0; y < FB_H; y++) {
         if (!row_used[y]) continue;
         uint32_t x0 = row_x0[y], x1 = row_x1[y];
         uint32_t scaled_width = (x1 - x0) * (uint32_t)s_scale;
         uint32_t *dst = (uint32_t *)(upload.map + used);
         uint64_t row0 = target0 + (uint64_t)y * row_bytes;
-        const uint8_t *guest_row = (const uint8_t *)SR_HOST(base + y * row_bytes);
+        const uint8_t *guest_row = (const uint8_t *)SR_HOST(
+            base + y * guest_span.row_pitch);
         for (uint32_t x = x0; x < x1; x++) {
             uint64_t pixel0 = row0 + (uint64_t)x * bpp;
             uint64_t pixel1 = pixel0 + bpp;
@@ -1513,6 +1519,8 @@ static Target *target_color_acquire(uint32_t fba, uint32_t stride, uint32_t fmt,
      * rather than clamp, which silently corrupted row addressing. */
     if (stride > FB_W) return NULL;
     fmt &= 3;
+    GeGpuFbDescriptor desc = target_descriptor(fba, stride, fmt);
+    if (!gegpu_validate_guest_fb_descriptor(&desc, NULL, NULL)) return NULL;
 
     Target *t = target_find_by_fba(fba);
     if (t && (t->stride != stride || t->fmt != fmt)) {
@@ -1728,9 +1736,7 @@ static uint32_t tex_source_size(void) {
 }
 
 static const uint8_t *tex_source_ptr(uint32_t addr, uint32_t bytes) {
-    if (!bytes || !sr_inrange(addr)) return NULL;
-    uint64_t last = (uint64_t)addr + bytes - 1u;
-    if (last > UINT32_MAX || !sr_inrange((uint32_t)last)) return NULL;
+    if (!bytes || !sr_guest_span_readable(addr, bytes)) return NULL;
     /* SR_HOST maps VRAM mirrors, but a direct memcmp/copy may not cross the physical
      * 2 MiB wrap. Fall back to the exact decoder on that rare shape. */
     if (is_vram(addr) && (uint64_t)vram_off(addr) + bytes > 0x200000u) return NULL;
@@ -1812,12 +1818,13 @@ static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
 
 static uint64_t tex_hash(void) {
     uint64_t profile_started = cpu_profile_now();
-    uint64_t bytes = tex_source_size();
-    if (!sr_inrange(s_ge->tex_addr)) {
+    uint32_t source_bytes = tex_source_size();
+    uint64_t bytes = source_bytes;
+    const uint8_t *p = tex_source_ptr(s_ge->tex_addr, source_bytes);
+    if (!p) {
         cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, profile_started);
         return 0;
     }
-    const uint8_t *p = (const uint8_t *)SR_HOST(s_ge->tex_addr);
     uint64_t h = 1469598103934665603ull;
     h = fnv64(h, &bytes, sizeof(bytes));
     uint64_t step = bytes / 64; if (step < 16) step = 16;

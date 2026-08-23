@@ -123,6 +123,74 @@ static inline int sr_size_mul_ok(uint32_t a, uint32_t b, uint32_t *out) {
     if (out) *out = a * b;
     return 1;
 }
+
+/* A checked pitched rectangle, expressed in bytes after resolving its pixel-space
+ * origin.  `first` is the first byte touched and `total_bytes` is the bounding span:
+ * (rows - 1) * row_pitch + row_bytes.  Rows may overlap (row_pitch < row_bytes);
+ * framebuffer callers that forbid that shape must enforce their semantic constraint
+ * before asking for the memory span. */
+typedef struct SrGuestRectSpan {
+    uint32_t first;
+    uint32_t row_pitch;
+    uint32_t row_bytes;
+    uint32_t total_bytes;
+} SrGuestRectSpan;
+
+static inline int sr_guest_rect_geometry(uint32_t base, uint32_t x, uint32_t y,
+                                         uint32_t stride, uint32_t width,
+                                         uint32_t rows, uint32_t bytes_per_pixel,
+                                         SrGuestRectSpan *out) {
+    SrGuestRectSpan span;
+    if (width == 0u || rows == 0u) {
+        span.first = base;
+        span.row_pitch = 0u;
+        span.row_bytes = 0u;
+        span.total_bytes = 0u;
+        if (out) *out = span;
+        return 1;
+    }
+    if (bytes_per_pixel == 0u) return 0;
+
+    uint32_t y_offset, first_pixel, first_offset, last_row;
+    if (!sr_size_mul_ok(y, stride, &y_offset) ||
+        !sr_size_add_ok(y_offset, x, &first_pixel) ||
+        !sr_size_mul_ok(first_pixel, bytes_per_pixel, &first_offset) ||
+        !sr_size_add_ok(base, first_offset, &span.first) ||
+        !sr_size_mul_ok(stride, bytes_per_pixel, &span.row_pitch) ||
+        !sr_size_mul_ok(width, bytes_per_pixel, &span.row_bytes) ||
+        !sr_size_mul_ok(rows - 1u, span.row_pitch, &last_row) ||
+        !sr_size_add_ok(last_row, span.row_bytes, &span.total_bytes))
+        return 0;
+
+    if (out) *out = span;
+    return 1;
+}
+
+static inline int sr_guest_rect_readable(uint32_t base, uint32_t x, uint32_t y,
+                                         uint32_t stride, uint32_t width,
+                                         uint32_t rows, uint32_t bytes_per_pixel,
+                                         SrGuestRectSpan *out) {
+    SrGuestRectSpan span;
+    if (!sr_guest_rect_geometry(base, x, y, stride, width, rows,
+                                bytes_per_pixel, &span) ||
+        !sr_guest_span_readable(span.first, span.total_bytes))
+        return 0;
+    if (out) *out = span;
+    return 1;
+}
+
+static inline int sr_guest_rect_writable(uint32_t base, uint32_t x, uint32_t y,
+                                         uint32_t stride, uint32_t width,
+                                         uint32_t rows, uint32_t bytes_per_pixel,
+                                         SrGuestRectSpan *out) {
+    SrGuestRectSpan span;
+    if (!sr_guest_rect_geometry(base, x, y, stride, width, rows,
+                                bytes_per_pixel, &span) ||
+        !sr_guest_span_writable(span.first, span.total_bytes))
+        return 0;
+    if (out) *out = span;
+    return 1;
+}
 extern void sr_oor(uint32_t a, uint32_t v, int store);   /* records out-of-range access (diag) */
 /* SR_HEAP_WATCH tracks allocator-owned free headers dynamically, so diagnostics survive
  * allocation-layout changes. The branch stays cold in normal runs; bulk native copy/clear
