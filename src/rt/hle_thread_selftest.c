@@ -309,10 +309,11 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
  * owned by gpu-coherence-selftest against the real Vulkan target. */
 static unsigned long g_sync_calls;
 static GeGpuFbDescriptor g_sync_last;
+static int g_sync_result = 2; /* GEGPU_SYNC_NO_TARGET */
 int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
     g_sync_calls++;
     if (desc) g_sync_last = *desc;
-    return 2; /* GEGPU_SYNC_NO_TARGET */
+    return g_sync_result;
 }
 void sr_profile_dump(void) {}
 #ifdef SR_PSP_ORACLE_SMOKE
@@ -1092,6 +1093,7 @@ static void reset_fixture(void) {
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
+    g_sync_result = 2;     /* GEGPU_SYNC_NO_TARGET */
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -7420,6 +7422,7 @@ static int run_psp_oracle(int argc, char **argv) {
  */
 int      sr_route_load(const char *path);
 uint32_t sr_route_step(uint32_t vblank, const uint8_t *sig);
+uint32_t sr_route_test_tick(uint32_t vblank);
 int      sr_route_status(void);
 int      sr_route_sig_bytes(void);
 void     sr_route_reset(void);
@@ -7553,6 +7556,188 @@ static void test_route_expect_without_observation_fails_closed(void) {
     sr_route_step(20 * 8 + 60, NULL);
     expect(sr_route_status() == RT_FAILED,
            "EXPECT fails closed when no framebuffer observation ever arrives");
+    remove(RT_PATH);
+}
+
+/* A route's VCOUNT is elapsed-period accounting, not a promise that every
+ * integer value is delivered to route_tick(). Coalesced periods can jump over
+ * every exact `v % SAMPLE_EVERY == 0` boundary for longer than EXPECT's
+ * fail-closed observation budget. This is the production-path form of the
+ * failure: a real framebuffer is configured, route_tick performs the real
+ * sample/match, and the delivered VCOUNT sequence deliberately skips modulo 5.
+ *
+ * The matching arm must advance and press; the wrong-screen arm must still
+ * fail closed. Together they prevent a cadence repair from becoming fake
+ * success or bypassing state qualification. */
+static void test_route_observer_samples_across_coalesced_vcount_jumps(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM = 0x04044000u;
+    char hex[1024], body[4096];
+    uint8_t sig[576];
+    CpuState cpu;
+
+    /* Matching arm: establish a guest-owned flat-black scanout and author the
+     * source-owned checkpoint from the production sampler's own bytes. */
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = VRAM; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "the cadence fixture publishes a guest-owned scanout");
+    expect(sr_route_test_sample(sig) == 1,
+           "the cadence fixture produces a production framebuffer observation");
+    for (int i = 0; i < sr_route_sig_bytes(); i++)
+        snprintf(hex + i * 2, 3, "%02x", sig[i]);
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 5\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "DELAY 3\n"
+             "EXPECT MAIN_MENU\n"
+             "PRESS 4000 1\n"
+             "END\n", hex);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1,
+           "the coalesced-VCOUNT cadence route loads");
+
+    expect(sr_route_test_tick(4318u) == 0u,
+           "the cadence route begins inside its inert delay");
+    expect(sr_route_test_tick(4324u) == 0u,
+           "a coalesced jump advances from delay into EXPECT without input");
+    expect(sr_route_test_tick(4333u) == 0x4000u,
+           "EXPECT samples after elapsed cadence even when VCOUNT skips modulo five");
+    expect(sr_route_status() == RT_RUNNING,
+           "a matching coalesced-cadence observation advances to the press");
+    expect(sr_route_test_tick(4334u) == 0u,
+           "the one-vblank press ends and the matching route completes");
+    expect(sr_route_status() == RT_DONE,
+           "the matching coalesced-cadence route reaches END");
+
+    /* Wrong-screen arm: keep the recorded black checkpoint but replace the
+     * live scanout with white before EXPECT. The cadence repair must sample
+     * it and fail, never manufacture the input expected only on a match. */
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = VRAM; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "the wrong-screen cadence arm publishes the same scanout");
+    for (uint32_t i = 0; i < 512u * 272u; i++) MEM_W32(VRAM + i * 4u, 0x00ffffffu);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1,
+           "the wrong-screen coalesced-VCOUNT route loads");
+    expect(sr_route_test_tick(5318u) == 0u,
+           "the wrong-screen cadence arm begins inside its inert delay");
+    expect(sr_route_test_tick(5324u) == 0u,
+           "the wrong-screen cadence arm reaches EXPECT without input");
+    expect(sr_route_test_tick(5333u) == 0u,
+           "a sampled wrong screen emits no input across a coalesced jump");
+    expect(sr_route_status() == RT_FAILED,
+           "the coalesced-cadence observer still fails closed on the wrong screen");
+    remove(RT_PATH);
+}
+
+/* Cadence invariants around the same production sampler used above. The live
+ * framebuffer is deliberately white while the checkpoint is black, so WAIT
+ * remains pending and every coherence call corresponds to a real observation
+ * attempt without advancing the route. */
+static void test_route_observer_elapsed_cadence_invariants(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM = 0x04044000u;
+    char hex[1024], body[4096];
+    uint8_t sig[576];
+    CpuState cpu;
+    uint32_t keys;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = VRAM; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "the cadence-invariant fixture publishes a guest-owned scanout");
+    expect(sr_route_test_sample(sig) == 1,
+           "the cadence-invariant fixture records a production framebuffer signature");
+    for (int i = 0; i < sr_route_sig_bytes(); i++)
+        snprintf(hex + i * 2, 3, "%02x", sig[i]);
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 5\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "END\n", hex);
+    for (uint32_t i = 0; i < 512u * 272u; i++) MEM_W32(VRAM + i * 4u, 0x00ffffffu);
+    rt_write(body);
+
+    expect(sr_route_load(RT_PATH) == 1, "the dense-cadence route loads");
+    g_sync_calls = 0;
+    keys  = sr_route_test_tick(100u);
+    keys |= sr_route_test_tick(105u);
+    keys |= sr_route_test_tick(110u);
+    expect(g_sync_calls == 3,
+           "dense delivery samples once at each elapsed cadence boundary");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "dense wrong-screen observations neither emit input nor advance WAIT");
+
+    expect(sr_route_load(RT_PATH) == 1, "the coalesced-cadence invariant route reloads");
+    g_sync_calls = 0;
+    keys  = sr_route_test_tick(4318u);
+    keys |= sr_route_test_tick(4324u);
+    keys |= sr_route_test_tick(4333u);
+    expect(g_sync_calls == 3,
+           "coalesced delivery samples after elapsed cadence without exact residues");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "coalesced wrong-screen observations keep WAIT fail-closed");
+
+    expect(sr_route_load(RT_PATH) == 1, "the sub-cadence route reloads");
+    g_sync_calls = 0;
+    keys  = sr_route_test_tick(100u);
+    keys |= sr_route_test_tick(102u);
+    keys |= sr_route_test_tick(104u);
+    expect(g_sync_calls == 1,
+           "sub-cadence delivery does not over-sample the framebuffer");
+    keys |= sr_route_test_tick(105u);
+    expect(g_sync_calls == 2,
+           "sub-cadence delivery samples when the elapsed boundary arrives");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "sub-cadence wrong-screen observations emit no input");
+
+    expect(sr_route_load(RT_PATH) == 1, "the wraparound-cadence route reloads");
+    g_sync_calls = 0;
+    keys  = sr_route_test_tick(0xfffffffcu);
+    keys |= sr_route_test_tick(0x00000003u);
+    expect(g_sync_calls == 2,
+           "unsigned elapsed cadence samples correctly across VCOUNT wraparound");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "wraparound observations preserve the pending WAIT state");
+
+    expect(sr_route_load(RT_PATH) == 1, "the failed-readback cadence route reloads");
+    g_sync_result = 0; /* neither GEGPU_SYNC_OK nor GEGPU_SYNC_NO_TARGET */
+    g_sync_calls = 0;
+    keys  = sr_route_test_tick(100u);
+    keys |= sr_route_test_tick(101u);
+    keys |= sr_route_test_tick(102u);
+    keys |= sr_route_test_tick(104u);
+    expect(g_sync_calls == 1,
+           "a failed readback attempt is not hammered on each delivered VBLANK");
+    keys |= sr_route_test_tick(105u);
+    expect(g_sync_calls == 2,
+           "a failed readback is retried at the next elapsed cadence boundary");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "failed readback attempts neither emit input nor advance WAIT");
+    g_sync_result = 2;
+
+    expect(sr_route_load(RT_PATH) == 1, "the route-load isolation control loads");
+    g_sync_calls = 0;
+    (void)sr_route_test_tick(100u);
+    expect(g_sync_calls == 1, "the route-load isolation control records its first attempt");
+    expect(sr_route_load(RT_PATH) == 1, "a new route reloads after an earlier attempt");
+    g_sync_calls = 0;
+    keys = sr_route_test_tick(102u);
+    expect(g_sync_calls == 1,
+           "a new route does not inherit stale sampling cadence from the previous load");
+    expect(keys == 0u && sr_route_status() == RT_RUNNING,
+           "route-load cadence isolation preserves wrong-screen fail-closed behavior");
     remove(RT_PATH);
 }
 
@@ -7805,6 +7990,11 @@ static void test_route_malformed_files_are_refused(void) {
     expect(sr_route_load(RT_PATH) == 0, "TOLERANCE after a CHECKPOINT is refused");
 
     sr_route_reset();
+    snprintf(body, sizeof body, "SAMPLE_EVERY 0\nCHECKPOINT MAIN_MENU %s\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a nonpositive sampling cadence is refused");
+
+    sr_route_reset();
     snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\n", hexA);
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 0, "a file of checkpoints with no steps is refused");
@@ -7959,6 +8149,8 @@ int main(int argc, char **argv) {
     test_route_wait_timeout_fails_loudly();
     test_route_expect_rejects_the_wrong_screen();
     test_route_expect_without_observation_fails_closed();
+    test_route_observer_samples_across_coalesced_vcount_jumps();
+    test_route_observer_elapsed_cadence_invariants();
     test_route_signature_tolerance_is_enforced();
     test_route_press_until_stops_when_the_screen_arrives();
     test_route_press_while_ends_with_its_screen();

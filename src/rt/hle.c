@@ -6305,6 +6305,8 @@ static int      s_route_state = ROUTE_OFF;
 static int      s_route_cols = 12, s_route_rows = 8;
 static int      s_route_tol = 12;
 static int      s_route_sample_every = 20;
+static uint32_t s_route_last_sample_vblank;
+static int      s_route_sample_started;
 static int      s_route_learn;
 static uint32_t s_route_keys;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
@@ -6627,6 +6629,8 @@ void sr_route_reset(void) {
     s_route_cols = 12; s_route_rows = 8;
     s_route_tol = 12;
     s_route_sample_every = 20;
+    s_route_last_sample_vblank = 0;
+    s_route_sample_started = 0;
     s_route_keys = 0;
     s_route_while_seen = 0;
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
@@ -6642,6 +6646,8 @@ int sr_route_load(const char *path) {
     s_route_pc = 0;
     s_route_step_started = 0;
     s_route_keys = 0;
+    s_route_last_sample_vblank = 0;
+    s_route_sample_started = 0;
     s_route_while_seen = 0;
     s_route_state = ROUTE_OFF;
     s_route_loaded = 1;
@@ -7429,6 +7435,27 @@ static void route_learn_emit(uint32_t v, const uint8_t *sig) {
     fprintf(stderr, "ROUTE_SIG v=%u %s\n", v, hex);
 }
 
+/* A delivered VCOUNT is elapsed-period accounting, not a dense callback
+ * sequence: coalesced periods can jump over one or more integer values. Exact
+ * modulo gating (`v % cadence == 0`) can therefore miss every sample boundary
+ * for longer than an EXPECT/WAIT budget even while valid frames are presented.
+ * Sample on elapsed guest time instead. Unsigned subtraction keeps the deadline
+ * correct across uint32_t wrap; one observation at the current frame is enough
+ * even when several cadence intervals were coalesced.
+ *
+ * Record an attempt, not only a successful readback, so a failing coherence
+ * boundary remains bounded by SAMPLE_EVERY rather than being hammered on every
+ * delivered vblank. Valid route files guarantee SAMPLE_EVERY is positive. */
+static int route_sample_due(uint32_t v) {
+    if (!s_route_sample_started ||
+        (uint32_t)(v - s_route_last_sample_vblank) >= (uint32_t)s_route_sample_every) {
+        s_route_sample_started = 1;
+        s_route_last_sample_vblank = v;
+        return 1;
+    }
+    return 0;
+}
+
 /* Once per delivered vblank, before the controller sample is latched, so a checkpoint
  * reached on this vblank can release its press on this vblank. */
 static void route_tick(uint32_t v) {
@@ -7446,13 +7473,22 @@ static void route_tick(uint32_t v) {
         int op = s_route_prog[s_route_pc].op;
         pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
     }
-    if ((pending || s_route_learn) && (v % (uint32_t)s_route_sample_every) == 0 &&
+    if ((pending || s_route_learn) && route_sample_due(v) &&
         route_sample(sig)) {
         observed = sig;
         if (s_route_learn) route_learn_emit(v, sig);
     }
     s_route_keys = sr_route_step(v, observed);
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Focused production-observer entry: exercise route_tick's real cadence,
+ * framebuffer sampler, matcher, and step machine without a title runtime. */
+uint32_t sr_route_test_tick(uint32_t v) {
+    route_tick(v);
+    return s_route_keys;
+}
+#endif
 
 /* ---- swapchain-truthful present capture (issue #57) -------------------------------
  *
