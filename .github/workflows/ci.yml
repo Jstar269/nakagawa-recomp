@@ -532,7 +532,15 @@ jobs:
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
         shell: msys2 {0}
-        run: >-
+        # The ordinary compile target invokes the repository's PowerShell 7.6
+        # asset-copy script after linking. Keep the broader Windows PATH scoped
+        # to this step so MSYS2 can resolve the runner's `pwsh` without changing
+        # tool selection in the other UCRT64 compile gates.
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
           mingw32-make --no-print-directory
           CC=gcc VULKAN_SDK=/ucrt64 production-smoke
 

@@ -128,6 +128,12 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertNotIn("gate_stub", production_recipe)
         self.assertIn("mingw32-make --no-print-directory", workflow)
         self.assertIn("production-smoke", workflow)
+        smoke_step = workflow.split(
+            "- name: Build and run full production pipeline smoke", 1
+        )[1].split("- name: Build and run scheduler selftest", 1)[0]
+        self.assertIn("shell: msys2 {0}", smoke_step)
+        self.assertIn("MSYS2_PATH_TYPE: inherit", smoke_step)
+        self.assertIn("command -v pwsh", smoke_step)
 
 
 if __name__ == "__main__":
