@@ -4619,7 +4619,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "062eb9ebf5f209fee8be311fb46a070ccc31c1128ea17ebed04ff023ce7e4bd5"
+      "sha256": "82b8a3343323e6efe1fb99db79289146bc8daa8be3202da436eb0992087ce2d1"
     },
     {
       "path": "src/rt/sched.c",
@@ -7014,7 +7014,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df0811703755f2068f9843448593e440ff36cbf8f005245c885722e3d5030f78"
+      "sha256": "1d0ec9deec939bac11915c0659a2500139d43a9e86d8a8956f4d7dc9bb7309a5"
     },
     {
       "path": "tools/test_sbom.py",

@@ -123,6 +123,7 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
 
 static void rd_cstr(uint32_t addr, char *out, int max) {
     int i = 0;
+    if (max <= 0) return;
     if (addr) for (; i < max - 1; i++) {
         uint8_t c = MEM_R8(addr + (uint32_t)i);
         if (!c) break;
@@ -214,6 +215,16 @@ static const SavedataStorageOps s_storage = { mkdirs, host_write_file, host_read
 /* ---- minimal PARAM.SFO writer (PSF v1.1) -------------------------------------------------- */
 typedef struct { const char *key; uint16_t fmt; uint32_t len, maxlen; const void *val; } SfoEnt;
 
+static SfoEnt sfo_str_entry(const char *key, const char *val, uint32_t maxlen) {
+    if (!val) val = "";
+    size_t slen = strlen(val);
+    if (maxlen > 0 && slen >= (size_t)maxlen) {
+        slen = (size_t)maxlen - 1u;
+    }
+    uint32_t len = maxlen > 0 ? (uint32_t)slen + 1u : 0u;
+    return (SfoEnt){key, 0x0204, len, maxlen, val};
+}
+
 static void sfo_write(const char *dir, const char *title, const char *saveTitle,
                       const char *detail, const char *saveDir, uint32_t parental,
                       const char *fileName) {
@@ -230,24 +241,26 @@ static void sfo_write(const char *dir, const char *title, const char *saveTitle,
     SfoEnt e[8];
     int n = 0;
     /* keys must be sorted alphabetically */
-    e[n++] = (SfoEnt){"CATEGORY",           0x0204, 3, 4, cat};
-    e[n++] = (SfoEnt){"PARENTAL_LEVEL",     0x0404, 4, 4, &pl};
-    e[n++] = (SfoEnt){"SAVEDATA_DETAIL",    0x0204, (uint32_t)strlen(detail) + 1, 1024, detail};
-    e[n++] = (SfoEnt){"SAVEDATA_DIRECTORY", 0x0204, (uint32_t)strlen(saveDir) + 1, 64, saveDir};
-    e[n++] = (SfoEnt){"SAVEDATA_FILE_LIST", 0x0004, sizeof(filelist), sizeof(filelist), filelist};
-    e[n++] = (SfoEnt){"SAVEDATA_PARAMS",    0x0004, sizeof(params), sizeof(params), params};
-    e[n++] = (SfoEnt){"SAVEDATA_TITLE",     0x0204, (uint32_t)strlen(saveTitle) + 1, 128, saveTitle};
-    e[n++] = (SfoEnt){"TITLE",              0x0204, (uint32_t)strlen(title) + 1, 128, title};
+    e[n++] = sfo_str_entry("CATEGORY",           cat, 4);
+    e[n++] = (SfoEnt){"PARENTAL_LEVEL",          0x0404, 4, 4, &pl};
+    e[n++] = sfo_str_entry("SAVEDATA_DETAIL",    detail, 1024);
+    e[n++] = sfo_str_entry("SAVEDATA_DIRECTORY", saveDir, 64);
+    e[n++] = (SfoEnt){"SAVEDATA_FILE_LIST",      0x0004, sizeof(filelist), sizeof(filelist), filelist};
+    e[n++] = (SfoEnt){"SAVEDATA_PARAMS",         0x0004, sizeof(params), sizeof(params), params};
+    e[n++] = sfo_str_entry("SAVEDATA_TITLE",     saveTitle, 128);
+    e[n++] = sfo_str_entry("TITLE",              title, 128);
 
     uint32_t keyOff[8], keySize = 0, dataOff[8], dataSize = 0;
     for (int i = 0; i < n; i++) {
+        if (e[i].len > e[i].maxlen) return;
         keyOff[i] = keySize; keySize += (uint32_t)strlen(e[i].key) + 1;
         dataOff[i] = dataSize; dataSize += (e[i].maxlen + 3) & ~3u;
     }
     uint32_t keyStart = 20 + 16u * (uint32_t)n;
     uint32_t dataStart = (keyStart + keySize + 3) & ~3u;
+    uint32_t totalAlloc = dataStart + dataSize;
 
-    uint8_t *buf = (uint8_t *)calloc(1, dataStart + dataSize);
+    uint8_t *buf = (uint8_t *)calloc(1, totalAlloc);
     if (!buf) return;
     memcpy(buf, "\0PSF", 4);
     *(uint32_t *)(buf + 4) = 0x0101;
@@ -262,9 +275,26 @@ static void sfo_write(const char *dir, const char *title, const char *saveTitle,
         *(uint32_t *)(ix + 8) = e[i].maxlen;
         *(uint32_t *)(ix + 12) = dataOff[i];
         strcpy((char *)(buf + keyStart + keyOff[i]), e[i].key);
-        memcpy(buf + dataStart + dataOff[i], e[i].val, e[i].len);
+        if (e[i].fmt == 0x0204) {
+            uint32_t payload = e[i].len > 0 ? e[i].len - 1u : 0u;
+            if (payload > 0) {
+                memcpy(buf + dataStart + dataOff[i], e[i].val, payload);
+            }
+            /* The preflight above proved len <= maxlen, so payload < maxlen for
+             * every slot that has capacity at all.  A zero-capacity slot has no
+             * terminator byte to write: writing one unconditionally would put a
+             * byte into the NEXT entry's slot, or past the allocation entirely
+             * when the zero-capacity entry is last.  No caller passes maxlen 0
+             * today; the guard is what keeps that true of the helper rather than
+             * only of its current call sites. */
+            if (e[i].maxlen > 0) {
+                buf[dataStart + dataOff[i] + payload] = '\0';
+            }
+        } else {
+            memcpy(buf + dataStart + dataOff[i], e[i].val, e[i].len);
+        }
     }
-    s_storage.write(dir, "PARAM.SFO", buf, dataStart + dataSize);
+    s_storage.write(dir, "PARAM.SFO", buf, totalAlloc);
     free(buf);
 }
 
@@ -284,7 +314,8 @@ static void put_psp_time(uint32_t addr, time_t when) {
 }
 
 static void wr_fixed(uint32_t addr, const char *s, int n) {
-    for (int i = 0; i < n; i++) MEM_W8(addr + (uint32_t)i, i < (int)strlen(s) ? (uint8_t)s[i] : 0);
+    size_t slen = s ? strlen(s) : 0;
+    for (int i = 0; i < n; i++) MEM_W8(addr + (uint32_t)i, (size_t)i < slen ? (uint8_t)s[i] : 0);
 }
 
 /* ---- minimal PARAM.SFO reader --------------------------------------------------------------
@@ -370,7 +401,7 @@ static void write_filedata(const char *dir, const char *name, uint32_t fd) {
 }
 
 static uint32_t do_save(uint32_t param, const char *game, const char *save) {
-    char dir[PATH_MAX], fileName[16], title[129], saveTitle[129], detail[1025], saveDir[64];
+    char dir[PATH_MAX], fileName[16], title[128], saveTitle[128], detail[1024], saveDir[64];
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
     uint32_t dataBuf = MEM_R32(param + SDP_dataBuf);
     uint32_t dataSize = MEM_R32(param + SDP_dataSize);
