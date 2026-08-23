@@ -134,6 +134,10 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertIn("shell: msys2 {0}", smoke_step)
         self.assertIn("MSYS2_PATH_TYPE: inherit", smoke_step)
         self.assertIn("command -v pwsh", smoke_step)
+        self.assertIn(
+            "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke",
+            smoke_step,
+        )
 
 
 if __name__ == "__main__":

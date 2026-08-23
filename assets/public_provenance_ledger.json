@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "77d4ff0c73ba7bcdb52c4e88d03f59adbf9befc74d0403de1c80ca3eeea66e56"
+      "sha256": "30f86417e2fffd6f47a036057c8176369ccea18f53df82fe1fbf702648e4258c"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -6800,7 +6800,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "19777a14a482660c1488571299e952339bf37fa6505a5e57bbe3f107cbb4ccf1"
+      "sha256": "93682bdefdbdc896e6a53e39f3906c53021ede47eaba9a009566115123b43773"
     },
     {
       "path": "tools/test_progress_evidence.py",

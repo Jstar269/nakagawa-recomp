@@ -541,8 +541,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v pwsh
-          mingw32-make --no-print-directory
-          CC=gcc VULKAN_SDK=/ucrt64 production-smoke
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke
 
       - name: Build and run scheduler selftest
         shell: msys2 {0}
