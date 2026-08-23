@@ -5531,6 +5531,30 @@ static void test_ge_block_transfer_span_atomicity(void) {
     expect(decoded[0] == 0u && decoded[1] == 0u,
            "linear texture decode rejects the complete invalid rectangle before reading");
 
+    /* Tightest reachable overshoot. TEXADDR0 carries no alignment mask, so a guest
+     * can place a 16-bpp linear texture at an odd address whose final row ends
+     * exactly ONE byte past the arena. Widening the accepted extent by a single
+     * byte is invisible to every other assertion in this file, so pin both sides
+     * of that boundary through the same production decode helper. */
+    state->tex_fmt = 0u;
+    state->tex_bufw = 1u;
+    state->tex_w = 1;
+    state->tex_h = 2;
+    state->tex_addr = 0x0bfffffdu;                 /* last row ends at arena_end + 1 */
+    memcpy(scratch + arena_bytes, &(uint16_t){0x7fffu}, 2u);
+    decoded[0] = 0x55555555u; decoded[1] = 0x66666666u;
+    ge_decode_tex_rgba(decoded);
+    expect(decoded[0] == 0u && decoded[1] == 0u,
+           "a texture rectangle ending one byte past the arena is rejected whole");
+
+    state->tex_addr = 0x0bfffffcu;                 /* last row ends AT arena_end */
+    MEM_W16(0x0bfffffcu, 0xffffu);
+    MEM_W16(0x0bfffffeu, 0xffffu);
+    decoded[0] = 0u; decoded[1] = 0u;
+    ge_decode_tex_rgba(decoded);
+    expect(decoded[0] != 0u && decoded[1] != 0u,
+           "a texture rectangle ending exactly at the arena end still decodes");
+
     /* LOADCLUT previously updated its internal palette one scalar at a time.  A
      * rejected complete source span must leave both palette bytes and generation
      * unchanged. */

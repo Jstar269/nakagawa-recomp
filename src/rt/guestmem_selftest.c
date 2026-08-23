@@ -136,6 +136,30 @@ static void test_rect_bounds(void) {
     CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u,
                                   1u, 0x80000000u, 1u, 4u, &span),
           "row-width multiplication overflow must be rejected");
+
+    /* The two multiplication guards above are ordered, so a rectangle whose row
+     * pitch is representable but whose FINAL-ROW offset is not must be rejected
+     * on its own; likewise the final add. Without these the later branches are
+     * never the branch that rejects. */
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u,
+                                  0x10000u, 1u, 0x10001u, 4u, &span),
+          "final-row multiplication overflow must be rejected on a valid row pitch");
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u,
+                                  0x40000000u, 0x40000000u, 2u, 2u, &span),
+          "final-row plus row-width addition overflow must be rejected");
+
+    /* Tightest possible boundary pair. Every other assertion here still passes if
+     * the accepted extent is widened by a single byte, so pin the exact end and
+     * the first byte past it. The 16-bpp unaligned shape is reachable: TEXADDR0
+     * carries no alignment mask, so a guest can place a linear texture at an odd
+     * address whose final row ends one byte outside the arena. */
+    CHECK(sr_guest_rect_readable(0x0bfffffcu, 0u, 0u, 1u, 1u, 2u, 2u, &span) &&
+          span.total_bytes == 4u,
+          "a rectangle whose last byte is the arena's last byte must be accepted");
+    CHECK(!sr_guest_rect_readable(0x0bfffffdu, 0u, 0u, 1u, 1u, 2u, 2u, &span),
+          "a rectangle reaching exactly one byte past the arena must be rejected");
+    CHECK(!sr_guest_rect_writable(0x0bfffffdu, 0u, 0u, 1u, 1u, 2u, 2u, &span),
+          "one byte past the arena must be rejected for writes as well as reads");
 }
 
 static void fuzz_differential(void) {
