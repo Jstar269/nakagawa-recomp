@@ -10,6 +10,7 @@
  *   - sr_inrange / sr_inrange_n      (existing scalar-access bounds)
  *   - sr_guest_span_readable/writable (bulk/parser span validation)
  *   - sr_size_add_ok / sr_size_mul_ok (overflow-safe size arithmetic)
+ *   - sr_guest_rect_readable/writable (pitched whole-rectangle validation)
  *
  * The core guarantee is overflow safety: a (base, size) pair whose naive sum wraps
  * uint32_t must be REJECTED, never accepted. A deterministic differential fuzz
@@ -94,6 +95,49 @@ static void test_checked_arith(void) {
     CHECK(sr_size_mul_ok(0xFFFFu, 0x10001u, &out) && out == 0xFFFFFFFFu, "0xFFFF*0x10001 == max, no overflow");
 }
 
+static void test_rect_bounds(void) {
+    SrGuestRectSpan span;
+    CHECK(sr_guest_rect_readable(0x08001000u, 3u, 2u, 8u, 4u, 3u, 2u, &span),
+          "ordinary pitched rectangle must be readable");
+    CHECK(span.first == 0x08001026u && span.row_pitch == 16u &&
+          span.row_bytes == 8u && span.total_bytes == 40u,
+          "rectangle geometry must resolve the exact first byte, pitch, row, and extent");
+
+    CHECK(sr_guest_rect_writable(0x0bffeff0u, 3u, 0u, 1024u, 1u, 2u, 4u, &span) &&
+          span.first == 0x0bffeffcu && span.total_bytes == 4100u,
+          "a later row ending exactly at the arena boundary must be valid");
+    CHECK(!sr_guest_rect_writable(0x0bfff000u, 1u, 0u, 1024u, 1u, 2u, 4u, &span),
+          "a valid first row with a later row outside the arena must be rejected");
+
+    CHECK(sr_guest_rect_readable(0x08002000u, 0u, 0u, 8u, 16u, 2u, 2u, &span) &&
+          span.row_pitch == 16u && span.row_bytes == 32u && span.total_bytes == 48u,
+          "overlapping rows remain a valid memory shape when pitch is narrower than a row");
+    CHECK(sr_guest_rect_readable(0x88001000u, 0u, 0u, 8u, 1u, 1u, 4u, &span),
+          "a valid kseg alias must resolve through the shared physical arena");
+
+    CHECK(sr_guest_rect_readable(0xdeadbeefu, 0xffffffffu, 0xffffffffu,
+                                 0xffffffffu, 0u, 9u, 4u, &span) &&
+          span.total_bytes == 0u,
+          "zero-width rectangles touch nothing even with otherwise invalid geometry");
+    CHECK(sr_guest_rect_writable(0xffffffffu, 0u, 0u, 1u, 1u, 0u, 4u, &span) &&
+          span.total_bytes == 0u,
+          "zero-row rectangles touch nothing even from an invalid base");
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u, 1u, 1u, 1u, 0u, &span),
+          "a non-empty rectangle with zero bytes per pixel must be rejected");
+
+    CHECK(!sr_guest_rect_readable(0xfffffff0u, 4u, 0u, 8u, 1u, 1u, 4u, &span),
+          "base plus first-pixel offset must not wrap to a small guest address");
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0xffffffffu,
+                                  0xffffffffu, 1u, 1u, 4u, &span),
+          "origin multiplication overflow must be rejected");
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u,
+                                  0x80000000u, 1u, 3u, 4u, &span),
+          "row-pitch or final-row multiplication overflow must be rejected");
+    CHECK(!sr_guest_rect_readable(0x08000000u, 0u, 0u,
+                                  1u, 0x80000000u, 1u, 4u, &span),
+          "row-width multiplication overflow must be rejected");
+}
+
 static void fuzz_differential(void) {
     /* Deterministic LCG; no host RNG, so the run is reproducible. Covers the full
      * 32-bit range for both base and size, hitting near-boundary and huge values. */
@@ -138,6 +182,7 @@ int main(void) {
     test_overflow_safety();
     test_zero_size_span();
     test_checked_arith();
+    test_rect_bounds();
     fuzz_differential();
     if (g_fail == 0) {
         printf("guestmem selftest: OK\n");

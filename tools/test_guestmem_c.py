@@ -84,6 +84,18 @@ class TestSpanHelperWiring(unittest.TestCase):
         self.assertIn("sr_size_add_ok", RECOMP_H)
         self.assertIn("sr_size_mul_ok", RECOMP_H)
 
+    def test_rect_helpers_use_checked_geometry_and_complete_spans(self):
+        geometry = _body(RECOMP_H, "sr_guest_rect_geometry")
+        self.assertIn("sr_size_mul_ok", geometry)
+        self.assertIn("sr_size_add_ok", geometry)
+        self.assertNotRegex(geometry, r"base\s*\+\s*first_offset")
+        readable = _body(RECOMP_H, "sr_guest_rect_readable")
+        writable = _body(RECOMP_H, "sr_guest_rect_writable")
+        self.assertIn("sr_guest_rect_geometry", readable)
+        self.assertIn("sr_guest_span_readable(span.first, span.total_bytes)", readable)
+        self.assertIn("sr_guest_rect_geometry", writable)
+        self.assertIn("sr_guest_span_writable(span.first, span.total_bytes)", writable)
+
     def test_arena_bound_matches_selftest_reference(self):
         # sr_inrange_n is the source of truth for the arena end; the selftest's
         # ARENA_END must match it so the fuzz validates against the right bound.
