@@ -38,6 +38,8 @@ import json
 import struct
 import sys
 
+import build_profile
+
 sys.path.insert(0, __file__.rsplit("/", 1)[0] if "/" in __file__ else ".")
 from analyze import Elf
 
@@ -290,10 +292,40 @@ def parse_imports(elf):
 
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
-    if len(args) < 2:
-        sys.stderr.write("usage: imports.py <prx-elf> <base-hex> [--toml out.toml]\n")
+    opts = [a for a in argv[1:] if a.startswith("--")]
+
+    use_env_elf = "--env-elf" in opts
+    expected = 1 if use_env_elf else 2
+    if len(args) < expected:
+        sys.stderr.write(
+            "usage: imports.py <prx-elf> <base-hex> [--toml out.toml]\n"
+            "       imports.py --env-elf <base-hex> [--toml out.toml]\n"
+        )
         return 2
-    elf = Elf(args[0], base=int(args[1], 16))
+    if use_env_elf and len(args) > 1:
+        sys.stderr.write(
+            "imports: --env-elf takes exactly one positional (<base-hex>); refusing to guess "
+            f"which of {args!r} is the base address. Pass the ELF or --env-elf, not both.\n"
+        )
+        return 2
+
+    cli_elf = None if use_env_elf else args[0]
+    base_hex = args[0] if use_env_elf else args[1]
+    try:
+        elf_path = build_profile.resolve_path(
+            "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf, cli_label="<prx-elf> argument", flag="--env-elf",
+        )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"imports: {exc}\n")
+        return 2
+
+    try:
+        base_val = int(base_hex, 16)
+    except ValueError:
+        sys.stderr.write(f"imports: invalid base address: {base_hex}\n")
+        return 2
+
+    elf = Elf(elf_path, base=base_val)
     try:
         stubs, findings = _import_model(elf)
     except ValueError as exc:

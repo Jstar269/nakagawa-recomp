@@ -42,6 +42,7 @@ implementation matches PSP hardware".  See tools/vfpu_coverage_report.py.
 
 import sys
 
+import build_profile
 from analyze import Elf, exec_ranges, resolve_extra_spans
 import codegen
 
@@ -149,15 +150,33 @@ def main(argv: list[str]) -> int:
         mode_label = "SYNTHETIC"
     else:
         # PRIVATE GAME-OBSERVED MODE (requires local ELF — never committed)
-        if len(args) < 2:
+        use_env_elf = "--env-elf" in opts
+        expected = 1 if use_env_elf else 2
+        if len(args) < expected:
             sys.stderr.write(
                 "usage: vfpu_fuzz_gen.py --synthetic <out.h>\n"
                 "       vfpu_fuzz_gen.py <elf> <out.h> [--base=HEX] [--extra-span=LO,HI]\n"
+                "       vfpu_fuzz_gen.py --env-elf <out.h> [--base=HEX] [--extra-span=LO,HI]\n"
+            )
+            return 2
+        if use_env_elf and len(args) > 1:
+            sys.stderr.write(
+                "vfpu_fuzz_gen: --env-elf takes exactly one positional (<out.h>); refusing to guess "
+                f"which of {args!r} is the output. Pass the ELF or --env-elf, not both.\n"
             )
             return 2
 
-        elf_path = args[0]
-        out_path = args[1]
+        cli_elf = None if use_env_elf else args[0]
+        out_path = args[0] if use_env_elf else args[1]
+        try:
+            # The legacy ".txt" word-list form is a pre-extracted corpus, not an
+            # ELF, but it is still an operator-supplied path on the same footing.
+            elf_path = build_profile.resolve_path(
+                "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf, cli_label="<elf> argument", flag="--env-elf",
+            )
+        except build_profile.BuildInputError as exc:
+            sys.stderr.write(f"vfpu_fuzz_gen: {exc}\n")
+            return 2
 
         if elf_path.endswith(".txt"):
             # Legacy: load from a pre-extracted word list file (local only)
