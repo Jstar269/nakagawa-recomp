@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -529,6 +530,390 @@ class OptimizationProfileContractTests(unittest.TestCase):
         self.assertTrue(stamp_o2.is_file())
         self.assertFalse(stamp_o0.exists())
 
+
+class GuestInputTransportTests(unittest.TestCase):
+    """The guest-input pathname boundary: no shell interpretation, no lost freshness.
+
+    Every test here drives the REAL repository Makefile. A mutation test that
+    builds its own toy Makefile only proves a property of cmd.exe and would keep
+    passing after the hardening was reverted, so each mutation below edits a copy
+    of the real Makefile and asserts the real one behaves differently.
+    """
+
+    # A legal Windows filename containing cmd.exe's command separator. `ver` is a
+    # cmd builtin, so its output is unambiguous proof that a command taken from
+    # pathname data was dispatched.
+    SPLIT_NAME = "split&ver&tail.elf"
+    VER_OUTPUT = "Microsoft Windows [Version"
+
+    def setUp(self) -> None:
+        self.make = shutil.which("mingw32-make") or shutil.which("make")
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-input-")
+        self.root = Path(self.temp.name)
+        self.builds: list[Path] = []
+
+    def tearDown(self) -> None:
+        for b in self.builds:
+            shutil.rmtree(b, ignore_errors=True)
+        self.temp.cleanup()
+
+    # -- helpers ---------------------------------------------------------
+
+    def _write_minimal_elf(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload_off = 52 + 32
+        filesz = 8
+        blob = bytearray(payload_off + filesz)
+        blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+        struct.pack_into(
+            "<HHIIIIIHHHHHH", blob, 16,
+            2, 8, 1, 0x08804000, 52, 0, 0, 52, 32, 1, 0, 0, 0,
+        )
+        struct.pack_into(
+            "<8I", blob, 52,
+            1, payload_off, 0x08804000, 0x08804000, filesz, filesz, 5, 4,
+        )
+        struct.pack_into("<2I", blob, payload_off, 0x03E00008, 0x00000000)
+        path.write_bytes(blob)
+
+    def _build_dir(self, name: str) -> Path:
+        d = ROOT / "build" / name
+        self.builds.append(d)
+        shutil.rmtree(d, ignore_errors=True)
+        return d
+
+    def _make(self, game_name: str, elf_rel: str, *, makefile: Path | None = None,
+              target: str | None = None, extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        tgt = target or f"build/{game_name}/{game_name}_image.bin"
+        cmd = [self.make, "--no-print-directory"]
+        if makefile is not None:
+            cmd += ["-f", str(makefile)]
+        cmd += [tgt, f"GAME_NAME={game_name}", f"GAME_ELF={elf_rel}",
+                "GAME_BASE=0x08804000", "GAME_ENTRY=0x08804000", *extra]
+        return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+
+    @staticmethod
+    def _blob(proc: subprocess.CompletedProcess) -> str:
+        return (proc.stdout or "") + (proc.stderr or "")
+
+    def _mutate_makefile(self, *replacements: tuple[str, str]) -> Path:
+        """Return a copy of the real Makefile with `replacements` applied.
+
+        Each replacement must actually match, so the mutation cannot silently
+        become a no-op if the Makefile is refactored.
+        """
+        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        for old, new in replacements:
+            self.assertIn(old, text, f"mutation anchor vanished from Makefile: {old!r}")
+            text = text.replace(old, new, 1)
+        mutant = self.root / "Makefile.mutant"
+        mutant.write_text(text, encoding="utf-8", newline="\n")
+        return mutant
+
+    # -- B: no shell interpretation --------------------------------------
+
+    def test_metacharacter_pathname_reaches_no_command_interpreter(self) -> None:
+        """A legal pathname containing `&` must not be dispatched as a command."""
+        build = self._build_dir("test_gi_split")
+        elf_rel = f"build/test_gi_split/{self.SPLIT_NAME}"
+        self._write_minimal_elf(ROOT / elf_rel)
+
+        proc = self._make("test_gi_split", elf_rel)
+        blob = self._blob(proc)
+        self.assertNotIn(self.VER_OUTPUT, blob,
+                         "cmd.exe executed a command taken from the pathname")
+        self.assertNotIn("is not recognized as an internal", blob,
+                         "cmd.exe attempted to resolve a pathname fragment as a command")
+        self.assertEqual(proc.returncode, 0, blob)
+        self.assertTrue((build / "test_gi_split_image.bin").is_file(), blob)
+
+    def test_M1_mutation_raw_recipe_interpolation_reintroduces_command_execution(self) -> None:
+        """M1: restoring raw $(GAME_ELF) in the recipe must make the above test fail."""
+        if sys.platform != "win32":
+            self.skipTest("cmd.exe command splitting is the Windows failure mode")
+        build = self._build_dir("test_gi_m1")
+        elf_rel = f"build/test_gi_m1/{self.SPLIT_NAME}"
+        self._write_minimal_elf(ROOT / elf_rel)
+
+        mutant = self._mutate_makefile(
+            ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py\n"
+             "\t$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE)",
+             "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
+             "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
+        )
+        proc = self._make("test_gi_m1", elf_rel, makefile=mutant)
+        self.assertIn(self.VER_OUTPUT, self._blob(proc),
+                      "mutation did not reproduce the pre-fix command execution; "
+                      "this regression is no longer load-bearing")
+
+    def test_M1b_sibling_inputs_are_transported_too(self) -> None:
+        """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
+        build = self._build_dir("test_gi_hdr")
+        elf_rel = "build/test_gi_hdr/plain.elf"
+        self._write_minimal_elf(ROOT / elf_rel)
+        hdr_rel = "build/test_gi_hdr/hdr&ver&tail.BIN"
+        (ROOT / hdr_rel).write_bytes(b"\x00" * 64)
+
+        proc = self._make("test_gi_hdr", elf_rel, extra=(f"GAME_PSP_HEADER={hdr_rel}",))
+        blob = self._blob(proc)
+        self.assertNotIn(self.VER_OUTPUT, blob,
+                         "GAME_PSP_HEADER still reaches a command interpreter")
+        self.assertNotIn("is not recognized as an internal", blob, blob)
+
+    # -- D: freshness is preserved, not dropped --------------------------
+
+    def _first_build(self, game: str, elf_rel: str) -> Path:
+        elf = ROOT / elf_rel
+        self._write_minimal_elf(elf)
+        proc = self._make(game, elf_rel)
+        self.assertEqual(proc.returncode, 0, self._blob(proc))
+        return elf
+
+    def test_changing_the_elf_rebuilds_for_every_pathname_shape(self) -> None:
+        """D: the dependency edge must survive names Make cannot put in a prereq list."""
+        shapes = {
+            "plain": "plain.elf",
+            "space": "my test game.elf",
+            "parens": "Game (USA) (v1.0).elf",
+            "amp": "Rock & Roll.elf",
+            "caret": "game^caret.elf",
+            "bracket": "br[ack]ets.elf",
+            "semi": "semi;colon.elf",
+            "equals": "eq=uals.elf",
+            "quote": "sin'gle.elf",
+            "dash": "-leading-dash.elf",
+            "pct": "pct%PATH%.elf",
+        }
+        for key, base in shapes.items():
+            with self.subTest(shape=key):
+                game = f"test_gi_d_{key}"
+                build = self._build_dir(game)
+                elf_rel = f"build/{game}/{base}"
+                elf = self._first_build(game, elf_rel)
+                image = build / f"{game}_image.bin"
+                self.assertTrue(image.is_file())
+
+                before = image.stat().st_mtime_ns
+                time.sleep(1.1)
+                os.utime(elf, None)
+                proc = self._make(game, elf_rel)
+                self.assertEqual(proc.returncode, 0, self._blob(proc))
+                self.assertGreater(
+                    image.stat().st_mtime_ns, before,
+                    f"changing the ELF did not rebuild for shape {key!r}: the dependency "
+                    f"edge was dropped and a stale image would be reused",
+                )
+
+    def test_M2_mutation_dropping_the_stamp_edge_loses_freshness(self) -> None:
+        """M2: removing the stamp prerequisite must make the freshness test fail."""
+        game = "test_gi_m2"
+        build = self._build_dir(game)
+        elf_rel = f"build/{game}/plain.elf"
+        mutant = self._mutate_makefile(
+            ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py",
+             "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py"),
+        )
+        elf = ROOT / elf_rel
+        self._write_minimal_elf(elf)
+        proc = self._make(game, elf_rel, makefile=mutant)
+        self.assertEqual(proc.returncode, 0, self._blob(proc))
+        image = build / f"{game}_image.bin"
+        before = image.stat().st_mtime_ns
+
+        time.sleep(1.1)
+        os.utime(elf, None)
+        self._make(game, elf_rel, makefile=mutant)
+        self.assertEqual(
+            image.stat().st_mtime_ns, before,
+            "mutation did not drop the dependency edge; the freshness regression "
+            "is no longer load-bearing",
+        )
+
+    # -- E: an absent input fails, it does not reuse stale output ---------
+
+    def test_M4_deleting_the_elf_fails_instead_of_reusing_stale_output(self) -> None:
+        """E: an up-to-date target must not mask a missing input.
+
+        GNU Make only reports a missing prerequisite when it decides to remake,
+        so a target that looks up to date silently survives its input being
+        deleted. The stamp is FORCE-checked, so the absence is caught.
+        """
+        game = "test_gi_e"
+        build = self._build_dir(game)
+        elf_rel = f"build/{game}/plain.elf"
+        elf = self._first_build(game, elf_rel)
+        image = build / f"{game}_image.bin"
+        self.assertTrue(image.is_file())
+
+        # Confirm the target really is considered up to date before deleting.
+        proc = self._make(game, elf_rel)
+        self.assertEqual(proc.returncode, 0, self._blob(proc))
+
+        elf.unlink()
+        proc = self._make(game, elf_rel)
+        self.assertNotEqual(
+            proc.returncode, 0,
+            "build succeeded with its guest input deleted, reusing stale output:\n"
+            + self._blob(proc),
+        )
+        self.assertIn("GAME_ELF does not exist", self._blob(proc))
+        self.assertTrue(image.is_file(), "the stale image should be left in place, not deleted")
+
+    def test_invalid_values_fail_closed(self) -> None:
+        """Empty, whitespace-only, and directory values must not build."""
+        game = "test_gi_invalid"
+        build = self._build_dir(game)
+        elf_rel = f"build/{game}/plain.elf"
+        self._first_build(game, elf_rel)
+
+        for label, value, expect in (
+            ("empty", "", "empty or whitespace-only"),
+            ("whitespace", "   ", "empty or whitespace-only"),
+            ("missing", "build/does/not/exist.elf", "does not exist"),
+            ("directory", f"build/{game}", "is a directory"),
+        ):
+            with self.subTest(value=label):
+                proc = self._make(game, value)
+                self.assertNotEqual(proc.returncode, 0,
+                                    f"{label} GAME_ELF was accepted:\n" + self._blob(proc))
+                self.assertIn(expect, self._blob(proc))
+
+    def test_public_lane_without_a_declared_guest_input_is_not_forced_to_invent_one(self) -> None:
+        """A caller that supplies its own generated artifacts needs no GAME_ELF.
+
+        The synthetic VFPU fuzz lane (.github/workflows/ci.yml) hand-writes
+        <game>_recomp.c and never names a guest ELF. Making the guest-input stamp
+        an unconditional prerequisite broke that lane, because a FORCE-checked
+        stamp demanded an ELF nothing was going to read.
+        """
+        game = "test_gi_public"
+        build = self._build_dir(game)
+        build.mkdir(parents=True, exist_ok=True)
+        base = [self.make, "--no-print-directory", f"GAME_NAME={game}", f"BUILD_DIR=build/{game}"]
+
+        # Settle the profile stamps first. CI creates them in earlier steps, so by the
+        # time it hand-writes <game>_recomp.c that file is the newest prerequisite and
+        # the codegen recipe is not triggered at all. Writing recomp.c against a fresh
+        # build directory instead makes the just-created profile stamp newer, which
+        # triggers codegen and fails on main too -- a different, pre-existing condition
+        # that would mask what this test is actually pinning.
+        subprocess.run(base + ["compiler-info"], cwd=ROOT, capture_output=True,
+                       text=True, check=False)
+        time.sleep(1.1)
+        (build / f"{game}_recomp.c").write_text("void f_00304290(void *s) { (void)s; }\n",
+                                                encoding="ascii")
+        (build / f"{game}_recomp_funcs.h").write_text("", encoding="ascii")
+
+        proc = subprocess.run(base + [f"build/{game}/{game}_recomp.c"], cwd=ROOT,
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+        blob = (proc.stdout or "") + (proc.stderr or "")
+        self.assertEqual(proc.returncode, 0,
+                         "a lane that declares no GAME_ELF was forced to supply one:\n" + blob)
+        self.assertNotIn("GAME_ELF does not exist", blob, blob)
+
+    # -- Make is also a parser -------------------------------------------
+
+    def test_M5_make_expands_dollar_in_the_value_and_the_build_fails_closed(self) -> None:
+        """M5: `$` is consumed by GNU Make upstream of any transport.
+
+        This is a real, measured parser case, not a hypothetical: the value is
+        corrupted before the environment is written, so the only correct
+        behaviour is to fail on the corrupted name rather than open a different
+        file. `$$` is the working escape.
+        """
+        game = "test_gi_m5"
+        build = self._build_dir(game)
+        base = "dol$lar.elf"
+        elf_rel = f"build/{game}/{base}"
+        self._write_minimal_elf(ROOT / elf_rel)
+
+        proc = self._make(game, elf_rel)
+        blob = self._blob(proc)
+        self.assertNotEqual(proc.returncode, 0, "Make no longer eats `$`; re-derive this case")
+        self.assertIn("does not exist: build/test_gi_m5/dolar.elf", blob,
+                      "Make's `$` expansion changed shape:\n" + blob)
+
+        escaped = self._make(game, elf_rel.replace("$", "$$"))
+        self.assertEqual(escaped.returncode, 0,
+                         "the documented `$$` escape no longer works:\n" + self._blob(escaped))
+        self.assertTrue((build / f"{game}_image.bin").is_file())
+
+
+class GuestInputSourcePrecedenceTests(unittest.TestCase):
+    """M3: two disagreeing sources for one input must fail, never be reconciled."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-src-")
+        self.root = Path(self.temp.name)
+        self.elf = self.root / "real.elf"
+        GuestInputTransportTests._write_minimal_elf(self, self.elf)
+        self.decoy = self.root / "decoy.elf"
+        GuestInputTransportTests._write_minimal_elf(self, self.decoy)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _run(self, tool: str, *args: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "GAME_ELF": str(self.elf)}
+        return subprocess.run([sys.executable, str(ROOT / "tools" / tool), *args],
+                              cwd=ROOT, env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+
+    def test_env_and_positional_disagreeing_is_refused(self) -> None:
+        cases = {
+            "prxload.py": ("--env-elf", str(self.decoy), "0x08804000"),
+            "codegen.py": ("--env-elf", str(self.decoy), str(self.root / "out.c"),
+                           "--base=0x08804000", "--profile=none"),
+            "imports.py": ("--env-elf", str(self.decoy), "0x08804000"),
+            "vfpu_fuzz_gen.py": ("--env-elf", str(self.decoy), str(self.root / "out.h"),
+                                 "--base=0x08804000"),
+        }
+        for tool, args in cases.items():
+            with self.subTest(tool=tool):
+                before = self.decoy.read_bytes()
+                proc = self._run(tool, *args)
+                self.assertNotEqual(proc.returncode, 0,
+                                    f"{tool} silently reconciled two sources:\n"
+                                    + proc.stdout + proc.stderr)
+                self.assertEqual(
+                    self.decoy.read_bytes(), before,
+                    f"{tool} OVERWROTE the extra positional -- a guest ELF passed alongside "
+                    f"--env-elf would be destroyed",
+                )
+
+    def test_verify_gates_refuses_two_sources(self) -> None:
+        proc = self._run("verify_gates.py", "--cc", "gcc", "--elf", str(self.decoy),
+                         "--env-elf", "--run-elf", "x", "--workdir", str(self.root))
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("conflicting sources", proc.stdout + proc.stderr)
+
+    def test_legacy_positional_form_still_works(self) -> None:
+        """The env form is additive: the documented positional call must not regress."""
+        out = self.root / "legacy_image.bin"
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "prxload.py"), str(self.elf),
+             "0x08804000", f"--out={out}"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(out.is_file())
+
+    def test_pathname_containing_equals_is_not_a_verification_spec(self) -> None:
+        """A legal `name=value.elf` pathname must not be parsed as `pc=word`."""
+        weird = self.root / "eq=uals.elf"
+        GuestInputTransportTests._write_minimal_elf(self, weird)
+        out = self.root / "eq_image.bin"
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "prxload.py"), str(weird),
+             "0x08804000", f"--out={out}"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(out.is_file())
 
 if __name__ == "__main__":
     unittest.main()

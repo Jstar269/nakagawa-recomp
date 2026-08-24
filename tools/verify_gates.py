@@ -12,17 +12,34 @@ from pathlib import Path
 import subprocess
 import sys
 
+import build_profile
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cc", required=True)
-    parser.add_argument("--elf", required=True)
+    parser.add_argument("--elf", default="")
+    parser.add_argument("--env-elf", action="store_true")
     parser.add_argument("--run-elf", required=True)
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--codegen-oracle", default="")
     parser.add_argument("--microtest-module", default="")
     parser.add_argument("--microtest-oracle", default="")
     args = parser.parse_args()
+
+    try:
+        elf = build_profile.resolve_path(
+            "GAME_ELF",
+            cli_value=args.elf or None,
+            use_env=args.env_elf,
+            cli_label="--elf option", flag="--env-elf",
+            # The gates below are BLOCKED without external oracle traces, so this
+            # entry point must still report cleanly when no ELF is on disk yet.
+            must_exist=False,
+        )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"verify_gates: {exc}\n")
+        return 2
 
     repo = Path(__file__).resolve().parent.parent
     workdir = Path(args.workdir)
@@ -35,7 +52,7 @@ def main() -> int:
             [
                 sys.executable,
                 str(repo / "tools" / "codegen_gate.py"),
-                args.elf,
+                elf,
                 args.codegen_oracle,
                 str(workdir / "codegen"),
             ],
@@ -46,7 +63,7 @@ def main() -> int:
         status |= result.returncode != 0
     else:
         print(
-            f"  BLOCKED: CODEGEN_ORACLE not set (need a PPSSPP-captured .trace for {args.elf})",
+            f"  BLOCKED: CODEGEN_ORACLE not set (need a PPSSPP-captured .trace for {elf})",
             flush=True,
         )
         status = 1

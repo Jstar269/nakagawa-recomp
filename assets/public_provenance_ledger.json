@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "e77750f3e78635147fa56f66b26712f8633ae4217e26a284c45d677913af224b"
+      "sha256": "e46c0dd2b5a07356b5f6511212f80c232ab3e7fff7c663aa3ad7dcfb2fb7f1cb"
     },
     {
       "path": "NOTICE.md",
@@ -5008,7 +5008,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c0ee620f5409627ca7081440836c58b266deabacd3cd5b6cf50f0df4aad4582"
+      "sha256": "a7b193317ec7f7d6cd891821cf0cf66dc5ecf8c75ce0ce3375542ed16d536f39"
     },
     {
       "path": "tools/build_public_export.py",
@@ -5061,7 +5061,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "383d292adf6f7a8acb0e20f93ea62437d89f16067f8e4dbe23dbba4044884704"
+      "sha256": "215fb4e80937dd92add29bda19f35c3a16248710652cdc10e8ef78d8118f6bce"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -5513,7 +5513,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "d1bced6d6cb539fb072865fe6c3668a8b5156718a6ff6cc8bc172c2734dae5cf"
+      "sha256": "650b683b1fce2e31b10b647d66b3eb7d989f097baa4624e74ac3be14ef45d03e"
     },
     {
       "path": "tools/lint_docs.py",
@@ -5730,7 +5730,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "18be8b18b9e4ba4e895d24bd082ed5d82fd40cfa2b5f7caa63033a35434735c3"
+      "sha256": "32e7486eeb97d5c2302411629f76bdb042ecebd14290cfc3866cb16a95932c00"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -6087,7 +6087,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d12370211f0029f98ad56811772e25efaf3a0bd887b13a798d0ba27c8e9a219"
+      "sha256": "b8f2be01a2c335ffc20d7388cceb4ee65a1c7a885fc320a10b6fc32bb5e0f588"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7420,7 +7420,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96e4d20fd57c264056e5441a78393aa017c35be6a85b162303230b4e27409e1c"
+      "sha256": "fa5156a8581e53d729c42b6d37d4c13281ac81352371812a210b5d80584df7b2"
     },
     {
       "path": "tools/verify_key_scrub.py",
@@ -7485,7 +7485,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "352014730a608ebffd538014ce8d606ee3a1935a26492eef7b912012b8b5e409"
+      "sha256": "7df8354517ea3f053e474e6a2e79e6352d125dac6cfc933de802d409e4f63cfb"
     },
     {
       "path": "tools/vfpu_synth_gen.py",

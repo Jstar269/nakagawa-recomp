@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass
 
 # Import the local analyzer
+import build_profile
 from analyze import analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
@@ -1743,15 +1744,46 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
-    if len(args) < 2:
-        sys.stderr.write("usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] [--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] [--extra-elf=ELF@BASE]...\n")
+
+    use_env_elf = "--env-elf" in opts
+    use_env_extra = "--env-extra-elfs" in opts
+    # The ELF is a positional only in the legacy form; with --env-elf the first
+    # positional is the output .c.  Supplying both is a conflict, not a
+    # precedence question: silently treating the ELF as the output path would
+    # overwrite the guest image with generated C.
+    expected = 1 if use_env_elf else 2
+    if len(args) < expected:
+        sys.stderr.write(
+            "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
+            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] [--extra-elf=ELF@BASE]...\n"
+            "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
+        )
         return 2
+    if use_env_elf and len(args) > 1:
+        sys.stderr.write(
+            "codegen: --env-elf takes exactly one positional (<out.c>); refusing to guess "
+            f"which of {args!r} is the output. Pass the ELF or --env-elf, not both.\n"
+        )
+        return 2
+
+    cli_elf = None if use_env_elf else args[0]
+    out_c = args[0] if use_env_elf else args[1]
+    try:
+        elf_path = build_profile.resolve_path(
+            "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf,
+            cli_label="<elf> argument", flag="--env-elf",
+        )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"codegen: {exc}\n")
+        return 2
+
     base = None
     profile = None
     funcs_per_chunk = 2000
     chunk_target_bytes = 0
     extra_span_arg = None
     extra_elfs = []  # list of (elf_path, base_addr)
+    cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
@@ -1781,14 +1813,27 @@ def main(argv):
                 sys.stderr.write("--target-chunk-bytes must be at least 1\n")
                 return 2
         elif o.startswith("--extra-elf="):
-            spec = o.split("=", 1)[1]
-            if "@" in spec:
-                elf_path, base_str = spec.split("@", 1)
-                extra_elfs.append((elf_path, int(base_str, 16)))
-            else:
-                sys.stderr.write(f"invalid --extra-elf format: {o}\n")
-                return 2
-    elf = Elf(args[0], base=base)
+            cli_extra_specs.append(o.split("=", 1)[1])
+
+    try:
+        extra_specs = build_profile.resolve_list(
+            "GAME_EXTRA_ELFS_ENV", use_env=use_env_extra, cli_values=cli_extra_specs,
+            flag="--env-extra-elfs",
+        )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"codegen: {exc}\n")
+        return 2
+    for spec in extra_specs:
+        if "@" not in spec:
+            sys.stderr.write(f"invalid extra-elf format (want ELF@BASE): {spec}\n")
+            return 2
+        extra_path, base_str = spec.rsplit("@", 1)
+        try:
+            extra_elfs.append((extra_path, int(base_str, 16)))
+        except ValueError:
+            sys.stderr.write(f"invalid extra-elf base address: {spec}\n")
+            return 2
+    elf = Elf(elf_path, base=base)
     # Only the primary image may carry an explicit extra executable span (its title's
     # configuration, from --extra-span or the HST_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
@@ -2177,7 +2222,7 @@ def main(argv):
             for i in range((len(func_texts) + funcs_per_chunk - 1) // funcs_per_chunk)
         ]
     num_files = len(boundaries)
-    base_name = os.path.splitext(args[1])[0]
+    base_name = os.path.splitext(out_c)[0]
 
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:
@@ -2210,7 +2255,7 @@ def main(argv):
         main_out.append(f"    sr_register_chunk_{i}();")
     main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
 
-    with open(args[1], "w", encoding="ascii", newline="\n") as f:
+    with open(out_c, "w", encoding="ascii", newline="\n") as f:
         f.write("\n".join(main_out))
 
     for i, chunk in enumerate(boundaries):
@@ -2246,7 +2291,7 @@ def main(argv):
         chunk_desc = f"{num_files} chunks (target {chunk_target_bytes} bytes, cap {funcs_per_chunk} functions)"
     else:
         chunk_desc = f"{num_files} chunks ({funcs_per_chunk} functions/chunk)"
-    print(f"wrote {args[1]} and {chunk_desc}; "
+    print(f"wrote {out_c} and {chunk_desc}; "
           f"{len(emitted) - resume_count} callable functions + {resume_count} resume entries, "
           f"{len(stubbed)} fallbacks. "
           f"Stub list: {base_name}_stubs.txt")

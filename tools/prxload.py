@@ -14,6 +14,8 @@
 import hashlib
 import struct
 import sys
+
+import build_profile
 from dataclasses import dataclass
 
 from elf_bounds import (
@@ -1433,18 +1435,66 @@ class Prx:
 
 
 def main(argv):
-    if len(argv) < 3:
+    # Positional arguments are resolved BY POSITION, never by sniffing their
+    # content: `pc=word` verification specs and pathnames both may contain "=",
+    # and a legal pathname such as "eq=uals.elf" must not be mistaken for one.
+    positionals: list[str] = []
+    use_env_elf = False
+    psp_header = None
+    use_env_header = False
+    out_file = None
+    verifications = []
+
+    for arg in argv[1:]:
+        if arg == "--env-elf":
+            use_env_elf = True
+        elif arg == "--env-psp-header":
+            use_env_header = True
+        elif arg.startswith("--psp-header="):
+            psp_header = arg.split("=", 1)[1]
+        elif arg.startswith("--out="):
+            out_file = arg.split("=", 1)[1]
+        elif arg.startswith("--verify="):
+            verifications.append(arg.split("=", 1)[1])
+        elif arg.startswith("--"):
+            sys.stderr.write(f"prxload: unknown option: {arg}\n")
+            return 2
+        else:
+            positionals.append(arg)
+
+    expected = 1 if use_env_elf else 2
+    if len(positionals) < expected:
         sys.stderr.write(
             "usage: prxload.py <prx-elf> <base-hex> "
-            "[--psp-header=EBOOT.BIN] [--out=image.bin] [pc=word ...]\n"
+            "[--psp-header=EBOOT.BIN] [--out=image.bin] [--verify=pc=word ...]\n"
+            "       prxload.py --env-elf <base-hex> [...]\n"
         )
         return 2
-    base = int(argv[2], 16)
-    psp_header = None
-    for arg in argv[3:]:
-        if arg.startswith("--psp-header="):
-            psp_header = arg.split("=", 1)[1]
-    prx = Prx(argv[1], base, psp_header=psp_header)
+
+    cli_elf = None if use_env_elf else positionals.pop(0)
+    base_hex = positionals.pop(0)
+    # Any remaining positional is a legacy `pc=word` verification spec.
+    verifications.extend(positionals)
+
+    try:
+        elf_path = build_profile.resolve_path(
+            "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf, cli_label="<prx-elf> argument", flag="--env-elf",
+        )
+        if use_env_header:
+            psp_header = build_profile.resolve_path(
+                "GAME_PSP_HEADER", cli_value=psp_header, use_env=True, cli_label="--psp-header= option", flag="--env-psp-header",
+            )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"prxload: {exc}\n")
+        return 2
+
+    try:
+        base = int(base_hex, 16)
+    except ValueError:
+        sys.stderr.write(f"prxload: invalid base address: {base_hex}\n")
+        return 2
+
+    prx = Prx(elf_path, base, psp_header=psp_header)
     n = prx.relocate()
     bss_note = (
         f" psp_bss=0x{prx.psp_bss_size:x}" if prx.psp_segment_sizes is not None else ""
@@ -1454,20 +1504,24 @@ def main(argv):
         f"image_size=0x{len(prx.mem):x}{bss_note} relocations applied={n}"
     )
     rc = 0
-    for a in argv[3:]:
-        if a.startswith("--psp-header="):
-            continue
-        if a.startswith("--out="):
-            open(a.split("=", 1)[1], "wb").write(prx.mem)
-            print("wrote image:", a.split("=", 1)[1])
-        elif "=" in a:
-            pc_s, word_s = a.split("=")
+    if out_file:
+        open(out_file, "wb").write(prx.mem)
+        print("wrote image:", out_file)
+    for a in verifications:
+        if a.count("=") != 1:
+            sys.stderr.write(f"prxload: invalid verification spec (want pc=word): {a}\n")
+            return 2
+        pc_s, word_s = a.split("=")
+        try:
             pc, want = int(pc_s, 16), int(word_s, 16)
-            got = prx.r32(pc)
-            ok = got == want
-            print(f"verify 0x{pc:08x}: got 0x{got:08x} want 0x{want:08x} {'OK' if ok else 'FAIL'}")
-            if not ok:
-                rc = 1
+        except ValueError:
+            sys.stderr.write(f"prxload: invalid verification spec (want pc=word): {a}\n")
+            return 2
+        got = prx.r32(pc)
+        ok = got == want
+        print(f"verify 0x{pc:08x}: got 0x{got:08x} want 0x{want:08x} {'OK' if ok else 'FAIL'}")
+        if not ok:
+            rc = 1
     return rc
 
 

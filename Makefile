@@ -13,6 +13,7 @@ GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
 
+
 ifeq ($(GAME_NAME),hst)
 CODEGEN_PROFILE_ARG := --profile=hst
 GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
@@ -35,6 +36,71 @@ GAME_PSP_HEADER ?=
 HST_EXTRA_SPANS ?=
 EXTRA_ELF_ARGS  = $(foreach elf,$(GAME_EXTRA_ELFS),--extra-elf=$(elf))
 PSP_HEADER_ARG  = $(if $(strip $(GAME_PSP_HEADER)),--psp-header=$(GAME_PSP_HEADER),)
+# Environment forms: the switch carries no pathname bytes at all.
+PSP_HEADER_ENV_ARG = $(if $(strip $(GAME_PSP_HEADER)),--env-psp-header,)
+EXTRA_ELF_ENV_ARG  = $(if $(strip $(GAME_EXTRA_ELFS)),--env-extra-elfs,)
+
+# ---------------------------------------------------------------------------
+# Guest-input pathname transport.
+#
+# Guest input pathnames (GAME_ELF, GAME_PSP_HEADER, GAME_EXTRA_ELFS) are operator
+# configuration, and a legal filename may contain characters a command interpreter
+# treats as syntax: cmd.exe splits on `&`, escapes with `^`, and expands `%VAR%`;
+# sh expands `$VAR`, backticks and quotes. Interpolating such a pathname into a
+# recipe therefore BOTH truncates the path the tool actually receives AND hands the
+# interpreter command tokens taken from pathname data. These values are consequently
+# transported to the tools through the process environment and read there with
+# --env-elf / --env-psp-header / --env-extra-elfs; no recipe below interpolates the
+# raw value into command text. See tools/build_profile.py.
+#
+# Two corruptions happen inside GNU Make itself, upstream of this transport, and are
+# NOT repaired here (tools/test_build_truth.py::GuestInputTransportTests pins them):
+#   * `$` in a command-line value is expanded by Make: GAME_ELF=a$b.elf arrives as
+#     "a.elf". Escape it as `$$` on the command line.
+#   * mingw32 Make carries its command line through the ANSI code page, so a pathname
+#     outside that code page arrives transliterated (CJK becomes "?").
+# Both leave a nonexistent path, on which the tools fail closed rather than opening a
+# different file.
+export GAME_ELF
+export GAME_PSP_HEADER
+
+# Make separates list elements with spaces, which is itself a legal filename character,
+# so the list form is transported newline-separated under its own name. GAME_EXTRA_ELFS
+# keeps its space-separated Make value so EXTRA_ELF_ARGS -- an input to the codegen
+# profile hash -- is byte-identical to before and no build cache is invalidated.
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+define NEWLINE
+
+
+endef
+GAME_EXTRA_ELFS_ENV := $(subst $(SPACE),$(NEWLINE),$(strip $(GAME_EXTRA_ELFS)))
+export GAME_EXTRA_ELFS_ENV
+
+# Make cannot carry these pathnames in a prerequisite list: prerequisites are
+# whitespace-delimited and glob-expanded, so a path containing a space, or one
+# containing `[`/`]`/`*`/`?`, cannot be named there faithfully. Filtering such paths
+# out of the prerequisite list would silently DROP the dependency and let a stale
+# image or translation be reused after the ELF changed. Instead the identity of the
+# inputs is recorded in a stamp whose own path contains no operator bytes, and the
+# pipeline targets depend on the stamp. tools/build_profile.py rewrites it only when an
+# input's size, mtime or content hash changes, and fails closed when a declared input
+# is unset, empty, missing, or a directory.
+GAME_INPUT_STAMP = $(BUILD_DIR)/.game-inputs
+
+# A guest input is tracked when the operator actually declared one, or when the
+# Makefile default happens to exist. A public lane that supplies its own generated
+# artifacts and never names a GAME_ELF (the synthetic VFPU fuzz lane, and any caller
+# hand-providing $(GAME_NAME)_recomp.c) has no guest input to be stale against, and
+# must not be forced to invent one -- the same reasoning as VFPU_FUZZ_PREGENERATED
+# below. When the operator DID declare one, the edge is always present, so deleting
+# it fails the build rather than silently reusing stale output.
+#
+# The $(wildcard) here tests only the Makefile's own fixed default, never operator
+# metacharacter data, and its failure mode is benign: an untracked input still makes
+# the consuming tool fail closed at the point it tries to read the file.
+GAME_INPUT_TRACKED := $(if $(filter command line environment,$(origin GAME_ELF)),1,$(if $(wildcard $(GAME_ELF)),1,))
+GAME_INPUT_PREREQ = $(if $(GAME_INPUT_TRACKED),$(GAME_INPUT_STAMP),)
 # Passed as an explicit argument rather than a recipe environment prefix: `VAR=x cmd`
 # needs a POSIX shell, and Make on Windows falls back to cmd.exe when sh is not on
 # PATH. The span therefore reaches only the primary-image analysis (codegen, VFPU
@@ -370,7 +436,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -404,16 +470,24 @@ CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
+# Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
+# only when an input's identity actually changed, so dependents do not rebuild spuriously.
+# GAME_PSP_HEADER and GAME_EXTRA_ELFS_ENV are optional; GAME_ELF is not.
+$(GAME_INPUT_STAMP): $(BUILD_PROFILE_TOOL) FORCE
+	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp-inputs --env GAME_ELF --optional-env GAME_PSP_HEADER --optional-env GAME_EXTRA_ELFS_ENV --list-env GAME_EXTRA_ELFS_ENV --out $@
+
+FORCE:
+
 pipeline: $(BUILD_DIR)/$(GAME_NAME)_image.bin $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_imports.toml
 
-$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_ELF) tools/prxload.py $(GAME_PSP_HEADER)
-	$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE) $(PSP_HEADER_ARG) --out=$@
+$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py
+	$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE) $(PSP_HEADER_ENV_ARG) --out=$@
 
-$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_ELF) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) tools/codegen.py $(GAME_ELF) $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ARGS) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG)
+$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
+	$(PYTHON) tools/codegen.py --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG)
 
-$(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_ELF) tools/imports.py tools/analyze.py tools/prxload.py
-	$(PYTHON) tools/imports.py $(GAME_ELF) $(GAME_BASE) --toml=$@
+$(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
+	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
@@ -866,8 +940,8 @@ ifeq ($(VFPU_FUZZ_PREGENERATED),1)
 $(VFPU_FUZZ_H):
 	@test -f "$@" || (echo "missing pre-generated VFPU fuzz header: $@" >&2; exit 1)
 else
-$(VFPU_FUZZ_H): $(GAME_ELF) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
-	$(PYTHON) tools/vfpu_fuzz_gen.py $(GAME_ELF) $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
+$(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
+	$(PYTHON) tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
 endif
 
 $(BUILD_DIR)/vfpu_fuzz.o: src/rt/vfpu_fuzz.c $(VFPU_FUZZ_H) src/rt/recomp.h
@@ -935,7 +1009,7 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 #          CODEGEN_ORACLE=oracle/eboot.trace \
 #          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace
 verify: run_elf
-	$(PYTHON) tools/verify_gates.py --cc "$(CC)" --elf "$(GAME_ELF)" \
+	$(PYTHON) tools/verify_gates.py --cc "$(CC)" --env-elf \
 		--run-elf "$(RUN_ELF_EXE)" --workdir "$(VERIFY_WORKDIR)" \
 		--codegen-oracle "$(CODEGEN_ORACLE)" --microtest-module "$(MICROTEST_MODULE)" \
 		--microtest-oracle "$(MICROTEST_ORACLE)"
