@@ -16,6 +16,22 @@ static SrExecSpan *s_exec_spans;
 static size_t s_exec_span_count;
 static size_t s_exec_span_capacity;
 
+/* Two distinct qualifications keep guest control flow lawful:
+ *
+ * 1. EXECUTABLE AUTHORITY -- membership in an analyzer-owned, end-exclusive
+ *    span registered below. Codegen derives these spans from the primary image
+ *    and every extra module it actually translated. Authority is structural:
+ *    alignment and a complete four-byte fetch slot. It deliberately does NOT
+ *    require the flat interpreter arena to back the bytes: extra modules are
+ *    translated at build time from their own files and are never copied into
+ *    guest RAM, so their addresses (e.g. 0x32200000-class load slots) are
+ *    owned here while being unreachable through SR_PHYS/SR_HOST.
+ * 2. INTERPRETER FETCH BACKING -- sr_guest_span_readable() over the actual
+ *    instruction word. Only interpreting bytes needs this; entering an already
+ *    translated native body does not.
+ *
+ * Mapped RAM alone grants neither tier, and native registration alone grants
+ * neither tier. */
 void sr_exec_span_reset(void) {
     free(s_exec_spans);
     s_exec_spans = NULL;
@@ -24,8 +40,7 @@ void sr_exec_span_reset(void) {
 }
 
 int sr_exec_span_register(uint32_t start, uint32_t end) {
-    if ((start & 3u) != 0u || end <= start ||
-        !sr_guest_span_readable(start, end - start)) {
+    if ((start & 3u) != 0u || end <= start) {
         return 0;
     }
 
@@ -55,14 +70,17 @@ int sr_exec_span_register(uint32_t start, uint32_t end) {
     return 1;
 }
 
+/* Authority tier: the PC is 4-byte aligned and one registered span covers its
+ * complete fetch slot. This is the predicate sr_lookup() applies before
+ * entering a native body; whether the arena can actually supply those bytes
+ * matters only when the interpreter itself must fetch them. */
 int sr_exec_span_owns_fetch(uint32_t pc) {
     if ((pc & 3u) != 0u) {
         return 0;
     }
     for (size_t i = 0; i < s_exec_span_count; i++) {
         const SrExecSpan *span = &s_exec_spans[i];
-        if (pc >= span->start && pc < span->end &&
-            span->end - pc >= 4u && sr_guest_span_readable(pc, 4u)) {
+        if (pc >= span->start && pc < span->end && span->end - pc >= 4u) {
             return 1;
         }
     }
@@ -84,6 +102,10 @@ static void set_fault(
     fault->opcode_valid = opcode_valid;
 }
 
+/* Fetch tier: interpretation needs the actual instruction word, so this is the
+ * only place that couples executable authority with arena-backed readability.
+ * An owned but unbacked PC fails closed here as a precise memory fault instead
+ * of reading fabricated or out-of-arena bytes. */
 static SrGuestInterpResult fetch_instruction(
     uint32_t pc,
     uint32_t *opcode,
@@ -197,15 +219,11 @@ SrGuestInterpResult sr_guest_interp_run(
             return SR_GUEST_INTERP_MISALIGNED_PC;
         }
 
-        uint32_t opcode = 0u;
-        SrGuestInterpResult fetch_result = fetch_instruction(pc, &opcode, fault);
-        if (fetch_result < 0) {
-            return fetch_result;
-        }
-
-        /* Native registration selects an execution tier; it does not grant
-         * executability. Qualify the complete current fetch against explicit
-         * span ownership before allowing an address-matched AOT handoff. */
+        /* Tier selection precedes byte fetching. sr_lookup() requires complete
+         * executable ownership, so a registered native body may be entered even
+         * when no arena bytes back the PC: the translation itself embodies those
+         * instructions (build-time-translated modules). Only the interpreted tier
+         * below needs readable bytes. */
         if (sr_lookup(pc)) {
             s->pc = pc;
             if (log_dispatch) {
@@ -215,6 +233,12 @@ SrGuestInterpResult sr_guest_interp_run(
             }
             dispatch(s, pc);
             return SR_GUEST_INTERP_AOT_HANDOFF;
+        }
+
+        uint32_t opcode = 0u;
+        SrGuestInterpResult fetch_result = fetch_instruction(pc, &opcode, fault);
+        if (fetch_result < 0) {
+            return fetch_result;
         }
 
         /* JR and direct J have one architectural delay slot. The branch owns

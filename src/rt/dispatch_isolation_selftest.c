@@ -126,6 +126,20 @@ static int g_failures = 0;
 #define INTERP_UNOWNED_AOT_ADDR 0x00603000u
 #define INTERP_PARTIAL_AOT_ADDR 0x00604000u
 
+/* Source-owned high virtual executable module: the architectural class of a
+ * build-time-translated extra PSP module (analyzer-owned load slots such as
+ * 0x32200000) whose bytes exist only inside its own file, never in the flat
+ * guest arena. Ownership of this range is lawful; interpreter fetch backing is
+ * not present and must never be fabricated. Disjoint from every other fixture
+ * range, probe address, and public title fixture family in this file. */
+#define INTERP_HIGH_EXEC_START  0x32200000u
+#define INTERP_HIGH_EXEC_END    (INTERP_HIGH_EXEC_START + 0x20u)
+#define INTERP_HIGH_AOT_ADDR    (INTERP_HIGH_EXEC_START + 0x08u)
+#define INTERP_HIGH_MISS_ADDR   (INTERP_HIGH_EXEC_START + 0x10u)
+/* A low mapped-RAM neighbour used to prove that registering an out-of-arena
+ * module span leaves ordinary low execution tiers fully working. */
+#define INTERP_LOW_NEIGHBOR     0x00605000u
+
 /* How many times a registered synthetic body was entered. */
 static int g_body_hits = 0;
 static void synthetic_body(CpuState *s) { (void)s; g_body_hits++; }
@@ -392,6 +406,96 @@ static void test_interpreter_rejects_unowned_and_invalid_fetches(void) {
     sr_exec_span_reset();
 }
 
+/* ---- high virtual module: authority without interpreter backing --------------------- */
+
+static void test_high_virtual_module_authority_is_fail_closed(void) {
+    SrGuestInterpFault fault;
+    CpuState s;
+    CpuState before;
+
+    sr_exec_span_reset();
+
+    /* Precondition: this architectural class of span lies outside the flat
+     * interpreter arena. A mutant that aliases high addresses onto SR_PHYS
+     * arena offsets, or enlarges the arena bound to cover them, fails here. */
+    CHECK(!sr_guest_span_readable(INTERP_HIGH_EXEC_START, 4u),
+          "precondition broken: 0x%08x is interpreter-readable in this build",
+          INTERP_HIGH_EXEC_START);
+
+    /* Structural ownership only: an analyzer-owned span whose bytes are never
+     * copied into guest RAM must register, or every build carrying such a
+     * module dies in sr_register_all() before guest dispatch. */
+    CHECK(sr_exec_span_register(INTERP_HIGH_EXEC_START, INTERP_HIGH_EXEC_END),
+          "analyzer-owned out-of-arena executable span was rejected");
+    CHECK(sr_exec_span_register(INTERP_HIGH_EXEC_START, INTERP_HIGH_EXEC_END),
+          "exact duplicate executable-span registration must stay idempotent");
+    CHECK(!sr_exec_span_register(INTERP_HIGH_EXEC_START + 2u, INTERP_HIGH_EXEC_END),
+          "misaligned out-of-arena span registration was accepted");
+
+    /* Authority tier: a registered native body inside the owned high span is a
+     * lawful dispatch destination. The build-time translation embodies those
+     * instructions, so entering it requires ownership, not arena backing. */
+    sr_register(INTERP_HIGH_AOT_ADDR, synthetic_body);
+    CHECK(sr_lookup(INTERP_HIGH_AOT_ADDR) != NULL,
+          "AOT lookup rejected a fully owned registered high-module entry");
+    int high_hits_before = g_body_hits;
+    Probe p = probe(INTERP_HIGH_AOT_ADDR, PROBE_PC, PROBE_RA);
+    CHECK(p.body_ran && p.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "owned high-module AOT dispatch did not run its native body "
+          "(ran=%d result=%d)", p.body_ran, p.dispatch_result);
+    CHECK(g_body_hits == high_hits_before + 1,
+          "owned high-module AOT body ran %d times instead of exactly once",
+          g_body_hits - high_hits_before);
+    CHECK(p.v0 == 0xdeadbeefu && p.pc == PROBE_PC,
+          "high-module AOT body disturbed caller state (v0=0x%08x pc=0x%08x)",
+          p.v0, p.pc);
+
+    /* Registering an out-of-arena module span must not poison ordinary tiers:
+     * startup-equivalent registration survives and low execution keeps working. */
+    own_synthetic_aot_word(INTERP_LOW_NEIGHBOR);
+    sr_register(INTERP_LOW_NEIGHBOR, synthetic_body);
+    Probe low = probe(INTERP_LOW_NEIGHBOR, PROBE_PC, PROBE_RA);
+    CHECK(low.body_ran && low.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "low execution broke while a high module span was registered "
+          "(ran=%d result=%d)", low.body_ran, low.dispatch_result);
+
+    /* Fetch tier: an owned high address with NO registered body and no readable
+     * bytes fails closed precisely instead of reading fabricated bytes. */
+    s = reject_state();
+    before = s;
+    int miss_result = dispatch_try(&s, INTERP_HIGH_MISS_ADDR);
+    CHECK(miss_result == SR_GUEST_INTERP_MEMORY_FAULT,
+          "owned unbacked unregistered fetch returned %s (result=%d)",
+          sr_guest_interp_result_name((SrGuestInterpResult)miss_result),
+          miss_result);
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "unbacked fetch rejection changed CpuState");
+
+    s = reject_state();
+    SrGuestInterpResult interp_result =
+        sr_guest_interp_run(&s, INTERP_HIGH_MISS_ADDR, &fault);
+    CHECK(interp_result == SR_GUEST_INTERP_MEMORY_FAULT,
+          "interpreter returned %s for an owned unbacked fetch",
+          sr_guest_interp_result_name(interp_result));
+    CHECK(!fault.opcode_valid && fault.pc == INTERP_HIGH_MISS_ADDR &&
+              fault.address == INTERP_HIGH_MISS_ADDR,
+          "unbacked-fetch fault metadata is imprecise (valid=%d pc=0x%08x addr=0x%08x)",
+          fault.opcode_valid, fault.pc, fault.address);
+
+    /* Current static first-slice union behavior only: exact duplicates are
+     * idempotent (asserted above), while a distinct overlapping analyzer span is
+     * recorded alongside the first and neither range loses authority. This is
+     * not a future module/segment/instance overlap contract. */
+    CHECK(sr_exec_span_register(INTERP_HIGH_MISS_ADDR, INTERP_HIGH_EXEC_END),
+          "distinct overlapping executable-span registration was rejected");
+    CHECK(sr_exec_span_owns_fetch(INTERP_HIGH_MISS_ADDR),
+          "complete fetch inside overlapping spans lost ownership");
+    CHECK(sr_lookup(INTERP_HIGH_AOT_ADDR) != NULL,
+          "overlapping registration invalidated the first span's owner");
+
+    sr_exec_span_reset();
+}
+
 static int run_unregistered_dispatch_child(const char *self_path) {
 #ifdef _WIN32
     const char *const argv[] = {self_path, "--unregistered-dispatch-child", NULL};
@@ -647,6 +751,7 @@ int main(int argc, char **argv) {
     test_configured_build_declares_both_collections();
     test_valid_aot_miss_executes_guest_bytes();
     test_interpreter_rejects_unowned_and_invalid_fetches();
+    test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
     test_retired_bindings_are_inert();
     test_configured_aliases_redirect();

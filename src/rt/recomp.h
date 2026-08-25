@@ -433,12 +433,19 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
 typedef void (*RecompFn)(CpuState *);
 void     sr_register(uint32_t addr, RecompFn fn);
 uint32_t sr_register_count(void);  /* number of sr_register() calls performed so far */
-/* Returns a registered body only when the same PC has a complete owned/readable
- * instruction fetch. This static first slice does not yet provide content guards. */
+/* Returns a registered body only when the same PC has complete four-byte
+ * executable ownership. Interpreter-readable bytes are required only to
+ * interpret; entering the translated body does not re-read them. This static
+ * first slice does not yet provide content guards. */
 RecompFn sr_lookup(uint32_t addr);
 
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
- * guest execution. Mapped RAM alone never grants interpreter fetch authority. */
+ * guest execution. Mapped RAM alone never grants interpreter fetch authority.
+ * Registration validates structural ownership (alignment, non-empty extent) and
+ * deliberately does not require the flat arena to back the span: extra modules
+ * are translated at build time and their load addresses need not be guest-RAM
+ * resident. Interpreting a span's bytes additionally requires them to be
+ * readable, enforced fail-closed at fetch time. */
 #define SR_HAS_EXEC_SPAN_REGISTRY 1
 void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);

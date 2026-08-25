@@ -3865,7 +3865,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17dc4d2e6e5389a44cf85c0e36d20fb800739bdd3b6c25632e3888e9f5c300d8"
+      "sha256": "4f22a71801b5332a921496893379da74d764c750f74b605bcca24c2a00bd83d9"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4297,7 +4297,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "1b47470674fc57727d17a1c1eb9d00176bda14339fc48b7809720c7e772e296e"
+      "sha256": "0c4e7639024577593f21f28e51130279c8da888fb09bdb1c73f9f90257ab4d2c"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4643,7 +4643,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "184bde8f69e60fcedd06e7335d3c61dfe634d3d7fbda348481649de42e008e7c"
+      "sha256": "945b28479840d12fed5111b721fe0c2efa986d09025ab519b56033e38788eb0a"
     },
     {
       "path": "src/rt/savedata.c",
