@@ -33,7 +33,7 @@ void Check(const char *what, uint32_t got, uint32_t want) {
 }
 
 // Register indices.
-enum { ZERO = 0, T0 = 8, T1 = 9, T2 = 10, T3 = 11, T4 = 12, T5 = 13, T6 = 14, T7 = 15, S0 = 16, S1 = 17, S2 = 18, S3 = 19, S4 = 20, S5 = 21, S6 = 22, S7 = 23, T8 = 24, T9 = 25, SP = 29 };
+enum { ZERO = 0, V0 = 2, A0 = 4, T0 = 8, T1 = 9, T2 = 10, T3 = 11, T4 = 12, T5 = 13, T6 = 14, T7 = 15, S0 = 16, S1 = 17, S2 = 18, S3 = 19, S4 = 20, S5 = 21, S6 = 22, S7 = 23, T8 = 24, T9 = 25, SP = 29, RA = 31 };
 
 uint32_t R(uint32_t rs, uint32_t rt, uint32_t rd, uint32_t sa, uint32_t funct) {
 	return (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct;
@@ -142,6 +142,39 @@ void TestBranchDelaySlot() {
 	Check("delay slot executed", s.r[T2], 0x111);
 	Check("skipped after branch", s.r[T3], 0);     // must remain 0
 	Check("branch target ran", s.r[T4], 0x333);
+}
+
+void TestDaybreak4GuestInterpreterOracle() {
+	const uint32_t base = 0x08910000u;
+	const uint32_t data = 0x08911000u;
+	const uint32_t resume = 0x08910040u;
+	const uint32_t program[] = {
+		0x24081234u, // addiu t0, zero, 0x1234
+		0xac880000u, // sw    t0, 0(a0)
+		0x8c820000u, // lw    v0, 0(a0)
+		0x03e00008u, // jr    ra
+		0x24420001u, // addiu v0, v0, 1 -- return delay slot
+	};
+
+	Memory mem;
+	for (size_t i = 0; i < sizeof(program) / sizeof(program[0]); ++i)
+		mem.Write32(base + static_cast<uint32_t>(i) * 4u, program[i]);
+	mem.Write32(resume, SYSCALL); // separate-oracle stand-in for the production AOT handoff
+	mem.Write32(data, 0xfeedfaceu);
+
+	ref::CpuState s;
+	s.pc = base;
+	s.r[V0] = 0xdeadbeefu;
+	s.r[A0] = data;
+	s.r[SP] = 0x08a00000u;
+	s.r[RA] = resume;
+	StepResult result = Run(&s, &mem, 16, nullptr);
+
+	Check("daybreak4 oracle stop", static_cast<uint32_t>(result.reason),
+		static_cast<uint32_t>(StopReason::kSyscall));
+	Check("daybreak4 oracle store", mem.Read32(data), 0x00001234u);
+	Check("daybreak4 oracle v0", s.r[V0], 0x00001235u);
+	Check("daybreak4 oracle pc", result.pc, resume);
 }
 
 void TestReferenceArithmeticGuards() {
@@ -607,6 +640,7 @@ int main() {
 	TestMulDiv();
 	TestMemory();
 	TestBranchDelaySlot();
+	TestDaybreak4GuestInterpreterOracle();
 	TestReferenceArithmeticGuards();
 	TestFpu();
 	TestFpuConvertEdgeCases();

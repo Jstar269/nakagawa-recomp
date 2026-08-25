@@ -20,8 +20,7 @@ base, entry, helper address (`0x08804028`), import stub, result slot and sentine
 - `aot-gap` — the AOT/dispatch seam: the mode's build-time codegen choice
   (`--omit-aot=0x08804028`) removes the helper from native emission/registration ONLY. Its bytes
   stay complete in the guest image; region A's `jal` compiles to the ordinary production
-  `dispatch(s, 0x08804028)` statement. Pre-interpreter (issue #116), that miss must terminate
-  under `SR_DISPATCH_FATAL=1`, which the run stage asserts via exact dispatcher evidence. The
-  helper tail transfers to registered AOT region B, so when the production interpreter lands, this
-  same build executes interpreted-helper → AOT-resume → sentinel with no fixture or pipeline
-  change.
+  `dispatch(s, 0x08804028)` statement. Generated registration explicitly owns the helper's
+  executable span; the production interpreter executes its load/store/control-flow body and hands
+  off to registered AOT region B. Region B commits the interpreted `0x00001235` result before the
+  real HLE path, so the production-driver assertion cannot pass on logs or dispatch alone.

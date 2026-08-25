@@ -303,12 +303,12 @@ the mode's build-time codegen choice `--omit-aot=0x08804028` removes the helper 
 emission/registration only. The guest bytes stay complete in the image inside the ordinary
 executable `.text` extent; region A's direct `jal` therefore compiles to the ordinary production
 `dispatch(s, 0x08804028)` statement — the same mechanism real generated code uses when control
-leaves its directly compiled destination set. Until a production interpreter fallback exists
-(issue #116), that miss must terminate under `SR_DISPATCH_FATAL=1`, and the run stage asserts the
-exact dispatcher evidence (`DISPATCH 0x08804028 …`, `NONPLT_MISS`, non-zero exit). The helper's
-tail transfers to registered AOT region B (`0x08804050`-adjacent), so once the interpreter lands,
-the SAME build executes interpreted-helper → AOT-resume → sentinel with no fixture or pipeline
-change. Nothing patches generated C after codegen and nothing substitutes host-side helpers.
+leaves its directly compiled destination set. Generated `sr_register_all()` records the analyzer's
+exact executable ranges before registering native functions; mapped guest RAM outside those ranges
+is never implicit code. The production interpreter executes the omitted helper's source-owned bytes
+and its delay slot, then transfers to registered AOT region B at `0x08804058`. Region B commits the
+interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
+patches generated C after codegen and nothing substitutes host-side helpers.
 
 ### Compile flags
 

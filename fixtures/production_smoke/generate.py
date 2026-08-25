@@ -25,11 +25,11 @@ Modes
     direct ``jal`` therefore compiles to the ordinary production
     ``dispatch(s, 0x<HELPER>)`` statement, and at runtime the guest transfer
     leaves the directly compiled destination set through the real dispatcher.
-    Until a production interpreter fallback exists (issue #116), that dispatch
-    misses and, with ``SR_DISPATCH_FATAL=1``, terminates the process.  The
-    helper's tail transfers to registered AOT region B, so once the interpreter
-    lands the SAME build executes interpreted-helper -> AOT-resume -> sentinel
-    without any fixture or pipeline change.
+    The production interpreter executes the helper bytes only because generated
+    registration explicitly owns their executable span.  Its tail transfers to
+    registered AOT region B, which commits the interpreted result before the
+    ordinary import/HLE path runs.  The final driver assertion therefore proves
+    interpreted-helper -> AOT-resume rather than a log-only dispatch seam.
 """
 
 from __future__ import annotations
@@ -55,7 +55,8 @@ DATA_BASE = BASE + 0x1000
 RESULT_POINTER = DATA_BASE + 0x68
 RESULT = DATA_BASE + 0x6C
 SENTINEL = 0x13579BDF
-MARKER = 0x00005A5A
+INTERP_STORE = 0x00001234
+INTERP_RESULT = 0x00001235
 NID = 0x7591C7DB
 LIBRARY = "SysMemUserForUser"
 
@@ -154,11 +155,11 @@ def _helper_words_gap() -> list[int]:
     return [
         _i(0x0F, 0, 8, 0),              # 0x28 lui t0, %hi(result_pointer)
         _i(0x23, 8, 8, 0x68),           # 0x2C lw t0, %lo(result_pointer)(t0)
-        _i(0x0F, 0, 9, MARKER >> 16),   # 0x30 lui t1, %hi(MARKER)
-        _i(0x0D, 9, 9, MARKER),         # 0x34 ori t1, t1, %lo(MARKER)
-        _i(0x2B, 8, 9, 0),              # 0x38 sw t1, 0(t0)   (interpreter-era progress mark)
-        _j(0x02, 0x58),                  # 0x3C j REGION_B     (transfer to AOT region B)
-        0,                               # 0x40 nop            (delay slot)
+        _i(0x09, 0, 9, INTERP_STORE),    # 0x30 addiu t1, zero, 0x1234
+        _i(0x2B, 8, 9, 0),              # 0x34 sw t1, 0(t0)
+        _i(0x23, 8, 2, 0),              # 0x38 lw v0, 0(t0)
+        _j(0x02, 0x58),                  # 0x3C j REGION_B     (registered AOT handoff)
+        _i(0x09, 2, 2, 1),              # 0x40 addiu v0, v0, 1 (delay slot)
         _r(31, 0, 0, 0, 0x08),          # 0x44 jr ra          (dead return path)
         0,                               # 0x48 nop
         _j(0x03, 0x58),                  # 0x4C jal REGION_B   (dead discovery anchor)
@@ -168,13 +169,13 @@ def _helper_words_gap() -> list[int]:
 
 
 def _region_b_words() -> list[int]:
-    """Registered AOT region B: writes the final sentinel and returns."""
+    """Registered AOT region B: commits the interpreted value and returns."""
     return [
-        _i(0x0F, 0, 8, 0),              # 0x58 lui t0, %hi(result_pointer)
-        _i(0x23, 8, 8, 0x68),           # 0x5C lw t0, %lo(result_pointer)(t0)
-        _i(0x0F, 0, 9, SENTINEL >> 16),
-        _i(0x0D, 9, 9, SENTINEL),
-        _i(0x2B, 8, 9, 0),              # 0x68 sw t1, 0(t0)
+        0,                               # 0x58 nop
+        0,                               # 0x5C nop
+        0,                               # 0x60 nop
+        0,                               # 0x64 nop
+        _i(0x2B, 8, 2, 0),              # 0x68 sw v0, 0(t0)
         _i(0x23, 8, 2, 0),              # 0x6C lw v0, 0(t0)
         _r(31, 0, 0, 0, 0x08),          # 0x70 jr ra
         0,                               # 0x74 nop
@@ -206,8 +207,6 @@ def relocation_records(mode: str = "aot") -> list[tuple[int, int]]:
                 (0x2C, relocation_info(R_MIPS_LO16, 0, 1)),
                 (0x3C, relocation_info(R_MIPS_26, 0, 0)),  # j REGION_B
                 (0x4C, relocation_info(R_MIPS_26, 0, 0)),  # dead anchor jal
-                (0x58, relocation_info(R_MIPS_HI16, 0, 1)),
-                (0x5C, relocation_info(R_MIPS_LO16, 0, 1)),
             ]
         )
     records.extend(
@@ -279,7 +278,7 @@ def expected_helper_bytes(mode: str = "aot") -> bytes:
 
 def expected_region_b_bytes() -> bytes:
     """RELOCATED region-B body for the gap-mode qualification."""
-    return _words(_patch_pointer_pair(_region_b_words()))
+    return _words(_region_b_words())
 
 
 def _check_region_bytes(image: bytes, offset: int, expected: bytes, label: str) -> None:
@@ -310,6 +309,18 @@ def _check_jump_targets(image: bytes, mode: str) -> None:
 def emitted_function_count(mode: str) -> int:
     """Functions the pipeline emits for one mode (analyzer-discovered minus omitted)."""
     return 3 if mode == "aot" else 5
+
+
+def expected_exec_spans(mode: str) -> tuple[tuple[int, int], ...]:
+    """Exact analyzer-owned executable spans generated into ``sr_register_all``."""
+    if mode == "aot":
+        return (
+            (BASE, BASE + TEXT_SECTION_SIZE_AOT),
+            (IMPORT_STUB, IMPORT_STUB + 8),
+        )
+    # Gap .text ends exactly where .sceStub.text starts, so exec_ranges merges
+    # them without granting any intervening data bytes.
+    return ((BASE, IMPORT_STUB + 8),)
 
 
 def build_data_segment() -> bytes:
@@ -525,23 +536,25 @@ class ModePlan:
         env: dict[str, str] | None = None,
         extra_driver_args: tuple[str, ...] = (),
         expect: str = "success",
+        expected_value: int = SENTINEL,
     ):
         self.codegen_args = codegen_args
         self.env = env or {}
         self.extra_driver_args = extra_driver_args
         self.expect = expect
+        self.expected_value = expected_value
 
 
 MODES: dict[str, ModePlan] = {
     "aot": ModePlan(
         env={"SR_DISPATCH_FATAL": "1", "SR_HLELOG": "1"},
     ),
-    # Pre-interpreter acceptance: the intentional AOT omission must terminate
-    # through the genuine production dispatch-miss path under SR_DISPATCH_FATAL.
+    # The intentional omission reaches the real production dispatcher, executes
+    # guest bytes inside an analyzer-owned span, and hands off to region B AOT.
     "aot-gap": ModePlan(
         codegen_args=(f"--omit-aot=0x{HELPER:08x}",),
         env={"SR_DISPATCH_FATAL": "1", "SR_HLELOG": "1", "SR_DISPLOG": "1"},
-        expect="dispatch-miss",
+        expected_value=INTERP_RESULT,
     ),
 }
 
@@ -618,6 +631,17 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         )
 
     main_text = main_c.read_text(encoding="ascii")
+    exec_spans = expected_exec_spans(mode)
+    if main_text.count("sr_exec_span_register(") != len(exec_spans):
+        raise RuntimeError("generated executable-span registration count is wrong")
+    for lo, hi in exec_spans:
+        registration = f"sr_exec_span_register(0x{lo:08x}u, 0x{hi:08x}u)"
+        if registration not in main_text:
+            raise RuntimeError(
+                f"generated registration omits executable span 0x{lo:08x},0x{hi:08x}"
+            )
+    if f"sr_register_all: registered {len(exec_spans)} executable span(s)" not in main_text:
+        raise RuntimeError("generated executable-span diagnostic is wrong")
     if f"sr_register_all: starting {emitted_count} registrations" not in main_text:
         raise RuntimeError(f"generated registration count is not exactly {emitted_count}")
     for index in range(emitted_count):
@@ -694,6 +718,7 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         f"{stem}_recomp_2.o",
         "ge.o",
         "recomp.o",
+        "guest_interp.o",
         "title_config.o",
         "vfpu_tables.o",
         "debug.o",
@@ -750,40 +775,38 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
     return 0
 
 
-def assert_dispatch_miss_evidence(combined: str, returncode: int) -> None:
-    """Pre-interpreter acceptance for the aot-gap mode.
-
-    Requires genuine production dispatch-miss evidence for the omitted helper
-    address and rejects every look-alike failure:
-      * a clean success (no miss occurred => the omission did not take effect);
-      * a weakened/stubbed dispatch path (miss logged but SR_DISPATCH_FATAL
-        ignored, process exits 0);
-      * a transfer defect (the dispatcher was never handed the helper address).
-    """
-
+def assert_gap_runtime_evidence(combined: str, returncode: int) -> None:
+    """Require the complete production AOT -> interpreter -> AOT seam."""
     required = (
-        f"DISPATCH 0x{HELPER:08x} from",
-        "NONPLT_MISS",
+        (
+            f"DISPATCH 0x{HELPER:08x} from 0x{ENTRY:08x} "
+            f"(ra=0x{ENTRY + 0x10:08x})"
+        ),
+        (
+            f"GUEST_INTERP_ENTER entry=0x{HELPER:08x} "
+            f"caller_pc=0x{ENTRY:08x} ra=0x{ENTRY + 0x10:08x}"
+        ),
+        f"GUEST_INTERP_AOT_HANDOFF pc=0x{REGION_B:08x} instructions=7",
+        f"DISPATCH 0x{REGION_B:08x} from 0x{REGION_B:08x}",
+        f"HLE: calling sceKernelSetCompiledSdkVersion (0x{NID:08x})",
+        (
+            f"DRIVER_EXPECT_U32 addr=0x{RESULT:08x} got=0x{INTERP_RESULT:08x} "
+            f"expected=0x{INTERP_RESULT:08x} status=PASS"
+        ),
     )
     missing = [marker for marker in required if marker not in combined]
     if missing:
-        raise RuntimeError(
-            "dispatch-miss evidence omits: " + ", ".join(missing)
-        )
+        raise RuntimeError("AOT-gap runtime evidence omits: " + ", ".join(missing))
     forbidden = (
-        "DRIVER_EXPECT_U32",
-        f"HLE: calling sceKernelSetCompiledSdkVersion (0x{NID:08x})",
+        "NONPLT_MISS",
+        "INTERP_REJECT",
+        "status=FAIL",
     )
     present = [marker for marker in forbidden if marker in combined]
     if present:
-        raise RuntimeError(
-            "dispatch-miss run unexpectedly contains: " + ", ".join(present)
-        )
-    if returncode == 0:
-        raise RuntimeError(
-            "production dispatch miss did not terminate the process "
-            "(SR_DISPATCH_FATAL weakened or dispatch replaced)"
-        )
+        raise RuntimeError("AOT-gap runtime evidence contains: " + ", ".join(present))
+    if returncode != 0:
+        raise RuntimeError(f"AOT-gap production runtime exited {returncode}")
 
 
 def run(build_dir: Path, mode: str = "aot") -> int:
@@ -804,7 +827,7 @@ def run(build_dir: Path, mode: str = "aot") -> int:
         "none",
         "--sched",
         *plan.extra_driver_args,
-        f"--expect-u32=0x{RESULT:08x}:0x{SENTINEL:08x}",
+        f"--expect-u32=0x{RESULT:08x}:0x{plan.expected_value:08x}",
     ]
     environment = os.environ.copy()
     for key, value in plan.env.items():
@@ -818,42 +841,37 @@ def run(build_dir: Path, mode: str = "aot") -> int:
     write_if_changed(build_dir / f"{log_stem}{log_suffix}.stdout.log", completed.stdout.encode("utf-8"))
     write_if_changed(build_dir / f"{log_stem}{log_suffix}.stderr.log", completed.stderr.encode("utf-8"))
     combined = completed.stdout + completed.stderr
-    if plan.expect == "dispatch-miss":
-        assert_dispatch_miss_evidence(combined, completed.returncode)
-        print(
-            f"PRODUCTION_SMOKE_RUN mode={mode} status=PASS "
-            f"(expected production dispatch miss at 0x{HELPER:08x}, "
-            f"exit={completed.returncode})"
-        )
-        return 0
     if completed.returncode != 0:
         sys.stderr.write(combined)
         raise RuntimeError(f"production smoke runtime exited {completed.returncode}")
     markers = (
         "BOOT_EVENT phase=init public_safe=1",
         f"BOOT_EVENT phase=image_loaded entry=0x{ENTRY:08x}",
+        f"sr_register_all: registered {len(expected_exec_spans(mode))} executable span(s)",
         f"sr_register_all: starting {emitted_function_count(mode)} registrations",
         "sr_register_all: completed",
         f"BOOT_EVENT phase=runtime_registered entry=0x{ENTRY:08x}",
         f"BOOT_EVENT phase=guest_start mode=scheduler entry=0x{ENTRY:08x}",
         f"HLE: calling sceKernelSetCompiledSdkVersion (0x{NID:08x})",
         (
-            f"DRIVER_EXPECT_U32 addr=0x{RESULT:08x} got=0x{SENTINEL:08x} "
-            f"expected=0x{SENTINEL:08x} status=PASS"
+            f"DRIVER_EXPECT_U32 addr=0x{RESULT:08x} got=0x{plan.expected_value:08x} "
+            f"expected=0x{plan.expected_value:08x} status=PASS"
         ),
     )
     missing = [marker for marker in markers if marker not in combined]
     if missing:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence omits: " + ", ".join(missing))
-    forbidden = ("UNKNOWN NID", "NONPLT_MISS", "status=FAIL")
+    forbidden = ("UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT", "status=FAIL")
     present = [marker for marker in forbidden if marker in combined]
     if present:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence contains: " + ", ".join(present))
+    if mode == "aot-gap":
+        assert_gap_runtime_evidence(combined, completed.returncode)
     print(
         f"PRODUCTION_SMOKE_RUN mode={mode} status=PASS "
-        f"nid=0x{NID:08x} result=0x{RESULT:08x} sentinel=0x{SENTINEL:08x}"
+        f"nid=0x{NID:08x} result=0x{RESULT:08x} value=0x{plan.expected_value:08x}"
     )
     return 0
 

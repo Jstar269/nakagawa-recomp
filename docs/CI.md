@@ -58,8 +58,9 @@ title acceptance evidence.
 
 The Windows job also runs `production-smoke-gap`: the same fixture with its helper omitted from
 native emission at build time, proving region A reaches the omitted guest address through the
-ordinary production `dispatch()` seam and that, pre-interpreter (issue #116), the miss terminates
-under `SR_DISPATCH_FATAL=1`.
+ordinary production `dispatch()` seam. Analyzer-owned executable-span registration permits only
+those guest bytes to enter the fail-closed interpreter; the gate then requires a registered AOT
+region-B handoff, real HLE call, and final `0x00001235` production-driver assertion.
 
 ## Classifier invariants
 

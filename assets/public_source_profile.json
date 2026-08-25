@@ -497,6 +497,8 @@
     "src/rt/gpu_sdl3vk/shader_manifest.json",
     "src/rt/gpu_sdl3vk/shaders/psp.frag",
     "src/rt/gpu_sdl3vk/shaders/psp.vert",
+    "src/rt/guest_interp.c",
+    "src/rt/guest_interp.h",
     "src/rt/guest_printf.c",
     "src/rt/guest_printf_selftest.c",
     "src/rt/guestmem_selftest.c",

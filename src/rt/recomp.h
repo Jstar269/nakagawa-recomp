@@ -35,13 +35,12 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 typedef struct CpuState {
     uint32_t r[32];     /* r[0] reads 0; the codegen never emits a write to r[0]. */
     uint32_t hi, lo;
-    /* NOT the current instruction. In the recompiled runtime nothing tracks the program
-     * counter per instruction: sr_begin_impl() records the pc into its own static trace
-     * slot, never into this field. Only three things write here -- SR_YIELD when the
-     * timeslice expires (storing the yield target), dispatch()'s no-target path, and a
-     * handful of custom stubs. So this holds the last *preemption* point, which can be
-     * an entire call tree away from where a fault is observed. Diagnostics that print it
-     * must label it as such (`last_yield_pc=`), never as the faulting pc.
+    /* AOT code does NOT update this per instruction: sr_begin_impl() records the pc into
+     * its own static trace slot, never into this field. Outside the guest interpreter this
+     * therefore remains the last preemption/dispatch point and can be an entire call tree
+     * away from a fault. The production guest interpreter is the explicit exception: while
+     * it owns execution, it advances this field as the architectural PC and leaves the AOT
+     * handoff destination here. Diagnostics must distinguish those two execution modes.
      * For the exact call site of the jal/jalr currently executing, use `r[31] - 8`: the
      * generated code assigns ra = call+8 at the call instruction itself. (The reference
      * interpreter in src/ref/cpu.h is different -- there pc IS exact.) */
@@ -429,11 +428,22 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
 #define SR_DISPATCH_VFPU_MASK 0xFC000000u
 
 /* Dispatch: guest address -> native recompiled function (section 7). Computed jumps/calls go
- * through here; unknown targets would fall to the interpreter once it is linked in. */
+ * through here; an AOT miss may execute only inside an explicitly registered executable span,
+ * and unsupported/unowned targets terminate rather than fabricating guest completion. */
 typedef void (*RecompFn)(CpuState *);
 void     sr_register(uint32_t addr, RecompFn fn);
 uint32_t sr_register_count(void);  /* number of sr_register() calls performed so far */
+/* Returns a registered body only when the same PC has a complete owned/readable
+ * instruction fetch. This static first slice does not yet provide content guards. */
 RecompFn sr_lookup(uint32_t addr);
+
+/* Codegen registers exact analyzer-owned, end-exclusive executable spans before
+ * guest execution. Mapped RAM alone never grants interpreter fetch authority. */
+#define SR_HAS_EXEC_SPAN_REGISTRY 1
+void     sr_exec_span_reset(void);
+int      sr_exec_span_register(uint32_t start, uint32_t end);
+int      sr_exec_span_owns_fetch(uint32_t pc);
+
 void     dispatch(CpuState *s, uint32_t target);
 
 /* Tracing. When a trace file is open, the generated code reports each instruction. sr_begin

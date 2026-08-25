@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "557a3bb49193bc404a28b355e58a6ae36bf7dfe215ecbde9b344909b76a10fc4"
+      "sha256": "b71395d068a6f5a253557f34cf6238d34c673a33d7e2b8cda863c03e529d9145"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "5ba07cbc688fc0f59239523e567e0e18dc1515e4d7f5aacdfe3c3b25d7c26b59"
+      "sha256": "8f03bb5aa7ba168581882e58169e13a3077888fbeb4a00ba4812420867cdc1c5"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "73099cdb9e2675dcd9a814ef0e0be8803e50f959aced5ab278806dc6732aa95d"
+      "sha256": "afc2b5e636ac0c071dd22c20768a412b76ae2a7d83927031329476a33610203d"
     },
     {
       "path": "assets/release_manifest.json",
@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99d0c96792ab740d8170969445651811d2fc8e1aa4e330228fb283c3da7cde80"
+      "sha256": "24987408381a35be5b5499e70f148092a6af21c5a8fff9f6b1aea1f6746fddea"
     },
     {
       "path": "docs/CI.md",
@@ -703,7 +703,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6df67e965fc0bf3a88b0049a3a074fa547c45ccf4353193d04dae949e17d6736"
+      "sha256": "230bee79234f493b002905e441b66cff6bea33faba4b93f581abc337a063de26"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1000,7 +1000,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "feccd41d38d4dfc3d5e33b11acff3df59dc3bc736234c04e19fcf2e1dc2df340"
+      "sha256": "7b4ab82cb599e816987355921e83b058dc72b26bd2cd1ee88a3ae22d4d919532"
     },
     {
       "path": "fixtures/production_smoke/generate.py",
@@ -1009,7 +1009,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "84e3dbc71fac62c763c50109c6d05d3bd34c4fd904cf71a1bd0d8a209e1ea131"
+      "sha256": "06fbf3bbd9db511fde73e6d89567d3f68b909656fc9acae8d4e5d2c8f001aad9"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -2574,7 +2574,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "92fbd64c6a742cea3c75ad4996d0ef8c0afa3196b32825504f511c2fcf701a94"
+      "sha256": "f47d423f9e65b190c68c2fdc87f4b44bad8df47d802f5bf77c187b2dcbb47760"
     },
     {
       "path": "src/rt/asset_index.h",
@@ -3865,7 +3865,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "678f3d3d160de72e95b403aacc280f50e5cfbf967c9384537707ffc3a690542a"
+      "sha256": "17dc4d2e6e5389a44cf85c0e36d20fb800739bdd3b6c25632e3888e9f5c300d8"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4288,6 +4288,30 @@
       "sha256": "98fdb5a8442ca81da0cf736e0054329ac6e6f74a57faf15e3358f6efa1594d04"
     },
     {
+      "path": "src/rt/guest_interp.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "daybreak4-guest-interpreter",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
+      },
+      "sha256": "1b47470674fc57727d17a1c1eb9d00176bda14339fc48b7809720c7e772e296e"
+    },
+    {
+      "path": "src/rt/guest_interp.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "daybreak4-guest-interpreter",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": "ppsspp"
+      },
+      "sha256": "1b09d7b5a26a6fc38c8dd5dbbbad4ab7284e4354fc2185621d1140b3b035b024"
+    },
+    {
       "path": "src/rt/guest_printf.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -4599,7 +4623,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9b24ef5111476f29b74a219d2189f8e07bd97876371f6ea418bb09cad6c568e2"
+      "sha256": "3f8eff6b4a7699b6b04672e2737f59ee8aec0bc4ca804b652a884d971788ec57"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4619,7 +4643,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3279c2026e2b546da14c4b841e1ef80b699f3eb464f78616d1ecc01cd0616a8e"
+      "sha256": "184bde8f69e60fcedd06e7335d3c61dfe634d3d7fbda348481649de42e008e7c"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5079,7 +5103,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "1e7ce464110e4281c1060312172d0dc586064220d10681add8dffd0111cc9c4f"
+      "sha256": "3f028ad3db9025ba8f6ff76cf3ad90d8d4e8a62ceaf8ea46f5781e7adc351dc3"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6165,7 +6189,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae57b720464eedfef82f93d28a5e58e742748191b66ed625a630c679762688cc"
+      "sha256": "906e2b1f4ba9db003ed061b2773b46ebffb04d37ee23c85dab1b4b231831915e"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
@@ -6801,7 +6825,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e1cee8849fa4227dbb35286fad25c505eef226e5281bb4dfc40eeb2aefef15a9"
+      "sha256": "030693f85c102475f86080ae459e8c6b709a77870d93398e598056ce2aa15e4d"
     },
     {
       "path": "tools/test_progress_evidence.py",

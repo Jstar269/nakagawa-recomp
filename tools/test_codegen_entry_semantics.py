@@ -192,6 +192,8 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
@@ -211,6 +213,8 @@ static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
+void sr_exec_span_reset(void) {{}}
+int sr_exec_span_register(uint32_t start, uint32_t end) {{ (void)start; (void)end; return 1; }}
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {{ (void)s; (void)code; (void)pc; }}
 void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
@@ -345,6 +349,8 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
@@ -362,6 +368,8 @@ static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
+void sr_exec_span_reset(void) {{}}
+int sr_exec_span_register(uint32_t start, uint32_t end) {{ (void)start; (void)end; return 1; }}
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {{ (void)s; (void)code; (void)pc; }}
 void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
@@ -467,6 +475,8 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
@@ -485,6 +495,8 @@ static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
+void sr_exec_span_reset(void) {{}}
+int sr_exec_span_register(uint32_t start, uint32_t end) {{ (void)start; (void)end; return 1; }}
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {{ (void)s; (void)code; (void)pc; }}
 void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}

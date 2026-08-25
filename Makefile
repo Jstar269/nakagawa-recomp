@@ -381,6 +381,7 @@ endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/guest_interp.c \
               src/rt/title_config.c \
               src/rt/vfpu_tables.c \
               src/rt/debug.c \
@@ -442,6 +443,7 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/guest_interp.c \
                       src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
                       src/rt/debug.c \
@@ -507,9 +509,9 @@ production-smoke-clean:
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the ordinary
-# production dispatch() seam. Until a production interpreter fallback exists,
-# that miss must terminate under SR_DISPATCH_FATAL=1, and the run stage asserts
-# exactly that evidence.
+# production dispatch() seam. Generated registration owns the executable span;
+# the interpreter executes the helper and hands off to registered AOT region B,
+# whose final value is asserted by the production driver.
 production-smoke-gap:
 	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_GAP_FIXTURE) --mode aot-gap
 	$(MAKE) all \
@@ -706,7 +708,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -716,7 +718,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/title_config.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -796,7 +798,7 @@ atrac3p-title-accept:
 # stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/title_config.c $(LIBS)
+		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
@@ -930,7 +932,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/title_config.c src/rt/vfpu_tables.c \
+		src/rt/dispatch_isolation_selftest.c src/rt/guest_interp.c src/rt/title_config.c src/rt/vfpu_tables.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 

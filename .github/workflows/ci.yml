@@ -545,9 +545,9 @@ jobs:
 
       # AOT-gap seam proof on the same source-owned fixture: the helper is
       # omitted from native emission at build time, so region A reaches it via
-      # the ordinary production dispatch() path. Until the production
-      # interpreter fallback lands, that miss must terminate under
-      # SR_DISPATCH_FATAL=1; the run stage asserts exactly that evidence.
+      # the ordinary production dispatch() path. Generated executable-span
+      # ownership gates interpretation, and the run must hand off to registered
+      # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
         shell: msys2 {0}
         env:

@@ -37,7 +37,7 @@ SPEC.loader.exec_module(generator)
 
 EXPECTED_PRX_SHA256 = "0e70188438318b1dd7324d9d08237634b4cb9f42b0078b189f72c569df9d9ace"
 EXPECTED_PSP_SHA256 = "835e63d84cc41a67a868dd34d57b2cb39fdc153039f1c8c4dba781e54ae257e3"
-GAP_EXPECTED_PRX_SHA256 = "57cc1674aa6048e0d2f10bd26a81ef9d76803f5645c52c0934940a25b1dd90c7"
+GAP_EXPECTED_PRX_SHA256 = "065cfc9092448d5689c922482e1b56d25b2abf56e52568c9582baea7f72f74c4"
 
 
 class TestProductionSmoke(unittest.TestCase):
@@ -84,7 +84,12 @@ class TestProductionSmoke(unittest.TestCase):
         # AOT gap is an emission choice, never a byte removal.
         raw_helper = generator.build_text_segment("aot-gap")[0x28:0x80]
         self.assertIn(struct.pack("<I", 0x08000016), raw_helper)  # j REGION_B
-        self.assertNotEqual(raw_helper[0x30:0x34], b"\0\0\0\0")   # marker lui present
+        self.assertEqual(struct.unpack_from("<I", raw_helper, 0x08)[0], 0x24091234)
+        self.assertEqual(struct.unpack_from("<I", raw_helper, 0x0C)[0], 0xAD090000)
+        self.assertEqual(struct.unpack_from("<I", raw_helper, 0x10)[0], 0x8D020000)
+        self.assertEqual(struct.unpack_from("<I", raw_helper, 0x18)[0], 0x24420001)
+        manifest = json.loads((gap_dir / "manifest.json").read_text(encoding="ascii"))
+        self.assertEqual(manifest["relocation_count"], 12)
 
     def test_real_loader_analyzer_and_import_parser_accept_fixture(self):
         loaded = prxload.Prx(self.prx_path, generator.BASE, psp_header=self.psp_path)
@@ -157,6 +162,13 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertIn(f"dispatch(s, 0x{generator.HELPER:08x}u);", omitted_text)
         self.assertNotIn(f"f_{generator.HELPER:08x}(", omitted_text)
         self.assertIn(f"f_{generator.REGION_B:08x}(", omitted_text)
+        self.assertIn(
+            f"sr_exec_span_register(0x{generator.BASE:08x}u, "
+            f"0x{generator.IMPORT_STUB + 8:08x}u)",
+            omitted_text,
+        )
+        self.assertEqual(omitted_text.count("sr_exec_span_register("), 1)
+        self.assertNotIn(f"sr_exec_span_register(0x{generator.DATA_BASE:08x}u", omitted_text)
 
     def test_result_pointer_relocation_is_load_bearing(self):
         mutated = bytearray(self.prx_path.read_bytes())
@@ -179,41 +191,43 @@ class TestProductionSmoke(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             generator.run(self.out_dir, mode="does-not-exist")
 
-    def test_dispatch_miss_checker_rejects_every_look_alike(self):
-        """Pre-interpreter acceptance distinguishes real seams from look-alikes."""
-        helper = f"0x{generator.HELPER:08x}"
-        good_miss = (
-            f"BOOT_EVENT phase=guest_start mode=scheduler entry=0x{generator.ENTRY:08x}\n"
-            f"DISPATCH {helper} from 0x{generator.ENTRY:08x} (ra=0x{generator.ENTRY+0x10:08x})\n"
-            f"  NONPLT_MISS: returning 0 (sentinel) from pc=0x{generator.ENTRY:08x} "
-            f"new_pc=0x{generator.ENTRY+8:08x} ra=0x{generator.ENTRY+0x10:08x}\n"
-        )
-        # Real shape passes and requires the process to have died.
-        generator.assert_dispatch_miss_evidence(good_miss, returncode=1)
-        with self.assertRaises(RuntimeError):
-            generator.assert_dispatch_miss_evidence(good_miss, returncode=0)
-
-        # M1': omission removed -> no dispatch happens, run succeeds.
-        success_log = (
-            "sr_register_all: starting 5 registrations\n"
+    def test_gap_checker_rejects_every_look_alike(self):
+        """Acceptance requires transfer, interpretation, AOT resume, and final state."""
+        good = (
+            f"DISPATCH 0x{generator.HELPER:08x} from 0x{generator.ENTRY:08x} "
+            f"(ra=0x{generator.ENTRY + 0x10:08x})\n"
+            f"GUEST_INTERP_ENTER entry=0x{generator.HELPER:08x} "
+            f"caller_pc=0x{generator.ENTRY:08x} ra=0x{generator.ENTRY + 0x10:08x}\n"
+            f"GUEST_INTERP_AOT_HANDOFF pc=0x{generator.REGION_B:08x} instructions=7\n"
+            f"DISPATCH 0x{generator.REGION_B:08x} from 0x{generator.REGION_B:08x}\n"
             f"HLE: calling sceKernelSetCompiledSdkVersion (0x{generator.NID:08x})\n"
-            f"DRIVER_EXPECT_U32 addr=0x{generator.RESULT:08x} got=0x{generator.SENTINEL:08x} "
-            f"expected=0x{generator.SENTINEL:08x} status=PASS\n"
+            f"DRIVER_EXPECT_U32 addr=0x{generator.RESULT:08x} "
+            f"got=0x{generator.INTERP_RESULT:08x} "
+            f"expected=0x{generator.INTERP_RESULT:08x} status=PASS\n"
         )
-        with self.assertRaises(RuntimeError):
-            generator.assert_dispatch_miss_evidence(success_log, returncode=0)
+        generator.assert_gap_runtime_evidence(good, returncode=0)
 
-        # M2': guest transfer altered -> dispatcher never sees the helper address.
-        wrong_target = (
-            f"DISPATCH 0x{generator.REGION_B:08x} from 0x{generator.ENTRY:08x}\n"
-            "  NONPLT_MISS: returning 0 (sentinel)\n"
-        )
-        with self.assertRaises(RuntimeError):
-            generator.assert_dispatch_miss_evidence(wrong_target, returncode=1)
-
-        # M3': dispatch replaced/stubbed -> miss logged but nothing terminates.
-        with self.assertRaises(RuntimeError):
-            generator.assert_dispatch_miss_evidence(good_miss, returncode=0)
+        mutants = {
+            "omission-removed": good.split("DISPATCH", 1)[0] + good.split("HLE:", 1)[1],
+            "wrong-helper-target": good.replace(
+                f"DISPATCH 0x{generator.HELPER:08x}",
+                f"DISPATCH 0x{generator.REGION_B:08x}",
+                1,
+            ),
+            "no-interpreter-transfer": good.replace("GUEST_INTERP_AOT_HANDOFF", "NO_TRANSFER"),
+            "no-aot-region-b": good.replace(
+                f"DISPATCH 0x{generator.REGION_B:08x} from 0x{generator.REGION_B:08x}",
+                "AOT_REGION_B_SKIPPED",
+            ),
+            "old-fatal-miss": good + "NONPLT_MISS\n",
+            "delay-slot-skipped": good.replace(
+                f"got=0x{generator.INTERP_RESULT:08x} expected=0x{generator.INTERP_RESULT:08x} status=PASS",
+                f"got=0x{generator.INTERP_STORE:08x} expected=0x{generator.INTERP_RESULT:08x} status=FAIL",
+            ),
+        }
+        for name, log in mutants.items():
+            with self.subTest(name=name), self.assertRaises(RuntimeError):
+                generator.assert_gap_runtime_evidence(log, returncode=1 if name == "old-fatal-miss" else 0)
 
     def _fabricated_aot_tree(self, root: Path, relative_dir: str) -> Path:
         """Minimal build tree satisfying verify(--mode aot) with RELATIVE-spelled
@@ -233,6 +247,11 @@ class TestProductionSmoke(unittest.TestCase):
         (build_dir / "production_smoke.exe").write_bytes(b"MZ-fake")
 
         (build_dir / "production_smoke_recomp.c").write_text(
+            f"sr_exec_span_register(0x{generator.BASE:08x}u, "
+            f"0x{generator.BASE + generator.TEXT_SECTION_SIZE_AOT:08x}u);\n"
+            f"sr_exec_span_register(0x{generator.IMPORT_STUB:08x}u, "
+            f"0x{generator.IMPORT_STUB + 8:08x}u);\n"
+            'fprintf(stderr, "sr_register_all: registered 2 executable span(s)\\n");\n'
             'fprintf(stderr, "sr_register_all: starting 3 registrations\\n");\n'
             "sr_register_chunk_0();\nsr_register_chunk_1();\nsr_register_chunk_2();\n",
             encoding="ascii",
@@ -258,7 +277,7 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_0.o",
             "production_smoke_recomp_1.o",
             "production_smoke_recomp_2.o",
-            "ge.o", "recomp.o", "title_config.o", "vfpu_tables.o", "debug.o",
+            "ge.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
             "iso_unavailable.o", "pgd_unavailable.o", "mpeg.o", "pgf_unavailable.o",
