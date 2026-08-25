@@ -225,6 +225,40 @@ static int parse_hex32(const char *text, uint32_t *value) {
     return 1;
 }
 
+typedef struct DriverExpectedU32 {
+    int enabled;
+    uint32_t address;
+    uint32_t value;
+} DriverExpectedU32;
+
+static int parse_expected_u32(const char *argument, DriverExpectedU32 *expectation) {
+    static const char prefix[] = "--expect-u32=";
+    if (!argument || !expectation || strncmp(argument, prefix, sizeof(prefix) - 1) != 0) {
+        return 0;
+    }
+    const char *spec = argument + sizeof(prefix) - 1;
+    const char *separator = strchr(spec, ':');
+    if (!separator || separator == spec || separator[1] == '\0' || strchr(separator + 1, ':')) {
+        return 0;
+    }
+    size_t address_length = (size_t)(separator - spec);
+    size_t value_length = strlen(separator + 1);
+    char address_text[16];
+    char value_text[16];
+    if (address_length >= sizeof(address_text) || value_length >= sizeof(value_text)) {
+        return 0;
+    }
+    memcpy(address_text, spec, address_length);
+    address_text[address_length] = '\0';
+    memcpy(value_text, separator + 1, value_length + 1);
+    if (!parse_hex32(address_text, &expectation->address)
+            || !parse_hex32(value_text, &expectation->value)) {
+        return 0;
+    }
+    expectation->enabled = 1;
+    return 1;
+}
+
 static void seed_from_init(const char *trace_path, CpuState *s) {
     if (strcmp(trace_path, "none") == 0) return;
     FILE *f = fopen(trace_path, "rb");
@@ -266,6 +300,7 @@ int main(int argc, char **argv) {
 #endif
     uint32_t entry;
     const char *ref_trace, *out;
+    DriverExpectedU32 expected_u32 = {0, 0, 0};
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32
@@ -294,6 +329,14 @@ int main(int argc, char **argv) {
     sr_debug_init_watches();
     sr_perf_init();
     sr_profile_init();
+
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;
+        if (expected_u32.enabled || !parse_expected_u32(argv[i], &expected_u32)) {
+            fprintf(stderr, "invalid or duplicate --expect-u32 option: %s\n", argv[i]);
+            return 2;
+        }
+    }
 
     if (g_sr_debug) {
         fprintf(stderr, "Debug: SR_DEBUG=0x%02x (", g_sr_debug);
@@ -339,8 +382,8 @@ int main(int argc, char **argv) {
         goto have_image;
     }
     if (argc < 4) {
-        fprintf(stderr, "usage: driver <elf> <ref-trace> <out-trace>\n"
-                        "       driver --image <image.bin> <base-hex> <entry-hex> <ref-trace> <out-trace>\n");
+        fprintf(stderr, "usage: driver <elf> <ref-trace> <out-trace> [--sched] [--expect-u32=ADDR:VALUE]\n"
+                        "       driver --image <image.bin> <base-hex> <entry-hex> <ref-trace> <out-trace> [--sched] [--expect-u32=ADDR:VALUE]\n");
         return 2;
     }
     {
@@ -352,6 +395,12 @@ int main(int argc, char **argv) {
     out = argv[3];
 have_image:;
     fprintf(stderr, "BOOT_EVENT phase=image_loaded entry=0x%08x\n", entry);
+    if (expected_u32.enabled
+            && ((expected_u32.address & 3u) != 0
+                || !sr_guest_span_readable(expected_u32.address, 4))) {
+        fprintf(stderr, "--expect-u32 guest address is unaligned or invalid: 0x%08x\n", expected_u32.address);
+        return 2;
+    }
 
     CpuState s;
     memset(&s, 0, sizeof(s));
@@ -429,6 +478,20 @@ have_image:;
     }
 
     fprintf(stderr, "done (hit_hle=%d)\n", sr_hit_hle);
+
+    if (expected_u32.enabled) {
+        uint32_t actual = MEM_R32(expected_u32.address);
+        int matches = actual == expected_u32.value;
+        fprintf(
+            stderr,
+            "DRIVER_EXPECT_U32 addr=0x%08x got=0x%08x expected=0x%08x status=%s\n",
+            expected_u32.address,
+            actual,
+            expected_u32.value,
+            matches ? "PASS" : "FAIL"
+        );
+        if (!matches) return 3;
+    }
 
     return 0;
 }

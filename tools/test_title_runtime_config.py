@@ -894,6 +894,73 @@ class DispatchAddressCensus(unittest.TestCase):
                 self.assertIn("src/rt/title_config.c", recipe)
                 self.assertRegex(recipe, r"-I\$\((GENERIC_TITLE_CONFIG_DIR|DISPATCH_ISO_DIR)\)")
 
+    def test_every_recomp_runtime_surface_links_guest_interp(self) -> None:
+        """Every surface that links recomp.c must also link guest_interp.c.
+
+        recomp.c's sr_lookup()/dispatch() consult the exec-span registry and
+        interpreter floor implemented in src/rt/guest_interp.c. PR #118 added
+        that dependency but three link surfaces kept their stale copies of the
+        recipe (the same drift #97 caused for title_config.c), and Draft-skipped
+        substantive jobs hid all three until the Ready transition:
+
+            undefined reference to `sr_exec_span_owns_fetch'
+            undefined reference to `sr_guest_interp_run'
+
+        Cover the three places a runtime link surface has historically lived:
+        Makefile targets, hosted-CI inline compile commands, and Python-driven
+        harnesses (tools/codegen_gate.py builds its own gcc command).
+        """
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        for target in ("heap-selftest:", "profiler-selftest:", "vfpu-interp-selftest:",
+                       "dispatch-isolation-selftest-one:"):
+            recipe = makefile.split(target, 1)[1].split("\n\n", 1)[0]
+            with self.subTest(surface="Makefile", target=target):
+                self.assertIn(
+                    "src/rt/guest_interp.c", recipe,
+                    f"Makefile target {target} compiles recomp.c (directly or via a "
+                    "white-box include) but does not link src/rt/guest_interp.c")
+
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        logical = workflow.replace("\\\n", " ")
+        pulls_in_recomp = {
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / "src" / "rt").glob("*.c")
+            if '#include "recomp.c"' in path.read_text(encoding="utf-8", errors="replace")
+        } | {"src/rt/recomp.c"}
+        checked = 0
+        for line in logical.splitlines():
+            stripped = line.strip()
+            if not re.match(r"^(gcc|cc|clang|\$\{?CC)\b", stripped):
+                continue
+            operands = set(re.findall(r"src/rt/[\w./-]+\.c", stripped))
+            if not operands & pulls_in_recomp:
+                continue
+            checked += 1
+            with self.subTest(surface="ci.yml", command=stripped[:80]):
+                self.assertIn(
+                    "src/rt/guest_interp.c", operands,
+                    "a CI compile command builds a translation unit that pulls in "
+                    "recomp.c but does not link src/rt/guest_interp.c:\n  " + stripped)
+        self.assertGreater(
+            checked, 0,
+            "no CI compile command was examined -- the parser has gone stale and "
+            "this assertion is vacuous")
+
+        for py in sorted((ROOT / "tools").glob("*.py")):
+            text = py.read_text(encoding="utf-8", errors="replace")
+            links_recomp = (
+                'os.path.join(rt, "recomp.c")' in text
+                or 'str(RT / "recomp.c")' in text
+            )
+            if not links_recomp:
+                continue
+            with self.subTest(surface="python-harness", path=py.name):
+                self.assertIn(
+                    "guest_interp.c", text,
+                    f"{py.name} builds a link command around src/rt/recomp.c but "
+                    "never references src/rt/guest_interp.c; if this surface really "
+                    "links the runtime it will fail to resolve sr_exec_span_owns_fetch"
+                    "/sr_guest_interp_run, and if it does not, tighten this scan")
 
     def test_ci_compiles_dispatch_the_same_way_the_makefile_does(self) -> None:
         """The Makefile is not the only place that compiles these translation units.

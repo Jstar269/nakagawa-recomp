@@ -13,6 +13,7 @@
 #include <string.h>
 #include "recomp.h"
 #include "dispatch_table.h"   /* guest code-address table + primitives (issue #45) */
+#include "guest_interp.h"     /* executable-span interpreter floor (issue #116) */
 #include "title_config.h"     /* generic title-binding accessors; no title identity here */
 
 uint8_t *g_mem = NULL;
@@ -1290,7 +1291,8 @@ void sr_register(uint32_t addr, RecompFn fn) {
 uint32_t sr_register_count(void) { return s_register_count; }
 
 RecompFn sr_lookup(uint32_t addr) {
-    return (RecompFn)sr_dtab_lookup(&g_dtab, addr);
+    RecompFn fn = (RecompFn)sr_dtab_lookup(&g_dtab, addr);
+    return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
 }
 
 /* ---- dispatch hook table ---- */
@@ -1738,7 +1740,7 @@ static void dump_dispatch_misses(void) {
     fflush(stderr);
 }
 
-void dispatch(CpuState *s, uint32_t target) {
+static int dispatch_try(CpuState *s, uint32_t target) {
     /* Per-instruction VFPU fallback.  Codegen keeps executing the owning native C
      * function after this returns, so no guest function boundary or host stack frame is
      * introduced.  Keeping the interpreter entry here also gives all computed execution
@@ -1764,7 +1766,7 @@ void dispatch(CpuState *s, uint32_t target) {
             sr_unimplemented(pc,"VFPU runtime interpreter returned SR_VFPU_OTHER");
         }
         s->pc=pc+4;
-        return;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
     }
     /* Configured callback terminators.
      *
@@ -1784,7 +1786,7 @@ void dispatch(CpuState *s, uint32_t target) {
     if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
         s->r[2] = 1u;
         s->pc = s->r[31];
-        return;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
     }
     /* CpuState corruption guard: a PC of 0 means the thread state has collapsed.
      * Terminate the thread to prevent infinite spinning/deadlock. */
@@ -1793,7 +1795,7 @@ void dispatch(CpuState *s, uint32_t target) {
         if (sched_current_uid() != 0) {
             sched_terminate_thread(sched_current_uid());
         }
-        return;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
     }
     static int plt_miss_streak = 0;  /* PLT consecutive-miss counter for force-terminate */
     /* The entry guard above (`if (s->pc == 0)`, near the top of this function) already
@@ -1826,7 +1828,7 @@ void dispatch(CpuState *s, uint32_t target) {
                 pc0_n++;
             }
             sched_exit_current(0);
-            return;
+            return SR_GUEST_INTERP_AOT_HANDOFF;
         }
     }
 
@@ -1864,7 +1866,7 @@ void dispatch(CpuState *s, uint32_t target) {
             g_hle_depth++;
             int rc = h->fn(s, target);
             g_hle_depth--;
-            if (rc == 0) return;  /* consumed */
+            if (rc == 0) return SR_GUEST_INTERP_AOT_HANDOFF;  /* consumed */
             /* rc == 1: fall through (trace-only hook) */
         }
     }
@@ -1886,7 +1888,7 @@ void dispatch(CpuState *s, uint32_t target) {
         uint32_t alias_target = 0u;
         if (sr_title_config_dispatch_alias(target, &alias_target)) {
             RecompFn aliased = sr_lookup(alias_target);
-            if (aliased) { aliased(s); return; }
+            if (aliased) { aliased(s); return SR_GUEST_INTERP_AOT_HANDOFF; }
         }
     }
 
@@ -1896,7 +1898,7 @@ void dispatch(CpuState *s, uint32_t target) {
         g_hle_depth++;
         int rc = h->fn(s, target);
         g_hle_depth--;
-        if (rc == 0) return;  /* consumed */
+        if (rc == 0) return SR_GUEST_INTERP_AOT_HANDOFF;  /* consumed */
     }
 
     /* Diagnostic: the launcher's init-array walker (f_00000fa0, dispatch site 0x00000fdc)
@@ -1983,7 +1985,7 @@ void dispatch(CpuState *s, uint32_t target) {
                 late_hle_n++;
             }
             sr_hle_call(s, target);
-            return;
+            return SR_GUEST_INTERP_AOT_HANDOFF;
         }
         if (late != 0 && late != target) {
             /* Normalize the resolved export the same way direct targets are. */
@@ -2193,28 +2195,34 @@ void dispatch(CpuState *s, uint32_t target) {
             }
             s->r[2] = 0u;  /* Honest failure: import not resolved */
             s->pc = s->r[31];
-            return;
+            return SR_GUEST_INTERP_AOT_HANDOFF;
         }
         plt_miss_streak = 0;  /* Reset on any non-PLT dispatch */
-        /* Boot-progress fix: a dispatch miss into a statically-unrecompiled region
-         * (e.g. a function pointer stored in a vtable pointing into a runtime-loaded
-         * PRX module, or a codegen-missed function) is no longer fatal. Return 0 (safe
-         * sentinel) to the caller so boot proceeds and we can observe subsequent misses.
-         * Set SR_DISPATCH_FATAL=1 to restore the old exit(1) when chasing the FIRST miss.
-         * s->pc + 8 handles both jalr (where ra = s->pc + 8, same as old s->r[31]) and
-         * jr tail-call thunks (advances past the jr+delay-slot, breaking infinite loops). */
-        static int nonplt_miss_n = 0;
-        if (nonplt_miss_n < 64) {
-            fprintf(stderr, "  NONPLT_MISS: returning 0 (sentinel) from pc=0x%08x new_pc=0x%08x ra=0x%08x\n",
-                    s->pc, s->pc + 8, s->r[31]);
-            nonplt_miss_n++;
+        /* A valid executable miss is not a fabricated success. Only bytes inside an
+         * explicitly registered executable span may execute; the interpreter itself
+         * stops at a registered AOT destination. Every rejection leaves the rejected
+         * instruction's architectural effects unapplied and propagates to dispatch(),
+         * whose public wrapper terminates instead of resuming native code as if the
+         * guest call had succeeded. */
+        SrGuestInterpFault fault;
+        SrGuestInterpResult interp_result = sr_guest_interp_run(s, target, &fault);
+        if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF) {
+            return SR_GUEST_INTERP_AOT_HANDOFF;
         }
-        if (getenv("SR_DISPATCH_FATAL")) {
-            exit(1);
-        }
-        s->r[2] = 0;
-        s->pc = s->pc + 8;
-        return;
+        fprintf(stderr,
+                "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "
+                "opcode=%s0x%08x address=0x%08x\n",
+                target, sr_guest_interp_result_name(interp_result), fault.pc,
+                fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
+        return (int)interp_result;
+    }
+    return SR_GUEST_INTERP_AOT_HANDOFF;
+}
+
+void dispatch(CpuState *s, uint32_t target) {
+    if (dispatch_try(s, target) < 0) {
+        fflush(stderr);
+        exit(1);
     }
 }
 

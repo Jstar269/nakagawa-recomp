@@ -39,13 +39,21 @@ class TestNativeDriverHardening(unittest.TestCase):
 #include "{DRIVER_C.as_posix()}"
 
 static uint8_t g_mock_ram[0x0c000000];
-uint8_t *g_mem = g_mock_ram;
+uint8_t *g_mem = g_mock_ram + 0x08000000;
 static int g_mem_init_calls = 0;
 static int g_segment_loads = 0;
 static int g_check_all_or_nothing = 0;
 
 uint32_t g_sr_debug = 0;
 int sr_hit_hle = 0;
+int g_sr_metadata_watch = 0;
+int g_hle_depth = 0;
+CpuState *s_cpu = NULL;
+void sr_oor(uint32_t address, uint32_t value, int store) {{
+    (void)address; (void)value; (void)store;
+}}
+uint32_t sr_get_ge_status(void) {{ return 0; }}
+uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
 void sr_perf_init(void) {{}}
 void sr_profile_init(void) {{}}
@@ -284,6 +292,61 @@ int main(int argc, char **argv) {{
         return driver_main(7, argv_fake);
     }}
 
+    if (strcmp(mode, "image_expect_valid") == 0) {{
+        if (argc < 3) return 100;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020:0x12345678"
+        }};
+        return driver_main(8, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_mismatch") == 0) {{
+        if (argc < 3) return 101;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020:0x87654321"
+        }};
+        return driver_main(8, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_malformed") == 0) {{
+        if (argc < 3) return 102;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020"
+        }};
+        return driver_main(8, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_out_of_range") == 0) {{
+        if (argc < 3) return 103;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0xffffffff:0x12345678"
+        }};
+        return driver_main(8, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_unaligned") == 0) {{
+        if (argc < 3) return 104;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000021:0x12345678"
+        }};
+        return driver_main(8, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_duplicate") == 0) {{
+        if (argc < 3) return 105;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020:0x12345678",
+            "--expect-u32=0x08000020:0x12345678"
+        }};
+        return driver_main(9, argv_fake);
+    }}
+
     return 99;
 }}
 '''
@@ -308,7 +371,9 @@ int main(int argc, char **argv) {{
                 encoding="ascii",
             )
             zero_file.write_bytes(b"")
-            sample_img.write_bytes(b"\x00" * 256)
+            sample_bytes = bytearray(256)
+            sample_bytes[0x20:0x24] = (0x12345678).to_bytes(4, "little")
+            sample_img.write_bytes(sample_bytes)
 
             # driver.c reads its fallback entry from the generic title configuration.
             # Build against the generic (no-title) configuration so this harness keeps
@@ -364,6 +429,35 @@ int main(int argc, char **argv) {{
             # 6. Valid --image load
             valid_img = subprocess.run([str(exe), "image_valid", str(sample_img)], capture_output=True, text=True)
             self.assertEqual(valid_img.returncode, 0, valid_img.stderr + valid_img.stdout)
+
+            expected_img = subprocess.run(
+                [str(exe), "image_expect_valid", str(sample_img)], capture_output=True, text=True
+            )
+            self.assertEqual(expected_img.returncode, 0, expected_img.stderr + expected_img.stdout)
+            self.assertIn(
+                "DRIVER_EXPECT_U32 addr=0x08000020 got=0x12345678 expected=0x12345678 status=PASS",
+                expected_img.stderr,
+            )
+
+            mismatched_img = subprocess.run(
+                [str(exe), "image_expect_mismatch", str(sample_img)], capture_output=True, text=True
+            )
+            self.assertEqual(mismatched_img.returncode, 3, mismatched_img.stderr + mismatched_img.stdout)
+            self.assertIn("status=FAIL", mismatched_img.stderr)
+
+            for mode in (
+                "image_expect_malformed",
+                "image_expect_out_of_range",
+                "image_expect_unaligned",
+                "image_expect_duplicate",
+            ):
+                result = subprocess.run([str(exe), mode, str(sample_img)], capture_output=True, text=True)
+                self.assertEqual(
+                    result.returncode,
+                    2,
+                    f"{mode} expected exit code 2, got {result.returncode}.\n"
+                    f"Stderr: {result.stderr}\nStdout: {result.stdout}",
+                )
 
             # 7. Malformed --image cases must exit(2)
             for mode in (

@@ -274,7 +274,10 @@ jobs:
         # title-configuration accessors, so it must link src/rt/title_config.c
         # against a generated artifact exactly as the Makefile target does. The
         # generic configuration is what CI wants: no manifest, every binding
-        # disabled, both typed collections empty.
+        # disabled, both typed collections empty. recomp.c's sr_lookup()/
+        # dispatch() also consult the exec-span registry and interpreter floor,
+        # so src/rt/guest_interp.c must be linked here exactly as the Makefile
+        # target does.
         run: |
           mkdir -p build/title-config/generic
           python tools/title_runtime_config.py \
@@ -282,13 +285,13 @@ jobs:
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
             -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -525,6 +528,37 @@ jobs:
           unset CC
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VULKAN_SDK=/ucrt64 runtime-objects
+
+      # This is the executable production-path gate. It generates a public
+      # PSP-shaped PRX, runs the normal loader/import/analyzer/codegen pipeline,
+      # links every production runtime object with the real driver, and reaches
+      # a real HLE NID through the scheduler before checking the guest sentinel.
+      - name: Build and run full production pipeline smoke
+        shell: msys2 {0}
+        # The ordinary compile target invokes the repository's PowerShell 7.6
+        # asset-copy script after linking. Keep the broader Windows PATH scoped
+        # to this step so MSYS2 can resolve the runner's `pwsh` without changing
+        # tool selection in the other UCRT64 compile gates.
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke
+
+      # AOT-gap seam proof on the same source-owned fixture: the helper is
+      # omitted from native emission at build time, so region A reaches it via
+      # the ordinary production dispatch() path. Generated executable-span
+      # ownership gates interpretation, and the run must hand off to registered
+      # AOT region B before the final production-driver assertion can pass.
+      - name: Build and run AOT-gap dispatch-seam smoke
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
       - name: Build and run scheduler selftest
         shell: msys2 {0}
