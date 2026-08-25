@@ -150,6 +150,13 @@ void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
 void sr_vread(float *r, const CpuState *s, const uint8_t *idx, int n, uint32_t prefix);
 void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t prefix);
+/* Generated sr_register_all() opens with the exec-span registry contract
+ * (sr_exec_span_reset + one sr_exec_span_register per executable span,
+ * failing closed when registration returns zero). This isolated harness
+ * declares the same generated interface and supplies accepting no-op
+ * stubs below instead of linking the whole runtime. */
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
 #endif
 """,
                 encoding="ascii",
@@ -164,6 +171,8 @@ void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t prefix
 #include "fp_convert_funcs.h"
 
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) { (void)addr; (void)fn; }
+void sr_exec_span_reset(void) {}
+int sr_exec_span_register(uint32_t start, uint32_t end) { (void)start; (void)end; return 1; }
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) { (void)s; (void)code; (void)pc; }
 void sr_hle_call(CpuState *s, uint32_t nid) { (void)s; (void)nid; }
 void sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; }
