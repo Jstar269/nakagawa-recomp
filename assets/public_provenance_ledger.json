@@ -288,7 +288,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ed20d9da3d0a4fc14a44b441caab4e4d31bc61c067fde92a525e2a7e94d2141d"
+      "sha256": "acd819dbaf87c19846a3dcbee11a272ce6b45bc428b032af7217554d8b117562"
     },
     {
       "path": "README.md",
@@ -380,7 +380,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b9fb0ecda50d37f336b0e76d52aa70379ec32e2286d96b0f0959f66dc848d76a"
+      "sha256": "64104f1258053ef458f810cbe93eccca0d3cbc0612be6c97bc6414bd9ef8fcc9"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -389,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "afc2b5e636ac0c071dd22c20768a412b76ae2a7d83927031329476a33610203d"
+      "sha256": "408102327b2ab78cf7163829aa77c6d8bb3f23d8c4649c0ad539ccfef88864b5"
     },
     {
       "path": "assets/release_manifest.json",
@@ -742,6 +742,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d71da8a629af814098006f08de17b79ee5bcd569650b02975d82cb627e216b5e"
+    },
+    {
+      "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "baac58ab421868e217626e741a8977f12852b0695329e1cc2fcb497b19052175"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -6501,6 +6510,15 @@
         "upstream_attribution": null
       },
       "sha256": "8f4368928e10be6dfb6c693bc08333665abb7ed4f0d05b0a5dbcb03f380fc95a"
+    },
+    {
+      "path": "tools/test_hardware_runner_protocol.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "972752bd9aec66c2b7a8d56afbf1fecced21b46e588d8f12113028cb60219ebe"
     },
     {
       "path": "tools/test_history_audit.py",
