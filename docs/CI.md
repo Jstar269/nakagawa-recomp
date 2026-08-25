@@ -47,6 +47,20 @@ test, lint, type-check, build, and standalone-output leakage checks. Native and
 Windows jobs remain synthetic/public-input gates; no private game input is put in
 Actions.
 
+The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
+SDL3, and Vulkan environment. That target generates its PSP-shaped input from committed source,
+uses the ordinary loader/import/analyzer/codegen pipeline, links the complete public-safe
+production runtime and real driver, and then reaches a registered HLE NID through the scheduler.
+Its pass condition is a relocation-dependent guest-memory sentinel checked by the production
+driver. The link map and runtime markers make reduced `gate_stub` substitution or omitted critical
+objects fail closed. This is a production-composition integration test, not PSP-hardware or private
+title acceptance evidence.
+
+The Windows job also runs `production-smoke-gap`: the same fixture with its helper omitted from
+native emission at build time, proving region A reaches the omitted guest address through the
+ordinary production `dispatch()` seam and that, pre-interpreter (issue #116), the miss terminates
+under `SR_DISPATCH_FATAL=1`.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a

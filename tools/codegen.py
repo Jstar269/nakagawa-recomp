@@ -28,6 +28,36 @@ class EntryInfo:
     provenance: frozenset[str]
 
 
+class _OmitAot:
+    """Build-time AOT-omission set (--omit-aot=ADDR[,ADDR...]).
+
+    An omitted address stays in the guest image and in analyzer discovery, but is
+    removed from the emission/registration catalog, so generated callers reach it
+    through the ordinary production ``dispatch()`` path instead of a direct C
+    call. This is the seam an interpreter fallback plugs into; with no
+    interpreter it fails closed at the dispatch miss.
+    """
+
+    def __init__(self) -> None:
+        self.addrs: set[int] = set()
+
+    def apply(self, catalog: dict, entry_addr: int) -> int:
+        removed = 0
+        for addr in sorted(self.addrs):
+            if addr == entry_addr:
+                raise ValueError(
+                    f"--omit-aot refuses to omit the ELF entry 0x{addr:08x}"
+                )
+            if addr not in catalog:
+                raise ValueError(
+                    f"--omit-aot address 0x{addr:08x} was not discovered as an "
+                    "entry; refusing to omit an unknown address"
+                )
+            del catalog[addr]
+            removed += 1
+        return removed
+
+
 # HST compatibility inventory.  These are structural entry classifications, not
 # replacement behavior: every address is translated from the guest ELF.  Keep the
 # profile explicit so unrelated zero-based MIPS ELFs do not inherit title addresses.
@@ -1782,6 +1812,7 @@ def main(argv):
     funcs_per_chunk = 2000
     chunk_target_bytes = 0
     extra_span_arg = None
+    omit_aot = _OmitAot()
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     for o in opts:
@@ -1812,6 +1843,16 @@ def main(argv):
             if chunk_target_bytes < 1:
                 sys.stderr.write("--target-chunk-bytes must be at least 1\n")
                 return 2
+        elif o.startswith("--omit-aot="):
+            for part in o.split("=", 1)[1].split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    omit_aot.addrs.add(int(part, 16))
+                except ValueError:
+                    sys.stderr.write(f"invalid --omit-aot address: {o}\n")
+                    return 2
         elif o.startswith("--extra-elf="):
             cli_extra_specs.append(o.split("=", 1)[1])
 
@@ -1840,6 +1881,10 @@ def main(argv):
     # span at all, so one module's title configuration can never reach another's.
     analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
+    omitted = omit_aot.apply(catalog, elf.entry)
+    if omitted:
+        for addr in sorted(omit_aot.addrs):
+            sys.stderr.write(f"CODEGEN_OMIT_AOT 0x{addr:08x} dispatch-fallback\n")
     known = {addr for addr, info in catalog.items() if info.callable}
     resume_owners = {
         addr: info.owner for addr, info in catalog.items() if info.resumable

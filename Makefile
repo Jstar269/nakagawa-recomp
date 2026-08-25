@@ -172,6 +172,29 @@ PSP_ORACLE_SMOKE_HEADER  := $(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_funcs.h
 PSP_ORACLE_SMOKE_CHUNK   := $(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c
 PSP_ORACLE_SMOKE_ADAPTER := $(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c
 
+# Public, source-owned end-to-end production smoke. The recipe emits its binary
+# inputs only under the ignored build tree, then deliberately re-enters the normal
+# two-phase `all` path so the test cannot substitute a reduced link harness.
+PRODUCTION_SMOKE_DIR       := build/production-smoke
+PRODUCTION_SMOKE_FIXTURE   := $(PRODUCTION_SMOKE_DIR)/fixture
+PRODUCTION_SMOKE_GENERATOR := fixtures/production_smoke/generate.py
+PRODUCTION_SMOKE_PRX       := $(PRODUCTION_SMOKE_FIXTURE)/guest.prx
+PRODUCTION_SMOKE_PSP       := $(PRODUCTION_SMOKE_FIXTURE)/guest.psp
+PRODUCTION_SMOKE_MAP       := $(PRODUCTION_SMOKE_DIR)/production_smoke.map
+
+# The AOT-gap mode of the same fixture: identical guest addresses, but the
+# helper is omitted from native emission (--omit-aot) so region A reaches it
+# through the ordinary production dispatch() seam.
+PRODUCTION_SMOKE_GAP_DIR       := build/production-smoke-gap
+PRODUCTION_SMOKE_GAP_FIXTURE   := $(PRODUCTION_SMOKE_GAP_DIR)/fixture
+PRODUCTION_SMOKE_GAP_MAP       := $(PRODUCTION_SMOKE_GAP_DIR)/production_smoke_gap.map
+PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
+
+# Caller-supplied extra codegen arguments (build-time codegen choices such as
+# the smoke's --omit-aot). Empty by default; carried into the codegen profile
+# hash so changing it regenerates instead of reusing stale output.
+CODEGEN_USER_ARGS ?=
+
 # A filtered public candidate omits the lineage-sensitive PGF backend and the
 # PGD/amctrl implementation. Full private checkouts default to both backends;
 # candidate trees default to fail-closed project-authored unavailable backends.
@@ -436,7 +459,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -464,11 +487,53 @@ all:
 	$(MAKE) pipeline
 	$(MAKE) compile
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" $(CHUNK_TARGET_ENTRY))
+production-smoke:
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_FIXTURE)
+	$(MAKE) all \
+		GAME_NAME=production_smoke \
+		GAME_ELF=$(PRODUCTION_SMOKE_PRX) \
+		GAME_BASE=0x08804000 \
+		GAME_ENTRY=0x08804000 \
+		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_PSP) \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PRODUCTION_SMOKE_DIR) \
+		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
+		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_MAP)"
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+
+production-smoke-clean:
+	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
+
+# AOT-gap mode of the same fixture: the helper is omitted from native emission
+# (build-time codegen choice), so region A reaches it through the ordinary
+# production dispatch() seam. Until a production interpreter fallback exists,
+# that miss must terminate under SR_DISPATCH_FATAL=1, and the run stage asserts
+# exactly that evidence.
+production-smoke-gap:
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_GAP_FIXTURE) --mode aot-gap
+	$(MAKE) all \
+		GAME_NAME=production_smoke_gap \
+		GAME_ELF=$(PRODUCTION_SMOKE_GAP_FIXTURE)/guest.prx \
+		GAME_BASE=0x08804000 \
+		GAME_ENTRY=0x08804000 \
+		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_GAP_FIXTURE)/guest.psp \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) \
+		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
+		CODEGEN_USER_ARGS=$(PRODUCTION_SMOKE_GAP_CODEGEN_ARGS) \
+		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_GAP_MAP)"
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
+
+production-smoke-gap-clean:
+	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) clean
+
+CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -484,7 +549,7 @@ $(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py
 	$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE) $(PSP_HEADER_ENV_ARG) --out=$@
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) tools/codegen.py --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG)
+	$(PYTHON) tools/codegen.py --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
