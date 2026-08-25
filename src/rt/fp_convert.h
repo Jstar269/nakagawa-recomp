@@ -19,6 +19,19 @@
 // modes, ties, and non-finite result words. Fixed round.w.s ties, finite
 // overflow, scaled VFPU overflow, and subnormal edges rely on the cited MIPS
 // contract plus PPSSPP precedent rather than a direct current hardware vector.
+//
+// Scalar arithmetic (below) extends the same behavioral-contract approach to
+// FCR31-directed add/sub/mul/div.s and int-to-float conversion:
+// - PSPAutotests fpu.expected (PSP_HARDWARE capture) pins mul.s RM anchors,
+//   the FS bit-24 flush gate on smallest-normal*0.5, and FCC0 at bit 23.
+// - MIPS32 Volume II defines RM-directed rounding for ADD/SUB/MUL/DIV.S and
+//   CVT.S.W, with FS gating subnormal RESULT flushing only.
+//
+// Guest-visible FS semantics modeled here: FS=1 flushes an underflowing
+// RESULT to signed zero. Input-side DAZ-on-FS is publicly unmeasured
+// inference and is deliberately NOT modeled: subnormal inputs always keep
+// gradual weight, matching both the measured FS=0 behavior and x86/ARM hosts.
+// No COP1 cause/flag bits are produced; that remains unmodeled scope.
 
 #ifndef SR_FP_CONVERT_H
 #define SR_FP_CONVERT_H
@@ -147,6 +160,122 @@ static inline uint32_t sr_vfpu_to_word(float x, unsigned mode, unsigned scale) {
 static inline int32_t sr_u32_as_s32(uint32_t bits) {
     if (bits <= 0x7fffffffu) return (int32_t)bits;
     return -1 - (int32_t)(0xffffffffu - bits);
+}
+
+/* ---- Guest FCR31 field layout and scalar arithmetic helpers ----
+ *
+ * FCR31 bits consumed by this layer: RM [1:0], FCC0 [23], FS [24].
+ *
+ * Fast-path predicate: emitted scalar code may use the plain host operation
+ * exactly when the guest has no non-default arithmetic policy. Only RM and FS
+ * alter scalar results in the modeled slice; flags, enables, cause, FCC, and
+ * reserved bits must neither force nor bypass the helper path. The predicate
+ * additionally relies on the HOST environment being at its IEEE defaults
+ * (round-to-nearest, gradual underflow): the runtime owns that assumption and
+ * nothing in it mutates process-global FP state (latent contamination from
+ * foreign host libraries remains recorded risk RISK-8).
+ */
+#define SR_FCR31_RM_MASK 0x00000003u
+#define SR_FCR31_FCC0    0x00800000u
+#define SR_FCR31_FS      0x01000000u
+
+static inline int sr_fpu_scalar_fast(uint32_t fcr31) {
+    return (fcr31 & (SR_FCR31_RM_MASK | SR_FCR31_FS)) == 0u;
+}
+
+#if defined(__SSE2__) || defined(_M_X64) || defined(__i386__)
+#include <xmmintrin.h>
+
+static inline uint32_t sr_fpu_env_save(void) {
+    return _mm_getcsr();
+}
+
+/* Install the guest's rounding policy on the host FP environment.
+ *
+ * Guest RM uses the MIPS encoding (0=RN, 1=RZ, 2=RP/+inf, 3=RM/-inf); MXCSR
+ * RC uses a different order (RN, -inf, +inf, zero), so the modes are
+ * translated explicitly instead of copied. FS=1 maps to MXCSR.FTZ so an
+ * underflowing result becomes signed zero, matching the PSP-visible flush
+ * contract; DAZ is deliberately left untouched (input flushing is unmeasured
+ * on PSP and must not be invented). Exception mask/flag fields are preserved
+ * exactly as found, so no helper can unmask a host FP exception. */
+static inline void sr_fpu_env_apply_guest(uint32_t fcr31) {
+    static const uint32_t rm_to_mxcsr[4] = {0u, 3u, 2u, 1u};
+    uint32_t csr = _mm_getcsr();
+    csr &= ~(0x3u << 13);
+    csr |= rm_to_mxcsr[fcr31 & SR_FCR31_RM_MASK] << 13;
+    if (fcr31 & SR_FCR31_FS) {
+        csr |= 1u << 15;
+    } else {
+        csr &= ~(1u << 15);
+    }
+    _mm_setcsr(csr);
+}
+
+static inline void sr_fpu_env_restore(uint32_t saved) {
+    _mm_setcsr(saved);
+}
+
+#else
+#error "Scalar COP1 helpers need SSE2 for scoped host FP-environment control"
+#endif
+
+/* Each wrapper saves the host environment, installs the guest policy, executes
+ * exactly one bounded operation, and restores before returning. The SSE
+ * intrinsics expand to volatile asm, so the compiler may not float the
+ * arithmetic across the environment transitions; each single C statement also
+ * prevents contraction into a fused form. No yield/callback/HLE can observe
+ * the modified environment: it lives only inside these inline bodies. */
+
+static inline float sr_fpu_add_s(float a, float b, uint32_t fcr31) {
+    const uint32_t saved = sr_fpu_env_save();
+    float r;
+    sr_fpu_env_apply_guest(fcr31);
+    r = a + b;
+    sr_fpu_env_restore(saved);
+    return r;
+}
+
+static inline float sr_fpu_sub_s(float a, float b, uint32_t fcr31) {
+    const uint32_t saved = sr_fpu_env_save();
+    float r;
+    sr_fpu_env_apply_guest(fcr31);
+    r = a - b;
+    sr_fpu_env_restore(saved);
+    return r;
+}
+
+static inline float sr_fpu_mul_s(float a, float b, uint32_t fcr31) {
+    const uint32_t saved = sr_fpu_env_save();
+    float r;
+    sr_fpu_env_apply_guest(fcr31);
+    r = a * b;
+    sr_fpu_env_restore(saved);
+    return r;
+}
+
+static inline float sr_fpu_div_s(float a, float b, uint32_t fcr31) {
+    const uint32_t saved = sr_fpu_env_save();
+    float r;
+    sr_fpu_env_apply_guest(fcr31);
+    r = a / b;
+    sr_fpu_env_restore(saved);
+    return r;
+}
+
+/* CVT.S.W rounds per guest RM near the binary32 precision boundary. Unlike the
+ * fast-path-guarded arithmetic above there is no host-default shortcut here:
+ * a bare int-to-float cast follows whatever mode the host currently has, so
+ * even guest RN goes through the scoped environment to pin round-to-nearest
+ * deterministically. FS cannot affect this conversion (an integer converts to
+ * a magnitude of at least 1.0 or to zero), so only RM is applied. */
+static inline float sr_fpu_cvt_s_w(int32_t value, uint32_t fcr31) {
+    const uint32_t saved = sr_fpu_env_save();
+    float r;
+    sr_fpu_env_apply_guest(fcr31 & SR_FCR31_RM_MASK);
+    r = (float)value;
+    sr_fpu_env_restore(saved);
+    return r;
 }
 
 #ifdef __cplusplus

@@ -373,7 +373,14 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 					SetR(s, ft, fs == 31 ? s->fcr31 : (fs == 0 ? 0x00003351u : 0u));
 					return StopReason::kRunning;
 				case 0x04: s->fi[fs] = s->r[ft]; return StopReason::kRunning;     // mtc1
-				case 0x06: if (fs == 31) s->fcr31 = s->r[ft]; return StopReason::kRunning;  // ctc1
+				case 0x06:
+					// ctc1 stores the guest FCSR wholesale; the cached fpcond
+					// mirror resyncs so FCC0 stays architectural in fcr31.
+					if (fs == 31) {
+						s->fcr31 = s->r[ft];
+						s->fpcond = (s->fcr31 >> 23) & 1u;
+					}
+					return StopReason::kRunning;  // ctc1
 				case 0x08: {  // bc1f / bc1t / bc1fl / bc1tl
 					bool tf = (op >> 16) & 1;
 					bool likely = (op >> 17) & 1;
@@ -383,18 +390,19 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 				}
 				case 0x10: {  // fmt = S
 					const uint32_t funct = Funct(op);
+					const uint32_t fcr31 = s->fcr31;
 					switch (funct) {
-						case 0x00: s->f[fd] = s->f[fs] + s->f[ft]; return StopReason::kRunning;  // add.s
-						case 0x01: s->f[fd] = s->f[fs] - s->f[ft]; return StopReason::kRunning;  // sub.s
-						case 0x02: {  // mul.s; PPSSPP forces inf*0 to the positive canonical NaN
+						case 0x00: s->f[fd] = sr_fpu_add_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // add.s
+						case 0x01: s->f[fd] = sr_fpu_sub_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // sub.s
+						case 0x02: {  // mul.s; the inf*0 canonical NaN is forced before RM-directed multiply
 							float a = s->f[fs], b = s->f[ft];
 							if ((std::isinf(a) && b == 0.0f) || (std::isinf(b) && a == 0.0f))
 								s->fi[fd] = 0x7fc00000;
 							else
-								s->f[fd] = a * b;
+								s->f[fd] = sr_fpu_mul_s(a, b, fcr31);
 							return StopReason::kRunning;
 						}
-						case 0x03: s->f[fd] = s->f[fs] / s->f[ft]; return StopReason::kRunning;  // div.s
+						case 0x03: s->f[fd] = sr_fpu_div_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // div.s
 						case 0x04: s->f[fd] = std::sqrt(s->f[fs]); return StopReason::kRunning;  // sqrt.s
 						case 0x05: s->f[fd] = std::fabs(s->f[fs]); return StopReason::kRunning;  // abs.s
 						case 0x06: s->f[fd] = s->f[fs]; return StopReason::kRunning;             // mov.s
@@ -412,7 +420,10 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 								bool less = !unordered && a < b;
 								bool equal = !unordered && a == b;
 								bool result = (unordered && (cond & 1)) || (equal && (cond & 2)) || (less && (cond & 4));
-								s->fpcond = result ? 1 : 0;  // PPSSPP stores the condition here, not in fcr31
+								s->fpcond = result ? 1 : 0;
+								// FCC0 stays architectural in fcr31; the cached
+								// fpcond mirror and bit 23 move together.
+								s->fcr31 = (s->fcr31 & ~0x00800000u) | (s->fpcond << 23);
 								return StopReason::kRunning;
 							}
 							return StopReason::kUnimplemented;
@@ -420,11 +431,10 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 				}
 				case 0x14: {  // fmt = W
 					if (Funct(op) == 0x20) {
-						// cvt.s.w: map the W register's bit pattern to its signed value
-						// without an implementation-defined uint32_t-to-int32_t cast.
-						s->f[fd] = (float)sr_u32_as_s32(s->fi[fs]);
-					return StopReason::kRunning;
-				}
+						// cvt.s.w rounds per guest FCR31 RM (see fp_convert.h).
+						s->f[fd] = sr_fpu_cvt_s_w(sr_u32_as_s32(s->fi[fs]), s->fcr31);
+						return StopReason::kRunning;
+					}
 					return StopReason::kUnimplemented;
 				}
 				default: return StopReason::kUnimplemented;

@@ -2531,7 +2531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "e00a0e576308d01e7a4ac31efbdd0d5ad7b7c3701009fe74268f2a7fa4543dd2"
+      "sha256": "299b31a04178065d773dd20a30cc0e5ec1569926ad31bb7e127ed5c7fa01c07a"
     },
     {
       "path": "src/ref/interp.h",
@@ -3966,7 +3966,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "dff5c638a81d5d45005fce292cacf7ddb5a3e99e6462582b90ee4662cee416a8"
+      "sha256": "89be5ec7c9b9a7dc1b558b5fea03328590fb78806d5d73eb5781c281bca3f70a"
     },
     {
       "path": "src/rt/fp_convert_selftest.c",
@@ -3978,7 +3978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "026776fd928dc6989c8f6ee6f297aa633222e7ce3a45b199c5286a504ea64cf0"
+      "sha256": "9e629ac6b1056aeae84917539c185bc2ec921899ceb0e5ce4847105b894cf45f"
     },
     {
       "path": "src/rt/funcdiff.c",
@@ -5105,7 +5105,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3f028ad3db9025ba8f6ff76cf3ad90d8d4e8a62ceaf8ea46f5781e7adc351dc3"
+      "sha256": "c609d3869b2ea2c7f1b9b680f9d1382bd4b46f8ee9fe1d240b5fffdf20d0a24c"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6203,7 +6203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8d2cc42237781d7c36903a47ced55ffd95c5f36bed278754db6304343e06aec"
+      "sha256": "32ada45474b4623c8d311dc52de9c7ff5689977db936daa88b2dddd513be4070"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",

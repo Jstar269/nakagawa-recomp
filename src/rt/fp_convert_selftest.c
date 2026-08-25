@@ -101,6 +101,73 @@ static const VfpuVector kVfpuVectors[] = {
     {"vf2iu subnormal",    0x00000001u, 2u, 31u, 0x00000001u},
 };
 
+/* Guest-RM-directed scalar arithmetic. Expected words are source-owned,
+ * independently derived correctly-rounded binary32 results; the mul.s RM row
+ * reproduces the PSP_HARDWARE-published anchors (18.386576 RN/RP vs
+ * 18.386574 RZ/RM) and the FS rows reproduce the measured flush gate on
+ * smallest-normal*0.5. Helpers must dominate the ambient host rounding mode,
+ * so every row runs under all four host modes. */
+typedef struct ScalarOpVector {
+    const char *name;
+    uint8_t op;               /* 0=add 1=sub 2=mul 3=div */
+    uint32_t a_bits;
+    uint32_t b_bits;
+    uint32_t fcr31;
+    uint32_t expected;
+} ScalarOpVector;
+
+#define SR_FP_OP_ADD 0u
+#define SR_FP_OP_SUB 1u
+#define SR_FP_OP_MUL 2u
+#define SR_FP_OP_DIV 3u
+
+static const ScalarOpVector kScalarOpVectors[] = {
+    {"mul RM anchors RN",   SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0u,          0x419317b5u},
+    {"mul RM anchors RZ",   SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 1u,          0x419317b4u},
+    {"mul RM anchors RP",   SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 2u,          0x419317b5u},
+    {"mul RM anchors RM",   SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 3u,          0x419317b4u},
+    {"add tie RN keeps",    SR_FP_OP_ADD, 0x3f800000u, 0x33800000u, 0u,          0x3f800000u},
+    {"add tie RP bumps",    SR_FP_OP_ADD, 0x3f800000u, 0x33800000u, 2u,          0x3f800001u},
+    {"sub tie RP toward+inf",SR_FP_OP_SUB, 0x3f800000u, 0x33c00000u, 2u,          0x3f7fffffu},
+    {"div 1/3 RN",          SR_FP_OP_DIV, 0x3f800000u, 0x40400000u, 0u,          0x3eaaaaabu},
+    {"div 1/3 RZ",          SR_FP_OP_DIV, 0x3f800000u, 0x40400000u, 1u,          0x3eaaaaaau},
+    {"mul FS=0 gradual",    SR_FP_OP_MUL, 0x00800000u, 0x3f000000u, 0u,          0x00400000u},
+    {"mul FS=1 flush",      SR_FP_OP_MUL, 0x00800000u, 0x3f000000u, 0x01000000u, 0x00000000u},
+    {"mul FS=1 flush -sign",SR_FP_OP_MUL, 0x80800000u, 0x3f000000u, 0x01000000u, 0x80000000u},
+    {"mul FS=1 RN normal",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000000u, 0x419317b5u},
+    {"mul RM+FS combined",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000001u, 0x419317b4u},
+};
+
+/* CVT.S.W honors guest RM near the binary32 precision boundary. */
+typedef struct CvtSwVector {
+    const char *name;
+    uint32_t word;
+    uint32_t fcr31;
+    uint32_t expected;
+} CvtSwVector;
+
+static const CvtSwVector kCvtSwVectors[] = {
+    {"cvt.s.w 2^24+1 RN",   0x01000001u, 0u,          0x4b800000u},
+    {"cvt.s.w 2^24+1 RP",   0x01000001u, 2u,          0x4b800001u},
+    {"cvt.s.w 2^24+1 RZ",   0x01000001u, 1u,          0x4b800000u},
+    {"cvt.s.w -(2^24+1) RN",0xfeffffffu, 0u,          0xcb800000u},
+    {"cvt.s.w -(2^24+1) RM",0xfeffffffu, 3u,          0xcb800001u},
+    {"cvt.s.w exact 7",     0x00000007u, 2u,          0x40e00000u},
+    {"cvt.s.w exact -1",    0xffffffffu, 1u,          0xbf800000u},
+};
+
+static uint32_t apply_scalar_op(unsigned op, float a, float b, uint32_t fcr31) {
+    float r;
+    switch (op) {
+        case SR_FP_OP_ADD: r = sr_fpu_add_s(a, b, fcr31); break;
+        case SR_FP_OP_SUB: r = sr_fpu_sub_s(a, b, fcr31); break;
+        case SR_FP_OP_MUL: r = sr_fpu_mul_s(a, b, fcr31); break;
+        default:           r = sr_fpu_div_s(a, b, fcr31); break;
+    }
+    return sr_float_bits(r);
+}
+
+
 int main(void) {
     static const struct {
         const char *name;
@@ -112,6 +179,12 @@ int main(void) {
         {"FE_TOWARDZERO", FE_TOWARDZERO},
     };
     const int saved_mode = fegetround();
+
+    /* Host environment baseline, captured before any helper runs so the
+     * restoration probe can prove exact recovery rather than assume defaults. */
+    const uint32_t csr_baseline = sr_fpu_env_save();
+    float baseline_third = 1.0f / 3.0f;
+    const uint32_t baseline_third_bits = sr_float_bits(baseline_third);
 
     for (size_t m = 0; m < sizeof(host_modes) / sizeof(host_modes[0]); m++) {
         if (fesetround(host_modes[m].value) != 0) {
@@ -131,6 +204,21 @@ int main(void) {
                        sr_vfpu_to_word(float_from_bits(v->input_bits), v->mode, v->scale),
                        v->expected);
         }
+        /* Guest-RM arithmetic must dominate whatever mode the host is in. */
+        for (size_t i = 0; i < sizeof(kScalarOpVectors) / sizeof(kScalarOpVectors[0]); i++) {
+            const ScalarOpVector *v = &kScalarOpVectors[i];
+            check_word(v->name, host_modes[m].name,
+                       apply_scalar_op(v->op, float_from_bits(v->a_bits), float_from_bits(v->b_bits), v->fcr31),
+                       v->expected);
+        }
+        for (size_t i = 0; i < sizeof(kCvtSwVectors) / sizeof(kCvtSwVectors[0]); i++) {
+            const CvtSwVector *v = &kCvtSwVectors[i];
+            char label[128];
+            snprintf(label, sizeof(label), "%s under %s", v->name, host_modes[m].name);
+            check_word(label, "host-mode",
+                       sr_float_bits(sr_fpu_cvt_s_w(sr_u32_as_s32(v->word), v->fcr31)),
+                       v->expected);
+        }
     }
     if (saved_mode != -1) (void)fesetround(saved_mode);
 
@@ -138,6 +226,64 @@ int main(void) {
     check_word("signed bits INTMAX", "representation", (uint32_t)sr_u32_as_s32(0x7fffffffu), 0x7fffffffu);
     check_word("signed bits INTMIN", "representation", (uint32_t)sr_u32_as_s32(0x80000000u), 0x80000000u);
     check_word("signed bits -1", "representation", (uint32_t)sr_u32_as_s32(0xffffffffu), 0xffffffffu);
+
+    /* Fast-path predicate contract: exactly RM and FS gate the helper path.
+     * Flags, enables, cause, FCC0, and reserved/FCC1-7 bits must not force or
+     * bypass helpers. */
+    {
+        static const struct { const char *name; uint32_t fcr31; int fast; } preds[] = {
+            {"fast default zero",        0x00000000u, 1},
+            {"fast RN+flags/cause junk", 0x0007f83cu, 1},
+            {"fast FCC0 set",            0x00800000u, 1},
+            {"fast FCC5 set",            0x02000000u, 1},
+            {"helper RM=RZ",             0x00000001u, 0},
+            {"helper RM=RP",             0x00000002u, 0},
+            {"helper RM=RM",             0x00000003u, 0},
+            {"helper FS only",           0x01000000u, 0},
+            {"helper FS+RZ",             0x01000001u, 0},
+        };
+        for (size_t i = 0; i < sizeof(preds) / sizeof(preds[0]); i++) {
+            g_checks++;
+            if ((sr_fpu_scalar_fast(preds[i].fcr31) != 0) != (preds[i].fast != 0)) {
+                fprintf(stderr, "FAIL: fast-path predicate %s (fcr31=0x%08x)\n",
+                        preds[i].name, preds[i].fcr31);
+                g_failures++;
+            }
+        }
+    }
+
+    /* Host-environment hygiene (RISK-8): every helper must return the host FP
+     * control word exactly as found, and a later native operation must behave
+     * as it did before any helper ran. */
+    {
+        (void)sr_fpu_mul_s(float_from_bits(0x3e97d668u), float_from_bits(0x42780000u),
+                           SR_FCR31_FS | 1u);
+        const uint32_t csr_after = sr_fpu_env_save();
+        g_checks++;
+        if (csr_after != csr_baseline) {
+            fprintf(stderr, "FAIL: helper left host FP env modified (before=0x%08x after=0x%08x)\n",
+                    csr_baseline, csr_after);
+            g_failures++;
+        }
+        float gradual = float_from_bits(0x00800000u) * float_from_bits(0x3f000000u);
+        check_word("native gradual underflow survives helpers", "restoration",
+                   sr_float_bits(gradual), 0x00400000u);
+        float third = 1.0f / 3.0f;
+        check_word("native rounding unchanged by helpers", "restoration",
+                   sr_float_bits(third), baseline_third_bits);
+    }
+
+    /* Non-finite inputs pass through as NaN results under a directed mode;
+     * payload selection is host-dependent and deliberately unasserted. */
+    {
+        uint32_t got = apply_scalar_op(SR_FP_OP_MUL, float_from_bits(0x7fc00001u),
+                                       float_from_bits(0x3f800000u), 1u);
+        g_checks++;
+        if ((got & 0x7f800000u) != 0x7f800000u || (got & 0x007fffffu) == 0u) {
+            fprintf(stderr, "FAIL: NaN input did not produce a NaN result (0x%08x)\n", got);
+            g_failures++;
+        }
+    }
 
     if (g_failures != 0) {
         fprintf(stderr, "fp_convert_selftest: %d/%d checks FAILED\n", g_failures, g_checks);
