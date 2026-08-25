@@ -287,7 +287,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "ed20d9da3d0a4fc14a44b441caab4e4d31bc61c067fde92a525e2a7e94d2141d"
     },
     {
       "path": "README.md",
@@ -378,7 +379,8 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      }
+      },
+      "sha256": "b9fb0ecda50d37f336b0e76d52aa70379ec32e2286d96b0f0959f66dc848d76a"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -5120,7 +5122,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a4c06ae82d0ad57ebd9411d54baad322fe3652dface8264704f962b81b37df9d"
+      "sha256": "3f9204bedcb5fadbd07f19011c96dc13adf323e24be7ccf55fc3bb7cbbd49c26"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -7237,7 +7239,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "c38fa32faa1c348e07e775fa1f0f1ca1dada2d9cd1154b962d73003298ee24ed"
+      "sha256": "9d08e38c1b065f8b5d141d26a1e1780b92e60928bf08d907ec826f313a1a71cf"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
