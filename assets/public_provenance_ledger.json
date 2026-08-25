@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b71395d068a6f5a253557f34cf6238d34c673a33d7e2b8cda863c03e529d9145"
+      "sha256": "27b73a69e92b4a7f4901b87bf4c0ba6a4c5fa9351042accfcfafe4cf154047ff"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -6201,7 +6201,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88bd2a996fa99f4537935a0bd172d97226813bef0eb9355c2044879bc52c6e94"
+      "sha256": "d8d2cc42237781d7c36903a47ced55ffd95c5f36bed278754db6304343e06aec"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -6783,7 +6783,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8d1f8851599bc1f3e866247cd5a174d2fbf5797196aa74a91cad42a917edc4af"
+      "sha256": "fdb807db302fe4be2210897cb92eb494b92b39ece6603fc0096439e248b494f1"
     },
     {
       "path": "tools/test_nid_name_proof.py",

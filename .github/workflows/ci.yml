@@ -274,7 +274,10 @@ jobs:
         # title-configuration accessors, so it must link src/rt/title_config.c
         # against a generated artifact exactly as the Makefile target does. The
         # generic configuration is what CI wants: no manifest, every binding
-        # disabled, both typed collections empty.
+        # disabled, both typed collections empty. recomp.c's sr_lookup()/
+        # dispatch() also consult the exec-span registry and interpreter floor,
+        # so src/rt/guest_interp.c must be linked here exactly as the Makefile
+        # target does.
         run: |
           mkdir -p build/title-config/generic
           python tools/title_runtime_config.py \
@@ -282,13 +285,13 @@ jobs:
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
             -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
