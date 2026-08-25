@@ -38,6 +38,35 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT 13
 #define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
 #define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
+#define PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED 16
+#define PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA 17
+#define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 18
+#define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 19
+
+/* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
+   probe declares the exact ABI it imports via fixtures/psp_oracle/
+   mutex_imports.S (ThreadManForUser NIDs). The struct mirrors the documented
+   SceKernelMutexStatus layout; only scalar fields are treated as evidence. */
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+typedef struct SceKernelMutexInfo {
+    SceSize size;
+    char name[32];
+    SceUInt attr;
+    int initCount;
+    int currentCount;
+    SceUID lockThread;
+    int numWaitThreads;
+} SceKernelMutexInfo;
+
+SceUID sceKernelCreateMutex(const char *name, SceUInt attr, int initCount, void *options);
+int sceKernelDeleteMutex(SceUID mutexid);
+int sceKernelLockMutex(SceUID mutexid, int count, uint32_t *pTimeout);
+int sceKernelLockMutexCB(SceUID mutexid, int count, uint32_t *pTimeout);
+int sceKernelTryLockMutex(SceUID mutexid, int count);
+int sceKernelUnlockMutex(SceUID mutexid, int count);
+int sceKernelCancelMutex(SceUID mutexid, int count, int *pNumWaitThreads);
+int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
+#endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -139,6 +168,15 @@ static void emit_test_extended(int emulated, const char *case_id, int pass,
                                uint32_t result, const uint32_t *out,
                                size_t out_count) {
     emit_record_extended(emulated, "PSP-KERNEL-001", case_id,
+                         pass ? "PASS" : "FAIL", result, out, out_count);
+}
+#endif
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+static void emit_mutex_test(int emulated, const char *case_id, int pass,
+                            uint32_t result, const uint32_t *out,
+                            size_t out_count) {
+    emit_record_extended(emulated, "PSP-MUTEX-001", case_id,
                          pass ? "PASS" : "FAIL", result, out, out_count);
 }
 #endif
@@ -1540,6 +1578,365 @@ static void run_display_ge_mask(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+static uint32_t run_mutex_refer_unlocked_case(uint32_t *out0, uint32_t *out1,
+                                              uint32_t *out2, uint32_t *out3,
+                                              uint32_t *out4) {
+    const SceUID self = sceKernelGetThreadId();
+    SceKernelMutexInfo info1;
+    SceKernelMutexInfo info2;
+    SceKernelMutexInfo info3;
+    memset(&info1, 0, sizeof(info1));
+    memset(&info2, 0, sizeof(info2));
+    memset(&info3, 0, sizeof(info3));
+    info1.size = sizeof(info1);
+    info2.size = sizeof(info2);
+    info3.size = sizeof(info3);
+
+    const SceUID m1 = sceKernelCreateMutex("oracle-m1", 0, 0, NULL);
+    const int r1 = m1 >= 0 ? sceKernelReferMutexStatus(m1, &info1) : -1;
+
+    const SceUID m2 = sceKernelCreateMutex("oracle-m2", 0, 1, NULL);
+    const int r2 = m2 >= 0 ? sceKernelReferMutexStatus(m2, &info2) : -1;
+
+    const int unlock2 = m2 >= 0 ? sceKernelUnlockMutex(m2, 1) : -1;
+    const int r3 = m2 >= 0 ? sceKernelReferMutexStatus(m2, &info3) : -1;
+
+    if (m1 >= 0) sceKernelDeleteMutex(m1);
+    if (m2 >= 0) sceKernelDeleteMutex(m2);
+
+    *out0 = (uint32_t)(m1 >= 0) |
+            ((uint32_t)(r1 == 0) << 1) |
+            ((uint32_t)(m2 >= 0) << 2) |
+            ((uint32_t)(r2 == 0) << 3) |
+            ((uint32_t)(unlock2 == 0) << 4) |
+            ((uint32_t)(r3 == 0) << 5) |
+            ((uint32_t)(info2.lockThread == self) << 6);
+
+    *out1 = (uint32_t)info1.lockThread; /* raw lockThread when unlocked at creation */
+    *out2 = (uint32_t)info2.lockThread; /* raw lockThread when locked at creation */
+    *out3 = (uint32_t)info3.lockThread; /* raw lockThread when unlocked after unlock */
+    *out4 = (uint32_t)self;
+
+    return m1 >= 0 && r1 == 0 && m2 >= 0 && r2 == 0 && unlock2 == 0 && r3 == 0;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA
+static volatile SceUID s_timeout_mutex;
+static volatile SceUID s_timeout_sema;
+static volatile uint32_t s_timeout_out[17];
+
+static int timeout_worker_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    const uint32_t intervals[] = {1, 10, 25, 50, 100, 250, 500, 1000, 2500};
+    uint32_t ret_words[9] = {0};
+    uint32_t min_us[9];
+    uint32_t max_us[9];
+    for (int i = 0; i < 9; i++) {
+        min_us[i] = 0xffffffffu;
+        max_us[i] = 0;
+    }
+
+    for (int i = 0; i < 9; i++) {
+        uint32_t req = intervals[i];
+        for (int trial = 0; trial < 10; trial++) {
+            uint32_t to = req;
+            uint64_t t0 = sceKernelGetSystemTimeWide();
+            int res = sceKernelLockMutex(s_timeout_mutex, 1, &to);
+            uint64_t t1 = sceKernelGetSystemTimeWide();
+            (void)res;
+            uint32_t elapsed = (uint32_t)(t1 - t0);
+            if (elapsed < min_us[i]) min_us[i] = elapsed;
+            if (elapsed > max_us[i]) max_us[i] = elapsed;
+            ret_words[i] = to;
+        }
+    }
+
+    uint32_t cb_to = 250;
+    uint64_t cb_t0 = sceKernelGetSystemTimeWide();
+    int cb_res = sceKernelLockMutexCB(s_timeout_mutex, 1, &cb_to);
+    uint64_t cb_t1 = sceKernelGetSystemTimeWide();
+    (void)cb_res;
+    uint32_t cb_elapsed = (uint32_t)(cb_t1 - cb_t0);
+
+    uint32_t early_to = 100000;
+    sceKernelSignalSema(s_timeout_sema, 1);
+    uint64_t early_t0 = sceKernelGetSystemTimeWide();
+    int early_res = sceKernelLockMutex(s_timeout_mutex, 1, &early_to);
+    uint64_t early_t1 = sceKernelGetSystemTimeWide();
+    uint32_t early_elapsed = (uint32_t)(early_t1 - early_t0);
+
+    s_timeout_out[0] = 1;
+    s_timeout_out[1] = ret_words[0]; /* 1us returned toptr */
+    s_timeout_out[2] = min_us[0];
+    s_timeout_out[3] = max_us[0];
+    s_timeout_out[4] = ret_words[2]; /* 25us returned toptr */
+    s_timeout_out[5] = min_us[2];
+    s_timeout_out[6] = max_us[2];
+    s_timeout_out[7] = ret_words[5]; /* 250us returned toptr */
+    s_timeout_out[8] = min_us[5];
+    s_timeout_out[9] = max_us[5];
+    s_timeout_out[10] = ret_words[7]; /* 1000us returned toptr */
+    s_timeout_out[11] = min_us[7];
+    s_timeout_out[12] = max_us[7];
+    s_timeout_out[13] = cb_to;
+    s_timeout_out[14] = cb_elapsed;
+    s_timeout_out[15] = early_to;
+    s_timeout_out[16] = early_elapsed;
+
+    return (int)early_res;
+}
+
+static uint32_t run_mutex_timeout_quanta_case(uint32_t *out, size_t max_out) {
+    s_timeout_mutex = sceKernelCreateMutex("oracle-m-to", 0, 1, NULL);
+    s_timeout_sema = sceKernelCreateSema("oracle-s-to", 0, 0, 1, NULL);
+    if (s_timeout_mutex < 0 || s_timeout_sema < 0) {
+        if (s_timeout_mutex >= 0) sceKernelDeleteMutex(s_timeout_mutex);
+        if (s_timeout_sema >= 0) sceKernelDeleteSema(s_timeout_sema);
+        return 0;
+    }
+
+    SceUID worker = sceKernelCreateThread("oracle-w-to", timeout_worker_entry,
+                                          0x20, 0x4000, 0, NULL);
+    if (worker < 0) {
+        sceKernelDeleteMutex(s_timeout_mutex);
+        sceKernelDeleteSema(s_timeout_sema);
+        return 0;
+    }
+
+    sceKernelStartThread(worker, 0, NULL);
+    sceKernelWaitSema(s_timeout_sema, 1, NULL);
+    sceKernelDelayThread(500);
+    sceKernelUnlockMutex(s_timeout_mutex, 1);
+
+    sceKernelWaitThreadEnd(worker, NULL);
+    sceKernelDeleteThread(worker);
+    sceKernelDeleteMutex(s_timeout_mutex);
+    sceKernelDeleteSema(s_timeout_sema);
+
+    for (size_t i = 0; i < 17 && i < max_out; i++) {
+        out[i] = s_timeout_out[i];
+    }
+    return 1;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE
+static volatile SceUID s_prio_m;
+static volatile SceUID s_prio_sema_started;
+static volatile SceUID s_prio_sema_unlocked;
+static volatile uint32_t s_owner_self_prio;
+
+static int prio_owner_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    sceKernelLockMutex(s_prio_m, 1, NULL);
+    sceKernelSignalSema(s_prio_sema_started, 1);
+    sceKernelWaitSema(s_prio_sema_unlocked, 1, NULL);
+    s_owner_self_prio = (uint32_t)sceKernelGetThreadCurrentPriority();
+    sceKernelUnlockMutex(s_prio_m, 1);
+    return 0;
+}
+
+static int prio_waiter_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    sceKernelLockMutex(s_prio_m, 1, NULL);
+    sceKernelUnlockMutex(s_prio_m, 1);
+    return 0;
+}
+
+static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *out1,
+                                                    uint32_t *out2, uint32_t *out3,
+                                                    uint32_t *out4, uint32_t *out5,
+                                                    uint32_t *out6) {
+    s_prio_m = sceKernelCreateMutex("oracle-m-prio", 0x100, 0, NULL);
+    s_prio_sema_started = sceKernelCreateSema("oracle-s-start", 0, 0, 1, NULL);
+    s_prio_sema_unlocked = sceKernelCreateSema("oracle-s-unl", 0, 0, 1, NULL);
+
+    SceUID owner = sceKernelCreateThread("oracle-owner", prio_owner_entry, 0x30, 0x4000, 0, NULL);
+    SceUID waiter = sceKernelCreateThread("oracle-waiter", prio_waiter_entry, 0x20, 0x4000, 0, NULL);
+
+    sceKernelStartThread(owner, 0, NULL);
+    sceKernelWaitSema(s_prio_sema_started, 1, NULL);
+
+    SceKernelThreadInfo info_before;
+    memset(&info_before, 0, sizeof(info_before));
+    info_before.size = sizeof(info_before);
+    sceKernelReferThreadStatus(owner, &info_before);
+
+    sceKernelStartThread(waiter, 0, NULL);
+    sceKernelDelayThread(1000);
+
+    SceKernelThreadInfo info_during;
+    memset(&info_during, 0, sizeof(info_during));
+    info_during.size = sizeof(info_during);
+    sceKernelReferThreadStatus(owner, &info_during);
+
+    sceKernelSignalSema(s_prio_sema_unlocked, 1);
+    sceKernelWaitThreadEnd(owner, NULL);
+    sceKernelWaitThreadEnd(waiter, NULL);
+
+    SceKernelThreadInfo info_after;
+    memset(&info_after, 0, sizeof(info_after));
+    info_after.size = sizeof(info_after);
+    sceKernelReferThreadStatus(owner, &info_after);
+
+    sceKernelDeleteThread(owner);
+    sceKernelDeleteThread(waiter);
+    sceKernelDeleteMutex(s_prio_m);
+    sceKernelDeleteSema(s_prio_sema_started);
+    sceKernelDeleteSema(s_prio_sema_unlocked);
+
+    *out0 = 1;
+    *out1 = (uint32_t)info_before.currentPriority;
+    *out2 = (uint32_t)info_during.currentPriority;
+    *out3 = s_owner_self_prio;
+    *out4 = (uint32_t)info_after.currentPriority;
+    *out5 = (uint32_t)info_during.initPriority;
+    *out6 = 0;
+    return 1;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+/* Kernel interrupt-context query: returns 1 when executing inside an ISR,
+   0 otherwise.  Sourced from InterruptManagerForKernel (NID per PSPSDK
+   pspintrman_kernel.h); libpspinterruptmanager_kernel_660 exports the stub.
+   This is independent proof that the VBLANK sub-interrupt handler body
+   executes in interrupt context before any mutex call is made. */
+extern int sceKernelIsIntrContext(void);
+
+/* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
+   one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
+   .. mutex-interrupt-context-t19), so the parser sees 20 independent records.
+   20 trials establish reproducibility and expose any per-firing variance. */
+#define MUTEX_INTR_TRIALS 20
+
+/* Per-trial result structure written by the VBLANK sub-interrupt handler.
+   All fields are set atomically from within the ISR; main thread reads them
+   only after s_subintr_count is incremented and the mutex mutex cycle resets. */
+typedef struct {
+    uint32_t ctx_proof;   /* sceKernelIsIntrContext() return value from ISR     */
+    uint32_t r_bad_uid;   /* LockMutex(0x7fffffff, 1, NULL)  -- bad UID         */
+    uint32_t r_bad_cnt;   /* LockMutex(valid, 0, NULL)        -- bad count       */
+    uint32_t r_lock;      /* LockMutex(valid_unlocked, 1, NULL)                  */
+    uint32_t r_lock_cb;   /* LockMutexCB(valid_unlocked, 1, NULL)                */
+    uint32_t r_try;       /* TryLockMutex(valid_unlocked, 1)                     */
+    uint32_t r_unlock;    /* UnlockMutex(main_owned, 1) -- non-owner unlock      */
+} IntrTrial;
+
+static volatile int s_subintr_count;
+static volatile SceUID s_intr_m_unlocked;   /* unlocked mutex (main does NOT hold) */
+static volatile SceUID s_intr_m_main_owned; /* locked mutex owned by main thread    */
+static IntrTrial s_trials[MUTEX_INTR_TRIALS];
+
+/* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
+   Increments s_subintr_count only after writing all six cell results so the
+   main thread can use s_subintr_count as the ready sentinel.  Uses
+   sceKernelIsIntrContext() as the first call -- before any mutex operation --
+   as independent proof of ISR execution context. */
+static int oracle_subintr_handler(int subintr, void *arg) {
+    (void)subintr;
+    (void)arg;
+    int idx = s_subintr_count;
+    if (idx >= MUTEX_INTR_TRIALS) {
+        return 0;
+    }
+    IntrTrial t;
+    /* Context proof: must return 1 when inside this ISR. */
+    t.ctx_proof  = (uint32_t)sceKernelIsIntrContext();
+    /* Cell A: bad UID.  PRX must already have context-check before lookup. */
+    t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
+    /* Cell B: valid UID, bad count (0).  Context vs count ordering cell. */
+    t.r_bad_cnt  = (uint32_t)sceKernelLockMutex((SceUID)s_intr_m_unlocked, 0, NULL);
+    /* Cell C: valid UID, valid count, mutex unlocked.  Nominal lock-from-ISR. */
+    t.r_lock     = (uint32_t)sceKernelLockMutex((SceUID)s_intr_m_unlocked, 1, NULL);
+    /* Cell D: same as C but CB variant.  Context check must still fire. */
+    t.r_lock_cb  = (uint32_t)sceKernelLockMutexCB((SceUID)s_intr_m_unlocked, 1, NULL);
+    /* Cell E: TryLockMutex -- no blocking; no context gate documented. */
+    t.r_try      = (uint32_t)sceKernelTryLockMutex((SceUID)s_intr_m_unlocked, 1);
+    /* Cell F: unlock a mutex owned by the main thread -- non-owner unlock. */
+    t.r_unlock   = (uint32_t)sceKernelUnlockMutex((SceUID)s_intr_m_main_owned, 1);
+    s_trials[idx] = t;
+    /* Barrier: write count last so main only reads a complete trial. */
+    s_subintr_count = idx + 1;
+    return 0;
+}
+
+/* Emit one protocol record per completed trial.
+   case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
+   out0 = ctx_proof, out1..out6 = six cell raw return values. */
+static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
+    char case_id[48];
+    snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
+    uint32_t out[7];
+    out[0] = t->ctx_proof;
+    out[1] = t->r_bad_uid;
+    out[2] = t->r_bad_cnt;
+    out[3] = t->r_lock;
+    out[4] = t->r_lock_cb;
+    out[5] = t->r_try;
+    out[6] = t->r_unlock;
+    /* pass iff context proof confirms ISR execution (ctx_proof == 1) */
+    int pass = (t->ctx_proof == 1u);
+    emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
+}
+
+static uint32_t run_mutex_interrupt_context_case(int emulated) {
+    s_subintr_count = 0;
+    for (int i = 0; i < MUTEX_INTR_TRIALS; i++) {
+        IntrTrial z = {0, 0, 0, 0, 0, 0, 0};
+        s_trials[i] = z;
+    }
+
+    /* Create fixtures before enabling the interrupt so the handler always
+       sees valid UIDs in s_intr_m_unlocked and s_intr_m_main_owned. */
+    s_intr_m_unlocked   = sceKernelCreateMutex("oracle-intr-unl", 0, 0, NULL);
+    s_intr_m_main_owned = sceKernelCreateMutex("oracle-intr-own", 0, 1, NULL);
+    /* s_intr_m_main_owned initialCount=1: main thread is owner. ISR Cell F
+       tests unlock from non-owner (the ISR thread context, if any). */
+
+    int reg = sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, 0,
+                                              oracle_subintr_handler, NULL);
+    int ena = sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
+
+    /* Wait for all MUTEX_INTR_TRIALS to complete.  VBLANK fires at ~60 Hz so
+       20 trials need at most ~400 ms.  1000 x 1 ms is a generous timeout. */
+    for (int i = 0; i < 1000 && s_subintr_count < MUTEX_INTR_TRIALS; i++) {
+        sceKernelDelayThread(1000);
+    }
+
+    sceKernelDisableSubIntr(PSP_VBLANK_INT, 0);
+    sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, 0);
+
+    if (s_intr_m_unlocked >= 0)   sceKernelDeleteMutex((SceUID)s_intr_m_unlocked);
+    if (s_intr_m_main_owned >= 0) sceKernelDeleteMutex((SceUID)s_intr_m_main_owned);
+
+    /* Emit header record: reg/enable/count summary. */
+    {
+        uint32_t hdr[3];
+        hdr[0] = (uint32_t)(reg == 0);
+        hdr[1] = (uint32_t)(ena == 0);
+        hdr[2] = (uint32_t)s_subintr_count;
+        int pass = (reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+        emit_mutex_test(emulated, "mutex-interrupt-context", pass, pass ? 1u : 0u,
+                        hdr, 3);
+    }
+
+    /* Emit per-trial records. */
+    int n = s_subintr_count;
+    if (n > MUTEX_INTR_TRIALS) n = MUTEX_INTR_TRIALS;
+    for (int i = 0; i < n; i++) {
+        emit_intr_trial(emulated, i, (const IntrTrial *)&s_trials[i]);
+    }
+
+    return (uint32_t)(reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -1620,6 +2017,21 @@ int main(int argc, char *argv[]) {
     run_display_mask_duty(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
     run_display_ge_mask(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+    uint32_t out0 = 0, out1 = 0, out2 = 0, out3 = 0, out4 = 0;
+    const int pass = (int)run_mutex_refer_unlocked_case(&out0, &out1, &out2, &out3, &out4);
+    uint32_t out[5] = {out0, out1, out2, out3, out4};
+    emit_mutex_test(emulated, "mutex-refer-unlocked", pass, pass ? 1u : 0u, out, 5);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA
+    uint32_t out[17] = {0};
+    const int pass = (int)run_mutex_timeout_quanta_case(out, 17);
+    emit_mutex_test(emulated, "mutex-timeout-quanta", pass, pass ? 1u : 0u, out, 17);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE
+    uint32_t out[7] = {0};
+    const int pass = (int)run_mutex_priority_inheritance_case(&out[0], &out[1], &out[2], &out[3], &out[4], &out[5], &out[6]);
+    emit_mutex_test(emulated, "mutex-priority-inheritance", pass, pass ? 1u : 0u, out, 7);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+    run_mutex_interrupt_context_case(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

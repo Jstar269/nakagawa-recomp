@@ -121,6 +121,34 @@
       }
     },
     {
+      "id": "PSP-MUTEX-001",
+      "status": "planned",
+      "group": "mutex",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceKernelCreateMutex",
+        "sceKernelDeleteMutex",
+        "sceKernelLockMutex",
+        "sceKernelLockMutexCB",
+        "sceKernelTryLockMutex",
+        "sceKernelUnlockMutex",
+        "sceKernelCancelMutex",
+        "sceKernelReferMutexStatus"
+      ],
+      "case_ids": [
+        "mutex-refer-unlocked",
+        "mutex-timeout-quanta",
+        "mutex-priority-inheritance",
+        "mutex-interrupt-context"
+      ],
+      "invariant": "unlocked lockThread word, timeout quantization/remaining-time, owner priority inheritance, and subinterrupt return precedence are deterministic",
+      "issues": [2],
+      "risk": "medium; isolate one case per launch",
+      "reset": "return to PSPLINK after each case",
+      "implementation_note": "Synthetic plain-mutex oracle probe suite isolating PR #52 unresolved cells. Probe sources are consolidated and build-clean; the entry stays planned until the plain-mutex host registrations stop being fake-success stubs (PR #52 stack), because implemented status feeds the hardware-exercise chain and a stub must never be reported as exercised."
+    },
+    {
       "id": "PSP-DMAC-001",
       "status": "implemented",
       "group": "dmac",

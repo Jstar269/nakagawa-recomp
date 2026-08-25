@@ -14,7 +14,8 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
 of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
-`CASE=display-ge-mask`.
+`CASE=display-ge-mask`. Plain-mutex sessions use one of the four
+`CASE=mutex-*` cases described below.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove
@@ -197,6 +198,42 @@ changed before resume, and `out13`/`out14` separate a completion callback seen
 *during* the mask from one seen only after resume. Those two are reported as
 distinct facts: GE memory work and GE completion notification are not the same
 hardware domain.
+
+## Plain-mutex cases (issue #2)
+
+Four cases isolate the unresolved plain-Mutex cells left open by PR #52. The
+mutex syscalls are absent from the installed PSPSDK headers, so
+`mutex_imports.S` declares the exact ThreadManForUser import stubs and
+`probe.c` mirrors the documented `SceKernelMutexInfo` layout. Only scalar
+return values are treated as evidence.
+
+- `CASE=mutex-refer-unlocked` — creates one unlocked and one locked mutex,
+  refers both, unlocks the second, and refers again. The raw `lockThread`
+  words for all three states plus the referring thread id are recorded so the
+  unlocked-value convention (`0` vs `0xffffffff`) is decided by bits, not by
+  documentation.
+- `CASE=mutex-timeout-quanta` — a worker thread performs timed locks across
+  1, 25, 250, and 1000 us requests (10 trials each), records the remaining-
+  time word and measured min/max elapsed per interval, one `LockMutexCB`
+  sample at 250 us, and a final lock with a 100 ms timeout released early via
+  the owning unlock. This arbitrates alleged 25 us/250 us quantization against
+  the measured clock.
+- `CASE=mutex-priority-inheritance` — a low-priority owner holds an
+  attr-`0x100` mutex while a higher-priority waiter blocks. Owner priority is
+  sampled before, during, and after the wait (both via `ReferThreadStatus`
+  from main and `GetThreadCurrentPriority` from the owner itself), deciding
+  whether PSP boosts the owner.
+- `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
+  that samples 20 firings; each firing first proves interrupt context with
+  `sceKernelIsIntrContext()`, then measures `LockMutex`/`LockMutexCB`/
+  `TryLockMutex` return precedence across bad UID, bad count, valid-unlocked,
+  and non-owner unlock cells. One header record and one record per trial are
+  emitted (`mutex-interrupt-context-t00`..`t19`). This case links
+  `libpspinterruptmanager_kernel_660`.
+
+All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
+machinery ran and every scalar was captured; it makes no claim that any host
+implementation matches until the comparison protocol runs on the capture.
 
 > **Operator note.** Never send the PSPLink shell command `exit` from a capture
 > driver. `exit` terminates PSPLink on the device and returns it to the XMB,

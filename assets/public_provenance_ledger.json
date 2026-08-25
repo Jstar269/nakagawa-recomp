@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2bf48c8ae3e76eaf283b69106489ce80d2eb9f4678a06b63f289f9c318011cdb"
+      "sha256": "1c080f26427fee3136f5902871035a770c5e21ad3762f4406240f75daa4982ac"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1000,7 +1000,17 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cddf4b943e63b40ce42095abca7b26c95bf9968a3d8ac0f59808a5dde5e98544"
+      "sha256": "ae0a525159bf1d88359ca81f42f0942eabfe91967355250b112dd35d775ad281"
+    },
+    {
+      "path": "fixtures/psp_oracle/mutex_imports.S",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "public provenance census",
+        "authorship": "independent project implementation",
+        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+      },
+      "sha256": "ee64c070e1ad7a0999746bba7eab0786fad58f2a34e01fc8c2036f69e05293b4"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1009,7 +1019,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "67e2ce19d564f30a9f83565eb5cf2c0aeb17f717b701eb23c4e7d67d14a987c3"
+      "sha256": "6e6eed9f94c642bb61282d514d47702fbbe97de47a8119932b6e7d456132b86b"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1018,7 +1028,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "20619cfa227084143438ad6793ecf55d8147575e660aaa6c1f553a612051fc34"
+      "sha256": "8ab972e0b490c2f649a62124fa24414d1a28a9a3319f9b14d6b6e00168dd562a"
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
@@ -5790,7 +5800,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "debfc02adf4dcbdec715fa0c1a5da3ac4d29112cf77331989b5f0247b8d6edd6"
+      "sha256": "0864c9703f7b6f9eb422bbc343d3bf1988bc257e7b7956fcbca6351282ad3d40"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -6870,7 +6880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02467b178dc79967a7fa8bd961693da475f9680ee0a610f32da5d2583c25bee1"
+      "sha256": "ba3f52e06ff2bd97f24ca79a7411f6903c906ead98361d5586da93ce7844180c"
     },
     {
       "path": "tools/test_psp_readiness.py",
