@@ -116,18 +116,115 @@ class FpScalarHeaderMutantTests(unittest.TestCase):
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M13_partial_restore_preserves_stickies(self):
-        # A helper that restores control fields but leaves sticky flags raised
-        # inside its window violates bit-for-bit caller restoration. The fresh
-        # before/after hygiene probe (and every clean-base hostile-matrix row)
-        # must kill it: guest inexact operations raise PE, and a partial
-        # restore would let it leak into caller state.
-        self.assert_killed(
-            "static inline void sr_fpu_env_restore(uint32_t saved) {\n"
-            "    _mm_setcsr(saved);\n"
-            "}",
-            "static inline void sr_fpu_env_restore(uint32_t saved) {\n"
-            "    _mm_setcsr((saved & ~0x3fu) | (_mm_getcsr() & 0x3fu));\n"
-            "}")
+        """A helper that restores control fields but leaves sticky flags raised
+        inside its window violates bit-for-bit caller restoration.
+
+        Deterministic dedicated harness (ambient-state independent): establish
+        a controlled caller state by clearing ONLY the sticky bits, capture
+        before, execute a runtime inexact operation through sr_fpu_div_s
+        (volatile operands cannot constant-fold), capture after. Production
+        helper must restore exactly (after == before); the M13 partial-restore
+        mutant must leak a newly-raised sticky bit (after != before).
+
+        Staged evidence only -- MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED with
+        an explicit sticky-delta diagnostic counts; build/harness failures do
+        not. Both directions are proven: pristine header PASSES the same
+        harness, so the discriminator is not vacuous.
+        """
+        if CC is None:
+            self.skipTest("gcc required")
+
+        harness_c = """\
+#include <stdio.h>
+#include <xmmintrin.h>
+#include "fp_convert.h"
+
+int main(void) {
+    const uint32_t outer = _mm_getcsr();
+    /* TEST-ONLY setup: clear ONLY sticky status bits; every non-sticky field
+     * (RC, masks, FTZ, DAZ) is preserved from the outer environment. */
+    const uint32_t controlled = outer & ~0x3fu;
+    _mm_setcsr(controlled);
+    const uint32_t before = _mm_getcsr();
+
+    volatile float one = 1.0f;
+    volatile float three = 3.0f;
+    float r = sr_fpu_div_s(one, three, 0u);   /* runtime inexact: raises PE */
+
+    const uint32_t after = _mm_getcsr();
+    const uint32_t delta = after ^ before;
+    printf("before=%08x\\nafter=%08x\\ndelta=%08x\\n", before, after, delta);
+    if (sr_float_bits(r) != 0x3eaaaaabu) {
+        fprintf(stderr, "RESULT_WRONG got=%08x\\n", sr_float_bits(r));
+        _mm_setcsr(outer);
+        return 3;
+    }
+    _mm_setcsr(outer);
+    if (after != before) {
+        fprintf(stderr, "STICKY_LEAK before=%08x after=%08x delta=%08x\\n",
+                before, after, delta);
+        return 1;
+    }
+    printf("restoration exact\\n");
+    return 0;
+}
+"""
+
+        def build_and_run(header_text: str, tag: str):
+            with tempfile.TemporaryDirectory(prefix=f"fp_scalar_m13_{tag}_") as tmp:
+                work = Path(tmp)
+                (work / "fp_convert.h").write_text(header_text, encoding="utf-8", newline="\n")
+                (work / "m13_harness.c").write_text(harness_c, encoding="utf-8", newline="\n")
+                exe = work / "m13.exe"
+                command = [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                           "-I", str(work),
+                           str(work / "m13_harness.c"), "-lm", "-o", str(exe)]
+                compiled = subprocess.run(command, capture_output=True, text=True)
+                if compiled.returncode != 0:
+                    return None, compiled.stderr + compiled.stdout
+                ran = subprocess.run([str(exe)], capture_output=True, text=True)
+                return ran.returncode, ran.stderr + ran.stdout
+
+        original = HEADER.read_text(encoding="utf-8")
+        anchor = ("static inline void sr_fpu_env_restore(uint32_t saved) {\n"
+                  "    _mm_setcsr(saved);\n"
+                  "}")
+        mutant_restore = ("static inline void sr_fpu_env_restore(uint32_t saved) {\n"
+                          "    _mm_setcsr((saved & ~0x3fu) | (_mm_getcsr() & 0x3fu));\n"
+                          "}")
+        self.assertIn(anchor, original, "restore anchor drifted")
+
+        # Direction 1 (discriminator validity): PRISTINE header must pass.
+        pristine_rc, pristine_out = build_and_run(original, "pristine")
+        self.assertEqual(pristine_rc, 0,
+                         f"M13 harness rejected the PRODUCTION helper; "
+                         f"production restoration defect:\n{pristine_out}")
+        self.assertIn("restoration exact", pristine_out)
+
+        # Direction 2: the M13 mutant must build, run, and fail SEMANTICALLY
+        # with a newly-leaked sticky bit in the diagnostic delta.
+        mutant_rc, mutant_out = build_and_run(
+            original.replace(anchor, mutant_restore), "mutant")
+        self.assertIsNotNone(
+            mutant_rc,
+            "M13_MUTANT_BUILD_FAILED: compilation failure is not a "
+            "behavioral kill\n" + mutant_out)
+        self.assertNotEqual(
+            mutant_rc, 0,
+            "M13_SURVIVED: partial-restore mutant passed the controlled "
+            "sticky-leak harness\n" + mutant_out)
+        self.assertIn("STICKY_LEAK", mutant_out,
+                      "M13_NON_SEMANTIC_FAILURE: no sticky-leak diagnostic\n"
+                      + mutant_out)
+        delta_line = next((line for line in mutant_out.splitlines()
+                           if line.startswith("delta=")), "")
+        self.assertTrue(delta_line, f"M13 diagnostic missing delta=\n{mutant_out}")
+        delta = int(delta_line.split("=")[1], 16)
+        self.assertTrue(
+            delta & 0x3f,
+            f"M13_EXPECTED_STICKY_LEAK_OBSERVED failed: delta={delta_line} "
+            "carries no sticky bit")
+        print(f"M13_EXPECTED_STICKY_LEAK_OBSERVED ({delta_line.strip()})")
 
 
 class FastPathRemovedStructuralTests(unittest.TestCase):
