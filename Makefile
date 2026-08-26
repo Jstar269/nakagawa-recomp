@@ -681,11 +681,15 @@ cosim-selftest:
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
 cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	# No $(LIBS): the harness stubs the runtime's few host-library symbols, so
+	# the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
+	# deliberate -- this gate should stay runnable anywhere the toolchain is,
+	# not inherit the graphics stack's environment requirements.
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
-		$(LDFLAGS) -o $(BUILD_DIR)/cosim_selftest.exe \
+		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c $(LIBS) -lm
+		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
