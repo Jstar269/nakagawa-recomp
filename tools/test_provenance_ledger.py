@@ -600,5 +600,65 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
+class SelfReferentialEntryTests(unittest.TestCase):
+    """The two entries that describe the ledger machinery itself carry no digest.
+
+    `assets/public_provenance_ledger.json` records a `sha256` for every path it
+    covers, and two of those paths are the ledger and the export document. A file
+    cannot contain its own hash, and the two documents also hash each other:
+    `PUBLIC_EXPORT.json` records `provenance_ledger_sha256`. Writing a digest for
+    either one is therefore not merely stale, it cannot converge -- refreshing one
+    invalidates the other, forever.
+
+    `publish_audit` does not enforce these two paths, so a wrong value here is
+    invisible to every gate. That is exactly why it needs a test: the honest
+    representation is the absent key, and nothing else was going to notice.
+    """
+
+    SELF_REFERENTIAL = ("PUBLIC_EXPORT.json", "assets/public_provenance_ledger.json")
+
+    def setUp(self) -> None:
+        self.ledger = json.loads(
+            (ROOT / "assets" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+        )
+        self.by_path = {entry["path"]: entry for entry in self.ledger["entries"]}
+
+    def test_self_referential_entries_carry_no_sha256(self) -> None:
+        for path in self.SELF_REFERENTIAL:
+            with self.subTest(path=path):
+                self.assertIn(path, self.by_path, "the entry itself must still exist")
+                self.assertNotIn(
+                    "sha256",
+                    self.by_path[path],
+                    f"{path} records a digest of itself, which can never be correct: "
+                    "refreshing it changes the bytes being hashed. Omit the key.",
+                )
+
+    def test_every_other_covered_path_does_carry_one(self) -> None:
+        """The exemption is exactly two paths, not a general licence to omit."""
+        missing = [
+            entry["path"]
+            for entry in self.ledger["entries"]
+            if "sha256" not in entry and entry["path"] not in self.SELF_REFERENTIAL
+        ]
+        self.assertEqual(missing, [])
+
+    def test_the_exemption_is_justified_by_the_documents_themselves(self) -> None:
+        """Pin the circularity, so the exemption cannot be cargo-culted wider.
+
+        Each of the two paths is either the ledger (which would hash itself) or a
+        document the ledger's own bytes depend on.
+        """
+        export = json.loads((ROOT / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
+        self.assertIn("provenance_ledger_sha256", export)
+        ledger_bytes = (ROOT / "assets" / "public_provenance_ledger.json").read_bytes()
+        self.assertEqual(
+            export["provenance_ledger_sha256"],
+            hashlib.sha256(ledger_bytes).hexdigest(),
+            "the export must hash the ledger's real bytes; if this drifts the "
+            "circularity above is no longer the reason the digests are omitted",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

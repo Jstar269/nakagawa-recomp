@@ -287,8 +287,7 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "0308eaade58c1c0fc6933f5c66cf7a548d85f20abbfb5b79e972fd2b25ee4fc7"
+      }
     },
     {
       "path": "README.md",
@@ -379,8 +378,7 @@
       "evidence": {
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "8b9e9ba976c4dde048c11d1a3367d93fedb69e31cdecada19310fcd9130b73a0"
+      }
     },
     {
       "path": "assets/public_source_profile.json",
@@ -6953,7 +6951,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "853b443ef24df23a02b7cec7959ab15543fec0ca97402f28086678b475fdabf1"
+      "sha256": "c0678619221449f1b0b885419f698f0de5f3b843e3a26f8a603b2e4ec405e251"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
