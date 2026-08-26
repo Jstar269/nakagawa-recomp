@@ -394,9 +394,9 @@ _CELL1_MAIN = """\
 #include <string.h>
 
 int main(void) {
-    /* The fast-path contract assumes the host default environment (RN, gradual
-     * underflow). The production runtime owns that assumption (RISK-8); this
-     * harness pins it explicitly instead of inheriting ambient state. */
+    /* All scalar operations execute through the scoped-environment helpers,
+     * so results must be correct regardless of the ambient host mode; the
+     * harness still pins FE_TONEAREST so expectations are deterministic. */
     if (fesetround(FE_TONEAREST) != 0) return 2;
     int failures = 0;
     static const uint32_t exp_mul[4] = {0x419317b5u, 0x419317b4u, 0x419317b5u, 0x419317b4u};
@@ -599,6 +599,56 @@ int main(void) {
 """
 
 
+_CELL_HOSTILE_MAIN = """\
+#include <fenv.h>
+#include <stdio.h>
+#include <xmmintrin.h>
+
+int main(void) {
+    if (fesetround(FE_TONEAREST) != 0) return 2;
+    int failures = 0;
+    struct Hostile { const char *name; uint32_t set; uint32_t clear; };
+    static const struct Hostile bases[] = {
+        {"RC=RZ",   1u << 13, 0u},
+        {"RC=RP",   2u << 13, 0u},
+        {"RC=RM",   3u << 13, 0u},
+        {"FTZ",     1u << 15, 0u},
+        {"DAZ",     1u << 6,  0u},
+    };
+    for (unsigned i = 0; i < 5; i++) {
+        const uint32_t base = _mm_getcsr();
+        const uint32_t hostile = (base | bases[i].set) & ~bases[i].clear;
+        _mm_setcsr(hostile);
+        CpuState s = {0};
+        s.fi[0] = 0x3e97d668u;    /* RM-sensitive mul operands */
+        s.fi[1] = 0x42780000u;
+        s.fi[16] = 0x00800000u;   /* smallest normal */
+        s.fi[17] = 0x3f000000u;   /* 0.5: FS=0 must stay gradual */
+        s.r[8] = 0u;              /* guest ctc1: RN, gradual */
+        f_00001000(&s);
+        if (s.r[9] != 0x419317b5u) {
+            fprintf(stderr, "FAIL hostile %s mul got=%08x want=419317b5\\n",
+                    bases[i].name, s.r[9]);
+            failures++;
+        }
+        if (s.r[10] != 0x00400000u) {
+            fprintf(stderr, "FAIL hostile %s gradual got=%08x want=00400000\\n",
+                    bases[i].name, s.r[10]);
+            failures++;
+        }
+        if (_mm_getcsr() != hostile) {
+            fprintf(stderr, "FAIL hostile %s mxcsr before=%08x after=%08x\\n",
+                    bases[i].name, hostile, _mm_getcsr());
+            failures++;
+        }
+        _mm_setcsr(base);
+    }
+    printf("generated_fp_scalar_hostile: %s\\n", failures == 0 ? "PASS" : "FAIL");
+    return failures == 0 ? 0 : 1;
+}
+"""
+
+
 @unittest.skipUnless(CC, "gcc is required for the generated-C conversion regression")
 class GeneratedScalarFcr31Tests(unittest.TestCase):
     """Guest-visible scalar COP1 semantics driven entirely through generated code.
@@ -627,7 +677,7 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
             0x03E00008, 0x00000000,                     # jr ra; nop
         ]
         emitted = _run_generated_fixture(self, "fp_scalar_rm", words, _CELL1_MAIN)
-        self.assertIn("sr_fpu_scalar_fast", emitted)
+        self.assertNotIn("sr_fpu_scalar_fast", emitted)  # fast path removed for correctness
         self.assertIn("sr_fpu_mul_s", emitted)
         self.assertIn("sr_fpu_add_s", emitted)
         self.assertIn("sr_fpu_sub_s", emitted)
@@ -672,6 +722,24 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
         ]
         emitted = _run_generated_fixture(self, "fp_scalar_cvtsw", words, _CELL4_MAIN)
         self.assertIn("sr_fpu_cvt_s_w", emitted)
+
+    def test_hostile_host_environment_isolated_from_default_guest_ops(self):
+        """Guest RM=RN/FS=0 must be isolated from a hostile host FP environment.
+
+        This is the fast-path disposition guard: with the native fast path
+        removed (review Disposition A), even default-state guests execute
+        through the scoped helpers, so ambient host RC/FTZ/DAZ cannot change
+        guest result bits and the caller's MXCSR must survive bit-for-bit.
+        """
+        words: list[int] = [
+            _ctc1(8),                                   # guest installs RM=0/FS=0
+            _fps3(1, 0, 8, 0x02), _mfc1(9, 8),          # mul.s (RM-sensitive vector)
+            _fps3(17, 16, 8, 0x02), _mfc1(10, 8),       # mul.s min-normal * 0.5 (FS=0 gradual)
+            0x03E00008, 0x00000000,
+        ]
+        emitted = _run_generated_fixture(
+            self, "fp_scalar_hostile", words, _CELL_HOSTILE_MAIN)
+        self.assertNotIn("sr_fpu_scalar_fast", emitted)  # fast path stays gone
 
 
 if __name__ == "__main__":

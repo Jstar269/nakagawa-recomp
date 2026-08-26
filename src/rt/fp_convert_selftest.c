@@ -228,30 +228,9 @@ int main(void) {
     check_word("signed bits INTMIN", "representation", (uint32_t)sr_u32_as_s32(0x80000000u), 0x80000000u);
     check_word("signed bits -1", "representation", (uint32_t)sr_u32_as_s32(0xffffffffu), 0xffffffffu);
 
-    /* Fast-path predicate contract: exactly RM and FS gate the helper path.
-     * Flags, enables, cause, FCC0, and reserved/FCC1-7 bits must not force or
-     * bypass helpers. */
-    {
-        static const struct { const char *name; uint32_t fcr31; int fast; } preds[] = {
-            {"fast default zero",        0x00000000u, 1},
-            {"fast RN+flags/cause junk", 0x0007f83cu, 1},
-            {"fast FCC0 set",            0x00800000u, 1},
-            {"fast FCC5 set",            0x02000000u, 1},
-            {"helper RM=RZ",             0x00000001u, 0},
-            {"helper RM=RP",             0x00000002u, 0},
-            {"helper RM=RM",             0x00000003u, 0},
-            {"helper FS only",           0x01000000u, 0},
-            {"helper FS+RZ",             0x01000001u, 0},
-        };
-        for (size_t i = 0; i < sizeof(preds) / sizeof(preds[0]); i++) {
-            g_checks++;
-            if ((sr_fpu_scalar_fast(preds[i].fcr31) != 0) != (preds[i].fast != 0)) {
-                fprintf(stderr, "FAIL: fast-path predicate %s (fcr31=0x%08x)\n",
-                        preds[i].name, preds[i].fcr31);
-                g_failures++;
-            }
-        }
-    }
+    /* Fast-path predicate removed for correctness (see fp_convert.h, FAST
+     * PATH DISPOSITION): the hostile-host matrix below is the standing proof
+     * that default-state guests are isolated without it. */
 
     /* Host-environment hygiene (RISK-8): every helper must return the host FP
      * control word exactly as found, and a later native operation must behave
@@ -307,6 +286,60 @@ int main(void) {
             fprintf(stderr, "FAIL: hostile-env restoration inexact (caller=0x%08x after=0x%08x)\n",
                     csr_hostile, csr_after);
             g_failures++;
+        }
+        _mm_setcsr(csr_base);   /* leave the process environment as found */
+    }
+
+    /* Full hostile-host matrix: every ambient control field that could bias a
+     * guest operation -- rounding mode, FTZ, DAZ, sticky status bits, and
+     * exception masks (including fully unmasked, which an unhardened window
+     * would let escalate into a host FP fault). Each row enters helpers under
+     * the mutated environment with GUEST RM/FS at defaults and requires both
+     * correct guest result bits and exact caller-environment restoration. */
+    {
+        struct HostileBase { const char *name; uint32_t set; uint32_t clear; };
+        static const struct HostileBase bases[] = {
+            {"RC=RZ",            1u << 13,       0u},
+            {"RC=RP",            2u << 13,       0u},
+            {"RC=RM",            3u << 13,       0u},
+            {"FTZ",              1u << 15,       0u},
+            {"DAZ",              1u << 6,        0u},
+            {"sticky PE|UE|OE",  0x32u,          0u},
+            {"fully unmasked",   0u,             0x1f80u},
+            {"combined hostile", (3u << 13) | (1u << 15) | (1u << 6) | 0x32u, 0x1f80u},
+        };
+        struct GuestCase { const char *name; unsigned op; uint32_t a, b, fcr31, want; };
+        static const struct GuestCase cases[] = {
+            {"mul gradual out", SR_FP_OP_MUL, 0x00800000u, 0x3f000000u, 0x00000000u, 0x00400000u},
+            {"mul subnormal in", SR_FP_OP_MUL, 0x00000001u, 0x40000000u, 0x00000000u, 0x00000002u},
+            {"div 1/3 RZ guest", SR_FP_OP_DIV, 0x3f800000u, 0x40400000u, 0x00000001u, 0x3eaaaaaau},
+        };
+        const uint32_t csr_base = sr_fpu_env_save();
+        char label[128];
+        for (size_t bi = 0; bi < sizeof(bases) / sizeof(bases[0]); bi++) {
+            const uint32_t hostile = (csr_base | bases[bi].set) & ~bases[bi].clear;
+            _mm_setcsr(hostile);
+            for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ci++) {
+                snprintf(label, sizeof(label), "%s under %s", cases[ci].name, bases[bi].name);
+                check_word(label, "hostile-matrix",
+                           apply_scalar_op(cases[ci].op,
+                                           float_from_bits(cases[ci].a),
+                                           float_from_bits(cases[ci].b),
+                                           cases[ci].fcr31),
+                           cases[ci].want);
+            }
+            snprintf(label, sizeof(label), "cvt RP guest under %s", bases[bi].name);
+            check_word(label, "hostile-matrix",
+                       sr_float_bits(sr_fpu_cvt_s_w(16777217, 2u)),
+                       0x4b800001u);
+            g_checks++;
+            const uint32_t csr_after = sr_fpu_env_save();
+            if (csr_after != hostile) {
+                fprintf(stderr, "FAIL: hostile-matrix restoration under %s "
+                                "(caller=0x%08x after=0x%08x)\n",
+                        bases[bi].name, hostile, csr_after);
+                g_failures++;
+            }
         }
         _mm_setcsr(csr_base);   /* leave the process environment as found */
     }

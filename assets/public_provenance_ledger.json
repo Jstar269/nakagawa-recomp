@@ -389,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "afc2b5e636ac0c071dd22c20768a412b76ae2a7d83927031329476a33610203d"
+      "sha256": "513873f6afa8446aeed57879140ca0fae35217cbbe1418c01dc506aaf296b2df"
     },
     {
       "path": "assets/release_manifest.json",
@@ -3966,7 +3966,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "e577a5f40c9b9e9936ace8cf829f4dd2626d12b80e4d2d68634552b5d7d0e87a"
+      "sha256": "5c202d4211395744cee6f10497a3dc3814c72e00a33fd7d6149cc345e4ab0290"
     },
     {
       "path": "src/rt/fp_convert_selftest.c",
@@ -3978,7 +3978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "a10742d1fd54af646a691a9d425f311b0f5fb71154e3b68ea0c366ffc908d5c5"
+      "sha256": "15c837b41eecddb3c76d3bf1c0602723be32a0f7e9242e4ef0652d96a7bffac1"
     },
     {
       "path": "src/rt/funcdiff.c",
@@ -5105,7 +5105,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "c609d3869b2ea2c7f1b9b680f9d1382bd4b46f8ee9fe1d240b5fffdf20d0a24c"
+      "sha256": "557a4f126a25b81b209d7af510f188ea677a3444c6d92a6e1f767983887a07d9"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6203,7 +6203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "32ada45474b4623c8d311dc52de9c7ff5689977db936daa88b2dddd513be4070"
+      "sha256": "7840d9f64d2775045d2d068f6bb7cc0a7b6e289334e856f2299d7c7ca7fe34e2"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -6417,6 +6417,15 @@
         "upstream_attribution": null
       },
       "sha256": "0c3661e99445b17ed88f33a60198f458328dfe46e68e7f53b35f79df6b673878"
+    },
+    {
+      "path": "tools/test_fp_scalar_mutations.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "4d8f2229f74be636c5e61784c64913544f0673f5b28dbe83be8be8c62e44909c"
     },
     {
       "path": "tools/test_gate_exit_resolution.py",

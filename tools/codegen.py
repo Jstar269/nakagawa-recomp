@@ -981,14 +981,16 @@ def fpu_effect(addr, w):
                             f"s->fpcond = (s->fcr31 >> 23) & 1u; }}"), None, 0
     if fmt == 0x10:
         fn = funct(w)
-        # Scalar arithmetic honors guest RM/FS: default-state guests take the
-        # plain host operation (fast predicate), everything else routes through
-        # the scoped-environment PSP-semantic helper. See fp_convert.h.
-        fast = "sr_fpu_scalar_fast(s->fcr31)"
-        if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = {fast} ? (_a + _b) : sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = {fast} ? (_a - _b) : sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x02: return f"{{ float _a={F(fs)},_b={F(ft)}; if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) s->fi[{fdv}]=0x7fc00000u; else {F(fdv)}={fast} ? (_a*_b) : sr_fpu_mul_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = {fast} ? (_a / _b) : sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
+        # Scalar arithmetic always routes through the scoped-environment
+        # PSP-semantic helpers: the native fast path was removed for
+        # correctness after hostile-host fixtures showed ambient host RC/FTZ/
+        # DAZ and sticky-bit leakage reaching guest results (see fp_convert.h,
+        # FAST PATH DISPOSITION). mul.s keeps its inf*0 canonicalization
+        # outside the environment-dependent multiply.
+        if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x02: return f"{{ float _a={F(fs)},_b={F(ft)}; if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) s->fi[{fdv}]=0x7fc00000u; else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
         if fn == 0x04: return f"{F(fdv)} = sqrtf({F(fs)});", None, 0
         if fn == 0x05: return f"{F(fdv)} = fabsf({F(fs)});", None, 0
         if fn == 0x06: return f"{F(fdv)} = {F(fs)};", None, 0
