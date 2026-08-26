@@ -389,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "513873f6afa8446aeed57879140ca0fae35217cbbe1418c01dc506aaf296b2df"
+      "sha256": "9b0ef96edc1711d5bbe829527d8f1e63903012cfa9543e0e69aabe65b1361803"
     },
     {
       "path": "assets/release_manifest.json",
@@ -5105,7 +5105,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4d5a3f9a45b860ab672b77a37c0a5492f8a8054bddec43b0736f2fa80cb16cd6"
+      "sha256": "92e0ea17a20ef081e4c9a9e69aa10af4f7cca92c07ce8f07d908ec905d8c2f04"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6273,6 +6273,15 @@
         "upstream_attribution": null
       },
       "sha256": "fbc5806ed4ab8558bbe6bfd3e3444ef41e72b643cad83e466ec2a59b0b48d5c5"
+    },
+    {
+      "path": "tools/test_codegen_transfer_target_timing.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "2f745a0a4ca69c62dd81dc9f0b0d9290f72b8efa6e4d2f350e638955744df330"
     },
     {
       "path": "tools/test_codegen_vfpu_fallback.py",
