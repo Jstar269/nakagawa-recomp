@@ -609,9 +609,10 @@ int main(void) {
     int failures = 0;
     struct Hostile { const char *name; uint32_t set; uint32_t clear; };
     static const struct Hostile bases[] = {
-        {"RC=RZ",   1u << 13, 0u},
-        {"RC=RP",   2u << 13, 0u},
-        {"RC=RM",   3u << 13, 0u},
+        /* Labels name the HOST x86 MXCSR RC field encoding, not MIPS RM. */
+        {"RC=x86 -inf", 1u << 13, 0u},
+        {"RC=x86 +inf", 2u << 13, 0u},
+        {"RC=x86 zero", 3u << 13, 0u},
         {"FTZ",     1u << 15, 0u},
         {"DAZ",     1u << 6,  0u},
     };
@@ -644,6 +645,60 @@ int main(void) {
         _mm_setcsr(base);
     }
     printf("generated_fp_scalar_hostile: %s\\n", failures == 0 ? "PASS" : "FAIL");
+    return failures == 0 ? 0 : 1;
+}
+"""
+
+
+_CELL_INFZERO_MAIN = """\
+#include <fenv.h>
+#include <stdio.h>
+#include <xmmintrin.h>
+
+int main(void) {
+    if (fesetround(FE_TONEAREST) != 0) return 2;
+    int failures = 0;
+    struct Base { const char *name; uint32_t set; uint32_t clear; };
+    static const struct Base bases[] = {
+        {"DAZ=1",     1u << 6, 0u},
+        {"DAZ=0 ctl", 0u,      0u},
+    };
+    static const struct { const char *what; unsigned reg; uint32_t want; } rows[] = {
+        {"+inf * +minsub", 9,  0x7f800000u},
+        {"+minsub * +inf", 10, 0x7f800000u},
+        {"-inf * +minsub", 11, 0xff800000u},
+        {"+inf * +0",      12, 0x7fc00000u},
+        {"+inf * -0",      13, 0x7fc00000u},
+        {"+0 * +inf",      14, 0x7fc00000u},
+        {"-0 * -inf",      15, 0x7fc00000u},
+    };
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t base = _mm_getcsr();
+        const uint32_t hostile = (base | bases[i].set) & ~bases[i].clear;
+        _mm_setcsr(hostile);
+        CpuState s = {0};
+        s.fi[0] = 0x7f800000u;   /* +inf           */
+        s.fi[1] = 0x00000001u;   /* min subnormal  */
+        s.fi[2] = 0xff800000u;   /* -inf           */
+        s.fi[3] = 0x00000000u;   /* exact +0       */
+        s.fi[4] = 0x80000000u;   /* exact -0       */
+        s.r[8] = 0u;
+        f_00001000(&s);
+        for (unsigned r = 0; r < 7; r++) {
+            if (s.r[rows[r].reg] != rows[r].want) {
+                fprintf(stderr, "FAIL %s %s got=%08x want=%08x\\n",
+                        bases[i].name, rows[r].what, s.r[rows[r].reg], rows[r].want);
+                failures++;
+            }
+        }
+        if (_mm_getcsr() != hostile) {
+            fprintf(stderr, "FAIL %s mxcsr before=%08x after=%08x\\n",
+                    bases[i].name, hostile, _mm_getcsr());
+            failures++;
+        }
+        _mm_setcsr(base);
+    }
+    printf("generated_fp_scalar_infzero: %s\\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }
 """
@@ -740,6 +795,38 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
         emitted = _run_generated_fixture(
             self, "fp_scalar_hostile", words, _CELL_HOSTILE_MAIN)
         self.assertNotIn("sr_fpu_scalar_fast", emitted)  # fast path stays gone
+
+    def test_mul_inf_zero_classifier_raw_bit_under_hostile_daz(self):
+        """The inf*0 pre-classifier must classify from RAW BITS, not FP compares.
+
+        A floating `_b == 0.0f` precheck executes outside the scoped window;
+        under hostile ambient DAZ=1 a real subnormal operand compares equal to
+        zero, sending inf * min-subnormal down the canonical-qNaN path. Raw
+        exponent/mantissa classification is environment-blind. Rows:
+          1. +inf * +min-subnormal, DAZ=1 -> +inf       (fails on FP compare)
+          2. +min-subnormal * +inf, DAZ=1 -> +inf       (fails on FP compare)
+          3. -inf * +min-subnormal, DAZ=1 -> -inf       (fails on FP compare)
+          4. +inf * +0            -> canonical 0x7fc00000
+          5. +inf * -0            -> canonical 0x7fc00000
+          6. symmetric zero*inf forms -> canonical 0x7fc00000
+          7. DAZ=0 controls proving identical classification outcomes
+        Every hostile row also asserts exact caller-MXCSR restoration.
+        """
+        words: list[int] = [
+            _fps3(1, 0, 8, 0x02), _mfc1(9, 8),    # +inf * +min-subnormal
+            _fps3(0, 1, 8, 0x02), _mfc1(10, 8),   # +min-subnormal * +inf
+            _fps3(1, 2, 8, 0x02), _mfc1(11, 8),   # -inf * +min-subnormal
+            _fps3(3, 0, 8, 0x02), _mfc1(12, 8),   # +inf * +0
+            _fps3(4, 0, 8, 0x02), _mfc1(13, 8),   # +inf * -0
+            _fps3(0, 3, 8, 0x02), _mfc1(14, 8),   # +0 * +inf
+            _fps3(2, 4, 8, 0x02), _mfc1(15, 8),   # -0 * -inf
+            0x03E00008, 0x00000000,
+        ]
+        emitted = _run_generated_fixture(
+            self, "fp_scalar_infzero", words, _CELL_INFZERO_MAIN)
+        self.assertIn("sr_fpu_mul_s", emitted)
+        self.assertIn("0x7f800000u", emitted)         # raw-bit inf classification
+        self.assertNotIn("isinf(_a)", emitted)        # no FP compare classifier
 
 
 if __name__ == "__main__":

@@ -984,12 +984,26 @@ def fpu_effect(addr, w):
         # Scalar arithmetic always routes through the scoped-environment
         # PSP-semantic helpers: the native fast path was removed for
         # correctness after hostile-host fixtures showed ambient host RC/FTZ/
-        # DAZ and sticky-bit leakage reaching guest results (see fp_convert.h,
-        # FAST PATH DISPOSITION). mul.s keeps its inf*0 canonicalization
-        # outside the environment-dependent multiply.
+        # DAZ reaching guest results (see fp_convert.h, FAST PATH
+        # DISPOSITION).
+        #
+        # mul.s classifies the inf*0 case from RAW IEEE-754 BITS read out of
+        # the register-file storage -- exponent/all-ones vs exact-zero words.
+        # A floating precheck (isinf()/x == 0.0f) would itself be a guest-
+        # sensitive FP comparison executing OUTSIDE the scoped window: under
+        # hostile ambient DAZ=1 a real subnormal operand compares equal to
+        # zero and inf*subnormal would wrongly take the canonical-qNaN path.
+        # Integer bit tests are environment-blind. Exact ±inf * exact ±0
+        # still canonicalizes to 0x7fc00000.
         if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
         if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x02: return f"{{ float _a={F(fs)},_b={F(ft)}; if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) s->fi[{fdv}]=0x7fc00000u; else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x02:
+            return (f"{{ const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}]; "
+                    f"float _a={F(fs)},_b={F(ft)}; "
+                    f"if((((_ab & 0x7fffffffu) == 0x7f800000u && (_bb & 0x7fffffffu) == 0u)) || "
+                    f"(((_bb & 0x7fffffffu) == 0x7f800000u && (_ab & 0x7fffffffu) == 0u))) "
+                    f"s->fi[{fdv}]=0x7fc00000u; "
+                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}"), None, 0
         if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
         if fn == 0x04: return f"{F(fdv)} = sqrtf({F(fs)});", None, 0
         if fn == 0x05: return f"{F(fdv)} = fabsf({F(fs)});", None, 0

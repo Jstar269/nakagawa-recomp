@@ -299,12 +299,15 @@ int main(void) {
     {
         struct HostileBase { const char *name; uint32_t set; uint32_t clear; };
         static const struct HostileBase bases[] = {
-            {"RC=RZ",            1u << 13,       0u},
-            {"RC=RP",            2u << 13,       0u},
-            {"RC=RM",            3u << 13,       0u},
+            /* Labels name the HOST x86 MXCSR RC field encoding (00=RN,
+             * 01=-inf, 10=+inf, 11=zero), which differs from the MIPS FCSR
+             * RM order the guest uses; the helper translates explicitly. */
+            {"RC=x86 -inf",      1u << 13,       0u},
+            {"RC=x86 +inf",      2u << 13,       0u},
+            {"RC=x86 zero",      3u << 13,       0u},
             {"FTZ",              1u << 15,       0u},
             {"DAZ",              1u << 6,        0u},
-            {"sticky PE|UE|OE",  0x32u,          0u},
+            {"sticky DE|UE|PE",  0x32u,          0u},
             {"fully unmasked",   0u,             0x1f80u},
             {"combined hostile", (3u << 13) | (1u << 15) | (1u << 6) | 0x32u, 0x1f80u},
         };

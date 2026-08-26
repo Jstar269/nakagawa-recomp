@@ -400,12 +400,18 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 					switch (funct) {
 						case 0x00: s->f[fd] = sr_fpu_add_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // add.s
 						case 0x01: s->f[fd] = sr_fpu_sub_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // sub.s
-						case 0x02: {  // mul.s; the inf*0 canonical NaN is forced before RM-directed multiply
-							float a = s->f[fs], b = s->f[ft];
-							if ((std::isinf(a) && b == 0.0f) || (std::isinf(b) && a == 0.0f))
+						case 0x02: {  // mul.s: inf*0 canonicalization classifies from RAW BITS
+							// (environment-blind). A floating isinf()/==0.0f precheck would
+							// be a guest-sensitive comparison outside any scoped window;
+							// under ambient DAZ=1 a subnormal operand would compare zero
+							// and inf*subnormal would wrongly canonicalize.
+							const uint32_t ab = sr_float_bits(s->f[fs]);
+							const uint32_t bb = sr_float_bits(s->f[ft]);
+							if (((ab & 0x7fffffffu) == 0x7f800000u && (bb & 0x7fffffffu) == 0u) ||
+							    ((bb & 0x7fffffffu) == 0x7f800000u && (ab & 0x7fffffffu) == 0u))
 								s->fi[fd] = 0x7fc00000;
 							else
-								s->f[fd] = sr_fpu_mul_s(a, b, fcr31);
+								s->f[fd] = sr_fpu_mul_s(s->f[fs], s->f[ft], fcr31);
 							return StopReason::kRunning;
 						}
 						case 0x03: s->f[fd] = sr_fpu_div_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // div.s

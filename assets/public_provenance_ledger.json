@@ -2516,7 +2516,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9791e05ecaa6f7a36771b5adba70e8e75a88f8c16551c27d993110f31b8bcd57"
+      "sha256": "63a4d99666306f449583e969a7cc8f1067df8d58f8436755515dc3d0ba5da679"
     },
     {
       "path": "src/ref/interp.cpp",
@@ -2531,7 +2531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b806b4fdc2ade2cc1c0675718c1d8a9d1f12844dfb431f3a812391e7141597b9"
+      "sha256": "31234c1dd905cd603a3b285bc5c8713eab92ee3ee8d56a23df2476c69ffa77ee"
     },
     {
       "path": "src/ref/interp.h",
@@ -3978,7 +3978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "15c837b41eecddb3c76d3bf1c0602723be32a0f7e9242e4ef0652d96a7bffac1"
+      "sha256": "a76bcb410dc5a8c31e11df44a8220cbf51de0a9460719c8d3fdb0668142b6b10"
     },
     {
       "path": "src/rt/funcdiff.c",
@@ -5105,7 +5105,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "557a4f126a25b81b209d7af510f188ea677a3444c6d92a6e1f767983887a07d9"
+      "sha256": "4d5a3f9a45b860ab672b77a37c0a5492f8a8054bddec43b0736f2fa80cb16cd6"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6203,7 +6203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7840d9f64d2775045d2d068f6bb7cc0a7b6e289334e856f2299d7c7ca7fe34e2"
+      "sha256": "85ea94bca865e2adb3c9491b179cbeff132dde9942cd3b036fd3f66d037f6a01"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -6425,7 +6425,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4d8f2229f74be636c5e61784c64913544f0673f5b28dbe83be8be8c62e44909c"
+      "sha256": "a6348749dc0e826c95f421989d73dc4b55e744fae611844e8d9d33eeb68ba46b"
     },
     {
       "path": "tools/test_gate_exit_resolution.py",

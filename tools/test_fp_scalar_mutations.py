@@ -131,6 +131,71 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
             "emitted code consults a native fast path again; a validated "
             "host-invariant design is a prerequisite (RISK-8)")
 
+    def test_mul_inf_zero_classifier_is_raw_bit(self):
+        """Structural anchor for the DAZ-precheck repair.
+
+        The emitted mul.s inf*0 classification must read raw register-file
+        bits; a floating isinf()/==0.0f precheck is guest-sensitive FP work
+        outside the scoped window and misfires under hostile ambient DAZ.
+        Anchors are contiguous fragments of codegen.py's emission template.
+        """
+        text = CODEGEN.read_text(encoding="utf-8")
+        self.assertIn(
+            'const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}];', text,
+            "mul.s must classify inf*0 from raw fi[] bits")
+        self.assertIn(
+            'f"if((((_ab & 0x7fffffffu) == 0x7f800000u && (_bb & 0x7fffffffu) == 0u)) || "',
+            text, "raw-bit inf classification fragment drifted")
+        self.assertNotIn("isinf(_a)&&_b==0.0f", text,
+                         "floating inf*0 precheck reintroduced into mul.s emission")
+
+    def test_behavioral_mul_daz_precheck_mutant_is_killed(self):
+        """Behavioral guard: restoring the FP-comparison classifier must fail
+        the committed generated hostile-DAZ case (inf * min-subnormal would
+        wrongly canonicalize to qNaN). Proves the fixture detects the defect,
+        not merely its textual absence."""
+        if CC is None:
+            self.skipTest("gcc required")
+        original = CODEGEN.read_text(encoding="utf-8")
+        # Exact contiguous fragments of the current raw-bit emission template.
+        frag_if = ('f"if((((_ab & 0x7fffffffu) == 0x7f800000u '
+                   '&& (_bb & 0x7fffffffu) == 0u)) || "')
+        frag_sym = ('f"(((_bb & 0x7fffffffu) == 0x7f800000u '
+                    '&& (_ab & 0x7fffffffu) == 0u))) "')
+        frag_store = 'f"s->fi[{fdv}]=0x7fc00000u; "'
+        self.assertIn(frag_if, original, "raw-bit classifier anchor drifted")
+        self.assertIn(frag_sym, original, "raw-bit classifier anchor drifted")
+        self.assertIn(frag_store, original, "raw-bit classifier anchor drifted")
+        float_if = ('f"if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) '
+                    's->fi[{fdv}]=0x7fc00000u; "')
+        mutant = (original
+                  .replace(frag_if, "")
+                  .replace(frag_sym, "")
+                  .replace(frag_store, float_if))
+        self.assertNotEqual(mutant, original, "mutant construction produced no change")
+        CODEGEN.write_text(mutant, encoding="utf-8", newline="\n")
+        failed = False
+        try:
+            # Import fresh so the mutated module is what actually runs.
+            import importlib
+            import tools.test_codegen_fp_convert as fixture
+            importlib.reload(fixture)
+            try:
+                suite = unittest.TestSuite([
+                    fixture.GeneratedScalarFcr31Tests(
+                        "test_mul_inf_zero_classifier_raw_bit_under_hostile_daz"),
+                ])
+                result = unittest.TextTestRunner(verbosity=0).run(suite)
+                failed = not result.wasSuccessful()
+            finally:
+                importlib.reload(fixture)
+        finally:
+            CODEGEN.write_text(original, encoding="utf-8", newline="\n")
+        self.assertTrue(
+            failed,
+            "FP-compare precheck classifier SURVIVED the committed "
+            "hostile-DAZ generated case; behavioral guard is vacuous")
+
     def test_codegen_routes_every_scalar_op_through_helpers(self):
         text = CODEGEN.read_text(encoding="utf-8")
         for helper in ("sr_fpu_add_s(_a,_b,s->fcr31)",
