@@ -33,9 +33,10 @@ class _OmitAot:
 
     An omitted address stays in the guest image and in analyzer discovery, but is
     removed from the emission/registration catalog, so generated callers reach it
-    through the ordinary production ``dispatch()`` path instead of a direct C
-    call. This is the seam an interpreter fallback plugs into; with no
-    interpreter it fails closed at the dispatch miss.
+    through the ordinary production dispatcher instead of a direct C call. A linked
+    call carries its resume PC with ``dispatch_call``; a tail transfer uses
+    ``dispatch`` with no native resume boundary. This is the seam an interpreter
+    fallback plugs into; with no interpreter it fails closed at the dispatch miss.
     """
 
     def __init__(self) -> None:
@@ -1071,9 +1072,11 @@ def is_control(w):
     fn = w & 0x3F
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
-def function_flow(elf, start, ranges, known, resume_owners=None):
+def function_flow(elf, start, ranges, known, resume_owners=None,
+                  dispatch_boundaries=None):
     insns, labels, seen = set(), set(), set()
     resume_owners = resume_owners or {}
+    dispatch_boundaries = dispatch_boundaries or set()
     # A translated entry may linearly run into another address-taken entry.  This is
     # common for switch cases (and extremely common in the hand-written libc code),
     # but it also marks real adjacent-function boundaries such as f_0000d518 ->
@@ -1093,6 +1096,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None):
             return False
         if next_pc in known:
             return True
+        if next_pc in dispatch_boundaries:
+            return True
         owner = resume_owners.get(next_pc)
         # A resume label belongs natively to its owner and to its own alternate
         # host entry.  It remains an external entry boundary for every other body.
@@ -1102,6 +1107,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None):
         # Preserve the existing callable/self-jump contract.  Only a resume label
         # owned by this body (or the resume body itself) is a native jump target.
         if target_pc in known:
+            return True
+        if target_pc in dispatch_boundaries:
             return True
         owner = resume_owners.get(target_pc)
         return owner is not None and start not in (owner, target_pc)
@@ -1127,7 +1134,7 @@ def function_flow(elf, start, ranges, known, resume_owners=None):
             if w is None:
                 break
             op, fn = w >> 26, w & 0x3F
-            if op == 3 or (op == 0 and fn == 0x09):  # jal / jalr: call, returns
+            if op == 3 or (op == 0 and fn == 0x09 and rd(w) != 0):  # jal / linked jalr
                 insns.add(pc + 4)
                 seen.add(pc + 4)
                 next_pc = pc + 8
@@ -1135,6 +1142,10 @@ def function_flow(elf, start, ranges, known, resume_owners=None):
                     break
                 pc = next_pc
                 continue
+            if op == 0 and fn == 0x09:  # jalr $zero, rs: computed tail transfer
+                insns.add(pc + 4)
+                seen.add(pc + 4)
+                break
             if op == 2:  # j
                 t = jump_target(pc, w)
                 insns.add(pc + 4)
@@ -1392,12 +1403,14 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
-def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False, profile=None):
+def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
+                  profile=None, dispatch_boundaries=None):
     hst_profile = profile == "hst"
     resume_owners = resume_owners or {}
     host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
-        elf, start, ranges, known, resume_owners=resume_owners)
+        elf, start, ranges, known, resume_owners=resume_owners,
+        dispatch_boundaries=dispatch_boundaries)
     sv_points = sv_plan(elf, insns, labels, hst_profile=hst_profile)
     # A delay slot that is itself a branch target is emitted twice: inline at its
     # owning control instruction (where it must execute as the slot) and again
@@ -1710,7 +1723,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             if target in host_entries:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
             else:
-                out.append(f"    dispatch(s, 0x{target:08x}u);")
+                out.append(
+                    f"    dispatch_call(s, 0x{target:08x}u, "
+                    f"0x{(addr + 8) & 0xFFFFFFFF:08x}u);"
+                )
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
             elif addr in dup_slot_skips:
@@ -1726,11 +1742,18 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.append(normal_line(ds, dsw, hst_profile=hst_profile))
-            out.append("      dispatch(s, _t); }")
-            if addr in continuations:
-                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-            elif addr in dup_slot_skips:
-                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            if d != 0:
+                out.append(
+                    f"      dispatch_call(s, _t, 0x{(addr + 8) & 0xFFFFFFFF:08x}u); }}"
+                )
+                if addr in continuations:
+                    out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+                elif addr in dup_slot_skips:
+                    out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            else:
+                out.append(
+                    f"      dispatch(s, _t); {emit_host_return(resumable)} }}"
+                )
             continue
         if op == 0 and fn == 0x08:  # jr rs
             a = rs(w)
@@ -1802,8 +1825,18 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         out.append("    goto _sr_fallthrough_return;")
         for target in sorted(set(continuations.values())):
             out.append(f"  _sr_cont_{target:08x}: ;")
-            out.append(f"    {entry_symbol(target, resume_owners)}(s);")
-            out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame')}")
+            if dispatch_boundaries and target in dispatch_boundaries:
+                # An omitted address remains a guest execution boundary even when a
+                # separate discovery anchor reaches it by linear fall-through. There
+                # is no native symbol to call, and this edge is a tail-shaped transfer:
+                # dispatch the guest target and then leave the current native body.
+                out.append(
+                    f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); "
+                    f"{emit_host_return(resumable)} }}"
+                )
+            else:
+                out.append(f"    {entry_symbol(target, resume_owners)}(s);")
+                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame')}")
         out.append("  _sr_fallthrough_return: ;")
     out.append(f"    {emit_host_fallthrough(resumable)}")
     out.append("}")
@@ -1922,6 +1955,7 @@ def main(argv):
     owned_exec_ranges = list(ranges)
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     omitted = omit_aot.apply(catalog, elf.entry)
+    dispatch_boundaries = set(omit_aot.addrs)
     if omitted:
         for addr in sorted(omit_aot.addrs):
             sys.stderr.write(f"CODEGEN_OMIT_AOT 0x{addr:08x} dispatch-fallback\n")
@@ -2120,7 +2154,8 @@ def main(argv):
         if hst_profile and a == 0x000468c8:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile)))
+                resumable=catalog[a].resumable, profile=profile,
+                dispatch_boundaries=dispatch_boundaries)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
             text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
     for (;;) {
@@ -2141,7 +2176,8 @@ def main(argv):
             # chooser or a VFS alias that would conceal bad resource paths globally.
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile)))
+                resumable=catalog[a].resumable, profile=profile,
+                dispatch_boundaries=dispatch_boundaries)))
             func_texts[-1] = func_texts[-1].replace(
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
@@ -2225,7 +2261,8 @@ def main(argv):
         try:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile)))
+                resumable=catalog[a].resumable, profile=profile,
+                dispatch_boundaries=dispatch_boundaries)))
             emitted.append(a)
         except Unsupported as e:
             reason = str(e).replace('"', "'")

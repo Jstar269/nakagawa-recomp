@@ -23,7 +23,7 @@ Modes
     still discovered by the analyzer, but the mode's build choice
     (``--omit-aot``) removes it from native emission/registration.  Region A's
     direct ``jal`` therefore compiles to the ordinary production
-    ``dispatch(s, 0x<HELPER>)`` statement, and at runtime the guest transfer
+    ``dispatch_call(s, 0x<HELPER>, 0x<RESUME>)`` statement, and at runtime the guest transfer
     leaves the directly compiled destination set through the real dispatcher.
     The production interpreter executes the helper bytes only because generated
     registration explicitly owns their executable span.  Its tail transfers to
@@ -699,7 +699,10 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         _check_region_bytes(image, REGION_B - BASE, expected_region_b_bytes(), "region B")
 
     if mode == "aot-gap":
-        seam = f"dispatch(s, 0x{HELPER:08x}u)"
+        seam = (
+            f"dispatch_call(s, 0x{HELPER:08x}u, "
+            f"0x{ENTRY + 0x10:08x}u)"
+        )
         if seam not in generated_text:
             raise RuntimeError("AOT-gap generated code lacks the production dispatch seam")
         resume = f"f_{REGION_B:08x}"
