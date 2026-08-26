@@ -101,6 +101,20 @@ extern uint32_t sr_hle_test_io_close_async(CpuState *s);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
 
+/* Extracted-data census preparation contract hooks (defined in hle.c,
+ * selftest-only): preparation state machine, walk/build counters, a guest-start
+ * boundary marker, and a reset that restores the pristine UNINITIALIZED route.
+ * See the prewarm tests below for the contracts these make observable. */
+extern int sr_host_data_prepare(void);
+extern size_t sr_host_data_entry_count(void);
+extern void sr_hle_test_data_mark_guest_start(void);
+extern unsigned long sr_hle_test_data_walk_calls(void);
+extern unsigned long sr_hle_test_data_build_attempts(void);
+extern unsigned long sr_hle_test_data_builds_after_guest(void);
+extern int sr_hle_test_data_state(void);
+extern size_t sr_hle_test_data_entry_count(void);
+extern void sr_hle_test_data_reset(int pace_ms);
+
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
 typedef struct {
     uint32_t capacity, count, read_pos, write_pos;
@@ -2302,6 +2316,233 @@ static void test_route_observer_waits_for_guest_scanout_state(void) {
            "with the guest's own pixel format (1), not the initializer's 3");
     expect(g_sync_last.width == 480u && g_sync_last.height == 272u,
            "and the full visible extent");
+}
+
+/* ---- extracted-data census preparation seam ---------------------------------
+ *
+ * The cold extracted-data index census must never begin from a guest HLE call.
+ * The historical lazy data_init() inside h_IoOpen ran the whole SR_DATAROOT
+ * filesystem walk synchronously on the single guest-scheduler OS thread; under
+ * host filesystem contention every guest thread/yield/VBLANK starved for
+ * seconds and the VCOUNT catch-up afterwards tripped SR_EXIT_AT_VBLANK.
+ *
+ * Production order under test: sr_host_data_prepare() runs once BEFORE any
+ * guest execution (driver.c), reaching a TERMINAL state -- READY (index
+ * published), FAILED (attempted census failed), or DISABLED (route not
+ * applicable: no operator SR_DATAROOT and this profile declares no expected
+ * census). Guest-time lookups consume terminal states only; a non-terminal
+ * observation refuses with ONE bounded diagnostic and never enumerates.
+ *
+ * These tests drive the REAL sr_host_data_prepare / host_data_lookup /
+ * data_walk through the real production h_IoOpen entry. */
+#define SR_DATA_TEST_STATE_UNINITIALIZED 0
+#define SR_DATA_TEST_STATE_INITIALIZING  1
+#define SR_DATA_TEST_STATE_READY         2
+#define SR_DATA_TEST_STATE_FAILED        3
+#define SR_DATA_TEST_STATE_DISABLED      4
+
+static char s_prewarm_root[MAX_PATH];
+
+static void prewarm_env_restore(void) {
+    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+}
+
+/* Build a fresh source-owned fixture tree <cwd>/build/data_prewarm_<pid> with
+ * one servable asset at data/menu/text/common.to. Returns 1 on success. */
+static int prewarm_make_fixture(int with_asset) {
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    CreateDirectoryA("build", NULL);
+    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\build\\data_prewarm_%lu",
+             cwd, (unsigned long)GetCurrentProcessId());
+    /* A stale fixture from an earlier run must not inflate the counts. */
+    char clean_root[MAX_PATH];
+    snprintf(clean_root, sizeof clean_root, "\\\\?\\%s", s_prewarm_root);
+    /* Best-effort removal of a previous run's deepest file only. */
+    {
+        char old_file[MAX_PATH];
+        snprintf(old_file, sizeof old_file, "\\\\?\\%s\\data\\menu\\text\\common.to",
+                 s_prewarm_root);
+        DeleteFileA(old_file);
+    }
+    (void)clean_root;
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
+    if (!(CreateDirectoryA(s_prewarm_root, NULL) || GetLastError() == ERROR_ALREADY_EXISTS))
+        return 0;
+    snprintf(dir, sizeof dir, "%s\\data", s_prewarm_root);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, sizeof dir, "%s\\data\\menu", s_prewarm_root);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
+    CreateDirectoryA(dir, NULL);
+    if (with_asset) {
+        char file[MAX_PATH];
+        snprintf(file, sizeof file, "%s\\common.to", dir);
+        FILE *f = fopen(file, "wb");
+        if (!f) return 0;
+        fputs("common", f);
+        fclose(f);
+    }
+    return 1;
+}
+
+static uint32_t prewarm_open_common(CpuState *cpu) {
+    static const uint32_t path_addr = 0x09100000u;
+    memset(cpu, 0, sizeof *cpu);
+    cpu->r[4] = path_addr;
+    /* disc0:/<rel> exercises the same device-strip + binary-search shape the
+     * extracted-data route serves in production. (The combined PSP_GAME/ +
+     * USRDIR/ double-strip has a pre-existing leading-slash quirk documented
+     * since PR #108; it is unchanged here and out of scope.) */
+    const char *path = "disc0:/data/menu/text/common.to";
+    for (unsigned i = 0;; i++) {
+        MEM_W8(path_addr + i, (uint8_t)path[i]);
+        if (!path[i]) break;
+    }
+    return sr_hle_test_io_open(cpu);
+}
+
+/* 1. The applicable route reaches READY synchronously during preparation; after
+ *    the guest-start boundary the production open serves the fixture asset,
+ *    and NO census attempt happens after that boundary. */
+static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
+    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    sr_hle_test_data_reset(0);
+
+    expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_UNINITIALIZED,
+           "a reset route starts UNINITIALIZED");
+    int state = sr_host_data_prepare();
+    expect(state == SR_DATA_TEST_STATE_READY,
+           "an applicable route reaches READY during preparation");
+    expect(sr_hle_test_data_entry_count() == 1 && sr_host_data_entry_count() == 1,
+           "the published index carries exactly the fixture asset");
+    unsigned long walks_before = sr_hle_test_data_walk_calls();
+    expect(walks_before >= 4u,
+           "the census enumerated the fixture directories exactly during preparation");
+
+    sr_hle_test_data_mark_guest_start();
+    uint32_t fd = prewarm_open_common(&cpu);
+    expect(fd >= 3u && fd < 64u,
+           "after guest start the production open serves the prepared asset");
+    expect(sr_hle_test_data_builds_after_guest() == 0,
+           "guest time never begins a cold census");
+    expect(sr_hle_test_data_build_attempts() == 1,
+           "preparation attempted the census exactly once");
+    expect(sr_hle_test_data_walk_calls() == walks_before,
+           "the served lookup enumerated nothing further");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the served descriptor closes cleanly");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+}
+
+/* 2. Mutation catcher: a lookup on a NEVER-prepared route after guest start
+ *    must refuse without enumerating or building anything. */
+static void test_unprepared_route_lookup_fails_closed_without_building(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
+    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    sr_hle_test_data_reset(0);
+    sr_hle_test_data_mark_guest_start();
+
+    expect(prewarm_open_common(&cpu) == 0x80010002u,
+           "an unprepared applicable route fails the guest open closed");
+    expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_UNINITIALIZED,
+           "the refusal did not start a census");
+    expect(sr_hle_test_data_walk_calls() == 0u,
+           "guest time never enumerates on behalf of an unprepared route");
+    expect(sr_hle_test_data_builds_after_guest() == 0,
+           "and never records a post-guest build attempt");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+}
+
+/* 3. Placement proof, not speed proof: even with per-directory pacing inside
+ *    the real walk, the whole census completes within preparation -- before
+ *    the guest-start boundary is marked. */
+static void test_slow_enumeration_completes_before_guest_start(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
+    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    sr_hle_test_data_reset(20 /* ms per directory */);
+
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+           "a slow census still finishes entirely inside preparation");
+    sr_hle_test_data_mark_guest_start();
+    expect(sr_hle_test_data_builds_after_guest() == 0,
+           "no paced enumeration work leaked past the boundary");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+    (void)cpu;
+}
+
+/* 4. A generic profile without SR_DATAROOT terminates DISABLED with ZERO
+ *    filesystem enumeration, and guest-time lookups consume that state in O(1). */
+static void test_unapplicable_route_disables_without_scanning(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(prewarm_make_fixture(1), "the unused fixture exists but must not be scanned");
+    prewarm_env_restore();   /* no operator root configured */
+    sr_hle_test_data_reset(0);
+
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_DISABLED,
+           "a generic profile without SR_DATAROOT disables the route");
+    expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_DISABLED,
+           "DISABLED is terminal");
+    expect(sr_hle_test_data_walk_calls() == 0u,
+           "a disabled route performs ZERO recursive enumeration");
+    expect(sr_hle_test_data_build_attempts() == 1,
+           "disabling is itself a single terminal preparation decision");
+
+    sr_hle_test_data_mark_guest_start();
+    expect(prewarm_open_common(&cpu) == 0x80010002u,
+           "guest lookups fail closed against a disabled route");
+    expect(sr_hle_test_data_walk_calls() == 0u,
+           "guest lookups never build or spin against a disabled route");
+
+    sr_hle_test_data_reset(0);
+}
+
+/* 5. A configured-but-missing root fails ONCE during preparation; repeated
+ *    guest-time lookups never rescan. */
+static void test_missing_root_fails_once_and_stays_failed(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    char missing[MAX_PATH];
+    snprintf(missing, sizeof missing, "%s\\build\\data_prewarm_missing_%lu",
+             s_prewarm_root, (unsigned long)GetCurrentProcessId());
+    SetEnvironmentVariableA("SR_DATAROOT", missing);
+    sr_hle_test_data_reset(0);
+
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_FAILED,
+           "a missing configured root reaches FAILED during preparation");
+    expect(sr_hle_test_data_build_attempts() == 1,
+           "exactly one census attempt was made");
+    sr_hle_test_data_mark_guest_start();
+    for (int i = 0; i < 3; i++) {
+        expect(prewarm_open_common(&cpu) == 0x80010002u,
+               "repeated guest opens keep failing closed against the failed route");
+    }
+    expect(sr_hle_test_data_build_attempts() == 1,
+           "FAILED is terminal: guest lookups never rescan");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
 }
 
 /* sceDisplaySetFrameBuf flip accounting.
@@ -8145,6 +8386,11 @@ int main(int argc, char **argv) {
     test_vcount_freezes_while_cpu_interrupts_are_masked();
     test_vcount_credits_one_deferred_period_on_resume();
     test_route_observer_waits_for_guest_scanout_state();
+    test_extracted_data_prepares_before_guest_and_lookup_never_builds();
+    test_unprepared_route_lookup_fails_closed_without_building();
+    test_slow_enumeration_completes_before_guest_start();
+    test_unapplicable_route_disables_without_scanning();
+    test_missing_root_fails_once_and_stays_failed();
     test_display_setframebuf_flip_accounting();
     test_watchdog_no_new_frame_observation();
     test_watchdog_fires_on_boundary_crossing_not_exact_multiple();

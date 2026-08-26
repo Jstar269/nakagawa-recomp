@@ -577,6 +577,14 @@ uint64_t sr_profile_test_lookup_drops(void);
 #define SCHED_INTR_VBLANK 0x00000001u /* coalescing display source */
 #define SCHED_INTR_GE     0x00000002u /* reserved GE source; retained until its handler lands */
 
+/* Extracted-data census preparation (src/rt/hle.c). The driver calls this ONCE
+ * on the startup thread AFTER configuration is final and BEFORE gui_init,
+ * sched_init, or any guest execution: the cold index must never begin from a
+ * guest HLE call. Returns a terminal SR_DATA_STATE_* value (READY, FAILED, or
+ * DISABLED); guest-time lookups consume terminal states only. */
+int sr_host_data_prepare(void);
+size_t sr_host_data_entry_count(void);      /* valid after READY */
+
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp);

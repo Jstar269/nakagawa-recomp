@@ -4997,6 +4997,38 @@ static DirFd s_dirfds[32];
 
 static SrAssetIndex s_data_index;
 static atomic_int s_data_state;
+
+/* Extracted-data route states. The historical numeric values 0-3 are part of
+ * the observable behavior of this file; DISABLED (4) is the terminal state for
+ * runs whose profile declares no extracted-data census and for which no
+ * operator configured SR_DATAROOT.
+ *
+ * Production order is: sr_host_data_prepare() runs ONCE, synchronously, on the
+ * startup thread BEFORE any guest execution exists (see driver.c). Guest-time
+ * lookups therefore only ever consume a TERMINAL state; a non-terminal
+ * observation after guest start means preparation was skipped or is still
+ * running, and the lookup fails closed with ONE bounded diagnostic rather than
+ * building the index on the scheduler thread (the historical early-boot stall)
+ * or spinning. */
+#define SR_DATA_STATE_UNINITIALIZED 0
+#define SR_DATA_STATE_INITIALIZING  1
+#define SR_DATA_STATE_READY         2
+#define SR_DATA_STATE_FAILED        3
+#define SR_DATA_STATE_DISABLED      4
+
+#ifndef SR_DATA_EXPECTED_COUNT
+#define SR_DATA_EXPECTED_COUNT 0
+#endif
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only white-box counters for the preparation contract. Production
+ * builds compile none of this. */
+static unsigned long s_data_test_walk_calls;         /* directories enumerated */
+static unsigned long s_data_test_build_attempts;     /* census attempts total */
+static unsigned long s_data_test_builds_after_guest; /* attempts after guest start */
+static int s_data_test_guest_started;
+static int s_data_test_pace_ms;                      /* per-directory pacing hook */
+#endif
 #ifndef SR_DATA_EXPECTED_COUNT
 #define SR_DATA_EXPECTED_COUNT 0u
 #endif
@@ -5056,6 +5088,13 @@ static int data_walk(const wchar_t *root, const char *relprefix, SrAssetIndex *i
     int ok = 1;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        /* Test-only pacing: proves the census COMPLETES before the guest-start
+         * boundary when the hook placement is correct (a placement proof, not a
+         * speed proof). Production builds never pace. */
+        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
         wchar_t *pattern = NULL;
         if (!sr_wide_join_alloc(current.host, L"*", &pattern)) {
             fprintf(stderr, "host_data: failed to construct enumeration pattern\n");
@@ -5210,18 +5249,45 @@ static int data_validate_index(const SrAssetIndex *index) {
     return 1;
 }
 
-static int data_init(void) {
-    int expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(&s_data_state, &expected, 1,
-                                                  memory_order_acq_rel, memory_order_acquire)) {
-        while (atomic_load_explicit(&s_data_state, memory_order_acquire) == 1) { }
-        return atomic_load_explicit(&s_data_state, memory_order_acquire) == 2;
+/* Build the extracted-data index ONCE, before guest execution starts.
+ *
+ * Applicability predicate: the route applies iff an operator explicitly
+ * configured SR_DATAROOT, OR the build profile declares an expected census
+ * (SR_DATA_EXPECTED_COUNT > 0, set only by GAME_NAME=hst). A generic profile
+ * without SR_DATAROOT terminates DISABLED with ZERO filesystem enumeration --
+ * a tree staged for one title can no longer be enumerated on behalf of another
+ * build or a synthetic guest. Census internals (walk, normalization, sort,
+ * publication checks, diagnostics) are unchanged from the historical lazy
+ * implementation; only WHEN it runs and WHO may trigger it changed. */
+int sr_host_data_prepare(void) {
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_data_test_build_attempts++;
+    if (s_data_test_guest_started &&
+        atomic_load_explicit(&s_data_state, memory_order_acquire) != SR_DATA_STATE_READY)
+        s_data_test_builds_after_guest++;
+#endif
+    int expected = SR_DATA_STATE_UNINITIALIZED;
+    if (!atomic_compare_exchange_strong_explicit(&s_data_state, &expected,
+                                                 SR_DATA_STATE_INITIALIZING,
+                                                 memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+        /* Idempotent for repeat calls (selftests, future callers): a route
+         * already terminal or being prepared is never re-scanned here. */
+        return atomic_load_explicit(&s_data_state, memory_order_acquire);
     }
-    SrAssetIndex temporary;
-    sr_asset_index_init(&temporary);
     wchar_t *configured_root = NULL;
     int configured_present = 0;
     int env_ok = sr_wide_env_alloc(L"SR_DATAROOT", &configured_root, &configured_present);
+    if (!configured_present && SR_DATA_EXPECTED_COUNT == 0) {
+        free(configured_root);
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_DISABLED, memory_order_release);
+        fprintf(stderr, "host_data: disabled (no SR_DATAROOT configured and this profile "
+                        "declares no extracted-data census); guest lookups will fall back "
+                        "to disc/VFS\n");
+        return SR_DATA_STATE_DISABLED;
+    }
+    SrAssetIndex temporary;
+    sr_asset_index_init(&temporary);
     const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
         "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
@@ -5246,20 +5312,52 @@ static int data_init(void) {
         fprintf(stderr, "host_data: index initialization failed; refusing partial index\n");
         free(root_wide);
         sr_asset_index_destroy(&temporary);
-        atomic_store_explicit(&s_data_state, 3, memory_order_release);
-        return 0;
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
+        return SR_DATA_STATE_FAILED;
     }
     free(root_wide);
     if (!sr_asset_index_publish(&s_data_index, &temporary)) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
-        atomic_store_explicit(&s_data_state, 3, memory_order_release);
-        return 0;
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
+        return SR_DATA_STATE_FAILED;
     }
-    atomic_store_explicit(&s_data_state, 2, memory_order_release);
+    atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
-    return 1;
+    return SR_DATA_STATE_READY;
 }
+
+/* Entry count of the published index; only meaningful after READY. Used by the
+ * driver's BOOT_EVENT index_prepare_end record so a boot log states how much
+ * was prepared without exposing internal structures. */
+size_t sr_host_data_entry_count(void) {
+    return atomic_load_explicit(&s_data_state, memory_order_acquire) == SR_DATA_STATE_READY
+        ? s_data_index.count : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only white-box accessors for the preparation contract. Production
+ * builds compile none of this. */
+void sr_hle_test_data_mark_guest_start(void) { s_data_test_guest_started = 1; }
+unsigned long sr_hle_test_data_walk_calls(void) { return s_data_test_walk_calls; }
+unsigned long sr_hle_test_data_build_attempts(void) { return s_data_test_build_attempts; }
+unsigned long sr_hle_test_data_builds_after_guest(void) { return s_data_test_builds_after_guest; }
+int sr_hle_test_data_state(void) {
+    return atomic_load_explicit(&s_data_state, memory_order_acquire);
+}
+size_t sr_hle_test_data_entry_count(void) { return s_data_index.count; }
+
+void sr_hle_test_data_reset(int pace_ms) {
+    sr_asset_index_destroy(&s_data_index);
+    sr_asset_index_init(&s_data_index);
+    atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
+    s_data_test_walk_calls = 0;
+    s_data_test_build_attempts = 0;
+    s_data_test_builds_after_guest = 0;
+    s_data_test_guest_started = 0;
+    s_data_test_pace_ms = pace_ms;
+}
+#endif
 
 static char *data_normalize_guest_key(const char *guest_path, int *wanted_variant) {
     if (!guest_path || !wanted_variant) return NULL;
@@ -5316,9 +5414,24 @@ static char *data_normalize_guest_key(const char *guest_path, int *wanted_varian
     return key;
 }
 
-/* Case-fold the guest key and binary-search the complete cache. */
+/* Case-fold the guest key and binary-search the complete cache.
+ *
+ * Guest-time consumption contract: only a TERMINAL route state is consumed.
+ * A non-terminal observation means preparation never ran (or has not finished)
+ * before guest execution reached a lookup -- the exact early-boot stall this
+ * seam exists to prevent. The lookup therefore refuses with ONE bounded
+ * diagnostic and never begins, resumes, or waits on a census here. */
 static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
-    if (!data_init()) return NULL;
+    int state = atomic_load_explicit(&s_data_state, memory_order_acquire);
+    if (state != SR_DATA_STATE_READY) {
+        static atomic_int s_data_lookup_warned;
+        if (!atomic_exchange_explicit(&s_data_lookup_warned, 1, memory_order_acq_rel)) {
+            fprintf(stderr, "host_data: lookup refused before preparation reached a "
+                            "terminal state (state=%d); disc/VFS fallback stays active\n",
+                    state);
+        }
+        return NULL;
+    }
     int wanted_variant = -2;
     char *key = data_normalize_guest_key(guest_path, &wanted_variant);
     if (!key) return NULL;
