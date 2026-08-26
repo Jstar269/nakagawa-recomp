@@ -1,0 +1,43 @@
+name: Validate manifests
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  validate-json:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - name: Validate JSON and basic manifest schema
+        run: |
+          python - <<'PY'
+          import json, glob, sys
+          errors = []
+          files = glob.glob('**/*.json', recursive=True)
+          if not files:
+              print('No JSON manifests found.')
+          for f in files:
+              try:
+                  with open(f,'r',encoding='utf-8') as fh:
+                      data = json.load(fh)
+              except Exception as e:
+                  errors.append(f"{f}: invalid JSON: {e}")
+                  continue
+              if not isinstance(data, dict):
+                  errors.append(f"{f}: top-level JSON is not an object")
+                  continue
+              if 'version' not in data:
+                  errors.append(f"{f}: missing required 'version' field")
+              if 'architecture' not in data:
+                  errors.append(f"{f}: missing required 'architecture' field")
+          if errors:
+              print('\n'.join(errors))
+              sys.exit(1)
+          print('All manifest JSON files passed basic validation')
+          PY

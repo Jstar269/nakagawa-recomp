@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "homepage": "https://github.com/Jstar269/nakagawa-recomp",
+  "description": "Example package demonstrating GitHub Releases based autoupdate and proper fields.",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Jstar269/nakagawa-recomp/releases/download/v1.0.0/nakagawa-recomp-1.0.0-win64.zip",
+      "hash": "sha256:b64fad876e49479910e591c2bde7882634e3d9e6e198022b285794a1e7d1c4d5",
+      "bin": "nakagawa-recomp.exe"
+    }
+  },
+  "checkver": {
+    "github": "Jstar269/nakagawa-recomp"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Jstar269/nakagawa-recomp/releases/download/v$version/nakagawa-recomp-$version-win64.zip",
+        "hash": {
+          "mode": "sha256"
+        }
+      }
+    }
+  }
+}
