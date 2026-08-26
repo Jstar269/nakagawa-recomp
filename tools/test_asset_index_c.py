@@ -159,6 +159,47 @@ class TestAssetIndexSelftestC(unittest.TestCase):
             hle,
         )
 
+    def test_cold_census_preparation_precedes_guest_execution(self):
+        """The cold extracted-data census must be prepared BEFORE guest execution.
+
+        Pins, by source shape (PR #108 reconstruction):
+        1. driver.c calls sr_host_data_prepare() after entry validation and
+           BEFORE gui_init / sched_init / any direct fn(&s) invocation;
+        2. host_data_lookup consumes TERMINAL route states only -- it must not
+           begin, resume, or await a census (no lazy construction), so a guest
+           HLE lookup can never start the cold walk on the scheduler thread;
+        3. the historical lazy trigger inside host_data_lookup stays gone.
+        """
+        driver = (ROOT / "src" / "rt" / "driver.c").read_text(encoding="utf-8")
+        prepare_idx = driver.find("sr_host_data_prepare()")
+        self.assertNotEqual(prepare_idx, -1,
+                            "driver.c must call sr_host_data_prepare()")
+        gui_idx = driver.find("gui_init(SR_APP_TITLE)")
+        sched_idx = driver.find("sched_init(&s)")
+        fn_idx = driver.find("fn(&s);")
+        boot_begin = driver.find("BOOT_EVENT phase=index_prepare_begin")
+        self.assertLess(boot_begin, prepare_idx,
+                        "preparation is announced before it runs")
+        for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx), ("fn(&s)", fn_idx)):
+            self.assertNotEqual(idx, -1, f"driver.c anchor {name} missing")
+            self.assertLess(prepare_idx, idx,
+                            f"preparation must precede {name} (guest execution seam)")
+
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        lookup_idx = hle.find("static const SrAssetIndexEntry *host_data_lookup")
+        self.assertNotEqual(lookup_idx, -1)
+        lookup_end = hle.find("\n}\n", lookup_idx)
+        lookup_code = hle[lookup_idx:lookup_end]
+        self.assertNotIn("sr_host_data_prepare(", lookup_code,
+                         "host_data_lookup must never build or resume a census")
+        self.assertNotIn("data_walk(", lookup_code,
+                         "host_data_lookup must never enumerate")
+        self.assertIn("SR_DATA_STATE_READY", lookup_code,
+                      "host_data_lookup consumes terminal state only")
+        self.assertIn("lookup refused before preparation reached a",
+                      hle,
+                      "a non-terminal observation fails closed with one bounded diagnostic")
+
 
 if __name__ == "__main__":
     unittest.main()

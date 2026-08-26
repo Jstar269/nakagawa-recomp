@@ -440,6 +440,18 @@ have_image:;
         s.pc = entry;
     }
 
+    /* Cold extracted-data census: prepare BEFORE the GUI, the scheduler, or any
+     * direct guest invocation exists. This is the last safe point -- title and
+     * runtime configuration are final here (image loaded, sr_register_all done,
+     * entry validated/fallback resolved) and no guest thread exists that could
+     * starve on host filesystem contention. The historical lazy data_init()
+     * inside h_IoOpen ran this whole census from the first guest sceIoOpen on
+     * the scheduler thread. */
+    fprintf(stderr, "BOOT_EVENT phase=index_prepare_begin\n");
+    int data_state = sr_host_data_prepare();
+    fprintf(stderr, "BOOT_EVENT phase=index_prepare_end state=%d ready=%zu\n",
+            data_state, sr_host_data_entry_count());
+
     int use_sched = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) { gui_init(SR_APP_TITLE); use_sched = 1; }
