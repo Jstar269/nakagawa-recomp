@@ -451,7 +451,10 @@ void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);
 int      sr_exec_span_owns_fetch(uint32_t pc);
 
-void     dispatch(CpuState *s, uint32_t target);
+#define SR_HAS_GUEST_CALL_BOUNDARY 1
+void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume boundary */
+int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
+void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
 /* Tracing. When a trace file is open, the generated code reports each instruction. sr_begin
  * snapshots the register file and records pc/op; sr_end diffs and emits the line, with an

@@ -19,8 +19,11 @@ base, entry, helper address (`0x08804028`), import stub, result slot and sentine
   run must pass the relocation-dependent sentinel.
 - `aot-gap` — the AOT/dispatch seam: the mode's build-time codegen choice
   (`--omit-aot=0x08804028`) removes the helper from native emission/registration ONLY. Its bytes
-  stay complete in the guest image; region A's `jal` compiles to the ordinary production
-  `dispatch(s, 0x08804028)` statement. Generated registration explicitly owns the helper's
-  executable span; the production interpreter executes its load/store/control-flow body and hands
-  off to registered AOT region B. Region B commits the interpreted `0x00001235` result before the
-  real HLE path, so the production-driver assertion cannot pass on logs or dispatch alone.
+  stay complete in the guest image; region A's linked `jal` compiles to the typed production
+  `dispatch_call(s, 0x08804028, 0x08804018)` seam. The call's resume PC is carried separately
+  from `$ra`, so the interpreter executes the omitted helper and its return delay slot, then
+  hands back before the native continuation. Generated registration explicitly owns the
+  helper's executable span; the production interpreter executes the helper bytes only because
+  that span is explicitly registered. Its tail transfers to registered AOT region B. Region B
+  commits the interpreted `0x00001235` result before the real HLE path, so the production-driver
+  assertion cannot pass on logs or dispatch alone.
