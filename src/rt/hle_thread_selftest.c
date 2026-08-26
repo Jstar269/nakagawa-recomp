@@ -52,6 +52,11 @@ extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
+/* Selftest-only entry into the real route_tick path (defined in hle.c under
+ * SR_HLE_THREAD_SELFTEST): drives production sampling cadence and the route
+ * state machine without a scheduler or GPU. */
+extern void sr_route_test_tick(uint32_t v);
+extern int sr_route_test_cadence_state(uint32_t *last_attempt);
 void sr_display_test_reset(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
@@ -8281,6 +8286,160 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
 }
 
+/* Route observer cadence (#109 reconstruction): sample by ELAPSED delivered
+ * VCOUNT, not exact modulo.
+ *
+ * Delivered VCOUNT is elapsed-period accounting and may jump over every exact
+ * residue of SAMPLE_EVERY (coalesced delivery), so the historical
+ * v % SAMPLE_EVERY == 0 gate could starve a pending route of its entire
+ * observation budget despite valid frame delivery. The contract under test,
+ * driven through the REAL route_tick -> route_sample -> matcher/state-machine
+ * path via the selftest-only tick entry:
+ *   - the first pending attempt samples immediately;
+ *   - every later attempt whose unsigned elapsed VCOUNT reached SAMPLE_EVERY
+ *     samples again -- including jumps that skip every exact residue;
+ *   - each due attempt is recorded BEFORE framebuffer readback, so failed
+ *     readback attempts stay cadence-bounded;
+ *   - route reset and route load both reset cadence state;
+ *   - the wrong screen still fails closed exactly as before.
+ *
+ * g_sync_calls counts real coherence-boundary synchronisations, one per
+ * sampling attempt that passes the display gate: it makes "an observation
+ * happened" observable without depending on wall-clock time. */
+static void test_route_samples_by_elapsed_vcount_cadence(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t FB = 0x04044000u;
+    char hex[1024], hexWrong[1024], body[4096];
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    /* A uniform fmt=3 framebuffer decodes to a flat signature byte-for-byte:
+     * every grid cell mean equals the fill value exactly. */
+    for (uint32_t y = 0; y < 272u; y++)
+        for (uint32_t x = 0; x < 480u; x++)
+            MEM_W32(FB + (y * 512u + x) * 4u, 0x00404040u);
+    cpu.r[4] = FB; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 1;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "the cadence fixture configures a complete guest scanout state");
+    sr_vblank_tick();
+
+    rt_hex(hex, 0x40);
+    rt_hex(hexWrong, 0xC0);
+
+    /* Arm 1: coalesced delivery never hits an exact residue of SAMPLE_EVERY,
+     * and the screen only becomes the awaited one BETWEEN two due attempts.
+     * The old modulo gate would take ZERO observations across these ticks and
+     * the route would starve until timeout; elapsed cadence must attempt on
+     * the first pending tick and then again once SAMPLE_EVERY elapsed -- and
+     * that second observation is the one that satisfies the WAIT. */
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 20\n"
+             "CHECKPOINT SCREEN %s\n"
+             "WAIT SCREEN 1000\n"
+             "END\n", hex);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the cadence route loads");
+    expect(sr_route_status() == RT_RUNNING, "the cadence route is running");
+    /* The screen starts as the WRONG one (0xC0). */
+    for (uint32_t y = 0; y < 272u; y++)
+        for (uint32_t x = 0; x < 480u; x++)
+            MEM_W32(FB + (y * 512u + x) * 4u, 0x00C0C0C0u);
+    g_sync_calls = 0;
+    sr_route_test_tick(7u);   /* first pending attempt: immediately */
+    expect(g_sync_calls == 1,
+           "the first pending attempt sampled immediately");
+    expect(sr_route_status() == RT_RUNNING,
+           "an observation of the wrong screen does not satisfy the WAIT");
+    /* The guest now presents the awaited screen -- delivered VCOUNT keeps
+     * jumping over every exact residue of SAMPLE_EVERY. */
+    for (uint32_t y = 0; y < 272u; y++)
+        for (uint32_t x = 0; x < 480u; x++)
+            MEM_W32(FB + (y * 512u + x) * 4u, 0x00404040u);
+    sr_route_test_tick(28u);  /* elapsed 21 >= SAMPLE_EVERY; skips v%20==0 entirely */
+    expect(g_sync_calls == 2,
+           "the next attempt sampled on elapsed VCOUNT despite coalesced delivery");
+    expect(sr_route_status() == RT_DONE,
+           "a WAIT satisfied through elapsed-cadence observation completes the route");
+
+    /* Arm 2: the wrong screen keeps failing closed under the new cadence. */
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 20\n"
+             "CHECKPOINT OTHER %s\n"
+             "WAIT OTHER 60\n"
+             "END\n", hexWrong);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the wrong-screen route loads");
+    g_sync_calls = 0;
+    {
+        const uint32_t vs[] = { 71u, 92u, 113u, 134u };
+        for (size_t i = 0; i < sizeof vs / sizeof vs[0]; i++)
+            sr_route_test_tick(vs[i]);
+    }
+    expect(g_sync_calls == 4,
+           "the wrong-screen arm was still observed on its elapsed cadence");
+    expect(sr_route_status() == RT_FAILED,
+           "the wrong screen never satisfies the WAIT and fails closed");
+
+    /* Arm 3: load/reset restore first-attempt-immediately cadence. */
+    snprintf(body, sizeof body,
+             "SAMPLE_EVERY 20\n"
+             "CHECKPOINT SCREEN %s\n"
+             "WAIT SCREEN 1000\n"
+             "END\n", hex);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the reload route loads");
+    g_sync_calls = 0;
+    sr_route_test_tick(500u);
+    expect(g_sync_calls == 1,
+           "the first pending attempt after load samples immediately");
+    sr_route_test_tick(505u);
+    expect(g_sync_calls == 1,
+           "attempts pace inside the interval once an attempt was recorded");
+    expect(sr_route_load(RT_PATH) == 1, "reloading the same route succeeds");
+    sr_route_test_tick(506u);
+    expect(g_sync_calls == 2,
+           "route load resets cadence state: the next pending attempt is immediate");
+
+    /* A reset route is OFF: the observer must not sample at all. */
+    sr_route_reset();
+    g_sync_calls = 0;
+    sr_route_test_tick(600u);
+    expect(g_sync_calls == 0 && sr_route_status() == RT_OFF,
+           "a reset route performs no sampling at all");
+
+    /* Arm 4: a due attempt is recorded BEFORE framebuffer readback, so a
+     * FAILED readback still consumes the cadence slot (a coherence failure
+     * must not turn the sampler into an every-vblank retry loop). */
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the pacing route loads");
+    sr_display_test_reset();          /* scanout unconfigured: readbacks fail */
+    g_sync_calls = 0;
+    {
+        uint32_t last_seen = 0xFFFFFFFFu;
+        expect(sr_route_test_cadence_state(&last_seen) == 0,
+               "a fresh route has no recorded cadence attempt");
+        sr_route_test_tick(700u);     /* due attempt recorded; readback fails */
+        expect(sr_route_test_cadence_state(&last_seen) == 1 && last_seen == 700u,
+               "the due attempt was recorded even though its readback failed");
+    }
+    expect(g_sync_calls == 0 && sr_route_status() == RT_RUNNING,
+           "the failed readback produced no observation and did not advance");
+    /* Immediate (sync=0) scanout republish makes readbacks succeed again; the
+     * next due attempt then observes the awaited screen and completes. */
+    cpu.r[4] = FB; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "scanout reconfigured mid-route (immediate publish)");
+    sr_route_test_tick(721u);         /* elapsed 21 >= SAMPLE_EVERY since 700 */
+    expect(g_sync_calls == 1,
+           "the next due attempt arrives on elapsed cadence and succeeds");
+    expect(sr_route_status() == RT_DONE,
+           "the paced route still completes through its due observation");
+
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
  *   - PSPSDK psp/sdk/include/psploadexec.h declares it with no parameter, and
  *     every psp/sdk/samples call site invokes it with no argument.
@@ -8423,6 +8582,7 @@ int main(int argc, char **argv) {
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
     test_route_legacy_pad_script_is_unchanged();
+    test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();
 
