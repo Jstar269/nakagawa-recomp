@@ -62,6 +62,16 @@ ordinary production `dispatch()` seam. Analyzer-owned executable-span registrati
 those guest bytes to enter the fail-closed interpreter; the gate then requires a registered AOT
 region-B handoff, real HLE call, and final `0x00001235` production-driver assertion.
 
+The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
+source-owned guest bytes twice — once as generated native code, once through the production
+interpreter floor — and reports the first difference in the canonical instruction trace, the
+ordered guest writes, the guest memory window, or the architectural state vector. The second
+rebuilds that comparator against deliberately mutated copies of the interpreter and requires each
+defect class to fail the gate; a mutant that only breaks the build is rejected as `INVALID`, not
+counted as a kill. Both are source-owned and need no game input. See
+[`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
+limits of the evidence.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a
