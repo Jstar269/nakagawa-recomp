@@ -136,6 +136,7 @@ static const ScalarOpVector kScalarOpVectors[] = {
     {"mul FS=1 flush -sign",SR_FP_OP_MUL, 0x80800000u, 0x3f000000u, 0x01000000u, 0x80000000u},
     {"mul FS=1 RN normal",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000000u, 0x419317b5u},
     {"mul RM+FS combined",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000001u, 0x419317b4u},
+    {"mul subnormal input exact", SR_FP_OP_MUL, 0x00000001u, 0x40000000u, 0u, 0x00000002u},
 };
 
 /* CVT.S.W honors guest RM near the binary32 precision boundary. */
@@ -284,6 +285,53 @@ int main(void) {
             g_failures++;
         }
     }
+
+    /* Hostile host environment: a foreign library may have left MXCSR.DAZ set
+     * (RISK-8). The modeled contract gives subnormal INPUTS gradual weight
+     * regardless of guest FS, so a helper entered with ambient DAZ=1 must
+     * still weight the input exactly, and must restore the caller's
+     * environment bit-for-bit -- including that DAZ bit itself. */
+    {
+        const uint32_t csr_base = sr_fpu_env_save();
+        const uint32_t csr_hostile = csr_base | (1u << 6);   /* MXCSR.DAZ */
+        _mm_setcsr(csr_hostile);
+        const uint32_t got = apply_scalar_op(SR_FP_OP_MUL,
+                                             float_from_bits(0x00000001u),  /* min subnormal */
+                                             float_from_bits(0x40000000u),  /* exactly 2.0   */
+                                             0u);
+        check_word("subnormal input keeps weight under hostile DAZ", "hostile-env",
+                   got, 0x00000002u);
+        g_checks++;
+        const uint32_t csr_after = sr_fpu_env_save();
+        if (csr_after != csr_hostile) {
+            fprintf(stderr, "FAIL: hostile-env restoration inexact (caller=0x%08x after=0x%08x)\n",
+                    csr_hostile, csr_after);
+            g_failures++;
+        }
+        _mm_setcsr(csr_base);   /* leave the process environment as found */
+    }
+
+    /* Compile-time folding guard: operands supplied as direct expressions are
+     * fully visible to the optimizer, so a helper whose arithmetic could be
+     * constant-folded under the abstract default rounding mode would return
+     * RN bits here instead of the directed ones. These checks only mean
+     * something when this TU is built optimized; the CI/local gate matrix
+     * builds it at multiple optimization levels for exactly that reason. */
+    check_word("literal mul RZ not folded to RN", "folding-guard",
+               sr_float_bits(sr_fpu_mul_s(float_from_bits(0x3e97d668u),
+                                          float_from_bits(0x42780000u), 1u)),
+               0x419317b4u);
+    check_word("literal add RP not folded to RN", "folding-guard",
+               sr_float_bits(sr_fpu_add_s(float_from_bits(0x3f800000u),
+                                          float_from_bits(0x33800000u), 2u)),
+               0x3f800001u);
+    check_word("literal div RZ not folded to RN", "folding-guard",
+               sr_float_bits(sr_fpu_div_s(float_from_bits(0x3f800000u),
+                                          float_from_bits(0x40400000u), 1u)),
+               0x3eaaaaaau);
+    check_word("literal cvt.s.w RP not folded to RN", "folding-guard",
+               sr_float_bits(sr_fpu_cvt_s_w(16777217, 2u)),
+               0x4b800001u);
 
     if (g_failures != 0) {
         fprintf(stderr, "fp_convert_selftest: %d/%d checks FAILED\n", g_failures, g_checks);

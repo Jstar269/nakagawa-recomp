@@ -169,11 +169,17 @@ static inline int32_t sr_u32_as_s32(uint32_t bits) {
  * Fast-path predicate: emitted scalar code may use the plain host operation
  * exactly when the guest has no non-default arithmetic policy. Only RM and FS
  * alter scalar results in the modeled slice; flags, enables, cause, FCC, and
- * reserved bits must neither force nor bypass the helper path. The predicate
- * additionally relies on the HOST environment being at its IEEE defaults
- * (round-to-nearest, gradual underflow): the runtime owns that assumption and
- * nothing in it mutates process-global FP state (latent contamination from
- * foreign host libraries remains recorded risk RISK-8).
+ * reserved bits must neither force nor bypass the helper path.
+ *
+ * HOST INVARIANT -- ASSUMED, NOT VALIDATED: the fast path additionally
+ * requires the host environment to sit at its IEEE defaults (round-to-
+ * nearest, no FTZ, no DAZ). Nothing in the runtime establishes or checks
+ * that environment today; a foreign library mutating process FP state could
+ * silently bias fast-path results. This is retained as pre-existing risk
+ * RISK-8 (latent host-FP-env contamination via flagless fibers); any startup
+ * canary/validation is deliberately deferred so this slice stays bounded.
+ * The helper path below is NOT exposed to that hazard: it pins RC/FTZ/DAZ
+ * inside its own window regardless of ambient state.
  */
 #define SR_FCR31_RM_MASK 0x00000003u
 #define SR_FCR31_FCC0    0x00800000u
@@ -196,13 +202,17 @@ static inline uint32_t sr_fpu_env_save(void) {
  * RC uses a different order (RN, -inf, +inf, zero), so the modes are
  * translated explicitly instead of copied. FS=1 maps to MXCSR.FTZ so an
  * underflowing result becomes signed zero, matching the PSP-visible flush
- * contract; DAZ is deliberately left untouched (input flushing is unmeasured
- * on PSP and must not be invented). Exception mask/flag fields are preserved
- * exactly as found, so no helper can unmask a host FP exception. */
+ * contract. DAZ is cleared unconditionally: the modeled contract gives
+ * subnormal INPUTS gradual weight (input-side flushing is publicly unmeasured
+ * inference and is not invented here), and a foreign library leaving DAZ set
+ * must not be able to change helper-visible input semantics. Exception
+ * mask/flag fields are preserved exactly as found, so no helper can unmask a
+ * host FP exception. */
 static inline void sr_fpu_env_apply_guest(uint32_t fcr31) {
     static const uint32_t rm_to_mxcsr[4] = {0u, 3u, 2u, 1u};
     uint32_t csr = _mm_getcsr();
     csr &= ~(0x3u << 13);
+    csr &= ~(1u << 6);                              /* DAZ off: inputs stay gradual */
     csr |= rm_to_mxcsr[fcr31 & SR_FCR31_RM_MASK] << 13;
     if (fcr31 & SR_FCR31_FS) {
         csr |= 1u << 15;
@@ -217,65 +227,123 @@ static inline void sr_fpu_env_restore(uint32_t saved) {
 }
 
 #else
-#error "Scalar COP1 helpers need SSE2 for scoped host FP-environment control"
+/* Support boundary: the scoped-host-mechanism backend currently exists for
+ * x86/x64 SSE2 hosts only -- which is every configuration the project builds
+ * today (MinGW-w64 gcc and gcc/clang x86-64 CI). AArch64 (FPCR) and other
+ * non-SSE backends are recorded follow-up work, deliberately out of scope
+ * here. */
+#error "sr_fpu scalar helpers need SSE2 for scoped host FP-environment control"
 #endif
 
-/* Each wrapper saves the host environment, installs the guest policy, executes
- * exactly one bounded operation, and restores before returning. The SSE
- * intrinsics expand to volatile asm, so the compiler may not float the
- * arithmetic across the environment transitions; each single C statement also
- * prevents contraction into a fused form. No yield/callback/HLE can observe
- * the modified environment: it lives only inside these inline bodies. */
+/* Ordering + opacity fence for the bounded operation inside each helper.
+ *
+ * The SSE environment writes are volatile asm and the guest operations are
+ * ordinary C expressions; ISO C gives no FENV guarantee there, and this was
+ * proven exploitable in practice: GCC -O1 reordered the CVT.S.W environment
+ * window so the conversion ran under the AMBIENT host mode, and folded
+ * literal-operand arithmetic at compile time under the default rounding mode
+ * (both caught by the selftest optimization matrix). Two mechanisms close
+ * that gap for every toolchain/optimization level the project builds:
+ *   1. a "memory"-clobber barrier between each environment transition and
+ *      the operation, so no memory access may move across the MXCSR write;
+ *   2. volatile-qualified operand locals, so inlined/LTO'd constant
+ *      arguments must round-trip through real stores and volatile loads and
+ *      cannot be constant-folded under the compiler's default mode.
+ * The claim is enforced, not assumed: the native selftest builds this header
+ * at multiple optimization levels with literal-argument checks. */
+#if defined(__GNUC__) || defined(__clang__)
+static inline void sr_fpu_scalar_barrier(void) {
+    __asm__ __volatile__("" ::: "memory");
+}
+#else
+#error "sr_fpu scalar helpers need a memory-clobber compiler barrier"
+#endif
+
+/* Each wrapper bounds exactly one operation inside the guest environment.
+ *
+ * Why three separate mechanisms: the SSE transitions are volatile asm, the
+ * guest operations are ordinary C expressions, and ISO C gives no FENV
+ * guarantee tying them together. Proven exploitable on this toolchain: GCC
+ * -O1 reordered the CVT.S.W window so the conversion ran under the AMBIENT
+ * host mode, folded literal-operand arithmetic under the default rounding
+ * mode, and even sank a register-only mulss/cvtsi2ss PAST the restoring
+ * ldmxcsr where a memory-only barrier was the only guard. The wrapper
+ * therefore composes:
+ *   1. volatile operand locals -- constant arguments round-trip through real
+ *      stores/loads, defeating compile-time folding (incl. LTO/inlining);
+ *   2. a volatile STORE of the result inside the window -- the operation is
+ *      chained by data dependency ahead of the store, and the surrounding
+ *      memory-clobber barriers forbid the store (and with it the operation)
+ *      from crossing either MXCSR transition;
+ *   3. the environment restored exactly before return.
+ * The claim is enforced, not assumed: the native selftest builds this header
+ * at multiple optimization levels with literal-argument checks, and hostile-
+ * environment tests prove ambient RC/FTZ/DAZ cannot alter helper results. */
 
 static inline float sr_fpu_add_s(float a, float b, uint32_t fcr31) {
+    volatile float va = a;
+    volatile float vb = b;
     const uint32_t saved = sr_fpu_env_save();
-    float r;
     sr_fpu_env_apply_guest(fcr31);
-    r = a + b;
+    sr_fpu_scalar_barrier();
+    volatile float vr = va + vb;
+    sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
-    return r;
+    return vr;
 }
 
 static inline float sr_fpu_sub_s(float a, float b, uint32_t fcr31) {
+    volatile float va = a;
+    volatile float vb = b;
     const uint32_t saved = sr_fpu_env_save();
-    float r;
     sr_fpu_env_apply_guest(fcr31);
-    r = a - b;
+    sr_fpu_scalar_barrier();
+    volatile float vr = va - vb;
+    sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
-    return r;
+    return vr;
 }
 
 static inline float sr_fpu_mul_s(float a, float b, uint32_t fcr31) {
+    volatile float va = a;
+    volatile float vb = b;
     const uint32_t saved = sr_fpu_env_save();
-    float r;
     sr_fpu_env_apply_guest(fcr31);
-    r = a * b;
+    sr_fpu_scalar_barrier();
+    volatile float vr = va * vb;
+    sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
-    return r;
+    return vr;
 }
 
 static inline float sr_fpu_div_s(float a, float b, uint32_t fcr31) {
+    volatile float va = a;
+    volatile float vb = b;
     const uint32_t saved = sr_fpu_env_save();
-    float r;
     sr_fpu_env_apply_guest(fcr31);
-    r = a / b;
+    sr_fpu_scalar_barrier();
+    volatile float vr = va / vb;
+    sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
-    return r;
+    return vr;
 }
 
 /* CVT.S.W rounds per guest RM near the binary32 precision boundary. Unlike the
  * fast-path-guarded arithmetic above there is no host-default shortcut here:
- * a bare int-to-float cast follows whatever mode the host currently has, so
- * even guest RN goes through the scoped environment to pin round-to-nearest
- * deterministically. FS cannot affect this conversion (an integer converts to
- * a magnitude of at least 1.0 or to zero), so only RM is applied. */
+ * a bare int-to-float cast follows whatever mode the host currently has (and
+ * GCC -O1+ demonstrably reorders the conversion outside the MXCSR window
+ * without the barrier), so even guest RN goes through the pinned path. FS
+ * cannot affect this conversion (an integer converts to a magnitude of at
+ * least 1.0 or to zero), so only RM is applied. */
 static inline float sr_fpu_cvt_s_w(int32_t value, uint32_t fcr31) {
+    volatile int32_t vv = value;
     const uint32_t saved = sr_fpu_env_save();
-    float r;
     sr_fpu_env_apply_guest(fcr31 & SR_FCR31_RM_MASK);
-    r = (float)value;
+    sr_fpu_scalar_barrier();
+    volatile float vr = (float)vv;
+    sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
-    return r;
+    return vr;
 }
 
 #ifdef __cplusplus

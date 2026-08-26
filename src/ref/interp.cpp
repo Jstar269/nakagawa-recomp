@@ -391,6 +391,12 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 				case 0x10: {  // fmt = S
 					const uint32_t funct = Funct(op);
 					const uint32_t fcr31 = s->fcr31;
+					// Evidence-class note: these scalar cells share the exact
+					// fp_convert.h helper with generated code, so AOT-vs-ref
+					// agreement here is SHARED_HELPER corroboration, not an
+					// independent semantic line. Independent authority for
+					// the underlying contract is the cited PSP_HARDWARE
+					// anchors in fp_convert.h.
 					switch (funct) {
 						case 0x00: s->f[fd] = sr_fpu_add_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // add.s
 						case 0x01: s->f[fd] = sr_fpu_sub_s(s->f[fs], s->f[ft], fcr31); return StopReason::kRunning;  // sub.s
