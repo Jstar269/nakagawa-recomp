@@ -6448,6 +6448,12 @@ static int      s_route_tol = 12;
 static int      s_route_sample_every = 20;
 static int      s_route_learn;
 static uint32_t s_route_keys;
+/* Elapsed-cadence bookkeeping for the route observer (#109): the delivered
+ * VCOUNT of the last due sampling attempt and whether one has happened since
+ * the route (re)started. Reset by sr_route_reset and sr_route_load so a fresh
+ * route always gets its first pending observation immediately. */
+static uint32_t s_route_last_attempt;
+static int      s_route_have_attempt;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
@@ -6770,6 +6776,8 @@ void sr_route_reset(void) {
     s_route_sample_every = 20;
     s_route_keys = 0;
     s_route_while_seen = 0;
+    s_route_last_attempt = 0;
+    s_route_have_attempt = 0;
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
 }
@@ -6784,6 +6792,8 @@ int sr_route_load(const char *path) {
     s_route_step_started = 0;
     s_route_keys = 0;
     s_route_while_seen = 0;
+    s_route_last_attempt = 0;
+    s_route_have_attempt = 0;
     s_route_state = ROUTE_OFF;
     s_route_loaded = 1;
     if (!path || !path[0]) return 0;
@@ -7587,13 +7597,41 @@ static void route_tick(uint32_t v) {
         int op = s_route_prog[s_route_pc].op;
         pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
     }
-    if ((pending || s_route_learn) && (v % (uint32_t)s_route_sample_every) == 0 &&
-        route_sample(sig)) {
-        observed = sig;
-        if (s_route_learn) route_learn_emit(v, sig);
+    /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
+     * elapsed-period accounting and may jump over every exact residue of
+     * SAMPLE_EVERY, so sampling only when v % SAMPLE_EVERY == 0 could starve a
+     * pending route of its whole observation budget despite valid frame
+     * delivery. Instead: the FIRST pending attempt samples immediately, and
+     * every later attempt whose unsigned elapsed VCOUNT reached SAMPLE_EVERY
+     * samples again. The due attempt is recorded BEFORE framebuffer readback so
+     * failed coherence/readback attempts stay cadence-bounded instead of
+     * retrying every vblank. */
+    int due = !s_route_have_attempt ||
+              (uint32_t)(v - s_route_last_attempt) >= (uint32_t)s_route_sample_every;
+    if ((pending || s_route_learn) && due) {
+        s_route_last_attempt = v;
+        s_route_have_attempt = 1;
+        if (route_sample(sig)) {
+            observed = sig;
+            if (s_route_learn) route_learn_emit(v, sig);
+        }
     }
     s_route_keys = sr_route_step(v, observed);
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Selftest-only entry into the real route_tick path: lets the executable
+ * regression drive production sampling/cadence/state-machine behavior without
+ * a scheduler, a title, or a GPU. Production builds compile none of this. */
+void sr_route_test_tick(uint32_t v) { route_tick(v); }
+/* Read-only view of the cadence bookkeeping: whether an attempt was recorded
+ * and which delivered VCOUNT it holds. Pins the record-BEFORE-readback order
+ * (a failed readback must still consume its cadence slot). */
+int sr_route_test_cadence_state(uint32_t *last_attempt) {
+    if (last_attempt) *last_attempt = s_route_last_attempt;
+    return s_route_have_attempt;
+}
+#endif
 
 /* ---- swapchain-truthful present capture (issue #57) -------------------------------
  *
