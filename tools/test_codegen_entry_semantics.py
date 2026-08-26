@@ -191,6 +191,7 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_begin(s, pc, op) ((void)0)
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
 void sr_exec_span_reset(void);
 int sr_exec_span_register(uint32_t start, uint32_t end);
@@ -224,6 +225,10 @@ void dispatch(CpuState *s, uint32_t target) {{
     if (target == 0x{TINY_LEAF:08x}u) {{ f_{TINY_LEAF:08x}(s); return; }}
     if (target == 0x{TAIL_TARGET:08x}u) {{ f_{TAIL_TARGET:08x}(s); return; }}
     abort();
+}}
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {{
+    (void)resume_pc;
+    dispatch(s, target);
 }}
 
 int main(void) {{
@@ -397,6 +402,133 @@ int main(void) {{
             self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
             ran = subprocess.run([str(work / "direct_j_semantics.exe")], capture_output=True, text=True)
             self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+
+    def test_omitted_direct_j_target_reaches_runtime_dispatch(self):
+        """An omitted direct-j target must not be absorbed into its AOT caller.
+
+        The dead ``jal`` is only a discovery anchor: it makes the target a valid
+        ``--omit-aot`` address without making it reachable from the tested owner.
+        The owner itself uses a direct tail ``j``.  The generated caller is compiled
+        and executed against a small dispatch seam, so a source-shape-only omission
+        cannot pass if the target's body is silently inlined.
+        """
+        assert CC is not None
+        owner = 0x00001000
+        anchor = 0x00001008
+        target = 0x00001040
+        with tempfile.TemporaryDirectory(prefix="direct_j_omission_") as tmp:
+            work = Path(tmp)
+            elf = work / "direct_j_omission.elf"
+            generated = work / "direct_j_omission.c"
+            words = {
+                owner: 0x08000410,       # j target
+                owner + 4: 0x24030011,   # delay slot: v1 = 0x11
+                anchor: 0x0C000410,      # dead jal target: discovery anchor only
+                anchor + 4: 0x24000000,
+                target: 0x24020022,      # addiu v0, zero, 0x22
+                target + 4: 0x03E00008,  # jr ra
+                target + 8: 0x24630044,  # return delay: v1 += 0x44
+            }
+            elf.write_bytes(_synthetic_elf(words, owner))
+            env = dict(os.environ)
+            env["HST_EXTRA_SPANS"] = ""
+            result = subprocess.run(
+                [sys.executable, str(CODEGEN), str(elf), str(generated),
+                 "--profile=hst", "--funcs-per-chunk=1",
+                 f"--omit-aot=0x{target:08x}"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            generated_text = generated.read_text(encoding="ascii") + "\n".join(
+                path.read_text(encoding="ascii")
+                for path in sorted(work.glob("direct_j_omission_[0-9]*.c"))
+            )
+            self.assertNotIn(f"void f_{target:08x}(CpuState *s)", generated_text)
+            self.assertIn(
+                f"{{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t);",
+                generated_text,
+            )
+
+            (work / "recomp.h").write_text(
+                """\
+#ifndef TEST_RECOMP_H
+#define TEST_RECOMP_H
+#include <stdint.h>
+typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
+uint32_t test_mem_r32(uint32_t addr);
+void test_mem_w32(uint32_t addr, uint32_t value);
+#define MEM_R32(a) test_mem_r32((uint32_t)(a))
+#define MEM_W32(a, v) test_mem_w32((uint32_t)(a), (uint32_t)(v))
+#define MEM_W32_PC(a, v, pc) test_mem_w32((uint32_t)(a), (uint32_t)(v))
+#define SR_YIELD(s, pc) ((void)0)
+#define sr_begin(s, pc, op) ((void)0)
+#define sr_end(s, addr, size) ((void)0)
+void dispatch(CpuState *s, uint32_t target);
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+void sr_register(uint32_t addr, void (*fn)(CpuState *));
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
+void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
+void sr_hle_call(CpuState *s, uint32_t nid);
+void sr_syscall(CpuState *s, uint32_t nid);
+void sr_unimplemented(uint32_t addr, const char *reason);
+#endif
+""",
+                encoding="ascii",
+            )
+            (work / "harness.c").write_text(
+                f"""\
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "direct_j_omission_funcs.h"
+
+static int dispatch_hits = 0;
+uint32_t test_mem_r32(uint32_t addr) {{ (void)addr; return 0u; }}
+void test_mem_w32(uint32_t addr, uint32_t value) {{ (void)addr; (void)value; }}
+void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
+void sr_exec_span_reset(void) {{}}
+int sr_exec_span_register(uint32_t start, uint32_t end) {{ (void)start; (void)end; return 1; }}
+void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {{ (void)s; (void)code; (void)pc; abort(); }}
+void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; abort(); }}
+void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; abort(); }}
+void sr_unimplemented(uint32_t addr, const char *reason) {{ (void)addr; (void)reason; abort(); }}
+static void dispatch_target(CpuState *s, uint32_t actual) {{
+    if (actual != 0x{target:08x}u) abort();
+    dispatch_hits++;
+    s->r[2] = 0x22u;
+    s->r[3] += 0x44u;
+    s->pc = s->r[31];
+}}
+void dispatch(CpuState *s, uint32_t actual) {{ dispatch_target(s, actual); }}
+void dispatch_call(CpuState *s, uint32_t actual, uint32_t resume_pc) {{
+    (void)resume_pc;
+    dispatch_target(s, actual);
+}}
+
+int main(void) {{
+    CpuState state = {{0}};
+    state.r[31] = 0x12345678u;
+    f_{owner:08x}(&state);
+    printf("dispatch_hits=%d v0=0x%08x v1=0x%08x\\n",
+           dispatch_hits, state.r[2], state.r[3]);
+    return dispatch_hits == 1 && state.r[2] == 0x22u && state.r[3] == 0x55u ? 0 : 1;
+}}
+""",
+                encoding="ascii",
+            )
+            chunks = sorted(work.glob("direct_j_omission_[0-9]*.c"))
+            exe = work / "direct_j_omission.exe"
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", "-I", str(work), str(work / "harness.c"),
+                 str(generated), *(str(path) for path in chunks),
+                 "-lm", "-o", str(exe)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            self.assertIn("dispatch_hits=1 v0=0x00000022 v1=0x00000055", ran.stdout)
 
 
     def test_direct_branch_resume_dispatch_preserves_live_guest_sp(self):

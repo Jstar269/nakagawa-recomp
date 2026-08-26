@@ -1740,7 +1740,10 @@ static void dump_dispatch_misses(void) {
     fflush(stderr);
 }
 
-static int dispatch_try(CpuState *s, uint32_t target) {
+static int dispatch_try_with_boundary(
+    CpuState *s,
+    uint32_t target,
+    const SrGuestInterpCallBoundary *call_boundary) {
     /* Per-instruction VFPU fallback.  Codegen keeps executing the owning native C
      * function after this returns, so no guest function boundary or host stack frame is
      * introduced.  Keeping the interpreter entry here also gives all computed execution
@@ -2201,13 +2204,16 @@ static int dispatch_try(CpuState *s, uint32_t target) {
         /* A valid executable miss is not a fabricated success. Only bytes inside an
          * explicitly registered executable span may execute; the interpreter itself
          * stops at a registered AOT destination. Every rejection leaves the rejected
-         * instruction's architectural effects unapplied and propagates to dispatch(),
-         * whose public wrapper terminates instead of resuming native code as if the
-         * guest call had succeeded. */
+         * instruction's architectural effects unapplied and propagates to the public
+         * dispatch wrapper, which terminates instead of resuming native code as if the
+         * guest transfer had succeeded. */
         SrGuestInterpFault fault;
-        SrGuestInterpResult interp_result = sr_guest_interp_run(s, target, &fault);
-        if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF) {
-            return SR_GUEST_INTERP_AOT_HANDOFF;
+        SrGuestInterpResult interp_result = call_boundary
+            ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
+            : sr_guest_interp_run(s, target, &fault);
+        if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF ||
+            interp_result == SR_GUEST_INTERP_CALL_RETURN) {
+            return (int)interp_result;
         }
         fprintf(stderr,
                 "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "
@@ -2219,8 +2225,27 @@ static int dispatch_try(CpuState *s, uint32_t target) {
     return SR_GUEST_INTERP_AOT_HANDOFF;
 }
 
+static int dispatch_try(CpuState *s, uint32_t target) {
+    return dispatch_try_with_boundary(s, target, NULL);
+}
+
+int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    if ((resume_pc & 3u) != 0u) {
+        return SR_GUEST_INTERP_MISALIGNED_PC;
+    }
+    SrGuestInterpCallBoundary boundary = { resume_pc };
+    return dispatch_try_with_boundary(s, target, &boundary);
+}
+
 void dispatch(CpuState *s, uint32_t target) {
     if (dispatch_try(s, target) < 0) {
+        fflush(stderr);
+        exit(1);
+    }
+}
+
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    if (dispatch_call_try(s, target, resume_pc) < 0) {
         fflush(stderr);
         exit(1);
     }

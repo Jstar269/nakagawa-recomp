@@ -198,14 +198,20 @@ static SrGuestInterpResult execute_noncontrol(
     return SR_GUEST_INTERP_AOT_HANDOFF;
 }
 
-SrGuestInterpResult sr_guest_interp_run(
+static SrGuestInterpResult sr_guest_interp_run_internal(
     CpuState *s,
     uint32_t entry,
+    const SrGuestInterpCallBoundary *boundary,
     SrGuestInterpFault *fault) {
     uint32_t pc = entry;
     unsigned long long instruction_count = 0u;
     const int log_dispatch = getenv("SR_DISPLOG") != NULL;
     set_fault(fault, entry, 0u, entry, 0);
+
+    if (boundary && (boundary->resume_pc & 3u) != 0u) {
+        set_fault(fault, boundary->resume_pc, 0u, boundary->resume_pc, 0);
+        return SR_GUEST_INTERP_MISALIGNED_PC;
+    }
 
     if (log_dispatch) {
         fprintf(stderr,
@@ -214,6 +220,21 @@ SrGuestInterpResult sr_guest_interp_run(
     }
 
     for (;;) {
+        /* A CALL boundary is an explicit execution contract, not an inference from
+         * the live $ra.  Check it before AOT lookup/fetch so a continuation that is
+         * itself registered is handed back to the still-live native caller rather
+         * than entered a second time.  The instruction count guard keeps a malformed
+         * self-call from returning before its callee executes any instruction. */
+        if (boundary && instruction_count != 0u && pc == boundary->resume_pc) {
+            s->pc = pc;
+            if (log_dispatch) {
+                fprintf(stderr,
+                        "GUEST_INTERP_CALL_RETURN pc=0x%08x instructions=%llu\n",
+                        pc, instruction_count);
+            }
+            return SR_GUEST_INTERP_CALL_RETURN;
+        }
+
         if ((pc & 3u) != 0u) {
             set_fault(fault, pc, 0u, pc, 0);
             return SR_GUEST_INTERP_MISALIGNED_PC;
@@ -286,9 +307,25 @@ SrGuestInterpResult sr_guest_interp_run(
     }
 }
 
+SrGuestInterpResult sr_guest_interp_run(
+    CpuState *s,
+    uint32_t entry,
+    SrGuestInterpFault *fault) {
+    return sr_guest_interp_run_internal(s, entry, NULL, fault);
+}
+
+SrGuestInterpResult sr_guest_interp_run_with_boundary(
+    CpuState *s,
+    uint32_t entry,
+    const SrGuestInterpCallBoundary *boundary,
+    SrGuestInterpFault *fault) {
+    return sr_guest_interp_run_internal(s, entry, boundary, fault);
+}
+
 const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     switch (result) {
     case SR_GUEST_INTERP_AOT_HANDOFF: return "aot-handoff";
+    case SR_GUEST_INTERP_CALL_RETURN: return "call-return";
     case SR_GUEST_INTERP_NOT_EXECUTABLE: return "not-executable";
     case SR_GUEST_INTERP_MISALIGNED_PC: return "misaligned-pc";
     case SR_GUEST_INTERP_FETCH_BOUNDARY: return "fetch-boundary";

@@ -508,10 +508,10 @@ production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
-# (build-time codegen choice), so region A reaches it through the ordinary
-# production dispatch() seam. Generated registration owns the executable span;
-# the interpreter executes the helper and hands off to registered AOT region B,
-# whose final value is asserted by the production driver.
+# (build-time codegen choice), so region A reaches it through the typed production
+# dispatch_call() seam. Generated registration owns the executable span; the
+# interpreter executes the helper and hands off to registered AOT region B, whose
+# final value is asserted by the production driver.
 production-smoke-gap:
 	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_GAP_FIXTURE) --mode aot-gap
 	$(MAKE) all \

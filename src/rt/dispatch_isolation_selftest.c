@@ -126,6 +126,24 @@ static int g_failures = 0;
 #define INTERP_UNOWNED_AOT_ADDR 0x00603000u
 #define INTERP_PARTIAL_AOT_ADDR 0x00604000u
 
+/* A production CALL regression: the native caller owns a live frame while the
+ * interpreted callee returns to an interior continuation. The callee also owns a
+ * small frame and changes $ra in its return delay slot, so matching the live $ra
+ * after the delay slot is intentionally not sufficient. */
+#define INTERP_CALL_EXEC_START 0x00610000u
+#define INTERP_CALL_RESUME     (INTERP_CALL_EXEC_START + 0x24u)
+#define INTERP_CALL_EXEC_END   (INTERP_CALL_EXEC_START + 0x3cu)
+#define INTERP_CALL_DATA_ADDR  0x00611000u
+#define INTERP_CALL_STACK      0x00410000u
+#define INTERP_CALLER_AOT_ADDR 0x00620000u
+
+/* Disjoint interpreter-owned tail-transfer cells. */
+#define INTERP_TAIL_EXEC_START 0x00640000u
+#define INTERP_TAIL_EXEC_END   (INTERP_TAIL_EXEC_START + 0x3cu)
+#define INTERP_TAIL_J_TARGET   (INTERP_TAIL_EXEC_START + 0x10u)
+#define INTERP_TAIL_JR_ENTRY   (INTERP_TAIL_EXEC_START + 0x20u)
+#define INTERP_TAIL_JR_TARGET  (INTERP_TAIL_EXEC_START + 0x30u)
+
 /* Source-owned high virtual executable module: the architectural class of a
  * build-time-translated extra PSP module (analyzer-owned load slots such as
  * 0x32200000) whose bytes exist only inside its own file, never in the flat
@@ -260,6 +278,166 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
           g_interp_handoff_mem == 0x00001234u,
           "AOT handoff observed wrong state (v0=0x%08x pc=0x%08x mem=0x%08x)",
           g_interp_handoff_v0, g_interp_handoff_pc, g_interp_handoff_mem);
+    sr_exec_span_reset();
+}
+
+static int g_call_continuation_hits = 0;
+static int g_call_outer_handoff_hits = 0;
+static uint32_t g_call_ra_after_callee = 0u;
+
+static void call_outer_return_body(CpuState *s) {
+    (void)s;
+    g_call_outer_handoff_hits++;
+}
+
+/* This is an AOT caller-shaped production body. Its continuation is deliberately
+ * native C, while the callee is fetched and executed by the production interpreter. */
+static void synthetic_aot_call_body(CpuState *s) {
+    const uint32_t entry_sp = s->r[29];
+
+    s->r[29] = entry_sp - 16u;
+    MEM_W32(s->r[29] + 12u, s->r[31]);
+    s->r[2] = 2u;
+    s->r[31] = INTERP_CALL_RESUME;
+#ifdef SR_HAS_GUEST_CALL_BOUNDARY
+    dispatch_call(s, INTERP_CALL_EXEC_START, INTERP_CALL_RESUME);
+#else
+    /* Failing-before path: the old untyped dispatch lets the interpreter run the
+     * native caller continuation from the guest image before returning here. */
+    dispatch(s, INTERP_CALL_EXEC_START);
+#endif
+    g_call_ra_after_callee = s->r[31];
+
+    /* Interior AOT continuation: read the callee's store and perform the caller's
+     * one-time tail. The same operations are present in the guest bytes at RESUME
+     * so an unbounded interpreter is observably wrong, not merely differently traced. */
+    s->r[3] += 0x10u;
+    s->r[5] = MEM_R32(s->r[4]);
+    s->r[2] += 0x100u;
+    s->r[31] = MEM_R32(s->r[29] + 12u);
+    s->r[29] += 16u;
+    g_call_continuation_hits++;
+}
+
+static void test_aot_call_returns_before_native_continuation(void) {
+    static const uint32_t program[] = {
+        0x27bdfff8u, /* addiu sp, sp, -8       -- callee frame */
+        0xafbf0004u, /* sw    ra, 4(sp)        -- preserve call link */
+        0x240905a5u, /* addiu t1, zero, 0x5a5  -- caller-saved register */
+        0xac890000u, /* sw    t1, 0(a0)        -- cross-tier store */
+        0x24420007u, /* addiu v0, v0, 7        -- accumulator */
+        0x8fbf0004u, /* lw    ra, 4(sp)        -- restore call link */
+        0x27bd0008u, /* addiu sp, sp, 8        -- restore callee frame */
+        0x03e00008u, /* jr    ra               -- return */
+        0x27ff0004u, /* addiu ra, ra, 4        -- return delay mutates $ra */
+        0x24630010u, /* addiu v1, v1, 0x10     -- AOT continuation */
+        0x8c850000u, /* lw    a1, 0(a0)        -- AOT reads callee store */
+        0x24420100u, /* addiu v0, v0, 0x100    -- AOT continuation */
+        0x8fbf000cu, /* lw    ra, 12(sp)       -- restore caller link */
+        0x03e00008u, /* jr    ra               -- caller return */
+        0x27bd0010u, /* addiu sp, sp, 16       -- caller return delay */
+    };
+    const uint32_t initial_sp = INTERP_CALL_STACK;
+
+    for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
+        MEM_W32(INTERP_CALL_EXEC_START + (uint32_t)(i * 4u), program[i]);
+    MEM_W32(INTERP_CALL_DATA_ADDR, 0u);
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_CALL_EXEC_START, INTERP_CALL_EXEC_END),
+          "CALL regression executable span registration failed");
+    own_synthetic_aot_word(PROBE_RA);
+    own_synthetic_aot_word(INTERP_CALLER_AOT_ADDR);
+    sr_register(PROBE_RA, call_outer_return_body);
+    sr_register(INTERP_CALLER_AOT_ADDR, synthetic_aot_call_body);
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[4] = INTERP_CALL_DATA_ADDR;
+    s.r[29] = initial_sp;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    s.r[3] = 0u;
+    s.r[5] = 0xfeedfaceu;
+
+    g_call_continuation_hits = 0;
+    g_call_outer_handoff_hits = 0;
+    g_call_ra_after_callee = 0u;
+    dispatch(&s, INTERP_CALLER_AOT_ADDR);
+
+    CHECK(g_call_continuation_hits == 1,
+          "AOT continuation ran %d times instead of exactly once",
+          g_call_continuation_hits);
+    CHECK(g_call_outer_handoff_hits == 0,
+          "CALL boundary handed the interpreted callee through the native outer return "
+          "(%d handoff(s))", g_call_outer_handoff_hits);
+    CHECK(MEM_R32(INTERP_CALL_DATA_ADDR) == 0x000005a5u,
+          "interpreted CALL callee did not commit its store (mem=0x%08x)",
+          MEM_R32(INTERP_CALL_DATA_ADDR));
+    CHECK(s.r[5] == 0x000005a5u && s.r[3] == 0x00000010u,
+          "AOT continuation observed wrong caller-saved/store state "
+          "(a1=0x%08x v1=0x%08x)", s.r[5], s.r[3]);
+    CHECK(s.r[2] == 0x00000109u,
+          "CALL accumulator ran the wrong number of times (v0=0x%08x)", s.r[2]);
+    CHECK(g_call_ra_after_callee == INTERP_CALL_RESUME + 4u,
+          "return delay slot did not execute exactly once before boundary handoff "
+          "(ra=0x%08x expected=0x%08x)",
+          g_call_ra_after_callee, INTERP_CALL_RESUME + 4u);
+    CHECK(s.r[29] == initial_sp && s.r[31] == PROBE_RA,
+          "CALL frame/outer return state was not restored exactly "
+          "(sp=0x%08x ra=0x%08x)", s.r[29], s.r[31]);
+    sr_exec_span_reset();
+}
+
+static void test_interpreter_tail_transfers_remain_untyped(void) {
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_TAIL_EXEC_START, INTERP_TAIL_EXEC_END),
+          "tail-transfer executable span registration failed");
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, call_outer_return_body);
+
+    /* j target; delay slot; target body returns through the seeded outer $ra. */
+    MEM_W32(INTERP_TAIL_EXEC_START, 0x08190004u);
+    MEM_W32(INTERP_TAIL_EXEC_START + 4u, 0x24030011u);
+    MEM_W32(INTERP_TAIL_J_TARGET, 0x24020022u);
+    MEM_W32(INTERP_TAIL_J_TARGET + 4u, 0x03e00008u);
+    MEM_W32(INTERP_TAIL_J_TARGET + 8u, 0x24000000u); /* addiu zero, zero, 0 */
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    g_call_outer_handoff_hits = 0;
+    dispatch(&s, INTERP_TAIL_EXEC_START);
+    CHECK(s.r[2] == 0x22u && s.r[3] == 0x11u &&
+              g_call_outer_handoff_hits == 1,
+          "tail j did not execute its delay/target/outer return exactly once "
+          "(v0=0x%08x v1=0x%08x handoffs=%d)",
+          s.r[2], s.r[3], g_call_outer_handoff_hits);
+
+    /* jr t0 is the computed tail counterpart; it must not inherit CALL semantics. */
+    MEM_W32(INTERP_TAIL_JR_ENTRY, 0x01000008u);
+    MEM_W32(INTERP_TAIL_JR_ENTRY + 4u, 0x24030033u);
+    MEM_W32(INTERP_TAIL_JR_TARGET, 0x24020044u);
+    MEM_W32(INTERP_TAIL_JR_TARGET + 4u, 0x03e00008u);
+    MEM_W32(INTERP_TAIL_JR_TARGET + 8u, 0x24000000u); /* addiu zero, zero, 0 */
+
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[8] = INTERP_TAIL_JR_TARGET;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    g_call_outer_handoff_hits = 0;
+    dispatch(&s, INTERP_TAIL_JR_ENTRY);
+    CHECK(s.r[2] == 0x44u && s.r[3] == 0x33u &&
+              g_call_outer_handoff_hits == 1,
+          "tail jr did not execute its delay/target/outer return exactly once "
+          "(v0=0x%08x v1=0x%08x handoffs=%d)",
+          s.r[2], s.r[3], g_call_outer_handoff_hits);
     sr_exec_span_reset();
 }
 
@@ -750,6 +928,8 @@ int main(int argc, char **argv) {
     test_generic_build_configures_no_collection();
     test_configured_build_declares_both_collections();
     test_valid_aot_miss_executes_guest_bytes();
+    test_aot_call_returns_before_native_continuation();
+    test_interpreter_tail_transfers_remain_untyped();
     test_interpreter_rejects_unowned_and_invalid_fetches();
     test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);

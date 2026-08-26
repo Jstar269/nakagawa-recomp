@@ -65,7 +65,7 @@ class TransferTargetTimingTests(unittest.TestCase):
         )
         capture = text.index("uint32_t _t = s->r[8];")
         slot = text.index("s->r[8] = (s->r[9] + 0u);")
-        call = text.index("dispatch(s, _t);")
+        call = text.index("dispatch_call(s, _t, 0x00001008u);")
         self.assertLess(capture, slot, "jalr target captured after its delay slot")
         self.assertLess(slot, call, "delay slot emitted after the transfer")
 
@@ -123,7 +123,7 @@ class TransferTargetTimingTests(unittest.TestCase):
         )
         capture = text.index("uint32_t _t = s->r[8];")
         link = text.index("s->r[8] = 0x00001008u;")
-        call = text.index("dispatch(s, _t);")
+        call = text.index("dispatch_call(s, _t, 0x00001008u);")
         self.assertLess(capture, link, "jalr read its target after writing the link")
         self.assertLess(link, call)
 

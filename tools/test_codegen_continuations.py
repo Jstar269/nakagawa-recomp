@@ -19,12 +19,92 @@ def jal(target):
     return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
 
 
+def j(target):
+    return 0x08000000 | ((target >> 2) & 0x03FFFFFF)
+
+
+def jalr(rd, rs):
+    return (rs << 21) | (rd << 11) | 0x09
+
+
 def beq(rs, rt, pc, target):
     offset = ((target - (pc + 4)) >> 2) & 0xFFFF
     return 0x10000000 | (rs << 21) | (rt << 16) | offset
 
 
 class ContinuationFlowTests(unittest.TestCase):
+    def test_linked_transfers_carry_the_native_resume_boundary(self):
+        linked_jal = "\n".join(
+            codegen.emit_function(
+                FakeElf({
+                    0x1000: jal(0x2000),
+                    0x1004: 0x24030011,
+                    0x1008: 0x03E00008,
+                    0x100C: 0x24000000,
+                }),
+                0x1000, [(0x1000, 0x1010)], {0x1000},
+            )
+        )
+        self.assertIn("dispatch_call(s, 0x00002000u, 0x00001008u);", linked_jal)
+
+        linked_jalr = "\n".join(
+            codegen.emit_function(
+                FakeElf({
+                    0x1100: jalr(31, 8),
+                    0x1104: 0x24030011,
+                    0x1108: 0x03E00008,
+                    0x110C: 0x24000000,
+                }),
+                0x1100, [(0x1100, 0x1110)], {0x1100},
+            )
+        )
+        self.assertIn("dispatch_call(s, _t, 0x00001108u);", linked_jalr)
+
+    def test_unlinked_computed_transfer_remains_a_tail_dispatch(self):
+        text = "\n".join(
+            codegen.emit_function(
+                FakeElf({
+                    0x1200: jalr(0, 8),
+                    0x1204: 0x24030011,
+                    0x1208: 0x03E00008,
+                    0x120C: 0x24000000,
+                }),
+                0x1200, [(0x1200, 0x1210)], {0x1200},
+            )
+        )
+        self.assertIn("dispatch(s, _t);", text)
+        self.assertNotIn("dispatch_call(s, _t, 0x00001208u);", text)
+
+    def test_omitted_direct_jump_remains_a_tail_dispatch_boundary(self):
+        elf = FakeElf(
+            {
+                0x1000: j(0x1040),
+                0x1004: 0x24030011,  # delay slot belongs to the tail transfer
+                0x1040: 0x24020022,  # intentionally omitted AOT target
+                0x1044: 0x03E00008,
+                0x1048: 0x00000000,
+            }
+        )
+        known = {0x1000}
+        omitted = {0x1040}
+        insns, labels, continuations = codegen.function_flow(
+            elf, 0x1000, [(0x1000, 0x104C)], known,
+            dispatch_boundaries=omitted,
+        )
+        self.assertEqual(insns, {0x1000, 0x1004})
+        self.assertNotIn(0x1040, labels)
+        self.assertEqual(continuations, {})
+
+        text = "\n".join(
+            codegen.emit_function(
+                elf, 0x1000, [(0x1000, 0x104C)], known,
+                dispatch_boundaries=omitted,
+            )
+        )
+        self.assertIn("dispatch(s, _t);", text)
+        self.assertNotIn("goto L_00001040", text)
+        self.assertNotIn("f_00001040(s);", text)
+
     def test_call_fallthrough_uses_foreign_entry_before_frame_restore(self):
         elf = FakeElf(
             {

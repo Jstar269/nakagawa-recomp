@@ -158,8 +158,13 @@ class TestProductionSmoke(unittest.TestCase):
             p.read_text(encoding="ascii") for p in chunks
         )
         # The seam: control leaves the compiled destination set through the
-        # ordinary production dispatcher, targeting the omitted guest address.
-        self.assertIn(f"dispatch(s, 0x{generator.HELPER:08x}u);", omitted_text)
+        # typed production dispatcher, targeting the omitted guest address with
+        # the native continuation kept separate from $ra.
+        self.assertIn(
+            f"dispatch_call(s, 0x{generator.HELPER:08x}u, "
+            f"0x{generator.ENTRY + 0x10:08x}u);",
+            omitted_text,
+        )
         self.assertNotIn(f"f_{generator.HELPER:08x}(", omitted_text)
         self.assertIn(f"f_{generator.REGION_B:08x}(", omitted_text)
         self.assertIn(
