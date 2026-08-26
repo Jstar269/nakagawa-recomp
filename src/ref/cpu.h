@@ -95,9 +95,10 @@ struct CpuState {
 		uint32_t fi[32];
 	};
 	uint32_t fcr31 = 0;
-	// FP compare result. PPSSPP keeps the condition in a separate cached field (not in
-	// fcr31 bit 23 on every compare), so c.cond.s does not show up as an fcr31 write in the
-	// trace. The reference interpreter models it the same way and bc1t/bc1f read it.
+	// FP compare result: a cached mirror of FCR31 FCC0 (bit 23), which is the
+	// architectural location. c.cond.s and ctc1 keep both in lockstep, so
+	// compare results DO show up as fcr31 writes in traces; bc1t/bc1f read
+	// this cached copy.
 	uint32_t fpcond = 0;
 
 	// VFPU / COP0 to match recomp.h exactly to avoid struct parity drift

@@ -975,13 +975,36 @@ def fpu_effect(addr, w):
     if fmt == 0x00: return wr(rt(w), f"s->fi[{fs}]"), None, 0          # mfc1
     if fmt == 0x02: return wr(rt(w), f"({fs} == 31 ? s->fcr31 : ({fs} == 0 ? 0x00003351u : 0u))"), None, 0  # cfc1
     if fmt == 0x04: return f"s->fi[{fs}] = {R(rt(w))};", None, 0       # mtc1
-    if fmt == 0x06: return (f"if ({fs} == 31) s->fcr31 = {R(rt(w))};"), None, 0  # ctc1
+    # ctc1 stores the guest FCSR wholesale; FCC0 is the architectural compare
+    # condition, so the cached fpcond mirror resyncs from the written bits.
+    if fmt == 0x06: return (f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))}; "
+                            f"s->fpcond = (s->fcr31 >> 23) & 1u; }}"), None, 0
     if fmt == 0x10:
         fn = funct(w)
-        if fn == 0x00: return f"{F(fdv)} = {F(fs)} + {F(ft)};", None, 0
-        if fn == 0x01: return f"{F(fdv)} = {F(fs)} - {F(ft)};", None, 0
-        if fn == 0x02: return f"{{ float _a={F(fs)},_b={F(ft)}; if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) s->fi[{fdv}]=0x7fc00000u; else {F(fdv)}=_a*_b; }}", None, 0
-        if fn == 0x03: return f"{F(fdv)} = {F(fs)} / {F(ft)};", None, 0
+        # Scalar arithmetic always routes through the scoped-environment
+        # PSP-semantic helpers: the native fast path was removed for
+        # correctness after hostile-host fixtures showed ambient host RC/FTZ/
+        # DAZ reaching guest results (see fp_convert.h, FAST PATH
+        # DISPOSITION).
+        #
+        # mul.s classifies the inf*0 case from RAW IEEE-754 BITS read out of
+        # the register-file storage -- exponent/all-ones vs exact-zero words.
+        # A floating precheck (isinf()/x == 0.0f) would itself be a guest-
+        # sensitive FP comparison executing OUTSIDE the scoped window: under
+        # hostile ambient DAZ=1 a real subnormal operand compares equal to
+        # zero and inf*subnormal would wrongly take the canonical-qNaN path.
+        # Integer bit tests are environment-blind. Exact ±inf * exact ±0
+        # still canonicalizes to 0x7fc00000.
+        if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x02:
+            return (f"{{ const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}]; "
+                    f"float _a={F(fs)},_b={F(ft)}; "
+                    f"if((((_ab & 0x7fffffffu) == 0x7f800000u && (_bb & 0x7fffffffu) == 0u)) || "
+                    f"(((_bb & 0x7fffffffu) == 0x7f800000u && (_ab & 0x7fffffffu) == 0u))) "
+                    f"s->fi[{fdv}]=0x7fc00000u; "
+                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}"), None, 0
+        if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
         if fn == 0x04: return f"{F(fdv)} = sqrtf({F(fs)});", None, 0
         if fn == 0x05: return f"{F(fdv)} = fabsf({F(fs)});", None, 0
         if fn == 0x06: return f"{F(fdv)} = {F(fs)};", None, 0
@@ -990,9 +1013,13 @@ def fpu_effect(addr, w):
             return f"s->fi[{fdv}] = sr_fpu_to_word({F(fs)}, 0x{fn:02x}u, s->fcr31);", None, 0
         if fn >= 0x30:
             cond = fn & 0xF
+            # FCC0 stays architectural in FCR31; fpcond remains as the cached
+            # read for bc1t/bc1f and is written together with bit 23 so the two
+            # can never disagree after a compare or a guest ctc1.
             return (f"{{ float _a={F(fs)},_b={F(ft)}; int _u=isnan(_a)||isnan(_b); int _l=!_u&&_a<_b; int _e=!_u&&_a==_b; "
-                    f"s->fpcond = ((_u&&({cond}&1))||(_e&&({cond}&2))||(_l&&({cond}&4)))?1u:0u; }}"), None, 0
-    if fmt == 0x14 and funct(w) == 0x20: return f"{F(fdv)} = (float)sr_u32_as_s32(s->fi[{fs}]);", None, 0  # cvt.s.w
+                    f"s->fpcond = ((_u&&({cond}&1))||(_e&&({cond}&2))||(_l&&({cond}&4)))?1u:0u; "
+                    f"s->fcr31 = (s->fcr31 & ~0x00800000u) | (s->fpcond << 23); }}"), None, 0
+    if fmt == 0x14 and funct(w) == 0x20: return f"{F(fdv)} = sr_fpu_cvt_s_w(sr_u32_as_s32(s->fi[{fs}]), s->fcr31);", None, 0  # cvt.s.w
     raise Unsupported(f"COP1 fmt 0x{fmt:02x} funct 0x{funct(w):02x} at 0x{addr:08x}")
 
 def is_cond_branch(w):
