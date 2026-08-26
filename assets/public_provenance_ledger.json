@@ -151,7 +151,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "27b73a69e92b4a7f4901b87bf4c0ba6a4c5fa9351042accfcfafe4cf154047ff"
+      "sha256": "19a14d3162004ff530f486f79e47b44df30cc6e9b89f189cf83ec9bdbcea8bed"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "3673e7c50b955b8799c1f83ce80ca5edf93d38aedb96b68365c0c91d063db5cd"
+      "sha256": "2ed0a8f4027e5fe77af550db922e47fe1f5cff2699aa429c052ac80238e00e3b"
     },
     {
       "path": "NOTICE.md",
@@ -389,7 +389,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9d3232254f54aa3560fa029136082b0af12e3c38d0158c97655c9b430ad89a48"
+      "sha256": "b686a2bd390c0457094b61f07e1c6f640923db6e4f5a0d9411a8db4f4577bfe2"
     },
     {
       "path": "assets/release_manifest.json",
@@ -696,7 +696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "24987408381a35be5b5499e70f148092a6af21c5a8fff9f6b1aea1f6746fddea"
+      "sha256": "9802acf91fd0e1d877101d3a56d967b76d74d56f16cfc11d6c2d186eb0032b09"
     },
     {
       "path": "docs/CI.md",
@@ -705,7 +705,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "230bee79234f493b002905e441b66cff6bea33faba4b93f581abc337a063de26"
+      "sha256": "5d1af6813337d451a2bb23fe8ab97835ede8ae95c294d5817afdd88bff8c2650"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -940,6 +940,42 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "cc2282c34f598f5fe5792b05c64c098b60b8e7400e5b9462c3419eab36ce2270"
+    },
+    {
+      "path": "fixtures/cosim/README.md",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "ddfe87a518718b29f7c0935013d18c5a019772bbe0fece70f1600c113bc166bb"
+    },
+    {
+      "path": "fixtures/cosim/cosim_selftest.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "7ce4cae9a1817d2429d5778c924b4f400cbc97d2143e374dd47ce64f0e444ef5"
+    },
+    {
+      "path": "fixtures/cosim/generate.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "39ae36156c19bc4f9bdee0dc9cceedd27454c9a797140bd653171130257c7384"
+    },
+    {
+      "path": "fixtures/cosim/mutate.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "ecf672d94ba7938153b2f1637f73ba49eefeaa5d03bae34cebcc73cbaf2661c8"
     },
     {
       "path": "fixtures/nakagawa_minimal/Makefile",
@@ -4299,7 +4335,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "b40f388cb6d644a5d8889f6555db75d55350cbb2b8854eb82b21eaad3246b477"
+      "sha256": "1e40b7627b60e435e5fec8fc12200d5fe4c010ecad702c0095743db1dcd99019"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4311,7 +4347,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "7d49f53f9c6dec22c76297158a38828f470174aa9edda73b00c5dd56dc2e0377"
+      "sha256": "9ae21d305f8ad7e741843da58a476af41fd6270989f0832d5117b1b24596de2d"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -6155,7 +6191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09687bbe7a89c46a87e3ceacf362423d179486bb782a5d90e7a101efd5d55423"
+      "sha256": "39e9a3d97e2c9aeeeb1fae41f4fc5cc3bd65c4402f6c39198b20adc0c61754d8"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -6306,6 +6342,15 @@
         "upstream_attribution": null
       },
       "sha256": "0e5386c67efc1c99dbd1d23621046ededdf6f7f75d34c5341b6de101318a8889"
+    },
+    {
+      "path": "tools/test_cosim_fixture.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "fe3a42f04aca4d51fed2e46bbcd385aac23c570d54fb7bf55f36c522d53a8947"
     },
     {
       "path": "tools/test_dco_policy.py",

@@ -77,6 +77,25 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(result["run_native"], "true")
         self.assertEqual(result["run_windows"], "true")
 
+    def test_cosim_fixture_reaches_the_windows_gate(self) -> None:
+        """The AOT/interpreter cosimulation gate only runs in the Windows job.
+
+        Its guest recipe, harness and mutation driver all live under fixtures/,
+        so a classification that treated them as inert data would let a change to
+        the comparator -- or to the guest it compares -- ship without the gate
+        ever executing. That is the false negative this classifier exists to
+        prevent.
+        """
+        for path in (
+            "fixtures/cosim/generate.py",
+            "fixtures/cosim/cosim_selftest.c",
+            "fixtures/cosim/mutate.py",
+        ):
+            with self.subTest(path=path):
+                result = classify([path])
+                self.assertEqual(result["run_native"], "true")
+                self.assertEqual(result["run_windows"], "true")
+
     def test_draft_pr_suppresses_substantive_jobs(self) -> None:
         result = classify(["src/rt/recomp.c"], draft=True)
         self.assertEqual(result["allow_substantive"], "false")
