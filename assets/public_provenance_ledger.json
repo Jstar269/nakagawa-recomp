@@ -288,7 +288,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ed20d9da3d0a4fc14a44b441caab4e4d31bc61c067fde92a525e2a7e94d2141d"
+      "sha256": "744f3a2269ff7895dc42dcac0d128c6879e86e11515992c22119ee315be96bda"
     },
     {
       "path": "README.md",
@@ -380,7 +380,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b9fb0ecda50d37f336b0e76d52aa70379ec32e2286d96b0f0959f66dc848d76a"
+      "sha256": "911febf8d9710f7f5027ae66e010dda53601bae6b896f02cd002b9225b665cec"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -4426,7 +4426,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4247f99540c784c5360f75ff83682e4c2a335678569f08cc85eedd360c8a9d27"
+      "sha256": "655525db9b095ec08bcc0a08b76d7345909154f030dead3af030bb23bec44cd6"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4663,7 +4663,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "82b8a3343323e6efe1fb99db79289146bc8daa8be3202da436eb0992087ce2d1"
+      "sha256": "b25e1053d474f15032eadf7a441d6b38cae9f5079b6c0dc2b1f6ddc280120ddd"
     },
     {
       "path": "src/rt/sched.c",
@@ -4903,7 +4903,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04d808b971c445fd1bcc8094e70f1e3c4e52c383c2ee277c5fc4e064ff93cf49"
+      "sha256": "f8a74afc9294f4f37b91d07300e7b81ec9350105a980487d58b2e781f267381f"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -4915,7 +4915,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8288d93f6ee63e6646739845f3d14a3b9275bc60d64169e60d2b09af5022f693"
+      "sha256": "30d58e260b92466c5871a7b0166a899638882e653ee252122730f79a338eaa08"
     },
     {
       "path": "src/rt/watchpoints_file.c",
@@ -7082,7 +7082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d0ec9deec939bac11915c0659a2500139d43a9e86d8a8956f4d7dc9bb7309a5"
+      "sha256": "a44fcdf7989876ab736cd2080fb40a2a469d76a2864bf36c1878df64fbd993da"
     },
     {
       "path": "tools/test_sbom.py",
