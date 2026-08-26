@@ -181,9 +181,15 @@ int main(void) {
     };
     const int saved_mode = fegetround();
 
-    /* Host environment baseline, captured before any helper runs so the
-     * restoration probe can prove exact recovery rather than assume defaults. */
-    const uint32_t csr_baseline = sr_fpu_env_save();
+    /* Host environment baseline for the native-result checks below. This is
+     * deliberately NOT used as a restoration reference: unrelated non-helper
+     * FP operations anywhere in this process can raise MXCSR sticky flags
+     * (reproduced on hosted gcc -O1: a runtime inexact division set PE
+     * between an ancient baseline and the probe), so comparing against a
+     * process-start snapshot falsely attributes pre-existing stickies to
+     * helpers. The restoration invariant is CALLER_MXCSR_BEFORE_HELPER ==
+     * CALLER_MXCSR_AFTER_HELPER, asserted freshly around each helper call.
+     * Result-bit baselines are sticky-independent and stay valid. */
     float baseline_third = 1.0f / 3.0f;
     const uint32_t baseline_third_bits = sr_float_bits(baseline_third);
 
@@ -233,16 +239,19 @@ int main(void) {
      * that default-state guests are isolated without it. */
 
     /* Host-environment hygiene (RISK-8): every helper must return the host FP
-     * control word exactly as found, and a later native operation must behave
-     * as it did before any helper ran. */
+     * control word exactly as the CALLER had it immediately before entry --
+     * full word, including sticky flags. Fresh before/after captures bracket
+     * the call directly; nothing else may run between capture and compare. */
     {
+        const uint32_t csr_before = sr_fpu_env_save();
         (void)sr_fpu_mul_s(float_from_bits(0x3e97d668u), float_from_bits(0x42780000u),
                            SR_FCR31_FS | 1u);
         const uint32_t csr_after = sr_fpu_env_save();
         g_checks++;
-        if (csr_after != csr_baseline) {
-            fprintf(stderr, "FAIL: helper left host FP env modified (before=0x%08x after=0x%08x)\n",
-                    csr_baseline, csr_after);
+        if (csr_after != csr_before) {
+            fprintf(stderr, "FAIL: helper left host FP env modified "
+                            "(caller-before=0x%08x caller-after=0x%08x)\n",
+                    csr_before, csr_after);
             g_failures++;
         }
         float gradual = float_from_bits(0x00800000u) * float_from_bits(0x3f000000u);

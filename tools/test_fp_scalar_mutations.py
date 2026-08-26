@@ -114,6 +114,21 @@ class FpScalarHeaderMutantTests(unittest.TestCase):
         # the folding/reorder guards and the hostile matrix at -O2.
         self.assert_killed("volatile float vr = va * vb;", "const float vr = va * vb;")
 
+    @unittest.skipUnless(CC, "gcc required")
+    def test_M13_partial_restore_preserves_stickies(self):
+        # A helper that restores control fields but leaves sticky flags raised
+        # inside its window violates bit-for-bit caller restoration. The fresh
+        # before/after hygiene probe (and every clean-base hostile-matrix row)
+        # must kill it: guest inexact operations raise PE, and a partial
+        # restore would let it leak into caller state.
+        self.assert_killed(
+            "static inline void sr_fpu_env_restore(uint32_t saved) {\n"
+            "    _mm_setcsr(saved);\n"
+            "}",
+            "static inline void sr_fpu_env_restore(uint32_t saved) {\n"
+            "    _mm_setcsr((saved & ~0x3fu) | (_mm_getcsr() & 0x3fu));\n"
+            "}")
+
 
 class FastPathRemovedStructuralTests(unittest.TestCase):
     """Disposition A: no native fast path may exist without a validated host

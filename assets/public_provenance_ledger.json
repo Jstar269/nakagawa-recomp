@@ -3978,7 +3978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "a76bcb410dc5a8c31e11df44a8220cbf51de0a9460719c8d3fdb0668142b6b10"
+      "sha256": "626dbdb78fc7469e026dbca52f78a781ce3d43dd31a1ccba7b480ebeaaacb2ac"
     },
     {
       "path": "src/rt/funcdiff.c",
@@ -6425,7 +6425,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8f6eadc44f896eb1a8d29cd3d597985f652080328d7415e96429fc45cd72229a"
+      "sha256": "b8e8a9225488afbaaa7a83214497918358b984dcae24790e344d96e2fcb3126b"
     },
     {
       "path": "tools/test_gate_exit_resolution.py",
