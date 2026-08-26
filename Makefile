@@ -461,7 +461,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -632,6 +632,72 @@ atrac3p-objects: $(ATRAC3P_OBJS)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
+
+# ---- AOT <-> interpreter cosimulation gate ---------------------------------------
+#
+# One pipeline run over a source-owned synthetic guest produces BOTH execution
+# lanes for the same guest bytes: real codegen output, and the production
+# interpreter floor over the loaded image. The harness runs each cell twice and
+# compares the canonical instruction trace, the ordered guest writes, the guest
+# memory window and the full architectural state vector.
+#
+# TRACE=1 is not optional here. The release preprocessor removes sr_begin/sr_end
+# from the generated chunks, and those records are how a divergence is localized
+# to one guest instruction -- generated code does not maintain an architectural
+# PC in CpuState, so the trace is the only per-instruction attribution the AOT
+# lane has.
+COSIM_DIR        := build/cosim
+COSIM_FIXTURE    := $(COSIM_DIR)/fixture
+COSIM_TRACES     := $(COSIM_FIXTURE)/traces
+COSIM_GENERATOR  := fixtures/cosim/generate.py
+COSIM_HARNESS    := fixtures/cosim/cosim_selftest.c
+COSIM_BASE_ADDR  := 0x08900000
+# Overridable so the mutation campaign can build the harness against a mutated
+# copy of the interpreter without touching the tree.
+COSIM_INTERP_SRC ?= src/rt/guest_interp.c
+
+# The loader and codegen rules are named directly rather than through `pipeline`.
+# This guest deliberately imports nothing, and tools/imports.py fails closed on an
+# empty stub table -- correctly, for a title. Manufacturing an unused import stub
+# just to satisfy that gate would put a fiction in the fixture; the import path is
+# already covered end to end by fixtures/production_smoke.
+cosim-selftest:
+	$(PYTHON) $(COSIM_GENERATOR) generate --out-dir $(COSIM_FIXTURE)
+	$(MAKE) $(COSIM_DIR)/cosim_image.bin $(COSIM_DIR)/cosim_recomp.c \
+		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
+		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
+		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1
+	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
+	$(MAKE) cosim-selftest-run \
+		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
+		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
+		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
+
+# Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
+# generated chunk sources must already exist before this target is parsed.
+cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
+		$(LDFLAGS) -o $(BUILD_DIR)/cosim_selftest.exe \
+		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c $(LIBS) -lm
+	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
+		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
+
+# Prove the comparator is load-bearing: each mutant is a semantic change to the
+# interpreter that must make the gate FAIL. A mutant that only breaks the build
+# is not a kill and the driver rejects it.
+cosim-mutants:
+	$(PYTHON) fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
+
+cosim-selftest-clean:
+	$(MAKE) BUILD_DIR=$(COSIM_DIR) clean
+
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
