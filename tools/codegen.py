@@ -1719,9 +1719,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 0 and fn == 0x09:  # jalr rd, rs
             d, a = rd(w), rs(w)
             link = f"s->r[{d}] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; " if d != 0 else ""
-            out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
+            # The transfer target is read AT the transfer, before its delay slot
+            # runs. Reading it after the slot lets a slot that writes the target
+            # register redirect the call -- proven divergent against the
+            # production interpreter by the `jrslot` cosim cell.
+            out.append(f"    {{ uint32_t _t = {R(a)};")
+            out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.append(normal_line(ds, dsw, hst_profile=hst_profile))
-            out.append(f"    {{ uint32_t _t = {R(a)}; dispatch(s, _t); }}")
+            out.append("      dispatch(s, _t); }")
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
             elif addr in dup_slot_skips:
@@ -1729,17 +1734,24 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             continue
         if op == 0 and fn == 0x08:  # jr rs
             a = rs(w)
-            out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
             if ds_is_syscall and dsw is not None:
+                out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
                 out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable)}")
-            else:
+            elif a == 31:
+                # `jr $ra` IS the host return; $ra is read at the transfer by
+                # construction, so a slot that rewrites it cannot redirect this.
+                out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.append(normal_line(ds, dsw, hst_profile=hst_profile))
-                if a == 31:
-                    out.append(f"    {emit_host_return(resumable)}")
-                else:
-                    out.append(f"    {{ uint32_t _t = {R(a)}; dispatch(s, _t); {emit_host_return(resumable)} }}")
+                out.append(f"    {emit_host_return(resumable)}")
+            else:
+                # Computed return/tail-call: same contract as jalr above -- the
+                # target register is read at the transfer, not after the slot.
+                out.append(f"    {{ uint32_t _t = {R(a)};")
+                out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
+                out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+                out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
