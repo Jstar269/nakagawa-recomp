@@ -6416,7 +6416,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ba74dc313192372772d2d65e98ed636ffe7de64a0f059c39b12ee5bd9f93860a"
+      "sha256": "ff9fcc8b754e8e221e7182fa0fa330ba1654eb2b70ff8df0225bc6bfba540d40"
     },
     {
       "path": "tools/test_dmac_semantics.py",
