@@ -288,7 +288,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "45f9df166e33fdd0cf2c8aa94dee3e0e8397401affa554480a2702aa5ea71c5c"
+      "sha256": "0308eaade58c1c0fc6933f5c66cf7a548d85f20abbfb5b79e972fd2b25ee4fc7"
     },
     {
       "path": "README.md",
@@ -380,7 +380,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1f4b9cabdd67b042276d94a6e5f26ac089cdbc73ce06bf3f258b0cb02045179d"
+      "sha256": "8b9e9ba976c4dde048c11d1a3367d93fedb69e31cdecada19310fcd9130b73a0"
     },
     {
       "path": "assets/public_source_profile.json",
@@ -4426,7 +4426,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "86258f3583511d9118d19eb2bbd599faf00014678dbbdc575b3c9423e2f0feae"
+      "sha256": "487932b08d6cde80f09d30cf0b77070c15a86a90ed583d4f3e7dd1458aa7de0d"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4438,7 +4438,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6dd9cde5c52776235c6a050f50fd6aab741a8496b5df2a206ddc5270cc2b0676"
+      "sha256": "f1ca606365f018941b220a08af31f72985c1e10fe25006e68a617fb98392240d"
     },
     {
       "path": "src/rt/intr_conformance.h",
