@@ -24,6 +24,8 @@ Two complementary layers:
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -150,51 +152,117 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
                          "floating inf*0 precheck reintroduced into mul.s emission")
 
     def test_behavioral_mul_daz_precheck_mutant_is_killed(self):
-        """Behavioral guard: restoring the FP-comparison classifier must fail
-        the committed generated hostile-DAZ case (inf * min-subnormal would
-        wrongly canonicalize to qNaN). Proves the fixture detects the defect,
-        not merely its textual absence."""
+        """Behavioral guard: a cleanly rebuilt PRE-REPAIR classifier (floating
+        isinf()/==0.0f comparisons, no leftover raw-bit locals) must compile
+        AND run AND fail the hostile-DAZ generated case semantically:
+        inf * min-subnormal misclassified as inf * zero -> qNaN.
+
+        The mutation is applied to a TEMP COPY of codegen.py; tracked bytes are
+        never touched. Only MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED counts as
+        a valid kill; generation or compilation failure is reported and
+        rejected as evidence.
+        """
         if CC is None:
             self.skipTest("gcc required")
         original = CODEGEN.read_text(encoding="utf-8")
+        original_sha = hashlib.sha256(original.encode("utf-8")).hexdigest()
+
         # Exact contiguous fragments of the current raw-bit emission template.
+        frag_decl = 'f"{{ const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}]; "'
         frag_if = ('f"if((((_ab & 0x7fffffffu) == 0x7f800000u '
                    '&& (_bb & 0x7fffffffu) == 0u)) || "')
         frag_sym = ('f"(((_bb & 0x7fffffffu) == 0x7f800000u '
                     '&& (_ab & 0x7fffffffu) == 0u))) "')
         frag_store = 'f"s->fi[{fdv}]=0x7fc00000u; "'
-        self.assertIn(frag_if, original, "raw-bit classifier anchor drifted")
-        self.assertIn(frag_sym, original, "raw-bit classifier anchor drifted")
-        self.assertIn(frag_store, original, "raw-bit classifier anchor drifted")
-        float_if = ('f"if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) '
-                    's->fi[{fdv}]=0x7fc00000u; "')
+        for frag in (frag_decl, frag_if, frag_sym, frag_store):
+            self.assertIn(frag, original, f"raw-bit classifier anchor drifted: {frag!r}")
+
+        # Rebuild the pre-repair emission shape CLEANLY: no _ab/_bb leftovers,
+        # floating classifier only. Emitted shape becomes exactly:
+        #   { float _a=..., _b=...;
+        #     if ((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) canonical qNaN;
+        #     else sr_fpu_mul_s(...); }
         mutant = (original
+                  .replace(frag_decl, 'f"{{ "')
                   .replace(frag_if, "")
                   .replace(frag_sym, "")
-                  .replace(frag_store, float_if))
+                  .replace(frag_store,
+                           'f"if((isinf(_a)&&_b==0.0f)||(isinf(_b)&&_a==0.0f)) '
+                           's->fi[{fdv}]=0x7fc00000u; "'))
         self.assertNotEqual(mutant, original, "mutant construction produced no change")
-        CODEGEN.write_text(mutant, encoding="utf-8", newline="\n")
-        failed = False
-        try:
-            # Import fresh so the mutated module is what actually runs.
-            import importlib
+
+        with tempfile.TemporaryDirectory(prefix="fp_scalar_codegen_mut_") as tmp:
+            tmp_codegen = Path(tmp) / "mutant_codegen.py"
+            tmp_codegen.write_text(mutant, encoding="utf-8", newline="\n")
+
+            # Drive the real fixture pipeline through the mutated COPY.
             import tools.test_codegen_fp_convert as fixture
-            importlib.reload(fixture)
-            try:
-                suite = unittest.TestSuite([
-                    fixture.GeneratedScalarFcr31Tests(
-                        "test_mul_inf_zero_classifier_raw_bit_under_hostile_daz"),
-                ])
-                result = unittest.TextTestRunner(verbosity=0).run(suite)
-                failed = not result.wasSuccessful()
-            finally:
-                importlib.reload(fixture)
-        finally:
-            CODEGEN.write_text(original, encoding="utf-8", newline="\n")
-        self.assertTrue(
-            failed,
-            "FP-compare precheck classifier SURVIVED the committed "
-            "hostile-DAZ generated case; behavioral guard is vacuous")
+
+            # Stage 1: generation must succeed through the mutated codegen.
+            gen_words = [
+                fixture._ctc1(8),
+                fixture._fps3(1, 0, 8, 0x02), fixture._mfc1(9, 8),
+                0x03E00008, 0x00000000,
+            ]
+            elf_bytes = fixture._synthetic_elf(gen_words)
+            gen_dir = Path(tmp) / "gen"
+            gen_dir.mkdir()
+            elf_path = gen_dir / "m.elf"
+            elf_path.write_bytes(elf_bytes)
+            import os as _os
+            env = dict(_os.environ)
+            env["HST_EXTRA_SPANS"] = ""
+            env["PYTHONPATH"] = str(ROOT / "tools") + _os.pathsep + env.get("PYTHONPATH", "")
+            gen_proc = subprocess.run(
+                [sys.executable, str(tmp_codegen), str(elf_path),
+                 str(gen_dir / "m.c"), "--profile=hst"],
+                cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(
+                gen_proc.returncode, 0,
+                "MUTANT_GENERATION_FAILED: mutated codegen.py could not run")
+
+            # Stage 2: generated C must COMPILE under normal test flags.
+            chunks = sorted(gen_dir.glob("m_*.c"))
+            (gen_dir / "recomp.h").write_text(fixture.ISOLATED_RECOMP_H, encoding="ascii")
+            harness = (f'#include "m_funcs.h"\n'
+                       + fixture.ISOLATED_STUBS_C + fixture._CELL_INFZERO_MAIN)
+            (gen_dir / "harness.c").write_text(harness, encoding="ascii")
+            exe = gen_dir / "mutant_test.exe"
+            command = [CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+                       "-I", str(gen_dir), "-I", str(ROOT / "src" / "rt")]
+            if os.name != "nt":
+                command.extend(["-fsanitize=undefined,float-cast-overflow",
+                                "-fno-sanitize-recover=all"])
+            command.extend([str(gen_dir / "harness.c"), str(gen_dir / "m.c"),
+                            *(str(p) for p in chunks), "-lm", "-o", str(exe)])
+            compiled = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(
+                compiled.returncode, 0,
+                "MUTANT_BUILD_FAILED: mutant must compile cleanly to prove a "
+                "SEMANTIC kill; build output:\n" + (compiled.stderr + compiled.stdout)[-1500:])
+
+            # Stage 3: executable must RUN and fail SEMANTICALLY.
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertNotEqual(
+                ran.returncode, 0,
+                "MUTANT_SURVIVED: FP-comparison classifier passed the "
+                "hostile-DAZ fixture")
+            combined = ran.stderr + ran.stdout
+            self.assertIn(
+                "+inf * +minsub", combined,
+                "MUTANT_NON_SEMANTIC_FAILURE: fixture failed without reaching "
+                "the inf*min-subnormal classification row\n" + combined[-800:])
+            self.assertIn(
+                "got=7fc00000", combined,
+                "MUTANT_NON_SEMANTIC_FAILURE: misclassification did not take "
+                "the canonical-qNaN path\n" + combined[-800:])
+            # Explicit verdict marker for audit trails.
+            print("MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED (valid behavioral kill)")
+
+        # Hygiene guard: tracked codegen.py untouched for the whole test.
+        final_sha = hashlib.sha256(CODEGEN.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        self.assertEqual(final_sha, original_sha,
+                         "tracked tools/codegen.py bytes changed by mutation test")
 
     def test_codegen_routes_every_scalar_op_through_helpers(self):
         text = CODEGEN.read_text(encoding="utf-8")

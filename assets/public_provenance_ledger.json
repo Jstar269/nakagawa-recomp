@@ -6203,7 +6203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "85ea94bca865e2adb3c9491b179cbeff132dde9942cd3b036fd3f66d037f6a01"
+      "sha256": "73f4b7d6f7591c80ff67687d7d95a45c660c2cdee9a4325426b267e0724d37a7"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -6425,7 +6425,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a6348749dc0e826c95f421989d73dc4b55e744fae611844e8d9d33eeb68ba46b"
+      "sha256": "8f6eadc44f896eb1a8d29cd3d597985f652080328d7415e96429fc45cd72229a"
     },
     {
       "path": "tools/test_gate_exit_resolution.py",

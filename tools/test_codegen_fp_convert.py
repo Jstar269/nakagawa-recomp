@@ -335,9 +335,16 @@ int main(void) {
             self.assertIn("generated_fp_convert: PASS", ran.stdout)
 
 
-def _run_generated_fixture(test, name, words, harness_main):
-    """Run one synthetic-ELF scalar-FPU fixture through codegen + isolated harness."""
+def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
+    """Run one synthetic-ELF scalar-FPU fixture through codegen + isolated harness.
+
+    codegen_path allows a mutation harness to drive a modified codegen COPY
+    living outside the repository tree without touching tracked files; the
+    real tools/ directory stays reachable through PYTHONPATH so codegen's
+    sibling imports resolve.
+    """
     assert CC is not None
+    codegen_path = Path(codegen_path) if codegen_path else CODEGEN
     with tempfile.TemporaryDirectory(prefix=f"codegen_fp_scalar_{name}_") as tmp:
         work = Path(tmp)
         elf = work / f"{name}.elf"
@@ -346,8 +353,9 @@ def _run_generated_fixture(test, name, words, harness_main):
 
         env = dict(os.environ)
         env["HST_EXTRA_SPANS"] = ""
+        env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
         result = subprocess.run(
-            [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
+            [sys.executable, str(codegen_path), str(elf), str(generated), "--profile=hst"],
             cwd=ROOT, env=env, capture_output=True, text=True,
         )
         test.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -661,7 +669,8 @@ int main(void) {
     struct Base { const char *name; uint32_t set; uint32_t clear; };
     static const struct Base bases[] = {
         {"DAZ=1",     1u << 6, 0u},
-        {"DAZ=0 ctl", 0u,      0u},
+        {"DAZ=0 ctl", 0u,      1u << 6},   /* explicitly CLEAR DAZ: truthful even
+                                             if a future runner inherits DAZ=1 */
     };
     static const struct { const char *what; unsigned reg; uint32_t want; } rows[] = {
         {"+inf * +minsub", 9,  0x7f800000u},
