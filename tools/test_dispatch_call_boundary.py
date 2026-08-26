@@ -159,13 +159,19 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
     def test_M5_return_delay_slot_is_skipped(self):
         self.assert_killed(
             "M5-skip-return-delay",
+            # The interpreter reports each instruction's guest store back to its
+            # caller (so sr_end() can record it in the canonical trace), so this
+            # call carries the store out-params too. The mutation is unchanged:
+            # feed the slot a nop instead of the word that was fetched for it.
             interp_old=(
-                "SrGuestInterpResult delay_result =\n"
-                "                execute_noncontrol(s, pc + 4u, delay_opcode, fault);"
+                "SrGuestInterpResult delay_result = execute_noncontrol(\n"
+                "                s, pc + 4u, delay_opcode, &delay_store_address, "
+                "&delay_store_size, fault);"
             ),
             interp_new=(
-                "SrGuestInterpResult delay_result =\n"
-                "                execute_noncontrol(s, pc + 4u, 0x24000000u, fault);"
+                "SrGuestInterpResult delay_result = execute_noncontrol(\n"
+                "                s, pc + 4u, 0x24000000u, &delay_store_address, "
+                "&delay_store_size, fault);"
             ),
             diagnostic="return delay slot did not execute exactly once",
         )
@@ -173,11 +179,16 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
     def test_M6_return_delay_slot_executes_twice(self):
         self.assert_killed(
             "M6-duplicate-return-delay",
-            interp_old="            instruction_count += 2u;\n            pc = target;",
-            interp_new=(
-                "            (void)execute_noncontrol(s, pc + 4u, delay_opcode, fault);\n"
+            interp_old=(
                 "            instruction_count += 2u;\n"
-                "            pc = target;"
+                "            pc = transfer.taken ? transfer.target : pc + 8u;"
+            ),
+            interp_new=(
+                "            (void)execute_noncontrol(s, pc + 4u, delay_opcode,\n"
+                "                                     &delay_store_address, "
+                "&delay_store_size, fault);\n"
+                "            instruction_count += 2u;\n"
+                "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             diagnostic="return delay slot did not execute exactly once",
         )

@@ -310,6 +310,42 @@ and its delay slot, then transfers to registered AOT region B at `0x08804058`. R
 interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
 patches generated C after codegen and nothing substitutes host-side helpers.
 
+#### AOT/interpreter cosimulation
+
+`mingw32-make cosim-selftest` takes the same seam further: one pipeline run over a source-owned
+synthetic guest ([`fixtures/cosim/`](../fixtures/cosim/)) produces both execution lanes for the same
+guest bytes, and a comparator runs every cell twice — once through the generated `f_<addr>` body,
+once through the production interpreter floor with that body absent from the dispatch table — then
+reports the **first** difference. Selection is at run time rather than through `--omit-aot`, so one
+build compares every cell.
+
+Four independent channels are compared: the canonical per-instruction trace
+([`tools/TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md), which the interpreter now emits in the same
+branch-before-delay-slot order as generated code), the ordered guest writes seen by
+`sr_note_mem_write()`, the guest memory window, and the full architectural state vector.
+`mingw32-make cosim-mutants` proves the comparator is load-bearing by rebuilding it against a
+mutated copy of the interpreter — or of `tools/codegen.py`, so both sides of the differential are
+covered — and requiring each defect class to fail the gate.
+
+Two lane `MIXED` cells (`xcall`, `xtail`) install every native body except one, which is the seam
+the AOT-gap floor actually crosses: native caller, dispatch miss, interpreter, back. Beside the
+comparison the harness runs interpreter-tier assertions the two-lane shape cannot express — a
+fail-closed negative corpus, a sweep of every control encoding in a delay slot, the `jalr`
+link-register shape, and a census that probes the production decoder and requires the set it
+decodes to equal the set the cells execute.
+
+`CpuState.pc` is not compared directly, because it is not a shared architectural field: generated
+code does not maintain a **per-instruction** architectural PC (each instruction's address is a
+literal in its `sr_begin()` call), while the interpreter advances `pc` per instruction and leaves
+the handoff destination there. Generated code is not silent on `pc` in general — it assigns
+`s->pc` at a VFPU interpreter fallback, at a conditional branch leaving the current function, and
+in the profile stubs — so the per-lane assertion is exact for the fixture's cells rather than
+universal. Both lanes are instead normalized to one **handoff target** and required to
+agree, and each lane's own PC behavior is asserted so a change fails the gate rather than silently
+redefining the field. `next_pc` and `in_delay_slot` are asserted to remain unclaimed by both lanes,
+keeping a future COP0 BD/EPC model free of an existing consumer. The full contract, the cell list
+and the limits of the evidence are in [`fixtures/cosim/README.md`](../fixtures/cosim/README.md).
+
 ### Compile flags
 
 The live Makefile currently uses:

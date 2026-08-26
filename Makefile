@@ -461,7 +461,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -531,11 +531,18 @@ production-smoke-gap:
 production-smoke-gap-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) clean
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" $(CHUNK_TARGET_ENTRY))
+# The generator the codegen rule runs. Overridable so the cosim mutation
+# campaign can mutate the GENERATOR as well as the interpreter -- a
+# differential proven against one side only is half proven. It MUST be
+# defined above the codegen profile hash and the codegen rule: both expand
+# it immediately, so a later definition would silently expand to empty.
+CODEGEN_TOOL ?= tools/codegen.py
+
+CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -550,8 +557,8 @@ pipeline: $(BUILD_DIR)/$(GAME_NAME)_image.bin $(BUILD_DIR)/$(GAME_NAME)_recomp.c
 $(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py
 	$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE) $(PSP_HEADER_ENV_ARG) --out=$@
 
-$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) tools/codegen.py --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
+$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
+	$(PYTHON) $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
@@ -632,6 +639,77 @@ atrac3p-objects: $(ATRAC3P_OBJS)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
+
+# ---- AOT <-> interpreter cosimulation gate ---------------------------------------
+#
+# One pipeline run over a source-owned synthetic guest produces BOTH execution
+# lanes for the same guest bytes: real codegen output, and the production
+# interpreter floor over the loaded image. The harness runs each cell twice and
+# compares the canonical instruction trace, the ordered guest writes, the guest
+# memory window and the full architectural state vector.
+#
+# TRACE=1 is not optional here. The release preprocessor removes sr_begin/sr_end
+# from the generated chunks, and those records are how a divergence is localized
+# to one guest instruction -- generated code does not maintain an architectural
+# PC in CpuState, so the trace is the only per-instruction attribution the AOT
+# lane has.
+COSIM_DIR        := build/cosim
+COSIM_FIXTURE    := $(COSIM_DIR)/fixture
+COSIM_TRACES     := $(COSIM_FIXTURE)/traces
+COSIM_GENERATOR  := fixtures/cosim/generate.py
+COSIM_HARNESS    := fixtures/cosim/cosim_selftest.c
+COSIM_BASE_ADDR  := 0x08900000
+# Overridable so the mutation campaign can build the harness against a mutated
+# copy of the interpreter without touching the tree.
+COSIM_INTERP_SRC ?= src/rt/guest_interp.c
+
+# The loader and codegen rules are named directly rather than through `pipeline`.
+# This guest deliberately imports nothing, and tools/imports.py fails closed on an
+# empty stub table -- correctly, for a title. Manufacturing an unused import stub
+# just to satisfy that gate would put a fiction in the fixture; the import path is
+# already covered end to end by fixtures/production_smoke.
+cosim-selftest:
+	$(PYTHON) $(COSIM_GENERATOR) generate --out-dir $(COSIM_FIXTURE)
+	$(MAKE) $(COSIM_DIR)/cosim_image.bin $(COSIM_DIR)/cosim_recomp.c \
+		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
+		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
+		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		CODEGEN_TOOL=$(CODEGEN_TOOL)
+	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
+	$(MAKE) cosim-selftest-run \
+		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
+		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
+		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
+
+# Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
+# generated chunk sources must already exist before this target is parsed.
+cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	# No $(LIBS): the harness stubs the runtime's few host-library symbols, so
+	# the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
+	# deliberate -- this gate should stay runnable anywhere the toolchain is,
+	# not inherit the graphics stack's environment requirements.
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
+		-o $(BUILD_DIR)/cosim_selftest.exe \
+		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c -lm
+	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
+		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
+
+# Prove the comparator is load-bearing: each mutant is a semantic change to the
+# interpreter that must make the gate FAIL. A mutant that only breaks the build
+# is not a kill and the driver rejects it.
+cosim-mutants:
+	$(PYTHON) fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
+
+cosim-selftest-clean:
+	$(MAKE) BUILD_DIR=$(COSIM_DIR) clean
+
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent

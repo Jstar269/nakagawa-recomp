@@ -560,6 +560,28 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
+      # AOT <-> interpreter differential over the same source-owned guest bytes.
+      # One pipeline run produces both execution lanes; the comparator diffs the
+      # canonical instruction trace, the ordered guest writes, the memory window
+      # and the architectural state vector, and reports the FIRST difference.
+      # Without this in CI, the only thing standing between a codegen semantic
+      # regression and a title run is a developer remembering to run it.
+      - name: Build and run AOT/interpreter cosimulation gate
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-selftest
+
+      # A comparator that cannot fail proves nothing. Each mutant is a semantic
+      # defect applied to a COPY of the interpreter under the ignored build tree;
+      # the gate must fail for every one, and a mutant that only breaks the build
+      # is rejected as INVALID rather than counted as a kill.
+      - name: Prove the cosimulation comparator is load-bearing
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
+
       - name: Build and run scheduler selftest
         shell: msys2 {0}
         run: >-
