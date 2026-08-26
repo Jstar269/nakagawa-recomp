@@ -217,6 +217,237 @@ int main(void) {
         }
     }
 
+    /* Test 17: DOS reserved-device detector (F114-5 edge semantics). */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NUL", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("PRN", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("AUX", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM1", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("com5", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("LPT9", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("nul.txt", 7), 1);   /* extension is stripped by Win32 */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON.BIN", 7), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NULL", 4), 0);      /* superset: ordinary name */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONSOLE", 7), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COMMON", 6), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM0", 4), 0);      /* never a reserved base */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("LPT0", 4), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NU", 2), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("DATA.BIN", 8), 0);
+
+    /* Test 18: safe-component validator (savedata filenames). */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("DATA.BIN", 8), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("PARAM.SFO", 9), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("UCUS98701", 9), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("0001", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("file..bak", 9), 1);   /* embedded dots stay legal */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("...", 3), 0);         /* trailing dot aliases */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("..", 2), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component(".", 1), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("", 0), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component(NULL, 5), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a/b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a\\b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a:b", 3), 0);         /* ADS stream syntax */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a*b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a?b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a<b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a|b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a\"b", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("a\x01""b", 3), 0);    /* control byte */
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("trailing_dot.", 13), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("trailing_space ", 15), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("CON", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL.txt", 7), 0);
+
+    /* Test 19: dir_path rejection of ADS, devices, wildcards, control bytes. */
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/DATA.BIN:stream", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/NUL", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/com4/x.dat", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/wildcard*name", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_vfs_host_dir_path("fs", "ms0:/PSP/a<b", out, sizeof(out), '/');
+    ASSERT_INT_EQ(len, 0);
+    /* Repeated separators must collapse rather than smuggle an UNC prefix. */
+    len = sr_vfs_host_dir_path("fs", "ms0://PSP//SAVEDATA", out, sizeof(out), '\\');
+    ASSERT_INT_EQ(len > 0, 1);
+    if (len > 0) {
+        ASSERT_STR_EQ(out, "fs\\PSP\\SAVEDATA");
+        if (strstr(out, "\\\\") != NULL) {
+            fprintf(stderr, "FAIL L%d: doubled separator survived: '%s'\n", __LINE__, out);
+            g_failed = 1;
+        }
+    }
+
+#ifdef _WIN32
+    /* Test 20: Win32 handle-based containment primitives. Everything below
+     * runs against source-owned temp trees; no private input is involved. */
+    {
+        char temp_dir[MAX_PATH];
+        GetTempPathA(MAX_PATH, temp_dir);
+        char test_root[512], test_sub[1024], sibling[512];
+        snprintf(test_root, sizeof(test_root), "%snk_vfs_root_%lu", temp_dir,
+                 (unsigned long)GetCurrentProcessId());
+        snprintf(test_sub, sizeof(test_sub), "%s\\sub", test_root);
+        snprintf(sibling, sizeof(sibling), "%snk_vfs_out_%lu", temp_dir,
+                 (unsigned long)GetCurrentProcessId());
+        CreateDirectoryA(test_root, NULL);
+        CreateDirectoryA(test_sub, NULL);
+        CreateDirectoryA(sibling, NULL);
+
+        wchar_t canonical[MAX_PATH * 2];
+        int canon_ok = sr_vfs_canonical_root(test_root, canonical, sizeof(canonical)/sizeof(wchar_t));
+        ASSERT_INT_EQ(canon_ok, 1);
+        if (canon_ok) {
+            ASSERT_INT_EQ(sr_vfs_dir_is_contained(test_sub, canonical), 1);
+            ASSERT_INT_EQ(sr_vfs_dir_is_contained(test_root, canonical), 1);
+            /* The temp PARENT is outside the root. */
+            ASSERT_INT_EQ(sr_vfs_dir_is_contained(temp_dir, canonical), 0);
+            /* Component-boundary discipline: a sibling sharing the root's name
+             * as a leading run ("rootX") must not prefix-match into containment. */
+            char sib_prefix[600];
+            snprintf(sib_prefix, sizeof(sib_prefix), "%sx", test_root);
+            CreateDirectoryA(sib_prefix, NULL);
+            ASSERT_INT_EQ(sr_vfs_dir_is_contained(sib_prefix, canonical), 0);
+            RemoveDirectoryA(sib_prefix);
+        }
+
+        /* Test 21: junction escape. A junction inside the root pointing OUTSIDE
+         * resolves to its target under an open handle and MUST be rejected.
+         * This is the exact behavior old PR #114 demonstrated on unpatched
+         * builds; here it is pinned as a permanent hostile fixture. */
+        {
+            char outside_file[600], junction[600], cmd[1400];
+            FILE *f;
+            DWORD attrs;
+            snprintf(outside_file, sizeof(outside_file), "%s\\secret.txt", sibling);
+            f = fopen(outside_file, "wb");
+            if (!f) {
+                fprintf(stderr, "FAIL L%d: cannot create outside fixture\n", __LINE__);
+                g_failed = 1;
+            } else {
+                fputs("outside", f);
+                fclose(f);
+            }
+            snprintf(junction, sizeof(junction), "%s\\link", test_root);
+            snprintf(cmd, sizeof(cmd), "cmd /c mklink /J \"%s\" \"%s\"", junction, sibling);
+            int made = system(cmd) == 0 &&
+                       (GetFileAttributesA(junction) & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            ASSERT_INT_EQ(made, 1);
+            if (made) {
+                /* Following the link lands outside: refuse. */
+                ASSERT_INT_EQ(sr_vfs_dir_is_contained(junction, canonical), 0);
+                /* A file THROUGH the link is refused too. */
+                char through[800];
+                snprintf(through, sizeof(through), "%s\\secret.txt", junction);
+                HANDLE h;
+                ASSERT_INT_EQ(sr_vfs_open_contained_utf8(through, GENERIC_READ, 0,
+                                                         OPEN_EXISTING, canonical, &h), 0);
+                /* mkdirs whose OWNED TAIL passes through a pre-planted link
+                 * must fail closed AND must not create anything beyond it
+                 * anywhere (F114-2). Plant the junction as the FIRST owned
+                 * component so the walk hits it before creating anything. */
+                char deep[900], deep_check[1100], psp_link[600];
+                snprintf(psp_link, sizeof(psp_link), "%s\\PSP", test_root);
+                snprintf(cmd, sizeof(cmd), "cmd /c mklink /J \"%s\" \"%s\"", psp_link, sibling);
+                int made_psp = system(cmd) == 0 &&
+                               (GetFileAttributesA(psp_link) & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                ASSERT_INT_EQ(made_psp, 1);
+                if (made_psp) {
+                    snprintf(deep_check, sizeof(deep_check), "%s\\SAVEDATA", sibling);
+                    ASSERT_INT_EQ(sr_vfs_mkdirs_contained("PSP\\SAVEDATA\\deep", canonical), 0);
+                    attrs = GetFileAttributesA(deep_check);
+                    ASSERT_INT_EQ(attrs == INVALID_FILE_ATTRIBUTES, 1);
+                    snprintf(deep, sizeof(deep), "%s\\SAVEDATA", psp_link);
+                    attrs = GetFileAttributesA(deep);
+                    ASSERT_INT_EQ(attrs == INVALID_FILE_ATTRIBUTES, 1);
+                    RemoveDirectoryA(psp_link);
+                }
+                /* Deleting the outside file BY NAME through the junction is
+                 * refused; the target survives byte-for-byte (F114-1). */
+                int was_dir = 0;
+                ASSERT_INT_EQ(sr_vfs_delete_contained_leaf(through, canonical, &was_dir), 0);
+                ASSERT_INT_EQ(was_dir, 0);
+                f = fopen(outside_file, "rb");
+                ASSERT_INT_EQ(f != NULL, 1);
+                if (f) fclose(f);
+                RemoveDirectoryA(junction);
+            }
+
+            /* Test 22: ordered creation happy path -- every level created and
+             * verified under a fresh root; nothing above the root appears. */
+            {
+                wchar_t canonical2[MAX_PATH * 2];
+                char root2[512];
+                snprintf(root2, sizeof(root2), "%snk_vfs_mkdir_%lu", temp_dir,
+                         (unsigned long)GetCurrentProcessId());
+                ASSERT_INT_EQ(sr_vfs_canonical_root(root2, canonical2,
+                                                    sizeof(canonical2)/sizeof(wchar_t)), 1);
+                char tree[900], above[700];
+                snprintf(tree, sizeof(tree), "%s\\PSP\\SAVEDATA\\UCUS98701DATA00", root2);
+                ASSERT_INT_EQ(sr_vfs_mkdirs_contained("PSP\\SAVEDATA\\UCUS98701DATA00",
+                                                      canonical2), 1);
+                ASSERT_INT_EQ(sr_vfs_dir_is_contained(tree, canonical2), 1);
+                /* A ".." segment is an owned-tail escape: refused outright. */
+                snprintf(above, sizeof(above), "%s\\..\\nk_vfs_escape_%lu", root2,
+                         (unsigned long)GetCurrentProcessId());
+                ASSERT_INT_EQ(sr_vfs_mkdirs_contained("..\\nk_vfs_escape_x", canonical2), 0);
+                attrs = GetFileAttributesA(above);
+                ASSERT_INT_EQ(attrs == INVALID_FILE_ATTRIBUTES, 1);
+                /* A component with trailing-dot aliasing is refused outright. */
+                char aliased[900];
+                snprintf(aliased, sizeof(aliased), "%s\\bad.\\x", root2);
+                ASSERT_INT_EQ(sr_vfs_mkdirs_contained("bad.\\x", canonical2), 0);
+                attrs = GetFileAttributesA(aliased);
+                ASSERT_INT_EQ(attrs == INVALID_FILE_ATTRIBUTES, 1);
+                /* Reserved device component refused. */
+                snprintf(aliased, sizeof(aliased), "%s\\NUL\\x", root2);
+                ASSERT_INT_EQ(sr_vfs_mkdirs_contained("NUL\\x", canonical2), 0);
+            }
+
+            /* Test 23: delete-by-handle semantics inside the root. */
+            {
+                char inner[700];
+                FILE *f2;
+                snprintf(inner, sizeof(inner), "%s\\sub\\data.bin", test_root);
+                f2 = fopen(inner, "wb");
+                if (!f2) {
+                    fprintf(stderr, "FAIL L%d: cannot create inner fixture\n", __LINE__);
+                    g_failed = 1;
+                } else {
+                    fputs("data", f2);
+                    fclose(f2);
+                }
+                int was_dir = -1;
+                ASSERT_INT_EQ(sr_vfs_delete_contained_leaf(inner, canonical, &was_dir), 1);
+                ASSERT_INT_EQ(was_dir, 0);
+                ASSERT_INT_EQ(GetFileAttributesA(inner) == INVALID_FILE_ATTRIBUTES, 1);
+                /* Directory entry: refused, left in place. */
+                was_dir = -1;
+                ASSERT_INT_EQ(sr_vfs_delete_contained_leaf(test_sub, canonical, &was_dir), 0);
+                ASSERT_INT_EQ(was_dir, 1);
+                ASSERT_INT_EQ(GetFileAttributesA(test_sub) != INVALID_FILE_ATTRIBUTES, 1);
+                /* Outside leaf: refused, survives. */
+                char out_leaf[700];
+                snprintf(out_leaf, sizeof(out_leaf), "%s\\z.txt", sibling);
+                f2 = fopen(out_leaf, "wb");
+                if (f2) fclose(f2);
+                was_dir = -1;
+                ASSERT_INT_EQ(sr_vfs_delete_contained_leaf(out_leaf, canonical, &was_dir), 0);
+                ASSERT_INT_EQ(GetFileAttributesA(out_leaf) != INVALID_FILE_ATTRIBUTES, 1);
+            }
+        }
+
+        RemoveDirectoryA(test_sub);
+        RemoveDirectoryA(test_root);
+        RemoveDirectoryA(sibling);
+    }
+#endif
+
     if (g_failed) {
         fprintf(stderr, "vfs_selftest: FAILED\n");
         return 1;

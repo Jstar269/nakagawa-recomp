@@ -432,5 +432,85 @@ class TestSavedataSfoProduction(unittest.TestCase):
             "production mutants survived the SFO assertions: " + ", ".join(survivors))
 
 
+class TestWindowsContainmentArchitecture(unittest.TestCase):
+    """Source-shape gates for the Windows OPEN -> HANDLE -> FINAL PATH VERIFY ->
+    OPERATION architecture (reconstruction of PR #114 plus audit findings
+    F114-1..F114-5). These complement the executable junction/hostile fixtures
+    in src/rt/vfs_selftest.c: a mutation that reintroduces verify-then-unlink-by-
+    name, creates below an unverified mid-path component, or drops the
+    component-boundary discipline must fail one of these checks."""
+
+    @staticmethod
+    def _windows_branch(code: str) -> str:
+        """Return only the #ifdef _WIN32 ... #else segment of a function body."""
+        return code.split("#ifdef _WIN32", 1)[1].split("#else", 1)[0]
+
+    def test_do_delete_never_unlinks_by_name_on_windows(self):
+        text = SAVEDATA_C.read_text(encoding="utf-8")
+        do_delete_idx = text.find("static uint32_t do_delete")
+        self.assertNotEqual(do_delete_idx, -1)
+        do_delete_code = text[do_delete_idx:text.find("/* ERASE/ERASESECURE", do_delete_idx)]
+        win_branch = self._windows_branch(do_delete_code)
+        # F114-1: no by-name deletion syscall may survive on the Windows path.
+        self.assertNotIn("sd_unlink(", win_branch,
+                         "do_delete must dispose through verified handles (F114-1)")
+        self.assertNotIn("_unlink(", win_branch,
+                         "do_delete must not unlink by name after verification")
+        self.assertIn("sr_vfs_delete_contained_leaf(", win_branch,
+                      "entries must be deleted through their own verified handle")
+        self.assertIn("sr_vfs_dispose_by_handle(", do_delete_code,
+                      "the save directory itself must be removed by handle")
+
+    def test_do_erase_deletes_through_verified_handle(self):
+        text = SAVEDATA_C.read_text(encoding="utf-8")
+        do_erase_idx = text.find("static uint32_t do_erase")
+        self.assertNotEqual(do_erase_idx, -1)
+        do_erase_code = text[do_erase_idx:text.find("/* LIST (11)", do_erase_idx)]
+        win_branch = self._windows_branch(do_erase_code)
+        self.assertIn("sr_vfs_delete_contained_leaf(", win_branch,
+                      "ERASE must delete through the handle it verified (F114-1)")
+        self.assertNotIn("sd_unlink(", win_branch,
+                         "the Windows ERASE branch must not fall back to by-name unlink")
+
+    def test_mkdirs_resolves_root_before_creating_owned_components(self):
+        text = SAVEDATA_C.read_text(encoding="utf-8")
+        mkdirs_idx = text.find("static int mkdirs(const char *path)")
+        self.assertNotEqual(mkdirs_idx, -1)
+        mkdirs_code = text[mkdirs_idx:text.find("uint32_t sr_savedata_prepare_utility", mkdirs_idx)]
+        self.assertIn("ms_canonical_root(", mkdirs_code,
+                      "F114-2: canonical root identity must be resolved first")
+        self.assertIn("sr_vfs_mkdirs_contained(tail, canonical_root)",
+                      mkdirs_code,
+                      "F114-2: owned components must be created through the ordered verifier")
+
+    def test_storage_reads_route_through_the_containment_boundary(self):
+        text = SAVEDATA_C.read_text(encoding="utf-8")
+        for fn_marker, next_marker in (("static int host_write_file", "static int host_read_file"),
+                                       ("static int host_read_file", "/* Storage boundary")):
+            fn_idx = text.find(fn_marker)
+            self.assertNotEqual(fn_idx, -1)
+            fn_code = text[fn_idx:text.find(next_marker, fn_idx)]
+            win_branch = self._windows_branch(fn_code)
+            self.assertIn("sr_vfs_open_contained_utf8(", win_branch,
+                          f"{fn_marker} must open through the containment wrapper")
+            self.assertNotIn("fopen(", win_branch,
+                             f"{fn_marker} must not bypass the verified-handle path on Windows")
+
+    def test_header_pins_boundary_aligned_containment_and_fail_closed_paths(self):
+        header = (ROOT / "src" / "rt" / "vfs_path.h").read_text(encoding="utf-8")
+        self.assertIn("FINAL PATH VERIFY", header,
+                      "the canonical operation order must stay documented at the seam")
+        self.assertIn("FILE_DISPOSITION_FLAG_POSIX_SEMANTICS", header,
+                      "delete-by-handle must prefer POSIX-semantics disposition (F114-1)")
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", header,
+                      "pre-planted links must be rejected before deeper creation (F114-2)")
+        self.assertIn("fail closed", header.lower(),
+                      "long-path truncation must fail closed, never fall back (F114-3)")
+        self.assertIn("documented F114-4 side effect", header,
+                      "root creation must remain a single documented side effect (F114-4)")
+        self.assertIn('"COM0"', header,
+                      "reserved-device edges (COM0/LPT0 non-reserved) must stay pinned (F114-5)")
+
+
 if __name__ == "__main__":
     unittest.main()
