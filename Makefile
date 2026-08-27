@@ -515,6 +515,125 @@ production-smoke-gap:
 production-smoke-gap-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) clean
 
+# ---------------------------------------------------------------------------
+# Source-owned second-platform workload ladder.
+#
+# fixtures/platform_ladder/generate.py emits six deliberately non-HST guest
+# identities (see that module's docstring) and drives each one through the
+# ordinary two-phase `all` target with PUBLIC_SAFE=1, no title manifest, no
+# SR_DATAROOT, no extra spans, and no compatibility overrides. Each workload
+# has its own base address, entry placement, import identity, segment/BSS
+# layout, and expected result word. Every workload, ladder-gap included, is an
+# ordinary PASS; no BLOCKED classification exists in this ladder.
+# ---------------------------------------------------------------------------
+PLATFORM_LADDER_DIR       := build/platform-ladder
+PLATFORM_LADDER_GENERATOR := fixtures/platform_ladder/generate.py
+
+PL_ZERO_BASE   := 0x08940000
+PL_RELOC_BASE  := 0x088C0000
+PL_SCHED_BASE  := 0x08900000
+PL_FPU_BASE    := 0x08980000
+PL_FS_BASE     := 0x089C0000
+
+.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-clean
+
+platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative
+
+platform-ladder-zero:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_zero \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-zero/fixture/guest.prx \
+		GAME_BASE=$(PL_ZERO_BASE) \
+		GAME_ENTRY=0x08940040 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-zero \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
+
+platform-ladder-reloc:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-reloc --out-dir $(PLATFORM_LADDER_DIR)/ladder-reloc/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_reloc \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-reloc/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-reloc/fixture/guest.psp \
+		GAME_BASE=$(PL_RELOC_BASE) \
+		GAME_ENTRY=0x088C0020 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-reloc \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
+
+# AOT-gap mode of ladder-reloc's tier chain: the interior callee is omitted
+# from native emission so the call reaches the ordinary production dispatch()
+# interpreter seam. Expected result is byte-identical to the intended guest.
+platform-ladder-gap:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-gap --out-dir $(PLATFORM_LADDER_DIR)/ladder-gap/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_gap_chain \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-gap/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-gap/fixture/guest.psp \
+		GAME_BASE=0x08A00000 \
+		GAME_ENTRY=0x08A00010 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-gap \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
+		CODEGEN_USER_ARGS=--omit-aot=0x08A00060
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
+
+platform-ladder-sched:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-sched --out-dir $(PLATFORM_LADDER_DIR)/ladder-sched/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_sched \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-sched/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-sched/fixture/guest.psp \
+		GAME_BASE=$(PL_SCHED_BASE) \
+		GAME_ENTRY=0x08900010 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-sched \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
+
+platform-ladder-fpu:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fpu --out-dir $(PLATFORM_LADDER_DIR)/ladder-fpu/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_fpu \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-fpu/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fpu/fixture/guest.psp \
+		GAME_BASE=$(PL_FPU_BASE) \
+		GAME_ENTRY=0x08980008 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fpu \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
+
+platform-ladder-fs:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fs --out-dir $(PLATFORM_LADDER_DIR)/ladder-fs/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_fs \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-fs/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fs/fixture/guest.psp \
+		GAME_BASE=$(PL_FS_BASE) \
+		GAME_ENTRY=0x089C0018 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fs \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
+
+# Negative control: same executable and guest, but the payload file is absent.
+# sceIoOpen must fail visibly and the guest must store the failure sentinel.
+platform-ladder-fs-negative:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
+
+platform-ladder-clean:
+	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
+
 # The generator the codegen rule runs. Overridable so the cosim mutation
 # campaign can mutate the GENERATOR as well as the interpreter -- a
 # differential proven against one side only is half proven. It MUST be
