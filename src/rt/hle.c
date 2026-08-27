@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+﻿// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
@@ -39,6 +39,7 @@
 #include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
+#include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -515,7 +516,7 @@ static uint32_t h_FreePartitionMemory(CpuState *s) {
             return 0;
         }
     }
-    /* Block not found — could be an invalid UID. PSP returns error. */
+    /* Block not found â€” could be an invalid UID. PSP returns error. */
     if (getenv("SR_ALLOC_TRACE")) fprintf(stderr, "FreePartitionMemory: uid=0x%x not found\n", uid);
     return 0x80020000;
 }
@@ -533,7 +534,7 @@ static uint32_t h_TotalFreeMemSize(CpuState *s) { (void)s; uint32_t f = partitio
  * approximates). */
 static uint32_t h_MaxFreeMemSize(CpuState *s) { (void)s; user_partition_init(); return s_heap < s_part_top ? s_part_top - s_heap : 0u; }
 
-/* Fixed Pool (FPL) — simple bump allocator per pool.  Enough for games that use FPL
+/* Fixed Pool (FPL) â€” simple bump allocator per pool.  Enough for games that use FPL
  * to allocate objects whose constructors populate vtables (e.g. sceUtility dialogs). */
 #define FPL_MAX 16
 typedef struct { uint32_t base; uint32_t cur; uint32_t end; uint32_t bsize; int used; } FplPool;
@@ -1759,7 +1760,7 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  * policy and is kept explicit rather than presented as a measured precedence.
  * The size-before-address ordering below is likewise a runtime ordering; the
  * combined size-zero-plus-invalid-pointer case was not part of the probe.
- * The measured ~376–382 us observation for a large call is caller wall time;
+ * The measured ~376â€“382 us observation for a large call is caller wall time;
  * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
  * does not currently translate guest self-modifying code or maintain a separate
@@ -4000,7 +4001,7 @@ static int s_osk_status = 0;
 static uint32_t s_osk_param = 0;
 /* PPSSPP keeps a "current dialog type": OskGetStatus is WRONG_TYPE only while a DIFFERENT
  * utility dialog owns the slot. After an OSK shuts down it stays the current dialog and
- * GetStatus returns NONE(0) — a game spinning "while (OskGetStatus() != 0)" after name entry
+ * GetStatus returns NONE(0) â€” a game spinning "while (OskGetStatus() != 0)" after name entry
  * hangs forever if we keep returning WRONG_TYPE there. */
 static int s_osk_current = 0;
 static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
@@ -4363,7 +4364,7 @@ int sr_thread_dispatch_callbacks(void) {
 int sr_vblank_dispatch_registered(void) {
     return 0;
 }
-/* h_NotifyCallback: 0xc11ba8c4 — synchronously dispatch a registered callback entry from
+/* h_NotifyCallback: 0xc11ba8c4 â€” synchronously dispatch a registered callback entry from
  * the calling thread context. The PSP firmware exposes this so the game can manually pump
  * a callback instead of waiting for the vblank IRQ. We honour the uid; the dispatched entry
  * receives the ABI packed by sr_callback_pack_args ($a0 = count, $a1 = notify arg,
@@ -4418,7 +4419,7 @@ static uint32_t h_ReferCallbackStatus(CpuState *s) {
     }
     return 0;
 }
-/* h_CreateNotifyCallback: 0x9f9b46b9 — same as sceKernelCreateCallback but the callback uid
+/* h_CreateNotifyCallback: 0x9f9b46b9 â€” same as sceKernelCreateCallback but the callback uid
  * is registered for NOTIFY semantics: the game calls sceKernelNotifyCallback (0xc11ba8c4) on
  * it, OR the kernel auto-fires it when triggered programmatically. The PSMF modules and the
  * PSP-LDD-aware HL code paths use this variant to install their ring-fill and stream-event
@@ -4426,7 +4427,7 @@ static uint32_t h_ReferCallbackStatus(CpuState *s) {
  * audio thread models assume one uid per NamedCallback binding). We register against the
  * same s_callbacks[] table as h_CreateCallback, so h_NotifyCallback and the callback-aware
  * wait paths (sr_thread_dispatch_callbacks) surface it the same way; the raw vblank IRQ does
- * NOT dispatch callbacks (sr_vblank_dispatch_registered() is a deliberate no-op — see its
+ * NOT dispatch callbacks (sr_vblank_dispatch_registered() is a deliberate no-op â€” see its
  * comment above). */
 static uint32_t h_CreateNotifyCallback(CpuState *s) {
     uint32_t error = 0;
@@ -4438,14 +4439,14 @@ static uint32_t h_CreateNotifyCallback(CpuState *s) {
     }
     return uid ? uid : error;
 }
-/* h_DeleteCallback: 0xedba5844 — release a callback uid from the s_callbacks[] table.
+/* h_DeleteCallback: 0xedba5844 â€” release a callback uid from the s_callbacks[] table.
  * h_CreateCallback returns these uids (they're real s_callbacks[] slots, not module uid
  * pool). Returning success without freeing would leave a stale entry that fires every
  * vblank against deleted code. */
 static uint32_t h_DeleteCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
 }
-/* h_DeleteNotifyCallback: 0x0ed48fe2 — release a Notify-flavored callback uid
+/* h_DeleteNotifyCallback: 0x0ed48fe2 â€” release a Notify-flavored callback uid
  * (allocated by h_CreateNotifyCallback). Same backing table; identical semantics. */
 static uint32_t h_DeleteNotifyCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
@@ -4827,8 +4828,28 @@ static uint32_t h_LoadModule(CpuState *s) {
     populate_known_module(path);
     /* The title checks this flag after the concrete libfont PRX load. Keep it
      * on the explicit PRX path instead of conflating libfont with AV module
-     * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). */
-    if (strstr(path, "libfont.prx")) MEM_W32(0x002d132cu, 1u);
+     * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). Title-qualified: only when the
+     * manifest configures the compat flag; generic sceKernelLoadModule
+     * otherwise performs no guest write. */
+    if (strstr(path, "libfont.prx")) {
+        uint32_t flag;
+        if (sr_title_config_libfont_ready_flag_addr(&flag)) {
+            if (!sr_guest_span_writable(flag, 4)) {
+                fprintf(stderr,
+                        "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
+                        flag, sr_title_config()->source_id);
+            } else {
+                MEM_W32(flag, 1u);
+                fprintf(stderr,
+                        "libfont compat: flag 0x%08x <- 1 (title %s)\n",
+                        flag, sr_title_config()->source_id);
+            }
+        } else {
+            fprintf(stderr,
+                    "libfont.prx loaded (generic: no compat flag write, title %s)\n",
+                    sr_title_config()->source_id);
+        }
+    }
     if (s_nloaded_modules < 16) {
         s_loaded_modules[s_nloaded_modules].uid = uid;
         snprintf(s_loaded_modules[s_nloaded_modules].path, sizeof(s_loaded_modules[0].path), "%s", path);
@@ -8067,18 +8088,28 @@ void sr_vblank_tick(void) {
      * rather than one frame late. */
     route_tick(s_vcount_fwd);
     sr_ctrl_sample();   /* latch one controller sample per frame (PPSSPP ring semantics) */
-    /* Last-resort un-wedge for the frame-ready latch (0x331b80): if it has been stuck
-     * above 0 for a sustained stretch of vblanks with no list completing to clear it,
-     * force it down so a wedged render loop can proceed instead of hanging forever
-     * (which would otherwise trip the no-frame watchdog). This mirrors the assist done
-     * in ge_finish_callback but covers lists that never reach a finish callback. */
+    /* Last-resort un-wedge for the frame-ready latch: title-qualified.
+     * Generic PSP has no such latch; HST's render loop gates presentation on
+     * MEM[frame_latch]. If it has been stuck above 0 for a sustained stretch
+     * with no list completing to clear it, force it down. This mirrors the
+     * assist in ge_finish_callback but covers lists that never reach a finish
+     * callback. Only when the title configures the latch (issue #98 #5).
+     * Retirement: replace the timer hack with the real guest/runtime event it
+     * approximates (list completion with no registered callback) once that event
+     * is modeled generically. */
     {
         static uint32_t latch_stuck = 0;
-        uint32_t lc = MEM_R32(0x00331b80u);
-        if (lc > 0) {
-            if (++latch_stuck > 30u) { ge_finish_latch_assist(); latch_stuck = 0; }
-        } else {
+        uint32_t latch;
+        if (!sr_title_config_frame_latch_addr(&latch) ||
+            !sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) {
             latch_stuck = 0;
+        } else {
+            uint32_t lc = MEM_R32(latch);
+            if (lc > 0) {
+                if (++latch_stuck > 30u) { ge_finish_latch_assist(); latch_stuck = 0; }
+            } else {
+                latch_stuck = 0;
+            }
         }
     }
     /* No-frame watchdog: vblanks keep being delivered even when every game thread is
@@ -8342,104 +8373,143 @@ static void ensure_runtime_sync_callbacks(CpuState *s);
 static uint32_t h_DisplaySetMode(CpuState *s) {
     uint32_t mode = s->r[4], width = s->r[5], height = s->r[6];
     (void)mode; (void)width; (void)height;
-    fprintf(stderr, "DISPLAY_SET_MODE: replaying game display-driver init (mode=%u %ux%u)\n", mode, width, height);
+    fprintf(stderr, "DISPLAY_SET_MODE: mode=%u %ux%u (title %s)\n", mode, width, height,
+            sr_title_config()->source_id);
     fflush(stderr);
 
     ensure_runtime_sync_callbacks(s);
 
+    SrTitleDisplayBringup bringup;
+    if (!sr_title_config_display_bringup(&bringup)) {
+        fprintf(stderr,
+                "DISPLAY_SET_MODE: display bringup not configured (generic PSP semantics, title %s)\n",
+                sr_title_config()->source_id);
+        return 0; /* Generic PSP: mode/width/height already recorded via generic path if needed */
+    }
+
+    if (!sr_guest_span_writable(bringup.render_context_magic_addr, 4) ||
+        !sr_guest_span_writable(bringup.render_table_ready_flag_addr, 1) ||
+        !sr_guest_span_writable(bringup.render_context_word_addr, 4)) {
+        fprintf(stderr,
+                "DISPLAY_SET_MODE: bringup data addrs not writable (title %s), skipping bringup\n",
+                sr_title_config()->source_id);
+        return 0;
+    }
+
+    fprintf(stderr, "DISPLAY_SET_MODE: replaying title display-driver init (title %s)\n",
+            sr_title_config()->source_id);
+
     /* Vblank device: allocate the device struct and let the real creator
-     * (f_0029a8bc, normally reached via f_0026b724(r5=2)) populate it and store
-     * its pointer at MEM[0x34B328]. Not strictly required for f_000487f4's
-     * return, but needed by the vblank ISR / device-ready subsystem. */
-    uint32_t dev = ge_call_guest_rv(s, 0x00000bccu, 0x40u, 0, 0); /* f_00000bcc = guest malloc */
+     * (guest's vblank device init, normally reached via guest's init dispatcher)
+     * populate it. Title-qualified addresses. */
+    uint32_t dev = ge_call_guest_rv(s, bringup.malloc_entry, 0x40u, 0, 0);
     if (dev) {
-        ge_call_guest(s, 0x0029a8bcu, dev, 0, 0);
+        ge_call_guest(s, bringup.vblank_device_init_entry, dev, 0, 0);
     } else {
-        fprintf(stderr, "DISPLAY_SET_MODE: guest malloc returned 0; skipping vblank device init\n");
+        fprintf(stderr, "DISPLAY_SET_MODE: guest malloc returned 0; skipping vblank device init (title %s)\n",
+                sr_title_config()->source_id);
     }
 
-    /* Render context: f_0001dc00 sets MEM[0x2CFC8C] = 0x31FC40 and fully
-     * initialises the context struct (including the +0x80 magic the poller
-     * checks). This is the gate that unblocks f_000487f4. */
-    ge_call_guest(s, 0x0001dc00u, 0, 0, 0);
+    /* Render context: guest render-context init fully initialises the context
+     * struct (including the +0x80 magic the poller checks). This is the gate
+     * that unblocks the file load path. */
+    ge_call_guest(s, bringup.render_context_init_entry, 0, 0, 0);
 
-    /* Guarantee chk7 even if loader state differs: the poller reads
-     * MEM[MEM[0x2CFC8C]+0x80]; f_0001dc00 points 0x2CFC8C at 0x31FC40, so the
-     * magic lives at 0x31FCC0. */
-    if (MEM_R32(0x0031fcc0u) != 0x308u) {
-        fprintf(stderr, "DISPLAY_SET_MODE: forcing render-context magic 0x31FCC0 -> 0x308\n");
-        MEM_W32(0x0031fcc0u, 0x308u);
+    /* Guarantee magic even if loader state differs. */
+    if (MEM_R32(bringup.render_context_magic_addr) != 0x308u) {
+        fprintf(stderr, "DISPLAY_SET_MODE: forcing render-context magic 0x%08x -> 0x308 (title %s)\n",
+                bringup.render_context_magic_addr, sr_title_config()->source_id);
+        MEM_W32(bringup.render_context_magic_addr, 0x308u);
     }
 
-    /* Seed the frame-ready counter so the second render-loop wait (L_00046f70)
-     * clears and the loop proceeds to present frame 0. The GE finish / vblank
-     * relaunch machinery keeps it alive thereafter. */
-    MEM_W32(0x00331b80u, 1u);
+    /* Seed the frame-ready counter so the second render-loop wait clears and
+     * the loop proceeds to present frame 0. Title-qualified: only when the
+     * frame latch is configured. */
+    uint32_t latch;
+    if (sr_title_config_frame_latch_addr(&latch)) {
+        if (sr_guest_span_writable(latch, 4)) {
+            MEM_W32(latch, 1u);
+            fprintf(stderr, "DISPLAY_SET_MODE: seeded frame latch 0x%08x <- 1 (title %s)\n",
+                    latch, sr_title_config()->source_id);
+        } else {
+            fprintf(stderr,
+                    "DISPLAY_SET_MODE: frame latch 0x%08x not writable, not seeding (title %s)\n",
+                    latch, sr_title_config()->source_id);
+        }
+    } else {
+        fprintf(stderr,
+                "DISPLAY_SET_MODE: frame latch not configured, not seeding (title %s)\n",
+                sr_title_config()->source_id);
+    }
 
-    /* f_00049194 / f_00049200 look up the display-driver's render-command table
-     * (a 0x240-entry halfword array). On real PSP a background kernel thread
-     * fills the table and sets a ready flag at MEM[0x311140] and a context dword
-     * at MEM[0x2d0738]; our HLE has no background thread, so the table stays
-     * empty and f_00049200 returns 0xFFFFFFFF which causes the per-frame path
-     * (f_0004f7dc) to retry forever. Seed both locations so the lookup succeeds
-     * and the worker advances to GE submission. */
-    MEM_W8(0x00311140u, 1u);
-    MEM_W32(0x002d0738u, 1u);
+    /* Render-command table ready flag and context word. On real PSP a
+     * background thread fills the table; our HLE has no background thread. */
+    MEM_W8(bringup.render_table_ready_flag_addr, 1u);
+    MEM_W32(bringup.render_context_word_addr, 1u);
+    fprintf(stderr,
+            "DISPLAY_SET_MODE: seeded table ready 0x%08x <-1 and ctx 0x%08x <-1 (title %s)\n",
+            bringup.render_table_ready_flag_addr, bringup.render_context_word_addr,
+            sr_title_config()->source_id);
 
     return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */
 }
 
-/* The engine's render loop gates "is a frame ready to present?" on the counter at
- * MEM[0x331b80] (decremented once per completed display list, either by the game's
- * own finish func or by us). When a list completes with NO registered guest callback
- * (sentinel cbid 0xFFFFFFFF, or a slot that is !used / has no finish_func) the old
- * code returned without touching the counter, so the latch could wedge above 0 and
- * the render loop would spin forever waiting for a decrement that never came -- the
- * frame-ready signal is write-only from HLE and there was no vblank-time fallback.
- * We now always guarantee the latch makes progress (assist-decrement) on completion,
- * regardless of how the callback resolved, which un-wedges that path. */
+/* The engine's render loop gates "is a frame ready to present?" on a title-
+ * specific counter (HST: MEM[0x331b80], decremented once per completed display
+ * list). Title-qualified: the latch address is configuration. Generic titles
+ * use the generic GE completion path without latch assist. */
 static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
+    uint32_t latch;
+    int has_latch = sr_title_config_frame_latch_addr(&latch) &&
+                    sr_guest_span_readable(latch, 4) && sr_guest_span_writable(latch, 4);
     if (cbid >= (uint32_t)cb_max) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb, advancing latch\n",
-                cbid, cb_max);
-        ge_finish_latch_assist();
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb%s\n",
+                cbid, cb_max, has_latch ? ", advancing latch" : " (generic: no latch)");
+        if (has_latch) ge_finish_latch_assist();
         return;
     }
     GeCallback *cb = &s_ge_cb[cbid];
     if (!cb->used || !cb->finish_func) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s) -- advancing latch\n",
-                cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function");
-        ge_finish_latch_assist();
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)%s\n",
+                cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function",
+                has_latch ? " -- advancing latch" : " (generic: no latch)");
+        if (has_latch) ge_finish_latch_assist();
         return;
     }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: cbid=%u list=0x%08x fn=0x%08x arg=0x%08x\n",
                 cbid, list_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
-    uint32_t pre_ctr = MEM_R32(0x00331b80u);
+    uint32_t pre_ctr = has_latch ? MEM_R32(latch) : 0u;
     ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
-    uint32_t post_ctr = MEM_R32(0x00331b80u);
-    if (ge_log_on())
-        fprintf(stderr, "GE_FINISH_CB: counter 0x331b80 before=%u after=%u\n", pre_ctr, post_ctr);
-    if (post_ctr == pre_ctr && pre_ctr > 0) {
-        MEM_W32(0x00331b80u, pre_ctr - 1u);
+    if (has_latch) {
+        uint32_t post_ctr = MEM_R32(latch);
         if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_CB: counter forcibly decremented to %u\n", pre_ctr - 1u);
+            fprintf(stderr, "GE_FINISH_CB: counter 0x%08x before=%u after=%u\n", latch, pre_ctr, post_ctr);
+        if (post_ctr == pre_ctr && pre_ctr > 0) {
+            MEM_W32(latch, pre_ctr - 1u);
+            if (ge_log_on())
+                fprintf(stderr, "GE_FINISH_CB: counter 0x%08x forcibly decremented to %u\n", latch, pre_ctr - 1u);
+        }
     }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: callback fn=0x%08x returned\n", cb->finish_func);
 }
 
-/* Guarantee the frame-ready latch (0x331b80) makes progress on every completed list,
- * even when no guest finish callback ran. Decrement toward 0 (the "all lists done"
- * state the render loop waits on). Called from ge_finish_callback when there is no
- * usable guest callback, and from sr_vblank_tick as a last-resort un-wedge. */
+/* Guarantee the frame-ready latch makes progress on every completed list,
+ * even when no guest finish callback ran. Title-qualified: only when the
+ * frame latch address is configured and writable; generic titles have no
+ * latch to assist. Called from ge_finish_callback and sr_vblank_tick. */
 void ge_finish_latch_assist(void) {
-    uint32_t pre = MEM_R32(0x00331b80u);
+    uint32_t latch;
+    if (!sr_title_config_frame_latch_addr(&latch)) return;
+    if (!sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) return;
+    uint32_t pre = MEM_R32(latch);
     if (pre > 0) {
-        MEM_W32(0x00331b80u, pre - 1u);
+        MEM_W32(latch, pre - 1u);
         if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_LATCH_ASSIST: 0x331b80 %u -> %u\n", pre, pre - 1u);
+            fprintf(stderr, "GE_FINISH_LATCH_ASSIST: 0x%08x %u -> %u (title %s)\n",
+                    latch, pre, pre - 1u, sr_title_config()->source_id);
     }
 }
 
@@ -8484,7 +8554,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     s_ge_lists[slot].cbarg = cbarg;
     s_ge_lists[slot].status = 1;
 
-    /* stall == list means the ring buffer is empty — the game will fill it and advance the
+    /* stall == list means the ring buffer is empty â€” the game will fill it and advance the
      * stall via sceGeListUpdateStallAddr. Running it now would read uninitialized eDRAM;
      * just record as stalled and let UpdateStallAddr drive it.
      * Also treat stall == 0 as "run to completion" (no stall fence). */
@@ -8512,7 +8582,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
         s_ge_lists[slot].status = 2; // completed
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
-        /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
+        /* List stalled at a non-start stall â€” game will advance via UpdateStallAddr.
          * Do NOT drain here: that runs past the game's write head into uninitialized eDRAM. */
         s_ge_lists[slot].current_pc = next_pc;
         /* status stays 1 (stalled) */
@@ -9565,58 +9635,96 @@ static uint32_t h_CreateSema(CpuState *s) {
  * "sgx-psp-di-sema" option is read with default 1 at 0x00081c24..0x00081c3c.
  * Mode 1 also owns a count-1 semaphore at +0x0c, created at
  * 0x00081c94..0x00081cb8.  Recreate both pieces together so the callbacks
- * block and wake with the same semantics as the original initializer. */
+ * block and wake with the same semantics as the original initializer.
+ *
+ * Title-qualified (issue #98): the config base, sema name pointer and
+ * mode-keyed wrapper pairs are validated title configuration. An unconfigured
+ * build performs no sync install at all (generic sceDisplaySetMode has no
+ * sync side effects). The pairing and the mode that selects it are part of
+ * the meaning and are not flattened. */
 static void ensure_runtime_sync_callbacks(CpuState *s) {
-    const uint32_t config = 0x00333138u;
-    uint32_t mode = MEM_R32(config + 0x30u);
-    uint32_t enter = MEM_R32(config + 0x34u);
-    uint32_t leave = MEM_R32(config + 0x38u);
-    const int initializer_ran = MEM_R32(config + 0x4c0u) != 0;
+    uint32_t config_base, sema_name_ptr;
+    const SrTitleRuntimeSyncWrapper *wrappers;
+    unsigned wrapper_count;
+    if (!sr_title_config_runtime_sync(&config_base, &sema_name_ptr, &wrappers, &wrapper_count)) {
+        if (hle_log_on())
+            fprintf(stderr,
+                    "DISPLAY_SET_MODE: runtime sync not configured (generic, title %s)\n",
+                    sr_title_config()->source_id);
+        return;
+    }
+    if (!sr_guest_span_writable(config_base, 0x4c4)) {
+        fprintf(stderr,
+                "DISPLAY_SET_MODE: runtime sync config 0x%08x not writable (title %s), skipping\n",
+                config_base, sr_title_config()->source_id);
+        return;
+    }
+    uint32_t mode = MEM_R32(config_base + 0x30u);
+    uint32_t enter = MEM_R32(config_base + 0x34u);
+    uint32_t leave = MEM_R32(config_base + 0x38u);
+    const int initializer_ran = MEM_R32(config_base + 0x4c0u) != 0;
 
     if (enter && leave) return;
 
     if (!initializer_ran) {
         mode = 1;
-        MEM_W32(config + 0x30u, mode);
+        MEM_W32(config_base + 0x30u, mode);
     } else if (mode > 2) {
         fprintf(stderr,
-                "DISPLAY_SET_MODE: invalid runtime sync mode %u; using game default mode 1\n",
-                mode);
+                "DISPLAY_SET_MODE: invalid runtime sync mode %u; using game default mode 1 (title %s)\n",
+                mode, sr_title_config()->source_id);
         mode = 1;
-        MEM_W32(config + 0x30u, mode);
+        MEM_W32(config_base + 0x30u, mode);
     }
 
-    switch (mode) {
-    case 0: /* nested CpuSuspendIntr / CpuResumeIntr wrappers */
-        enter = 0x000823f0u;
-        leave = 0x00082438u;
-        break;
-    case 1: { /* semaphore wait / signal wrappers */
-        uint32_t sema = MEM_R32(config + 0x0cu);
+    uint32_t cfg_enter = 0, cfg_leave = 0;
+    int found = sr_title_config_runtime_sync_wrapper_for_mode(mode, &cfg_enter, &cfg_leave);
+    if (!found) {
+        /* Fallback to mode 1 if the requested mode is not in the configured set
+         * (e.g. a synthetic title that only configures mode 0). Mirrors the
+         * historical "invalid mode -> mode 1" fallback. */
+        found = sr_title_config_runtime_sync_wrapper_for_mode(1, &cfg_enter, &cfg_leave);
+        if (!found) {
+            fprintf(stderr,
+                    "DISPLAY_SET_MODE: no runtime sync wrapper for mode %u and no mode 1 fallback (title %s)\n",
+                    mode, sr_title_config()->source_id);
+            return;
+        }
+        fprintf(stderr, "DISPLAY_SET_MODE: mode %u not in config, fallback to mode 1 wrappers (title %s)\n", mode, sr_title_config()->source_id); mode = 1;
+        MEM_W32(config_base + 0x30u, mode);
+    }
+
+    if (mode == 1) {
+        uint32_t sema = MEM_R32(config_base + 0x0cu);
         if (!sync_find(sema)) {
             CpuState call = *s;
-            call.r[4] = 0x002bdf38u; /* "sgx-di-sema" */
+            call.r[4] = sema_name_ptr;
             call.r[5] = 0;
             call.r[6] = 1;
             call.r[7] = 1;
+            if (!sr_guest_span_readable(sema_name_ptr, 16)) {
+                fprintf(stderr,
+                        "DISPLAY_SET_MODE: sema name 0x%08x not readable, still creating sema (title %s)\n",
+                        sema_name_ptr, sr_title_config()->source_id);
+            }
             sema = h_CreateSema(&call);
-            MEM_W32(config + 0x0cu, sema);
+            MEM_W32(config_base + 0x0cu, sema);
+            fprintf(stderr,
+                    "DISPLAY_SET_MODE: created runtime sync sema 0x%x for mode 1 (title %s)\n",
+                    sema, sr_title_config()->source_id);
         }
-        enter = 0x00082474u;
-        leave = 0x0008249cu;
-        break;
-    }
-    case 2: /* lightweight mutex lock / unlock wrappers */
-        enter = 0x000824c0u;
-        leave = 0x000824e8u;
-        break;
+        enter = cfg_enter;
+        leave = cfg_leave;
+    } else {
+        enter = cfg_enter;
+        leave = cfg_leave;
     }
 
-    MEM_W32(config + 0x34u, enter);
-    MEM_W32(config + 0x38u, leave);
+    MEM_W32(config_base + 0x34u, enter);
+    MEM_W32(config_base + 0x38u, leave);
     fprintf(stderr,
-            "DISPLAY_SET_MODE: runtime sync callbacks mode=%u enter=0x%08x leave=0x%08x\n",
-            mode, enter, leave);
+            "DISPLAY_SET_MODE: runtime sync callbacks mode=%u enter=0x%08x leave=0x%08x (title %s)\n",
+            mode, enter, leave, sr_title_config()->source_id);
 }
 static uint32_t h_DeleteSema(CpuState *s) { Sync *m = sync_find(A0); if (m) m->used = 0; return 0; }
 /* Entry contract shared by sceKernelWaitSema and sceKernelWaitSemaCB.
@@ -9984,7 +10092,7 @@ static uint32_t h_SetEventFlag(CpuState *s) {
 static uint32_t h_ClearEventFlag(CpuState *s) {
     /* sceKernelClearEventFlag(evfid, bits): A1 is the mask of bits to KEEP
      * (currentPattern &= bits), matching PSP/PPSSPP. It is NOT a mask of bits
-     * to remove — inverting A1 here inverts the contract. */
+     * to remove â€” inverting A1 here inverts the contract. */
     Sync *m = sync_find(A0); if (!m) return 0x80020000;
     m->pattern = sr_evf_clear_pattern(m->pattern, A1); return 0;
 }
