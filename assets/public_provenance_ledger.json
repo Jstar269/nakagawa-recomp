@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "29f486a5f63b4576729fba75a14475f20e38085b4e2a59e087690e5a813a0874"
+      "sha256": "0256d54edce3cf68627d2f3112bbaeb818b5d58f3eedbe0fe938c280c2fed61c"
     },
     {
       "path": "NOTICE.md",
@@ -856,7 +856,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bbbd732ad3148f3ea3916d7dcb9320e6e67a35f24c5f491f685d88f6e783a601"
+      "sha256": "b192bd282a91c3d33ec080e6ddc341ae16e4248bea053db1f845833cac170979"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -6165,7 +6165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "294a7a9ed8b03db50c1586153b3a64c836ada8b3b49d1f3a0f3bb35d9c97822c"
+      "sha256": "b0ed668ec045fcdf3e4f5d0d443c3630a6e02f6b18a55e1e5541ce456fff1dc0"
     },
     {
       "path": "tools/test_callback_correctness.py",
