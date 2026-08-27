@@ -1209,5 +1209,40 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
             self.assertTrue(pdir.is_dir(), f"Protected directory {pdir} was compromised")
 
 
+class MachinePortabilityTests(unittest.TestCase):
+    """Regression and structural tests for machine and toolchain portability."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.make = shutil.which("mingw32-make") or shutil.which("make")
+
+    def test_vulkan_sdk_discovery_in_makefile_resolves_when_unset(self) -> None:
+        """When VULKAN_SDK is not explicitly set, Makefile discovers it dynamically via tools/vulkan_sdk.py."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "compiler-info"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("CFLAGS=", proc.stdout)
+        self.assertIn("Include", proc.stdout)
+
+    def test_mem_debug_nm_discovery_prefers_environment_and_path(self) -> None:
+        """get_symbol_rvas in mem_debug.py must probe NM environment variable and shutil.which before hardcoded paths."""
+        mem_debug_text = (ROOT / "tools" / "mem_debug.py").read_text(encoding="utf-8")
+        self.assertIn("os.environ.get(\"NM\")", mem_debug_text)
+        self.assertIn("shutil.which(\"nm\")", mem_debug_text)
+
+    def test_copy_build_assets_script_has_toolchain_discovery_fallback(self) -> None:
+        """copy_build_assets.ps1 must attempt compiler toolchain discovery if SDL3.dll is absent from local dirs."""
+        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        self.assertIn("Get-Command gcc", script_text)
+        self.assertIn("SDL3.dll", script_text)
+
+
 if __name__ == "__main__":
     unittest.main()
