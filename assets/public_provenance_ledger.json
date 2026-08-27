@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "0256d54edce3cf68627d2f3112bbaeb818b5d58f3eedbe0fe938c280c2fed61c"
+      "sha256": "de35d40485fc737e4d57224cddb93cd2f181345d169f5ad563269449efea09ef"
     },
     {
       "path": "NOTICE.md",
@@ -676,7 +676,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "5bcd66f8d0d351eeb00289df4579e65da54dd5b4a9fa33209449ef789daa4239"
+      "sha256": "e11ae46fb0b7875aec4120a2f7b8d3d05a16d207af4c4c60c2204a5eef207f03"
     },
     {
       "path": "docs/AI_USAGE.md",
@@ -5615,7 +5615,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f59b6c6ea47fc2b8224a8d5cdab299e0817dbd923bbd97675d8f5c8ae604442"
+      "sha256": "059e41666c47bb7d8c6c26a93724bf169dc9b9200eb294c7215fe9f940214273"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -6165,7 +6165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0ed668ec045fcdf3e4f5d0d443c3630a6e02f6b18a55e1e5541ce456fff1dc0"
+      "sha256": "2dd291712650756588257d8f5143824db8226974f9b52dd50e8ae13bbdf922f1"
     },
     {
       "path": "tools/test_callback_correctness.py",
