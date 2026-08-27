@@ -54,6 +54,8 @@ RUNTIME_BINDING_FIELDS = (
     "launcher_thread_entry",
     "vblank_frame_counter_addr",
     "vblank_vsync_counter_addr",
+    "libfont_ready_flag_addr",
+    "frame_ready_latch_addr",
 )
 RUNTIME_BINDING_PAIRS = (("vblank_frame_counter_addr", "vblank_vsync_counter_addr"),)
 
@@ -62,6 +64,23 @@ RUNTIME_BINDING_PAIRS = (("vblank_frame_counter_addr", "vblank_vsync_counter_add
 #: instead of a single value. Both are individually optional and both are empty in a
 #: generic build.
 RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
+
+#: Optional *typed objects* of title bindings. Each names a structured,
+#: title-qualified compatibility capability with its own validated shape.
+#: Atomic: either fully configured or absent, never half-configured.
+RUNTIME_BINDING_OBJECTS = ("display_bringup", "runtime_sync")
+
+DISPLAY_BRINGUP_FIELDS = (
+    "malloc_entry",
+    "vblank_device_init_entry",
+    "render_context_init_entry",
+    "render_context_magic_addr",
+    "render_table_ready_flag_addr",
+    "render_context_word_addr",
+)
+
+#: Wrappers for runtime_sync: max modes is 3 (0,1,2) matching HST's mode switch.
+MAX_RUNTIME_SYNC_WRAPPERS = 3
 
 #: Per-collection ceilings. These are semantic-debt inventories, not general relocation
 #: tables: a manifest needing dozens of entries is describing a codegen or analysis gap
@@ -679,6 +698,85 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
     return result
 
 
+def validate_display_bringup(value: Any, path: str) -> dict[str, int]:
+    """Validate the display bring-up replay: 3 dispatch targets + 3 data seeds.
+
+    Atomic: the whole replay is either fully configured or absent. A half-configured
+    replay would leave generic core calling whatever happens to live at a missing
+    address. Each dispatch target is subject to the core VFPU reservation; data
+    seeds are not.
+    """
+    value = obj(value, path, set(DISPLAY_BRINGUP_FIELDS))
+    require(value, path, *DISPLAY_BRINGUP_FIELDS)
+    result: dict[str, int] = {}
+    for name in DISPLAY_BRINGUP_FIELDS:
+        result[name] = guest_address(value[name], f"{path}.{name}")
+    # Dispatch targets must not be in the VFPU window.
+    for name in ("malloc_entry", "vblank_device_init_entry", "render_context_init_entry"):
+        reject_core_reserved_target(result[name], f"{path}.{name}", "display bringup target")
+    # All six must be distinct addresses: reusing one would conflate two roles.
+    addrs = list(result.values())
+    if len(set(addrs)) != len(addrs):
+        fail(path, "display bringup addresses must be distinct")
+    return result
+
+
+def validate_runtime_sync(value: Any, path: str) -> dict[str, Any]:
+    """Validate the runtime sync callback configuration.
+
+    Shape is PROFILE_OWNED_CONFIGURATION but was EXPLICIT_COMPATIBILITY_OVERRIDE:
+    a config base with fixed field layout (sema @+0x0c, mode @+0x30, enter @+0x34,
+    leave @+0x38, initializer @+0x4c0), a semaphore name pointer, and MODE-KEYED
+    PAIRS of wrapper entry points. Pairs must not be flattened: the mode that
+    selects a pair is part of the meaning.
+    """
+    value = obj(value, path, {"config_base", "sema_name_ptr", "wrappers"})
+    require(value, path, "config_base", "sema_name_ptr", "wrappers")
+    config_base = guest_address(value["config_base"], f"{path}.config_base")
+    sema_name_ptr = guest_address(value["sema_name_ptr"], f"{path}.sema_name_ptr")
+    if config_base == sema_name_ptr:
+        fail(path, "config_base and sema_name_ptr must be distinct")
+    wrappers_raw = array(value["wrappers"], f"{path}.wrappers", MAX_RUNTIME_SYNC_WRAPPERS)
+    if not wrappers_raw:
+        fail(f"{path}.wrappers", "must not be empty")
+    wrappers: list[dict[str, int]] = []
+    seen_modes: dict[int, int] = {}
+    seen_addrs: dict[int, str] = {}
+    for index, item in enumerate(wrappers_raw):
+        item_path = f"{path}.wrappers[{index}]"
+        item = obj(item, item_path, {"mode", "enter", "leave"})
+        require(item, item_path, "mode", "enter", "leave")
+        mode = uint(item["mode"], f"{item_path}.mode", 2)
+        if mode in seen_modes:
+            fail(f"{item_path}.mode", f"duplicate mode {mode} (already at {path}.wrappers[{seen_modes[mode]}])")
+        seen_modes[mode] = index
+        enter = guest_address(item["enter"], f"{item_path}.enter")
+        leave = guest_address(item["leave"], f"{item_path}.leave")
+        reject_core_reserved_target(enter, f"{item_path}.enter", "runtime sync wrapper")
+        reject_core_reserved_target(leave, f"{item_path}.leave", "runtime sync wrapper")
+        if enter == leave:
+            fail(item_path, "enter and leave must be distinct (a mode's pair is two roles)")
+        for addr, label in ((enter, f"enter[{mode}]"), (leave, f"leave[{mode}]"),
+                            (config_base, "config_base"), (sema_name_ptr, "sema_name_ptr")):
+            # Ensure wrapper addresses don't collide with the config block/names
+            # and that pairs don't reuse each other's entries.
+            if addr in seen_addrs and label != seen_addrs[addr]:
+                # But different modes may have different enters; only exact duplicates forbidden?
+                # We forbid reuse across modes to keep the matrix unambiguous.
+                pass
+        # Check that this wrapper's enters/leaves don't duplicate another wrapper's
+        for other in wrappers:
+            if enter in (other["enter"], other["leave"]) or leave in (other["enter"], other["leave"]):
+                fail(item_path, "wrapper addresses must be distinct across modes")
+        wrappers.append({"mode": mode, "enter": enter, "leave": leave})
+    # Also ensure wrappers don't reuse config_base/sema_name_ptr
+    for w in wrappers:
+        if w["enter"] in (config_base, sema_name_ptr) or w["leave"] in (config_base, sema_name_ptr):
+            fail(path, "wrapper entry must be distinct from config_base and sema_name_ptr")
+    wrappers.sort(key=lambda e: e["mode"])
+    return {"config_base": config_base, "sema_name_ptr": sema_name_ptr, "wrappers": wrappers}
+
+
 def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     """Validate the optional, strictly-checked title bindings the runtime consumes.
 
@@ -689,7 +787,8 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     a given field, leaves the corresponding runtime behavior disabled.
     """
     value = obj(value, path,
-                {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS})
+                {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS,
+                 *RUNTIME_BINDING_OBJECTS})
     require(value, path, "schema_version")
     if uint(value["schema_version"], f"{path}.schema_version") != 1:
         fail(f"{path}.schema_version", "only runtime-binding schema version 1 is supported")
@@ -703,6 +802,12 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     if "callback_terminators" in value:
         result["callback_terminators"] = validate_callback_terminators(
             value["callback_terminators"], f"{path}.callback_terminators")
+    if "display_bringup" in value:
+        result["display_bringup"] = validate_display_bringup(
+            value["display_bringup"], f"{path}.display_bringup")
+    if "runtime_sync" in value:
+        result["runtime_sync"] = validate_runtime_sync(
+            value["runtime_sync"], f"{path}.runtime_sync")
     if len(result) == 1:
         fail(path, "must configure at least one binding; omit the block instead")
     for left, right in RUNTIME_BINDING_PAIRS:
