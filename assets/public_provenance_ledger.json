@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "da5f30d013e622b82f18e943e55a4c73498a662566c12caba5cf6a0a31bf0bc4"
+      "sha256": "8796a71d9fef21c4f393e8d39caa6e77110a01b769968d6b9bdfe55490f13b95"
     },
     {
       "path": "assets/release_manifest.json",
