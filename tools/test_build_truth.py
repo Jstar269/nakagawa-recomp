@@ -1047,5 +1047,167 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
                 )
 
 
+class BuildArtifactLifecycleTests(unittest.TestCase):
+    """Structural and functional tests for clean, clean-fixtures, distclean, tidy, and clean-all targets."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.make = shutil.which("mingw32-make") or shutil.which("make")
+        cls.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    def test_makefile_declares_lifecycle_phony_targets(self) -> None:
+        """Verify that clean-fixtures, tidy, and clean-all are declared as phony targets."""
+        phony_match = re.search(r"^\.PHONY:\s*(.+)$", self.makefile_text, re.MULTILINE)
+        self.assertIsNotNone(phony_match, "No .PHONY declaration found in Makefile")
+        phony_targets = set(phony_match.group(1).split())
+        for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
+            self.assertIn(target, phony_targets, f"Target {target} missing from .PHONY")
+
+    def test_clean_removes_specified_build_dir(self) -> None:
+        """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        target_dir = ROOT / "build" / "test_lifecycle_clean"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = target_dir / "sample_artifact.o"
+        sentinel.write_text("dummy", encoding="utf-8")
+        self.assertTrue(sentinel.is_file())
+
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "clean", f"BUILD_DIR={target_dir.as_posix()}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(target_dir.exists(), f"Target dir {target_dir} was not cleaned")
+
+    def test_clean_fixtures_removes_fixture_subdirs(self) -> None:
+        """make clean-fixtures must remove smoke, cosim, and oracle artifact directories under build/."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        fixture_dirs = [
+            ROOT / "build" / "production-smoke",
+            ROOT / "build" / "production-smoke-gap",
+            ROOT / "build" / "cosim",
+            ROOT / "build" / "nakagawa_psp_oracle",
+            ROOT / "build" / "vfpu_oracle",
+        ]
+        for fdir in fixture_dirs:
+            fdir.mkdir(parents=True, exist_ok=True)
+            (fdir / "artifact.tmp").write_text("tmp", encoding="utf-8")
+
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "clean-fixtures"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        for fdir in fixture_dirs:
+            self.assertFalse(fdir.exists(), f"Fixture directory {fdir} was not cleaned")
+
+    def test_distclean_and_tidy_preserve_binaries_while_cleaning_objects_and_ephemeral_logs(self) -> None:
+        """distclean and tidy must preserve .exe and .pdb while removing .o, .d, and ephemeral logs."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        test_dir = ROOT / "build" / "test_lifecycle_distclean"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        exe_file = test_dir / "mygame.exe"
+        pdb_file = test_dir / "mygame.pdb"
+        obj_file = test_dir / "mygame.o"
+        dep_file = test_dir / "mygame.d"
+        exe_file.write_text("binary", encoding="utf-8")
+        pdb_file.write_text("symbols", encoding="utf-8")
+        obj_file.write_text("object", encoding="utf-8")
+        dep_file.write_text("deps", encoding="utf-8")
+
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ephemeral_log = log_dir / "build_out_recomp.log"
+        ephemeral_log.write_text("ephemeral log", encoding="utf-8")
+
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "tidy", f"BUILD_DIR={test_dir.as_posix()}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(exe_file.is_file(), "distclean deleted .exe")
+        self.assertTrue(pdb_file.is_file(), "distclean deleted .pdb")
+        self.assertFalse(obj_file.exists(), "distclean did not delete .o")
+        self.assertFalse(dep_file.exists(), "distclean did not delete .d")
+        self.assertFalse(ephemeral_log.exists(), "distclean did not clean ephemeral log")
+
+        # Cleanup test dir
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_clean_all_cleans_all_build_subdirs_and_ephemeral_logs(self) -> None:
+        """clean-all must remove all subdirectories under build/ and ephemeral build logs."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        sub_a = ROOT / "build" / "test_sub_a"
+        sub_b = ROOT / "build" / "test_sub_b"
+        sub_a.mkdir(parents=True, exist_ok=True)
+        sub_b.mkdir(parents=True, exist_ok=True)
+        (sub_a / "test.bin").write_text("a", encoding="utf-8")
+        (sub_b / "test.bin").write_text("b", encoding="utf-8")
+
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        recomp_log = log_dir / "recomp_err.log"
+        recomp_log.write_text("err", encoding="utf-8")
+
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "clean-all"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(sub_a.exists(), f"Subdir {sub_a} was not cleaned by clean-all")
+        self.assertFalse(sub_b.exists(), f"Subdir {sub_b} was not cleaned by clean-all")
+        self.assertFalse(recomp_log.exists(), f"Log {recomp_log} was not cleaned by clean-all")
+
+    def test_clean_targets_never_delete_protected_paths(self) -> None:
+        """Verification that clean recipes do not touch protected paths or source directories."""
+        protected_dirs = [
+            ROOT / "assets",
+            ROOT / "fixtures",
+            ROOT / "src",
+            ROOT / "tools",
+            ROOT / "docs",
+        ]
+        for pdir in protected_dirs:
+            self.assertTrue(pdir.is_dir(), f"Protected directory {pdir} must exist")
+
+        # Create non-ephemeral log file and verify it is not deleted by clean targets
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        evidence_log = log_dir / "evidence_run_test.log"
+        evidence_log.write_text("evidence data", encoding="utf-8")
+
+        if self.make:
+            proc = subprocess.run(
+                [self.make, "--no-print-directory", "clean-all"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        self.assertTrue(evidence_log.is_file(), "clean-all deleted non-ephemeral evidence log")
+        evidence_log.unlink(missing_ok=True)
+
+        for pdir in protected_dirs:
+            self.assertTrue(pdir.is_dir(), f"Protected directory {pdir} was compromised")
+
+
 if __name__ == "__main__":
     unittest.main()

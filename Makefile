@@ -443,7 +443,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean distclean verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -714,12 +714,21 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME).exe')"
 
 clean:
-	$(PYTHON) -c "import shutil; shutil.rmtree(r'$(BUILD_DIR)', ignore_errors=True)"
+	$(PYTHON) -c "import shutil, sys; from pathlib import Path; p = Path(r'$(BUILD_DIR)'); [shutil.rmtree(p) if p.is_dir() else p.unlink()] if p.exists() else None"
+
+clean-fixtures:
+	$(PYTHON) -c "import shutil, sys; from pathlib import Path; [shutil.rmtree(Path(d)) if Path(d).is_dir() else Path(d).unlink() for d in ('$(PRODUCTION_SMOKE_DIR)', '$(PRODUCTION_SMOKE_GAP_DIR)', '$(COSIM_DIR)', 'build/nakagawa_psp_oracle', 'build/vfpu_oracle', 'build/portable-core', 'build/verify', 'build/link') if Path(d).exists()]"
+
+tidy: distclean
 
 distclean:
 	@echo "Removing stale build artefacts (preserving .exe and .pdb for debugger)"
-	$(PYTHON) -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)]"
-	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log')]"
+	$(PYTHON) -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)] if r.exists() else None"
+	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log', 'logs/stdout_run.log', 'logs/stderr_run.log')]"
+
+clean-all: clean clean-fixtures
+	$(PYTHON) -c "import shutil, sys; from pathlib import Path; b = Path('build'); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None"
+	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log', 'logs/stdout_run.log', 'logs/stderr_run.log')]"
 
 # sched-selftest — white-box scheduler/lifecycle unit tests (src/rt/sched_selftest.c).
 # No game inputs needed; #includes sched.c for direct access to pick_next()/TCB state and
