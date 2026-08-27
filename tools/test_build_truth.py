@@ -940,5 +940,112 @@ class GuestInputSourcePrecedenceTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertTrue(out.is_file())
 
+
+class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
+    """Regression and structural tests for Windows cmd.exe / MSYS2 / POSIX shell recipe truth.
+
+    Make executes recipes using the active shell (cmd.exe on Windows when sh is
+    absent, or sh under MSYS2/Linux). Recipes must not introduce accidental shell
+    assumptions:
+      - cmd.exe treats tab-indented `#` as an executable name ('#' is not recognized).
+      - cmd.exe has no `true` built-in, so `&& true` fails with exit code 1.
+      - Unix `rm -f` fails under cmd.exe; Python Path.unlink is portable.
+      - Posix `test -f` fails under cmd.exe; cmd `if not exist` fails under sh.
+    """
+
+    def setUp(self) -> None:
+        self.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.make = shutil.which("mingw32-make") or shutil.which("make")
+
+    def test_makefile_has_no_tab_indented_comments_in_recipes(self) -> None:
+        """Physical lines starting with tab must not start with '#'.
+
+        Under Windows cmd.exe, Make passes '# comment' directly to cmd.exe which fails:
+        '#' is not recognized as an internal or external command, operable program or batch file.
+        Comments belong outside recipes or as un-indented lines.
+        """
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t#") or line.startswith("\t #"):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile contains tab-indented comments in recipes which break Windows cmd.exe:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_makefile_recipes_do_not_use_unix_true_or_chained_and_true(self) -> None:
+        """Recipes must not chain with `&& true` or invoke `true` directly.
+
+        `true` does not exist in standard Windows cmd.exe. Make recipes should use
+        newline-separated execution or explicit target dependencies.
+        """
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t") and re.search(r"\btrue\b", line):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile recipes contain 'true' which fails under Windows cmd.exe:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_makefile_recipes_do_not_use_raw_rm(self) -> None:
+        """Recipes must not rely on Unix `rm` for cleanup when Python is available."""
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t") and re.search(r"\brm\s+-[rf]", line):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile recipes contain 'rm -f' which is not portable to Windows cmd.exe:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_makefile_recipes_do_not_use_shell_conditionals(self) -> None:
+        """Recipes must not use shell-specific test -f or cmd if not exist."""
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t") and (re.search(r"\btest\s+-[fdsew]", line) or "if not exist" in line):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile recipes contain shell-specific conditional commands:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_matrix_recipes_fail_fast_on_first_configuration_failure(self) -> None:
+        """Mutation test: verify that a failing sub-configuration causes the aggregate target to fail.
+
+        When Make runs newline-separated recipe lines, any non-zero exit code must immediately
+        abort the target with non-zero exit status (fail-closed behavior preserved).
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+
+        for target, override_var in (
+            ("sched-selftest", "SCHED_SELFTEST_MANIFEST_generic"),
+            ("dispatch-isolation-selftest", "DISPATCH_ISO_MANIFEST_generic"),
+        ):
+            with self.subTest(target=target):
+                proc = subprocess.run(
+                    [
+                        self.make,
+                        "--no-print-directory",
+                        target,
+                        f"{override_var}=nonexistent_manifest_fixture.json",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(
+                    proc.returncode, 0,
+                    f"{target} did not fail when a configuration was invalid:\n"
+                    + proc.stdout + proc.stderr,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
