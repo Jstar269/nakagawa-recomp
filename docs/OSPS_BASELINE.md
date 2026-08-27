@@ -63,12 +63,12 @@ Every control is classified into exactly one of five standard states:
 
 ---
 
-## Current Evidence Highlights
+## Evidence highlights as captured (2026-08-06)
 
-### Live CI Posture & Gate Integrity
+### CI posture and gate integrity, as observed at capture time
 
-- Hosted GitHub Actions execution is active (`CI`, `Mypy`, `Pre-commit`, `Dependabot Updates`, `Dependency Graph`).
-- **Gate Repair Status**: While individual feature PRs (#293, #294, #300, #301, #303) pass focused test suites, PR #298 / #299 (owned by Freebuff A) is currently open to synchronize `tools/test_generate_sbom.py` following PR #294's SBOM generator refactoring. Do not claim overall CI is fully green until PR #299 lands on `main`.
+- Hosted GitHub Actions execution was active (`CI`, `Mypy`, `Pre-commit`, `Dependabot Updates`, `Dependency Graph`).
+- **Gate repair status at capture time**: individual feature work (historical tracker items #293, #294, #300, #301, #303) passed focused test suites, while historical tracker items #298 / #299 were then open to synchronize `tools/test_generate_sbom.py` after #294's SBOM generator refactoring. Those numbers belong to the pre-republication tracker and do not map to current public pull requests; do not read this bullet as a live CI status. Current hosted gate routing and its evidence limits are in [`CI.md`](CI.md).
 
 ### Secret & History Prevention Layers
 

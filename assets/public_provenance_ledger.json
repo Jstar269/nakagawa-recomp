@@ -251,7 +251,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8bcda01f86abfac12135edec489188dd3808135ffc6cef59c895f0c18b0838a7"
+      "sha256": "1bd2ad7ba4f4b765dcaf9d632763550b3d8181d6dd65d73e60a4f9989473094e"
     },
     {
       "path": "LICENSE",
@@ -694,7 +694,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9802acf91fd0e1d877101d3a56d967b76d74d56f16cfc11d6c2d186eb0032b09"
+      "sha256": "e894b7022d23b438187d1027ea5fa827bb2c7d664b40cd5e9a6bd16efcea77b8"
     },
     {
       "path": "docs/CI.md",
@@ -748,7 +748,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "62ca948e4e5129b662f03d6962d08ae672dc16fba1295f9fcacfe1d4ee6e8896"
+      "sha256": "3a6fcacb91be04bde17ff68620de27aef00c0a9d1898b5bedb016d8132feaae2"
     },
     {
       "path": "docs/ISSUE196_DIRECT_XB.md",
@@ -757,7 +757,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "94abc2502cafa36548bb1418905ee949a1e5c244b6a62c02ff776d5f81698bd5"
+      "sha256": "1c237728b1cc7b13c14f304c5853a187834fbb3030d8cac37ad4e48b58d2bcbd"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -766,7 +766,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "233a938325cb5fd06751fe38d2ca29a19765f430a0176e8c433e001b99a3a144"
+      "sha256": "789b3ea6c8852281012e8aec67f0b38c4c64d48c47761aac6aa2750413a41085"
     },
     {
       "path": "docs/SYMBOL_REFERENCE.md",
@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "eadefdfc07a22ce9431e49dd917a52d328ec734ab5dd728bfd33815a3ef141ff"
+      "sha256": "79a253ec01994212f87e88298ceb46456407cb913d66b479fa933f6aebb56636"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -883,7 +883,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9272de333bdde9471a3923d0bd41b6347d8dbc235cb348b2023d3cd9d0135114"
+      "sha256": "80407e45e894003c377a4beb8ff6b153de1a0613adcce4a6d50e4d46235e9a6f"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1063,7 +1063,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "67e2ce19d564f30a9f83565eb5cf2c0aeb17f717b701eb23c4e7d67d14a987c3"
+      "sha256": "fe3bf91a94478708b45018783a89477129929f260334b1a53e527925cc90df32"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -5603,7 +5603,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0fad08322b3cb1a9f0b5758f30b3ae9058c1cd75883e6b8a7ff5b595768a661b"
+      "sha256": "489475caf90d503cfe10cc10dab0785885d8cc23cdd178f5d5da2c4e69e24c9c"
     },
     {
       "path": "tools/mem_debug.py",
