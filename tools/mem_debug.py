@@ -36,6 +36,7 @@ Safety contract (issue #180):
 import sys
 import os
 import json
+import shutil
 import subprocess
 import ctypes
 import hashlib
@@ -299,13 +300,21 @@ def get_symbol_rvas(exe_path):
     if not exe_path or not os.path.exists(exe_path):
         return rvas, "fallback"
 
+    nm_candidate = os.environ.get("NM")
     nm_paths = [
+        nm_candidate,
+        shutil.which("nm"),
+        shutil.which("nm.exe"),
+        os.path.join(os.environ.get("MSYSTEM_PREFIX", ""), "bin", "nm.exe") if os.environ.get("MSYSTEM_PREFIX") else None,
         "C:\\msys64\\ucrt64\\bin\\nm.exe",
+        "C:\\msys64\\mingw64\\bin\\nm.exe",
         "nm.exe",
-        "nm"
+        "nm",
     ]
     nm_path = None
     for p in nm_paths:
+        if not p:
+            continue
         try:
             subprocess.run([p, "--version"], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)

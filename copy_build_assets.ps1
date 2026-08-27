@@ -27,6 +27,15 @@ if (Test-Path 'SDL3.dll') {
     Copy-Item 'SDL3.dll' $BuildDir -Force
 } elseif (Test-Path '../SDL3.dll') {
     Copy-Item '../SDL3.dll' $BuildDir -Force
+} else {
+    $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+    if ($gccCmd) {
+        $binDir = Split-Path $gccCmd.Source
+        $toolchainSdl = Join-Path $binDir 'SDL3.dll'
+        if (Test-Path $toolchainSdl) {
+            Copy-Item $toolchainSdl $BuildDir -Force
+        }
+    }
 }
 
 if (-not $ExcludeOptionalFonts) {

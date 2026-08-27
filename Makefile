@@ -115,9 +115,11 @@ ifneq ($(filter default undefined,$(origin CC)),)
 CC := gcc
 endif
 PYTHON     ?= python
-# The manager resolves and validates the current SDK before invoking Make.
-# Direct Make callers must provide VULKAN_SDK explicitly (or export it).
-VULKAN_SDK ?=
+# Direct Make callers may provide VULKAN_SDK explicitly (or export it).
+# If unset, discover dynamically via tools/vulkan_sdk.py.
+ifeq ($(VULKAN_SDK),)
+VULKAN_SDK := $(shell $(PYTHON) -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
+endif
 # PowerShell commonly exports this with backslashes while hst_manager passes the
 # same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
 # and manager builds do not churn otherwise identical runtime profiles.
