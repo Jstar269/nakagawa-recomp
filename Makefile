@@ -357,27 +357,9 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 
 # Ensure the build directory and nested object directories exist up front so no
 # per-recipe mkdir is needed.
-# (mkdir -p under MSYS2 GNU make intermittently fails with "No such file or directory"
-#  when invoked from a non-MSYS2 PowerShell host — explicit creation here avoids that;
-#  and a per-recipe `mkdir -p` fails under cmd.exe when sh is absent from PATH.)
-ifeq ($(OS),Windows_NT)
-ifdef MSYSTEM
-# MSYS2 shell (CI's msys2 {0} step): cmd may be absent from PATH, so the cmd
-# branch below silently no-ops and the first compile fails with "can't create
-# <obj>: No such file or directory". sh-style mkdir is reliable here.
-$(shell mkdir -p "$(BUILD_DIR)")
-$(shell mkdir -p "$(BUILD_DIR)/portable-core")
-$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell mkdir -p "$(d)"))
-else
-$(shell cmd /c if not exist "$(BUILD_DIR)" mkdir "$(subst /,\,$(BUILD_DIR))" 1>nul 2>nul)
-$(shell cmd /c if not exist "$(BUILD_DIR)\portable-core" mkdir "$(subst /,\,$(BUILD_DIR))\portable-core" 1>nul 2>nul)
-$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell cmd /c if not exist "$(subst /,\,$(d))" mkdir "$(subst /,\,$(d))" 1>nul 2>nul))
-endif
-else
-$(shell mkdir -p "$(BUILD_DIR)")
-$(shell mkdir -p "$(BUILD_DIR)/portable-core")
-$(foreach d,$(ATRAC3P_OBJ_DIRS),$(shell mkdir -p "$(d)"))
-endif
+# Use Python for fully portable directory creation across Windows cmd.exe, MSYS2,
+# PowerShell, and POSIX environments.
+_MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
@@ -688,11 +670,11 @@ cosim-selftest:
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
+# No $(LIBS): the harness stubs the runtime's few host-library symbols, so
+# the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
+# deliberate -- this gate should stay runnable anywhere the toolchain is,
+# not inherit the graphics stack's environment requirements.
 cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	# No $(LIBS): the harness stubs the runtime's few host-library symbols, so
-	# the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
-	# deliberate -- this gate should stay runnable anywhere the toolchain is,
-	# not inherit the graphics stack's environment requirements.
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
@@ -737,7 +719,7 @@ clean:
 distclean:
 	@echo "Removing stale build artefacts (preserving .exe and .pdb for debugger)"
 	$(PYTHON) -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)]"
-	-rm -f logs/build_out_recomp.log logs/build_err_recomp.log logs/recomp_err.log logs/obj_err.log logs/link_err.log
+	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log')]"
 
 # sched-selftest — white-box scheduler/lifecycle unit tests (src/rt/sched_selftest.c).
 # No game inputs needed; #includes sched.c for direct access to pick_next()/TCB state and
@@ -758,7 +740,7 @@ SCHED_SELFTEST_MANIFEST_fixture-a := assets/titles/pspdev-phase5.json
 SCHED_SELFTEST_MANIFEST_fixture-b := assets/titles/synthetic.json
 
 sched-selftest:
-	@$(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(MAKE) --no-print-directory sched-selftest-one SCHED_SELFTEST_CONFIG=$(cfg) &&) true
+	@$(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(MAKE) --no-print-directory sched-selftest-one SCHED_SELFTEST_CONFIG=$(cfg)$(NEWLINE)	)
 
 # One configuration of the matrix. SCHED_SELFTEST_CONFIG names the flavour; the title
 # configuration is generated fresh into build/<game>/title-config/<flavour>/.
@@ -948,7 +930,6 @@ psp-oracle: psp-oracle-nakagawa
 psp-oracle-nakagawa-smoke-generate: $(PSP_ORACLE_SMOKE_STAMP)
 
 $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakagawa_smoke.py tools/codegen.py tools/analyze.py
-	@if not exist "$(PSP_ORACLE_SMOKE_ELF)" (echo Missing $(PSP_ORACLE_SMOKE_ELF) ^& echo Build it with the documented PSPDEV fixture command first. ^& exit /b 2)
 	$(PYTHON) tools/psp_oracle/build_nakagawa_smoke.py --elf "$(PSP_ORACLE_SMOKE_ELF)" --out-dir "$(PSP_ORACLE_SMOKE_DIR)"
 	$(PYTHON) -c "from pathlib import Path; Path(r'$(PSP_ORACLE_SMOKE_STAMP)').write_text('generated\n', encoding='ascii')"
 
@@ -997,7 +978,7 @@ DISPATCH_ISO_MANIFEST_fixture-a := assets/titles/pspdev-phase5.json
 DISPATCH_ISO_MANIFEST_fixture-b := assets/titles/synthetic.json
 
 dispatch-isolation-selftest:
-	@$(foreach cfg,$(DISPATCH_ISO_CONFIGS),$(MAKE) --no-print-directory dispatch-isolation-selftest-one DISPATCH_ISO_CONFIG=$(cfg) &&) true
+	@$(foreach cfg,$(DISPATCH_ISO_CONFIGS),$(MAKE) --no-print-directory dispatch-isolation-selftest-one DISPATCH_ISO_CONFIG=$(cfg)$(NEWLINE)	)
 
 # One configuration of the matrix. The generated header lands in its own directory so the
 # three builds cannot share one.
@@ -1083,7 +1064,7 @@ ifeq ($(VFPU_FUZZ_PREGENERATED),1)
 # CI/public mode: the caller generated a synthetic cases header explicitly.  Do not
 # introduce a fake GAME_ELF dependency or regenerate from proprietary/private input.
 $(VFPU_FUZZ_H):
-	@test -f "$@" || (echo "missing pre-generated VFPU fuzz header: $@" >&2; exit 1)
+	@$(PYTHON) -c "import sys, os; sys.exit(0 if os.path.isfile(r'$@') else (print('missing pre-generated VFPU fuzz header: $@', file=sys.stderr) or 1))"
 else
 $(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
 	$(PYTHON) tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)

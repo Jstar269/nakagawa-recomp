@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "2ed0a8f4027e5fe77af550db922e47fe1f5cff2699aa429c052ac80238e00e3b"
+      "sha256": "29f486a5f63b4576729fba75a14475f20e38085b4e2a59e087690e5a813a0874"
     },
     {
       "path": "NOTICE.md",
@@ -6165,7 +6165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2ddc7cae9f7766df0141da4d714ce3ccdd55ae9c15d72c6fa49047c095d2a5d"
+      "sha256": "294a7a9ed8b03db50c1586153b3a64c836ada8b3b49d1f3a0f3bb35d9c97822c"
     },
     {
       "path": "tools/test_callback_correctness.py",
