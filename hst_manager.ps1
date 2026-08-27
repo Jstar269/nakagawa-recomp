@@ -575,7 +575,7 @@ try {
             if (Test-Path $c) { $csvPath = $c; break }
         }
         if (-not $csvPath) {
-            Write-Warning "functions.csv not found. See docs/PARALLEL_WORK.md for setup."
+            Write-Warning "functions.csv not found. See docs/SYMBOL_REFERENCE.md for setup."
             return
         }
         $results = Select-String -LiteralPath $csvPath -Pattern $Query -ErrorAction SilentlyContinue

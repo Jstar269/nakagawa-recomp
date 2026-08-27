@@ -174,7 +174,7 @@ waiver fails the gate.
 `0x1b4217bc` (`sceKernelSetCompiledSdkVersion603_605`) was originally
 registered under the generic `sceKernelSetCompiledSdkVersion` name routed to
 `h_ok`, fabricating success without updating `g_sdk_version` (see the audit
-note on [issue #71](https://github.com/Jstar269/nakagawa-recomp/issues/71)).
+note on the historical tracker item #71).
 It now routes to `h_SetCompiledSdkVersion` under its canonical name, and both
 waivers were retired in the same change. The alias rule and canonical-name
 map in `tools/hle_registry_meta.py` remain, so a regression of either fix

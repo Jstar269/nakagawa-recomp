@@ -14,7 +14,7 @@ the captured then-current-`main` classification of every cell.
 This document is **historical evidence**, not a current plan or status dashboard.
 It records what the cited hardware oracle and captured Nakagawa revision did,
 and which cells could not then be exercised. See historical
-[issue #88](https://github.com/Jstar269/nakagawa-recomp/issues/88) for the semantics work,
+historical tracker item #88 for the semantics work,
 and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2
 onward remain future work.
 
@@ -581,7 +581,7 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      Both NIDs are registered to `h_ok` (`{ return 0; }`), so there is no object, no validation
      and no mutation; a context check there would be the only real thing in the handler and
      would turn 12 `intr-off`/`disp-off` cells plus 6 `intr-ctx` cells green on a stub. **18 cells.**
-   * `sceKernelVolatileMemLock` while-free and while-locked -> **[#79](https://github.com/Jstar269/nakagawa-recomp/issues/79)**.
+   * `sceKernelVolatileMemLock` while-free and while-locked -> **historical tracker item #79**.
      The handler ignores lock state entirely, so both scenarios are one code path. **5 cells**
      (4 `intr-off`/`disp-off` + 1 `intr-ctx`; while-locked `intr-ctx` is a control).
    * `sceUmdWaitDriveStat*` valid type -> **PR-E**, with the invalid-type cells. Not an ownership
@@ -617,7 +617,7 @@ with the GE lifecycle (#25/#44) and audio work respectively, not with #88.
 
 ## Related
 
-* [#88](https://github.com/Jstar269/nakagawa-recomp/issues/88) - pending interrupt delivery and CPU interrupt-state semantics
-* [#76](https://github.com/Jstar269/nakagawa-recomp/issues/76) - executable production-HLE behavioral tests and semantic CI gates
+* Historical tracker item #88 - pending interrupt delivery and CPU interrupt-state semantics
+* Historical tracker item #76 - executable production-HLE behavioral tests and semantic CI gates
 * [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) - bounded hardware-oracle proposal and limits
 * [AGENTS.md](../AGENTS.md) - evidence-tier definitions used throughout this document

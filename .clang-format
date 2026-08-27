@@ -1,5 +1,5 @@
 ---
-# .clang-format — HST_Recomp C/C++ style
+# .clang-format — Nakagawa Recomp C/C++ style
 # Base: LLVM with project overrides. Every option is explicit.
 Language: Cpp
 BasedOnStyle: LLVM

@@ -119,5 +119,81 @@ class TestDCOPolicy(unittest.TestCase):
         self.assertFalse(pattern.search(msg_invalid))
 
 
+class TestGovernanceSurfaces(unittest.TestCase):
+    """Small fail-closed checks for the public agent/configuration contract."""
+
+    def test_agents_contract_stays_concise(self):
+        lines = (ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines()
+        self.assertGreaterEqual(len(lines), 180)
+        self.assertLessEqual(len(lines), 250)
+
+    def test_release_safety_rule_is_present_and_not_contradicted(self):
+        required = (
+            "Agents must not create, move, push, or delete Git tags; create, edit, delete, "
+            "publish, or unpublish GitHub Releases; upload release assets; or change a published "
+            "version without explicit maintainer authorization in the current turn. Generic "
+            "instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' "
+            "do not authorize a version/tag/release operation."
+        )
+        policy_text = "\n".join(
+            (ROOT / rel).read_text(encoding="utf-8")
+            for rel in (
+                "AGENTS.md",
+                "CLAUDE.md",
+                ".github/copilot-instructions.md",
+                ".github/PULL_REQUEST_TEMPLATE.md",
+            )
+        )
+        self.assertIn(required, policy_text)
+        self.assertNotRegex(
+            policy_text,
+            r"(?im)^[ \t-]*agents?\s+(?:may|can)\s+(?:create|edit|publish|delete).*\b(?:tag|release)",
+        )
+
+    def test_documented_gate_paths_exist(self):
+        for rel in (
+            "tools/codegen.py",
+            "tools/policy_sync.py",
+            "tools/publish_audit.py",
+            "tools/modified_file_notice_audit.py",
+            "tools/lint_docs.py",
+            "tools/ci_paths.py",
+            "tools/test_ci_paths.py",
+            "tools/test_codegen_transfer_target_timing.py",
+            "tools/test_codegen_continuations.py",
+            "tools/test_dispatch_c.py",
+            "tools/test_dispatch_call_boundary.py",
+            "tools/test_cosim_fixture.py",
+            "tools/test_sched_invariants.py",
+            "src/rt/guest_interp.c",
+            "src/rt/recomp.c",
+            "src/rt/sched.c",
+        ):
+            with self.subTest(path=rel):
+                self.assertTrue((ROOT / rel).is_file(), f"documented gate path missing: {rel}")
+
+    def test_single_pull_request_template_is_canonical(self):
+        template = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+        template_dir = ROOT / ".github" / "PULL_REQUEST_TEMPLATE"
+        self.assertTrue(template.is_file())
+        self.assertFalse((template_dir / "default.md").exists())
+        self.assertEqual(list(template_dir.glob("*.md")), [])
+
+    def test_tracked_claude_guidance_is_public_and_small(self):
+        content = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(content.splitlines()), 50)
+        windows_path = r"[A-Z]" + re.escape(":") + r"[\\/]"
+        unix_user_path = "/" + "Users" + "/"
+        self.assertNotRegex(
+            content,
+            rf"(?i)(place_game_here|game\.iso|EBOOT|SaveBase|memstick/|{unix_user_path}|{windows_path}|session[-_ ]?[0-9a-f]{{8,}})",
+        )
+        self.assertNotRegex(content, r"(?i)\b(?:issue|pr)\s*#\d+")
+
+    def test_claude_is_no_longer_ignored(self):
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertNotIn("/CLAUDE.md", ignore.splitlines())
+
+
 if __name__ == "__main__":
     unittest.main()
