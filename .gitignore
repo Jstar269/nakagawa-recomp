@@ -125,7 +125,6 @@ interface/src/generated/prisma/
 # AI tool local/personal state
 /.mcp.json
 /codegraph.json
-/CLAUDE.md
 /GEMINI.md
 /.claude/settings.local.json
 /.claude/scheduled_tasks.lock

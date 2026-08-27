@@ -22,6 +22,15 @@ Closes/Tracks #
 
 <!-- Record exact results, including anything blocked or unavailable. -->
 
+## Integration and release safety
+
+- [ ] Exact `BASE_SHA` and `HEAD_SHA`, applicable hosted-CI status, review state, and remaining
+      uncertainty are recorded below.
+- [ ] No tag, GitHub Release, release asset, or published-version operation was performed. Those
+      operations require explicit maintainer authorization in the current turn.
+- [ ] No private-input, hardware, legal-clearance, provenance-attestation, or human DCO action is
+      being represented as completed by this PR.
+
 ## Correctness / compatibility scope
 
 - [ ] No unrelated compatibility workaround or fake-success path was introduced.

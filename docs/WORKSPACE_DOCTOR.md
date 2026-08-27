@@ -152,3 +152,18 @@ Before implementing those commands, the project should complete the following in
 4. determine whether a direct XB virtual filesystem can remove the expanded asset tree entirely;
 5. separate build-time dependencies from the files required only to run a completed local build;
 6. unify the flattened `fs/` and hierarchical `memstick/` mappings under one safe Memory Stick root.
+
+## Deferred build and workspace ergonomics
+
+The governance work intentionally leaves these as separate, evidence-backed follow-ups:
+
+1. replace mixed cmd/sh Make recipes with a Windows-native wrapper that preserves the current
+   dependency and fail-closed semantics;
+2. remove hardcoded machine paths from VS Code, `mem_debug`, and tool discovery;
+3. make worktree asset resolution explicit and independent of the invoking checkout;
+4. add a long-path diagnostic to the workspace doctor;
+5. define bounded artifact accumulation and a safe, scoped `clean-all` workflow;
+6. stop root-level artifact pollution and document the intended output roots;
+7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
+8. audit and bound agent database/worktree accumulation;
+9. consider build-cache research only after the correctness and ownership contracts are stable.
