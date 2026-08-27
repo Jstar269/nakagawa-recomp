@@ -31,7 +31,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "e5fff7a6e833ef2ee674b6a4f99cf95b3c90b671937154b6c7e4a6d7e6b7b2be"
+      "sha256": "0fc00c65e2fbe6bec4d60787330a16f37731fc223a7433d131e0f0792bb640c1"
     },
     {
       "path": ".clangd",
@@ -106,16 +106,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cb8ca16f46574b8728d9124ab55552f67e144265270b4e931c11e96e467e23b0"
-    },
-    {
-      "path": ".github/PULL_REQUEST_TEMPLATE/default.md",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "d6afdfeeb5225b68f8baceb6c4cca1044f368370767e67820b91de7c86fe8eec"
+      "sha256": "c2608b96947f01fa2cb5ffa58a572a6dbe785f1ca8f46e7c0d8b93c379cd7417"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -124,7 +115,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "310f40651961365bc0c74b5ebc2ffd52307e4b87297363f08eb02b85496a044a"
+      "sha256": "ba876393539561dedbf1511bb532f91383870f9e9be86c1635856b3b786e7015"
     },
     {
       "path": ".github/dependabot.yml",
@@ -179,7 +170,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "e2d3fc3603512755235a9b817b7eb7264ce4ac70cedee5ed0ada1eaf2d46a508"
+      "sha256": "7c60e7b70006ddd067f9d1e98b5a3668f1c0e163b2045716538d6a2ebe6a99c6"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -206,7 +197,16 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a1ee8095cdbb3e3b2296242cb52eb6f0f5af3e294cd3d3f8fb4b5f0cef8cd123"
+      "sha256": "b68d7c89b3e8054bc84b31a857ed7fd921ed5af8503f9a2c5f6f9e54fabb391c"
+    },
+    {
+      "path": "CLAUDE.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "34826e448b7c4e214e530c67853915a79e03c626df2a6f46ba66bcdcc5c08140"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b686a2bd390c0457094b61f07e1c6f640923db6e4f5a0d9411a8db4f4577bfe2"
+      "sha256": "da5f30d013e622b82f18e943e55a4c73498a662566c12caba5cf6a0a31bf0bc4"
     },
     {
       "path": "assets/release_manifest.json",
@@ -748,7 +748,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5cbb06c087a5ceb7f2d7d911a9c73f1b0ea7f38475149d3c98a510262dd514a2"
+      "sha256": "62ca948e4e5129b662f03d6962d08ae672dc16fba1295f9fcacfe1d4ee6e8896"
     },
     {
       "path": "docs/ISSUE196_DIRECT_XB.md",
@@ -769,7 +769,7 @@
       "sha256": "233a938325cb5fd06751fe38d2ca29a19765f430a0176e8c433e001b99a3a144"
     },
     {
-      "path": "docs/PARALLEL_WORK.md",
+      "path": "docs/SYMBOL_REFERENCE.md",
       "classification": "reviewed_documentation",
       "evidence": {
         "source": "public documentation review",
@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cbef86f49a270cfa4f489863fb40cea4f156f2d9455dae998793e7cc85a1ef4f"
+      "sha256": "eadefdfc07a22ce9431e49dd917a52d328ec734ab5dd728bfd33815a3ef141ff"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -892,7 +892,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d2cde1a5a9c52c3e90ac9cf00b6f98d30f5e85515ea86c9190b6dc309789fbc8"
+      "sha256": "afcbb9eaf2bdbdc2447560fe9f3cc4985f75cdffed2a569224a9abf748dc30d0"
     },
     {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
@@ -1185,7 +1185,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "1979605334b3efb3ccce8e406154df01a0d79dc05adc01fab0913b6ef83da6a8"
+      "sha256": "83a7ae4f1af3b5ee34dc6e4182cf353acb866586f32a920f766714c8b2609067"
     },
     {
       "path": "interface/.env.example",
@@ -6360,7 +6360,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "466c0540bf440bad7d1c839812797d093accf08a72f398ae78b30f30f3004c1f"
+      "sha256": "13c6e3d980507ec2f2ff3dab33328f42baa00d1b5b6392ad8ed9ad1f18d008a4"
     },
     {
       "path": "tools/test_debug.py",
