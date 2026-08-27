@@ -89,7 +89,12 @@ class RuntimeBindingValidation(unittest.TestCase):
         left = a["runtime_bindings"]
         right = b["runtime_bindings"]
         self.assertEqual(set(left), set(right))
+        # Only scalar fields that are present in both fixtures must be distinct.
+        # Migrated compat fields (libfont, frame) are optional and not yet in the
+        # public fixtures, which is the generic/title separation we want.
         for field in title_manifest.RUNTIME_BINDING_FIELDS:
+            if field not in left or field not in right:
+                continue
             self.assertNotEqual(
                 left[field], right[field],
                 f"the two public fixtures must not share {field}; multi-title behavior "
@@ -202,7 +207,8 @@ class RuntimeBindingValidation(unittest.TestCase):
         self.assertEqual(
             published,
             set(title_manifest.RUNTIME_BINDING_FIELDS)
-            | set(title_manifest.RUNTIME_BINDING_COLLECTIONS),
+            | set(title_manifest.RUNTIME_BINDING_COLLECTIONS)
+            | set(title_manifest.RUNTIME_BINDING_OBJECTS),
             "the schema binding vocabulary drifted from the Python validator",
         )
         self.assertIn("runtime_bindings", schema["properties"])

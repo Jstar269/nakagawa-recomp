@@ -197,10 +197,14 @@ CODEGEN_CUSTOM_STUBS = [
                 "native implementation preserves PSP EABI varargs placement (r6..r11, then stack), "
                 "including aligned two-word double arguments for floating conversions",
          test="tools/test_guest_printf.py"),
-    dict(address=0x00046d14, category="diagnostic", name="game loop entry trace",
-         reason="unconditional (non-env-gated) one-line fprintf marking L_00046d14 entry; "
-                "debug litter, harmless but should be gated or removed",
-         test="none"),
+    dict(address=0x00046d14, category="temporary_compatibility_patch", name="game-loop entry stub",
+         reason="replaces the translated body with an immediate return; the debug line is now "
+                "scheduler-gated, but no public behavioral test proves this stub is safe. Retire "
+                "by restoring the translated body after adding a production-path regression",
+         test="tools/test_codegen_profile_isolation.py",
+         retirement="restore translated execution when the guest's loop entry can be proven to "
+                    "make progress without the stub; keep the scheduler-gated trace as diagnostic "
+                    "only after the body is restored"),
     dict(address=0x0001034c, category="temporary_compatibility_patch", name="skip heap-statistics walk",
          reason="the guest free-list can be incomplete during bring-up; walking it for "
                 "mallinfo-style counters must not block game initialization",
@@ -611,108 +615,80 @@ HLE_GUEST_ADDRESS_GROUPS = [
                   "the cast-wrapped shape was previously invisible to the extractor",
          accidental_inheritance="no -- diagnostic output only",
          test="none"),
+]
+
+# Migrated to typed title configuration (issue #98). These four groups were
+# EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before 2026-08-27 and are now
+# PROFILE_OWNED_CONFIGURATION via runtime_bindings (display_bringup, runtime_sync,
+# libfont_ready_flag_addr, frame_ready_latch_addr). Generic builds have no effect;
+# a validated title manifest enables them. They remain inventoried here so the
+# 46->30 census delta is auditable, but they are no longer part of the live
+# hle.c coupling census.
+HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
-         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_LoadModule",
+         source="src/rt/hle.c:h_LoadModule -> title_config.libfont_ready_flag_addr",
          addresses=[0x002d132c],
          reason="loading a path containing 'libfont.prx' writes 1 to a guest word at a "
-                "fixed address. A generic module-load handler writing a title-specific "
-                "global is title coupling: another executable loading a similarly named "
-                "PRX would take an unrelated word to 1.",
-         generic_fallback="h_LoadModule already returns a real UID and populates the "
-                          "module registry without the write; the write is a title-pacing "
-                          "assist only",
-         evidence_tier="PRIVATE_ACCEPTANCE",
-         evidence="private acceptance record; details retained outside public tree",
-         accidental_inheritance="yes -- ANY executable that loads a path containing "
-                                "'libfont.prx' gets an unrelated guest word forced to 1",
-         test="none"),
+                "title-qualified address via title_config. Generic LoadModule has no write.",
+         generic_fallback="h_LoadModule already returns a real UID without the write; title "
+                          "config enables it only for the title that needs it",
+         evidence_tier="SOURCE_SHAPE",
+         evidence="title_config gated: generic build has no MEM_W32(0x002d132c)",
+         accidental_inheritance="no -- generic build writes nothing; configured title writes "
+                                "only its own flag address",
+         test="tools/test_hle_title_isolation.py",
+         retirement="retire the flag by proving the guest's font bring-up does not need host assistance"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
-         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:sr_vblank_tick / ge_finish_callback / ge_finish_latch_assist",
+         source="src/rt/hle.c:sr_vblank_tick / ge_finish_callback / ge_finish_latch_assist -> title_config.frame_ready_latch_addr",
          addresses=[0x00331b80],
-         reason="the runtime seeds a counter at a fixed guest address, decrements it when "
-                "a display list completes with no registered guest finish callback, and "
-                "after 30 vblanks with it stuck above zero forces it down. Forcing a "
-                "guest latch is precisely the shape the project's no-band-aids rule "
-                "names; it is inventoried here so it stays visible rather than being "
-                "rediscovered.",
+         reason="the runtime seeds a counter at a title-qualified guest address. Generic vblank "
+                "has no latch; the 30-vblank assist is profile-qualified. Retirement is to "
+                "replace the timer hack with the real guest/runtime event it approximates.",
          generic_fallback="without the assist the guest render loop waits on a latch only "
                           "the guest's own finish callback can clear; the assist covers "
                           "lists with no registered callback",
-         evidence_tier="PRIVATE_ACCEPTANCE",
-         evidence="private acceptance record; details retained outside public tree",
-         accidental_inheritance="yes -- any title whose render loop happens to read "
-                                "0x00331b80 (or where that address is live memory) sees "
-                                "HLE-driven writes",
-         test="none"),
+         evidence_tier="SOURCE_SHAPE",
+         evidence="title_config gated: generic build has no MEM_R32/MEM_W32(0x00331b80)",
+         accidental_inheritance="no -- generic build touches no latch; configured title touches only its own",
+         test="tools/test_hle_title_isolation.py",
+         retirement="model the real list-complete event generically; then the latch address itself may retire"),
     dict(name="runtime_sync_callback_config", category="temporary_compatibility_patch",
-         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:ensure_runtime_sync_callbacks, reached from h_DisplaySetMode",
+         source="src/rt/hle.c:ensure_runtime_sync_callbacks -> title_config.runtime_sync",
          addresses=[0x00333138, 0x002bdf38,
                     0x000823f0, 0x00082438,
                     0x00082474, 0x0008249c,
                     0x000824c0, 0x000824e8],
-         reason="sceDisplaySetMode installs this title's runtime sync callbacks. It reads "
-                "and writes an HST configuration block based at 0x00333138 (+0x0c sema "
-                "handle, +0x30 mode, +0x34/+0x38 enter/leave, +0x4c0 initializer flag), "
-                "may create an HLE semaphore whose NAME POINTER is handed to the guest as "
-                "0x002bdf38, and then stores one of three pairs of guest wrapper entry "
-                "points into that block. Every one of the eight is a location in HST's map "
-                "and nothing else. This entry exists because none of them were visible to "
-                "the coupling gate before 2026-08-21: not one is written inside a MEM_* "
-                "call, so the direct-literal regex matched none of them while the census "
-                "reported itself complete at 38/38.",
-         generic_fallback="none today, and that is the point -- the handler has no path "
-                          "that installs sync callbacks without these addresses. The "
-                          "generic PSP semantic (register mode/width/height, drive vblank "
-                          "cadence) does not require them; the bring-up replay does.",
-         retirement="the eight values are PROFILE_OWNED_CONFIGURATION in shape: a config "
-                    "base with a fixed field layout, a name pointer, and three MODE-KEYED "
-                    "PAIRS of wrapper entries. They must NOT be flattened into scalar "
-                    "runtime_bindings -- the pairing and the mode that selects it are part "
-                    "of the meaning. The host-side replay and seeding behavior around them "
-                    "stays EXPLICIT_COMPATIBILITY_OVERRIDE until it has a generic "
-                    "mechanism to be configured INTO.",
+         reason="sceDisplaySetMode installs this title's runtime sync callbacks via title_config: "
+                "config base with field layout, sema name pointer, and three MODE-KEYED PAIRS. "
+                "Generic builds install nothing.",
+         generic_fallback="generic PSP sceDisplaySetMode does not install sync callbacks",
+         retirement="the eight values are typed configuration (base + name ptr + mode-keyed pairs); "
+                    "they must NOT be flattened into scalar runtime_bindings. Host-side replay stays "
+                    "until a generic mechanism exists.",
          evidence_tier="SOURCE_SHAPE",
-         evidence="SOURCE_SHAPE: the eight literals and their read/write offsets are read "
-                  "out of src/rt/hle.c; h_DisplaySetMode is registered unconditionally in "
-                  "hle_register_display_handlers(), with no title gate, so any guest "
-                  "calling sceDisplaySetMode reaches this code. No route was run for this "
-                  "inventory entry and none is claimed.",
-         accidental_inheritance="yes, and this is the worst shape in the inventory: a "
-                                "second executable that calls sceDisplaySetMode has "
-                                "whatever lives at 0x00333138 in ITS map read AND WRITTEN, "
-                                "gets 0x002bdf38 handed to sceKernelCreateSema as a name "
-                                "pointer, and has two of the six wrapper addresses stored "
-                                "where its own code will later call them.",
-         test="tools/test_compat_manifest.py:HleIndirectCouplingGrammar"),
+         evidence="title_config gated: generic hle.c has no literal 0x00333138 etc.",
+         accidental_inheritance="no -- generic build installs nothing; configured title installs its own pairs",
+         test="tools/test_hle_title_isolation.py"),
     dict(name="display_setmode_guest_init", category="temporary_compatibility_patch",
-         title2_bucket="EXPLICIT_COMPATIBILITY_OVERRIDE",
+         title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_DisplaySetMode",
+         source="src/rt/hle.c:h_DisplaySetMode -> title_config.display_bringup + frame latch",
          addresses=[0x00000bcc, 0x0029a8bc, 0x0001dc00,
                     0x0031fcc0, 0x00311140, 0x002d0738],
-         reason="sceDisplaySetMode replays a display-driver bring-up sequence: it "
-                "calls guest functions at 0x00000bcc, 0x0029a8bc and 0x0001dc00, then "
-                "forces the render-context magic at 0x0031fcc0 and seeds the "
-                "render-command-table ready flag and context word. This is the single "
-                "largest title dependency in the runtime and the clearest blocker to "
-                "running a second executable: the addresses are dispatch targets, so a "
-                "different guest would be called at whatever lives at those offsets in "
-                "its own map.",
-         generic_fallback="the handler's non-bring-up path is the generic PSP contract "
-                          "(mode/width/height registration and vblank cadence); the guest "
-                          "calls replace display-driver init the real title would do itself",
-         evidence_tier="PRIVATE_ACCEPTANCE",
-         evidence="private acceptance record; details retained outside public tree",
-         accidental_inheritance="yes -- and worse than the other groups: three of the six "
-                                "addresses are DISPATCH TARGETS, so a second executable "
-                                "would execute whatever its own map holds at those offsets",
-         test="none"),
+         reason="sceDisplaySetMode replays a title-qualified display-driver bring-up via title_config "
+                "display_bringup (3 dispatch targets + 3 data seeds). Generic builds do no guest calls.",
+         generic_fallback="generic PSP sceDisplaySetMode (mode/width/height) without guest bring-up",
+         evidence_tier="SOURCE_SHAPE",
+         evidence="title_config gated: generic hle.c has no ge_call_guest at those addresses",
+         accidental_inheritance="no -- generic build calls nothing; configured title calls its own entries",
+         test="tools/test_hle_title_isolation.py",
+         retirement="model the guest's own display-driver init; retire when generic init suffices"),
 ]
 
 def all_documented_addresses() -> "set[int]":

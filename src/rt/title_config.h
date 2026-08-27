@@ -31,6 +31,12 @@
  * the manifest validator rejects an empty one, so a set bit always means >= 1 entry. */
 #define SR_TITLE_CFG_DISPATCH_ALIASES      0x10u
 #define SR_TITLE_CFG_CALLBACK_TERMINATORS  0x20u
+/* Compatibility-profile bits. Each names a typed, title-qualified capability that
+ * is either fully configured or absent. See tools/title_manifest.py for shape. */
+#define SR_TITLE_CFG_DISPLAY_BRINGUP       0x40u
+#define SR_TITLE_CFG_RUNTIME_SYNC          0x80u
+#define SR_TITLE_CFG_LIBFONT_READY         0x100u
+#define SR_TITLE_CFG_FRAME_LATCH           0x200u
 
 /* One dispatch alias: a computed call to `from` must enter the body registered at `to`.
  * This does not invent behavior -- the runtime still executes an ordinary registered
@@ -56,6 +62,21 @@ typedef struct SrTitleCallbackTerminator {
     uint32_t ra;
 } SrTitleCallbackTerminator;
 
+typedef struct SrTitleDisplayBringup {
+    uint32_t malloc_entry;
+    uint32_t vblank_device_init_entry;
+    uint32_t render_context_init_entry;
+    uint32_t render_context_magic_addr;
+    uint32_t render_table_ready_flag_addr;
+    uint32_t render_context_word_addr;
+} SrTitleDisplayBringup;
+
+typedef struct SrTitleRuntimeSyncWrapper {
+    uint32_t mode;
+    uint32_t enter;
+    uint32_t leave;
+} SrTitleRuntimeSyncWrapper;
+
 typedef struct SrTitleRuntimeConfig {
     unsigned    valid;                        /* OR of the SR_TITLE_CFG_* bits above */
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
@@ -63,6 +84,11 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    launcher_thread_entry;        /* thread entry that carries the title's launcher role */
     uint32_t    vblank_frame_counter_addr;    /* guest word incremented once per delivered VBLANK */
     uint32_t    vblank_vsync_counter_addr;    /* guest word incremented once per delivered VBLANK */
+    uint32_t    libfont_ready_flag_addr;      /* guest word forced to 1 when libfont.prx loads */
+    uint32_t    frame_ready_latch_addr;       /* guest counter that gates frame presentation */
+    SrTitleDisplayBringup display_bringup;    /* valid only when DISPLAY_BRINGUP bit set */
+    uint32_t    runtime_sync_config_base;     /* base of HST sync config block */
+    uint32_t    runtime_sync_sema_name_ptr;   /* name ptr handed to sceKernelCreateSema */
     const char *source_id;                    /* validated title id, or "none" */
 
     /* Typed collections. Both are empty (count 0) in a generic build. The pointers are
@@ -71,6 +97,8 @@ typedef struct SrTitleRuntimeConfig {
     unsigned                          dispatch_alias_count;
     const SrTitleCallbackTerminator  *callback_terminators;
     unsigned                          callback_terminator_count;
+    const SrTitleRuntimeSyncWrapper  *runtime_sync_wrappers;
+    unsigned                          runtime_sync_wrapper_count;
 } SrTitleRuntimeConfig;
 
 /* The build's configuration. Never NULL; a generic build reports valid == 0. */
@@ -103,5 +131,25 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr);
  * An unconfigured build answers 0 for every triple, so the same sentinel at the same
  * site follows ordinary generic dispatch behavior instead. */
 int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra);
+
+/* Display bringup. Returns 1 and fills *out when the title configures the
+ * display-driver bringup replay, 0 otherwise. An unconfigured build answers 0
+ * for every caller, so generic sceDisplaySetMode performs no guest calls. */
+int sr_title_config_display_bringup(SrTitleDisplayBringup *out);
+
+/* Runtime sync. Returns 1 and fills base/name/wrappers when configured, 0
+ * otherwise. Wrappers are mode-keyed pairs; the mode that selects a pair is
+ * part of the meaning and is not flattened. */
+int sr_title_config_runtime_sync(uint32_t *config_base, uint32_t *sema_name_ptr,
+                                 const SrTitleRuntimeSyncWrapper **wrappers,
+                                 unsigned *count);
+
+/* Convenience: find the wrapper pair for a specific mode. Returns 1 on hit. */
+int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
+                                                  uint32_t *enter, uint32_t *leave);
+
+/* Single-address compat flags. Returns 1 when configured. */
+int sr_title_config_libfont_ready_flag_addr(uint32_t *out);
+int sr_title_config_frame_latch_addr(uint32_t *out);
 
 #endif /* SR_TITLE_CONFIG_H */
