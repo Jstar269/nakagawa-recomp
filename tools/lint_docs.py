@@ -57,29 +57,26 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # blocks legitimate work -- which is how this was found: citing the (real, new) public
 # issue 98 failed this lint.
 #
-# The public sequence had allocated through 101 as of 2026-08-21 and reaches 102 with the
-# pull request that carries this change, so 98-102 are live public objects.
-#
-# 103-105 are retired here too, one to three allocations ahead of the sequence rather than
-# behind it. That is deliberate, and it is not a weakening:
-#
-#   * nothing in the tracked tree cites 102-105, so those entries protect no document
-#     today -- checked, not assumed;
-#   * the sequence is monotonic and days away from them, so each would shortly flag a
-#     LIVE object and block legitimate work, which is exactly the failure that produced
-#     this comment;
-#   * existence is owned by tools/audit_public_issue_links.py, which is networked and
-#     does not care about this list.
-#
 # An offline check that fires on live objects is worse than no check at all. Retiring an
 # entry loses only an offline regression check; leaving one in place past its number
 # breaks the build. The guard below refuses any entry at or below the frontier, so the
 # two can never drift apart silently.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 105
+#
+# The frontier is a LOWER BOUND on what the public repository has allocated, and it only
+# ever moves up. State it as a bound rather than as an exact count: an exact count is stale
+# the moment the next object is opened, and the dangerous direction is a frontier that is
+# too LOW, because that is what lets a soon-to-be-live number sit in the denylist unnoticed.
+# Raise it whenever this file is touched during a sweep. The public sequence had allocated
+# at least through 133 as of 2026-08-27 -- the pull request carrying this change is 133 --
+# so 98-133 are live public objects, which is why the 98-105 entries this comment used to
+# argue about are gone.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 133
 
 RETIRED_PRIVATE_ISSUE_NUMBERS = (
     139, 142, 143, 145, 146, 147, 149, 150, 151, 152,
-    154, 179, 187, 188, 196, 197, 234, 286, 304, 339,
+    154, 179, 187, 188, 196, 197, 234, 247, 248, 249,
+    253, 286, 293, 294, 296, 298, 299, 300, 301, 303,
+    304, 339, 346,
 )
 
 _reallocated = sorted(n for n in RETIRED_PRIVATE_ISSUE_NUMBERS

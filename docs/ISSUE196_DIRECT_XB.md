@@ -1,4 +1,10 @@
-# Issue 196: direct XB archive prototype
+# Direct XB archive prototype (historical tracker item #196)
+
+> **Tracker numbering.** Bare `#N` references in this document are
+> **pre-republication tracker numbers**. GitHub numbers issues and pull requests from one
+> sequence, and the sanitized public repository restarted that sequence, so a number here
+> may now resolve to an unrelated live public object. Read every bare number below as a
+> historical identifier unless it is written as an explicit link.
 
 This document records the source audit and the bounded probe added on
 `codex/issue196-direct-xb`. The probe is investigation tooling only. It does

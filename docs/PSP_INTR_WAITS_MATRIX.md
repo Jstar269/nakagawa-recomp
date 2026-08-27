@@ -11,11 +11,16 @@ Hardware-derived expectations for the blocking and polling APIs that PSPAutotest
 `tests/intr/waits.cpp` exercises, the executable Nakagawa harness built from them, and
 the captured then-current-`main` classification of every cell.
 
+> **Tracker numbering.** Bare `#N` references in this document are
+> **pre-republication tracker numbers**. GitHub numbers issues and pull requests from one
+> sequence, and the sanitized public repository restarted that sequence, so a number here
+> may now resolve to an unrelated live public object. Read every bare number below as a
+> historical identifier unless it is written as an explicit link.
+
 This document is **historical evidence**, not a current plan or status dashboard.
 It records what the cited hardware oracle and captured Nakagawa revision did,
-and which cells could not then be exercised. See historical
-historical tracker item #88 for the semantics work,
-and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2
+and which cells could not then be exercised. See historical tracker item #88 for the
+semantics work, and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2
 onward remain future work.
 
 Some cells in this matrix are **not #88's to fix**. Where the deviation is really a missing

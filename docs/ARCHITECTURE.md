@@ -445,9 +445,10 @@ Clock ownership:
     mask itself was held for a negligible fraction of wall time. Per-title rate figures are run
     evidence and belong with the run that produced them, not here.
 
-  The masked-window behavior is `HARDWARE_MEASURED`. The original #88 probe found system time
-  advancing while VCOUNT and VBLANK handler calls stayed frozen, followed by one coalesced delivery
-  on resume, but it never sampled VCOUNT immediately after `CpuResumeIntr`. The source-owned
+  The masked-window behavior is `HARDWARE_MEASURED`. The original interrupt-conformance probe
+  (historical tracker item #88) found system time advancing while VCOUNT and VBLANK handler
+  calls stayed frozen, followed by one coalesced delivery on resume, but it never sampled
+  VCOUNT immediately after `CpuResumeIntr`. The source-owned
   `display-mask-vcount` probe (PSP-3001 / 6.61-ARK, 12 trials at each of 4 / 16.7 / 30 / 50 ms) took
   that sample and settled it: a mask crossing no source period credits `+0`, and a mask crossing one
   or more credits `+1` — measured across durations from 0.24 to 3.00 display periods, which crossed
