@@ -1244,5 +1244,41 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertIn("SDL3.dll", script_text)
 
 
+class StrbufSafetyTests(unittest.TestCase):
+    """Structural tests ensuring safe cursor-accumulation formatting across source-owned C/C++."""
+
+    def test_strbuf_header_declares_safe_inline_append(self) -> None:
+        """src/rt/strbuf.h must define static inline sr_buf_append and sr_buf_append_v with bounds checks."""
+        header_path = ROOT / "src" / "rt" / "strbuf.h"
+        self.assertTrue(header_path.is_file(), "src/rt/strbuf.h must exist")
+        text = header_path.read_text(encoding="utf-8")
+        self.assertIn("sr_buf_append", text)
+        self.assertIn("sr_buf_append_v", text)
+        self.assertIn("n >= cap", text)
+        self.assertIn("cap - n - 1", text)
+        self.assertIn("format(printf", text)
+
+    def test_trace_paths_use_sr_buf_append_not_unclamped_accumulation(self) -> None:
+        """recomp.c, interp.cpp, and ge.c must not use unclamped n += snprintf(buf + n, ...)."""
+        recomp_text = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
+        interp_text = (ROOT / "src" / "ref" / "interp.cpp").read_text(encoding="utf-8")
+        ge_text = (ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8")
+
+        self.assertNotIn("n += snprintf(line + n", recomp_text)
+        self.assertIn("sr_buf_append(line, sizeof(line)", recomp_text)
+
+        self.assertNotIn("n += std::snprintf(line + n", interp_text)
+        self.assertIn("sr_buf_append(line, sizeof(line)", interp_text)
+
+        self.assertNotIn("bn += snprintf(buf + bn", ge_text)
+        self.assertIn("sr_buf_append(buf, sizeof(buf)", ge_text)
+
+    def test_makefile_declares_strbuf_selftest(self) -> None:
+        """Makefile must declare strbuf-selftest target in .PHONY and compile strbuf_selftest.c."""
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("strbuf-selftest", makefile_text)
+        self.assertIn("strbuf_selftest.c", makefile_text)
+
+
 if __name__ == "__main__":
     unittest.main()
