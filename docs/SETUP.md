@@ -261,6 +261,17 @@ even while a frame is slow.
 
 The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
 
+### Build lifecycle and cleanup targets
+
+The build system provides scoped and explicit cleanup targets:
+
+- `mingw32-make clean`: removes all build outputs for the current target (`build/$(GAME_NAME)`).
+- `mingw32-make clean-fixtures`: removes temporary smoke test, cosimulation, and oracle build artifacts (`build/production-smoke`, `build/cosim`, etc.).
+- `mingw32-make tidy` (or `distclean`): removes intermediate object files (`.o`, `.d`, profile manifests) and ephemeral build logs while preserving linked binaries (`.exe`, `.pdb`) for debugging.
+- `mingw32-make clean-all`: comprehensively removes all subdirectories under `build/` and ephemeral build logs under `logs/`.
+
+These targets strictly operate within `build/` and transient log paths, never deleting protected directories (`place_game_here/`, `memstick/`, `keys/`, `oracle/`, `assets/`, `fixtures/`, `docs/`, `src/`, `tools/`).
+
 ## 5. Optional developer quality tools
 
 The repository includes shared pre-commit/pre-push checks for text/structured-file hygiene,
