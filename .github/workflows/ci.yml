@@ -261,6 +261,12 @@ jobs:
             src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c
           ./build/watchpoints_file_selftest
 
+      - name: Run strbuf checked-append formatting selftest under UBSan
+        run: |
+          gcc -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
+            -Isrc/rt -o build/strbuf_selftest_san src/rt/strbuf_selftest.c
+          ./build/strbuf_selftest_san
+
       - name: Run VFPU interpreter selftest (source-owned, no game inputs)
         # Issue #184: quad/vector VFPU memory ops are all-or-nothing (span
         # preflight before any lane commit; rejected ops consume no prefixes),
@@ -604,6 +610,12 @@ jobs:
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
+
+      - name: Build and run strbuf checked-append formatting selftest
+        shell: msys2 {0}
+        run: >-
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
+          CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest
 
       # hle-thread-selftest compiles src/rt/hle.c directly, so it is the only
       # gate that catches a target drifting out of step with hle.c's own

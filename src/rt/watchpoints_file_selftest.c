@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "watchpoints_file.h"
+#include "strbuf.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -156,9 +157,9 @@ int main(void) {
         buf[off++] = '[';
         for (int i = 0; i < 17; i++) {
             if (i > 0) buf[off++] = ',';
-            off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-                                    "{\"start\":%d,\"end\":%d,\"label\":\"w%d\"}",
-                                    0x1000 + i * 0x100, 0x1000 + i * 0x100 + 0x10, i);
+            off = sr_buf_append(buf, sizeof(buf), off,
+                                "{\"start\":%d,\"end\":%d,\"label\":\"w%d\"}",
+                                0x1000 + i * 0x100, 0x1000 + i * 0x100 + 0x10, i);
         }
         buf[off++] = ']';
         buf[off] = '\0';
@@ -168,9 +169,9 @@ int main(void) {
         buf[off16++] = '[';
         for (int i = 0; i < 16; i++) {
             if (i > 0) buf[off16++] = ',';
-            off16 += (size_t)snprintf(buf + off16, sizeof(buf) - off16,
-                                      "{\"start\":%d,\"end\":%d,\"label\":\"w%d\"}",
-                                      0x2000 + i * 0x100, 0x2000 + i * 0x100 + 0x10, i);
+            off16 = sr_buf_append(buf, sizeof(buf), off16,
+                                  "{\"start\":%d,\"end\":%d,\"label\":\"w%d\"}",
+                                  0x2000 + i * 0x100, 0x2000 + i * 0x100 + 0x10, i);
         }
         buf[off16++] = ']';
         buf[off16] = '\0';
