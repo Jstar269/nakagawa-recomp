@@ -820,7 +820,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ad1c108df065cd5b30f357b49a65d2bb93ca6a594666b47180e0ce8ece6395ff"
+      "sha256": "f868e6af283994d34136ec050c4d94cdf9895794f9687f703b18c675d28addd9"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -4802,9 +4802,11 @@
       "path": "src/rt/strbuf.h",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "strbuf-format-helper-20260827",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "06901583d381fbf697b3ec4e89d740a7806578dd660be12af4c0e94c6b2762df"
     },
@@ -4812,9 +4814,11 @@
       "path": "src/rt/strbuf_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "strbuf-format-selftest-20260827",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7e35d15cbeea61dc99cc0e1ca970b6437a0b6c9b2a87619677ca876af1dff6f0"
     },
@@ -5806,12 +5810,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "provenance-refresh-workflow-20260827",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c15f2256f50dcb3873519cef0096124edad7250414c5119b47702aefc2115e1"
+      "sha256": "81669a588945630b282eb8983c92ca11a248832e40d5acbe623353885d9bac95"
     },
     {
       "path": "tools/prxload.py",
@@ -6971,7 +6975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c0678619221449f1b0b885419f698f0de5f3b843e3a26f8a603b2e4ec405e251"
+      "sha256": "b378471be412d1aeafedf96a43fa93d78cb9bdd06b5b94fce3ece92af0885420"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7693,5 +7697,17 @@
       },
       "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "45ea60429bec615ce9310840a055d66b5ae4d09a",
+    "candidate_tree": "14b2135bf0f315bc809b967ba5e9fbc2abfc20d0",
+    "refreshed_paths": [
+      "docs/PUBLICATION_READINESS.md",
+      "src/rt/strbuf.h",
+      "src/rt/strbuf_selftest.c",
+      "tools/provenance_ledger.py",
+      "tools/test_provenance_ledger.py"
+    ]
+  }
 }
