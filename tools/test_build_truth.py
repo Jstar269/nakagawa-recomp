@@ -540,11 +540,35 @@ class GuestInputTransportTests(unittest.TestCase):
     of the real Makefile and asserts the real one behaves differently.
     """
 
-    # A legal Windows filename containing cmd.exe's command separator. `ver` is a
-    # cmd builtin, so its output is unambiguous proof that a command taken from
-    # pathname data was dispatched.
+    # A legal Windows filename containing `&`, which is a command separator to
+    # cmd.exe and a background operator to a POSIX shell. Either way, a recipe
+    # that interpolates it raw hands `ver` to a command interpreter.
     SPLIT_NAME = "split&ver&tail.elf"
     VER_OUTPUT = "Microsoft Windows [Version"
+
+    # WHICH shell GNU Make dispatches to is a property of the host, not of the
+    # defect: Make prefers a POSIX `sh` when one is on PATH (it is, under MSYS2)
+    # and falls back to cmd.exe otherwise. So the evidence that pathname data
+    # reached an interpreter has more than one shape, and pinning only cmd.exe's
+    # made this suite host-dependent in both directions:
+    #
+    #   * the M1 mutation could not reproduce the pre-fix behavior at all, because
+    #     `ver` is a cmd builtin that `sh` does not have -- the regression was
+    #     permanently red on an MSYS2 host, which is how a real gate rots into
+    #     noise;
+    #   * worse, the POSITIVE test only rejected cmd.exe's signatures, so an
+    #     injection dispatched through `sh` would have satisfied it.
+    #
+    # Assert the property -- "a fragment of the pathname was dispatched as a
+    # command" -- rather than one host's spelling of it.
+    INJECTION_SIGNATURES = (
+        VER_OUTPUT,                       # cmd.exe ran `ver`
+        "is not recognized as an internal",  # cmd.exe tried to resolve a fragment
+        "ver: command not found",         # a POSIX shell tried to run `ver`
+    )
+
+    def _injection_evidence(self, blob: str) -> list[str]:
+        return [marker for marker in self.INJECTION_SIGNATURES if marker in blob]
 
     def setUp(self) -> None:
         self.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -623,10 +647,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
         proc = self._make("test_gi_split", elf_rel)
         blob = self._blob(proc)
-        self.assertNotIn(self.VER_OUTPUT, blob,
-                         "cmd.exe executed a command taken from the pathname")
-        self.assertNotIn("is not recognized as an internal", blob,
-                         "cmd.exe attempted to resolve a pathname fragment as a command")
+        self.assertEqual(
+            self._injection_evidence(blob), [],
+            "a command interpreter saw a fragment of the pathname:\n" + blob)
         self.assertEqual(proc.returncode, 0, blob)
         self.assertTrue((build / "test_gi_split_image.bin").is_file(), blob)
 
@@ -644,10 +667,12 @@ class GuestInputTransportTests(unittest.TestCase):
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
              "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
-        proc = self._make("test_gi_m1", elf_rel, makefile=mutant)
-        self.assertIn(self.VER_OUTPUT, self._blob(proc),
-                      "mutation did not reproduce the pre-fix command execution; "
-                      "this regression is no longer load-bearing")
+        blob = self._blob(proc := self._make("test_gi_m1", elf_rel, makefile=mutant))
+        self.assertTrue(
+            self._injection_evidence(blob),
+            "mutation did not reproduce the pre-fix command execution; this "
+            "regression is no longer load-bearing. Expected one of "
+            f"{self.INJECTION_SIGNATURES} in:\n" + blob)
 
     def test_M1b_sibling_inputs_are_transported_too(self) -> None:
         """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
@@ -659,9 +684,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
         proc = self._make("test_gi_hdr", elf_rel, extra=(f"GAME_PSP_HEADER={hdr_rel}",))
         blob = self._blob(proc)
-        self.assertNotIn(self.VER_OUTPUT, blob,
-                         "GAME_PSP_HEADER still reaches a command interpreter")
-        self.assertNotIn("is not recognized as an internal", blob, blob)
+        self.assertEqual(
+            self._injection_evidence(blob), [],
+            "GAME_PSP_HEADER still reaches a command interpreter:\n" + blob)
 
     # -- D: freshness is preserved, not dropped --------------------------
 
