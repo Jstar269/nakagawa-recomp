@@ -29,6 +29,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,8 +41,12 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from build_public_export import public_safe_excluded_paths  # noqa: E402
 import provenance_ledger  # noqa: E402
+import publication_policy  # noqa: E402
+from public_export import build_document  # noqa: E402
 LEDGER = ROOT / "docs" / "provenance" / "IMPLEMENTATION_PROVENANCE.json"
 PUBLIC_LEDGER = ROOT / "assets" / "public_provenance_ledger.json"
+REFRESH_TOOL = ROOT / "tools" / "provenance_ledger.py"
+AUDIT_TOOL = ROOT / "tools" / "publish_audit.py"
 
 VOCABULARY = {
     "project-authored-independent",
@@ -598,6 +603,464 @@ class ProvenanceFailClosedTest(unittest.TestCase):
             ]}), encoding="utf-8")
             code = provenance_ledger.main(["--check", "--output", str(ledger)])
         self.assertEqual(code, 1)
+
+
+class _RefreshFixture:
+    """Small real Git repository with a trusted baseline ledger."""
+
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.tmp = Path(testcase.enterContext(tempfile.TemporaryDirectory()))
+        self.repo = self.tmp / "candidate"
+        self.repo.mkdir()
+        for argv in (
+            ("init", "-q", "."),
+            ("config", "user.email", "refresh-test@example.invalid"),
+            ("config", "user.name", "refresh-test"),
+        ):
+            subprocess.run(["git", *argv], cwd=self.repo, check=True, capture_output=True)
+
+        self._write("LICENSE", "Synthetic fixture license placeholder\n")
+        self._write("NOTICE.md", "# Notices\n\nSynthetic fixture.\n")
+        self._write("README.md", "# Synthetic refresh fixture\n")
+        self._write("AGENTS.md", "# Synthetic refresh fixture\n")
+        self._write("docs/guide.md", "# Guide\n\nSynthetic fixture.\n")
+        self._write("src/rt/existing.c", self.source)
+        self._write("tools/helper.py", self.helper)
+        self._write(self.route, self.route_source)
+        self._write("assets/release_manifest.json", '{"name": "synthetic", "components": []}\n')
+        self._write_policy()
+        self._write("assets/public_provenance_ledger.json", "")
+        self._write("PUBLIC_EXPORT.json", "")
+        self._write_ledger()
+        self._write_export()
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "synthetic trusted baseline"], cwd=self.repo,
+                       check=True, capture_output=True)
+        self.baseline = self._git("rev-parse", "HEAD")
+
+        self.trusted_policy = self.tmp / "trusted-policy.json"
+        self.trusted_ledger = self.tmp / "trusted-ledger.json"
+        self.trusted_manifest = self.tmp / "trusted-manifest.json"
+        shutil.copy2(self.repo / "assets/public_source_profile.json", self.trusted_policy)
+        shutil.copy2(self.repo / "assets/public_provenance_ledger.json", self.trusted_ledger)
+        shutil.copy2(self.repo / "assets/release_manifest.json", self.trusted_manifest)
+
+    source = (
+        "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "/* synthetic fixture - not a retail or private input */\n"
+        "int existing(void) { return 0; }\n"
+    )
+    helper = (
+        "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "# synthetic fixture - not a retail or private input\n"
+        "def helper():\n    return 0\n"
+    )
+    route = "interface/src/app/api/recompiler/profiles/[id]/export/route.ts"
+    route_source = (
+        "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "// synthetic fixture - literal bracketed route path\n"
+        "export function route(): number { return 0; }\n"
+    )
+
+    def _write(self, relative: str, content: str | bytes) -> None:
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, str):
+            path.write_text(content, encoding="utf-8", newline="\n")
+        else:
+            path.write_bytes(content)
+
+    def _git(self, *argv: str) -> str:
+        return subprocess.run(["git", *argv], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def _write_policy(self) -> None:
+        included = {
+            "LICENSE", "NOTICE.md", "README.md", "AGENTS.md", "docs/guide.md",
+            "src/rt/existing.c", "tools/helper.py", self.route, "assets/release_manifest.json",
+            "assets/public_source_profile.json", "assets/public_provenance_ledger.json",
+            "PUBLIC_EXPORT.json",
+        }
+        policy = {
+            "name": "public-safe-v1",
+            "profile_version": "2.0.0",
+            "min_tool_version": "0.4.0",
+            "build_mode": "PUBLIC_SAFE=1",
+            "default_disposition": "REJECT",
+            "exclude_prefixes": [],
+            "exclude_globs": [],
+            "exclude_paths": [],
+            "include_paths": sorted(included),
+        }
+        self._write("assets/public_source_profile.json", json.dumps(policy, indent=2) + "\n")
+
+    def _classification(self, relative: str) -> tuple[str, dict]:
+        if relative.startswith("docs/") or relative in {"LICENSE", "NOTICE.md", "README.md", "AGENTS.md"}:
+            return "reviewed_documentation", {"source": "synthetic publication fixture"}
+        if relative.startswith("assets/") or relative == "PUBLIC_EXPORT.json":
+            return "reviewed_configuration", {"source": "synthetic publication fixture"}
+        record_id = {
+            "src/rt/existing.c": "PROV-EXISTING",
+            "interface/src/app/api/recompiler/profiles/[id]/export/route.ts": "PROV-ROUTE",
+        }.get(relative, "PROV-HELPER")
+        return "project_authored_attested", {
+            "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+            "record_id": record_id,
+            "evidence_tier": "H",
+            "authorship": "independent implementation record",
+            "upstream_attribution": None,
+        }
+
+    def _write_ledger(self) -> None:
+        entries: list[dict] = []
+        for path in sorted(
+            relative.relative_to(self.repo).as_posix()
+            for relative in self.repo.rglob("*")
+            if relative.is_file()
+            and ".git" not in relative.relative_to(self.repo).parts
+            and relative.relative_to(self.repo).as_posix()
+            not in {"assets/public_provenance_ledger.json", "PUBLIC_EXPORT.json"}
+        ):
+            classification, evidence = self._classification(path)
+            entries.append({
+                "path": path,
+                "classification": classification,
+                "evidence": evidence,
+                "sha256": hashlib.sha256((self.repo / path).read_bytes()).hexdigest(),
+            })
+        entries.extend([
+            {
+                "path": "assets/public_provenance_ledger.json",
+                "classification": "reviewed_configuration",
+                "evidence": {"source": "synthetic publication fixture"},
+            },
+            {
+                "path": "PUBLIC_EXPORT.json",
+                "classification": "generated_from_public_source",
+                "evidence": {"source": "synthetic export generator"},
+            },
+        ])
+        document = {"schema_version": 1, "entries": sorted(entries, key=lambda entry: entry["path"])}
+        self._write("assets/public_provenance_ledger.json", json.dumps(document, indent=2) + "\n")
+
+    def _write_export(self) -> None:
+        files = []
+        for relative in sorted(
+            path.relative_to(self.repo).as_posix()
+            for path in self.repo.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(self.repo).parts
+        ):
+            raw = b"" if relative == "PUBLIC_EXPORT.json" else (self.repo / relative).read_bytes()
+            files.append((relative, raw))
+        policy = publication_policy.load_policy(self.repo / "assets" / "public_source_profile.json")
+        ledger = (self.repo / "assets" / "public_provenance_ledger.json").read_bytes()
+        manifest = (self.repo / "assets" / "release_manifest.json").read_bytes()
+        document = build_document(policy, files, provenance_ledger=ledger, manifest=manifest)
+        self._write("PUBLIC_EXPORT.json", json.dumps(document, indent=2) + "\n")
+
+    def commit_change(self, relative: str, content: str, message: str) -> None:
+        self._write(relative, content)
+        subprocess.run(["git", "add", relative], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
+
+    def refresh(
+        self,
+        *paths: str,
+        trusted_ledger: Path | None = None,
+        trusted_tree: str | None = None,
+        trusted_manifest: Path | None = None,
+        trusted_baseline_ledger: Path | None = None,
+    ) -> subprocess.CompletedProcess:
+        argv = [
+            sys.executable, str(REFRESH_TOOL), "refresh-reviewed",
+            "--trusted-ledger", str(trusted_ledger or self.trusted_ledger),
+            "--candidate-tree", str(self.repo), "--trusted-tree", trusted_tree or self.baseline,
+            "--trusted-policy", str(self.trusted_policy),
+            "--trusted-manifest", str(trusted_manifest or self.trusted_manifest), "--paths", *paths,
+        ]
+        if trusted_baseline_ledger is not None:
+            argv[argv.index("--paths"):argv.index("--paths")] = [
+                "--trusted-baseline-ledger", str(trusted_baseline_ledger),
+            ]
+        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+
+    def audit(self, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable, str(AUDIT_TOOL), "--candidate-root", str(self.repo),
+                "--candidate-tree", "--public-scope", "--policy", str(self.trusted_policy),
+                *extra,
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+
+
+class ProvenanceRefreshTests(unittest.TestCase):
+    def test_existing_attested_path_refreshes_and_audits(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 1"), "candidate source edit")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        baseline = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        old_entries = {entry["path"]: entry for entry in baseline["entries"]}
+        new_entries = {entry["path"]: entry for entry in refreshed["entries"]}
+        for path, entry in old_entries.items():
+            if path != "src/rt/existing.c":
+                self.assertEqual(entry, new_entries[path], path)
+        self.assertNotEqual(old_entries["src/rt/existing.c"]["sha256"], new_entries["src/rt/existing.c"]["sha256"])
+        self.assertEqual(refreshed["refresh"]["candidate_tree"], fixture._git("rev-parse", "HEAD^{tree}"))
+        self.assertEqual(refreshed["refresh"]["trusted_tree"], fixture._git("rev-parse", f"{fixture.baseline}^{{tree}}"))
+        self.assertEqual(refreshed["refresh"]["refreshed_paths"], ["src/rt/existing.c"])
+
+        export = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
+        self.assertEqual(export["candidate_tree"], refreshed["refresh"]["candidate_tree"])
+        self.assertEqual(export["provenance_ledger_sha256"], hashlib.sha256(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()
+        ).hexdigest())
+
+        self.assertEqual(fixture.audit("--provenance-self-consistency").returncode, 0)
+        trusted_refreshed = fixture.tmp / "trusted-refreshed.json"
+        shutil.copy2(fixture.repo / "assets/public_provenance_ledger.json", trusted_refreshed)
+        audited = fixture.audit("--provenance-ledger", str(trusted_refreshed),
+                                "--trusted-manifest", str(fixture.trusted_manifest))
+        self.assertEqual(audited.returncode, 0, audited.stderr)
+
+    def test_missing_trusted_ledger_fails_before_writing(self) -> None:
+        fixture = _RefreshFixture(self)
+        before = (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()
+        result = fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.tmp / "missing.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_MISSING", result.stderr)
+        self.assertEqual(before, (fixture.repo / "assets/public_provenance_ledger.json").read_bytes())
+
+    def test_candidate_ledger_cannot_be_used_as_trusted_input(self) -> None:
+        fixture = _RefreshFixture(self)
+        result = fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.repo / "assets" / "public_provenance_ledger.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_CANDIDATE_CONTROLLED", result.stderr)
+
+    def test_candidate_ledger_edit_cannot_self_authorize_unresolved_path(self) -> None:
+        """A candidate ledger edit cannot turn an unresolved path into attested evidence."""
+        fixture = _RefreshFixture(self)
+        trusted = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        for entry in trusted["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "unresolved"
+        fixture.trusted_ledger.write_text(json.dumps(trusted, indent=2) + "\n", encoding="utf-8")
+
+        candidate = json.loads((fixture.repo / "assets" / "public_provenance_ledger.json").read_text(encoding="utf-8"))
+        for entry in candidate["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "project_authored_attested"
+                entry["evidence"] = {"source": "candidate self-authorization"}
+        fixture.commit_change(
+            "assets/public_provenance_ledger.json",
+            json.dumps(candidate, indent=2) + "\n",
+            "candidate ledger self-authorization attempt",
+        )
+        result = fixture.refresh(
+            "src/rt/existing.c",
+            trusted_ledger=fixture.repo / "assets" / "public_provenance_ledger.json",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_CANDIDATE_CONTROLLED", result.stderr)
+
+    def test_candidate_tree_cannot_be_used_as_trusted_tree(self) -> None:
+        fixture = _RefreshFixture(self)
+        result = fixture.refresh("src/rt/existing.c", trusted_tree=str(fixture.repo))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_TREE_CANDIDATE_CONTROLLED", result.stderr)
+
+    def test_trusted_manifest_must_match_trusted_tree(self) -> None:
+        fixture = _RefreshFixture(self)
+        forged = fixture.tmp / "forged-manifest.json"
+        forged.write_text('{"name": "forged", "components": []}\n', encoding="utf-8")
+        result = fixture.refresh("src/rt/existing.c", trusted_manifest=forged)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_MANIFEST_MISMATCH", result.stderr)
+
+    def test_candidate_policy_substitution_fails(self) -> None:
+        fixture = _RefreshFixture(self)
+        policy = (fixture.repo / "assets/public_source_profile.json").read_text(encoding="utf-8")
+        fixture.commit_change("assets/public_source_profile.json", policy.replace('"build_mode": "PUBLIC_SAFE=1"', '"build_mode": "PUBLIC_SAFE=forged"'), "candidate policy substitution")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE_POLICY_MISMATCH", result.stderr)
+
+    def test_wildcard_and_directory_authorization_fail(self) -> None:
+        for path in ("src/*", "src/rt/"):
+            with self.subTest(path=path):
+                fixture = _RefreshFixture(self)
+                result = fixture.refresh(path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("REFRESH_PATH_NOT_EXACT", result.stderr)
+
+    def test_literal_bracket_path_is_exact(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change(
+            fixture.route,
+            fixture.route_source.replace("return 0", "return 1"),
+            "candidate literal bracketed route edit",
+        )
+        result = fixture.refresh(fixture.route)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_new_implementation_path_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("src/rt/new_widget.c", fixture.source, "candidate new implementation")
+        result = fixture.refresh("src/rt/new_widget.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NEW_PATH_REFUSED", result.stderr)
+
+    def test_unrequested_candidate_change_is_stale(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("docs/guide.md", "# Changed guide\n", "candidate unrelated edit")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE_TREE_STALE", result.stderr)
+
+    def test_dirty_candidate_has_no_tree_identity(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture._write("src/rt/existing.c", fixture.source.replace("return 0", "return 2"))
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE_TREE_DIRTY", result.stderr)
+
+    def test_unqualified_classification_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        document = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        for entry in document["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "reviewed_configuration"
+        fixture.trusted_ledger.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_PATH_UNQUALIFIED", result.stderr)
+
+    def test_trusted_snapshot_must_cover_exact_tree(self) -> None:
+        fixture = _RefreshFixture(self)
+        document = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        document["entries"] = [entry for entry in document["entries"] if entry["path"] != "src/rt/existing.c"]
+        fixture.trusted_ledger.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_LEDGER_COVERAGE", result.stderr)
+
+    def test_private_boundary_is_rejected(self) -> None:
+        fixture = _RefreshFixture(self)
+        document = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        document["entries"].append({
+            "path": "private/secret.txt", "classification": "project_authored_attested",
+            "evidence": {"source": "synthetic private input"}, "sha256": hashlib.sha256(b"private").hexdigest(),
+        })
+        fixture.trusted_ledger.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_LEDGER_COVERAGE", result.stderr)
+
+    def test_external_detailed_ledger_requires_an_exact_record(self) -> None:
+        fixture = _RefreshFixture(self)
+        detailed = fixture.tmp / "trusted-detailed.json"
+        detailed.write_text(json.dumps({
+            "schema_version": 1,
+            "records": [
+                {"id": "PROV-EXISTING", "classification": "project-authored-independent", "evidence_tier": "H", "paths": ["src/rt/existing.c"]},
+                {"id": "PROV-HELPER", "classification": "project-authored-independent", "evidence_tier": "H", "paths": ["tools/helper.py"]},
+                {"id": "PROV-ROUTE", "classification": "project-authored-independent", "evidence_tier": "H", "paths": [fixture.route]},
+            ],
+        }, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 3"), "candidate source edit")
+        result = fixture.refresh("src/rt/existing.c", trusted_ledger=detailed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        entry = next(entry for entry in refreshed["entries"] if entry["path"] == "src/rt/existing.c")
+        self.assertEqual(entry["evidence"]["record_id"], "PROV-EXISTING")
+
+    def test_detailed_ledger_refresh_projects_external_evidence_over_baseline(self) -> None:
+        fixture = _RefreshFixture(self)
+        detailed = fixture.tmp / "trusted-detailed.json"
+        detailed.write_text(json.dumps({
+            "schema_version": 1,
+            "records": [
+                {"id": "PROV-EXISTING", "classification": "project-authored-independent", "evidence_tier": "H", "paths": ["src/rt/existing.c"]},
+                {"id": "PROV-HELPER", "classification": "project-authored-independent", "evidence_tier": "H", "paths": ["tools/helper.py"]},
+                {"id": "PROV-ROUTE", "classification": "project-authored-independent", "evidence_tier": "H", "paths": [fixture.route]},
+            ],
+        }, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 4"), "candidate source edit")
+        result = fixture.refresh(
+            "src/rt/existing.c",
+            trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        entry = next(entry for entry in refreshed["entries"] if entry["path"] == "src/rt/existing.c")
+        self.assertEqual(entry["evidence"], {
+            "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+            "record_id": "PROV-EXISTING",
+            "evidence_tier": "H",
+            "authorship": "independent implementation record",
+            "upstream_attribution": None,
+        })
+
+    def test_classification_guard_is_load_bearing_mutation(self) -> None:
+        """A mutant that removes the class gate must be killed by this test."""
+        fixture = _RefreshFixture(self)
+        document = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        for entry in document["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "reviewed_configuration"
+        fixture.trusted_ledger.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        original = fixture.refresh("src/rt/existing.c")
+        self.assertNotEqual(original.returncode, 0)
+        self.assertIn("TRUSTED_PATH_UNQUALIFIED", original.stderr)
+
+        mutant_root = fixture.tmp / "mutant-tools"
+        (mutant_root / "tools").mkdir(parents=True)
+        mutant_source = REFRESH_TOOL.read_text(encoding="utf-8")
+        needle = "if classification in REFRESHABLE_CLASSES:"
+        self.assertIn(needle, mutant_source)
+        mutant_source = mutant_source.replace(needle, "if True:  # mutation removes the class gate", 1)
+        (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
+        shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
+        shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        mutant = subprocess.run(
+            [
+                sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"), "refresh-reviewed",
+                "--trusted-ledger", str(fixture.trusted_ledger), "--candidate-tree", str(fixture.repo),
+                "--trusted-tree", fixture.baseline, "--trusted-policy", str(fixture.trusted_policy),
+                "--trusted-manifest", str(fixture.trusted_manifest), "--paths", "src/rt/existing.c",
+            ], cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(mutant.returncode, 0, mutant.stderr)
+
+    def test_existing_documentation_path_refreshes_without_private_record(self) -> None:
+        fixture = _RefreshFixture(self)
+        baseline = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        fixture.commit_change("docs/guide.md", "# Changed guide\n", "candidate documentation edit")
+        result = fixture.refresh("docs/guide.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refreshed = json.loads((fixture.repo / "assets" / "public_provenance_ledger.json").read_text(encoding="utf-8"))
+        old_entries = {entry["path"]: entry for entry in baseline["entries"]}
+        new_entries = {entry["path"]: entry for entry in refreshed["entries"]}
+        self.assertEqual(new_entries["docs/guide.md"]["classification"], "reviewed_documentation")
+        self.assertNotEqual(old_entries["docs/guide.md"]["sha256"], new_entries["docs/guide.md"]["sha256"])
+        self.assertEqual(fixture.audit("--provenance-self-consistency").returncode, 0)
+
+    def test_staged_generated_controls_are_replaced_not_trusted(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 5"), "candidate source edit")
+        fixture.commit_change("assets/public_provenance_ledger.json", "{\"candidate\": true}\n", "candidate ledger output edit")
+        fixture.commit_change("PUBLIC_EXPORT.json", "{\"candidate\": true}\n", "candidate export output edit")
+        result = fixture.refresh("src/rt/existing.c")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        self.assertIn("entries", refreshed)
+        exported = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
+        self.assertIn("included_content_sha256", exported)
 
 
 class SelfReferentialEntryTests(unittest.TestCase):

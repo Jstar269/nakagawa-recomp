@@ -92,6 +92,76 @@ ledger and then attests the export against that regenerated copy. Candidate
 hashes prove bytes, not authorization; only a record in the trusted detailed
 ledger attests a path.
 
+## Reviewed refresh of an existing public path
+
+A legitimate edit to an already-qualified public path needs a new
+content hash, but the candidate must not be able to turn that edit into its own
+provenance claim. The maintainer-controlled refresh workflow is:
+
+```text
+python tools/provenance_ledger.py refresh-reviewed \
+  --trusted-ledger <external-trusted-ledger-or-detailed-ledger> \
+  --candidate-tree <clean-candidate-worktree-or-immutable-ref> \
+  --trusted-tree <trusted-baseline-worktree-or-immutable-ref> \
+  --trusted-policy <external-trusted-policy> \
+  --trusted-manifest <external-trusted-manifest> \
+  --paths <exact-existing-public-path> [<exact-path> ...]
+```
+
+The trusted ledger and policy must be outside the candidate checkout. When the
+trusted baseline is supplied as a worktree, it must also be outside the
+candidate checkout; the refresh outputs may not overwrite that trusted tree. A public
+ledger snapshot is the preferred input when it has already been generated from
+the detailed development ledger; the command also accepts an external detailed
+ledger with exact `records` entries. A detailed ledger may be paired with an
+external baseline public snapshot when preserving the existing public entry
+objects is required. The command never treats the candidate's
+`assets/public_provenance_ledger.json`, policy, manifest, or export as trusted.
+The candidate's current ledger and export may differ from the trusted baseline
+because they are the two generated outputs of this operation; those bytes are
+ignored as inputs and replaced by the deterministic outputs below. The policy
+and manifest remain independently checked against their external trusted copies.
+
+Before writing either generated artifact, the command verifies all of the
+following: the candidate worktree is clean; the candidate and trusted trees
+have the same path set; every unrequested blob is byte-identical to the trusted
+baseline; the candidate policy matches the external policy; the requested paths
+are explicit exact files already present in the trusted tree; their trusted
+ledger class is either an implementation class backed by an exact detailed
+record or a matching deterministic public class; and the trusted public ledger
+covers the complete trusted public tree. Wildcards, directory authorizations,
+missing implementation records, new paths, stale candidates, policy
+substitutions, and private or unclassified tree content fail closed. Existing
+documentation, configuration, public metadata, and synthetic fixture paths may
+refresh their hash only when their deterministic class remains unchanged. Only
+the `sha256` values for the listed paths are changed. The output records the
+trusted and candidate tree IDs and the exact refreshed path set without
+inventing a person, DCO trailer, or provenance attestation.
+
+For each changed or new path, use this disposition before invoking the command:
+
+| Disposition | Meaning |
+| --- | --- |
+| `PASS` | The path is unchanged from the trusted tree; no refresh is needed. |
+| `TRUSTED_REFRESHABLE` | The path already exists in the trusted tree and has either an exact trusted implementation record or an unchanged deterministic class. |
+| `PROVENANCE_RECORD_REQUIRED` | The path is new or implementation-bearing without an exact trusted detailed record; create or confirm that record in the trusted ledger first. |
+| `UNRESOLVED` | The trusted class is unresolved, substituted, or disagrees with the detailed record; stop and report the missing fact. |
+
+The command accepts only `TRUSTED_REFRESHABLE` paths. A new implementation
+path is always `PROVENANCE_RECORD_REQUIRED`, even if a candidate adds a public
+ledger entry for it. Candidate-controlled ledger, policy, manifest, and export
+bytes never change these dispositions.
+
+The resulting ledger and `PUBLIC_EXPORT.json` are mechanical outputs, not
+authorization. The release process must copy the refreshed ledger to its
+trusted location, run `publish_audit.py` against that external copy and the
+trusted manifest, and then run the non-attesting
+`--provenance-self-consistency` tripwire. A dashboard source file such as
+`interface/src/components/studio/test-lab-panel.tsx` cannot use a
+`reviewed_configuration` record; it remains blocked until a maintainer creates
+or confirms an exact trusted implementation record. The refresh command does
+not merge or otherwise authorize an unrelated dashboard change.
+
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted
 gates.
