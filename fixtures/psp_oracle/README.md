@@ -140,8 +140,8 @@ delivery is masked. Build one per launch, as with every other case.
 `CASE=display-mask-vcount` holds `sceKernelCpuSuspendIntr` for 4000, 16700,
 30000 and 50000 us — 12 trials each — and samples `sceDisplayGetVcount`
 *immediately after* `sceKernelCpuResumeIntr`. That sample is the one the
-accepted #88 record never took, and it is what separates "the counter catches up
-by every elapsed period" from "exactly one deferred event is credited" from "the
+accepted interrupt-conformance record (historical tracker item #88) never took,
+and it is what separates "the counter catches up by every elapsed period" from "exactly one deferred event is credited" from "the
 elapsed periods are gone". The case never assumes a period length: it calibrates
 the device's own vblank period in the same run over 60 `sceDisplayWaitVblankStart`
 intervals and reports it in `result` and `out26`. Every spin is bounded by BOTH

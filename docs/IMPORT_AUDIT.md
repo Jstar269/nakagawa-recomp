@@ -1,4 +1,10 @@
-# Import-coverage and fake-success audit (issue #71)
+# Import-coverage and fake-success audit (historical tracker item #71)
+
+> **Tracker numbering.** Bare `#N` references in this document are
+> **pre-republication tracker numbers**. GitHub numbers issues and pull requests from one
+> sequence, and the sanitized public repository restarted that sequence, so a number here
+> may now resolve to an unrelated live public object. Read every bare number below as a
+> historical identifier unless it is written as an explicit link.
 
 The audit distinguishes three materially different states for every NID a PSP
 title imports, plus one honest refusal state:

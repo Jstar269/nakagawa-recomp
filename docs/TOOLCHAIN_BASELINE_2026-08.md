@@ -3,6 +3,12 @@
 Track: dependency/toolchain modernization only. No PSP/runtime semantics changed and no
 private HST routes were run.
 
+> **Tracker numbering.** Bare `#N` references in this document are
+> **pre-republication tracker numbers**. GitHub numbers issues and pull requests from one
+> sequence, and the sanitized public repository restarted that sequence, so a number here
+> may now resolve to an unrelated live public object. Read every bare number below as a
+> historical identifier unless it is written as an explicit link.
+
 - Branch: `freebuff/toolchain-refresh-202608`
 - Base: `origin/main` @ `b31f5aa548587350901d7ddef3c4b94fa2e47340` (fetched 2026-08-03)
 - Local verification host: Windows 11 x64; PowerShell 7.6.4; CPython 3.14.6;
@@ -108,8 +114,8 @@ The #248 lint blocker below is unaffected — `npm run lint` still exits 2 with 
    TypeScript 7.0.2 remains outside that range. origin/main already resolves 8.65.0 with TypeScript
    7.0.2, so lint fails identically on main. No supported release currently covers TS 7; do not
    suppress the parser error or downgrade the project's TypeScript baseline merely for green lint.
-   Tracked in GitHub issue [#248](https://github.com/Jstar269/nakagawa-recomp/issues/248); upstream
-   tracking is typescript-eslint/typescript-eslint#10940. Re-verify the npm peer range before changing
+   Tracked as historical tracker item #248; upstream tracking is
+   typescript-eslint/typescript-eslint#10940. Re-verify the npm peer range before changing
    this statement.
 2. The Next.js build failure that motivated `useTypeScriptCli` is likewise pre-existing on main
    (TypeScript 7.0.2 + Next 16.2.11). This branch fixes it with the documented config.
