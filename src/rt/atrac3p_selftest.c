@@ -78,13 +78,12 @@ static const uint8_t MONO_UNIT_FRAME[] = { 0x16, 0x0c, 0xf6, 0x86, 0x87, 0x35, 0
 static int pcm_sha256_hex(const int16_t *pcm, size_t samples, char out[65])
 {
     uint8_t digest[32];
-    char *p = out;
     size_t i;
 
     sr_vfpu_sha256((const uint8_t *)pcm, samples * sizeof(int16_t), digest);
     for (i = 0; i < 32; i++)
-        p += sprintf(p, "%02x", digest[i]);
-    *p = '\0';
+        snprintf(out + i * 2, 3, "%02x", digest[i]);
+    out[64] = '\0';
     return 0;
 }
 
