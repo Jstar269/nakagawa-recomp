@@ -270,7 +270,7 @@
         "authorship": "independent project implementation",
         "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
       },
-      "sha256": "de617c76d33e886dd89424f23102b86cad06c97ea2935dbfc51aed878a681c41"
+      "sha256": "646bc6ca95b0bb74656bf25e30678ba1128f82a516fa659c80b7bf593c4279ee"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +387,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "79fca7858f71691d42771d9e0352be052cc83afce404ba1c22d0f488595ae1fa"
+      "sha256": "52f54ff883ea1f69d283bcfb417785931ed2bd085f5485d8776fbcae7b6fe776"
     },
     {
       "path": "assets/release_manifest.json",
@@ -895,6 +895,14 @@
       "sha256": "afcbb9eaf2bdbdc2447560fe9f3cc4985f75cdffed2a569224a9abf748dc30d0"
     },
     {
+      "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "trusted detailed implementation ledger"
+      },
+      "sha256": "dc771c6217ed2814d024299edd48a05201100cd0fd9d5df1f51fe9c55424aa53"
+    },
+    {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1028,6 +1036,26 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "9ff4c56ec6ec753127e03d43f3520d1eacf41069e03fe07e199ca332d31bbce4"
+    },
+    {
+      "path": "fixtures/platform_ladder/README.md",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "trusted detailed implementation ledger"
+      },
+      "sha256": "f9801b5550dca80a303595fc7c86d7285e4518ba256a8f2cd46b3b9805be098f"
+    },
+    {
+      "path": "fixtures/platform_ladder/generate.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "platform-ladder-generator-20260827",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9a990f87355ec572012bcbe593434ca5535cabbbaab3455d37186e883d342b05"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -5615,7 +5643,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "650b683b1fce2e31b10b647d66b3eb7d989f097baa4624e74ac3be14ef45d03e"
+      "sha256": "01583d1053aee14a272543dcedce70190408a2ff8cf2e2d41402c10da2797ebf"
     },
     {
       "path": "tools/lint_docs.py",
@@ -6924,6 +6952,18 @@
       "sha256": "168bb9e3368b41856e33eef9b6b1673a095677eb50751268fbddd90b6c1c98ab"
     },
     {
+      "path": "tools/test_platform_ladder.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "platform-ladder-regressions-20260827",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "fd6022f8be0c6885828c2781a03f8606120c7a00675372493f006effed754b4b"
+    },
+    {
       "path": "tools/test_production_smoke.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -7700,14 +7740,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "45ea60429bec615ce9310840a055d66b5ae4d09a",
-    "candidate_tree": "14b2135bf0f315bc809b967ba5e9fbc2abfc20d0",
+    "trusted_tree": "01c2b2032a2f433b2747d9abe818577f897a5360",
+    "candidate_tree": "7d5027dd835ab0f5cf75c73de7dbf02c336241fa",
     "refreshed_paths": [
-      "docs/PUBLICATION_READINESS.md",
-      "src/rt/strbuf.h",
-      "src/rt/strbuf_selftest.c",
-      "tools/provenance_ledger.py",
-      "tools/test_provenance_ledger.py"
+      "Makefile",
+      "docs/provenance/GENERICITY_CENSUS_20260826.md",
+      "fixtures/platform_ladder/README.md",
+      "fixtures/platform_ladder/generate.py",
+      "tools/imports.py",
+      "tools/test_platform_ladder.py"
     ]
   }
 }

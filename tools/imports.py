@@ -163,6 +163,19 @@ def _import_model(elf):
             raise ValueError("import stub table step wraps 32-bit guest space")
         pos += step
     if not windows:
+        # A PSP module may legally import nothing: an empty declared window
+        # table with no stub/NID regions is a valid zero-import module, not a
+        # malformed one. Fail only when the shapes disagree.
+        st_empty = True
+        nid_empty = True
+        st = elf.sec(".sceStub.text")
+        nidsec = elf.sec(".rodata.sceNid")
+        if st is not None and st["size"]:
+            st_empty = False
+        if nidsec is not None and nidsec["size"]:
+            nid_empty = False
+        if st_empty and nid_empty:
+            return {}, ["module declares an empty import table"]
         raise ValueError("import stub table is empty")
 
     # Pass 2: full stub/NID region extents. Prefer the real sections (the
