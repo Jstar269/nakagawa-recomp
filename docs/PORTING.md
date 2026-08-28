@@ -232,12 +232,17 @@ per group):
 | `guest_bss_snapshots` | DIAGNOSTIC_ONLY | 27 | 30 |
 | `exit_path_context` | DIAGNOSTIC_ONLY | 2 | 3 |
 | `umd_ufl_head_dump` | DIAGNOSTIC_ONLY | 1 | 3 |
-| `libfont_ready_flag` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 1 |
-| `frame_ready_latch_assist` | EXPLICIT_COMPATIBILITY_OVERRIDE | 1 | 7 |
-| `runtime_sync_callback_config` | EXPLICIT_COMPATIBILITY_OVERRIDE | 8 | 8 |
-| `display_setmode_guest_init` | EXPLICIT_COMPATIBILITY_OVERRIDE | 6 | 7 |
 
-`TOTAL_COUPLINGS`: 46 distinct addresses / 59 sites. By bucket:
+`TOTAL_COUPLINGS` in `src/rt/hle.c`: 30 distinct addresses / 36 sites (DIAGNOSTIC_ONLY).
+The four former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups below (16 addresses / 23 sites)
+were migrated on 2026-08-27 to typed title configuration via `runtime_bindings`
+(`display_bringup`, `runtime_sync`, `libfont_ready_flag_addr`,
+`frame_ready_latch_addr`); they are `PROFILE_OWNED_CONFIGURATION` and no longer
+appear in the `hle.c` census. Retired inventory lives in
+`tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
+`tools/test_hle_title_isolation.py`.
+
+By bucket (live `hle.c` only):
 
 - `GENERIC_PSP_SEMANTIC`: 0 (generic PSP constants are exempted only through
   the narrow, explicit site rules in `HLE_GENERIC_SITE_RULES`: an exact
@@ -246,64 +251,61 @@ per group):
   There is no blanket numeric ceiling and no whole-region VRAM exemption: a
   direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
   `0x041fffff`) is inventoried like any other absolute guest address.
-- `PROFILE_OWNED_CONFIGURATION`: 0 inside the hle.c gate; two documented build/profile
-  couplings below (C-2, C-3) are this bucket. The eight `runtime_sync_callback_config`
-  addresses are this bucket *in shape* — a config base with a fixed field layout, a
-  name pointer, and three mode-keyed pairs of wrapper entries — but they are not typed
-  configuration today, so they are counted where they actually are.
-- `EXPLICIT_COMPATIBILITY_OVERRIDE`: 16 addresses / 23 sites (the four groups above;
-  each answers the five review questions in `tools/compat_overrides.py`).
+- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (16 title-configured
+  addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
+  build/profile couplings below (C-2, C-3) are this bucket.
+- `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
 - `DIAGNOSTIC_ONLY`: 30 addresses / 36 sites (read-only, env-gated).
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
 - `FALSE_POSITIVE`: 0 (a deliberately injected generic constant never flags; the
   explicit generic-site rules are regression-tested).
 - `UNRESOLVED_COUPLING`: 0 (all sites classified; the gate fails closed on any new one).
 
-**Why this blocks title #2.** The sixteen override addresses are not merely wrong for
-another title — three of them are *dispatch targets*, and eight more are installed as
-guest callback pointers. A different guest executable reaching `h_DisplaySetMode` is
-called at whatever lives at `0x00000bcc`, `0x0029a8bc` and `0x0001dc00` in its own map,
-has whatever lives at `0x00333138` read *and written*, and ends up with two of the six
-wrapper addresses stored where its own code will later call them. The failure is
-arbitrary rather than diagnosable, which is the opposite of exposing a clean
-unsupported-semantic boundary.
+Migrated compat (now `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
 
-### Top title-#2 blockers
+| Group | Addresses | Title config | Note |
+| --- | --- | --- | --- |
+| `libfont_ready_flag` | 1 | `libfont_ready_flag_addr` | generic LoadModule has no write |
+| `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | 30-vblank timer is profile-qualified |
+| `runtime_sync_callback_config` | 8 | `runtime_sync {config_base, sema_name_ptr, wrappers{mode,enter,leave}}` | mode-keyed pairs not flattened |
+| `display_setmode_guest_init` | 6 | `display_bringup {malloc, vblank_init, render_init, magic, ready_flag, ctx_word}` | 3 dispatch + 3 data |
 
-1. `display_setmode_guest_init` dispatch targets (`0x00000bcc`, `0x0029a8bc`,
-   `0x0001dc00`) — a generic `sceDisplaySetMode` handler calls three fixed guest
-   functions that only exist in this title's map.
-2. `runtime_sync_callback_config` (`0x00333138` + seven) — the same handler reads and
-   writes a title configuration block, may create a semaphore named through a title
-   string pointer, and installs one of three mode-keyed pairs of guest wrapper entry
-   points. Newly visible: the coupling gate could not see any of these eight until the
-   indirect-shape grammar landed.
-3. `display_setmode_guest_init` forced globals (`0x0031fcc0`, `0x00311140`,
-   `0x002d0738`) — render-context magic, render-command-table ready flag and context
-   word are seeded to this title's expected values.
-4. `frame_ready_latch_assist` (`0x00331b80`) — the runtime seeds, decrements, and after
-   30 stuck vblanks force-clears this title's frame-ready counter.
-5. `libfont_ready_flag` (`0x002d132c`) — any `libfont.prx` load writes 1 to a title
-   global from a generic module-load handler.
-6. `SR_DATA_EXPECTED_COUNT` in the build driver (`Makefile`, 56672) — a hard-coded
-   extracted-asset count for one specific release; the runtime side already defaults to
-   "unset is safe", so the constant should move into the title manifest.
+**Why this no longer blocks title #2 (for these 4 groups).** Generic `sceDisplaySetMode`
+/ `sceKernelLoadModule` / `sr_vblank_tick` now consult `title_config` and perform
+no HST guest calls, writes or callback installs when the title has no compat
+profile. A second executable reaching `h_DisplaySetMode` with no `display_bringup`
+gets the generic PSP path (mode/width/height logged, no guest dispatch). The
+`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the 16 addresses auditable and the
+`test_hle_title_isolation.py` matrix proves wrong-title, invalid-address and
+disabled-profile fail-closed.
 
-The minimal generic interface is a per-title manifest section (`tools/title_manifest.py`
-already carries a per-title profile) naming these entry points and globals by role —
-allocator, vblank-device creator, render-context initialiser, frame-ready counter — so
-the handler stays generic and consults the profile, or reports an unsupported boundary
-when the profile is silent. This PR establishes the boundary and evidence; it does not
-retire the sites.
+### Top remaining title-#2 blockers
+
+1. `SR_CALL_GUEST_STACK` (`src/rt/hle.c`, `src/rt/mpeg.c`) — one shared scratch stack
+   for every nested guest call (see C-4).
+2. `disc.id` duplication (C-3) and the remaining diagnostic-only groups above.
+
+`SR_DATA_EXPECTED_COUNT` (former blocker #1) is now retired: see C-2.
+
+The `runtime_bindings` manifest section now carries the four retired groups by role —
+allocator, vblank-device creator, render-context initialiser, frame-ready counter,
+runtime sync config — so the handlers stay generic and consult the profile, or report
+an unsupported boundary when the profile is silent. This slice retires the 16
+addresses from generic core; the remaining blockers are tracked separately.
 
 ### C-2 — `SR_DATA_EXPECTED_COUNT` in the build driver
 
-`Makefile` hard-codes `-DSR_DATA_EXPECTED_COUNT=56672`, the extracted-asset count of one
-specific release. `src/rt/hle.c` defaults it to 0 (check disabled) when undefined, so
-the runtime side is already generic. Building title #2 requires editing the shared build
-driver, and a stale value silently fails the new title's asset index instead of the old
-one's. `PROFILE_OWNED_CONFIGURATION` — deferred (touches manifest schema and build
-driver together).
+`Makefile` previously hard-coded `-DSR_DATA_EXPECTED_COUNT=56672`. As of 2026-08-28
+the count is owned by the validated title manifest (`runtime_bindings`
+`expected_data_file_count`) and flows through `tools/title_runtime_config.py`
+into `src/rt/title_config.c` (`SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT`,
+`SR_TITLE_CONFIG_EXPECTED_DATA_FILE_COUNT`). `src/rt/hle.c` now consults
+`sr_title_config_expected_data_file_count()` (0 = disabled). A generic build
+therefore has no census and enumerates no HST tree; a title-configured HST
+build asserts the expected 56,672-file census through the manifest.
+`PROFILE_OWNED_CONFIGURATION` — retired for this census (true typed
+title configuration; see `tools/test_hle_title_isolation.py` and
+`tools/test_title_runtime_config.py`).
 
 ### C-3 — Disc ID duplicated outside the manifest
 
@@ -319,6 +321,21 @@ address, but it assumes a guest map in which that address is free, and it makes 
 callbacks unsafe for any title that nests them. The PSP's real nested-call contract is
 `NOT_ESTABLISHED`; a hardware probe is needed before a design can be chosen.
 `GENERIC_PSP_SEMANTIC` (open question) — deferred deliberately.
+
+### C-5 — `f_00046d14` game-loop entry stub
+
+`tools/codegen.py` replaces the translated body at `0x00046d14` with an
+immediate `s->pc = s->r[31]` return plus a scheduler-gated trace. The stub is
+`--profile=hst` only (`hst_profile` branch), so a generic or `pl_*` build
+emits the normal translation path (or a fail-closed `sr_unimplemented` if
+untranslatable). This satisfies the north-star (a newly supplied executable
+never inherits the stub), but the stub is still semantic debt: no public
+production-path regression proves the translated body makes forward progress.
+`temporary_compatibility_patch` — title-scoped with enforced non-inheritance
+(`tools/test_codegen_profile_isolation.py` proves `--profile=none` emits
+identical text at `0x00046d14` and its control copy), evidence
+`SOURCE_SHAPE`, retirement “restore translated execution when a
+production-path regression proves progress; keep the trace as diagnostic only”.
 
 ## Reference
 
