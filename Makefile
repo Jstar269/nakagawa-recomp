@@ -133,11 +133,11 @@ GLSLC ?= glslc
 # acceptable for HST.
 RUNTIME_OPT ?= -O0
 CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
-# The extracted HST archive tree is a concrete 56,672-file input contract.  The
-# runtime rejects a different count so a truncated walk cannot become evidence.
-ifeq ($(GAME_NAME),hst)
-CFLAGS += -DSR_DATA_EXPECTED_COUNT=56672
-endif
+# The extracted HST archive tree has a title-specific extracted-data census
+# (HST: 56,672 files). The generic build has no census (0 = disabled); a
+# title-configured build carries the expectation via runtime_bindings
+# (expected_data_file_count) validated from the title manifest. See
+# tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
 LDFLAGS ?= -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
 # DirectInput (-ldinput8 -ldxguid) removed: gui.c controller input is now handled entirely by
 # the SDL3 gamepad subsystem (src/rt/gpu_sdl3vk). -lole32 stays (Media Foundation, h264_mf.c);
