@@ -1186,9 +1186,7 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
     # Keep the public text report to aggregate counts.  The machine-readable
     # verdict still carries the digest for local binding, but a CI summary must
     # not publish even a derived value from the private authority.
-    print(f"  trusted ledger   : external authority ("
-          f"{verdict['trusted_record_count']} records, "
-          f"{verdict['blob_approvals_available']} blob approvals)")
+    print("  trusted ledger   : external authority (details withheld)")
     if verdict.get("authority_revision"):
         print(f"  authority rev    : {verdict['authority_revision']}")
     print(f"  public paths     : {verdict['public_path_count']}")

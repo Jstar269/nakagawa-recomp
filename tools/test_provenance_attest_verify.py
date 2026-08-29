@@ -142,8 +142,8 @@ class Repository:
         target.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
-        # codeql[py/clear-text-storage-sensitive-data]
         # This is synthetic fixture data written only below a temporary test root.
+        # codeql[py/clear-text-storage-sensitive-data]
         target.write_bytes(raw)
 
     def remove(self, path: str) -> None:
@@ -244,8 +244,8 @@ class GateCase(unittest.TestCase):
         return document
 
     def write_trusted(self, document: dict) -> None:
-        # codeql[py/clear-text-storage-sensitive-data]
         # The authority document is synthetic test input in a temporary directory.
+        # codeql[py/clear-text-storage-sensitive-data]
         self.trusted_ledger.write_text(json.dumps(document, indent=2), encoding="utf-8", newline="\n")
 
     def write_policy(self, include_paths: list[str]) -> None:

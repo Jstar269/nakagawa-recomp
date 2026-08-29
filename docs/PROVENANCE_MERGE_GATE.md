@@ -360,8 +360,9 @@ paths, classification names, finding codes, and record ids **that the public
 ledger already names**. A trusted record id the public ledger does not carry is
 reported as `<withheld: private record id>`; redaction is display-only and can
 never change a verdict. The machine-readable verdict retains the trusted-ledger
-digest for local binding, but the human/public report emits only aggregate
-record and approval counts plus the authority repository's commit SHA.
+digest for local binding, but the human/public report emits only public tree
+identity and the authority repository's commit SHA; trusted record and approval
+counts are withheld.
 `--show-debt` keeps the path/backing summary and withholds detailed record
 fields. Nothing else about the private ledger crosses the public-log boundary.
 

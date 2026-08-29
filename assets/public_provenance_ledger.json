@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "702cc8012d1a708d907fb6a81fe2b29ac1883c5755fd8297029edce25b0c16d9"
+      "sha256": "4fa2972d971ead6edf53df0aeb2a216423f73f23b8d030c3a1fddf45bc433bd2"
     },
     {
       "path": ".gitignore",
@@ -805,7 +805,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fed1d70fd85dc49c3b08c27ed6136bd3526bfb600ba5df70d3e9528a12daaec9"
+      "sha256": "175d7e1e6b2e0336475a83a57165ce97ed9486b57691f6d76f66f21f1cc3373b"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -5857,7 +5857,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7b8e977472964f93cbb7eb73fa2476ec071327b88e9d65ecf1bd8783e4186a73"
+      "sha256": "b5ea09b7f9a492516f12fbbb4c403bf8c9977230b45311a922e3291089cb087f"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -6864,7 +6864,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "704c8f24dfb3237e1557938efdbf02be37bf905bd465987510cee13f8ee56811"
+      "sha256": "a8cd4cb367302d46ceac9dd6ae8289c577366eac23f8a2babeaf923db0a55750"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -7503,10 +7503,9 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "ad5a7461132c4236b8410d5451267edb7623a073",
-    "candidate_tree": "2c04af09847bc7cbaed94b1287183e7cc4003f70",
+    "trusted_tree": "8728803dbb8a4a09bbb9573d0d10bce087ecd93a",
+    "candidate_tree": "190e8ea10c571fe4e2f9ab4328a177b148ea7c53",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
       ".github/workflows/provenance-attestation.yml",
       "docs/PROVENANCE_MERGE_GATE.md",
       "tools/provenance_attest_verify.py",
