@@ -824,9 +824,10 @@ def vfpu_effect(addr, w):
             scalar_vidx = vreg_indices(which & 7, 1)[0]
             side = n
             writes = []
+            writes.append(f"float _sc = s->v[{scalar_vidx}];")
             for row in range(side - 1):
                 for col in range(side):
-                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * s->v[{scalar_vidx}];")
+                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
             last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
             last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
@@ -894,10 +895,10 @@ def vfpu_effect(addr, w):
     if op == 0x19 and sub == 4:  # vhdp
         ti = vreg_indices(vt, n)
         dst = vreg_indices(vd, 1)[0]
-        terms = "+".join(f"_s[{i}]*_t[{i}]" for i in range(n - 1)) + f"+1.0f*_t[{n - 1}]"
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d={terms}; _d=isnan(_d)?fabsf(_d):_d; "
+                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
+                f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
                 f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 5:  # vcrs
@@ -958,9 +959,10 @@ def vfpu_effect(addr, w):
         scalar_vidx = vreg_indices(vt, 1)[0]
         side = n
         writes = []
+        writes.append(f"float _sc = s->v[{scalar_vidx}];")
         for row in range(side - 1):
             for col in range(side):
-                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * s->v[{scalar_vidx}];")
+                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
         last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
         last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
@@ -2118,9 +2120,11 @@ def main(argv):
             func_texts.append(text); emitted.append(a); continue
 
         if hst_profile and a == 0x00046d14:
-            text = """void f_00046d14(CpuState *s) {  /* game loop entry trace */
-    fprintf(stderr, "GAMELOOP: entered L_00046d14 pc=0x%08x\\n", s->pc);
-    fflush(stderr);
+            text = """void f_00046d14(CpuState *s) {  /* temporary game-loop entry stub */
+    if (SR_DBG(SR_DBG_SCHED)) {
+        fprintf(stderr, "GAMELOOP: entered L_00046d14 pc=0x%08x\\n", s->pc);
+        fflush(stderr);
+    }
     s->pc = s->r[31];
 }"""
             func_texts.append(text); emitted.append(a); continue

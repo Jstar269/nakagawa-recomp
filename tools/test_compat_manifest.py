@@ -341,6 +341,13 @@ def hle_inventoried_addresses() -> set[int]:
     return result
 
 
+def hle_title_configured_addresses() -> set[int]:
+    result: set[int] = set()
+    for group in getattr(compat_overrides, "HLE_TITLE_CONFIGURED_COMPAT", []):
+        result.update(group["addresses"])
+    return result
+
+
 class HleGuestAddressCoverageTests(unittest.TestCase):
     """src/rt/hle.c is a generic PSP HLE layer by name. Every address in it that
     only means something in one title's memory map is title coupling, and has to
@@ -535,29 +542,32 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
 
     def test_census_counts_are_reconciled_exactly(self):
         """CENSUS RECONCILIATION (F): the extractor must currently find exactly
-        46 distinct addresses across 59 sites in src/rt/hle.c, with every site
-        inventoried and no stale inventory entries.  If the corrected scanner
-        legitimately changes these counts (for example after src/rt/hle.c
-        changes land from #91/#92), update the census and this assertion
-        together -- never silently.
+        30 distinct addresses across 36 sites in src/rt/hle.c, with every site
+        inventoried and no stale inventory entries.
 
-        38/50 -> 46/59 on 2026-08-21 when the indirect grammar landed: the eight
-        ensure_runtime_sync_callbacks addresses, plus a second (bound_local) site
-        for 0x0030b8d0, which the direct scan already saw through its
-        cast-wrapped MEM_R8 shape."""
+        46/59 -> 30/36 on 2026-08-27 when the four EXPLICIT_COMPATIBILITY_OVERRIDE
+        groups (libfont, frame latch, runtime_sync, display_setmode -- 16 addrs /
+        23 sites) were retired from generic hle.c into typed title configuration
+        (issue #98). The remaining 30/36 are DIAGNOSTIC_ONLY. Update the census
+        and this assertion together -- never silently."""
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        self.assertEqual(len(found), 46,
-                         "distinct-address census drifted from the reconciled 46; "
+        self.assertEqual(len(found), 30,
+                         "distinct-address census drifted from the reconciled 30; "
                          "recompute the census deliberately if the scanner "
                          "legitimately changed")
-        self.assertEqual(sum(len(v) for v in found.values()), 59,
-                         "site-count census drifted from the reconciled 59; "
+        self.assertEqual(sum(len(v) for v in found.values()), 36,
+                         "site-count census drifted from the reconciled 36; "
                          "recompute the census deliberately if the scanner "
                          "legitimately changed")
         missing = set(found) - hle_inventoried_addresses()
         stale = hle_inventoried_addresses() - set(found)
         self.assertEqual(missing, set())
         self.assertEqual(stale, set())
+        # Migrated groups must NOT be in hle.c any more (wrong-title safety).
+        migrated = hle_title_configured_addresses()
+        self.assertEqual(set(found) & migrated, set(),
+                         "migrated compat addresses must not appear in hle.c any more; "
+                         f"found migrated overlap: {sorted(hex(a) for a in set(found) & migrated)}")
 
     def test_old_ceiling_design_would_have_missed_high_ram_writes(self):
         """FAILING-BEFORE PROOF (A): reproduce the original extractor's ceiling
@@ -668,8 +678,33 @@ class CompatManifestCoverageTests(unittest.TestCase):
         claimed: set[int] = {int(o["address"]) for o in compat_overrides.DISPATCH_HOOKS if "address" in o}
         stale = claimed - live
         self.assertEqual(stale, set(),
-                          f"tools/compat_overrides.py DISPATCH_HOOKS lists address(es) no longer in "
-                          f"src/rt/recomp.c g_exact_hooks[] (stale entry): {sorted(hex(a) for a in stale)}")
+                         f"tools/compat_overrides.py DISPATCH_HOOKS lists address(es) no longer in "
+                         f"src/rt/recomp.c g_exact_hooks[] (stale entry): {sorted(hex(a) for a in stale)}")
+
+    def test_new_semantic_overrides_must_have_tests(self):
+        """Hardening (issue #98 #7): new semantic fixed-address overrides cannot be
+        added with test=\"none\" without an explicit fail-closed exception."""
+        # Grandfathered semantic codegen stubs that predate the gate (diagnostic
+        # litter, not new). A new temporary_compatibility_patch must name a test.
+        grandfathered_codegen = {0x0001034c, 0x001d9eb0}
+        for entry in compat_overrides.CODEGEN_CUSTOM_STUBS:
+            if entry["category"] != "temporary_compatibility_patch":
+                continue
+            if entry.get("test") != "none":
+                continue
+            self.assertIn(entry["address"], grandfathered_codegen,
+                          f"CODEGEN_CUSTOM_STUBS {hex(entry['address'])} ({entry['name']}) "
+                          "is a semantic override with test=\"none\"; add a regression or "
+                          "an explicit exception")
+        # HLE: EXPLICIT_COMPATIBILITY_OVERRIDE must never be test none
+        for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS:
+            if group["title2_bucket"] == "EXPLICIT_COMPATIBILITY_OVERRIDE":
+                self.assertNotEqual(group.get("test"), "none",
+                                    f"HLE group {group['name']} is EXPLICIT but has test none")
+        # Migrated groups are PROFILE_OWNED_CONFIGURATION and must be tested
+        for group in getattr(compat_overrides, "HLE_TITLE_CONFIGURED_COMPAT", []):
+            self.assertNotEqual(group.get("test"), "none",
+                                f"migrated HLE group {group['name']} must have a test")
 
 
 #: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c
@@ -691,12 +726,11 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
     """The indirect grammar: a guest address bound to a NAME, not written inside
     the call that uses it.
 
-    This class exists because the census was reporting itself complete at 38/38
-    while an entire title coupling -- a configuration block, a semaphore name
-    pointer and six guest wrapper entry points, all reached from an
-    unconditionally registered sceDisplaySetMode -- was invisible to the gate.
-    Every literal there is bound to a local or assigned into a CpuState register
-    first, so the direct-literal regex matched exactly none of them.
+    Historically the census reported complete at 38/38 while an entire title
+    coupling (runtime_sync) was invisible to the direct regex. The grammar was
+    added to catch it. Those 8 addresses are now typed title configuration
+    (issue #98) and must NOT appear in hle.c at all; the grammar itself remains
+    load-bearing for future indirect sites.
 
     Evidence tier: SOURCE_SHAPE / STATICALLY_SUPPORTED throughout. These tests
     read source, they do not run a guest.
@@ -705,44 +739,43 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
     def setUp(self) -> None:
         self.source = HLE_C.read_text(encoding="utf-8")
 
-    # ---- A: the real sites ------------------------------------------------
+    # ---- A: the migrated sites must be absent from hle.c -------------------
     def test_the_real_runtime_sync_sites_are_detected(self) -> None:
+        """The 8 runtime_sync addresses were migrated to title_config and must
+        NOT be found in hle.c any more (wrong-title safety). The indirect
+        grammar is still exercised by the synthetic snippets below."""
         found = extract_hle_guest_sites(self.source)
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
             with self.subTest(address=hex(address), role=role):
-                self.assertIn(address, found,
-                              f"0x{address:08x} ({role}) is title coupling in a generic "
-                              "PSP handler and must be visible to the gate")
-                shapes = {shape for _line, _fn, shape in found[address]}
-                self.assertTrue(shapes & {"bound_local", "cpu_state_register"},
-                                f"0x{address:08x} was found only through {sorted(shapes)}; "
-                                "this test would then pass without the indirect grammar")
+                self.assertNotIn(address, found,
+                                 f"0x{address:08x} ({role}) migrated to title_config; "
+                                 "it must not appear in hle.c any more")
 
     def test_the_real_runtime_sync_sites_are_inventoried(self) -> None:
-        inventoried = hle_inventoried_addresses()
+        """Migrated sites are inventoried in HLE_TITLE_CONFIGURED_COMPAT, not in
+        the live HLE_GUEST_ADDRESS_GROUPS."""
+        live = hle_inventoried_addresses()
+        configured = hle_title_configured_addresses()
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
             with self.subTest(address=hex(address), role=role):
-                self.assertIn(address, inventoried)
+                self.assertNotIn(address, live,
+                                 f"0x{address:08x} must not be in live HLE census")
+                self.assertIn(address, configured,
+                              f"0x{address:08x} must be in title-configured inventory")
 
     def test_the_sites_are_attributed_to_their_real_enclosing_function(self) -> None:
-        """The historical h_*-only function regex attributed everything in this
-        helper to whichever handler happened to precede it."""
+        """After migration this is a negative control: the addresses must not be
+        attributed to any function in hle.c."""
         found = extract_hle_guest_sites(self.source)
         for address in RUNTIME_SYNC_CALLBACK_SITES:
-            functions = {fn for _line, fn, _shape in found[address]}
-            self.assertEqual(functions, {"ensure_runtime_sync_callbacks"},
-                             f"0x{address:08x} attributed to {sorted(functions)}")
+            self.assertNotIn(address, found,
+                             f"0x{address:08x} should not be in any hle.c function after migration")
 
     def test_the_direct_regex_alone_finds_none_of_them(self) -> None:
-        """FAILING-BEFORE PROOF: run the pre-2026-08-21 direct-literal scan over
-        the same source and show it matched none of the eight. If this ever
-        starts finding them, the indirect grammar is no longer load-bearing and
-        the tests above have become vacuous."""
-        direct = set()
-        for match in HLE_GUEST_ADDRESS_RE.finditer(self.source):
-            direct.add(int(match.group(1) or match.group(2), 16))
-        self.assertEqual(direct & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
-                         "the direct-literal shapes now reach the indirect sites")
+        """The 8 addresses must be absent from both direct and indirect scans."""
+        found = extract_hle_guest_addresses(self.source)
+        self.assertEqual(found.keys() & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
+                         "migrated runtime_sync addresses must not appear in hle.c")
 
     # ---- B: const-local address propagation --------------------------------
     def test_a_const_local_used_as_an_address_base_is_detected(self) -> None:
@@ -804,15 +837,23 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- E/F: inventory drift ----------------------------------------------
     def test_a_missing_inventory_entry_fails_the_gate(self) -> None:
-        """Drop one of the eight from the inventory and the coverage gate must
-        fail. Asserted through the same set arithmetic the gate uses."""
+        """Drop one live diagnostic address from the inventory and the gate must fail."""
         found = set(extract_hle_guest_addresses(self.source))
+        # Pick a known live diagnostic address (0x0030a000 is in guest_bss_snapshots)
+        live_example = 0x0030a000
+        self.assertIn(live_example, found, "live diagnostic address not found for drift test")
+        thinned = hle_inventoried_addresses() - {live_example}
+        self.assertEqual(found - thinned, {live_example},
+                         "removing a live inventory entry must leave exactly that "
+                         "address uncovered")
+        # Migrated addresses are not in live inventory; dropping one must not affect live census
         for address in RUNTIME_SYNC_CALLBACK_SITES:
             with self.subTest(address=hex(address)):
-                thinned = hle_inventoried_addresses() - {address}
-                self.assertEqual(found - thinned, {address},
-                                 "removing an inventory entry must leave exactly that "
-                                 "address uncovered")
+                self.assertNotIn(address, found)
+                self.assertNotIn(address, hle_inventoried_addresses())
+                thinned2 = hle_inventoried_addresses() - {address}
+                self.assertEqual(found - thinned2, set(),
+                                 "migrated address should not be in live census")
 
     def test_a_stale_inventory_entry_fails_the_gate(self) -> None:
         found = set(extract_hle_guest_addresses(self.source))
@@ -823,17 +864,19 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- G: the grammar itself must not go silently dead --------------------
     def test_the_indirect_grammar_is_not_vacuous(self) -> None:
-        """BLIND-SPOT REGRESSION: if extract_hle_indirect_sites stops matching --
-        a regex edit, a formatting change in hle.c -- every test above would pass
-        for the wrong reason on an inventory that still lists the addresses."""
+        """The grammar must still be live. The 8 migrated addresses are gone,
+        but the diagnostic umd dump still uses an indirect site (0x0030b8d0 via
+        bound_local), so at least one indirect site should remain. The synthetic
+        snippet tests further prove both shapes."""
         indirect = extract_hle_indirect_sites(self.source)
-        self.assertGreaterEqual(len(indirect), 8,
-                                "the indirect grammar matched almost nothing; it has "
-                                "probably gone dead and its coverage tests with it")
-        self.assertTrue(set(RUNTIME_SYNC_CALLBACK_SITES) <= set(indirect))
-        shapes = {shape for sites in indirect.values() for _l, _f, shape in sites}
-        self.assertEqual(shapes, {"bound_local", "cpu_state_register"},
-                         "both indirect shapes must still be live")
+        self.assertGreaterEqual(len(indirect), 1,
+                                "indirect grammar matched nothing; it has gone dead")
+        # The remaining indirect should be the diagnostic umd dump, not the migrated 8
+        self.assertNotIn(0x0030b8d0, set(RUNTIME_SYNC_CALLBACK_SITES))
+        self.assertIn(0x0030b8d0, indirect,
+                      "the diagnostic umd dump (0x0030b8d0) should still be indirect")
+        self.assertEqual(set(indirect) & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
+                         "migrated runtime_sync addresses must not be indirect in hle.c any more")
 
     def test_function_spans_do_not_collapse(self) -> None:
         """The grammar is per-function: if span detection degraded to one giant
@@ -861,13 +904,13 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
                          "a literal that never reaches guest state is not coupling")
 
     def test_the_real_file_produces_no_unclassified_indirect_address(self) -> None:
-        """The grammar's false-positive rate on the real file is zero: every
-        address it reports is either one of the eight or an address the direct
-        scan already inventoried."""
+        """Every indirect address in the real file must be inventoried as diagnostic."""
         indirect = set(extract_hle_indirect_sites(self.source))
-        unexpected = indirect - set(RUNTIME_SYNC_CALLBACK_SITES) - hle_inventoried_addresses()
-        self.assertEqual(unexpected, set(),
-                         f"unclassified: {sorted(hex(a) for a in unexpected)}")
+        # Only diagnostic umd dump should remain as indirect; all 8 migrated are gone
+        expected_indirect = {0x0030b8d0}
+        self.assertEqual(indirect, expected_indirect,
+                         f"unclassified indirect in hle.c: {sorted(hex(a) for a in indirect)}")
+        self.assertTrue(expected_indirect <= hle_inventoried_addresses())
 
     def test_the_alignment_rule_is_what_excludes_the_sentinels(self) -> None:
         """Document the limit honestly: the indirect shapes admit only 4-byte
@@ -883,12 +926,10 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- I: a ninth hidden callback must fail the gate ---------------------
     def test_a_ninth_hidden_callback_literal_fails_the_gate(self) -> None:
-        """MUTATION: add a ninth hidden wrapper target to the real handler the
-        same way the existing six are written, and the coverage gate must refuse
-        it. This is the property the whole slice exists for."""
+        """MUTATION: add a new direct MEM_W32 at a fresh address; the gate must refuse it."""
         contaminated = self.source.replace(
-            "        enter = 0x000824c0u;",
-            "        enter = 0x000824c0u;\n        leave = 0x0009abc0u;",
+            "DISPLAY_SET_MODE: display bringup not configured",
+            "DISPLAY_SET_MODE: display bringup not configured\n    MEM_W32(0x0009abc0u, 1u);",
             1,
         )
         self.assertNotEqual(contaminated, self.source, "mutation anchor not found")
@@ -901,20 +942,17 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- the inventory entry itself ----------------------------------------
     def test_the_inventory_entry_states_its_retirement_shape(self) -> None:
-        """The eight are PROFILE_OWNED_CONFIGURATION in shape but are NOT typed
-        configuration today. The entry has to say both, and has to say that the
-        mode-keyed pairs must not be flattened into scalar bindings."""
-        group = next(g for g in compat_overrides.HLE_GUEST_ADDRESS_GROUPS
+        """The eight migrated groups are now PROFILE_OWNED_CONFIGURATION via
+        title_config; the entry must say so and that pairs are not flattened."""
+        group = next(g for g in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
                      if g["name"] == "runtime_sync_callback_config")
-        self.assertEqual(group["title2_bucket"], "EXPLICIT_COMPATIBILITY_OVERRIDE")
+        self.assertEqual(group["title2_bucket"], "PROFILE_OWNED_CONFIGURATION")
         self.assertEqual(set(group["addresses"]), set(RUNTIME_SYNC_CALLBACK_SITES))
-        self.assertIn("PROFILE_OWNED_CONFIGURATION", group["retirement"])
+        self.assertIn("typed", group["retirement"].lower())
         self.assertIn("not be flattened", group["retirement"].replace("NOT", "not"))
-        # The claim must stay a source claim: no route was run for it. SOURCE_SHAPE is
-        # the label AGENTS.md section 9 defines for "static structure/text/emission
-        # assertion only" -- the inventory must not invent a competing vocabulary.
+        # The migrated entry's evidence is now title_config gated, not a direct hle.c shape
         self.assertEqual(group["evidence_tier"], "SOURCE_SHAPE")
-        self.assertIn("SOURCE_SHAPE", group["evidence"])
+        self.assertIn("title_config", group["evidence"].lower())
 
 if __name__ == "__main__":
     unittest.main()

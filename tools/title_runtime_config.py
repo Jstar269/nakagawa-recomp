@@ -30,7 +30,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 2
+GENERATED_SCHEMA_VERSION = 3
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -40,6 +40,13 @@ FIELD_BITS: dict[str, str] = {
     "launcher_thread_entry": "SR_TITLE_CFG_LAUNCHER_ENTRY",
     "vblank_frame_counter_addr": "SR_TITLE_CFG_VBLANK_COUNTERS",
     "vblank_vsync_counter_addr": "SR_TITLE_CFG_VBLANK_COUNTERS",
+    "libfont_ready_flag_addr": "SR_TITLE_CFG_LIBFONT_READY",
+    "frame_ready_latch_addr": "SR_TITLE_CFG_FRAME_LATCH",
+}
+
+#: Emitted count -> the C validity bit that gates it. Zero is disabled.
+COUNT_BITS: dict[str, str] = {
+    "expected_data_file_count": "SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT",
 }
 
 #: Emitted collection -> the C validity bit that gates it. A collection counts as
@@ -48,6 +55,13 @@ FIELD_BITS: dict[str, str] = {
 COLLECTION_BITS: dict[str, str] = {
     "dispatch_aliases": "SR_TITLE_CFG_DISPATCH_ALIASES",
     "callback_terminators": "SR_TITLE_CFG_CALLBACK_TERMINATORS",
+}
+
+#: Emitted object -> the C validity bit that gates it. An object is atomic:
+#: either fully configured or absent.
+OBJECT_BITS: dict[str, str] = {
+    "display_bringup": "SR_TITLE_CFG_DISPLAY_BRINGUP",
+    "runtime_sync": "SR_TITLE_CFG_RUNTIME_SYNC",
 }
 
 GENERIC_SOURCE_ID = "none"
@@ -67,7 +81,7 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
     normalized = title_manifest.validate_manifest(manifest)
     block = dict(normalized.get("runtime_bindings") or {})
     block.pop("schema_version", None)
-    unknown = sorted(set(block) - set(FIELD_BITS) - set(COLLECTION_BITS))
+    unknown = sorted(set(block) - set(FIELD_BITS) - set(COLLECTION_BITS) - set(OBJECT_BITS) - set(COUNT_BITS))
     if unknown:
         # Unreachable through the validator; a fail-closed guard against a future
         # manifest field silently reaching the runtime without a C binding.
@@ -100,6 +114,16 @@ def binding_summary(config: dict[str, Any]) -> str:
         entries = bindings.get(name, [])
         if entries:
             parts.append(f"{len(entries)} {name.replace('_', ' ')}")
+    for name in OBJECT_BITS:
+        if name in bindings:
+            obj = bindings[name]
+            if name == "runtime_sync":
+                parts.append(f"{len(obj.get('wrappers', []))} runtime sync wrappers")
+            else:
+                parts.append(f"1 {name.replace('_', ' ')}")
+    for name in COUNT_BITS:
+        if name in bindings:
+            parts.append(f"{name}={bindings[name]}")
     return ", ".join(parts)
 
 
@@ -108,13 +132,15 @@ def render_header(config: dict[str, Any]) -> str:
     # Fail closed on a binding with no C representation rather than filtering it out: a
     # silently dropped field would reach neither the header nor an error, and the build
     # would look successful while the binding did nothing.
-    unrepresentable = sorted(set(bindings) - set(FIELD_BITS) - set(COLLECTION_BITS))
+    unrepresentable = sorted(set(bindings) - set(FIELD_BITS) - set(COLLECTION_BITS) - set(OBJECT_BITS) - set(COUNT_BITS))
     if unrepresentable:
         raise TitleRuntimeConfigError(
             "runtime binding(s) have no runtime representation: " + ", ".join(unrepresentable)
         )
     valid = sorted({FIELD_BITS[name] for name in bindings if name in FIELD_BITS} |
-                   {COLLECTION_BITS[name] for name in bindings if name in COLLECTION_BITS})
+                   {COLLECTION_BITS[name] for name in bindings if name in COLLECTION_BITS} |
+                   {OBJECT_BITS[name] for name in bindings if name in OBJECT_BITS} |
+                   {COUNT_BITS[name] for name in bindings if name in COUNT_BITS})
     valid_text = " | ".join(valid) if valid else "0u"
     source_id = config["source_id"]
     if '"' in source_id or "\\" in source_id:
@@ -163,6 +189,50 @@ def render_header(config: dict[str, Any]) -> str:
             f"0x{entry['sentinel']:08x}u, "
             f"{1 if 'pc' in entry else 0}u, 0x{entry.get('pc', 0):08x}u, "
             f"{1 if 'ra' in entry else 0}u, 0x{entry.get('ra', 0):08x}u){tail}")
+
+    # Display bringup: atomic object, zero when unconfigured.
+    bringup = bindings.get('display_bringup')
+    if bringup:
+        lines += ['',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY 0x{bringup["malloc_entry"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_VBLANK_DEVICE_INIT_ENTRY 0x{bringup["vblank_device_init_entry"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_INIT_ENTRY 0x{bringup["render_context_init_entry"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_MAGIC_ADDR 0x{bringup["render_context_magic_addr"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_TABLE_READY_FLAG_ADDR 0x{bringup["render_table_ready_flag_addr"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_WORD_ADDR 0x{bringup["render_context_word_addr"]:08x}u']
+    else:
+        lines += ['',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY 0x00000000u',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_VBLANK_DEVICE_INIT_ENTRY 0x00000000u',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_INIT_ENTRY 0x00000000u',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_MAGIC_ADDR 0x00000000u',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_TABLE_READY_FLAG_ADDR 0x00000000u',
+                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_WORD_ADDR 0x00000000u']
+
+    # Runtime sync: atomic object with mode-keyed wrapper pairs.
+    runtime_sync = bindings.get('runtime_sync')
+    if runtime_sync:
+        lines += ['',
+                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_CONFIG_BASE 0x{runtime_sync["config_base"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_SEMA_NAME_PTR 0x{runtime_sync["sema_name_ptr"]:08x}u',
+                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_COUNT {len(runtime_sync["wrappers"])}',
+                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_LIST' + (CONT if runtime_sync["wrappers"] else '')]
+        for idx, w in enumerate(runtime_sync["wrappers"]):
+            tail = CONT if idx + 1 < len(runtime_sync["wrappers"]) else ''
+            lines.append(f'    SR_TITLE_CFG_RUNTIME_SYNC_WRAPPER({w["mode"]}u, 0x{w["enter"]:08x}u, 0x{w["leave"]:08x}u){tail}')
+    else:
+        lines += ['',
+                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_CONFIG_BASE 0x00000000u',
+                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_SEMA_NAME_PTR 0x00000000u',
+                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_COUNT 0',
+                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_LIST']
+
+    # Expected data file count: scalar typed census, 0 = disabled.
+    for name in COUNT_BITS:
+        macro = "SR_TITLE_CONFIG_" + name.upper()
+        value = bindings.get(name, 0)
+        lines.append(f"#define {macro} {value}u")
+
     lines += ["", "#endif /* SR_TITLE_CONFIG_GENERATED_H */", ""]
     return "\n".join(lines)
 
