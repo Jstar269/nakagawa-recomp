@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e92905dbe8c2f27aa6dddf73544670d57a9efcbd600412b20bac5cd6d53f1a4a"
+      "sha256": "9d6450b1647096342ad8b165ffcc849f26e2f7ba3ef1bb9eeb327c856014da20"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a10a83f81afc8687ae410fab7276494199d281f598c74c64e70081b70bd52785"
+      "sha256": "702cc8012d1a708d907fb6a81fe2b29ac1883c5755fd8297029edce25b0c16d9"
     },
     {
       "path": ".gitignore",
@@ -805,7 +805,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7e39a596e1c9c8e5ee1087d6e00ce4cda25589a6b8f82be78202abb04bda29e4"
+      "sha256": "fed1d70fd85dc49c3b08c27ed6136bd3526bfb600ba5df70d3e9528a12daaec9"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -5857,7 +5857,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c52351c61d2ce0229a4e0811e2892deb46153a09330f6d3a4b31512736b69e5b"
+      "sha256": "7b8e977472964f93cbb7eb73fa2476ec071327b88e9d65ecf1bd8783e4186a73"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -6864,7 +6864,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "055efa1b2784ce71a579d06c7e3c6174c6fc078f21d7491e83eaac8783910e29"
+      "sha256": "704c8f24dfb3237e1557938efdbf02be37bf905bd465987510cee13f8ee56811"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -7500,5 +7500,17 @@
       },
       "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "ad5a7461132c4236b8410d5451267edb7623a073",
+    "candidate_tree": "2c04af09847bc7cbaed94b1287183e7cc4003f70",
+    "refreshed_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/provenance-attestation.yml",
+      "docs/PROVENANCE_MERGE_GATE.md",
+      "tools/provenance_attest_verify.py",
+      "tools/test_provenance_attest_verify.py"
+    ]
+  }
 }

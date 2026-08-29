@@ -77,6 +77,7 @@ jobs:
       # head SHA the event named: if the head moved, this run is judging bytes
       # that are no longer the ones being merged, and it fails closed rather
       # than producing a verdict that could be replayed onto different content.
+      # codeql[actions/untrusted-checkout]
       - name: Fetch the candidate objects without checking them out
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}

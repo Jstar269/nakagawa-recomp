@@ -359,11 +359,11 @@ artifact, and never printed. The verifier emits only public data: repository
 paths, classification names, finding codes, and record ids **that the public
 ledger already names**. A trusted record id the public ledger does not carry is
 reported as `<withheld: private record id>`; redaction is display-only and can
-never change a verdict. The run reports the SHA-256 of the trusted ledger bytes,
-its record count, and the authority repository's commit SHA, so two runs can be
-compared and authority substitution detected without disclosing content. Those
-three are deliberate aggregate disclosures in a public log; nothing else about
-the private ledger crosses the boundary.
+never change a verdict. The machine-readable verdict retains the trusted-ledger
+digest for local binding, but the human/public report emits only aggregate
+record and approval counts plus the authority repository's commit SHA.
+`--show-debt` keeps the path/backing summary and withholds detailed record
+fields. Nothing else about the private ledger crosses the public-log boundary.
 
 ## Running it locally
 

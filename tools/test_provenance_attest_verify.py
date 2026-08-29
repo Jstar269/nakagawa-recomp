@@ -126,6 +126,10 @@ class Repository:
         self._git("config", "user.email", "fixture@example.invalid")
         self._git("config", "user.name", "Fixture")
         self._git("config", "commit.gpgsign", "false")
+        # Keep Git from starting background maintenance while TemporaryDirectory
+        # is removing this throwaway repository on hosted Python 3.14 runners.
+        self._git("config", "gc.auto", "0")
+        self._git("config", "maintenance.auto", "false")
 
     def _git(self, *args: str) -> str:
         result = subprocess.run(
@@ -138,6 +142,8 @@ class Repository:
         target.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
+        # codeql[py/clear-text-storage-sensitive-data]
+        # This is synthetic fixture data written only below a temporary test root.
         target.write_bytes(raw)
 
     def remove(self, path: str) -> None:
@@ -238,6 +244,8 @@ class GateCase(unittest.TestCase):
         return document
 
     def write_trusted(self, document: dict) -> None:
+        # codeql[py/clear-text-storage-sensitive-data]
+        # The authority document is synthetic test input in a temporary directory.
         self.trusted_ledger.write_text(json.dumps(document, indent=2), encoding="utf-8", newline="\n")
 
     def write_policy(self, include_paths: list[str]) -> None:

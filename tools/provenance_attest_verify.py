@@ -1183,8 +1183,11 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
     print(f"  candidate commit : {scope['candidate_commit']}")
     print(f"  candidate tree   : {scope['candidate_tree']}")
     print(f"  base commit      : {scope['base_commit']}")
-    print(f"  trusted ledger   : sha256={verdict['trusted_ledger_sha256']} "
-          f"({verdict['trusted_record_count']} records, "
+    # Keep the public text report to aggregate counts.  The machine-readable
+    # verdict still carries the digest for local binding, but a CI summary must
+    # not publish even a derived value from the private authority.
+    print(f"  trusted ledger   : external authority ("
+          f"{verdict['trusted_record_count']} records, "
           f"{verdict['blob_approvals_available']} blob approvals)")
     if verdict.get("authority_revision"):
         print(f"  authority rev    : {verdict['authority_revision']}")
@@ -1211,9 +1214,8 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
           "corrected to what authority derives; 'blanket'/'none' needs a trusted record first")
     if show_debt:
         for item in debt:
-            print(f"          [{item['backing']}] {item['path']}: claims {item['claimed']} "
-                  f"(record_id={item['claimed_record_id']}), trusted derives {item['trusted']} "
-                  f"(record_id={item['trusted_record_id']})")
+            print(f"          [{item['backing']}] {item['path']}: "
+                  "public claim differs; private record details withheld")
     print(f"  verdict: {verdict['verdict'].upper()} ({verdict['fatal_count']} fatal finding(s))")
 
 

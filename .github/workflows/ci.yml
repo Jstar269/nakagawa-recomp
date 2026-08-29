@@ -288,6 +288,7 @@ jobs:
           mkdir -p build/title-config/generic
           python tools/title_runtime_config.py \
             --output build/title-config/generic/sr_title_config.h
+          python tools/vfpu_overlap_diff_gen.py build/vfpu_overlap_diff_cases.h
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
