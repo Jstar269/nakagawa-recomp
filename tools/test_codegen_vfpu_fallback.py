@@ -76,6 +76,36 @@ class VfpuFallbackTests(unittest.TestCase):
         self.assertNotRegex(effect, r"float _v[0-9]=0\.0f\+",
                             "chained vtfm expression reintroduces the NaN payload split")
 
+    def test_vhdp_accumulates_into_a_local_with_ordered_loop(self):
+        # Issue #40: vhdp must accumulate with an ordered loop so the host
+        # compiler cannot reassociate the sum and pick a different NaN payload.
+        word=(0x19<<26)|(4<<23)|(0<<16)|(1<<15)|(0x20<<8)|(0x20)  # vhdp.t 3-lane, vd=0x20, vs=0x20, vt=0x00
+        effect,_,_=codegen.vfpu_effect(0x5200,word)
+        self.assertIn("float _d=0.0f;",effect)
+        self.assertIn("for(int _i=0;_i<2;_i++) _d+=_s[_i]*_t[_i];",effect)
+        self.assertIn("_d+=1.0f*_t[2];",effect)
+        self.assertNotRegex(effect, r"float _d=0\.0f\+",
+                            "chained vhdp expression reintroduces the NaN payload split")
+
+    def test_vmscl_snapshots_scalar_before_destructive_writes(self):
+        # Issue #40: vmscl must snapshot the scalar before any destination write
+        # so overlapping scalar-in-destination reads the original value.
+        word=(0x3c<<26)|(4<<23)|(0<<16)|(1<<15)|(0x20<<8)|(0x20)  # vmscl.t 3x3, vd=0x20, vs=0x20, vt=0x00
+        effect,_,_=codegen.vfpu_effect(0x5300,word)
+        self.assertIn("float _sc = s->v[0];",effect)
+        self.assertIn("s->v[0] = s->v[0] * _sc;",effect)
+        self.assertNotIn("s->v[0] * s->v[0]",effect,
+                         "vmscl must not read the scalar fresh after it is overwritten")
+
+    def test_vmscl_alias_snapshots_scalar_before_destructive_writes(self):
+        # Issue #40: Matrix1 vmscl alias path has the same scalar-overlap contract.
+        word=(0x3c<<26)|(7<<23)|(1<<16)|(1<<15)|(0x20<<8)|(0x20)  # Matrix1 which=1, vd=0x20, vs=0x20
+        effect,_,_=codegen.vfpu_effect(0x5400,word)
+        self.assertIn("float _sc = s->v[4];",effect)
+        self.assertIn("s->v[0] = s->v[0] * _sc;",effect)
+        self.assertNotIn("s->v[0] * s->v[4]",effect,
+                         "vmscl alias must not read the scalar fresh after it is overwritten")
+
 
 if __name__ == "__main__":
     unittest.main()

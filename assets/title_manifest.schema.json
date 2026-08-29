@@ -324,6 +324,64 @@
       },
       "anyOf": [{"required": ["pc"]}, {"required": ["ra"]}]
     },
+    "displayBringup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["malloc_entry", "vblank_device_init_entry", "render_context_init_entry", "render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"],
+      "properties": {
+        "malloc_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "vblank_device_init_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "render_context_init_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "render_context_magic_addr": {"$ref": "#/$defs/guestAddress"},
+        "render_table_ready_flag_addr": {"$ref": "#/$defs/guestAddress"},
+        "render_context_word_addr": {"$ref": "#/$defs/guestAddress"}
+      }
+    },
+    "runtimeSyncWrapper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "enter", "leave"],
+      "properties": {
+        "mode": {"type": "integer", "minimum": 0, "maximum": 2},
+        "enter": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "leave": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        }
+      }
+    },
+    "runtimeSync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_base", "sema_name_ptr", "wrappers"],
+      "properties": {
+        "config_base": {"$ref": "#/$defs/guestAddress"},
+        "sema_name_ptr": {"$ref": "#/$defs/guestAddress"},
+        "wrappers": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/runtimeSyncWrapper"}}
+      }
+    },
     "runtimeBindings": {
       "type": "object",
       "additionalProperties": false,
@@ -336,6 +394,15 @@
         "launcher_thread_entry": {"$ref": "#/$defs/guestAddress"},
         "vblank_frame_counter_addr": {"$ref": "#/$defs/guestAddress"},
         "vblank_vsync_counter_addr": {"$ref": "#/$defs/guestAddress"},
+        "libfont_ready_flag_addr": {"$ref": "#/$defs/guestAddress"},
+        "frame_ready_latch_addr": {"$ref": "#/$defs/guestAddress"},
+        "expected_data_file_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "display_bringup": {"$ref": "#/$defs/displayBringup"},
+        "runtime_sync": {"$ref": "#/$defs/runtimeSync"},
         "dispatch_aliases": {
           "type": "array", "minItems": 1, "maxItems": 32,
           "items": {"$ref": "#/$defs/dispatchAlias"}

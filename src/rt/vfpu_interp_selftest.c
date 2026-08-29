@@ -38,6 +38,7 @@
 #include "recomp.c"
 #include "vfpu_tables.c"
 #include "vfpu_interp.c"
+#include "vfpu_overlap_diff_cases.h"
 
 #include <fenv.h>
 #include <stdio.h>
@@ -370,6 +371,141 @@ static int check_vrot_overlap(void) {
     return bad;
 }
 
+static int check_vhdp_vmscl_overlap(void) {
+    CpuState s;
+    int bad = 0;
+
+    /* vhdp.t (op 0x19 sub 4): destination overlaps source lanes.
+     * vd=0x20 (physical v[1] for scalar result), vs=0x20 (v[0],v[4],v[8]), vt=0x00 (v[0],v[1],v[2]).
+     * The scalar term is 1.0 * t[2] = v[2]. */
+    setup_identity_compute(&s);
+    s.v[0] = 2.0f;
+    s.v[4] = 3.0f;
+    s.v[8] = 5.0f;
+    s.v[1] = 7.0f;
+    s.v[2] = 11.0f;
+    uint32_t vhdp = (0x19u << 26) | (4u << 23) | (0u << 16) | (0x20u << 8) | (1u << 15) | 0x20u;
+    CHECK(sr_vfpu_interp(&s, vhdp) == SR_VFPU_COMPUTE, "vhdp.t overlap computes");
+    CHECK(s.v[1] == 2.0f * 2.0f + 3.0f * 7.0f + 1.0f * 11.0f,
+          "vhdp.t overlap accumulation matches dot-product contract");
+    if (s.v[1] != 2.0f * 2.0f + 3.0f * 7.0f + 1.0f * 11.0f) bad = 1;
+
+    /* vmscl.t (op 0x3C sub 4): scalar inside destination matrix.
+     * vd=0x20 (v[0..10]), vs=0x20 (v[0..10]), vt=0x00 (scalar at v[0]).
+     * The scalar is read once before the early-row loop, but the last row
+     * re-reads it via sr_vread from the live v[] array, so if the scalar
+     * register lies inside the destination it sees the clobbered value. */
+    setup_identity_compute(&s);
+    s.v[0] = 3.0f;  /* scalar */
+    s.v[1] = 2.0f;  /* source row 0 col 1 */
+    s.v[4] = 5.0f;  /* source row 1 col 0 */
+    s.v[9] = 7.0f;  /* source row 2 col 1 */
+    uint32_t vmscl = (0x3Cu << 26) | (4u << 23) | (0u << 16) | (0x20u << 8) | (1u << 15) | 0x20u;
+    CHECK(sr_vfpu_interp(&s, vmscl) == SR_VFPU_COMPUTE, "vmscl.t scalar-in-dest computes");
+    CHECK(s.v[0] == 3.0f * 3.0f, "vmscl.t row0col0 uses original scalar");
+    CHECK(s.v[1] == 2.0f * 3.0f, "vmscl.t row0col1 uses original scalar");
+    CHECK(s.v[4] == 5.0f * 3.0f, "vmscl.t row1col0 uses original scalar");
+    CHECK(s.v[9] == 7.0f * 9.0f, "vmscl.t row2col1 sees clobbered scalar");
+    if (s.v[0] != 3.0f * 3.0f || s.v[1] != 2.0f * 3.0f ||
+        s.v[4] != 5.0f * 3.0f || s.v[9] != 7.0f * 9.0f) bad = 1;
+
+    /* vmscl alias (Matrix1 which=1): scalar at register which (v[4] for which=1).
+     * vs=0x20, vd=0x20. The scalar v[4] is overwritten by row 1 col 0, so the
+     * last row reads the product through sr_vread. */
+    setup_identity_compute(&s);
+    s.v[0] = 4.0f;  /* source row 0 col 0 */
+    s.v[1] = 3.0f;  /* source row 0 col 1 */
+    s.v[4] = 6.0f;  /* scalar AND source row 1 col 0 */
+    s.v[9] = 8.0f;  /* source row 2 col 1 */
+    uint32_t vmscl_alias = (0x3Cu << 26) | (7u << 23) | (1u << 16) | (0x20u << 8) | (1u << 15) | 0x20u;
+    CHECK(sr_vfpu_interp(&s, vmscl_alias) == SR_VFPU_COMPUTE, "vmscl alias scalar-in-dest computes");
+    CHECK(s.v[0] == 4.0f * 6.0f, "vmscl alias row0col0 uses original scalar");
+    CHECK(s.v[1] == 3.0f * 6.0f, "vmscl alias row0col1 uses original scalar");
+    CHECK(s.v[4] == 6.0f * 6.0f, "vmscl alias row1col0 overwrites scalar");
+    CHECK(s.v[9] == 8.0f * 36.0f, "vmscl alias row2col1 sees clobbered scalar");
+    if (s.v[0] != 4.0f * 6.0f || s.v[1] != 3.0f * 6.0f ||
+        s.v[4] != 6.0f * 6.0f || s.v[9] != 8.0f * 36.0f) bad = 1;
+
+    return bad;
+}
+
+static int check_overlap_diff(void) {
+    CpuState s0, s1, s2;
+    int bad = 0;
+
+    for (int c = 0; c < OVERLAP_DIFF_NCASES; c++) {
+        uint32_t w = overlap_diff_cases[c].w;
+        const char *name = overlap_diff_cases[c].name;
+        int case_bad = 0;
+
+        memset(&s0, 0, sizeof(s0));
+        for (int i = 0; i < 128; i++) {
+            int32_t m = (int32_t)((i * 37 + c * 13) % 8192) - 4096;
+            s0.v[i] = (float)m / 32.0f;
+        }
+        s0.vfpuCtrl[0] = 0xe4u;
+        s0.vfpuCtrl[1] = 0xe4u;
+        s0.vfpuCtrl[2] = 0u;
+        s0.vfpuCtrl[3] = 0u;
+
+        s1 = s0;
+        s2 = s0;
+        overlap_diff_run_codegen(&s1, c);
+        int kind = sr_vfpu_interp(&s2, w);
+        CHECK(kind == SR_VFPU_COMPUTE, "overlap diff interp executes");
+        if (kind != SR_VFPU_COMPUTE) { case_bad = 1; }
+
+        for (int i = 0; i < 128 && !case_bad; i++) {
+            if (s1.vi[i] != s2.vi[i]) {
+                fprintf(stderr,
+                        "MISMATCH overlap diff case=%s op=0x%08x: v%d codegen=0x%08x (%g) interp=0x%08x (%g)\n",
+                        name, w, i, s1.vi[i], s1.v[i], s2.vi[i], s2.v[i]);
+                case_bad = 1;
+                break;
+            }
+        }
+        for (int i = 0; i < 4 && !case_bad; i++) {
+            if (s1.vfpuCtrl[i] != s2.vfpuCtrl[i]) {
+                fprintf(stderr,
+                        "MISMATCH overlap diff case=%s op=0x%08x: vfpuCtrl[%d] codegen=0x%08x interp=0x%08x\n",
+                        name, w, i, s1.vfpuCtrl[i], s2.vfpuCtrl[i]);
+                case_bad = 1;
+                break;
+            }
+        }
+        if (case_bad) bad = 1;
+    }
+    return bad;
+}
+
+static int check_vhdp_signed_zero_corpus(void) {
+    CpuState codegen, interp;
+    setup_identity_compute(&codegen);
+    /* The exotic vhdp.t case uses vs={v0,v1,v2}, vt={v16,v17,v18}, vd={v32}.
+     * Every product is -0. IEEE chained addition preserves -0, while the
+     * repaired ordered accumulator starts at +0 and produces +0. */
+    codegen.vi[0] = 0x00000000u;
+    codegen.vi[1] = 0x00000000u;
+    codegen.vi[2] = 0x00000000u;
+    codegen.vi[16] = 0x80000000u;
+    codegen.vi[17] = 0x80000000u;
+    codegen.vi[18] = 0x80000000u;
+    codegen.vi[32] = 0xdeadbeefu;
+    interp = codegen;
+
+    overlap_diff_run_codegen(&codegen, OVERLAP_DIFF_VHDP_EXOTIC_INDEX);
+    int kind = sr_vfpu_interp(&interp,
+                              overlap_diff_cases[OVERLAP_DIFF_VHDP_EXOTIC_INDEX].w);
+    CHECK(kind == SR_VFPU_COMPUTE, "vhdp signed-zero corpus executes in interpreter");
+    CHECK(codegen.vi[32] == 0x00000000u,
+          "ordered vhdp codegen emits positive zero for signed-zero corpus");
+    CHECK(interp.vi[32] == 0x00000000u,
+          "vhdp interpreter emits positive zero for signed-zero corpus");
+    CHECK(codegen.vi[32] == interp.vi[32],
+          "ordered vhdp codegen agrees with interpreter on signed-zero corpus");
+    return codegen.vi[32] != interp.vi[32] || interp.vi[32] != 0x00000000u;
+}
+
 static uint32_t vf2i(unsigned mode, unsigned scale) {
     /* Scalar vf2in/vf2iz/vf2iu/vf2id, vs=0 (physical v[0]), vd=1
      * (physical v[4]). Width bits 7/15 remain clear. */
@@ -436,6 +572,9 @@ int main(void) {
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vrot_overlap();
+    bad |= check_vhdp_vmscl_overlap();
+    bad |= check_overlap_diff();
+    bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
     bad |= g_failures != 0;
     if (bad == 0) {

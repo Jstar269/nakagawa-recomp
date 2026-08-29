@@ -40,6 +40,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 #include "iso.h"
+#include "title_config.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -58,6 +59,10 @@ int sr_route_test_sample(uint8_t *out);
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
 void sr_display_test_reset(void);
+/* Test-build-only call-throughs to the production title-qualified HLE handlers. */
+extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
+extern uint32_t sr_hle_test_load_module(CpuState *s);
+extern void ge_finish_latch_assist(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
  * hle.c: the observation count and the vblanks-since-flip clock. */
@@ -419,6 +424,30 @@ static int s_oracle_callback_calls;
 static uint32_t s_oracle_callback_arg1;
 static uint32_t s_oracle_callback_arg2;
 
+/* Narrow guest-body hook for the title-configured display replay. The handler
+ * remains production hle.c; this only supplies the three analyzer-owned guest
+ * entry bodies that a full title image would normally dispatch. */
+static int s_title_hle_probe;
+static unsigned s_title_hle_guest_calls;
+
+static int title_hle_dispatch_intercept(CpuState *cpu, uint32_t target) {
+    if (!s_title_hle_probe || !cpu) return 0;
+    SrTitleDisplayBringup bringup;
+    if (!sr_title_config_display_bringup(&bringup)) return 0;
+    if (target == bringup.malloc_entry) {
+        s_title_hle_guest_calls++;
+        cpu->r[2] = 0x09000000u;
+        return 1;
+    }
+    if (target == bringup.vblank_device_init_entry ||
+        target == bringup.render_context_init_entry) {
+        s_title_hle_guest_calls++;
+        cpu->r[2] = 0;
+        return 1;
+    }
+    return 0;
+}
+
 /* Defined in intr_conformance.h (included below, once the fixture helpers it
  * builds on exist). Returns non-zero when `target` is the synthetic VBLANK
  * sub-interrupt handler entry that the #88 conformance harness registered; in
@@ -431,6 +460,7 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target);
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
     if (cbabi_dispatch(cpu, target)) return;
+    if (title_hle_dispatch_intercept(cpu, target)) return;
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
@@ -460,6 +490,119 @@ static void expect(int condition, const char *description) {
         s_failures++;
         fprintf(stderr, "FAIL: %s\n", description);
     }
+}
+
+static void title_hle_write_cstr(uint32_t addr, const char *text) {
+    size_t i = 0;
+    do {
+        MEM_W8(addr + (uint32_t)i, (uint8_t)text[i]);
+    } while (text[i++] != '\0');
+}
+
+/* The title-configured HLE probe enters the actual hle.c handlers and the
+ * actual nested guest-call marshaller. Only the three analyzer-owned guest
+ * bodies are intercepted; all address qualification and side effects remain
+ * production code. Generic and public fixture profiles deliberately exercise
+ * the negative direction because they do not configure migrated HLE groups. */
+static void test_title_config_hle_bindings(void) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    SrTitleDisplayBringup bringup;
+    uint32_t sync_base = 0, sync_name = 0;
+    const SrTitleRuntimeSyncWrapper *wrappers = NULL;
+    unsigned wrapper_count = 0;
+    int has_bringup = sr_title_config_display_bringup(&bringup);
+    int has_sync = sr_title_config_runtime_sync(&sync_base, &sync_name,
+                                                &wrappers, &wrapper_count);
+    uint32_t libfont_flag = 0, frame_latch = 0;
+    int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
+    int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
+    CpuState cpu;
+
+    memset(g_mem_base, 0, 0x0c000000u);
+    memset(&cpu, 0, sizeof(cpu));
+    sr_hle_init();
+
+    expect((has_bringup && has_sync && has_libfont && has_latch) ||
+           (!has_bringup && !has_sync && !has_libfont && !has_latch),
+           "migrated HLE groups are all configured together or all absent");
+
+    s_title_hle_guest_calls = 0;
+    s_title_hle_probe = 1;
+    cpu.r[4] = 0;
+    cpu.r[5] = 480;
+    cpu.r[6] = 272;
+
+    if (!has_bringup) {
+        expect(strcmp(cfg->source_id, "none") == 0 || cfg->valid != 0u,
+               "unconfigured HLE probe has an explicit source identity");
+        expect(sr_hle_test_display_set_mode(&cpu) == 0u,
+               "generic DisplaySetMode keeps its PSP success result");
+        expect(s_title_hle_guest_calls == 0u,
+               "generic DisplaySetMode dispatches no title guest body");
+        expect(!has_sync && !has_libfont && !has_latch,
+               "generic HLE probe has no migrated address bindings");
+
+        title_hle_write_cstr(0x08906000u, "libfont.prx");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        expect(sr_hle_test_load_module(&cpu) != 0u,
+               "generic LoadModule still returns a module uid");
+        expect(s_title_hle_guest_calls == 0u,
+               "generic LoadModule dispatches no title guest body");
+        expect(MEM_R32(0x08906010u) == 0u,
+               "generic LoadModule does not write a migrated compat flag");
+        MEM_W32(0x08906014u, 0u);
+        ge_finish_latch_assist();
+        expect(MEM_R32(0x08906014u) == 0u,
+               "generic GE completion does not assist a title latch");
+    } else {
+        expect(has_sync && wrappers != NULL && wrapper_count >= 2u,
+               "configured display bringup has mode-keyed runtime sync wrappers");
+        expect(has_libfont && has_latch,
+               "configured display bringup has libfont and frame-latch bindings");
+
+        title_hle_write_cstr(sync_name, "synthetic-sync");
+        MEM_W32(sync_base + 0x30u, 99u);
+        MEM_W32(sync_base + 0x34u, 0u);
+        MEM_W32(sync_base + 0x38u, 0u);
+        MEM_W32(sync_base + 0x4c0u, 1u);
+        MEM_W32(sync_base + 0x0cu, 0u);
+        MEM_W32(bringup.render_context_magic_addr, 0u);
+        MEM_W8(bringup.render_table_ready_flag_addr, 0u);
+        MEM_W32(bringup.render_context_word_addr, 0u);
+        MEM_W32(frame_latch, 0u);
+
+        expect(sr_hle_test_display_set_mode(&cpu) == 0u,
+               "configured DisplaySetMode returns production success");
+        expect(s_title_hle_guest_calls == 3u,
+               "configured DisplaySetMode dispatches malloc and two init bodies");
+        expect(MEM_R32(bringup.render_context_magic_addr) == 0x308u,
+               "configured DisplaySetMode seeds render-context magic");
+        expect(MEM_R8(bringup.render_table_ready_flag_addr) == 1u &&
+               MEM_R32(bringup.render_context_word_addr) == 1u,
+               "configured DisplaySetMode seeds render readiness state");
+        expect(MEM_R32(frame_latch) == 1u,
+               "configured DisplaySetMode seeds the frame-ready latch");
+        expect(MEM_R32(sync_base + 0x30u) == 1u &&
+               MEM_R32(sync_base + 0x34u) != 0u &&
+               MEM_R32(sync_base + 0x38u) != 0u &&
+               MEM_R32(sync_base + 0x0cu) != 0u,
+               "configured DisplaySetMode installs mode-1 sync state");
+
+        title_hle_write_cstr(0x08906000u, "libfont.prx");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        expect(sr_hle_test_load_module(&cpu) != 0u,
+               "configured LoadModule returns a module uid");
+        expect(MEM_R32(libfont_flag) == 1u,
+               "configured LoadModule drives the libfont-ready flag");
+
+        MEM_W32(frame_latch, 5u);
+        ge_finish_latch_assist();
+        expect(MEM_R32(frame_latch) == 4u,
+               "configured GE completion decrements the frame latch");
+    }
+    s_title_hle_probe = 0;
 }
 
 /* Test-only access to the real PRX parser.  The wrapper is compiled only for this executable;
@@ -8507,6 +8650,14 @@ int main(int argc, char **argv) {
     expect(s_sched_coro != NULL, "scheduler coroutine was adopted");
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
+
+    if (argc > 1 && strcmp(argv[1], "--title-config") == 0) {
+        test_title_config_hle_bindings();
+        fprintf(stderr, "hle_title_production_selftest: %d checks, %d failures\n",
+                s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
 
     test_prx_export_relocation_behavior();
     test_fd_namespace();
