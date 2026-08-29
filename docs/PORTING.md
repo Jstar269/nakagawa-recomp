@@ -198,10 +198,14 @@ Nakagawa is a generic PSP static recompiler whose first mature profile happens t
 not currently hold: where generic core (runtime/tooling) carries knowledge that is true
 only of one title. It is the second-title readiness record; the machine-enforced
 inventory lives in `tools/compat_overrides.py` (`HLE_GUEST_ADDRESS_GROUPS`) and is
-gated by `tools/test_compat_manifest.py`. Retiring these entries is tracked by
-[issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98). (This previously
-cited #20, which is a merged pull request about `sceSasCore` routing and has no relation
-to this surface — so the surface had no tracker at all.)
+inventoried as static source-shape (tier 4) and gated by `tools/test_compat_manifest.py`.
+The inventory is *not* an executable proof of unsupported-interpreter fail-closed; that
+property is proven by the production interpreter floor (`src/rt/guest_interp.c`) through
+`fixtures/cosim/cosim_selftest.c` (fail-closed negative corpus, control sweep, jalr link
+shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retiring these entries
+is tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98). (This
+previously cited #20, which is a merged pull request about `sceSasCore` routing and has
+no relation to this surface — so the surface had no tracker at all.)
 
 **Readiness criterion.** A newly supplied, lawfully obtained PSP executable should be
 able to receive a profile, run analysis, produce its target/import/capability census,
@@ -224,8 +228,9 @@ registered `sceDisplaySetMode`. Not one of them is written inside a `MEM_*` call
 is bound to a local or assigned into a `CpuState` register first, so the extractor's
 direct-literal regex matched none of them. The gate now also recognizes those indirect
 shapes (`bound_local`, `cpu_state_register`); its grammar and its explicit limits are
-documented in `tools/test_compat_manifest.py`. Classification summary (census buckets,
-per group):
+documented in `tools/test_compat_manifest.py` (static inventory — see executable
+fail-closed coverage in `fixtures/cosim/` and `src/rt/dispatch_isolation_selftest.c`).
+Classification summary (census buckets, per group):
 
 | Group | Bucket | Addresses | Sites |
 | --- | --- | --- | --- |

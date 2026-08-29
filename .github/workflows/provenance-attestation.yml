@@ -1,0 +1,194 @@
+name: Trusted provenance attestation
+
+# The merge-path provenance gate.
+#
+# Why pull_request_target and not pull_request: for a `pull_request` event the
+# workflow definition comes from the pull request itself, so a candidate could
+# keep the required check's name and replace its body with `exit 0`. A
+# `pull_request_target` workflow is always the base branch's copy, which is the
+# whole point -- the verifier, its inputs, and this file are all controlled from
+# trusted main while the candidate is treated purely as data.
+#
+# pull_request_target hands secrets to the job, so every line below is written
+# on the assumption that the pull request author is hostile:
+#
+#   * the checkout is pinned to the repository's DEFAULT BRANCH, never to
+#     `base.ref`. A pull request author chooses its own base, so checking out
+#     `base.ref` would let an author open `evil-head` -> `evil-base` and have
+#     this job execute their own tools/ code with the authority token in the
+#     environment. The job also refuses to run unless the base IS the default
+#     branch, which is the only branch the ruleset protects;
+#   * the candidate is NEVER checked out. Its objects are fetched into the
+#     trusted checkout and read with `git cat-file`, which returns raw object
+#     bytes -- no .gitattributes filter, smudge driver, submodule recursion or
+#     checkout hook can run;
+#   * no pull request title, body, or branch name is referenced anywhere. The
+#     only event data used is the PR number and head SHA, both passed through
+#     `env:` and quoted, never interpolated into a script body;
+#   * third-party actions are pinned to immutable commit SHAs.
+#
+# Nothing here uploads an artifact or prints the trusted detailed ledger.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: provenance-attestation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    # This job name is the required status-check context. tools/provenance_
+    # attest_verify.py reserves the string: a candidate workflow declaring a job
+    # under the same name is refused. See docs/PROVENANCE_MERGE_GATE.md for why
+    # a context name alone is not sufficient anti-spoof protection.
+    name: Trusted provenance attestation
+    # Only the default branch is ruleset-protected, and only its content is
+    # trusted. A pull request targeting any other branch gets no verdict rather
+    # than a verdict computed from a base the author may control.
+    if: ${{ github.event.pull_request.base.ref == github.event.repository.default_branch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # The TRUSTED side: the default branch, which is also where this file and
+      # the verifier came from. Not `base.ref` -- see the header.
+      - name: Check out the trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # Full history: the run is judged against the event's exact base SHA,
+          # which a depth-1 clone would not contain, and the ancestry check
+          # below needs real history rather than a graft.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # Data only. refs/pull/N/head is served by the base repository for fork
+      # and same-repository pull requests alike, so this needs no token and no
+      # trust in the candidate's remote. The fetched tip must be exactly the
+      # head SHA the event named: if the head moved, this run is judging bytes
+      # that are no longer the ones being merged, and it fails closed rather
+      # than producing a verdict that could be replayed onto different content.
+      - name: Fetch the candidate objects without checking them out
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          case "${PR_NUMBER}" in
+            ''|*[!0-9]*) echo "pull request number is not numeric" >&2; exit 1 ;;
+          esac
+          for value in "${HEAD_SHA}" "${BASE_SHA}"; do
+            case "${value}" in
+              [0-9a-f]*) [ "${#value}" -eq 40 ] || { echo "sha malformed" >&2; exit 1; } ;;
+              *) echo "sha malformed" >&2; exit 1 ;;
+            esac
+          done
+          git fetch --no-tags --no-recurse-submodules --quiet \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "+refs/pull/${PR_NUMBER}/head:refs/candidate/head"
+          fetched="$(git rev-parse refs/candidate/head)"
+          if [ "${fetched}" != "${HEAD_SHA}" ]; then
+            echo "candidate head moved during this run: event named ${HEAD_SHA}, fetched ${fetched}" >&2
+            echo "failing closed; the push that moved it starts its own run" >&2
+            exit 1
+          fi
+          # The base the verdict is computed against must be a real commit on
+          # the trusted default branch, not merely whatever the event named.
+          if ! git merge-base --is-ancestor "${BASE_SHA}" HEAD; then
+            echo "event base ${BASE_SHA} is not an ancestor of the default branch" >&2
+            exit 1
+          fi
+          echo "candidate head ${fetched} fetched as data only (never checked out)"
+          echo "base ${BASE_SHA} confirmed on the default branch"
+
+      # The private trusted authority. It lands outside GITHUB_WORKSPACE so it
+      # is structurally outside the tree under verification, and the verifier
+      # refuses to run if that is ever untrue. A missing or unreadable secret
+      # is a hard failure: an unverifiable provenance claim is not a passing one.
+      - name: Fetch the trusted detailed implementation ledger
+        id: authority
+        env:
+          GH_TOKEN: ${{ secrets.PROVENANCE_AUTHORITY_TOKEN }}
+          TRUSTED_REPO: Jstar269/nakagawa-recomp-history-private
+          TRUSTED_REF: main
+          TRUSTED_LEDGER_PATH: docs/provenance/IMPLEMENTATION_PROVENANCE.json
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "PROVENANCE_AUTHORITY_TOKEN is not configured for this repository." >&2
+            echo "The trusted provenance authority cannot be read, so no attestation claim" >&2
+            echo "in this pull request can be verified. Failing closed." >&2
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/trusted"
+          # Resolve the authority revision ONCE and read the ledger AT that
+          # revision. Reading "main" and separately asking what "main" is leaves
+          # a window in which the two answers describe different content.
+          authority_sha="$(gh api "repos/${TRUSTED_REPO}/commits/${TRUSTED_REF}" --jq .sha)"
+          case "${authority_sha}" in
+            [0-9a-f]*) [ "${#authority_sha}" -eq 40 ] || { echo "authority sha malformed" >&2; exit 1; } ;;
+            *) echo "authority sha malformed" >&2; exit 1 ;;
+          esac
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "repos/${TRUSTED_REPO}/contents/${TRUSTED_LEDGER_PATH}?ref=${authority_sha}" \
+            > "${RUNNER_TEMP}/trusted/IMPLEMENTATION_PROVENANCE.json"
+          # Report identity, never content.
+          echo "trusted authority ${TRUSTED_REPO}@${authority_sha}"
+          echo "authority_sha=${authority_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify the candidate ledger against the trusted authority
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AUTHORITY_SHA: ${{ steps.authority.outputs.authority_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/verify"
+          # Exact immutable SHAs from the event, never branch names: resolving
+          # a branch twice can name two different trees.
+          python tools/provenance_attest_verify.py \
+            --repo "${GITHUB_WORKSPACE}" \
+            --candidate "${HEAD_SHA}" \
+            --base "${BASE_SHA}" \
+            --require-immutable-revisions \
+            --authority-revision "${AUTHORITY_SHA}" \
+            --trusted-ledger "${RUNNER_TEMP}/trusted/IMPLEMENTATION_PROVENANCE.json" \
+            --workdir "${RUNNER_TEMP}/verify" \
+            --json "${RUNNER_TEMP}/verify/verdict.json" \
+            | tee "${RUNNER_TEMP}/verify/report.txt"
+
+      # Runs on failure too, so a maintainer reads the finding codes in the pull
+      # request rather than opening the log. Only the public report is copied,
+      # and it is copied as a file rather than interpolated into the script.
+      - name: Publish the public report
+        if: always()
+        env:
+          AUTHORITY_SHA: ${{ steps.authority.outputs.authority_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Trusted provenance attestation'
+            echo
+            echo '> **OBSERVATION MODE — this is not enforcement.** This check is'
+            echo '> deliberately NOT a required status check. GitHub matches required'
+            echo '> checks by context name, and a pull request can declare a job under'
+            echo '> this same name, so a green result here is a signal for review, not'
+            echo '> a merge guarantee. See docs/PROVENANCE_MERGE_GATE.md.'
+            echo
+            echo "Trusted authority: ${AUTHORITY_SHA:-unavailable}"
+            echo
+            echo '```text'
+            cat "${RUNNER_TEMP}/verify/report.txt" 2>/dev/null || echo 'the verifier did not produce a report'
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

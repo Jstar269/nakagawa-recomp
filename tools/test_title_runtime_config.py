@@ -1374,5 +1374,193 @@ class TitleConfigIdentityWiring(unittest.TestCase):
             self.assertTrue(victim.exists(),
                             "an unchanged flavour must not invalidate anything")
 
+
+class DisplayBringupAndRuntimeSyncReservedTests(unittest.TestCase):
+    """Schema and Python must agree on the VFPU reservation for every
+    dispatch / call-target field. Display bring-up has 3 dispatch targets
+    (malloc, vblank, render) that must reject the reservation while its 3
+    data addresses must accept it; runtime-sync wrappers must reject it.
+    This test proves the fix for finding 1 and audits all affected fields.
+    """
+
+    def assert_python_rejects(self, manifest: dict, fragment: str) -> None:
+        with self.assertRaises(title_manifest.TitleManifestError) as caught:
+            title_manifest.validate_manifest(manifest)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_display_bringup_dispatch_targets_reject_reserved(self) -> None:
+        for field in ("malloc_entry", "vblank_device_init_entry", "render_context_init_entry"):
+            with self.subTest(field=field):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {
+                    "schema_version": 1,
+                    "display_bringup": {
+                        "malloc_entry": 0x08901000,
+                        "vblank_device_init_entry": 0x08901010,
+                        "render_context_init_entry": 0x08901020,
+                        "render_context_magic_addr": 0x08902000,
+                        "render_table_ready_flag_addr": 0x08902004,
+                        "render_context_word_addr": 0x08902008,
+                    },
+                }
+                m["runtime_bindings"]["display_bringup"][field] = title_manifest.SR_DISPATCH_VFPU_TAG
+                self.assert_python_rejects(m, "core VFPU")
+                # Data seeds must still accept the same value (they are not dispatch targets)
+        for field in ("render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"):
+            with self.subTest(field=field):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {
+                    "schema_version": 1,
+                    "display_bringup": {
+                        "malloc_entry": 0x08901000,
+                        "vblank_device_init_entry": 0x08901010,
+                        "render_context_init_entry": 0x08901020,
+                        "render_context_magic_addr": 0x08902000,
+                        "render_table_ready_flag_addr": 0x08902004,
+                        "render_context_word_addr": 0x08902008,
+                    },
+                }
+                m["runtime_bindings"]["display_bringup"][field] = title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000
+                # Must validate — data seeds are plain guest addresses, VFPU window is allowed
+                # (guest_address allows it, and display_bringup does not reject for these)
+                normalized = title_manifest.validate_manifest(m)
+                self.assertEqual(normalized["runtime_bindings"]["display_bringup"][field],
+                                 title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000)
+
+    def test_display_bringup_schema_encodes_reservation(self) -> None:
+        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        props = schema["$defs"]["displayBringup"]["properties"]
+        excluded = {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+        for field in ("malloc_entry", "vblank_device_init_entry", "render_context_init_entry"):
+            with self.subTest(field=field):
+                self.assertIn("allOf", props[field])
+                self.assertIn(excluded, props[field]["allOf"])
+        for field in ("render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"):
+            with self.subTest(field=field):
+                self.assertNotIn("allOf", props[field])
+                self.assertEqual(props[field], {"$ref": "#/$defs/guestAddress"})
+
+    def test_runtime_sync_wrappers_reject_reserved(self) -> None:
+        for role in ("enter", "leave"):
+            with self.subTest(role=role):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {
+                    "schema_version": 1,
+                    "runtime_sync": {
+                        "config_base": 0x08903000,
+                        "sema_name_ptr": 0x08903020,
+                        "wrappers": [{"mode": 0, "enter": 0x08904000, "leave": 0x08904004}],
+                    },
+                }
+                m["runtime_bindings"]["runtime_sync"]["wrappers"][0][role] = title_manifest.SR_DISPATCH_VFPU_TAG
+                self.assert_python_rejects(m, "core VFPU")
+
+    def test_out_of_range_and_malformed_rejected(self) -> None:
+        # Out-of-range: too large
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {
+            "schema_version": 1,
+            "display_bringup": {
+                "malloc_entry": 0x100000000,  # > UINT32_MAX
+                "vblank_device_init_entry": 0x08901010,
+                "render_context_init_entry": 0x08901020,
+                "render_context_magic_addr": 0x08902000,
+                "render_table_ready_flag_addr": 0x08902004,
+                "render_context_word_addr": 0x08902008,
+            },
+        }
+        self.assert_python_rejects(m, "must be in range")
+        # Malformed: unaligned
+        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = 0x08901001
+        self.assert_python_rejects(m, "must be 4-byte aligned")
+        # Malformed: zero (omit means disabled)
+        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = 0
+        self.assert_python_rejects(m, "must not be zero")
+        # Malformed: wrong type
+        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = "0x08901000"
+        self.assert_python_rejects(m, "must be an integer")
+
+    def test_valid_ordinary_guest_target_accepted(self) -> None:
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {
+            "schema_version": 1,
+            "display_bringup": {
+                "malloc_entry": 0x08901000,
+                "vblank_device_init_entry": 0x08901010,
+                "render_context_init_entry": 0x08901020,
+                "render_context_magic_addr": 0x08902000,
+                "render_table_ready_flag_addr": 0x08902004,
+                "render_context_word_addr": 0x08902008,
+            },
+        }
+        normalized = title_manifest.validate_manifest(m)
+        self.assertEqual(normalized["runtime_bindings"]["display_bringup"]["malloc_entry"], 0x08901000)
+
+
+class ExpectedDataFileCountTests(unittest.TestCase):
+    """Slice B hardening: bounded, zero-disabled, malformed/absurd, mismatch."""
+
+    def test_positive_bounded(self) -> None:
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": 56672}
+        normalized = title_manifest.validate_manifest(m)
+        self.assertEqual(normalized["runtime_bindings"]["expected_data_file_count"], 56672)
+        cfg = title_runtime_config.bindings_from_manifest(m)
+        header = title_runtime_config.render_header(cfg)
+        self.assertIn("#define SR_TITLE_CONFIG_EXPECTED_DATA_FILE_COUNT 56672u", header)
+        self.assertIn("SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT", header)
+
+    def test_zero_means_disabled_only_for_generic(self) -> None:
+        cfg = title_runtime_config.bindings_from_manifest(None)
+        header = title_runtime_config.render_header(cfg)
+        self.assertIn("#define SR_TITLE_CONFIG_EXPECTED_DATA_FILE_COUNT 0u", header)
+        self.assertNotIn("SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT", header)
+        self.assertEqual(title_runtime_config.bindings_from_manifest(None)["bindings"], {})
+
+    def test_zero_explicitly_rejected(self) -> None:
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": 0}
+        with self.assertRaises(title_manifest.TitleManifestError) as caught:
+            title_manifest.validate_manifest(m)
+        self.assertIn("must be > 0", str(caught.exception))
+
+    def test_malformed_rejected(self) -> None:
+        for bad, fragment in (("56672", "must be an integer"), (56672.0, "must be an integer"), (-1, "must be in range")):
+            with self.subTest(bad=bad):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": bad}
+                with self.assertRaises(title_manifest.TitleManifestError) as caught:
+                    title_manifest.validate_manifest(m)
+                self.assertIn(fragment, str(caught.exception))
+
+    def test_absurd_rejected(self) -> None:
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": 2000000}
+        with self.assertRaises(title_manifest.TitleManifestError) as caught:
+            title_manifest.validate_manifest(m)
+        self.assertIn("must be in range", str(caught.exception))
+
+    def test_mismatch_remains_failure_not_silent_disable(self) -> None:
+        # The failure is in hle.c data_validate_index, not in the validator, but the
+        # accessor must return the configured count so the check is not bypassed.
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": 56672}
+        cfg = title_runtime_config.bindings_from_manifest(m)
+        self.assertEqual(cfg["bindings"]["expected_data_file_count"], 56672)
+        header = title_runtime_config.render_header(cfg)
+        self.assertIn("56672u", header)
+        # A different enumerated count must not be silently accepted — the runtime will
+        # compare index.count against this value and fail closed (see src/rt/hle.c).
+
+    def test_absence_cannot_weaken_validation_for_declared_binding(self) -> None:
+        # A manifest that declares the binding must be validated; omitting it is a
+        # different configuration, not a way to weaken the declared one.
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        m["runtime_bindings"] = {"schema_version": 1, "expected_data_file_count": 56672}
+        normalized = title_manifest.validate_manifest(m)
+        self.assertIn("expected_data_file_count", normalized["runtime_bindings"])
+        # Generic (no block) has no expectation — 0 — but HST's explicit GAME_NAME=hst
+        # without a manifest is a build-time refusal, not a silent generic fallback.
+
 if __name__ == "__main__":
     unittest.main()

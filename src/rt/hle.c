@@ -4858,6 +4858,11 @@ static uint32_t h_LoadModule(CpuState *s) {
     return uid;
 }
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only call-through to the production LoadModule handler. */
+uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
+#endif
+
 /* LoadModuleByID receives an already-open file UID, so the original path is not part of this
  * ABI call. Populate the fixed set of statically recompiled late modules idempotently; the
  * sorted registry replaces duplicate NIDs and therefore remains safe across repeated loads. */
@@ -8450,6 +8455,11 @@ static uint32_t h_DisplaySetMode(CpuState *s) {
 
     return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only call-through to the production DisplaySetMode handler. */
+uint32_t sr_hle_test_display_set_mode(CpuState *s) { return h_DisplaySetMode(s); }
+#endif
 
 /* The engine's render loop gates "is a frame ready to present?" on a title-
  * specific counter (HST: MEM[0x331b80], decremented once per completed display

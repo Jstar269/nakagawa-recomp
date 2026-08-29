@@ -25,41 +25,37 @@
     },
     {
       "path": ".clang-format",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "0fc00c65e2fbe6bec4d60787330a16f37731fc223a7433d131e0f0792bb640c1"
     },
     {
       "path": ".clangd",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "ad82d1edce2f42f5587f01140812d4379bfcbca5d4554e3a26783493c856d13e"
     },
     {
       "path": ".editorconfig",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "39f1362a9f03d0baf6a485c92b16c1ac73189e26068d5f62f610d7000b35cfd5"
     },
     {
       "path": ".gitattributes",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "e158f0e82141bb9994cc3512a1f0a082919eb1a8fecc72223fc8d821a2c6084e"
     },
@@ -163,12 +159,20 @@
       "sha256": "b03c6b23457260facfb9306a97aaacbdf58f7c614c157d516c05b20ead5f111f"
     },
     {
-      "path": ".gitignore",
-      "classification": "project_authored_attested",
+      "path": ".github/workflows/provenance-attestation.yml",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "a10a83f81afc8687ae410fab7276494199d281f598c74c64e70081b70bd52785"
+    },
+    {
+      "path": ".gitignore",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "7c60e7b70006ddd067f9d1e98b5a3668f1c0e163b2045716538d6a2ebe6a99c6"
     },
@@ -264,13 +268,12 @@
     },
     {
       "path": "Makefile",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "646bc6ca95b0bb74656bf25e30678ba1128f82a516fa659c80b7bf593c4279ee"
+      "sha256": "d9c4f603a949566580e5810ce018fe7034ed7387d38615c632a6848f91765f34"
     },
     {
       "path": "NOTICE.md",
@@ -387,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "52f54ff883ea1f69d283bcfb417785931ed2bd085f5485d8776fbcae7b6fe776"
+      "sha256": "689877cc45ac7d4fdad5765201b7497075252bcb03fc83884eaa738bf159d9da"
     },
     {
       "path": "assets/release_manifest.json",
@@ -405,7 +408,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b7368f9cadd626f05f3a90dc1f103a76be88d1c12c8c4ed3220c83d4c2cb0dad"
+      "sha256": "0788f81a2be37a7d2719141c8e8176377a43a3ca7fe4fba11c3928c21fd8acd0"
     },
     {
       "path": "assets/titles/README.md",
@@ -418,19 +421,19 @@
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
-      "classification": "reviewed_configuration",
+      "classification": "public_factual_metadata",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "4a2979fff1c03a3e5d29ce7e053f070b3fccd9ccbfd3330ab6eb1041a150818e"
     },
     {
       "path": "assets/titles/synthetic.json",
-      "classification": "reviewed_configuration",
+      "classification": "public_factual_metadata",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "0253047413322cf990f74d57ca1b4194b66b0f81948221497110eb7dc9ae31fd"
     },
@@ -784,7 +787,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ebaf7185ac99e515bd1d4fb452f3b8cc957ad39d1cccbee8caee27dfc7d9f7f1"
+      "sha256": "96dcf191a5b4fe46798362e65e71b622c4c2557e8a71a919c476f512904582e7"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -794,6 +797,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "ad8478612fa1f888b902115c25cfb3cc56f3e67eaa6cec68cd289bf09d4d1c16"
+    },
+    {
+      "path": "docs/PROVENANCE_MERGE_GATE.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "7e39a596e1c9c8e5ee1087d6e00ce4cda25589a6b8f82be78202abb04bda29e4"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -898,9 +910,19 @@
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "dc771c6217ed2814d024299edd48a05201100cd0fd9d5df1f51fe9c55424aa53"
+    },
+    {
+      "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "54fb6861504c054092ccec29f29ddf6449324dae994df88a330e36bdb2e8b895"
     },
     {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
@@ -1041,7 +1063,8 @@
       "path": "fixtures/platform_ladder/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f9801b5550dca80a303595fc7c86d7285e4518ba256a8f2cd46b3b9805be098f"
     },
@@ -4488,7 +4511,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "487932b08d6cde80f09d30cf0b77070c15a86a90ed583d4f3e7dd1458aa7de0d"
+      "sha256": "801f999b0a9ece55d0c18d067da7ddd9a5e3cd6de556a3edbe381b36c966ee26"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4500,7 +4523,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f1ca606365f018941b220a08af31f72985c1e10fe25006e68a617fb98392240d"
+      "sha256": "6685aedcb5281baa10dc67edcb9bf07b7bb15158aad7801c1d26ff4a38535b91"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4860,7 +4883,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2a01e61ba0eff8abbffb5a1fcb6514ce0d791756bb9aa1147c3c89abc81b379"
+      "sha256": "e9839fa2bc7ddc35482fa8a5e62691e6ff97233f075ec71750f62a34be1c7e5e"
     },
     {
       "path": "src/rt/title_config.h",
@@ -4872,7 +4895,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20ed432601b59eb5255acb9f44cdb4bc6aa2d4ad00ca6e7b83ead33d5e34bdaa"
+      "sha256": "13f5e9b8a3e820fe280e4ad9ae1eaf7b16115167f7ed630a02a515a5bf774146"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -4929,7 +4952,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3239c8332e2abf47940ea61b907c224f2c14082b96f4609279baf8323890c182"
+      "sha256": "1a1ce0087a6787067fbf7405a927867a9935348db804aa52a1a43d86a8baaa0f"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -5041,25 +5064,19 @@
     },
     {
       "path": "tools/README.md",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_documentation",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "460676a629298a0a50d2b9ad14bee0bb222eb5a60a86bbfc1ab221be1a62f4ef"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_documentation",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5c105e11df11bff86c65e52b114b856be64d9f5720a9a88424d7a70d14bced5f"
     },
@@ -5191,7 +5208,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "bb0ebb192e1762ef08b5c5f31f1019eac91a80ec495bc80b00cc843a45327f85"
+      "sha256": "86dc5a932b93fda3f69bbab0ed0edb5a238a9004804913afc471313817e10d82"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -5220,7 +5237,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d3eebd031a7184080366f8a58426db73de29e5852de02c12c4e7da5be81f5d7"
+      "sha256": "ae870d8651650d12ecb8182852fccd1cecf5aab590f3a05f78ecd2aaf0ca80fe"
     },
     {
       "path": "tools/decompme_export.py",
@@ -5594,13 +5611,10 @@
     },
     {
       "path": "tools/import_audit_baseline.json",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "761882cdd25ca18e350d117dbfd8fc7df8f3990de9ccd2ef975cbc9317e31646"
     },
@@ -5832,6 +5846,18 @@
         "upstream_attribution": null
       },
       "sha256": "73cf40e0fbb1a539001535b65353fbd0a6b9d63fe72c6fdd271b37d1f8fdd64d"
+    },
+    {
+      "path": "tools/provenance_attest_verify.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-tooling",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c52351c61d2ce0229a4e0811e2892deb46153a09330f6d3a4b31512736b69e5b"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -6104,13 +6130,10 @@
     },
     {
       "path": "tools/requirements-lock.txt",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_documentation",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "320dbda08b9bab45926a774244d0aa7e4b7d067b1667c820223001c3a78da916"
     },
@@ -6140,13 +6163,10 @@
     },
     {
       "path": "tools/test_analyze_tailcall.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "51438bd10165d3b4586c30d8e9ba72eaac933f03ccfcbb311fea102c055582e1"
     },
@@ -6161,169 +6181,127 @@
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e7c17a770407ab2ff2f3dc4ff32458c7e82242a71247b669e27a112f2b6a09fc"
     },
     {
       "path": "tools/test_asset_index_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "78fc46fb6726b68df2ae9268190ea129d7797697fe7b606ed83625227b2b114e"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "b40885e72b12f331362ad0f46a6ddb04216038d0031e9258460951da611d33e9"
     },
     {
       "path": "tools/test_boot_gate.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a8e4d080f6008610ed9305ba5bdba7281e917baed6a1121c276704ecdf21fea0"
     },
     {
       "path": "tools/test_build_truth.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f3b7b0087838fbdd4c21f4058cd0d641cd0e155a47ebe16d38af6dfc31b6cc4a"
     },
     {
       "path": "tools/test_callback_correctness.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "b77e48ad7a6ad2edc4e7888a5204127e676556f84944d42cc802133aaa1dcdad"
     },
     {
       "path": "tools/test_ci_paths.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "39e9a3d97e2c9aeeeb1fae41f4fc5cc3bd65c4402f6c39198b20adc0c61754d8"
     },
     {
       "path": "tools/test_ci_required.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "de66b8fb2e42cb0898cb1c971f99f0bb1fbe419de4270f18692534c2510a5ecd"
     },
     {
       "path": "tools/test_codegen_continuations.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "88f1b8436e1eb890ac3b629734029c705276b0c4adc7839a7a76b2a223a0f950"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "dfbcb4eb2c5c8c529a1ef63a48de35c1ad55cdf4e216da70bb31cd394253681d"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "73f4b7d6f7591c80ff67687d7d95a45c660c2cdee9a4325426b267e0724d37a7"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a32090446f0045466ea31d0863fb66d128d4deed75d105b1b149901c4c596d75"
     },
     {
       "path": "tools/test_codegen_madd_msub.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "d6b109b68b3baeb0122c1f35dede89e3a9cd2d06d581511c1990544ac99c2f3c"
     },
     {
       "path": "tools/test_codegen_no_shadow_stubs.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "59739c655cfdaf21e09e175c0612ba80af8f0bb0323c47bd47db59fa9dea9377"
     },
@@ -6338,25 +6316,19 @@
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "c4b6eefbe229f259930d051f98da99fa0cc5208bbe4d3098349ea6fee395b53b"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "fbc5806ed4ab8558bbe6bfd3e3444ef41e72b643cad83e466ec2a59b0b48d5c5"
     },
@@ -6371,27 +6343,21 @@
     },
     {
       "path": "tools/test_codegen_vfpu_fallback.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "dad109bec103d2321a09367ab44d45e07a31fb0441e3bca8da58749a2be850c2"
+      "sha256": "8429593545623e872c5c999a3857c43517a4b1f7471a4d1a34f7817d2246f987"
     },
     {
       "path": "tools/test_compat_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0e5386c67efc1c99dbd1d23621046ededdf6f7f75d34c5341b6de101318a8889"
+      "sha256": "b64a297679ce7c64c39fd86e66569f89c90631c77f47f4cf932091d7c5997712"
     },
     {
       "path": "tools/test_cosim_fixture.py",
@@ -6404,37 +6370,28 @@
     },
     {
       "path": "tools/test_dco_policy.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "13c6e3d980507ec2f2ff3dab33328f42baa00d1b5b6392ad8ed9ad1f18d008a4"
     },
     {
       "path": "tools/test_debug.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "454cabd8d775acffd4f5e102c93fed7f2ec046c0d0cd20b36854c3499886e07e"
     },
     {
       "path": "tools/test_decompme_export.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "3d073c3ca48492f0726e52960d1e739b92c3af26745d23d692a5fe44e862f21f"
     },
@@ -6449,13 +6406,10 @@
     },
     {
       "path": "tools/test_dispatch_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "532f30ef6d290eb4735c2fc502a8392c2844a2722aad78f40066c9b9476cda31"
     },
@@ -6470,73 +6424,55 @@
     },
     {
       "path": "tools/test_dmac_semantics.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "2dc8553a36b8088f02bbee8f3149306f7f87365373687e2527ed8316b1e6158b"
     },
     {
       "path": "tools/test_elf_bounds.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "c4b878575b6a79f173a51f91d0f6f33daa5128649fcd3adccb5c6078a4a637f4"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "69c90b61000f08a0d6c048b9e985c1e4d1f5f6b807800b9b1df28140b5996dd4"
     },
     {
       "path": "tools/test_evf_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "6d0a5e3941891b4d0d0a225e4ba3f27f415ef2013909210acd6df78498727041"
     },
     {
       "path": "tools/test_evidence_model.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "b0039e14170aedce97934499eee9ced0303715d9e7db8b5d8293ea8c6a41d44f"
     },
     {
       "path": "tools/test_extract_xb_gim.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "0c3661e99445b17ed88f33a60198f458328dfe46e68e7f53b35f79df6b673878"
     },
@@ -6551,25 +6487,19 @@
     },
     {
       "path": "tools/test_gate_exit_resolution.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "07832ea5a22630eac97ddaf071cf25515bb1236bf611be6d93e313b9252a18c9"
     },
     {
       "path": "tools/test_ge_capture.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "cda06d44c0b26503bd92696a8db4e76be9afdd33d11d19327b518194ae1871c0"
     },
@@ -6587,277 +6517,226 @@
     },
     {
       "path": "tools/test_generate_benchmarks.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "90e8c84cfb708428b69d15d7559d9119536a15a75eaeeacaddcd516bd1bf1ff1"
     },
     {
       "path": "tools/test_guest_printf.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "896a0211627558b827de16c931ba9f8bb76f2550c488ffef197583687a512c74"
     },
     {
       "path": "tools/test_guest_span_routing.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "d761b771f50efea5c5ea588348a6a984ffba5a8a1009e17dd7cd70968676cdcb"
     },
     {
       "path": "tools/test_guestmem_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "8f4368928e10be6dfb6c693bc08333665abb7ed4f0d05b0a5dbcb03f380fc95a"
     },
     {
       "path": "tools/test_history_audit.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "9079a1232777f244cbce8436efe017e27d6db42785ea46156c7cf72f5d3edf4a"
     },
     {
       "path": "tools/test_hle_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "580ff4fb38dd5f4c0401633668eb3b6b509d05f9bf78892f6699cb5d19ab39ee"
     },
     {
-      "path": "tools/test_hle_umd_wakeup.py",
-      "classification": "project_authored_attested",
+      "path": "tools/test_hle_title_config_behavior.py",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "1172b46729c567cb0d958fa8bec9fccc5fccde4793a7cc0102533e676b3aa41f"
+    },
+    {
+      "path": "tools/test_hle_title_isolation.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "cce8785d1fa4bef3954bab211ab9ac0e4c87579b6fdacc4be6f70f8167850e4f"
+    },
+    {
+      "path": "tools/test_hle_umd_wakeup.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "ce04d1e895cd17798b41acd1ad8d8c47846e73a8f6f47e9fc527f1051a0d38c5"
     },
     {
       "path": "tools/test_hst_doctor.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "1021e868c36b2573b52c869ffcab214b7caa15f2ed06af36a9bc0e8bb51c43d6"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "20524ed63ab5bc885d4f4d14c9cc50f60cce865744757b32c388fb1faf73e6d4"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e68dadbba18070cf348981f73f380ed32404bf75d59b826ee361f13cd583316e"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "8b82f03b1ae0a57c9fd790721597bf527549f370e44bec8cd40af31111aeda90"
     },
     {
       "path": "tools/test_import_audit.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e3a01ef6ce48490dd66b937819eab323077e2dd99142e4fa322719e050d474b0"
     },
     {
       "path": "tools/test_import_name_safety.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "10645648ce588074bda4665866ed26301e46f1dd26e524c07090856ac3641b84"
     },
     {
       "path": "tools/test_imports.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "51bbdb2639a2aa01b4daec328170d0f4fb70909c72e1a6da14967831bd3de8c0"
     },
     {
       "path": "tools/test_incident_regression_private.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "692861e05d4d4242bfc68dcc3a32ab0e252e0d267aa7c6a0b283f061aaca8146"
     },
     {
       "path": "tools/test_intr_waits_matrix.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "efaad2c232c9b51316d5cc5aeb8224d1b9f97ba9558d47edd7505815555e43dc"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "747a07b14850c9d017286d34913803d51614f1eac901488213fb25e54cbea9e5"
     },
     {
       "path": "tools/test_lint_docs.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "42a5b763a08654a0b0abfedda63925a267cfe97fa5fc429f43574106e67d4add"
     },
     {
       "path": "tools/test_manager_safety.ps1",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e7905c44c44187dd849c80892deacbf14bb2a7041927c7bbf851f6d514277962"
     },
     {
       "path": "tools/test_manager_safety.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "fc7782dee74e8ea9a4419741194d831ec38d08a9608895fb18e343657c6dbbe6"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "409f6dc2f9ca48bcbd3dd268084d1bf7086481b450e8347cc26fb0cb6b0a1222"
     },
     {
       "path": "tools/test_matrix_disposition.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f389ae20c9c8ac62133febaae1157bcd66c52016669e961e2f61380e2d470b06"
     },
     {
       "path": "tools/test_matrix_report.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "16e20467f91149851f13cb8f934c42a45efd659885a61572549716cabfe9a9cd"
     },
@@ -6875,25 +6754,19 @@
     },
     {
       "path": "tools/test_modified_file_notice_audit.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "98b70d30baed55ba68bb9722385c4c28a1225d33073e4b084bab84c4b0cc3653"
     },
     {
       "path": "tools/test_mpeg_h264_bounds.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "cc4d59e11dfbcc1d52ddbcf37e082394ea5a65b45c4615ee2b07f296894689e9"
     },
@@ -6908,13 +6781,10 @@
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "fdb807db302fe4be2210897cb92eb494b92b39ece6603fc0096439e248b494f1"
     },
@@ -6932,13 +6802,10 @@
     },
     {
       "path": "tools/test_padscript_from_log.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "85991c6985235193fca0fb3f0b9a0d1d885b697ab42716bb4014257aad3c42ad"
     },
@@ -6974,27 +6841,30 @@
     },
     {
       "path": "tools/test_progress_evidence.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "4b3e68efbf8590227270168173e5b8daf65afc013b99b57d0505a0b0f7715bdd"
     },
     {
       "path": "tools/test_progress_tracker.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "bcb3706c1472a970eecadf46480f79146c14da49268ade6f93c868d4ce7bb3af"
+    },
+    {
+      "path": "tools/test_provenance_attest_verify.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "055efa1b2784ce71a579d06c7e3c6174c6fc078f21d7491e83eaac8783910e29"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -7028,361 +6898,273 @@
     },
     {
       "path": "tools/test_prxload_psp_header.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f423d1952a441f296f6cb51b9cae7734fa11044fb7dd5421a5bce89c3744d54b"
     },
     {
       "path": "tools/test_prxload_relocations.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "18ee8c66ab76e6a58170204b4a5e7141f7b049431f5bb5059fe39ca49efb3ac7"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "16502da4e9eeff0826b028f392321a24a73d02bbd396110b5c8fa46eba5d4510"
     },
     {
       "path": "tools/test_psp_oracle.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "02467b178dc79967a7fa8bd961693da475f9680ee0a610f32da5d2583c25bee1"
     },
     {
       "path": "tools/test_psp_readiness.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f3082a19e248d8ee612e4b536a8cc980140d7cfda90987c39ff84edb72de107e"
     },
     {
       "path": "tools/test_pspdev_lock.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "97b848c237dc476c31fe627f39f5b6167f5b8eae935be03112e933781a61e6ee"
     },
     {
       "path": "tools/test_pspdev_probe.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "55709f8d069baf20b7e8d015110fcf0e11fe390aecc32404df2b4a153e633ab0"
     },
     {
       "path": "tools/test_pspsdk_sync.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "13050cf38cd8adf827cc161d142362cae036cc9c5f1f5763ee264aeb9e01bcf5"
     },
     {
       "path": "tools/test_public_candidate.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "5d729a137d630dc5344e8b062b8516a58920e08832f7e7e74926359403111df5"
     },
     {
       "path": "tools/test_public_ci_wiring.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "6f6d25b094461918c1fefbe65f8791485f703518c65496ce66ef4cdcbdf7228a"
     },
     {
       "path": "tools/test_public_export.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "4227e6d6d3d4e1ba2a8b8921efb34a1b95fdba2d4c0682bf322ecc3932d41c60"
     },
     {
       "path": "tools/test_publication_policy_gate.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "79dafd0bbe1936eb5a58821b00b84441a795409b999a59fb8fdbbfc25257cab5"
     },
     {
       "path": "tools/test_publish_audit.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "5c10ef5eb39c062cbfa901c80e6a37c5c4a253afda471cbc3ce7db5714bc1090"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "779a8637b59f26b19f6d61116c40970274a26e76d2b3e889db61813ef2aef9ee"
     },
     {
       "path": "tools/test_release_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "c9547129777b61c7add374b90aaf7582d591ea90cc68f05c01a6f152302623c7"
     },
     {
       "path": "tools/test_savedata_spans.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a44fcdf7989876ab736cd2080fb40a2a469d76a2864bf36c1878df64fbd993da"
     },
     {
       "path": "tools/test_sbom.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "aa25e04d6f4abd0e3b0c28b97dcb96e49ebf1259254b50ab49f08a6f4fc7d1f4"
     },
     {
       "path": "tools/test_sched_invariants.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "de9d1f684ef12ba7b6079a77cb139021d81b210ae590ae926c9fd85a3a07690f"
     },
     {
       "path": "tools/test_sdkver_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "dd30940cbcbf11cbb8b050fe3889b52369abdf3607f0869d7d7c022b0b8320ba"
     },
     {
       "path": "tools/test_shader_embed.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "ae51f20e4e4e1626d3b545224a9ee034d12413a49e0ed41d0195a31bb3af0d9a"
     },
     {
       "path": "tools/test_sync_drift_check.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "0d3e98f9a16e6485a6f34862a89133f5885a42c914881fb3cfe5aedfb207f4dc"
     },
     {
       "path": "tools/test_telemetry_export_security.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f86d27c6bb1e6e80b1000f12398842548d65d96d506ce34c5730ae896b832ea6"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "5c4cdb8665152cbcc33141c5aa405b40962f9b62f0d1bc3828baac3487709bde"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e666a8ef49c782022f4d7aed56a6bbddc04f3722f50cd172d880f22204678d1e"
     },
     {
       "path": "tools/test_title_manager_adapter.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a9ed93186ff5bc876049715420ce002507ae1e72b66754d052b75dea54ffc95b"
     },
     {
       "path": "tools/test_title_manager_plan.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "68056e250c5ffa1a0c9d339b858d8cb2e136dfa32dfded8978bcb4f79d1fdcf7"
     },
     {
       "path": "tools/test_title_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "7b2ee99a926b87cccb8e2a7e44b894b92905a2ee26bfaa98dc6af6c6248ff0ad"
     },
     {
       "path": "tools/test_title_protected_digest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "9892dc9b7b41b9dbd2922be785392b9eabdc55bf9c4f889931d9d2e076d3acf3"
     },
     {
       "path": "tools/test_title_pspdev_phase5.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "66e40b578d1ca510d30b92f6ccc407dc6fb038b6c25a12b065cd9eb5da408a19"
     },
     {
       "path": "tools/test_title_runtime_config.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9d08e38c1b065f8b5d141d26a1e1780b92e60928bf08d907ec826f313a1a71cf"
+      "sha256": "c8aeced9b90b716d86607d7bfcddeb857a4534f521c0290fe6661cae8b2911d7"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -7398,13 +7180,10 @@
     },
     {
       "path": "tools/test_vfpu_interp_guards.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f63d986bafdb3c7237e6fda1e5431cce31fc2b380dc846d8d963acdb6aa222dd"
     },
@@ -7419,121 +7198,91 @@
     },
     {
       "path": "tools/test_vfpu_oracle.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "91e43c16ab5148c10368ea19b504d486c7176e0101cd07e1ba3a6cf8229fe221"
     },
     {
       "path": "tools/test_vfpu_provenance.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "58621998bebe3a766307d368942cf5125b0f40e9e134e5cfb42f940941b8b308"
     },
     {
       "path": "tools/test_vfpu_synth_corpus.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "d8f067bf9cacf67a751050f363c73c685e4e1bc0a19052e6f699b9956a6a79bd"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "ef4986702d6ee02f03c39ee94a82980af0f13a90ff1287b52322aeca4543383a"
     },
     {
       "path": "tools/test_vfpu_trace_bits.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f08f66b8011ba3beb4717b98f62ca11a69e7196d459ca2b1f4f19586181b8dd9"
     },
     {
       "path": "tools/test_vfs_c.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "de614e2752997ec25fc9c24ff94940d4ed88eb372cd313d18d2c3e551f60cec7"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "0593173b74f0c2ca2b875f89a0dbc71940c7b6e51173f4d6218afe2ff3a005ea"
     },
     {
       "path": "tools/test_visual_oracle.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "bb3baf7ee1bc3f1862723779d5d0586c47ff0e61c33ae2a3226623e1424852d0"
     },
     {
       "path": "tools/test_vulkan_sdk.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "41062ed5dabd9bf0a8c62f400df1c724a3c58b7bc0c0ff6bd9e9c0f991812ad7"
     },
     {
       "path": "tools/test_xb_probe.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "32eff0ab6d88414f6ec78cc863c9711b361b1eec6117c3825511c6997fb0f3cb"
     },
@@ -7571,17 +7320,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "52ef2f24612f642749c6f5826631742d01997a7270ea7ac82a76eedcf61dee2e"
+      "sha256": "109892d0539dc8e4c9b975f224ce56f16c205a585a6b3110f4346162beaf9e07"
     },
     {
       "path": "tools/title_runtime_config.py",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "f28e7d16b40bbc5983a71c2ee3ec7aa76993fcfbd4c2af1bdf3a20028411393a"
+      "sha256": "6721c8a60d1779b274eaa268d2e9159d8a21acfe1a01ee6001214770732c2d15"
     },
     {
       "path": "tools/tracediff.py",
@@ -7690,6 +7441,18 @@
       "sha256": "7df8354517ea3f053e474e6a2e79e6352d125dac6cfc933de802d409e4f63cfb"
     },
     {
+      "path": "tools/vfpu_overlap_diff_gen.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tooling-general",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f0eca0f51441b8c6b2a6635b2a8ec713c086ed090ed8312b12dab3c1c24d12c7"
+    },
+    {
       "path": "tools/vfpu_synth_gen.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7737,18 +7500,5 @@
       },
       "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "01c2b2032a2f433b2747d9abe818577f897a5360",
-    "candidate_tree": "7d5027dd835ab0f5cf75c73de7dbf02c336241fa",
-    "refreshed_paths": [
-      "Makefile",
-      "docs/provenance/GENERICITY_CENSUS_20260826.md",
-      "fixtures/platform_ladder/README.md",
-      "fixtures/platform_ladder/generate.py",
-      "tools/imports.py",
-      "tools/test_platform_ladder.py"
-    ]
-  }
+  ]
 }

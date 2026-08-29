@@ -445,7 +445,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -989,13 +989,17 @@ atrac3p-title-accept:
 # vfpu-interp-selftest — executable regression for issue #184: quad/vector VFPU
 # memory ops are all-or-nothing (span preflight before any lane commit, no prefix
 # consumption on rejection), plus the vcrs width guard and vrot active-lane
-# overlap scan. The white-box TU includes the real recomp.c/vfpu_tables.c/
-# vfpu_interp.c (heap_selftest pattern); only scheduler/driver plumbing is
-# stubbed. No game inputs or private data required.
-vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
+# overlap scan, plus the issue #40 codegen-vs-interpreter differential for
+# vhdp/vmscl overlap encodings. The white-box TU includes the real
+# recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern); only
+# scheduler/driver plumbing is stubbed. No game inputs or private data required.
+vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
 		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
+
+$(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
+	$(PYTHON) tools/vfpu_overlap_diff_gen.py $@
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
 # results are explicit source-owned constants and the same vectors run under
@@ -1050,6 +1054,37 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 
 hle-thread-selftest: hle-thread-selftest-build
 	$(BUILD_DIR)/hle_thread_selftest.exe
+
+# hle-title-selftest — run the same production-HLE executable against the generic
+# profile and both public fixture profiles. The optional configured profile is
+# invoked by tools/test_hle_title_config_behavior.py with a temporary synthetic
+# manifest; no title-specific fixture is committed merely to make this gate pass.
+HLE_TITLE_SELFTEST_CONFIGS := generic fixture-a fixture-b
+HLE_TITLE_SELFTEST_MANIFEST_generic :=
+HLE_TITLE_SELFTEST_MANIFEST_fixture-a := assets/titles/pspdev-phase5.json
+HLE_TITLE_SELFTEST_MANIFEST_fixture-b := assets/titles/synthetic.json
+HLE_TITLE_CONFIG ?= generic
+HLE_TITLE_MANIFEST ?= $(HLE_TITLE_SELFTEST_MANIFEST_$(HLE_TITLE_CONFIG))
+HLE_TITLE_SELFTEST_DIR := $(BUILD_DIR)/title-config/hle-$(HLE_TITLE_CONFIG)
+HLE_TITLE_SELFTEST_HEADER := $(HLE_TITLE_SELFTEST_DIR)/sr_title_config.h
+HLE_TITLE_SELFTEST_CONFIG_ARG := $(if $(strip $(HLE_TITLE_MANIFEST)),--manifest $(strip $(HLE_TITLE_MANIFEST)),)
+HLE_TITLE_SELFTEST_EXE := $(BUILD_DIR)/hle_title_production_selftest_$(HLE_TITLE_CONFIG).exe
+
+hle-title-selftest:
+	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=generic HLE_TITLE_MANIFEST=
+	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
+	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
+
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/title_config.c $(PGD_BACKEND_SRC)
+	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
+	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
+		-ffunction-sections -fdata-sections \
+		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
+		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
+	$(HLE_TITLE_SELFTEST_EXE) --title-config
 
 # Emit one scalar production-HLE comparison stream. Keep this target separate from the normal
 # selftest so a deliberate FAIL remains visible in the record without turning the build recipe

@@ -329,9 +329,24 @@
       "additionalProperties": false,
       "required": ["malloc_entry", "vblank_device_init_entry", "render_context_init_entry", "render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"],
       "properties": {
-        "malloc_entry": {"$ref": "#/$defs/guestAddress"},
-        "vblank_device_init_entry": {"$ref": "#/$defs/guestAddress"},
-        "render_context_init_entry": {"$ref": "#/$defs/guestAddress"},
+        "malloc_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "vblank_device_init_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
+        "render_context_init_entry": {
+          "allOf": [
+            {"$ref": "#/$defs/guestAddress"},
+            {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
+          ]
+        },
         "render_context_magic_addr": {"$ref": "#/$defs/guestAddress"},
         "render_table_ready_flag_addr": {"$ref": "#/$defs/guestAddress"},
         "render_context_word_addr": {"$ref": "#/$defs/guestAddress"}
