@@ -40,6 +40,7 @@
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
+#include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8266,19 +8267,30 @@ static GeCallback s_ge_cb[16];
 static uint32_t s_ge_list_next = 0;
 
 /* Every nested guest call this runtime makes -- GE callbacks here and the MPEG
- * ring-refill callback in mpeg.c -- runs on this single hard-coded guest stack
- * address rather than on the calling thread's stack.  Naming it does not change
- * that; it makes the shared-stack property greppable and gives the executable
- * regression one place to read the value from.  Whether the PSP shares a stack
- * across nested guest calls is NOT established: see the callback-ABI regression
- * in hle_thread_selftest.c, which measures what this runtime does today. */
-#define SR_CALL_GUEST_STACK 0x09df8000u
-
+ * ring-refill callback in mpeg.c -- runs on a guest stack that is NOT the
+ * calling thread's own $sp.  It used to be one hard-coded address (0x09df8000)
+ * shared by every such call, on every thread, at every depth; nested_frames.c
+ * replaces that with a per-owner, per-depth frame out of a reserved region.
+ *
+ * Only $sp changes here.  The zeroed CpuState, the inherited $gp, $ra = 0, the
+ * 0xe4 VFPU prefix seeds and the full caller-state restore are unchanged, and
+ * whether they match the PSP remains NOT_ESTABLISHED -- see the callback-ABI
+ * regression in hle_thread_selftest.c, which measures what this runtime does. */
 static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST: fn=0x0 (null, skipping)\n"); return; }
+    /* Fail closed BEFORE any caller state is touched: with no frame of its own
+     * there is no correct stack to hand the callee, and dispatching onto a frame
+     * another owner holds is the defect this replaced. */
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
+        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        return;
+    }
     if (ge_log_on())
-        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x\n",
-                fn, a0, a1, a2, sched_current_uid());
+        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x sp=0x%08x\n",
+                fn, a0, a1, a2, sched_current_uid(), frame_sp);
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
@@ -8287,7 +8299,7 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = SR_CALL_GUEST_STACK;
+    s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8297,16 +8309,24 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
 }
 
 /* Like ge_call_guest but returns the guest function's v0 (r2). Used by HLE
  * stubs that must extract a value from a guest constructor (e.g. the guest
  * malloc f_00000bcc returns the allocated block in r2). */
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x0 (null, skipping)\n"); return 0; }
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
+        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        return 0;
+    }
     if (ge_log_on())
-        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x\n",
-                fn, a0, a1, a2, sched_current_uid());
+        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x sp=0x%08x\n",
+                fn, a0, a1, a2, sched_current_uid(), frame_sp);
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
@@ -8315,7 +8335,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = SR_CALL_GUEST_STACK;
+    s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8326,6 +8346,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
     return rv;
 }
 
@@ -8340,10 +8361,13 @@ uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
                                 uint32_t a0, uint32_t a1, uint32_t a2) {
     return ge_call_guest_rv(s, fn, a0, a1, a2);
 }
-/* The nested-call scratch stack is a single hard-coded guest address shared by
- * every such call.  Expose it so the regression states the measured value once
- * instead of duplicating the literal. */
-uint32_t sr_hle_test_call_guest_stack(void) { return SR_CALL_GUEST_STACK; }
+/* Reach the void-returning marshaller too: it carries its own acquire/release
+ * pair, so "both wrappers isolate" is a claim the regression has to test rather
+ * than infer from the one it can already call. */
+void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
+                                 uint32_t a0, uint32_t a1, uint32_t a2) {
+    ge_call_guest(s, fn, a0, a1, a2);
+}
 #endif /* SR_HLE_THREAD_SELFTEST */
 
 /* sceDisplaySetMode: on the real PSP this triggers the display driver to

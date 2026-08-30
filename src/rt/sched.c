@@ -23,6 +23,7 @@
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
 #include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
+#include "nested_frames.h"  /* reserved region for nested host->guest call frames */
 
 #include <SDL3/SDL_timer.h>
 #include <stdio.h>
@@ -56,7 +57,19 @@ static int sched_status_is_negative(int32_t status) {
 }
 
 #define SR_STACK_ARENA_FLOOR 0x05000000u
-#define SR_STACK_ARENA_CEIL  0x09f00000u
+/* The ceiling is DERIVED from the reserved nested-call frame region rather than
+ * written as its own literal: the region must be excluded from thread-stack
+ * allocation, and two literals that happen to agree today are exactly how that
+ * exclusion would silently stop holding.  This is not a move -- the reserved
+ * region starts at the address this ceiling already had, so every thread stack
+ * keeps the address it had before.  Proven by
+ * test_nested_frame_region_is_reserved_from_thread_stacks(), which runs the
+ * allocator instead of re-deriving its arithmetic. */
+#define SR_STACK_ARENA_CEIL  SR_NESTED_FRAME_BASE
+_Static_assert(SR_STACK_ARENA_CEIL == 0x09f00000u,
+               "deriving the ceiling from the reserved region must not move any thread stack");
+_Static_assert(SR_STACK_ARENA_FLOOR < SR_STACK_ARENA_CEIL,
+               "the thread-stack arena must be non-empty and below the reserved region");
 #define SR_STACK_RANGE_MAX   (MAXTHREADS + 1)
 
 typedef struct {
@@ -153,6 +166,11 @@ uint32_t g_root_uid     = SR_ROLE_UID_NONE;
 uint32_t g_worker_uid   = SR_ROLE_UID_NONE;
 uint32_t g_launcher_uid = SR_ROLE_UID_NONE;
 static int s_root_seen  = 0;      /* first-created-thread latch (file-scope for the selftest) */
+
+/* Nested host->guest call frames still held when a thread's resources are
+ * released.  This should always be zero: it counts release paths that were
+ * missed, not frames that were expected to survive. */
+static unsigned s_stranded_nested_frames;
 
 /* Defined below, after the virtual-time service and VBLANK frame are declared. */
 static void scheduler_progress_time(void);
@@ -1052,8 +1070,17 @@ static void coro_body(void *param) {
         if (setjmp(t->unwind_jmp) == 0) {
             dispatch(s_cpu, t->entry);    /* runs until the thread returns or exits */
         } else {
-            /* longjmp path: sched_unwind_current() was called from recomp.c */
+            /* longjmp path: sched_unwind_current() was called from recomp.c.
+             * The C frames of any in-flight nested host->guest call were
+             * discarded by that jump, so their guest frames must be reclaimed
+             * here: leaving them held would retire pool slots permanently and
+             * make this thread's later nested calls fail closed for no reason. */
+            unsigned reclaimed = sr_nested_frame_release_owner(t->uid);
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
+            if (reclaimed)
+                fprintf(stderr,
+                        "FIBER_UNWIND: uid=0x%x reclaimed %u nested guest-call frame(s)\n",
+                        t->uid, reclaimed);
         }
         t->has_unwind_jmp = 0;
         if (sched_uid_is_worker(t->uid)) fprintf(stderr, "DISPATCH uid=0x%x returned pc=0x%08x\n", t->uid, s_cpu->pc);
@@ -1293,9 +1320,24 @@ static void unregister_libc_thread(uint32_t k0) {
  * returns the guest stack range.  The flags live on the TCB so a repeated
  * lifecycle call is an observable no-op instead of a second teardown. */
 static void sched_release_thread_resources(TCB *t) {
+    unsigned stranded;
     if (!t || t->resources_released) return;
     if (t->k0_init) unregister_libc_thread(t->k0_init);
     sr_callback_unregister_owner(t->uid);
+    /* Last net under this thread's nested host->guest call frames.  Every normal
+     * and error return releases its own frame, and the coro_body unwind path
+     * reclaims the chain after a longjmp, so a non-zero count here means a
+     * release path was missed -- report and COUNT it instead of absorbing it.
+     * The counter is what makes the unwind hook testable: without it a removed
+     * reclaim in coro_body is invisible, because this net silently repairs it
+     * a few instructions later. */
+    stranded = sr_nested_frame_release_owner(t->uid);
+    s_stranded_nested_frames += stranded;
+    if (stranded)
+        fprintf(stderr,
+                "sched_release_thread_resources: uid=0x%x still held %u nested guest-call "
+                "frame(s) at teardown -- reclaimed, but a release path was missed\n",
+                t->uid, stranded);
     t->resources_released = 1;
 }
 

@@ -456,10 +456,13 @@ static int ic_dispatch_intercept(uint32_t target);
 /* Synthetic guest bodies for the nested-guest-call ABI specimen; defined
  * further down, next to the regression that reads what they recorded. */
 static int cbabi_dispatch(CpuState *cpu, uint32_t target);
+/* Synthetic guest bodies for the H2/H3 nested-frame isolation specimens. */
+static int nfi_dispatch(CpuState *cpu, uint32_t target);
 
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
     if (cbabi_dispatch(cpu, target)) return;
+    if (nfi_dispatch(cpu, target)) return;
     if (title_hle_dispatch_intercept(cpu, target)) return;
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
@@ -1254,6 +1257,7 @@ static void reset_fixture(void) {
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
+    sr_nested_frame_reset();
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -5102,15 +5106,15 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Nested guest-call (callback) ABI specimen.
+ * Nested guest-call (callback) frame and ABI specimens.
  *
- * WHAT THIS IS.  Every nested guest call this runtime makes goes through the
- * same marshalling policy: ge_call_guest() and ge_call_guest_rv() in hle.c, and
- * call_guest3() in mpeg.c.  Before this regression existed nothing recorded what
- * that policy actually preserves, so any argument about the MPEG callback stack
- * was an argument about unmeasured behaviour.  These cases enter the production
- * marshalling through sr_hle_test_call_guest() -- a call-through to
- * ge_call_guest_rv(), not a copy of it -- and pin every observable.
+ * WHAT THIS IS.  Every nested host->guest call this runtime makes goes through
+ * the same marshalling policy: ge_call_guest() and ge_call_guest_rv() in hle.c,
+ * and call_guest3() in mpeg.c.  These cases enter the production marshalling
+ * through sr_hle_test_call_guest() / sr_hle_test_call_guest_void() --
+ * call-throughs to those functions, not copies of them -- and pin every
+ * observable: what the callee is handed, what the caller gets back, and which
+ * guest memory the call is allowed to disturb.
  *
  * WHAT IT IS NOT.  This is HOST_TESTED: it states what Nakagawa does today.  It
  * is NOT a PSP contract and must never be read as one.  Public PSP ABI/source
@@ -5119,18 +5123,27 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
  * and $gp and may freely clobber the argument, result and temporary registers),
  * but the exact PSP callback-stack contract relevant to this runtime is
  * unmeasured here and remains CORROBORATIVE_ONLY / NOT_ESTABLISHED.
- * This runtime instead zeroes the whole CpuState, hands the callee one fixed
- * scratch stack, and restores the caller's entire state afterwards.  Those are
- * different models.  Which one the PSP requires is NOT ESTABLISHED and cannot be
- * settled from source; it needs a hardware probe.  Until then this regression's
- * job is to make the current model impossible to change by accident.
+ * This runtime instead zeroes the whole CpuState, hands the callee a runtime-
+ * owned guest frame, and restores the caller's entire state afterwards.  Those
+ * are different models.  Which one the PSP requires is NOT ESTABLISHED and
+ * cannot be settled from source; it needs a hardware probe.  Until then this
+ * regression's job is to make the current model impossible to change by
+ * accident.
+ *
+ * WHAT CHANGED, AND WHAT DID NOT.  The frame handed to a nested call used to be
+ * one fixed guest address, 0x09df8000, shared by every call on every thread at
+ * every depth; it is now a per-owner, per-depth frame out of the reserved region
+ * owned by src/rt/nested_frames.c.  Only $sp moved.  The zeroed CpuState, the
+ * inherited $gp, $ra = 0, the 0xe4 VFPU prefix seeds and the byte-exact caller
+ * restore are unchanged and are asserted below exactly as before.
  *
  * The guest bodies below are synthetic and source-owned.  Only the body is
  * synthetic: the state marshalling under test is production code.
  * --------------------------------------------------------------------------- */
 extern uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
                                        uint32_t a0, uint32_t a1, uint32_t a2);
-extern uint32_t sr_hle_test_call_guest_stack(void);
+extern void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
+                                        uint32_t a0, uint32_t a1, uint32_t a2);
 
 #define CBABI_ENTRY        0x0800ab00u  /* records its incoming state, then mutates everything */
 #define CBABI_NESTED_ENTRY 0x0800ab40u  /* records, makes one nested call, records again */
@@ -5145,6 +5158,10 @@ extern uint32_t sr_hle_test_call_guest_stack(void);
 #define CBABI_LOCAL_OFFSET 16u
 #define CBABI_OUTER_LOCAL  0x0a7e5710u
 #define CBABI_INNER_LOCAL  0xdeadbeefu
+/* A guest word OUTSIDE every nested frame: the shared state a real nested call
+ * exists to update.  Isolating stacks must not isolate this. */
+#define CBABI_SHARED_ADDR  0x08a00000u
+#define CBABI_SHARED_VALUE 0x5eed5eedu
 
 static CpuState s_cbabi_seen[4];     /* incoming state, per invocation */
 static unsigned s_cbabi_calls;
@@ -5153,6 +5170,7 @@ static int s_cbabi_max_depth;
 static uint32_t s_cbabi_outer_sp;
 static uint32_t s_cbabi_inner_sp;
 static uint32_t s_cbabi_outer_local_after_nested;
+static uint32_t s_cbabi_shared_after_nested;
 
 /* Mutate every architectural class a real guest body could touch, so anything
  * the caller-side restore misses shows up as a difference after the call. */
@@ -5184,6 +5202,8 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target) {
         s_cbabi_inner_sp = cpu->r[29];
         /* Exactly what a translated body does with a guest local: store below $sp. */
         MEM_W32(cpu->r[29] - CBABI_LOCAL_OFFSET, CBABI_INNER_LOCAL);
+        /* ... and exactly what it does with shared state: store outside any frame. */
+        MEM_W32(CBABI_SHARED_ADDR, CBABI_SHARED_VALUE);
         cbabi_scribble(cpu, 0x77000000u);
         cpu->r[2] = CBABI_STORE_RETURN;
     } else if (target == CBABI_NEG_ENTRY) {
@@ -5195,6 +5215,7 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target) {
          * nested-callback shape, driven through the same entry point. */
         uint32_t inner = sr_hle_test_call_guest(cpu, CBABI_STORE_ENTRY, 1u, 2u, 3u);
         s_cbabi_outer_local_after_nested = MEM_R32(cpu->r[29] - CBABI_LOCAL_OFFSET);
+        s_cbabi_shared_after_nested = MEM_R32(CBABI_SHARED_ADDR);
         cpu->r[2] = inner == CBABI_STORE_RETURN ? CBABI_NESTED_RETURN : 0xbadbad00u;
     } else {
         cbabi_scribble(cpu, 0x55000000u);
@@ -5213,6 +5234,7 @@ static void cbabi_reset(void) {
     s_cbabi_outer_sp = 0;
     s_cbabi_inner_sp = 0;
     s_cbabi_outer_local_after_nested = 0;
+    s_cbabi_shared_after_nested = 0;
 }
 
 /* Every GPR except the ones the marshalling deliberately populates: the three
@@ -5225,14 +5247,23 @@ static int cbabi_other_gprs_zero(const CpuState *seen) {
     return 1;
 }
 
+/* An address is a usable nested-frame stack pointer when it is inside the
+ * reserved region and sits at the fixed $sp offset within some slot. */
+static int nfi_is_frame_sp(uint32_t sp) {
+    uint32_t base = 0, end = 0;
+    sr_nested_frame_region(&base, &end);
+    if (sp < base || sp >= end) return 0;
+    return ((sp - base) % SR_NESTED_FRAME_STRIDE) == SR_NESTED_FRAME_SP_OFF;
+}
+
 static void test_nested_guest_call_abi(void) {
     CpuState caller, before;
-    const uint32_t scratch = sr_hle_test_call_guest_stack();
-    const uint32_t local_addr = scratch - CBABI_LOCAL_OFFSET;
+    uint32_t region_base = 0, region_end = 0;
 
     reset_fixture();
     sr_hle_init();
     cbabi_reset();
+    sr_nested_frame_region(&region_base, &region_end);
 
     /* A caller state with every class set to something distinctive, so "restored"
      * is a real claim rather than "was zero and stayed zero". */
@@ -5240,7 +5271,7 @@ static void test_nested_guest_call_abi(void) {
     cbabi_scribble(&caller, 0x33000000u);
     caller.r[0] = 0u;                     /* $zero is architecturally fixed */
     caller.r[28] = 0x08800000u;           /* $gp */
-    caller.r[29] = 0x09c00000u;           /* the caller's own stack, distinct from the scratch one */
+    caller.r[29] = 0x09c00000u;           /* the caller's own stack, distinct from any frame */
     caller.r[31] = 0x08123456u;           /* $ra */
     caller.pc = 0x08001000u;
     memcpy(&before, &caller, sizeof(caller));
@@ -5258,10 +5289,10 @@ static void test_nested_guest_call_abi(void) {
                    seen->r[6] == 0xc2c2c2c2u,
                "the three call arguments arrive in $a0/$a1/$a2");
         expect(seen->r[28] == before.r[28], "$gp is inherited from the calling state");
-        expect(seen->r[29] == scratch,
-               "the callee runs on the fixed scratch stack, not the caller's $sp");
+        expect(nfi_is_frame_sp(seen->r[29]),
+               "the callee runs on a reserved nested-call frame, not the caller's $sp");
         expect(seen->r[29] != before.r[29],
-               "the scratch stack is genuinely a different stack from the caller's");
+               "the nested frame is genuinely a different stack from the caller's");
         expect(seen->r[31] == 0u, "$ra is zero: the callee has no guest return address to jump to");
         expect(seen->pc == CBABI_ENTRY, "$pc names the guest entry being dispatched");
         expect(cbabi_other_gprs_zero(seen),
@@ -5295,13 +5326,30 @@ static void test_nested_guest_call_abi(void) {
            "the entire caller CpuState is restored byte-for-byte across the call");
     expect(caller.r[2] == before.r[2],
            "$v0 is restored as well: the callee's result is not left in the caller's registers");
+    expect(sr_nested_frame_live() == 0u,
+           "the nested frame is released when the call returns normally");
+    /* The frame pool is statically reserved guest memory and a static host slot
+     * table: acquiring one must not call the guest allocator.  s_heap_arena_off
+     * is this fixture's guest-malloc bump cursor, so it moves if anything on the
+     * callback-entry path allocates. */
+    {
+        size_t heap_before = s_heap_arena_off;
+        cbabi_reset();
+        (void)sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u);
+        sr_hle_test_call_guest_void(&caller, CBABI_ENTRY, 0u, 0u, 0u);
+        expect(s_cbabi_calls == 2u, "both marshallers dispatched for the allocation probe");
+        expect(s_heap_arena_off == heap_before,
+               "entering a nested guest call allocates no guest heap memory");
+    }
 
     /* ---- guest memory is NOT part of that restoration ---------------------- */
     cbabi_reset();
-    MEM_W32(local_addr, 0u);
+    MEM_W32(CBABI_SHARED_ADDR, 0u);
     (void)sr_hle_test_call_guest(&caller, CBABI_STORE_ENTRY, 0u, 0u, 0u);
-    expect(MEM_R32(local_addr) == CBABI_INNER_LOCAL,
+    expect(MEM_R32(s_cbabi_inner_sp - CBABI_LOCAL_OFFSET) == CBABI_INNER_LOCAL,
            "guest memory written by the callee persists after the call returns");
+    expect(MEM_R32(CBABI_SHARED_ADDR) == CBABI_SHARED_VALUE,
+           "a callee write to shared guest memory outside its frame survives the return");
 
     /* ---- repeated calls do not leak state between invocations -------------- */
     cbabi_reset();
@@ -5310,6 +5358,10 @@ static void test_nested_guest_call_abi(void) {
     expect(s_cbabi_calls == 2u, "the guest body is entered once per call");
     expect(s_cbabi_seen[1].r[4] == 2u && cbabi_other_gprs_zero(&s_cbabi_seen[1]),
            "the second invocation starts from a freshly zeroed state, not the first one's");
+    expect(s_cbabi_seen[0].r[29] == s_cbabi_seen[1].r[29],
+           "sequential (non-overlapping) calls reuse the same frame slot");
+    expect(sr_nested_frame_live() == 0u,
+           "sequential calls each release their frame");
 
     /* ---- a sign-bit result survives unchanged ------------------------------ *
      * The marshalling returns uint32_t, so a guest error code must arrive with
@@ -5323,29 +5375,618 @@ static void test_nested_guest_call_abi(void) {
     expect(sr_hle_test_call_guest(&caller, 0u, 1u, 2u, 3u) == 0u,
            "a null guest entry returns zero");
     expect(s_cbabi_calls == 0u, "a null guest entry dispatches nothing");
+    expect(sr_nested_frame_live() == 0u,
+           "a refused null entry acquires no frame");
 
-    /* ---- nested call: the measured shared-stack hazard --------------------- *
-     * This is the concrete mechanism behind the MPEG scratch-stack question.  The
-     * inner call is handed the SAME fixed stack address as the outer one, so a
-     * word the outer body parked below its own $sp is overwritten by the inner
-     * body before the outer body resumes.  Recorded as a measurement of THIS
-     * runtime, not as a claim about the PSP: whether hardware shares a stack
-     * across nested guest calls is NOT ESTABLISHED, and no production behaviour
-     * is changed on the strength of this test. */
+    /* ---- the void marshaller carries its own acquire/release --------------- */
     cbabi_reset();
     memcpy(&caller, &before, sizeof(caller));
+    sr_hle_test_call_guest_void(&caller, CBABI_STORE_ENTRY, 4u, 5u, 6u);
+    expect(s_cbabi_calls == 1u && s_cbabi_seen[0].r[4] == 4u,
+           "ge_call_guest() dispatches its callee with the same argument marshalling");
+    expect(nfi_is_frame_sp(s_cbabi_seen[0].r[29]),
+           "ge_call_guest() also runs its callee on a reserved nested-call frame");
+    expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
+           "ge_call_guest() restores the caller CpuState byte-for-byte too");
+    expect(sr_nested_frame_live() == 0u, "ge_call_guest() releases its frame");
+
+    /* ---- nested call on ONE thread: the same-thread isolation claim -------- *
+     * This is the shape that used to destroy the outer body's guest locals: both
+     * levels were handed the same fixed address.  They now get distinct frames
+     * at distinct depths, while a write to shared guest memory made by the inner
+     * body still reaches the outer body -- isolation must not become erasure. */
+    cbabi_reset();
+    memcpy(&caller, &before, sizeof(caller));
+    MEM_W32(CBABI_SHARED_ADDR, 0u);
     uint32_t nested_rv = sr_hle_test_call_guest(&caller, CBABI_NESTED_ENTRY, 0u, 0u, 0u);
     expect(nested_rv == CBABI_NESTED_RETURN, "a callback may itself perform a nested guest call");
     expect(s_cbabi_calls == 2u && s_cbabi_max_depth == 2,
            "the nested call really re-entered the marshalling two levels deep");
-    expect(s_cbabi_outer_sp == s_cbabi_inner_sp && s_cbabi_outer_sp == scratch,
-           "outer and inner nested calls are handed the identical scratch stack address");
-    expect(s_cbabi_outer_local_after_nested == CBABI_INNER_LOCAL,
-           "MEASURED HAZARD: the inner call overwrites the outer body's guest stack local");
-    expect(s_cbabi_outer_local_after_nested != CBABI_OUTER_LOCAL,
-           "MEASURED HAZARD: the outer body cannot rely on its guest stack across a nested call");
+    expect(nfi_is_frame_sp(s_cbabi_outer_sp) && nfi_is_frame_sp(s_cbabi_inner_sp),
+           "both nesting levels run on reserved nested-call frames");
+    expect(s_cbabi_outer_sp != s_cbabi_inner_sp,
+           "outer and inner nested calls are handed DIFFERENT guest frames");
+    expect(s_cbabi_outer_local_after_nested == CBABI_OUTER_LOCAL,
+           "the inner call does not overwrite the outer body's guest stack local");
+    expect(s_cbabi_shared_after_nested == CBABI_SHARED_VALUE,
+           "a shared-memory write made by the inner call is visible to the outer body");
+    expect(MEM_R32(CBABI_SHARED_ADDR) == CBABI_SHARED_VALUE,
+           "that shared-memory write also survives the outermost return");
     expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
            "the outermost caller state is still restored despite the nested re-entry");
+    expect(sr_nested_frame_live() == 0u,
+           "both nesting levels released their frames");
+    expect(sr_nested_frame_guard_failures() == 0u && sr_nested_frame_exhaustions() == 0u &&
+               sr_nested_frame_lifo_violations() == 0u,
+           "the ABI specimen provokes no guard, exhaustion or ordering fault");
+}
+
+/* ---------------------------------------------------------------------------
+ * H2 / H3 specimens, plus the frame pool's own contracts.
+ *
+ * test_nested_guest_call_abi() above covers the SAME-thread nesting hazard.  Two
+ * stronger hazards do not follow from that measurement and were argued from
+ * address arithmetic alone, so they are measured here through production code:
+ *
+ *   H2  Two DIFFERENT guest threads, each only one level deep, collided.  This
+ *       needs the nested call to be scheduler-preemptible, which it is: the
+ *       marshalling refreshes sr_timeslice but installs no scheduler lock, so
+ *       the SR_YIELD that codegen emits at every guest function entry and loop
+ *       back-edge reaches sr_yield(), saves the nested frame into the TCB and
+ *       switches away.  The specimen drives exactly that sequence through the
+ *       real sr_yield() and the real sched_run() resume stores.
+ *
+ *   H3  The frame region must be outside [SR_STACK_ARENA_FLOOR,
+ *       SR_STACK_ARENA_CEIL), the descending arena sceKernelCreateThread carves
+ *       guest thread stacks out of.  Measured by running the production
+ *       allocator, not by re-deriving its arithmetic in the test.
+ *
+ * Both are host measurements of THIS runtime, exactly like the ABI specimen
+ * above; neither states a PSP contract.
+ * --------------------------------------------------------------------------- */
+#define NFI_YIELD_ENTRY    0x0800ac00u  /* writes a local, yields, re-reads the local */
+#define NFI_WRITE_ENTRY    0x0800ac40u  /* writes its own local below $sp and returns */
+#define NFI_RECURSE_ENTRY  0x0800ac80u  /* nests into itself until it is refused */
+#define NFI_OVERFLOW_ENTRY 0x0800acc0u  /* writes into its own low guard band */
+#define NFI_MIRROR_ENTRY   0x0800ace0u  /* writes the NEIGHBOUR slot guard word into its own */
+#define NFI_UNWIND_ENTRY   0x0800ad00u  /* thread body: nested call, then longjmp out */
+#define NFI_JUMP_ENTRY     0x0800ad40u  /* nested callee that calls sched_unwind_current */
+#define NFI_CB_ENTRY       0x0800ad80u  /* PSP callback body that makes a nested call */
+#define NFI_YIELD_RETURN   0x00000051u
+#define NFI_WRITE_RETURN   0x00000052u
+#define NFI_RECURSE_RETURN 0x00000053u
+#define NFI_OVERFLOW_RETURN 0x00000054u
+#define NFI_CB_RETURN      0x00000000u  /* 0 keeps the PSP auto-delete rule off */
+#define NFI_LOCAL_OFFSET   16u
+#define NFI_YIELDER_LOCAL  0x11117777u
+#define NFI_WRITER_LOCAL   0x2222bbbbu
+#define NFI_CB_LOCAL       0x3333ccccu
+
+static uint32_t s_nfi_yielder_sp;
+static uint32_t s_nfi_writer_sp;
+static uint32_t s_nfi_yielder_local_after;
+static uint32_t s_nfi_a_rv, s_nfi_b_rv;
+static unsigned s_nfi_yielder_owner_depth;
+static unsigned s_nfi_writer_owner_depth;
+static unsigned s_nfi_live_while_both_open;
+static int s_nfi_yielder_resumed;
+static int s_nfi_writer_ran;
+
+static unsigned s_nfi_recurse_limit;
+static unsigned s_nfi_recurse_calls;
+static uint32_t s_nfi_recurse_sp[8];
+static unsigned s_nfi_recurse_depth_seen[8];
+static int s_nfi_recurse_refused_at;
+
+static uint32_t s_nfi_overflow_sp;
+static uint32_t s_nfi_overflow_target;
+static uint32_t s_nfi_mirror_value;
+
+static uint32_t s_nfi_unwind_depth_at_jump;
+static int s_nfi_unwind_body_entered;
+static int s_nfi_unwind_returned;      /* must stay 0: the longjmp skips the return */
+
+static uint32_t s_nfi_cb_sp;
+static uint32_t s_nfi_cb_local_after_nested;
+static uint32_t s_nfi_cb_nested_sp;
+static int s_nfi_cb_ran;
+
+static void nfi_reset_observations(void) {
+    s_nfi_yielder_sp = 0;
+    s_nfi_writer_sp = 0;
+    s_nfi_yielder_local_after = 0;
+    s_nfi_a_rv = 0;
+    s_nfi_b_rv = 0;
+    s_nfi_yielder_owner_depth = 0;
+    s_nfi_writer_owner_depth = 0;
+    s_nfi_live_while_both_open = 0;
+    s_nfi_yielder_resumed = 0;
+    s_nfi_writer_ran = 0;
+    s_nfi_recurse_limit = 0;
+    s_nfi_recurse_calls = 0;
+    memset(s_nfi_recurse_sp, 0, sizeof s_nfi_recurse_sp);
+    memset(s_nfi_recurse_depth_seen, 0, sizeof s_nfi_recurse_depth_seen);
+    s_nfi_recurse_refused_at = -1;
+    s_nfi_overflow_sp = 0;
+    s_nfi_overflow_target = 0;
+    s_nfi_mirror_value = 0;
+    s_nfi_unwind_depth_at_jump = 0;
+    s_nfi_unwind_body_entered = 0;
+    s_nfi_unwind_returned = 0;
+    s_nfi_cb_sp = 0;
+    s_nfi_cb_local_after_nested = 0;
+    s_nfi_cb_nested_sp = 0;
+    s_nfi_cb_ran = 0;
+}
+
+static int nfi_dispatch(CpuState *cpu, uint32_t target) {
+    if (target == NFI_YIELD_ENTRY) {
+        s_nfi_yielder_sp = cpu->r[29];
+        s_nfi_yielder_owner_depth = sr_nested_frame_owner_depth(sched_current_uid());
+        /* What a translated body does with a guest local: spill below $sp. */
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_YIELDER_LOCAL);
+        /* The production preemption point.  Nothing in the nested-call
+         * marshalling suspends dispatch or interrupts, so this is reachable
+         * from inside a GE/MPEG callback exactly as written. */
+        sr_yield(cpu);
+        s_nfi_yielder_resumed = 1;
+        s_nfi_yielder_local_after = MEM_R32(cpu->r[29] - NFI_LOCAL_OFFSET);
+        cpu->r[2] = NFI_YIELD_RETURN;
+        return 1;
+    }
+    if (target == NFI_WRITE_ENTRY) {
+        s_nfi_writer_ran = 1;
+        s_nfi_writer_sp = cpu->r[29];
+        s_nfi_writer_owner_depth = sr_nested_frame_owner_depth(sched_current_uid());
+        s_nfi_live_while_both_open = sr_nested_frame_live();
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_WRITER_LOCAL);
+        cpu->r[2] = NFI_WRITE_RETURN;
+        return 1;
+    }
+    if (target == NFI_RECURSE_ENTRY) {
+        unsigned level = cpu->r[4];
+        if (level < 8u) {
+            s_nfi_recurse_sp[level] = cpu->r[29];
+            s_nfi_recurse_depth_seen[level] = sr_nested_frame_owner_depth(sched_current_uid());
+        }
+        s_nfi_recurse_calls++;
+        if (level + 1u < s_nfi_recurse_limit) {
+            uint32_t inner = sr_hle_test_call_guest(cpu, NFI_RECURSE_ENTRY, level + 1u, 0u, 0u);
+            if (inner == 0u && s_nfi_recurse_refused_at < 0)
+                s_nfi_recurse_refused_at = (int)level;
+        }
+        cpu->r[2] = NFI_RECURSE_RETURN;
+        return 1;
+    }
+    if (target == NFI_OVERFLOW_ENTRY || target == NFI_MIRROR_ENTRY) {
+        /* Run off the bottom of the frame: the last word of the low guard band
+         * is the first thing a descending overflow reaches. */
+        uint32_t slot = cpu->r[29] - SR_NESTED_FRAME_SP_OFF;
+        s_nfi_overflow_sp = cpu->r[29];
+        s_nfi_overflow_target = slot + SR_NESTED_FRAME_GUARD - 4u;
+        if (target == NFI_MIRROR_ENTRY) {
+            /* The adversarial shape a constant guard word would miss: write the
+             * value that is CORRECT in the neighbouring slot at the same offset,
+             * i.e. what a bulk guest copy across the region would leave behind.
+             * Only an address-keyed guard rejects this. */
+            s_nfi_mirror_value = MEM_R32(s_nfi_overflow_target - SR_NESTED_FRAME_STRIDE);
+            MEM_W32(s_nfi_overflow_target, s_nfi_mirror_value);
+        } else {
+            MEM_W32(s_nfi_overflow_target, 0xbadf00du);
+        }
+        cpu->r[2] = NFI_OVERFLOW_RETURN;
+        return 1;
+    }
+    if (target == NFI_UNWIND_ENTRY) {
+        s_nfi_unwind_body_entered = 1;
+        (void)sr_hle_test_call_guest(cpu, NFI_JUMP_ENTRY, 0u, 0u, 0u);
+        s_nfi_unwind_returned = 1;    /* unreachable: the callee jumps out */
+        cpu->r[2] = 0;
+        return 1;
+    }
+    if (target == NFI_JUMP_ENTRY) {
+        s_nfi_unwind_depth_at_jump = sr_nested_frame_owner_depth(sched_current_uid());
+        /* The production nonlocal exit recomp.c uses to abandon a guest thread. */
+        sched_unwind_current();
+        cpu->r[2] = 0;                /* unreachable */
+        return 1;
+    }
+    if (target == NFI_CB_ENTRY) {
+        s_nfi_cb_ran = 1;
+        s_nfi_cb_sp = cpu->r[29];
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_CB_LOCAL);
+        /* callback (live stack) -> HLE -> GE nested call (reserved frame). */
+        (void)sr_hle_test_call_guest(cpu, NFI_WRITE_ENTRY, 0u, 0u, 0u);
+        s_nfi_cb_nested_sp = s_nfi_writer_sp;
+        s_nfi_cb_local_after_nested = MEM_R32(cpu->r[29] - NFI_LOCAL_OFFSET);
+        cpu->r[2] = NFI_CB_RETURN;
+        return 1;
+    }
+    return 0;
+}
+
+static void nfi_thread_a_body(void *arg) {
+    (void)arg;
+    s_nfi_a_rv = sr_hle_test_call_guest(s_cpu, NFI_YIELD_ENTRY, 0u, 0u, 0u);
+    selftest_park_on_scheduler();
+}
+
+static void nfi_thread_b_body(void *arg) {
+    (void)arg;
+    s_nfi_b_rv = sr_hle_test_call_guest(s_cpu, NFI_WRITE_ENTRY, 0u, 0u, 0u);
+    selftest_park_on_scheduler();
+}
+
+/* The register/state half of sched_run()'s resume sequence, with the
+ * coroutine-creation policy left to the caller.  Copying the policy would make
+ * the specimen measure the copy; copying these three stores is what makes the
+ * resumed thread see the registers the scheduler really hands it. */
+static void nfi_resume(TCB *t) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    sr_coro_switch(t->coro);
+}
+
+static void test_nested_frames_isolate_concurrent_threads(void) {
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    s_pace_on = 0;
+    s_vbl_next_us = 100000000ull;   /* no VBLANK inside the window under test */
+    s_vbl_event_period_rem = 0;
+
+    TCB *a = fixture_thread(0x1e0u, TH_READY, 32);
+    TCB *b = fixture_thread(0x1e1u, TH_READY, 32);
+    a->started = 1;
+    b->started = 1;
+    a->coro = sr_coro_create(nfi_thread_a_body, NULL, (size_t)4 << 20);
+    b->coro = sr_coro_create(nfi_thread_b_body, NULL, (size_t)4 << 20);
+    expect(a->coro != NULL && b->coro != NULL, "both nested-frame specimen threads got a coroutine");
+    if (!a->coro || !b->coro) return;
+
+    /* Thread A enters a nested guest call and is preempted INSIDE it. */
+    nfi_resume(a);
+    expect(s_nfi_yielder_sp != 0u, "thread A entered the nested guest call");
+    expect(a->state == TH_READY && !s_nfi_yielder_resumed,
+           "thread A was preempted while still inside the nested guest call");
+    expect(a->saved.r[29] == s_nfi_yielder_sp,
+           "the preempted nested frame is what the scheduler saved for thread A");
+    expect(sr_nested_frame_live() == 1u,
+           "thread A still holds its nested frame while it is not running");
+
+    /* Thread B now makes its own depth-1 nested guest call while A's is live. */
+    nfi_resume(b);
+    expect(s_nfi_writer_ran && s_nfi_b_rv == NFI_WRITE_RETURN,
+           "thread B completed its own depth-1 nested guest call");
+    expect(s_nfi_live_while_both_open == 2u,
+           "both threads' nested frames were live at the same moment");
+    expect(s_nfi_yielder_owner_depth == 1u && s_nfi_writer_owner_depth == 1u,
+           "each thread saw itself at nesting depth 1, not a shared depth");
+
+    /* Thread A resumes and reads the local it spilled before being preempted. */
+    nfi_resume(a);
+    expect(s_nfi_yielder_resumed && s_nfi_a_rv == NFI_YIELD_RETURN,
+           "thread A resumed and completed its nested guest call");
+
+    expect(nfi_is_frame_sp(s_nfi_yielder_sp) && nfi_is_frame_sp(s_nfi_writer_sp),
+           "both threads ran on reserved nested-call frames");
+    expect(s_nfi_writer_sp != s_nfi_yielder_sp,
+           "H2: concurrent depth-1 nested calls on different threads get different guest frames");
+    expect(s_nfi_yielder_local_after == NFI_YIELDER_LOCAL,
+           "H2: another thread's nested call does not overwrite this thread's nested guest local");
+    expect(sr_nested_frame_live() == 0u,
+           "both threads released their frames");
+    expect(sr_nested_frame_guard_failures() == 0u,
+           "neither thread's frame reported guard corruption");
+
+    if (a->coro) { sr_coro_destroy(a->coro); a->coro = NULL; }
+    if (b->coro) { sr_coro_destroy(b->coro); b->coro = NULL; }
+    s_cur = -1;
+}
+
+static void test_nested_frame_region_is_reserved_from_thread_stacks(void) {
+    uint32_t base = 0, end = 0;
+    uint32_t colliding_uid = 0, colliding_base = 0, colliding_end = 0;
+    int created = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_nested_frame_region(&base, &end);
+
+    expect(end > base && (end - base) == SR_NESTED_FRAME_SLOTS * SR_NESTED_FRAME_STRIDE,
+           "the reserved nested-frame region is exactly the slot array");
+
+    /* Structural: the arena bounds anything the allocator can ever hand out. */
+    expect(end <= SR_STACK_ARENA_FLOOR || base >= SR_STACK_ARENA_CEIL,
+           "H3: the nested guest-call frame region is outside the thread-stack arena");
+
+    /* Empirical: run the production allocator with the production default stack
+     * size (0 => 0x40000) and look at the ranges it actually produced.  Five
+     * default-sized stacks was enough to land on 0x09df8000 before the region
+     * was reserved, so the loop bound is well past the historical collision. */
+    for (int i = 0; i < 8 && colliding_uid == 0u; i++) {
+        uint32_t uid = sched_create_thread(0x0800dc00u + (uint32_t)i, 40, 0u);
+        TCB *t;
+        if (!uid) break;
+        t = tcb_by_uid(uid);
+        if (!t) break;
+        created++;
+        if (t->stack_base < end && t->stack_base + t->stack_reservation > base) {
+            colliding_uid = uid;
+            colliding_base = t->stack_base;
+            colliding_end = t->stack_base + t->stack_reservation;
+        }
+    }
+    expect(created > 0, "the production thread-stack allocator carved at least one guest stack");
+    {
+        char msg[224];
+        snprintf(msg, sizeof msg,
+                 "H3: no created thread stack overlaps the nested guest-call frame region "
+                 "([0x%08x,0x%08x), %d stacks, first overlap uid=0x%x [0x%08x,0x%08x))",
+                 base, end, created, colliding_uid, colliding_base, colliding_end);
+        expect(colliding_uid == 0u, msg);
+    }
+
+    /* SEPARATE, UNFIXED BOUNDARY, measured here so it stays visible: the VBLANK
+     * interrupt stack is inside the thread-stack arena, exactly as the nested
+     * frames used to be.  This assertion records the present state deliberately
+     * -- if the interrupt stack is ever moved out, this fails and must be
+     * updated rather than silently drifting. */
+    expect(0x09df0000u >= SR_STACK_ARENA_FLOOR && 0x09df0000u < SR_STACK_ARENA_CEIL,
+           "MEASURED, NOT FIXED: the VBLANK interrupt stack 0x09df0000 is still inside "
+           "the thread-stack arena (separate boundary)");
+}
+
+static void test_nested_frame_depth_is_bounded_and_fails_closed(void) {
+    CpuState caller;
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&caller, 0, sizeof caller);
+    caller.r[29] = 0x09c00000u;
+
+    /* Ask for two levels more than the contract allows. */
+    s_nfi_recurse_limit = SR_NESTED_FRAME_MAX_DEPTH + 2u;
+    (void)sr_hle_test_call_guest(&caller, NFI_RECURSE_ENTRY, 0u, 0u, 0u);
+
+    expect(s_nfi_recurse_calls == SR_NESTED_FRAME_MAX_DEPTH,
+           "nesting stops after exactly SR_NESTED_FRAME_MAX_DEPTH guest bodies");
+    expect(s_nfi_recurse_refused_at == (int)(SR_NESTED_FRAME_MAX_DEPTH - 1u),
+           "the refusal happens at the deepest permitted level, not earlier or later");
+    expect(sr_nested_frame_exhaustions() == 1u,
+           "the refused call is counted exactly once as an exhaustion");
+    {
+        int distinct = 1, depths_ok = 1;
+        for (unsigned i = 0; i < SR_NESTED_FRAME_MAX_DEPTH; i++) {
+            if (!nfi_is_frame_sp(s_nfi_recurse_sp[i])) distinct = 0;
+            if (s_nfi_recurse_depth_seen[i] != i + 1u) depths_ok = 0;
+            for (unsigned j = 0; j < i; j++)
+                if (s_nfi_recurse_sp[i] == s_nfi_recurse_sp[j]) distinct = 0;
+        }
+        expect(distinct, "every permitted nesting level ran on its own reserved frame");
+        expect(depths_ok, "each level observed its own depth, counting from 1");
+    }
+    expect(sr_nested_frame_live() == 0u,
+           "unwinding the whole nest releases every frame");
+    expect(sr_nested_frame_owner_depth(0u) == 0u,
+           "the owner's depth returns to zero after the nest unwinds");
+    expect(sr_nested_frame_lifo_violations() == 0u,
+           "the nest released its frames innermost-first");
+
+    /* Pool exhaustion is a separate limit from per-owner depth: hold every slot
+     * under other owners, then a call from a fresh owner must be refused rather
+     * than handed a frame somebody else is standing on. */
+    sr_nested_frame_reset();
+    {
+        int handles[SR_NESTED_FRAME_SLOTS];
+        uint32_t sp = 0;
+        unsigned i, held = 0;
+        for (i = 0; i < SR_NESTED_FRAME_SLOTS; i++) {
+            handles[i] = -1;
+            if (sr_nested_frame_acquire(0x900u + i, &sp, &handles[i])) held++;
+        }
+        expect(held == SR_NESTED_FRAME_SLOTS,
+               "the pool hands out exactly SR_NESTED_FRAME_SLOTS frames");
+        expect(sr_nested_frame_live() == SR_NESTED_FRAME_SLOTS,
+               "all pool slots are accounted for as live");
+        cbabi_reset();
+        expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == 0u,
+               "a nested call with the pool exhausted returns zero");
+        expect(s_cbabi_calls == 0u,
+               "a nested call with the pool exhausted dispatches nothing");
+        expect(sr_nested_frame_exhaustions() == 1u,
+               "the pool-exhaustion refusal is counted");
+        for (i = 0; i < SR_NESTED_FRAME_SLOTS; i++)
+            if (handles[i] >= 0) (void)sr_nested_frame_release(handles[i]);
+        expect(sr_nested_frame_live() == 0u, "releasing every handle empties the pool");
+        cbabi_reset();
+        expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == CBABI_RETURN_VALUE,
+               "the pool is usable again once the frames are returned");
+    }
+    sr_nested_frame_reset();
+}
+
+static void test_nested_frame_guard_detects_overflow(void) {
+    CpuState caller;
+    uint32_t neighbour_sp = 0, neighbour_probe = 0;
+    int neighbour = -1;
+
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&caller, 0, sizeof caller);
+    caller.r[29] = 0x09c00000u;
+
+    /* Hold slot 0 under a different owner so the overflowing call gets slot 1
+     * and there is a real neighbour whose stack must stay intact. */
+    expect(sr_nested_frame_acquire(0x901u, &neighbour_sp, &neighbour),
+           "the neighbour frame was acquired");
+    neighbour_probe = neighbour_sp - NFI_LOCAL_OFFSET;
+    MEM_W32(neighbour_probe, 0xfeedfaceu);
+
+    expect(sr_hle_test_call_guest(&caller, NFI_OVERFLOW_ENTRY, 0u, 0u, 0u) == NFI_OVERFLOW_RETURN,
+           "the overflowing body still returns its value to the HLE caller");
+    expect(s_nfi_overflow_sp != neighbour_sp,
+           "the overflowing call ran on a different frame from the neighbour");
+    expect(sr_nested_frame_guard_failures() == 1u,
+           "running off the bottom of a frame is detected exactly once at release");
+    expect(sr_nested_frame_live() == 1u,
+           "a corrupt frame is still reclaimed: only the neighbour stays live");
+    expect(MEM_R32(neighbour_probe) == 0xfeedfaceu,
+           "the guard band absorbed the overflow; the neighbouring frame is untouched");
+
+    /* Adversarial variant: a write that carries the value the guard band holds
+     * one slot LOWER -- the shape a bulk guest copy across the region leaves.
+     * A constant guard word would accept it; an address-keyed one must not. */
+    expect(sr_hle_test_call_guest(&caller, NFI_MIRROR_ENTRY, 0u, 0u, 0u) == NFI_OVERFLOW_RETURN,
+           "the mirrored-guard body returns its value");
+    expect(s_nfi_mirror_value != 0u,
+           "the mirrored write really copied a guard word from the neighbouring slot");
+    expect(sr_nested_frame_guard_failures() == 2u,
+           "a guard word that is valid one slot away is still rejected in this slot");
+
+    (void)sr_nested_frame_release(neighbour);
+    expect(sr_nested_frame_live() == 0u, "the neighbour frame is released");
+    /* A clean call afterwards must not inherit the previous occupant's verdict. */
+    cbabi_reset();
+    expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == CBABI_RETURN_VALUE,
+           "a well-behaved call after a guard failure still runs");
+    expect(sr_nested_frame_guard_failures() == 2u,
+           "a well-behaved call does not report guard corruption");
+    sr_nested_frame_reset();
+}
+
+static void test_nested_frame_survives_thread_unwind(void) {
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    s_stranded_nested_frames = 0;
+
+    TCB *worker = fixture_thread(0x1e4u, TH_READY, 40);
+    worker->entry = NFI_UNWIND_ENTRY;
+    run_worker(worker);
+
+    expect(s_nfi_unwind_body_entered, "the unwinding thread body ran");
+    expect(s_nfi_unwind_depth_at_jump == 1u,
+           "the thread held one nested guest-call frame when it jumped out");
+    expect(s_nfi_unwind_returned == 0,
+           "sched_unwind_current() really left through the longjmp, not by returning");
+    expect(sr_nested_frame_owner_depth(worker->uid) == 0u,
+           "the unwind path reclaimed the thread's nested guest-call frame");
+    expect(sr_nested_frame_live() == 0u,
+           "no frame outlives the nonlocal exit");
+    expect(sr_nested_frame_guard_failures() == 0u,
+           "reclaiming an in-flight frame is not reported as guard corruption");
+    /* Thread teardown carries its own reclaim, so "live == 0" alone cannot tell
+     * whether the UNWIND path did the work.  The teardown net counts what it had
+     * to repair: zero means the unwind hook reclaimed the frame itself. */
+    expect(s_stranded_nested_frames == 0u,
+           "the unwind path -- not the thread-teardown net -- reclaimed the frame");
+
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+static void test_nested_frame_under_psp_callback_dispatch(void) {
+    CpuState cpu, before;
+    const uint32_t live_sp = 0x09c00000u;
+
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[16] = 0x0badc0deu;          /* a callee-saved register the callback must not lose */
+    cpu.r[28] = 0x08800000u;
+    cpu.r[29] = live_sp;
+    cpu.r[31] = 0x08123456u;
+    cpu.pc = 0x08002000u;
+    memcpy(&before, &cpu, sizeof cpu);
+
+    /* The production PSP-callback frame helper: a nested call on the interrupted
+     * thread's LIVE register file and LIVE stack.  That is deliberately a
+     * different model from the GE/MPEG marshalling and is unchanged here. */
+    uint32_t ret = sr_callback_dispatch_one(&cpu, NFI_CB_ENTRY, 3, 0xaabbccddu, 0x11223344u,
+                                            dispatch);
+
+    expect(s_nfi_cb_ran, "the PSP callback body ran");
+    expect(ret == NFI_CB_RETURN, "the callback's $v0 reaches the dispatcher");
+    expect(s_nfi_cb_sp == live_sp,
+           "PRESERVED: a PSP callback still runs on the interrupted thread's live stack");
+    expect(nfi_is_frame_sp(s_nfi_cb_nested_sp),
+           "a GE nested call made from inside that callback gets a reserved frame");
+    expect(s_nfi_cb_nested_sp != live_sp,
+           "the nested call does not run on the callback's live stack");
+    expect(s_nfi_cb_local_after_nested == NFI_CB_LOCAL,
+           "the callback's own live-stack local survives the nested call it made");
+    expect(memcmp(&cpu, &before, sizeof cpu) == 0,
+           "the interrupted CpuState is restored byte-for-byte through both nesting layers");
+    expect(sr_nested_frame_live() == 0u,
+           "the nested call under a callback released its frame");
+}
+
+/* Frame-handle hygiene: the paths production cannot reach on its own, but which
+ * decide whether a bookkeeping slip corrupts a live frame or is refused.  A
+ * released handle must never resolve again, because the slot behind it is
+ * immediately re-issuable to a different owner. */
+static void test_nested_frame_handle_hygiene(void) {
+    uint32_t sp_a = 0, sp_b = 0, owner = 0, base = 0, sp = 0, floor = 0;
+    unsigned depth = 0;
+    int ha = -1, hb = -1, again = -1;
+
+    reset_fixture();
+    sr_hle_init();
+
+    expect(sr_nested_frame_acquire(0xa10u, &sp_a, &ha), "a frame is acquired");
+    expect(sr_nested_frame_handle_info(ha, &owner, &depth, &base, &sp),
+           "a live handle describes itself");
+    expect(owner == 0xa10u && depth == 1u && sp == sp_a && sp_a == base + SR_NESTED_FRAME_SP_OFF,
+           "the handle reports its owner, depth and the $sp the caller was given");
+    expect(sr_nested_frame_handle_extent(ha, &floor, &sp) &&
+               floor == base + SR_NESTED_FRAME_GUARD && sp > floor,
+           "the usable extent starts above the low guard and ends at $sp");
+    expect(sp - floor == SR_NESTED_FRAME_SP_OFF - SR_NESTED_FRAME_GUARD,
+           "the usable stack is the whole slot minus its guard bands and argument save area");
+
+    expect(sr_nested_frame_release(ha), "releasing an intact frame reports no corruption");
+    expect(!sr_nested_frame_handle_info(ha, NULL, NULL, NULL, NULL),
+           "a released handle no longer resolves");
+    expect(sr_nested_frame_live() == 0u, "the released frame is back in the pool");
+
+    /* The same slot, re-issued to a different owner.  The stale handle from the
+     * previous occupant must not reach it. */
+    expect(sr_nested_frame_acquire(0xa11u, &sp_b, &again), "the slot is re-issued");
+    expect(sp_b == sp_a, "the pool reuses the lowest free slot");
+    expect(again != ha, "a re-issued slot gets a distinct handle");
+    expect(!sr_nested_frame_release(ha), "the stale handle is refused");
+    expect(sr_nested_frame_live() == 1u,
+           "refusing the stale handle did not free the new owner's frame");
+    expect(sr_nested_frame_handle_info(again, &owner, NULL, NULL, NULL) && owner == 0xa11u,
+           "the new owner still holds the slot");
+    expect(!sr_nested_frame_release(-1), "a negative handle is refused");
+    expect(sr_nested_frame_live() == 1u, "a negative handle frees nothing");
+    expect(sr_nested_frame_release(again), "the current handle still works");
+
+    /* Out-of-order release is a bookkeeping fault, not a memory fault: it is
+     * counted and reported, and the slot is still reclaimed. */
+    expect(sr_nested_frame_lifo_violations() == 0u, "no ordering fault so far");
+    expect(sr_nested_frame_acquire(0xa12u, &sp_a, &ha) &&
+               sr_nested_frame_acquire(0xa12u, &sp_b, &hb),
+           "one owner takes two nesting levels");
+    expect(sp_a != sp_b, "the two levels are different frames");
+    (void)sr_nested_frame_release(ha);          /* outer first: wrong order */
+    expect(sr_nested_frame_lifo_violations() == 1u,
+           "releasing the outer frame before the inner one is counted");
+    (void)sr_nested_frame_release(hb);
+    expect(sr_nested_frame_live() == 0u, "both frames are still reclaimed");
+
+    sr_nested_frame_reset();
+    expect(sr_nested_frame_live() == 0u && sr_nested_frame_lifo_violations() == 0u &&
+               sr_nested_frame_guard_failures() == 0u && sr_nested_frame_exhaustions() == 0u,
+           "reset clears the pool and every counter");
 }
 
 /* =========================================================================
@@ -7016,12 +7657,12 @@ static void check_coroutine_lifecycle(void) {
      * not from the park hook, so this stays a genuine cross-check of the
      * coroutine layer rather than a tautology. */
     {
-        int expected_parks = 6 + ic_expected_parks();
+        int expected_parks = 8 + ic_expected_parks();
         char msg[224];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
-                 "+ 1 delay body + 2 slice-C waiters + %d returned conformance legs "
-                 "= %d, observed %lu)",
+                 "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
+                 "+ %d returned conformance legs = %d, observed %lu)",
                  ic_expected_parks(), expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -8679,6 +9320,13 @@ int main(int argc, char **argv) {
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
+    test_nested_frames_isolate_concurrent_threads();
+    test_nested_frame_region_is_reserved_from_thread_stacks();
+    test_nested_frame_depth_is_bounded_and_fails_closed();
+    test_nested_frame_guard_detects_overflow();
+    test_nested_frame_survives_thread_unwind();
+    test_nested_frame_under_psp_callback_dispatch();
+    test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);

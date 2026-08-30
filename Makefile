@@ -365,6 +365,7 @@ _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) 
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/nested_frames.c \
               src/rt/guest_interp.c \
               src/rt/title_config.c \
               src/rt/vfpu_tables.c \
@@ -427,6 +428,7 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/nested_frames.c \
                       src/rt/guest_interp.c \
                       src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
@@ -913,10 +915,10 @@ SCHED_SELFTEST_DIR := $(BUILD_DIR)/title-config/$(SCHED_SELFTEST_CONFIG)
 SCHED_SELFTEST_MANIFEST := $(SCHED_SELFTEST_MANIFEST_$(SCHED_SELFTEST_CONFIG))
 SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest $(strip $(SCHED_SELFTEST_MANIFEST)),)
 
-sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
+sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
-		src/rt/sched_selftest.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
+		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
@@ -1076,13 +1078,13 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -1109,13 +1111,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/title_config.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/title_config.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -1140,12 +1142,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
