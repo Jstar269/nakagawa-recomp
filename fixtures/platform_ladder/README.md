@@ -30,6 +30,7 @@ compatibility behavior.
 | `ladder-sched` | 0x08900000 | +0x10 | ThreadManForUser ×6 | thread create/start/exit + event flag handoff |
 | `ladder-fpu` | 0x08980000 | +0x08 | none | #120 scalar-FPU contract: RM/FCC0/FS/cvt.w.s |
 | `ladder-fs` | 0x089C0000 | +0x18 | IoFileMgrForUser ×3 | SR_FSDIR open/read/close + failure sentinel |
+| `ladder-title2` | 0x08A40000 | +0x20 | ThreadManForUser ×5 + IoFileMgrForUser ×3 | callback/event-flag path + synchronous I/O + AOT gap + memory mutation oracle |
 
 Statuses: all six workloads are ordinary PASS results end-to-end; the
 ladder-gap result is derived from the intended guest memory round trip. Its

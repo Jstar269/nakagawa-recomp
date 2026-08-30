@@ -84,6 +84,38 @@ L5_PAYLOAD_BYTES = b"Nakagawa platform ladder L5 source-owned payload\n"
 L5_FAIL_SENTINEL = 0xF51D0001
 L5_BUFFER_SIZE = 0x80
 
+NID_CREATE_CALLBACK = 0xE81CAF8F
+NID_NOTIFY_CALLBACK = 0xC11BA8C4
+NID_SET_EVENT_FLAG = 0x1FB15A32
+NID_WAIT_EVENT_FLAG = 0x402FCF22
+NID_CHECK_CALLBACK = 0x349D6D6C
+LIB_KERNEL_CALLBACK = "ThreadManForUser"
+
+TITLE2_BASE = 0x08A40000
+TITLE2_ENTRY_OFF = 0x20
+TITLE2_GAP_OFF = 0x220
+TITLE2_RESULT_OFF = 0x000
+TITLE2_PATH_OFF = 0x000
+TITLE2_PAYLOAD_OFF = 0x080
+TITLE2_PAYLOAD_LEN = 69
+TITLE2_PAYLOAD_CHECKSUM = 0x0000188B
+TITLE2_GAP_WORDS = (
+    0x24020007,
+    0x3C0808A4,
+    0x25083558,
+    0x8D090000,
+    0x25290007,
+    0xAD090000,
+    0x01224026,
+    0x03E00008,
+    0x24420000,
+)
+TITLE2_MEM_CELL = 0x08A43558
+TITLE2_MEM_CELL_INIT = 7
+TITLE2_MEM_CELL_EXPECTED = 14
+TITLE2_UNSUPPORTED_NID = 0xDEAD2F02
+TITLE2_PATH_BYTES = b"ms0:/title2_payload.bin\0"
+
 
 def _r(rs: int, rt: int, rd: int, shift: int, function: int) -> int:
     return (
@@ -845,7 +877,220 @@ def build_l5(plan: Plan) -> Asm:
     return a
 
 
-# --- ladder-gap (dedicated AOT-gap chain, floor-expressible) ----------------
+def title2_payload_bytes() -> bytes:
+    return (
+        b"Nakagawa title2 source-owned payload\n"
+        b"config=0x13579bdf\n"
+        b"route=generic\n"
+    )
+
+
+def title2_payload_words() -> dict[int, int]:
+    payload = title2_payload_bytes()
+    blob = bytearray(len(payload))
+    blob[:] = payload
+    return {
+        TITLE2_PAYLOAD_OFF + index: struct.unpack_from("<I", blob, index)[0]
+        for index in range(0, len(blob) - 1, 4)
+    }
+
+
+def title2_payload_trailing() -> dict[int, bytes]:
+    payload = title2_payload_bytes()
+    return {TITLE2_PAYLOAD_OFF + (len(payload) - 1): payload[len(payload) - 1:]}
+
+
+def title2_path_words() -> dict[int, int]:
+    blob = bytearray(len(TITLE2_PATH_BYTES))
+    blob[:] = TITLE2_PATH_BYTES
+    return {
+        TITLE2_PATH_OFF + index: struct.unpack_from("<I", blob, index)[0]
+        for index in range(0, len(blob) - 1, 4)
+    }
+
+
+def title2_path_strings() -> dict[int, bytes]:
+    return {TITLE2_PATH_OFF + (len(TITLE2_PATH_BYTES) - 1): TITLE2_PATH_BYTES[len(TITLE2_PATH_BYTES) - 1:]}
+
+
+def title2_checksum() -> int:
+    return sum(title2_payload_bytes()) & 0xFFFFFFFF
+
+
+def title2_expected(plan: Plan) -> int:
+    checksum = title2_checksum()
+    return ((checksum << 16) | (TITLE2_MEM_CELL_EXPECTED << 8) | 0x11) & 0xFFFFFFFF
+
+
+def build_title2(plan: Plan) -> Asm:
+    a = Asm()
+
+    def ref(reg: int, off: int) -> None:
+        plan.addr_ref(a, reg, off)
+
+    s_create_cb = plan.stub_address(0)
+    s_notify_cb = plan.stub_address(1)
+    s_set_ef = plan.stub_address(2)
+    s_wait_ef = plan.stub_address(3)
+    s_check_cb = plan.stub_address(4)
+    s_io_open = plan.stub_address(5)
+    s_io_read = plan.stub_address(6)
+    s_io_close = plan.stub_address(7)
+
+    callback_entry = plan.base + 0x100
+    path_abs = plan.base + plan.data_seg_vaddr + TITLE2_PATH_OFF
+    buffer_abs = plan.base + plan.data_seg_vaddr + TITLE2_PAYLOAD_OFF
+    result_abs = plan.base + plan.data_seg_vaddr + TITLE2_RESULT_OFF
+    mem_cell_abs = TITLE2_MEM_CELL
+
+    a.pad_to(TITLE2_ENTRY_OFF)
+    a.label("entry")
+    a.i(0x09, 29, 29, -96)
+    a.i(0x2B, 29, 31, 88)
+
+    a.li(4, 0x08A4C000)
+    a.i(0x09, 0, 5, 16)
+    a.call_literal(s_create_cb)
+    a.rr(2, 0, 16, 0, 0x21)
+    a.bltz(2, "cb_fail")
+    a.nop()
+
+    a.load_addr_literal(4, callback_entry)
+    a.i(0x09, 0, 5, 0)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_notify_cb)
+    a.rr(2, 0, 17, 0, 0x21)
+
+    a.load_addr_literal(4, mem_cell_abs)
+    a.i(0x09, 0, 5, TITLE2_MEM_CELL_INIT)
+    a.i(0x2B, 4, 5, 0)
+
+    a.load_addr_literal(4, mem_cell_abs)
+    a.i(0x09, 0, 5, 1)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_set_ef)
+    a.rr(2, 0, 18, 0, 0x21)
+
+    a.load_addr_literal(4, mem_cell_abs)
+    a.i(0x09, 0, 5, 1)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_wait_ef)
+    a.rr(2, 0, 19, 0, 0x21)
+
+    a.i(0x09, 0, 4, 0)
+    a.call_literal(s_check_cb)
+    a.rr(2, 0, 20, 0, 0x21)
+
+    a.load_addr_literal(4, path_abs)
+    a.i(0x09, 0, 5, 1)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_io_open)
+    a.rr(2, 0, 21, 0, 0x21)
+    a.bltz(2, "fs_fail")
+    a.nop()
+
+    a.rr(21, 0, 4, 0, 0x21)
+    a.load_addr_literal(5, buffer_abs)
+    a.i(0x09, 0, 6, TITLE2_PAYLOAD_LEN)
+    a.call_literal(s_io_read)
+    a.rr(2, 0, 22, 0, 0x21)
+
+    a.rr(21, 0, 4, 0, 0x21)
+    a.call_literal(s_io_close)
+
+    a.li(4, 0x09)
+    a.i(0x09, 0, 5, 0)
+    a.call_literal(plan.base + TITLE2_GAP_OFF)
+    a.rr(2, 0, 23, 0, 0x21)
+
+    a.load_addr_literal(8, buffer_abs)
+    a.rr(22, 0, 9, 0, 0x21)
+    a.i(0x09, 0, 10, 0)
+    a.label("sum_loop")
+    a.beq(9, 0, "sum_done")
+    a.nop()
+    a.i(0x09, 9, 9, -1)
+    a.raw((0x24 << 26) | (8 << 21) | (11 << 16))
+    a.i(0x09, 8, 8, 1)
+    a.rr(10, 11, 10, 0, 0x21)
+    a.beq(0, 0, "sum_loop")
+    a.nop()
+    a.label("sum_done")
+
+    a.load_addr_literal(12, mem_cell_abs)
+    a.i(0x23, 12, 13, 0)
+    a.rr(10, 10, 14, 16, 0x00)
+    a.rr(13, 13, 15, 8, 0x00)
+    a.li(8, 0x11)
+    a.rr(14, 15, 14, 0, 0x25)
+    a.rr(14, 8, 14, 0, 0x25)
+    a.load_addr_literal(8, result_abs)
+    a.i(0x2B, 8, 14, 0)
+    a.i(0x23, 8, 2, 0)
+    a.beq(0, 0, "epilogue")
+    a.nop()
+
+    a.label("cb_fail")
+    a.li(14, 0xDEAD0001)
+    a.beq(0, 0, "store_result")
+    a.nop()
+
+    a.label("fs_fail")
+    a.li(14, 0xDEAD0002)
+    a.beq(0, 0, "store_result")
+    a.nop()
+
+    a.label("store_result")
+    a.load_addr_literal(8, result_abs)
+    a.i(0x2B, 8, 14, 0)
+    a.i(0x23, 8, 2, 0)
+
+    a.label("epilogue")
+    a.i(0x23, 29, 17, 40)
+    a.i(0x23, 29, 16, 44)
+    a.i(0x23, 29, 31, 88)
+    a.i(0x09, 29, 29, 96)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+
+    a.pad_to(TITLE2_GAP_OFF)
+    a.raw(TITLE2_GAP_WORDS[0])
+    a.raw(TITLE2_GAP_WORDS[1])
+    a.raw(TITLE2_GAP_WORDS[2])
+    a.raw(TITLE2_GAP_WORDS[3])
+    a.raw(TITLE2_GAP_WORDS[4])
+    a.raw(TITLE2_GAP_WORDS[5])
+    a.raw(TITLE2_GAP_WORDS[6])
+    a.raw(TITLE2_GAP_WORDS[7])
+    a.raw(TITLE2_GAP_WORDS[8])
+
+    return a
+
+
+# --- plans ------------------------------------------------------------------
+
+PLANS: dict[str, Plan] = {}
+
+
+def _register_plans() -> None:
+    PLANS["ladder-zero"] = Plan(
+        name="ladder-zero",
+        game_name="pl_zero",
+        base=L0_BASE,
+        entry_offset=L0_ENTRY_OFF,
+        build_asm=build_l0,
+        imports=[],
+        data_words={},
+        data_strings={},
+        data_file_size=L0_RESULT_OFF + 4,
+        data_mem_size=L0_RESULT_OFF + 4,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L0_RESULT_OFF,
+        expected_value_fn=l0_expected,
+        psp_header=False,
+        data_seg_vaddr=0x4000,
+    )
 
 LG_BASE = 0x08A00000
 LG_ENTRY_OFF = 0x10
@@ -1212,6 +1457,44 @@ def _register_plans() -> None:
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L5_RESULT,
         expected_value_fn=l5_expected_ok,
         env={"SR_DISPATCH_FATAL": "1"},
+    )
+    PLANS["ladder-title2"] = Plan(
+        name="ladder-title2",
+        game_name="pl_title2",
+        base=TITLE2_BASE,
+        entry_offset=TITLE2_ENTRY_OFF,
+        build_asm=build_title2,
+        imports=[
+            (LIB_KERNEL_CALLBACK, [
+                NID_CREATE_CALLBACK,
+                NID_NOTIFY_CALLBACK,
+                NID_SET_EVENT_FLAG,
+                NID_WAIT_EVENT_FLAG,
+                NID_CHECK_CALLBACK,
+            ]),
+            (LIB_IOFILEMGR, [NID_IO_OPEN, NID_IO_READ, NID_IO_CLOSE]),
+        ],
+        data_words={
+            **title2_path_words(),
+            **title2_payload_words(),
+            0x558: TITLE2_MEM_CELL_INIT,
+        },
+        data_strings={
+            **title2_path_strings(),
+            **title2_payload_trailing(),
+        },
+        data_file_size=0x55C,
+        data_mem_size=0x55C,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: p.base + p.data_seg_vaddr + TITLE2_RESULT_OFF,
+        expected_value_fn=title2_expected,
+        env={"SR_DISPATCH_FATAL": "1"},
+        label_contract={"entry": TITLE2_ENTRY_OFF},
+        gap_omit_offset=TITLE2_GAP_OFF,
+        data_text_pointers=[],
+        data_seg_vaddr=0x3000,
+        text_pad_end=TITLE2_GAP_OFF + 36,
     )
 
 
@@ -1710,11 +1993,13 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     if workload == "ladder-fs":
         fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_fs_")
         if not negative:
-            # The writable-storage VFS flattens the WHOLE guest path into one
-            # host filename beneath SR_FSDIR (vfs_path.h: '/'\\':' ' -> '_'),
-            # so "ms0:/<name>" lands as "ms0__<name>".
             payload = Path(fs_root.name) / ("ms0__" + L5_PAYLOAD_NAME)
             payload.write_bytes(L5_PAYLOAD_BYTES)
+        environment["SR_FSDIR"] = fs_root.name
+    if workload == "ladder-title2":
+        fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_title2_")
+        payload = Path(fs_root.name) / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")
+        payload.write_bytes(title2_payload_bytes())
         environment["SR_FSDIR"] = fs_root.name
     for key, value in plan.env.items():
         environment[key] = value

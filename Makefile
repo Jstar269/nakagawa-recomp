@@ -534,10 +534,11 @@ PL_RELOC_BASE  := 0x088C0000
 PL_SCHED_BASE  := 0x08900000
 PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
+PL_TITLE2_BASE := 0x08A40000
 
-.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-clean
+.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-clean
 
-platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative
+platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2
 
 platform-ladder-zero:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
@@ -630,6 +631,21 @@ platform-ladder-fs:
 # sceIoOpen must fail visibly and the guest must store the failure sentinel.
 platform-ladder-fs-negative:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
+
+platform-ladder-title2:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2 --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_title2 \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.psp \
+		GAME_BASE=$(PL_TITLE2_BASE) \
+		GAME_ENTRY=0x08A40020 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2 \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
+		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean

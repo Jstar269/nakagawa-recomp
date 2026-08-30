@@ -43,6 +43,7 @@ EXPECTED_PRX_SHA256 = {
     "ladder-sched": "758971ab4080215d6411f95cf69242658250316c75b1d94a560464bd0e9f51c1",
     "ladder-fpu": "c32d6cf9d99c0369bc3e7f202b43ec36f806ef96777482992f7e9059782f2d90",
     "ladder-fs": "7dea7d6f105f0994dd22164a732dd0666a5d912f657f7c2f6b0b638a5a182ae9",
+    "ladder-title2": "PLACEHOLDER",
 }
 
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
@@ -311,6 +312,46 @@ class MutationKillTests(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertIn("status=PASS", combined)
         self.assertNotIn("xbdata_extracted ...", combined.replace("\n", ""))
+
+
+class Title2ContractTests(unittest.TestCase):
+    """Locked Title-2 production platform-ladder v1 contract."""
+
+    def test_locked_payload_checksum_and_sha256(self):
+        plan = generator.PLANS["ladder-title2"]
+        prx, psp = generator.build_prx(plan)
+        self.assertEqual(generator.title2_checksum(), generator.TITLE2_PAYLOAD_CHECKSUM)
+        payload = generator.title2_payload_bytes()
+        self.assertEqual(len(payload), 69)
+        self.assertEqual(generator.hashlib.sha256(prx).hexdigest(), "fa71f742c225cea7e31185379faa9d35d07b8d38a5315f88e847c2ebb00ca778")
+
+    def test_locked_gap_words_are_present(self):
+        plan = generator.PLANS["ladder-title2"]
+        prx, _ = generator.build_prx(plan)
+        text_offset = plan.base + generator.TEXT_FILE_OFFSET + generator.TITLE2_GAP_OFF
+        for index, word in enumerate(generator.TITLE2_GAP_WORDS):
+            actual = struct.unpack_from("<I", prx, text_offset + index * 4)[0]
+            self.assertEqual(actual, word)
+
+    def test_memory_cell_mutation_is_oracle(self):
+        plan = generator.PLANS["ladder-title2"]
+        self.assertEqual(generator.TITLE2_MEM_CELL_INIT, 7)
+        self.assertEqual(generator.TITLE2_MEM_CELL_EXPECTED, 14)
+        env = dict(os.environ)
+        env["SR_DATAROOT"] = "."
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import fixtures.platform_ladder.generate as g; "
+             "print(f'cell={g.TITLE2_MEM_CELL_INIT}->{g.TITLE2_MEM_CELL_EXPECTED}')"],
+            capture_output=True, text=True, env=env, cwd=str(ROOT),
+        )
+        self.assertIn("cell=7->14", result.stdout)
+
+    def test_unsupported_nid_is_absent_from_registrations(self):
+        manifest = importlib.import_module("hle_manifest")
+        data = manifest.build_manifest()
+        nids = {entry["nid"] for entry in data["registrations"]}
+        self.assertNotIn(generator.TITLE2_UNSUPPORTED_NID, nids)
 
 
 if __name__ == "__main__":
