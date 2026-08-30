@@ -7215,7 +7215,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d8f067bf9cacf67a751050f363c73c685e4e1bc0a19052e6f699b9956a6a79bd"
+      "sha256": "024fcde355def4b68cccf68ad4bc3f9d72424a803e48f41c6c86907c6cb23b5c"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
@@ -7451,12 +7451,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "vfpu-synth-generator-20260830",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25807eeaf1b516c1a1149190c299f4bb2906c1741e21897b1a1946265d91ded5"
+      "sha256": "5a98cb1b2e143e76fb0e17e3e72835ca2ae664d0962c11b107297cae9adc2068"
     },
     {
       "path": "tools/vulkan_sdk.ps1",
@@ -7497,13 +7497,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "a4b370fbeff517f36f801f34d37f152746f7e247",
-    "candidate_tree": "c2928e1f4d293b3335152c5bf9d16e35f5a0f8cd",
+    "trusted_tree": "e9341726a3eee5e8edb7fd121447e7e2d9a3f984",
+    "candidate_tree": "e8da3eacbbb4e312c83b53626e6c18650dabfb06",
     "refreshed_paths": [
-      "docs/PORTING.md",
-      "tools/codegen.py",
-      "tools/compat_overrides.py",
-      "tools/test_codegen_profile_isolation.py"
+      "tools/test_vfpu_synth_corpus.py",
+      "tools/vfpu_synth_gen.py"
     ]
   }
 }
