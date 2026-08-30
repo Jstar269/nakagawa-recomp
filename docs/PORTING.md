@@ -327,20 +327,24 @@ callbacks unsafe for any title that nests them. The PSP's real nested-call contr
 `NOT_ESTABLISHED`; a hardware probe is needed before a design can be chosen.
 `GENERIC_PSP_SEMANTIC` (open question) — deferred deliberately.
 
-### C-5 — `f_00046d14` game-loop entry stub
+### C-5 — `f_00046d14` game-loop entry stub — retired 2026-08-29
 
-`tools/codegen.py` replaces the translated body at `0x00046d14` with an
-immediate `s->pc = s->r[31]` return plus a scheduler-gated trace. The stub is
-`--profile=hst` only (`hst_profile` branch), so a generic or `pl_*` build
-emits the normal translation path (or a fail-closed `sr_unimplemented` if
-untranslatable). This satisfies the north-star (a newly supplied executable
-never inherits the stub), but the stub is still semantic debt: no public
-production-path regression proves the translated body makes forward progress.
-`temporary_compatibility_patch` — title-scoped with enforced non-inheritance
-(`tools/test_codegen_profile_isolation.py` proves `--profile=none` emits
-identical text at `0x00046d14` and its control copy), evidence
-`SOURCE_SHAPE`, retirement “restore translated execution when a
-production-path regression proves progress; keep the trace as diagnostic only”.
+Retired. `tools/codegen.py` previously replaced the translated body at
+`0x00046d14` with an immediate `s->pc = s->r[31]` return plus a
+scheduler-gated trace. Private executable analysis has proven `0x00046d14`
+is an interior basic-block loop header `L_00046d14` inside `f_000468c8_real`
+— not a callable entry, resume/continuation, `jal` or tail target, and not
+present in the current codegen entry catalog — and is reached via
+fall-through and loop back-edges. A clean A/B build removing only the
+codegen branch is byte-identical (`hst_recomp_1.c`
+`B82E0418C5005C34DBBD221F4EE391B3F7CAEF7136F62B3D549422F82D9BD58B`,
+`hst_recomp_funcs.h`
+`49B9153E8AF06D5F0B2B205AA88647434BD6552654C8DEC43B3D59F50AE1161E`,
+`hst.exe` `2AF5F4AB42D7668144B9EEE2C964663CB22836FFD35E967D2ACEC991BEE9F70B`).
+`0x00046d14` now takes the ordinary translated path under every profile; no
+title-address-specific override remains at this address.
+`tools/test_codegen_profile_isolation.py` guards against reintroduction by
+expecting no HST divergence at this address.
 
 ## Reference
 

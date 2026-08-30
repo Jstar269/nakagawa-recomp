@@ -2119,16 +2119,6 @@ def main(argv):
 }'''
             func_texts.append(text); emitted.append(a); continue
 
-        if hst_profile and a == 0x00046d14:
-            text = """void f_00046d14(CpuState *s) {  /* temporary game-loop entry stub */
-    if (SR_DBG(SR_DBG_SCHED)) {
-        fprintf(stderr, "GAMELOOP: entered L_00046d14 pc=0x%08x\\n", s->pc);
-        fflush(stderr);
-    }
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
         if hst_profile and a == 0x0001034c:
             text = """void f_0001034c(CpuState *s) {  /* custom stub: skip corrupted heap-statistics walk */
     /* This routine only accumulates mallinfo-style counters. The guest free-list can be
