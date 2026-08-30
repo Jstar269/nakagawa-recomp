@@ -518,13 +518,14 @@ production-smoke-gap-clean:
 # ---------------------------------------------------------------------------
 # Source-owned second-platform workload ladder.
 #
-# fixtures/platform_ladder/generate.py emits six deliberately non-HST guest
+# fixtures/platform_ladder/generate.py emits seven deliberately non-HST guest
 # identities (see that module's docstring) and drives each one through the
 # ordinary two-phase `all` target with PUBLIC_SAFE=1, no title manifest, no
 # SR_DATAROOT, no extra spans, and no compatibility overrides. Each workload
 # has its own base address, entry placement, import identity, segment/BSS
-# layout, and expected result word. Every workload, ladder-gap included, is an
-# ordinary PASS; no BLOCKED classification exists in this ladder.
+# layout, and expected result word. Every positive workload, ladder-gap
+# included, is an ordinary PASS; the Title-2 unsupported-NID control must exit
+# through the production fatal boundary.
 # ---------------------------------------------------------------------------
 PLATFORM_LADDER_DIR       := build/platform-ladder
 PLATFORM_LADDER_GENERATOR := fixtures/platform_ladder/generate.py
@@ -535,10 +536,11 @@ PL_SCHED_BASE  := 0x08900000
 PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
 PL_TITLE2_BASE := 0x08A40000
+PL_TITLE2_NEGATIVE_BASE := 0x08A80000
 
-.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-clean
+.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-clean
 
-platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2
+platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative
 
 platform-ladder-zero:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
@@ -646,6 +648,22 @@ platform-ladder-title2:
 		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+
+# Negative control: a real mapped import stub dispatches an absent NID through
+# sr_syscall() and the production unknown-HLE scheduler boundary must exit 7.
+platform-ladder-title2-negative:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2-negative --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_title2_negative \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.psp \
+		GAME_BASE=$(PL_TITLE2_NEGATIVE_BASE) \
+		GAME_ENTRY=0x08A80020 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2-negative \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative --negative
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
