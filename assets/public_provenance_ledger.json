@@ -273,7 +273,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d9c4f603a949566580e5810ce018fe7034ed7387d38615c632a6848f91765f34"
+      "sha256": "1321ee5665dede2732ad56d1f339465eaa11818b9ae741e457182c4241fb9039"
     },
     {
       "path": "NOTICE.md",
@@ -1066,7 +1066,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "f9801b5550dca80a303595fc7c86d7285e4518ba256a8f2cd46b3b9805be098f"
+      "sha256": "9c32f09b4bf8d31b65fdc2e01691a71b98b5482285674397226b7aabbd5027ec"
     },
     {
       "path": "fixtures/platform_ladder/generate.py",
@@ -1078,7 +1078,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a990f87355ec572012bcbe593434ca5535cabbbaab3455d37186e883d342b05"
+      "sha256": "84bbe851f4c732c35ffca2dcdb5b3a461f464cf4f036197c27ec919ebe104fbd"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -3985,13 +3985,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "13e936690b0032ac82b010552ea6446ae2991f73db222446cb9a7ce2f7aedee4"
+      "sha256": "02df75887b8869483e49ef8b404224bd8cf84e31227a58e3503db1682625d519"
     },
     {
       "path": "src/rt/evf.h",
@@ -6777,7 +6775,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "67c91451bde811d2322c3d0fbcc12e292fed9be87fc26fa9d8ed6d51dddaa85c"
+      "sha256": "57cde20184969cad3817221eb07ad42483fefd14ff30c2d3bd377477874182e8"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -6828,7 +6826,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd6022f8be0c6885828c2781a03f8606120c7a00675372493f006effed754b4b"
+      "sha256": "6577314d0aa6ad57cb55e00fda1980a417c50ed5b1aac459020b562737f845c0"
     },
     {
       "path": "tools/test_production_smoke.py",
@@ -7503,10 +7501,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "a45d5ffe01a7c5b01a268be0f6ade3ad65aad88a",
-    "candidate_tree": "d366ec68f00772ea2e0c65547df4e6431dd7465b",
+    "trusted_tree": "23b305cc3474ff3e12d3cdef70061f22b0423f19",
+    "candidate_tree": "8ef8451975e7f17c27ffb709d930c0ee8923d4b8",
     "refreshed_paths": [
-      ".github/workflows/ci.yml"
+      "Makefile",
+      "fixtures/platform_ladder/README.md",
+      "fixtures/platform_ladder/generate.py",
+      "src/rt/driver.c",
+      "tools/test_native_driver_hardening.py",
+      "tools/test_platform_ladder.py"
     ]
   }
 }
