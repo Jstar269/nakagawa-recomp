@@ -787,7 +787,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96dcf191a5b4fe46798362e65e71b622c4c2557e8a71a919c476f512904582e7"
+      "sha256": "1255cc212fd2a7d011b0a2c2617b9850e20cc5b77ce53b77ce859c590254f026"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -5198,15 +5198,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "86dc5a932b93fda3f69bbab0ed0edb5a238a9004804913afc471313817e10d82"
+      "sha256": "6701aab1646ca04b2b18cd02df6767bf6910e7bf33e47068f100f05877852ed0"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -5235,7 +5231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae870d8651650d12ecb8182852fccd1cecf5aab590f3a05f78ecd2aaf0ca80fe"
+      "sha256": "6ffa79338678a57a53d9cff4294d1c1523043a3d379c19b50e4065fe6437deee"
     },
     {
       "path": "tools/decompme_export.py",
@@ -6310,7 +6306,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ac77a66a41c7075cbfd41dd13df1e5c6dcbb3b21bfb4e5872eb2ff13d8e4a1e9"
+      "sha256": "16fc85f0b79da5b82926c78b29b2f4d057c75edf656fa5941bd836de47dfbef8"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -7501,15 +7497,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "23b305cc3474ff3e12d3cdef70061f22b0423f19",
-    "candidate_tree": "8ef8451975e7f17c27ffb709d930c0ee8923d4b8",
+    "trusted_tree": "a4b370fbeff517f36f801f34d37f152746f7e247",
+    "candidate_tree": "c2928e1f4d293b3335152c5bf9d16e35f5a0f8cd",
     "refreshed_paths": [
-      "Makefile",
-      "fixtures/platform_ladder/README.md",
-      "fixtures/platform_ladder/generate.py",
-      "src/rt/driver.c",
-      "tools/test_native_driver_hardening.py",
-      "tools/test_platform_ladder.py"
+      "docs/PORTING.md",
+      "tools/codegen.py",
+      "tools/compat_overrides.py",
+      "tools/test_codegen_profile_isolation.py"
     ]
   }
 }
