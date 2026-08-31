@@ -223,6 +223,7 @@
     "docs/provenance/INDEPENDENCE_MODEL.md",
     "docs/provenance/MODIFIED_FILE_NOTICES.json",
     "docs/provenance/MODIFIED_FILE_NOTICES.md",
+    "docs/research/PSP_THREADING_SEMANTICS.md",
     "fixtures/cosim/README.md",
     "fixtures/cosim/cosim_selftest.c",
     "fixtures/cosim/generate.py",

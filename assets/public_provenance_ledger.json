@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3cb1af668fa58a4b2daf3cfdbe870968902068e15ac8cf6f0ff7e62ccadd6567"
+      "sha256": "1d3b32efb8fc58fecdcff20512e1d08336cf06209be3b9fb038a8dd786bbf915"
     },
     {
       "path": "assets/release_manifest.json",
@@ -850,7 +850,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "088999f864a543dfc81e64c99a13b23576d14f1e57d1169cba5502a6fd95561e"
+      "sha256": "79738f2c2c802493486ed64407d7334c04b49c7fb2921186898b44c3166ee9ee"
     },
     {
       "path": "docs/SETUP.md",
@@ -968,6 +968,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "cc2282c34f598f5fe5792b05c64c098b60b8e7400e5b9462c3419eab36ce2270"
+    },
+    {
+      "path": "docs/research/PSP_THREADING_SEMANTICS.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "bce73b42fe0cc535b04c2d1e330f39016fe19888c744536f3bbf8173db34647c"
     },
     {
       "path": "fixtures/cosim/README.md",
