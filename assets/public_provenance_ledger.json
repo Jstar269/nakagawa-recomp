@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1d3b32efb8fc58fecdcff20512e1d08336cf06209be3b9fb038a8dd786bbf915"
+      "sha256": "c397f90123e5c5bdc6e59c5d9767bf308f5a2b272713d1adbff604fc7d49de60"
     },
     {
       "path": "assets/release_manifest.json",
@@ -4836,7 +4836,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b25e1053d474f15032eadf7a441d6b38cae9f5079b6c0dc2b1f6ddc280120ddd"
+      "sha256": "6143ec2d5e17c271430cf873f9572119288f31e9790b71812e1c02040be4c7c9"
     },
     {
       "path": "src/rt/sched.c",
@@ -5089,6 +5089,30 @@
         "upstream_attribution": null
       },
       "sha256": "cb5d59b25ad00257959af9245cbcc75e292136e2e4357f75bf78539c6d04c088"
+    },
+    {
+      "path": "src/rt/vfs_contained.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e8c034ceed9de5d5c75725d737d06126dcffbb4501cf372914316b1c9a4586fa"
+    },
+    {
+      "path": "src/rt/vfs_contained_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-pure-state-helpers",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "fab34acff5530c31e4ac7ed2c3d44e035c4fbcfd68d3cb57a35371e4276bfd4e"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -7122,7 +7146,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a44fcdf7989876ab736cd2080fb40a2a469d76a2864bf36c1878df64fbd993da"
+      "sha256": "ddd84ab2aadda2a54ace6de03ba0f7cf19ba5db11dc3813268a4d6a940ab0ae4"
     },
     {
       "path": "tools/test_sbom.py",
@@ -7333,6 +7357,15 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "de614e2752997ec25fc9c24ff94940d4ed88eb372cd313d18d2c3e551f60cec7"
+    },
+    {
+      "path": "tools/test_vfs_contained.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "ad7c15bc38d4914a20720d6de75c69687a80e11205fdb158a3fff688bef10620"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
