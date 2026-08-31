@@ -522,6 +522,8 @@
     "src/rt/iso.h",
     "src/rt/iso_unavailable.c",
     "src/rt/mpeg.c",
+    "src/rt/nested_frames.c",
+    "src/rt/nested_frames.h",
     "src/rt/nid_names.h",
     "src/rt/osk_win.c",
     "src/rt/perf.c",
