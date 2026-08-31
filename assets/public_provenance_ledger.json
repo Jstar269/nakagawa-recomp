@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1b21c68143c5ff44594e11f955cc6d022e8348556726b2a3d71e24de889aa58e"
+      "sha256": "3cb1af668fa58a4b2daf3cfdbe870968902068e15ac8cf6f0ff7e62ccadd6567"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1428,6 +1428,18 @@
       "sha256": "13db436e5944b1d97837115c9390f04f539486ce657737c271901a8d8f3fc7a5"
     },
     {
+      "path": "interface/src/app/api/recompiler/doctor/route.ts",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4ed49e7eeed415f238b22e414c78b9535d2a1703976c41aefb75f772a9fb9d71"
+    },
+    {
       "path": "interface/src/app/api/recompiler/issues/route.ts",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -1654,12 +1666,15 @@
     },
     {
       "path": "interface/src/components/studio/build-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "d7afe600a9e2a0e501b7f7e66682356757875a71f078f6b28d36b4b24cfc98ad"
+      "sha256": "e42e2921420a909324b2e0c995fca1932325d8535d98b7a4d1053dc2f041e111"
     },
     {
       "path": "interface/src/components/studio/config-diff.tsx",
@@ -1744,12 +1759,15 @@
     },
     {
       "path": "interface/src/components/studio/iso-loader.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "248a45e38ed555768757c2394d35596325e5da2ab7302979dc27bccc359432fd"
+      "sha256": "b21839f32c9286ec865dcf7c1a2d104a4fcc86b10eab46a5d990868d738dc8a6"
     },
     {
       "path": "interface/src/components/studio/limitations-panel.tsx",
@@ -1804,6 +1822,18 @@
         "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "44c3e8fe1d56f82b4cf476da9e2435c67e3a028a56f675c2d6b291d217928cf4"
+    },
+    {
+      "path": "interface/src/components/studio/preflight-card.tsx",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "af67001435bf82cd09a7eec0a147261e8774f167cd7d1274eee3b14d93d845a5"
     },
     {
       "path": "interface/src/components/studio/preset-bar.tsx",
@@ -1870,12 +1900,15 @@
     },
     {
       "path": "interface/src/components/studio/summary-rail.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "0cb7f59a0bcd4420671055865bfdea51b5883db5b08e62ada316cef171361105"
+      "sha256": "a79658afed1347b78830b7e187c99b878b93d1212170719976d21f7a76e86226"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -2218,6 +2251,30 @@
         "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "8a4703b7711316d4b62f647a998e5e8e20fe3722eb4e18a3071dc90a871e6cfb"
+    },
+    {
+      "path": "interface/src/lib/recompiler/doctor.test.ts",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9a02b677897ac3c65696ed40f7aae58fc428d13b4023764f0b4228ad693591e3"
+    },
+    {
+      "path": "interface/src/lib/recompiler/doctor.ts",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "manager-first-run-ux-truthfulness-20260831",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "fe4c61543c630ced424d6a64900554ea8107515dcfbe509346e7e0982b57f40e"
     },
     {
       "path": "interface/src/lib/recompiler/iso.ts",
