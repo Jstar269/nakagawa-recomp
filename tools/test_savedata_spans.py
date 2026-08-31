@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,66 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 SAVEDATA_C = ROOT / "src" / "rt" / "savedata.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+SEAM_H = ROOT / "src" / "rt" / "vfs_contained.h"
+
+
+def _savedata_fn(marker, end_marker):
+    """Return the source text of one savedata.c function, by markers."""
+    text = SAVEDATA_C.read_text(encoding="utf-8")
+    idx = text.find(marker)
+    assert idx != -1, "marker not found: " + marker
+    end = text.find(end_marker, idx + len(marker))
+    assert end != -1, "end marker not found: " + end_marker
+    return text[idx:end]
+
+
+def _strip_c_comments(code):
+    """Drop C comments so a source-shape gate judges CODE, not prose.
+
+    The seam's documentation deliberately names the host primitives it refuses
+    to let generic logic call; a gate that scanned raw text would fire on the
+    explanation instead of the implementation."""
+    return re.sub(r"/\*.*?\*/", " ", code, flags=re.S)
+
+
+# The seam's backends are delimited by banner comments, not by the macro names
+# (those also appear in the struct and in the diagnostics helpers).
+_SEAM_BANNERS = {
+    "SR_CD_BACKEND_WINDOWS": "/* Windows backend: OPEN -> HANDLE",
+    "SR_CD_BACKEND_POSIX_AT": "/* POSIX backend: descriptor-relative",
+    "SR_CD_BACKEND_NONE": "/* Fail-closed backend for hosts",
+}
+
+
+def _seam_backend(macro):
+    """Return the source text of one vfs_contained.h backend block."""
+    text = SEAM_H.read_text(encoding="utf-8")
+    banner = _SEAM_BANNERS[macro]
+    idx = text.index(banner)
+    rest = text[idx + len(banner):]
+    following = [rest.index(b) for b in _SEAM_BANNERS.values() if b in rest]
+    end = idx + len(banner) + (min(following) if following else len(rest))
+    return text[idx:end]
+
+
+def _seam_generic():
+    """The host-neutral half: everything above the first backend banner."""
+    text = SEAM_H.read_text(encoding="utf-8")
+    first = min(text.index(b) for b in _SEAM_BANNERS.values())
+    return text[:first]
+
+
+def _assert_absent(case, needles, code, what):
+    """Refuse a bare substring match: `fdopendir(` must not trip a ban on
+    `opendir(`, and `AT_REMOVEDIR` must not trip a ban on a remove call."""
+    stripped = _strip_c_comments(code)
+    for needle in needles:
+        # Every banned name is a CALL, so require the call parenthesis: a ban on
+        # "stat" must not fire on the word "static".
+        pattern = r"\b" + re.escape(needle) + r"\s*\("
+        case.assertIsNone(re.search(pattern, stripped),
+                          f"{what} must not name {needle!r}")
+
 
 class TestSavedataSpanPreflight(unittest.TestCase):
     def test_savedata_uses_guest_span_validation(self):
@@ -317,6 +378,44 @@ int main(void) {
     check_field("SAVEDATA_DIRECTORY", 64);
     check_field("CATEGORY", 4);
 
+    /* 4. save_rel: the ROOT-RELATIVE path the contained-delete seam walks.
+     *    This is the only new savedata.c code on the destructive path, and a
+     *    silent defect here would disable DELETE/ERASE rather than announce
+     *    itself, so it gets executable coverage and not just a source gate. */
+    {
+        char rel[256];
+        CHECK(save_rel(rel, sizeof(rel), "ULUS00001", "DATA") == 1,
+              "an ordinary save must produce a relative path");
+        CHECK(strcmp(rel, "PSP/SAVEDATA/ULUS00001DATA") == 0,
+              "save_rel produced '%s'", rel);
+        /* No host root may leak into a path the seam walks from its own anchor. */
+        CHECK(strstr(rel, "memstick") == NULL, "save_rel must not embed the host root");
+        CHECK(rel[0] != '/', "save_rel must not produce an absolute path");
+
+        /* The JOINED name is what reaches the host: "NU" and "L" are each a
+         * safe component, "NUL" is a device alias. Validating the two guest
+         * strings separately would let it through. */
+        CHECK(save_rel(rel, sizeof(rel), "NU", "L") == 0,
+              "a joined device alias must be refused");
+        CHECK(save_rel(rel, sizeof(rel), "CO", "N") == 0,
+              "a joined device alias must be refused");
+        /* ...while a JOINED name that merely contains those letters stays
+         * legal, so the added check does not over-reject. (A game string of
+         * exactly "CON" is already refused one layer earlier, by the
+         * per-component path_sanitize that has always run.) */
+        CHECK(save_rel(rel, sizeof(rel), "CONS", "OLE") == 1,
+              "CONSOLE is an ordinary save directory name");
+        CHECK(strcmp(rel, "PSP/SAVEDATA/CONSOLE") == 0, "save_rel produced '%s'", rel);
+        CHECK(save_rel(rel, sizeof(rel), "CON", "SOLE") == 0,
+              "a reserved-device GAME string is refused by the pre-existing component filter");
+
+        CHECK(save_rel(rel, sizeof(rel), "A/B", "C") == 0, "a separator must be refused");
+        CHECK(save_rel(rel, sizeof(rel), "..", "X") == 0, "traversal must be refused");
+        CHECK(save_rel(rel, sizeof(rel), "ULUS00001", "") == 0, "an empty save must be refused");
+        CHECK(save_rel(rel, sizeof(rel), "", "DATA") == 0, "an empty game must be refused");
+        CHECK(save_rel(rel, 8, "ULUS00001", "DATA") == 0, "a path that does not fit must be refused");
+    }
+
     printf(g_fail ? "sfo_selftest: %d FAILURE(S)\n" : "sfo_selftest: OK\n", g_fail);
     return g_fail ? 1 : 0;
 }
@@ -375,6 +474,13 @@ SFO_MUTANTS = {
 }
 
 
+# savedata.c reaches the POSIX contained-delete backend only when the
+# translation unit selects a POSIX.1-2008 feature profile. -std=c11 selects
+# none, so the flag is supplied here rather than letting the seam's #error stop
+# a build that is merely missing a profile.
+_POSIX_PROFILE = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
+
+
 def _build(tmp, savedata_override=None):
     """Compile the harness against production savedata.c, or a mutated copy."""
     harness = os.path.join(tmp, "sfo_selftest.c")
@@ -389,7 +495,7 @@ def _build(tmp, savedata_override=None):
     exe = os.path.join(tmp, "sfo_selftest.exe")
     rt = str(ROOT / "src" / "rt")
     build = subprocess.run(
-        [CC, "-std=c11", "-O1", "-I", tmp, "-I", rt, "-o", exe, harness,
+        [CC, "-std=c11", "-O1"] + _POSIX_PROFILE + ["-I", tmp, "-I", rt, "-o", exe, harness,
          os.path.join(rt, "debug.c"), os.path.join(rt, "watchpoints_file.c")],
         capture_output=True, text=True,
     )
@@ -446,31 +552,34 @@ class TestWindowsContainmentArchitecture(unittest.TestCase):
         return code.split("#ifdef _WIN32", 1)[1].split("#else", 1)[0]
 
     def test_do_delete_never_unlinks_by_name_on_windows(self):
-        text = SAVEDATA_C.read_text(encoding="utf-8")
-        do_delete_idx = text.find("static uint32_t do_delete")
-        self.assertNotEqual(do_delete_idx, -1)
-        do_delete_code = text[do_delete_idx:text.find("/* ERASE/ERASESECURE", do_delete_idx)]
-        win_branch = self._windows_branch(do_delete_code)
-        # F114-1: no by-name deletion syscall may survive on the Windows path.
-        self.assertNotIn("sd_unlink(", win_branch,
-                         "do_delete must dispose through verified handles (F114-1)")
-        self.assertNotIn("_unlink(", win_branch,
-                         "do_delete must not unlink by name after verification")
-        self.assertIn("sr_vfs_delete_contained_leaf(", win_branch,
+        """The Windows guarantee moved, it did not go away.
+
+        do_delete no longer contains a Windows branch at all -- it speaks the
+        host-neutral contained-delete seam. The verified-handle disposition it
+        used to inline now lives in the seam's Windows backend, so that is where
+        F114-1 is pinned."""
+        win = _seam_backend("SR_CD_BACKEND_WINDOWS")
+        self.assertNotIn("sd_unlink(", win,
+                         "the Windows backend must dispose through verified handles (F114-1)")
+        self.assertNotIn("_unlink(", win,
+                         "the Windows backend must not unlink by name after verification")
+        self.assertIn("sr_vfs_delete_contained_leaf(", win,
                       "entries must be deleted through their own verified handle")
-        self.assertIn("sr_vfs_dispose_by_handle(", do_delete_code,
+        self.assertIn("sr_vfs_dispose_by_handle(", win,
                       "the save directory itself must be removed by handle")
+        self.assertIn("FILE_FLAG_OPEN_REPARSE_POINT", win,
+                      "the directory disposition must stay pinned to the object, not a link target")
+        self.assertIn("sr_vfs_dir_is_contained(", win,
+                      "the save directory must be containment-checked before enumeration")
 
     def test_do_erase_deletes_through_verified_handle(self):
-        text = SAVEDATA_C.read_text(encoding="utf-8")
-        do_erase_idx = text.find("static uint32_t do_erase")
-        self.assertNotEqual(do_erase_idx, -1)
-        do_erase_code = text[do_erase_idx:text.find("/* LIST (11)", do_erase_idx)]
-        win_branch = self._windows_branch(do_erase_code)
-        self.assertIn("sr_vfs_delete_contained_leaf(", win_branch,
+        win = _seam_backend("SR_CD_BACKEND_WINDOWS")
+        self.assertIn("sr_vfs_delete_contained_leaf(", win,
                       "ERASE must delete through the handle it verified (F114-1)")
-        self.assertNotIn("sd_unlink(", win_branch,
-                         "the Windows ERASE branch must not fall back to by-name unlink")
+        self.assertNotIn("sd_unlink(", win,
+                         "the Windows backend must not fall back to by-name unlink")
+        self.assertIn("SR_CD_IS_DIRECTORY", win,
+                      "a directory named where a file was required must fail closed")
 
     def test_mkdirs_resolves_root_before_creating_owned_components(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
@@ -510,6 +619,160 @@ class TestWindowsContainmentArchitecture(unittest.TestCase):
                       "root creation must remain a single documented side effect (F114-4)")
         self.assertIn('"COM0"', header,
                       "reserved-device edges (COM0/LPT0 non-reserved) must stay pinned (F114-5)")
+
+
+class TestPortableContainedDeleteArchitecture(unittest.TestCase):
+    """Source-shape gates for the host-neutral contained-delete seam.
+
+    The POSIX savedata deletion path used to re-resolve a guest-influenced
+    pathname on every step: stat(path) then unlink(path), opendir(dir) then
+    rmdir(dir). An actor able to replace an intermediate save-directory
+    component redirected the deletion outside the memstick root. These gates
+    pin the shape of the repair; src/rt/vfs_contained_selftest.c is the
+    executable half, and it demonstrates the old design being redirected on a
+    live fixture before showing the new one refusing the same fixture."""
+
+    def test_savedata_destructive_paths_name_no_host_primitive(self):
+        """do_delete and do_erase must be host-neutral.
+
+        Not "must not call unlink" -- must not contain a platform conditional
+        or a host filesystem call AT ALL. Generic savedata logic asks the seam
+        to delete a contained object; which syscall that becomes is the
+        backend's business."""
+        for fn, end_marker in (("static uint32_t do_delete", "static uint32_t do_erase"),
+                               ("static uint32_t do_erase", "/* LIST (11)")):
+            code = _savedata_fn(fn, end_marker)
+            _assert_absent(self, ("stat", "unlink", "rmdir", "remove", "opendir", "readdir",
+                                  "sd_unlink", "sd_rmdir", "DeleteFileA", "DeleteFileW",
+                                  "RemoveDirectoryA", "RemoveDirectoryW",
+                                  "SetFileInformationByHandle", "CreateFileW"), code, fn)
+            self.assertNotIn("#ifdef", code, f"{fn} must not branch on the host")
+            self.assertNotIn("#if defined", code, f"{fn} must not branch on the host")
+            self.assertNotIn("_WIN32", code, f"{fn} must not branch on the host")
+
+    def test_savedata_defines_no_by_name_delete_primitive(self):
+        """Stronger than "do_delete does not call unlink": the file no longer
+        DEFINES a by-name delete at all, so the pathname design cannot creep
+        back in one call site at a time."""
+        text = SAVEDATA_C.read_text(encoding="utf-8")
+        for gone in ("#define sd_unlink", "#define sd_rmdir"):
+            self.assertNotIn(gone, text,
+                             f"{gone} was removed with the pathname delete design")
+        _assert_absent(self, ("sd_unlink", "sd_rmdir", "unlink", "rmdir"),
+                       text, "savedata.c")
+
+    def test_do_delete_routes_through_the_contained_seam(self):
+        code = _savedata_fn("static uint32_t do_delete", "static uint32_t do_erase")
+        self.assertIn("sr_cd_root_open(ms_root()", code,
+                      "the trusted root must be bound before anything is destroyed")
+        self.assertIn("sr_cd_delete_dir_shallow(&root, rel)", code,
+                      "DELETE must go through the contained tree-delete entry point")
+        self.assertIn("save_rel(", code,
+                      "DELETE must pass a ROOT-RELATIVE path, never an absolute pathname")
+        self.assertIn("sr_cd_root_close(&root)", code, "the root binding must be released")
+        self.assertIn("st == SR_CD_OK ? 0 : ERR_DELETE_NO_DATA", code,
+                      "any non-OK seam status must fail the guest call")
+
+    def test_do_erase_routes_through_the_contained_seam(self):
+        code = _savedata_fn("static uint32_t do_erase", "/* LIST (11)")
+        self.assertIn("sr_cd_root_open(ms_root()", code,
+                      "the trusted root must be bound before anything is destroyed")
+        self.assertIn("sr_cd_delete_leaf(&root, rel, fileName)", code,
+                      "ERASE must go through the contained leaf-delete entry point")
+        self.assertIn("save_rel(", code,
+                      "ERASE must pass a ROOT-RELATIVE path, never an absolute pathname")
+        self.assertIn("st == SR_CD_OK ? 0 : ERR_RW_NO_DATA", code,
+                      "any non-OK seam status must fail the guest call")
+
+    def test_posix_backend_is_descriptor_relative_end_to_end(self):
+        posix = _seam_backend("SR_CD_BACKEND_POSIX_AT")
+        for primitive in ("openat(", "fdopendir(", "unlinkat(", "O_DIRECTORY", "O_NOFOLLOW",
+                          "AT_REMOVEDIR", "AT_SYMLINK_NOFOLLOW"):
+            self.assertIn(primitive, posix,
+                          f"the POSIX backend must anchor with {primitive}")
+        # Nothing destructive may be named by pathname. Word boundaries keep
+        # fdopendir/unlinkat/AT_REMOVEDIR from tripping their by-name cousins.
+        _assert_absent(self, ("unlink", "rmdir", "remove", "opendir", "lstat", "stat"),
+                       posix, "the POSIX backend")
+
+    def test_posix_backend_never_probes_type_before_deleting(self):
+        """The check/use race is removed by ORDER, not by a better check.
+
+        The old code asked stat() what the leaf was and then unlinked the name;
+        an actor who changed the answer in between won. The repair does not use
+        a better probe -- it stops probing. unlinkat() without AT_REMOVEDIR
+        cannot remove a directory, so the kernel enforces the file/directory
+        distinction at the moment of deletion. The single fstatat in the backend
+        runs only inside the failure handler, after the kernel has ALREADY
+        refused, and can therefore never select a victim.
+
+        (Textual position proves nothing here -- the handler is defined above
+        its callers. What is asserted is that the probe lives in the handler and
+        that every use of the handler directly follows a refused unlinkat.)"""
+        posix = _seam_backend("SR_CD_BACKEND_POSIX_AT")
+        self.assertEqual(posix.count("fstatat("), 1,
+                         "exactly one fstatat may exist, and only for diagnosis")
+        self.assertEqual(posix.count("S_ISDIR"), 1,
+                         "no destructive step may be gated on a directory-type probe")
+
+        handler_start = posix.index("static inline sr_cd_status sr_cd__at_unlink_fail")
+        handler_end = posix.index("\n}\n", handler_start)
+        handler = posix[handler_start:handler_end]
+        self.assertIn("fstatat(", handler, "the only fstatat must be the post-refusal diagnosis")
+        self.assertIn("S_ISDIR", handler, "the only type test must be the post-refusal diagnosis")
+        self.assertNotIn("unlinkat(", handler,
+                         "the diagnosis handler must not itself delete anything")
+
+        after = posix[handler_end:]
+        calls = [m.start() for m in re.finditer(r"sr_cd__at_unlink_fail\(", after)]
+        self.assertEqual(len(calls), 2,
+                         "both destructive entry points must diagnose the same way")
+        for at in calls:
+            window = after[max(0, at - 240):at]
+            self.assertIn("unlinkat(", window,
+                          "the diagnosis must directly follow the deletion the kernel refused")
+            # ...and that unlinkat's result must be tested, so the diagnosis can
+            # only be reached on the branch where the kernel already refused.
+            self.assertIsNotNone(
+                re.search(r"unlinkat\([^;]*\)\s*(!=|==)\s*0", window),
+                "the diagnosis must run only on the failure branch of the deletion")
+
+    def test_seam_has_no_unsafe_fallback_for_an_unsupported_host(self):
+        header = SEAM_H.read_text(encoding="utf-8")
+        fallback = _seam_backend("SR_CD_BACKEND_NONE")
+        self.assertIn("SR_CD_UNSUPPORTED_HOST", fallback)
+        _assert_absent(self, ("unlink", "unlinkat", "rmdir", "remove", "openat",
+                              "DeleteFileA", "DeleteFileW", "RemoveDirectoryA"),
+                       fallback, "the unsupported backend")
+        # Losing containment must be a decision, not an accident.
+        self.assertIn("SR_CD_ALLOW_UNSUPPORTED_HOST", header,
+                      "an unsupported host must be opted into explicitly")
+        self.assertIn("#error", header,
+                      "a build with no backend must stop rather than silently degrade")
+
+    def test_seam_is_not_windows_shaped(self):
+        """The generic half of the seam must name no host primitive: a future
+        desktop/mobile/handheld backend has to be addable without touching it."""
+        generic = _seam_generic()
+        _assert_absent(self, ("CreateFileW", "openat", "unlinkat", "fdopendir", "unlink",
+                              "SetFileInformationByHandle", "GetFinalPathNameByHandleW"),
+                       generic, "the generic contract")
+        for entry in ("sr_cd_root_open", "sr_cd_root_close", "sr_cd_delete_leaf",
+                      "sr_cd_delete_dir_shallow"):
+            self.assertIn(entry, generic, f"{entry} must be declared host-neutrally")
+
+    def test_save_rel_validates_the_joined_component(self):
+        """game and save are validated separately elsewhere, but it is the
+        CONCATENATION that reaches the host: "NU" + "L" is two safe components
+        and one device alias."""
+        code = _savedata_fn("static int save_rel", "static int sdlog")
+        self.assertIn("sr_vfs_is_safe_component(leaf", code,
+                      "the joined save-directory name must be validated as one component")
+        self.assertIn('"PSP/SAVEDATA/%s"', code,
+                      "save_rel must produce a root-relative path")
+        self.assertNotIn("ms_root()", code,
+                         "save_rel must not embed the host root in the relative path")
+
 
 
 if __name__ == "__main__":

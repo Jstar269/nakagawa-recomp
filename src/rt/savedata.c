@@ -19,6 +19,11 @@
  * GETSIZE report a roomy fake memory stick; the DELETE family removes a save directory.
  */
 
+/* vfs_contained.h comes FIRST on purpose: on a strict-ISO POSIX build it must
+ * select the feature profile before any system header is pulled in, otherwise
+ * the descriptor-relative primitives it needs are hidden and the seam would
+ * silently fall back to its fail-closed backend. */
+#include "vfs_contained.h"
 #include "recomp.h"
 #include "vfs_path.h"
 #include <dirent.h>
@@ -31,19 +36,19 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/* No by-name deletion primitive is defined here any more. Destructive
+ * savedata paths go through the contained-delete seam, which anchors on a
+ * trusted root; sd_unlink/sd_rmdir existed only for the pathname design
+ * that seam replaced, and leaving them defined would invite its return. */
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
 #define sd_mkdir(path) _mkdir(path)
-#define sd_unlink(path) _unlink(path)
-#define sd_rmdir(path) _rmdir(path)
 #define sd_stricmp(a, b) _stricmp((a), (b))
 #else
 #include <strings.h>
 #include <unistd.h>
 #define sd_mkdir(path) mkdir((path), 0777)
-#define sd_unlink(path) unlink(path)
-#define sd_rmdir(path) rmdir(path)
 #define sd_stricmp(a, b) strcasecmp((a), (b))
 #endif
 
@@ -203,6 +208,25 @@ static void save_dir(char *out, int cap, const char *game, const char *save) {
         return;
     }
     snprintf(out, cap, "%s/PSP/SAVEDATA/%s%s", ms_root(), game, save);
+}
+
+/* Root-RELATIVE form of the same location: "PSP/SAVEDATA/<gameName><saveName>".
+ * The contained-delete seam anchors on the trusted root itself and walks this
+ * relative path component by component, so destructive savedata operations
+ * never hand a host a re-resolvable absolute pathname.
+ *
+ * Unlike save_dir this validates the CONCATENATION as one component rather than
+ * the two guest strings separately: "NU" and "L" are each a safe component but
+ * "NUL" is a device alias, and it is the joined name that reaches the host. */
+static int save_rel(char *out, size_t cap, const char *game, const char *save) {
+    char leaf[64];
+    if (!path_sanitize(game) || !path_sanitize(save)) return 0;
+    int n = snprintf(leaf, sizeof(leaf), "%s%s", game, save);
+    if (n <= 0 || (size_t)n >= sizeof(leaf)) return 0;
+    if (!sr_cd_component_is_generic(leaf, (size_t)n) ||
+        !sr_vfs_is_safe_component(leaf, (size_t)n)) return 0;
+    n = snprintf(out, cap, "PSP/SAVEDATA/%s", leaf);
+    return n > 0 && (size_t)n < cap;
 }
 
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
@@ -628,84 +652,47 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
     return 0;
 }
 
+/* DELETE family: remove one save directory and everything in it.
+ *
+ * Both destructive savedata paths now speak the host-neutral contained-delete
+ * contract (vfs_contained.h) instead of a host primitive. No absolute pathname
+ * is re-resolved here, and no host that lacks a containment backend gets an
+ * unsafe by-name fallback -- it gets SR_CD_UNSUPPORTED_HOST and deletes
+ * nothing. See vfs_contained.h for the per-backend anchoring proofs. */
 static uint32_t do_delete(const char *game, const char *save) {
-    char dir[PATH_MAX], path[PATH_MAX];
-    save_dir(dir, sizeof(dir), game, save);
-#ifdef _WIN32
-    /* F114-1: verify AND delete through handles. The old flow verified a
-     * handle, then unlinked BY NAME -- a swap between those steps redirected
-     * the unlink (verify->swap->unlink TOCTOU). Here every entry is disposed
-     * through its own verified handle and the directory itself is removed
-     * through a final verified handle; no by-name deletion exists anymore. */
-    wchar_t canonical_root[MAX_PATH * 2];
-    if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
-        return ERR_DELETE_NO_DATA;
-    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return ERR_DELETE_NO_DATA;
-#endif
-    DIR *d = opendir(dir);
-    if (!d) return ERR_DELETE_NO_DATA;
-    struct dirent *de;
-    int ok = 1;
-    while ((de = readdir(d)) != NULL) {
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-        if (!path_join(path, sizeof(path), dir, de->d_name)) { ok = 0; continue; }
-#ifdef _WIN32
-        int was_dir = 0;
-        /* Disposes the entry through the handle whose final path was just
-         * verified. A planted junction is reported as was_dir and fails the
-         * whole delete exactly like the old S_ISDIR branch did. */
-        if (!sr_vfs_delete_contained_leaf(path, canonical_root, &was_dir) || was_dir) ok = 0;
-#else
-        struct stat st;
-        if (stat(path, &st) != 0 || S_ISDIR(st.st_mode) || sd_unlink(path) != 0) ok = 0;
-#endif
+    char rel[SR_CD_REL_MAX];
+    if (!save_rel(rel, sizeof(rel), game, save)) return ERR_DELETE_NO_DATA;
+    sr_cd_root root;
+    sr_cd_status st = sr_cd_root_open(ms_root(), &root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_delete_dir_shallow(&root, rel);
+        sr_cd_root_close(&root);
     }
-    closedir(d);
-#ifdef _WIN32
-    {
-        /* Remove the emptied save directory itself through a verified handle.
-         * FILE_FLAG_OPEN_REPARSE_POINT keeps the disposition on the object the
-         * root actually contains even if the leaf name was swapped to a link
-         * after enumeration. */
-        HANDLE hd;
-        if (!sr_vfs_open_contained_utf8(dir, DELETE | FILE_READ_ATTRIBUTES,
-                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                                        OPEN_EXISTING, canonical_root, &hd)) {
-            return ERR_DELETE_NO_DATA;
-        }
-        int removed = sr_vfs_dispose_by_handle(hd);
-        CloseHandle(hd);
-        if (!removed) ok = 0;
-    }
-#else
-    if (sd_rmdir(dir) != 0) ok = 0;
-#endif
-    return ok ? 0 : ERR_DELETE_NO_DATA;
+    if (sdlog())
+        fprintf(stderr, "savedata: DELETE %s [%s] -> %s\n", rel, sr_cd_backend_name(),
+                sr_cd_status_name(st));
+    return st == SR_CD_OK ? 0 : ERR_DELETE_NO_DATA;
 }
 
 /* ERASE/ERASESECURE: remove just the named data file inside the save dir (PPSSPP DeleteData). */
 static uint32_t do_erase(uint32_t param, const char *game, const char *save) {
-    char dir[PATH_MAX], fileName[16], path[PATH_MAX];
-    save_dir(dir, sizeof(dir), game, save);
+    char rel[SR_CD_REL_MAX], fileName[16];
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
     if (!fileName[0] || !path_sanitize(fileName)) return ERR_RW_NO_DATA;
-    if (!path_join(path, sizeof(path), dir, fileName)) return ERR_RW_NO_DATA;
-#ifdef _WIN32
-    /* F114-1: same handle-bound disposition as do_delete -- the verified handle
-     * is the object erased, so a verify->swap->unlink race has no by-name step
-     * left to win. A directory/link entry fails closed. */
-    wchar_t canonical_root[MAX_PATH * 2];
-    if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
-        return ERR_RW_NO_DATA;
-    int was_dir = 0;
-    if (!sr_vfs_delete_contained_leaf(path, canonical_root, &was_dir) || was_dir)
-        return ERR_RW_NO_DATA;
-    if (sdlog()) fprintf(stderr, "savedata: ERASE %s\n", path);
-    return 0;
-#else
-    if (sdlog()) fprintf(stderr, "savedata: ERASE %s\n", path);
-    return sd_unlink(path) == 0 ? 0 : ERR_RW_NO_DATA;
-#endif
+    if (!save_rel(rel, sizeof(rel), game, save)) return ERR_RW_NO_DATA;
+    sr_cd_root root;
+    sr_cd_status st = sr_cd_root_open(ms_root(), &root);
+    if (st == SR_CD_OK) {
+        /* A directory entry fails closed with SR_CD_IS_DIRECTORY: ERASE names a
+         * file, and the backend proves that through the deletion primitive
+         * itself rather than through a by-name type probe. */
+        st = sr_cd_delete_leaf(&root, rel, fileName);
+        sr_cd_root_close(&root);
+    }
+    if (sdlog())
+        fprintf(stderr, "savedata: ERASE %s/%s [%s] -> %s\n", rel, fileName,
+                sr_cd_backend_name(), sr_cd_status_name(st));
+    return st == SR_CD_OK ? 0 : ERR_RW_NO_DATA;
 }
 
 /* LIST (11): fill idList with this game's save directories. */
