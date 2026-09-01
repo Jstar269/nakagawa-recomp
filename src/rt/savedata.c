@@ -128,6 +128,14 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
 #define CLUSTER 0x8000u          /* 32 KB "memory stick" cluster */
 #define FREE_CLUSTERS 0x4000u    /* pretend 512 MB free */
 
+/* PPSSPP's savedata model keeps file-list requests within 99 entries.  The
+ * PSP GETSIZE structure has no separate array-capacity field, so this existing
+ * savedata count contract is the semantic ceiling for both entry arrays here,
+ * rather than an arbitrary time-based loop cap. */
+#define SAVEDATA_MAX_FILE_ENTRIES 99u
+#define SAVEDATA_SIZE_ENTRY_BYTES 24u
+#define SAVEDATA_SIZE_INFO_BYTES 60u
+
 static void rd_cstr(uint32_t addr, char *out, int max) {
     int i = 0;
     if (max <= 0) return;
@@ -142,6 +150,27 @@ static void rd_cstr(uint32_t addr, char *out, int max) {
 static const char *ms_root(void) {
     const char *r = getenv("SR_MEMSTICK");
     return r && *r ? r : "memstick";
+}
+
+/* `save_dir` and the utility preparation paths are built from the same
+ * operator-configured root.  This helper only recovers their already-known
+ * root-relative spelling for descriptor traversal; it is not a string-prefix
+ * containment check and no host operation is performed on its result. */
+static int savedata_root_relative(const char *path, char *out, size_t cap) {
+    const char *root = ms_root();
+    size_t root_len = strlen(root);
+    size_t path_len = path ? strlen(path) : 0;
+    if (!path || !out || cap == 0 || root_len == 0 || path_len <= root_len ||
+        strncmp(path, root, root_len) != 0 ||
+        (path[root_len] != '/' && path[root_len] != '\\')) {
+        return 0;
+    }
+    const char *rel = path + root_len;
+    while (*rel == '/' || *rel == '\\') rel++;
+    size_t rel_len = strlen(rel);
+    if (rel_len == 0 || rel_len >= cap || !sr_cd_rel_is_acceptable(rel)) return 0;
+    memcpy(out, rel, rel_len + 1u);
+    return 1;
 }
 
 #ifdef _WIN32
@@ -170,17 +199,24 @@ static int mkdirs(const char *path) {
     if (strncmp(path, ms_root(), root_len) != 0) return 0;
     return sr_vfs_mkdirs_contained(tail, canonical_root);
 #else
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            char sep = *p;
-            *p = 0;
-            if (sd_mkdir(tmp) != 0 && errno != EEXIST) return 0;
-            *p = sep;
-        }
-    }
-    return sd_mkdir(tmp) == 0 || errno == EEXIST;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(path, rel, sizeof(rel))) return 0;
+    /* The configured root is operator-owned, and creating that bare root is
+     * the existing savedata preparation side effect.  All guest-named
+     * components below it are still created only through descriptor-relative
+     * mkdirat/openat traversal. */
+    if (mkdir(ms_root(), 0777) != 0 && errno != EEXIST) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    sr_cd_status st = sr_cd_mkdirs(&root, rel);
+    sr_cd_root_close(&root);
+    return st == SR_CD_OK;
+#else
+    /* An unsupported host must not fall back to pathname mkdir(). */
+    (void)path;
+    return 0;
+#endif
 #endif
 }
 
@@ -232,9 +268,10 @@ static int save_rel(char *out, size_t cap, const char *game, const char *save) {
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
 static int host_write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
+    if (!path_sanitize(name)) { errno = EINVAL; return 0; }
+#ifdef _WIN32
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
-#ifdef _WIN32
     /* OPEN -> HANDLE -> FINAL PATH VERIFY -> OPERATION. The write lands through
      * the very handle whose final path was verified, so a swap after the check
      * cannot redirect the bytes. OPEN_ALWAYS + SetEndOfFile reproduces the old
@@ -255,19 +292,30 @@ static int host_write_file(const char *dir, const char *name, const uint8_t *dat
     CloseHandle(h);
     return ok ? 1 : 0;
 #else
-    FILE *f = fopen(path, "wb");
-    if (!f) return 0;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    FILE *f = NULL;
+    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);
+    sr_cd_root_close(&root);
+    if (st != SR_CD_OK || !f) return 0;
     int ok = !n || fwrite(data, 1, n, f) == n;
-    fclose(f);
+    if (fclose(f) != 0) ok = 0;
     return ok;
+#else
+    return 0;
+#endif
 #endif
 }
 
 static int host_read_file(const char *dir, const char *name, uint8_t *data, uint32_t cap,
                           uint32_t *size) {
+    if (!path_sanitize(name)) { errno = EINVAL; return 0; }
+#ifdef _WIN32
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
-#ifdef _WIN32
     wchar_t canonical_root[MAX_PATH * 2];
     if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
         return 0;
@@ -293,8 +341,15 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
     if (size) *size = (uint32_t)bytes_read;
     return ok ? 1 : 0;
 #else
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    FILE *f = NULL;
+    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_READ, &f);
+    sr_cd_root_close(&root);
+    if (st != SR_CD_OK || !f) return 0;
     uint32_t n = 0;
     int ok = 1;
     if (data && cap) {
@@ -311,9 +366,12 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
         ok = sz >= 0;
         if (ok) n = (uint32_t)sz;
     }
-    fclose(f);
+    if (fclose(f) != 0) ok = 0;
     if (size) *size = n;
     return ok;
+#else
+    return 0;
+#endif
 #endif
 }
 
@@ -566,9 +624,21 @@ static int dir_exists(const char *dir) {
     if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
         return 0;
     if (!sr_vfs_dir_is_contained(dir, canonical_root)) return 0;
-#endif
     struct stat st;
     return stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
+#else
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    sr_cd_status st = sr_cd_dir_is_contained(&root, rel);
+    sr_cd_root_close(&root);
+    return st == SR_CD_OK;
+#else
+    return 0;
+#endif
+#endif
 }
 
 /* Read a host file into a guest PspUtilitySavedataFileData block {buf, bufSize, size, unk}.
@@ -872,20 +942,46 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     return sizes_no_data ? ERR_SIZES_NO_DATA : 0;
 }
 
+static int validate_getsize_entries(uint32_t count, uint32_t entries, uint32_t *span) {
+    if (!span || count > SAVEDATA_MAX_FILE_ENTRIES ||
+        !sr_size_mul_ok(count, SAVEDATA_SIZE_ENTRY_BYTES, span)) {
+        return 0;
+    }
+    if (count > 0 && (!entries || !sr_guest_span_readable(entries, *span))) return 0;
+    return 1;
+}
+
+static int getsize_add_entry(uint64_t *needed, uint32_t entries, uint32_t index) {
+    uint32_t offset, entry;
+    if (!needed || !sr_size_mul_ok(index, SAVEDATA_SIZE_ENTRY_BYTES, &offset) ||
+        !sr_size_add_ok(entries, offset, &entry)) return 0;
+    uint64_t size = MEM_R32(entry) | ((uint64_t)MEM_R32(entry + 4) << 32);
+    if (size > UINT64_MAX - (uint64_t)(CLUSTER - 1u)) return 0;
+    uint64_t rounded = ((size + (uint64_t)(CLUSTER - 1u)) / CLUSTER) * CLUSTER;
+    if (rounded > UINT64_MAX - *needed) return 0;
+    *needed += rounded;
+    return 1;
+}
+
 /* GETSIZE (22): free/needed space for the sizeInfo block. */
 static uint32_t do_getsize(uint32_t param) {
     uint32_t si = MEM_R32(param + SDP_sizeInfo);
     if (!si) return 0;
+    if (!sr_guest_span_readable(si, SAVEDATA_SIZE_INFO_BYTES) ||
+        !sr_guest_span_writable(si, SAVEDATA_SIZE_INFO_BYTES)) return 0x80110381u;
     uint32_t nSec = MEM_R32(si + 0), nNorm = MEM_R32(si + 4);
     uint32_t pSec = MEM_R32(si + 8), pNorm = MEM_R32(si + 12);
+    uint32_t secSpan = 0, normSpan = 0;
+    if (!validate_getsize_entries(nSec, pSec, &secSpan) ||
+        !validate_getsize_entries(nNorm, pNorm, &normSpan)) return 0x80110381u;
     uint64_t needed = CLUSTER + CLUSTER;                    /* dir record + SFO */
-    for (uint32_t i = 0; i < nSec && pSec; i++) {
-        uint64_t sz = MEM_R32(pSec + i * 24u) | ((uint64_t)MEM_R32(pSec + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
+    (void)secSpan;
+    (void)normSpan;
+    for (uint32_t i = 0; i < nSec; i++) {
+        if (!getsize_add_entry(&needed, pSec, i)) return 0x80110381u;
     }
-    for (uint32_t i = 0; i < nNorm && pNorm; i++) {
-        uint64_t sz = MEM_R32(pNorm + i * 24u) | ((uint64_t)MEM_R32(pNorm + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
+    for (uint32_t i = 0; i < nNorm; i++) {
+        if (!getsize_add_entry(&needed, pNorm, i)) return 0x80110381u;
     }
     MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
     MEM_W32(si + 20, FREE_CLUSTERS);                        /* freeSectors */
@@ -909,7 +1005,7 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
     uint32_t list = MEM_R32(param + SDP_saveNameList);
     if ((isList || wild) && list) {
         char ent[24], first[24] = "", dir[PATH_MAX];
-        for (int i = 0; i < 99; i++) {
+        for (uint32_t i = 0; i < SAVEDATA_MAX_FILE_ENTRIES; i++) {
             rd_cstr(list + (uint32_t)i * 20, ent, 21);
             if (!ent[0]) break;
             if (!strcmp(ent, "<>")) continue;

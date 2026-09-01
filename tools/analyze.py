@@ -226,7 +226,7 @@ def section_bytes(elf, s):
     return elf.data[s["off"]:s["off"] + s["size"]]
 
 
-EXTRA_SPAN_ENV = "HST_EXTRA_SPANS"
+EXTRA_SPAN_ENV = "TITLE_EXTRA_SPANS"
 UINT32_END_MAX = 0x100000000
 
 
@@ -268,10 +268,19 @@ def analyzer_span_from_env(environ=None):
     called exclusively from CLI entry points for the primary image. Library callers
     (`exec_ranges`, `analyze`) never consult the environment, so an inherited value
     cannot leak into a rebased extra guest module analyzed in the same process.
+
+    GENERIC: TITLE_EXTRA_SPANS is the sole authority. HST_EXTRA_SPANS is a legacy
+    alias that lives ONLY at the HST compatibility boundary (Makefile
+    GAME_NAME=hst origin translation, PowerShell Push-HstAnalyzerEnvironment) which
+    synthesizes TITLE_EXTRA_SPANS before invoking generic logic. The generic analyzer
+    never consults HST_EXTRA_SPANS, so a stale HST value cannot affect a generic
+    build whether TITLE is absent or explicitly empty.
     """
     if environ is None:
         environ = os.environ
-    return parse_extra_spans(environ.get(EXTRA_SPAN_ENV), EXTRA_SPAN_ENV)
+    if EXTRA_SPAN_ENV in environ:
+        return parse_extra_spans(environ.get(EXTRA_SPAN_ENV), EXTRA_SPAN_ENV)
+    return None
 
 
 def resolve_extra_spans(cli_text, environ=None, source="--extra-span"):

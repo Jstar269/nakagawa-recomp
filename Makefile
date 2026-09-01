@@ -14,6 +14,26 @@ GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
 
 
+# ---------------------------------------------------------------------------
+# GENERIC TITLE CONTRACT (title-neutral, host-portable):
+#   GAME_NAME, GAME_ELF, GAME_BASE, GAME_ENTRY, GAME_EXTRA_ELFS, GAME_PSP_HEADER,
+#   TITLE_EXTRA_SPANS (extra executable span, at most one; legacy HST_EXTRA_SPANS
+#   lives only in the HST PROFILE compatibility block below and is ignored for
+#   generic titles), BUILD_DIR, FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are
+#   all derived from a validated title manifest via tools/title_codegen_plan.py or
+#   TITLE_MANIFEST. Default values below are for a generic rebased ELF; HST-specific
+#   defaults live only in the HST PROFILE block that follows and never affect a
+#   generic title.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HST PROFILE (isolated compatibility defaults for the one legacy title).
+#   This block is the ONLY Makefile place that names HST constants (HST span,
+#   module load addresses, psp-header path, O2/O1 tuning). A generic title (including
+#   the three synthetic fixtures) never enters this block unless the
+#   operator explicitly requested GAME_NAME=hst, and a second synthetic title does
+#   not add another conditional here.
+# ---------------------------------------------------------------------------
 ifeq ($(GAME_NAME),hst)
 CODEGEN_PROFILE_ARG := --profile=hst
 GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
@@ -28,12 +48,29 @@ GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
 RUNTIME_OPT ?= -O2
 RECOMP_OPT  ?= -O1
+# HST LEGACY COMPATIBILITY: derive generic TITLE span from legacy HST only when the
+# generic key was never explicitly supplied. Use origin check to distinguish explicit
+# empty (command line `TITLE_EXTRA_SPANS=`) from undefined, so explicit empty stays
+# authoritative and does not fall through to stale legacy state. For non-HST titles
+# this block is not entered and HST_EXTRA_SPANS is ignored completely.
+ifeq ($(origin TITLE_EXTRA_SPANS),undefined)
+TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
+else ifeq ($(origin TITLE_EXTRA_SPANS),default)
+TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
 endif
+endif
+
+# GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
+# authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
+# the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
+# environment value must not affect a generic build.
+TITLE_EXTRA_SPANS ?=
+HST_EXTRA_SPANS ?=
+export TITLE_EXTRA_SPANS
 
 CODEGEN_PROFILE_ARG ?=
 GAME_EXTRA_ELFS ?=
 GAME_PSP_HEADER ?=
-HST_EXTRA_SPANS ?=
 EXTRA_ELF_ARGS  = $(foreach elf,$(GAME_EXTRA_ELFS),--extra-elf=$(elf))
 PSP_HEADER_ARG  = $(if $(strip $(GAME_PSP_HEADER)),--psp-header=$(GAME_PSP_HEADER),)
 # Environment forms: the switch carries no pathname bytes at all.
@@ -105,7 +142,17 @@ GAME_INPUT_PREREQ = $(if $(GAME_INPUT_TRACKED),$(GAME_INPUT_STAMP),)
 # needs a POSIX shell, and Make on Windows falls back to cmd.exe when sh is not on
 # PATH. The span therefore reaches only the primary-image analysis (codegen, VFPU
 # fuzz); rebased extra guest modules never receive it.
-EXTRA_SPAN_ARG  = $(if $(strip $(HST_EXTRA_SPANS)),--extra-span=$(strip $(HST_EXTRA_SPANS)),)
+# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS. For non-HST titles
+# a stale HST_EXTRA_SPANS (environment or make-arg) is ignored completely. For HST
+# the legacy compatibility translation above has already copied HST into TITLE when
+# TITLE was not explicitly supplied, so the effective value still reflects the HST
+# default/legacy without ever reading HST directly here. Explicit empty TITLE stays
+# empty and does not fall through.
+EFFECTIVE_EXTRA_SPANS := $(strip $(TITLE_EXTRA_SPANS))
+EXTRA_SPAN_ARG  = $(if $(strip $(EFFECTIVE_EXTRA_SPANS)),--extra-span=$(strip $(EFFECTIVE_EXTRA_SPANS)),)
+# Preserve legacy variable for profile hash and existing recipes that still expand
+# HST_EXTRA_SPANS directly (HST compatibility). It mirrors the effective span.
+HST_EXTRA_SPANS_EFFECTIVE := $(EFFECTIVE_EXTRA_SPANS)
 
 # GNU Make defines a built-in CC=cc with origin "default". A normal `CC ?= gcc`
 # therefore never takes effect. Treat only that built-in/undefined state as unset,

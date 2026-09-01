@@ -74,7 +74,13 @@ class TestContainedDeleteSelftest(unittest.TestCase):
                       "this host must select a real containment backend:\n" + out)
         # A run that quietly skipped every hostile case would look like a pass.
         # Report what actually executed so a skipped matrix stays visible.
-        self.assertIn(": 233 checks, 0 skipped hostile case(s)", out)
+        if "backend=windows-verified-handle" in out:
+            expected_checks = 233
+        elif "backend=posix-descriptor-relative" in out:
+            expected_checks = 237
+        else:
+            self.fail("selftest did not identify a supported containment backend:\n" + out)
+        self.assertIn(f": {expected_checks} checks, 0 skipped hostile case(s)", out)
         sys.stderr.write("\n[vfs_contained] " + out.strip().replace("\n", "\n[vfs_contained] ") + "\n")
 
     def test_unsupported_host_refuses_every_entry_point(self):

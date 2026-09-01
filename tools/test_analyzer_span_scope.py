@@ -66,7 +66,7 @@ def write_elf(path: Path, *, load_addr: int = PRIMARY_BASE, words=(0x03E00008, 0
 class AnalyzerSpanScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved_environ = os.environ.copy()
-        for name in ("HST_EXTRA_SPANS", "GAME_BASE"):
+        for name in ("TITLE_EXTRA_SPANS", "HST_EXTRA_SPANS", "GAME_BASE"):
             os.environ.pop(name, None)
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-span-scope-")
         self.addCleanup(self.temp.cleanup)
@@ -81,6 +81,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
     def _clean_env(self, **overrides: str) -> dict[str, str]:
         env = os.environ.copy()
+        env.pop("TITLE_EXTRA_SPANS", None)
         env.pop("HST_EXTRA_SPANS", None)
         env.update(overrides)
         return env
@@ -99,8 +100,14 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_HST_EXTRA_SPANS", source)
 
     def test_ambient_environment_cannot_reach_a_library_call(self) -> None:
-        os.environ["HST_EXTRA_SPANS"] = FOREIGN_SPAN_TEXT
+        os.environ["TITLE_EXTRA_SPANS"] = FOREIGN_SPAN_TEXT
         loaded = analyze.Elf(str(self.elf), base=0)
+        self.assertEqual(analyze.exec_ranges(loaded), [(PRIMARY_BASE, PRIMARY_BASE + 8)])
+        _, ranges = analyze.analyze(loaded)
+        self.assertEqual(ranges, [(PRIMARY_BASE, PRIMARY_BASE + 8)])
+        # Legacy HST must also not reach library (generic analyzer ignores HST entirely)
+        os.environ.pop("TITLE_EXTRA_SPANS", None)
+        os.environ["HST_EXTRA_SPANS"] = FOREIGN_SPAN_TEXT
         self.assertEqual(analyze.exec_ranges(loaded), [(PRIMARY_BASE, PRIMARY_BASE + 8)])
         _, ranges = analyze.analyze(loaded)
         self.assertEqual(ranges, [(PRIMARY_BASE, PRIMARY_BASE + 8)])
@@ -159,7 +166,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                     analyze.parse_extra_spans(malformed)
 
     def test_environment_and_option_must_agree(self) -> None:
-        env = {"HST_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
+        env = {"TITLE_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
         self.assertEqual(analyze.analyzer_span_from_env(env), [FOREIGN_SPAN])
         self.assertIsNone(analyze.analyzer_span_from_env({}))
         # An explicit option wins over an equal environment value...
@@ -169,6 +176,57 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         # ...and a disagreement fails closed instead of silently picking one.
         with self.assertRaisesRegex(RuntimeError, "conflicts with"):
             analyze.resolve_extra_spans(RIVAL_SPAN_TEXT, env)
+
+    # --- generic TITLE is sole authority: HST legacy does not leak --------------
+
+    def test_title_undefined_plus_stale_hst_yields_none_A3(self) -> None:
+        # A3 mandatory load-bearing: TITLE undefined + stale HST -> none
+        env = {"HST_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
+        self.assertIsNone(analyze.analyzer_span_from_env(env))
+
+    def test_title_empty_plus_stale_hst_yields_none_A4(self) -> None:
+        env = {"TITLE_EXTRA_SPANS": "", "HST_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
+        self.assertIsNone(analyze.analyzer_span_from_env(env))
+
+    def test_title_generic_value_yields_span_A2(self) -> None:
+        env = {"TITLE_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
+        self.assertEqual(analyze.analyzer_span_from_env(env), [FOREIGN_SPAN])
+
+    def test_title_undefined_empty_yields_none_A1(self) -> None:
+        self.assertIsNone(analyze.analyzer_span_from_env({}))
+        self.assertIsNone(analyze.analyzer_span_from_env({"TITLE_EXTRA_SPANS": ""}))
+
+    def test_malformed_title_fails_closed_A5(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "look like"):
+            analyze.analyzer_span_from_env({"TITLE_EXTRA_SPANS": "bad"})
+        with self.assertRaisesRegex(RuntimeError, "numeric"):
+            analyze.analyzer_span_from_env({"TITLE_EXTRA_SPANS": "0x10,zzz"})
+
+    def test_unsupported_multi_span_fails_closed_A6(self) -> None:
+        # analyzer seam accepts at most one span; two comma-separated pairs is malformed grammar
+        with self.assertRaisesRegex(RuntimeError, "look like"):
+            analyze.parse_extra_spans("0x1000,0x2000,0x3000,0x4000")
+
+    def test_nonzero_base_plus_extra_span_fails_closed_A7(self) -> None:
+        loaded = analyze.Elf(str(self.elf), base=REBASED_BASE)
+        with self.assertRaisesRegex(RuntimeError, "GAME_BASE != 0"):
+            analyze.exec_ranges(loaded, extra_spans=[FOREIGN_SPAN])
+
+    def test_hst_legacy_translation_outside_analyzer_A8(self) -> None:
+        # A8: HST translation must happen before analyzer, not inside it.
+        # Simulate HST boundary: HST value translated to TITLE before calling analyzer.
+        hst_env = {"HST_EXTRA_SPANS": FOREIGN_SPAN_TEXT}
+        # Generic analyzer sees HST and returns None (no leak)
+        self.assertIsNone(analyze.analyzer_span_from_env(hst_env))
+        # HST boundary translates to TITLE
+        translated = {"TITLE_EXTRA_SPANS": hst_env["HST_EXTRA_SPANS"]}
+        self.assertEqual(analyze.analyzer_span_from_env(translated), [FOREIGN_SPAN])
+        # Analyzer source must not consult HST as implicit fallback (documentation mention allowed)
+        source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
+        self.assertNotIn("LEGACY_EXTRA_SPAN_ENV", source)
+        # The generic helper must not read HST env var code-wise
+        self.assertNotIn('LEGACY_EXTRA_SPAN_ENV in environ', source)
+        self.assertNotIn('environ.get(LEGACY', source)
 
     # --- CLI seams --------------------------------------------------------
 
@@ -223,7 +281,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 "--funcs-per-chunk=2000",
             ],
             cwd=ROOT,
-            env=self._clean_env(HST_EXTRA_SPANS=FOREIGN_SPAN_TEXT),
+            env=self._clean_env(TITLE_EXTRA_SPANS=FOREIGN_SPAN_TEXT),
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -236,7 +294,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         outputs = []
         for label, argv, env in (
             ("option", [f"--extra-span={FOREIGN_SPAN_TEXT}"], self._clean_env()),
-            ("environment", [], self._clean_env(HST_EXTRA_SPANS=FOREIGN_SPAN_TEXT)),
+            ("environment", [], self._clean_env(TITLE_EXTRA_SPANS=FOREIGN_SPAN_TEXT)),
         ):
             # Same output *name* in different directories: the generated translation
             # unit embeds its own basename, so differing names would mask a real diff.
@@ -265,7 +323,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 f"--extra-span={RIVAL_SPAN_TEXT}",
             ],
             cwd=ROOT,
-            env=self._clean_env(HST_EXTRA_SPANS=FOREIGN_SPAN_TEXT),
+            env=self._clean_env(TITLE_EXTRA_SPANS=FOREIGN_SPAN_TEXT),
             capture_output=True, text=True, check=False,
         )
         self.assertNotEqual(proc.returncode, 0)
@@ -406,15 +464,18 @@ class MakefileSpanBindingTests(unittest.TestCase):
 
     def test_span_is_passed_as_an_argument_not_a_shell_environment_prefix(self) -> None:
         # `VAR=value cmd` needs a POSIX shell; Make falls back to cmd.exe on Windows
-        # when sh is absent. The span therefore travels as an argv entry.
-        self.assertIn("--extra-span=$(strip $(HST_EXTRA_SPANS))", self.makefile)
+        # when sh is absent. The span therefore travels as an argv entry via
+        # EFFECTIVE_EXTRA_SPANS derived only from TITLE_EXTRA_SPANS (generic contract).
+        self.assertIn("--extra-span=$(strip $(EFFECTIVE_EXTRA_SPANS))", self.makefile)
         self.assertIn("$(EXTRA_SPAN_ARG)", self.makefile)
         self.assertNotIn("HST_EXTRA_SPANS=$(HST_EXTRA_SPANS) $(PYTHON)", self.makefile)
 
     def test_span_is_empty_for_a_generic_title(self) -> None:
         # Outside the GAME_NAME=hst block the binding must default to empty, so a
-        # generic build passes no span at all.
+        # generic build passes no span at all. Generic contract uses TITLE_EXTRA_SPANS.
         generic = self.makefile.split("ifeq ($(GAME_NAME),hst)", 1)[1].split("endif", 1)[1]
+        self.assertIn("TITLE_EXTRA_SPANS ?=\n", generic)
+        # Legacy HST variable also defaults to empty but is ignored for generic titles.
         self.assertIn("HST_EXTRA_SPANS ?=\n", generic)
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:

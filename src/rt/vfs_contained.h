@@ -28,6 +28,11 @@
  *   sr_cd_delete_dir_shallow
  *                         delete every non-directory entry of a root-relative
  *                         directory and then the directory itself
+ *   sr_cd_mkdirs         create a root-relative directory tree without
+ *                         following a link at any guest-named component
+ *   sr_cd_open_file      open one regular file through the retained POSIX
+ *                         directory descriptors (POSIX backend extension;
+ *                         Windows savedata keeps its existing HANDLE route)
  *   sr_cd_root_close      release the binding
  *
  * TWO SEPARATE GUARANTEES
@@ -419,7 +424,8 @@ static inline int sr_cd_entry_name_is_acceptable(const char *name, size_t len) {
 enum {
     SR_CD_HOOK_AFTER_DRAIN = 0,   /* target emptied; its name not yet re-resolved */
     SR_CD_HOOK_AFTER_CONFIRM = 1, /* identity re-confirmed; removal not yet issued */
-    SR_CD_HOOK_COUNT = 2
+    SR_CD_HOOK_BEFORE_FILE_OPEN = 2, /* path validated; final open not yet issued */
+    SR_CD_HOOK_COUNT = 3
 };
 
 #if defined(SR_CD_TEST_HOOKS)
@@ -673,6 +679,148 @@ static inline sr_cd_status sr_cd__at_walk(int root_fd, const char *rel, int *out
         if (*p == '/') p++;
     }
     *out_fd = cur;
+    return SR_CD_OK;
+}
+
+/* Create a canonical root-relative directory tree while retaining the same
+ * descriptor anchor used by the delete seam.  Missing components are created
+ * with mkdirat() and then reopened with O_NOFOLLOW; an existing link or a
+ * component that is not a directory therefore fails closed before the walk can
+ * descend through it.  The caller owns the root binding, so a replacement of
+ * the configured root pathname cannot redirect this operation. */
+static inline sr_cd_status sr_cd_mkdirs(const sr_cd_root *root, const char *rel) {
+    if (!root || root->fd < 0 || !sr_cd_rel_is_acceptable(rel))
+        return SR_CD_INVALID_PATH;
+    int cur = dup(root->fd);
+    if (cur < 0) return SR_CD_IO_ERROR;
+
+    const char *p = rel;
+    while (*p) {
+        const char *start = p;
+        while (*p && *p != '/') p++;
+        size_t len = (size_t)(p - start);
+        char comp[SR_CD_NAME_MAX];
+        if (len >= sizeof(comp) || !sr_cd_name_is_acceptable(start, len)) {
+            close(cur);
+            return SR_CD_INVALID_PATH;
+        }
+        memcpy(comp, start, len);
+        comp[len] = '\0';
+
+        int next = sr_cd__at_open_dir(cur, comp);
+        if (next < 0) {
+            if (errno != ENOENT) {
+                sr_cd_status st = sr_cd__at_open_fail();
+                close(cur);
+                return st;
+            }
+            if (mkdirat(cur, comp, 0777) != 0 && errno != EEXIST) {
+                sr_cd_status st = sr_cd__at_open_fail();
+                close(cur);
+                return st;
+            }
+            /* The second descriptor-open is the decision point after a
+             * create race; a link planted in the interval is ELOOP. */
+            next = sr_cd__at_open_dir(cur, comp);
+            if (next < 0) {
+                sr_cd_status st = sr_cd__at_open_fail();
+                close(cur);
+                return st;
+            }
+        }
+        close(cur);
+        cur = next;
+        if (*p == '/') p++;
+    }
+    close(cur);
+    return SR_CD_OK;
+}
+
+/* Probe a root-relative directory through descriptors only.  This is used by
+ * savedata's load/wildcard qualification, not as a check that precedes an
+ * unsafe pathname operation. */
+static inline sr_cd_status sr_cd_dir_is_contained(const sr_cd_root *root, const char *rel) {
+    if (!root || root->fd < 0 || !sr_cd_rel_is_acceptable(rel))
+        return SR_CD_INVALID_PATH;
+    int fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, rel, &fd);
+    if (st == SR_CD_OK) close(fd);
+    return st;
+}
+
+typedef enum sr_cd_file_mode {
+    SR_CD_FILE_READ = 0,
+    SR_CD_FILE_WRITE_TRUNCATE = 1
+} sr_cd_file_mode;
+
+/* Open one regular file relative to a retained root descriptor.  Every
+ * component is opened relative to a descriptor and O_NOFOLLOW applies to the
+ * final component as well, so the operation has no validation-to-fopen race.
+ * fdopen() only wraps the descriptor that openat() already acquired; it never
+ * resolves the guest path a second time. */
+static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *rel_dir,
+                                            const char *leaf, sr_cd_file_mode mode,
+                                            FILE **out) {
+    if (out) *out = NULL;
+    if (!root || root->fd < 0 || !out || !leaf)
+        return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_is_acceptable(rel_dir) ||
+        !sr_cd_name_is_acceptable(leaf, strlen(leaf)))
+        return SR_CD_INVALID_PATH;
+
+    int dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, rel_dir, &dir_fd);
+    if (st != SR_CD_OK) return st;
+
+    /* Test-only deterministic race point.  Production builds compile this to
+     * a no-op; the actual openat below remains the first operation that can
+     * select the final object. */
+    sr_cd__hook_fire(SR_CD_HOOK_BEFORE_FILE_OPEN);
+
+    /* Do not let a planted FIFO turn the regular-file qualification below
+     * into an unbounded open wait.  O_NONBLOCK has no effect on ordinary
+     * regular save files; non-regular objects are rejected after acquisition. */
+    int flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
+    const char *stdio_mode;
+    if (mode == SR_CD_FILE_WRITE_TRUNCATE) {
+        flags |= O_WRONLY | O_CREAT;
+        stdio_mode = "wb";
+    } else if (mode == SR_CD_FILE_READ) {
+        flags |= O_RDONLY;
+        stdio_mode = "rb";
+    } else {
+        close(dir_fd);
+        return SR_CD_INVALID_PATH;
+    }
+
+    int fd = openat(dir_fd, leaf, flags, 0666);
+    if (fd < 0) {
+        st = sr_cd__at_open_fail();
+        close(dir_fd);
+        return st;
+    }
+    close(dir_fd);
+
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        close(fd);
+        return SR_CD_IO_ERROR;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        close(fd);
+        return SR_CD_NOT_CONTAINED;
+    }
+    if (mode == SR_CD_FILE_WRITE_TRUNCATE && ftruncate(fd, 0) != 0) {
+        close(fd);
+        return SR_CD_IO_ERROR;
+    }
+
+    FILE *stream = fdopen(fd, stdio_mode);
+    if (!stream) {
+        close(fd);
+        return SR_CD_IO_ERROR;
+    }
+    *out = stream;
     return SR_CD_OK;
 }
 

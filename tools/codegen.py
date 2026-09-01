@@ -1950,7 +1950,7 @@ def main(argv):
             return 2
     elf = Elf(elf_path, base=base)
     # Only the primary image may carry an explicit extra executable span (its title's
-    # configuration, from --extra-span or the HST_EXTRA_SPANS seam). Every extra guest
+    # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
