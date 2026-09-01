@@ -273,7 +273,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "98a22077f7d31dc1397fd6e5b98e39b259e750ab680ba7dda2d9046ca57d73e8"
+      "sha256": "5732227d5b1bf0cef9fa755fa4380402c7a58d5db681e66bad738f715299a62e"
     },
     {
       "path": "NOTICE.md",
@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c397f90123e5c5bdc6e59c5d9767bf308f5a2b272713d1adbff604fc7d49de60"
+      "sha256": "30c41a93a5b25202cc452d9f259cb6d8c79d8289398fcd42f63e230be3403065"
     },
     {
       "path": "assets/release_manifest.json",
@@ -417,7 +417,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "46c5a282bb05a77b9c4bbcfa4a005f08abed57f7b40484857c991ba0f46f6590"
+      "sha256": "13c2c530e3948b9acd72baecec35fa30f659ce5058567ae2b87457ffe2df809c"
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
@@ -427,6 +427,15 @@
         "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "4a2979fff1c03a3e5d29ce7e053f070b3fccd9ccbfd3330ab6eb1041a150818e"
+    },
+    {
+      "path": "assets/titles/synthetic-title2.json",
+      "classification": "public_factual_metadata",
+      "evidence": {
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
+      },
+      "sha256": "21a26397604719892ff39dca5f3ba686b6e46c2b6446495426326be586dd6113"
     },
     {
       "path": "assets/titles/synthetic.json",
@@ -4827,16 +4836,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "savedata",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/Dialog/SavedataParam.h",
-          "Core/Dialog/SavedataParam.cpp"
-        ],
-        "upstream_revision": null,
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6143ec2d5e17c271430cf873f9572119288f31e9790b71812e1c02040be4c7c9"
+      "sha256": "3041e7c9d5bfdeacbc3b758331c227a9a9592db468e1d6e9c19d7c3ad0d74035"
     },
     {
       "path": "src/rt/sched.c",
@@ -5100,7 +5104,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8c034ceed9de5d5c75725d737d06126dcffbb4501cf372914316b1c9a4586fa"
+      "sha256": "68b0fc2c0388ba36f34954dcf8af0ae80a949a486efe2555f614f934a7e43974"
     },
     {
       "path": "src/rt/vfs_contained_selftest.c",
@@ -5199,15 +5203,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1d68cd8330140a40e51c266ffc2e320c9e7fc5125d44eee68cf2bf3d8f5b94d3"
+      "sha256": "1d93817976e82ca8239afcb415595be4d5705da131b669161c8439b54fd62740"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5316,7 +5316,7 @@
         "license": "see NOTICE.md",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6701aab1646ca04b2b18cd02df6767bf6910e7bf33e47068f100f05877852ed0"
+      "sha256": "baf4641f0f7cc7c19fbeb90a4d6d2ca811f937c28e4a08bbf10e7ca0069f036f"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6294,7 +6294,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e7c17a770407ab2ff2f3dc4ff32458c7e82242a71247b669e27a112f2b6a09fc"
+      "sha256": "6d25fa46d312e1d1996ccbac30fa64bf2daef55f61277bb8b4b7d2461a39c117"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -6631,6 +6631,15 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "90e8c84cfb708428b69d15d7559d9119536a15a75eaeeacaddcd516bd1bf1ff1"
+    },
+    {
+      "path": "tools/test_generic_title_planning_proof.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "c2c36b373c196036315ff9bc600dd3f684ecfe3d1213094f98174224fcb67c12"
     },
     {
       "path": "tools/test_guest_printf.py",
@@ -7140,6 +7149,15 @@
       "sha256": "c9547129777b61c7add374b90aaf7582d591ea90cc68f05c01a6f152302623c7"
     },
     {
+      "path": "tools/test_savedata_security.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "07ebb883ac911a4bb27fd7d182143fa647113436c6f6440aa9ebec2fc9a71f81"
+    },
+    {
       "path": "tools/test_savedata_spans.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -7209,7 +7227,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "5c4cdb8665152cbcc33141c5aa405b40962f9b62f0d1bc3828baac3487709bde"
+      "sha256": "0dfad429049c748b18b6611f65abc9cd7e08fee4b00655c1adb796600871f754"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -7218,7 +7236,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e666a8ef49c782022f4d7aed56a6bbddc04f3722f50cd172d880f22204678d1e"
+      "sha256": "c103903b0365a689b418e82ad14a8633607707cce2ea891d2536e9ddb1322520"
     },
     {
       "path": "tools/test_title_manager_adapter.py",
@@ -7227,7 +7245,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a9ed93186ff5bc876049715420ce002507ae1e72b66754d052b75dea54ffc95b"
+      "sha256": "bbc7c0f93ca1b119a41dd3e51a210ff5e8ffa6fbb992fa223472cdecfa98d28a"
     },
     {
       "path": "tools/test_title_manager_plan.py",
@@ -7236,7 +7254,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "68056e250c5ffa1a0c9d339b858d8cb2e136dfa32dfded8978bcb4f79d1fdcf7"
+      "sha256": "8ebd270bab408ba9e0f6100d04d8aec4ed25fa7ed0cbc348be59a5ab5a89d83d"
     },
     {
       "path": "tools/test_title_manifest.py",
@@ -7263,7 +7281,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "66e40b578d1ca510d30b92f6ccc407dc6fb038b6c25a12b065cd9eb5da408a19"
+      "sha256": "2453594ddd1a4aef0980fb25f0a34082cf9408dee73979ad2e3f9dbbfda2c363"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -7365,7 +7383,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ad7c15bc38d4914a20720d6de75c69687a80e11205fdb158a3fff688bef10620"
+      "sha256": "502a5f5c081552e5dc36a15b274677aafc54426f931e708e3b2baae0a3680736"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
@@ -7408,24 +7426,24 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "generic-title-planning-20260901",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d327b6b1dc6624c004169f406dc672af2951ea4e00b296c6eee9627659e48582"
+      "sha256": "dfb05d109b2d2a4cafa2b0dda486d6db98c71a92409657de108f8240583b8e12"
     },
     {
       "path": "tools/title_manager_plan.ps1",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "generic-title-planning-20260901",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2f4ce6950192c58db9ccc509a8655a6286b3b431ecab12f9c643ebd8646eac8d"
+      "sha256": "80b1923664aac05373c17f067de3b29707e03ea67663a04ccc28a7916cd6e6e7"
     },
     {
       "path": "tools/title_manifest.py",
@@ -7617,5 +7635,30 @@
       },
       "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
+    "candidate_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
+    "refreshed_paths": [
+      "Makefile",
+      "assets/titles/README.md",
+      "assets/titles/synthetic-title2.json",
+      "src/rt/savedata.c",
+      "src/rt/vfs_contained.h",
+      "tools/analyze.py",
+      "tools/codegen.py",
+      "tools/test_analyzer_span_scope.py",
+      "tools/test_generic_title_planning_proof.py",
+      "tools/test_savedata_security.py",
+      "tools/test_title_codegen_plan.py",
+      "tools/test_title_codegen_synthetic.py",
+      "tools/test_title_manager_adapter.py",
+      "tools/test_title_manager_plan.py",
+      "tools/test_title_pspdev_phase5.py",
+      "tools/test_vfs_contained.py",
+      "tools/title_codegen_plan.py",
+      "tools/title_manager_plan.ps1"
+    ]
+  }
 }
