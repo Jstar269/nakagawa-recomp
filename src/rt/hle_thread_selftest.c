@@ -7839,6 +7839,15 @@ static void test_psp_mutex(void) {
     expect(mtx_unlock(m_try, 1) == 0x800201c5u, "T20: unlock unowned mutex returns 0x800201c5");
     mtx_delete(m_try);
 
+    uint32_t m_try_rec = mtx_create("try_rec", 0x0200u, 1);
+    expect(mtx_trylock(m_try_rec, 0x7fffffff) == 0x800201c6u,
+           "T18: recursive TryLock overflow returns 0x800201c6");
+    expect(mtx_get_info(m_try_rec, &info) && info.currentCount == 1 &&
+           info.lockThread == (int32_t)cur->uid,
+           "T18: recursive TryLock overflow leaves ownership unchanged");
+    expect(mtx_unlock(m_try_rec, 1) == 0, "T18: recursive TryLock fixture unlocks");
+    mtx_delete(m_try_rec);
+
     /* ---- T12: Contended Lock FIFO queue order & direct handoff ---- */
     uint32_t m_fifo = mtx_create("fifo_mtx", 0, 1);
     MtxWaiterCtx w1; memset(&w1, 0, sizeof w1);
@@ -7927,6 +7936,40 @@ static void test_psp_mutex(void) {
     sr_coro_destroy(w_low.tcb->coro); w_low.tcb->coro = NULL;
     sr_coro_destroy(w_high.tcb->coro); w_high.tcb->coro = NULL;
     mtx_delete(m_pri);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T13b: PRIORITY equal-priority ties remain FIFO ---- */
+    uint32_t m_equal = mtx_create("equal_pri", 0x0100u, 1);
+    MtxWaiterCtx w_eq1; memset(&w_eq1, 0, sizeof w_eq1);
+    w_eq1.uid = 0x118u; w_eq1.tcb = fixture_thread(w_eq1.uid, TH_READY, 20); w_eq1.tcb->started = 1;
+    w_eq1.mtx_uid = m_equal; w_eq1.count = 1;
+    w_eq1.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_eq1, (size_t)4 << 20);
+
+    MtxWaiterCtx w_eq2; memset(&w_eq2, 0, sizeof w_eq2);
+    w_eq2.uid = 0x119u; w_eq2.tcb = fixture_thread(w_eq2.uid, TH_READY, 20); w_eq2.tcb->started = 1;
+    w_eq2.mtx_uid = m_equal; w_eq2.count = 1;
+    w_eq2.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_eq2, (size_t)4 << 20);
+
+    s_cur = (int)(w_eq1.tcb - s_tcb); sr_coro_switch(w_eq1.tcb->coro);
+    expect(w_eq1.tcb->state == TH_WAIT_OBJ, "T13b: first equal-priority waiter blocked");
+    s_cur = (int)(w_eq2.tcb - s_tcb); sr_coro_switch(w_eq2.tcb->coro);
+    expect(w_eq2.tcb->state == TH_WAIT_OBJ, "T13b: second equal-priority waiter blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_equal, 1) == 0, "T13b: equal-priority owner unlocked");
+    expect(mtx_get_info(m_equal, &info) && info.lockThread == (int32_t)w_eq1.uid &&
+           info.numWaitThreads == 1 && w_eq1.tcb->state == TH_READY &&
+           w_eq2.tcb->state == TH_WAIT_OBJ,
+           "T13b: equal-priority tie selects the FIFO-first waiter");
+    s_cur = (int)(w_eq1.tcb - s_tcb); sr_coro_switch(w_eq1.tcb->coro);
+    expect(w_eq1.returned == 1 && w_eq1.ret == 0, "T13b: FIFO-first equal waiter acquired");
+    expect(mtx_unlock(m_equal, 1) == 0, "T13b: FIFO-first equal waiter unlocked");
+    s_cur = (int)(w_eq2.tcb - s_tcb); sr_coro_switch(w_eq2.tcb->coro);
+    expect(w_eq2.returned == 1 && w_eq2.ret == 0, "T13b: FIFO-second equal waiter acquired");
+    mtx_unlock(m_equal, 1);
+    sr_coro_destroy(w_eq1.tcb->coro); w_eq1.tcb->coro = NULL;
+    sr_coro_destroy(w_eq2.tcb->coro); w_eq2.tcb->coro = NULL;
+    mtx_delete(m_equal);
     s_cur = (int)(cur - s_tcb);
 
     /* ---- T14, T15, T16: Timeout cases ---- */
@@ -8025,6 +8068,11 @@ static void test_psp_mutex(void) {
 
     uint32_t num_wait_out = 0x00270090u; MEM_W32(num_wait_out, 0xdeadbeefu);
     s_cur = (int)(cur - s_tcb);
+    expect(mtx_cancel(m_cn, 0, 0x0c000000u - 2) == 0x80000103u,
+           "T21: CancelMutex rejects an invalid numWaitThreads pointer");
+    expect(mtx_get_info(m_cn, &info) && info.currentCount == 1 &&
+           info.lockThread == (int32_t)cur->uid && info.numWaitThreads == 1,
+           "T21: invalid CancelMutex output pointer leaves mutex state unchanged");
     expect(mtx_cancel(m_cn, 0, num_wait_out) == 0, "T21: CancelMutex newCount=0 succeeded");
     expect(MEM_R32(num_wait_out) == 1u, "T21: CancelMutex wrote previous waiter count 1");
     expect(w_cn.tcb->state == TH_READY, "T21: waiter woke to TH_READY on cancel");

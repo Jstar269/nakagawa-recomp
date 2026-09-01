@@ -10184,7 +10184,14 @@ static Mutex *mutex_find(uint32_t uid) {
 
 static Mutex *mutex_alloc(void) {
     if (s_mutex_len >= s_mutex_cap) {
-        size_t next = s_mutex_cap ? s_mutex_cap * 2u : 64u;
+        size_t next;
+        if (s_mutex_cap) {
+            if (s_mutex_cap > SIZE_MAX / 2u) return NULL;
+            next = s_mutex_cap * 2u;
+        } else {
+            next = 64u;
+        }
+        if (next > SIZE_MAX / sizeof(*s_mutexes)) return NULL;
         Mutex **grown = (Mutex **)realloc(s_mutexes, next * sizeof(*grown));
         if (!grown) return NULL;
         for (size_t i = s_mutex_cap; i < next; i++) grown[i] = NULL;
@@ -10214,7 +10221,14 @@ static void mutex_free(Mutex *m) {
 
 static int mutex_enqueue_waiter(Mutex *m, uint32_t thread_uid, int requested_count) {
     if (m->wait_count >= m->wait_cap) {
-        int next = m->wait_cap ? m->wait_cap * 2 : 4;
+        int next;
+        if (m->wait_cap) {
+            if (m->wait_cap > INT_MAX / 2) return 0;
+            next = m->wait_cap * 2;
+        } else {
+            next = 4;
+        }
+        if ((size_t)next > SIZE_MAX / sizeof(*m->waiters)) return 0;
         MutexWaiter *grown = (MutexWaiter *)realloc(m->waiters, (size_t)next * sizeof(*grown));
         if (!grown) return 0;
         m->waiters = grown;
@@ -10376,7 +10390,7 @@ static uint32_t h_LockMutex_impl(CpuState *s, int is_cb) {
         if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE)) {
             return SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED;
         }
-        if (m->current_count + count < 0 || (uint64_t)m->current_count + (uint64_t)count > 0x7FFFFFFFu) {
+        if ((uint64_t)m->current_count + (uint64_t)count > (uint64_t)INT_MAX) {
             return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
         }
         m->current_count += count;
@@ -10398,7 +10412,7 @@ static uint32_t h_LockMutex_impl(CpuState *s, int is_cb) {
             return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
         }
         sched_vtime_refresh();
-        end_time = sched_vtime_us() + (uint64_t)usec;
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
         has_timeout = 1;
     }
 
@@ -10514,7 +10528,7 @@ static uint32_t h_TryLockMutex(CpuState *s) {
         if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE)) {
             return SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED;
         }
-        if (m->current_count + count < 0 || (uint64_t)m->current_count + (uint64_t)count > 0x7FFFFFFFu) {
+        if ((uint64_t)m->current_count + (uint64_t)count > (uint64_t)INT_MAX) {
             return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
         }
         m->current_count += count;
@@ -10571,11 +10585,9 @@ static uint32_t h_CancelMutex(CpuState *s) {
         return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     }
 
-    if (num_wait_ptr) {
-        if (sr_guest_span_writable(num_wait_ptr, 4)) {
-            MEM_W32(num_wait_ptr, (uint32_t)m->num_wait_threads);
-        }
-    }
+    if (num_wait_ptr && !sr_guest_span_writable(num_wait_ptr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (num_wait_ptr) MEM_W32(num_wait_ptr, (uint32_t)m->num_wait_threads);
 
     m->cancel_seq++;
     if (new_count == 1) {

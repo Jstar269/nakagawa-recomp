@@ -4568,23 +4568,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-core",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
-          "Core/HLE/sceCtrl.cpp (sample ring)",
-          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
-          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
-          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
-          "Core/HLE/sceMpeg.cpp (delay constants)",
-          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
-          "GPU/GPU.h (GE_STATUS layout)",
-          "Core/HW/Display.cpp (hCountPerVblank)"
-        ],
-        "upstream_revision": null,
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c281c56db1087347a44d717e35d770814bfbf419cb6be11ebedba745f8f16905"
+      "sha256": "291355e61437f8448a7a1c7149232fddc5346233486e96b58cb47a69b5a5c0f5"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4596,7 +4584,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e79c5d831af7fb0cac19ad7cc7786961164c7fcdc4b0e54461dfeb375834ecc"
+      "sha256": "6a01fd8500632123a465faf0c7c7644cc0cf3541bc9877a22afa65bb87c4464d"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4608,7 +4596,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee2e5fdf64fb759610be0c8be155212ed77cfa591d97e1285e3228711c56a900"
+      "sha256": "412f5759f938ea9548ac980300f5deb1da0e663fb2ad2e74682eb85ca21e34b2"
     },
     {
       "path": "src/rt/iso.h",
@@ -4816,18 +4804,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
-          "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
-          "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
-          "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
-        ],
-        "upstream_revision": null,
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "080e7a5cc2f6c3acc3f0203c1c0fc28789fb5786cb3bafca0eedb04b9ea76dd1"
+      "sha256": "e15804e04f10442e93a9d771a109867d7b6b58cd8574e3503688dee99537e60f"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4849,13 +4830,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "scheduler",
         "evidence_tier": "H",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "upstream": "documented upstream family",
+        "license": "see NOTICE.md",
+        "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "90111652b2f4940eeb549c83d5d37c7e0a42bc816a4bcb00176c32591f09105c"
+      "sha256": "68259873923705fc120a3f8ba35f38555a28f5f8ee83efaa994b1d8240bf9d9f"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4867,7 +4846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08500ef5887e9900bdbcef3ccba262f165ba6d3ad1a49b65834d0f27227ec180"
+      "sha256": "1cfb791e486f08e95afd4c10e41ab81e201bfea4989d0d467858830492f702f2"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -5724,7 +5703,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "761882cdd25ca18e350d117dbfd8fc7df8f3990de9ccd2ef975cbc9317e31646"
+      "sha256": "fc24b9b6e1e1b9c6e1174cf451ce642ad07d50a2353667f1e487dde105691701"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -7638,14 +7617,16 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
-    "candidate_tree": "c4d1a957ed2bea11f26455600a40e4dd814289b6",
+    "trusted_tree": "6510e7dc5eaf7c7ee4e1e6b4c01e13eaf199d7f7",
+    "candidate_tree": "ab73e142a329eb170a9c6e804aa1c781b74488eb",
     "refreshed_paths": [
-      ".github/workflows/osv-scanner.yml",
-      "docs/research/PSP_THREADING_SEMANTICS.md",
-      "interface/package-lock.json",
-      "interface/package.json",
-      "src/rt/vfs_contained_selftest.c"
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c",
+      "src/rt/intr_conformance.h",
+      "src/rt/recomp.h",
+      "src/rt/sched.c",
+      "src/rt/sched_selftest.c",
+      "tools/import_audit_baseline.json"
     ]
   }
 }
