@@ -19,6 +19,11 @@
  * GETSIZE report a roomy fake memory stick; the DELETE family removes a save directory.
  */
 
+/* vfs_contained.h comes FIRST on purpose: on a strict-ISO POSIX build it must
+ * select the feature profile before any system header is pulled in, otherwise
+ * the descriptor-relative primitives it needs are hidden and the seam would
+ * silently fall back to its fail-closed backend. */
+#include "vfs_contained.h"
 #include "recomp.h"
 #include "vfs_path.h"
 #include <dirent.h>
@@ -31,19 +36,19 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/* No by-name deletion primitive is defined here any more. Destructive
+ * savedata paths go through the contained-delete seam, which anchors on a
+ * trusted root; sd_unlink/sd_rmdir existed only for the pathname design
+ * that seam replaced, and leaving them defined would invite its return. */
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
 #define sd_mkdir(path) _mkdir(path)
-#define sd_unlink(path) _unlink(path)
-#define sd_rmdir(path) _rmdir(path)
 #define sd_stricmp(a, b) _stricmp((a), (b))
 #else
 #include <strings.h>
 #include <unistd.h>
 #define sd_mkdir(path) mkdir((path), 0777)
-#define sd_unlink(path) unlink(path)
-#define sd_rmdir(path) rmdir(path)
 #define sd_stricmp(a, b) strcasecmp((a), (b))
 #endif
 
@@ -123,6 +128,14 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
 #define CLUSTER 0x8000u          /* 32 KB "memory stick" cluster */
 #define FREE_CLUSTERS 0x4000u    /* pretend 512 MB free */
 
+/* PPSSPP's savedata model keeps file-list requests within 99 entries.  The
+ * PSP GETSIZE structure has no separate array-capacity field, so this existing
+ * savedata count contract is the semantic ceiling for both entry arrays here,
+ * rather than an arbitrary time-based loop cap. */
+#define SAVEDATA_MAX_FILE_ENTRIES 99u
+#define SAVEDATA_SIZE_ENTRY_BYTES 24u
+#define SAVEDATA_SIZE_INFO_BYTES 60u
+
 static void rd_cstr(uint32_t addr, char *out, int max) {
     int i = 0;
     if (max <= 0) return;
@@ -137,6 +150,27 @@ static void rd_cstr(uint32_t addr, char *out, int max) {
 static const char *ms_root(void) {
     const char *r = getenv("SR_MEMSTICK");
     return r && *r ? r : "memstick";
+}
+
+/* `save_dir` and the utility preparation paths are built from the same
+ * operator-configured root.  This helper only recovers their already-known
+ * root-relative spelling for descriptor traversal; it is not a string-prefix
+ * containment check and no host operation is performed on its result. */
+static int savedata_root_relative(const char *path, char *out, size_t cap) {
+    const char *root = ms_root();
+    size_t root_len = strlen(root);
+    size_t path_len = path ? strlen(path) : 0;
+    if (!path || !out || cap == 0 || root_len == 0 || path_len <= root_len ||
+        strncmp(path, root, root_len) != 0 ||
+        (path[root_len] != '/' && path[root_len] != '\\')) {
+        return 0;
+    }
+    const char *rel = path + root_len;
+    while (*rel == '/' || *rel == '\\') rel++;
+    size_t rel_len = strlen(rel);
+    if (rel_len == 0 || rel_len >= cap || !sr_cd_rel_is_acceptable(rel)) return 0;
+    memcpy(out, rel, rel_len + 1u);
+    return 1;
 }
 
 #ifdef _WIN32
@@ -165,17 +199,24 @@ static int mkdirs(const char *path) {
     if (strncmp(path, ms_root(), root_len) != 0) return 0;
     return sr_vfs_mkdirs_contained(tail, canonical_root);
 #else
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            char sep = *p;
-            *p = 0;
-            if (sd_mkdir(tmp) != 0 && errno != EEXIST) return 0;
-            *p = sep;
-        }
-    }
-    return sd_mkdir(tmp) == 0 || errno == EEXIST;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(path, rel, sizeof(rel))) return 0;
+    /* The configured root is operator-owned, and creating that bare root is
+     * the existing savedata preparation side effect.  All guest-named
+     * components below it are still created only through descriptor-relative
+     * mkdirat/openat traversal. */
+    if (mkdir(ms_root(), 0777) != 0 && errno != EEXIST) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    sr_cd_status st = sr_cd_mkdirs(&root, rel);
+    sr_cd_root_close(&root);
+    return st == SR_CD_OK;
+#else
+    /* An unsupported host must not fall back to pathname mkdir(). */
+    (void)path;
+    return 0;
+#endif
 #endif
 }
 
@@ -205,12 +246,32 @@ static void save_dir(char *out, int cap, const char *game, const char *save) {
     snprintf(out, cap, "%s/PSP/SAVEDATA/%s%s", ms_root(), game, save);
 }
 
+/* Root-RELATIVE form of the same location: "PSP/SAVEDATA/<gameName><saveName>".
+ * The contained-delete seam anchors on the trusted root itself and walks this
+ * relative path component by component, so destructive savedata operations
+ * never hand a host a re-resolvable absolute pathname.
+ *
+ * Unlike save_dir this validates the CONCATENATION as one component rather than
+ * the two guest strings separately: "NU" and "L" are each a safe component but
+ * "NUL" is a device alias, and it is the joined name that reaches the host. */
+static int save_rel(char *out, size_t cap, const char *game, const char *save) {
+    char leaf[64];
+    if (!path_sanitize(game) || !path_sanitize(save)) return 0;
+    int n = snprintf(leaf, sizeof(leaf), "%s%s", game, save);
+    if (n <= 0 || (size_t)n >= sizeof(leaf)) return 0;
+    if (!sr_cd_component_is_generic(leaf, (size_t)n) ||
+        !sr_vfs_is_safe_component(leaf, (size_t)n)) return 0;
+    n = snprintf(out, cap, "PSP/SAVEDATA/%s", leaf);
+    return n > 0 && (size_t)n < cap;
+}
+
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
 static int host_write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
+    if (!path_sanitize(name)) { errno = EINVAL; return 0; }
+#ifdef _WIN32
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
-#ifdef _WIN32
     /* OPEN -> HANDLE -> FINAL PATH VERIFY -> OPERATION. The write lands through
      * the very handle whose final path was verified, so a swap after the check
      * cannot redirect the bytes. OPEN_ALWAYS + SetEndOfFile reproduces the old
@@ -231,19 +292,30 @@ static int host_write_file(const char *dir, const char *name, const uint8_t *dat
     CloseHandle(h);
     return ok ? 1 : 0;
 #else
-    FILE *f = fopen(path, "wb");
-    if (!f) return 0;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    FILE *f = NULL;
+    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);
+    sr_cd_root_close(&root);
+    if (st != SR_CD_OK || !f) return 0;
     int ok = !n || fwrite(data, 1, n, f) == n;
-    fclose(f);
+    if (fclose(f) != 0) ok = 0;
     return ok;
+#else
+    return 0;
+#endif
 #endif
 }
 
 static int host_read_file(const char *dir, const char *name, uint8_t *data, uint32_t cap,
                           uint32_t *size) {
+    if (!path_sanitize(name)) { errno = EINVAL; return 0; }
+#ifdef _WIN32
     char path[PATH_MAX];
     if (!path_join(path, sizeof(path), dir, name)) return 0;
-#ifdef _WIN32
     wchar_t canonical_root[MAX_PATH * 2];
     if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
         return 0;
@@ -269,8 +341,15 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
     if (size) *size = (uint32_t)bytes_read;
     return ok ? 1 : 0;
 #else
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    FILE *f = NULL;
+    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_READ, &f);
+    sr_cd_root_close(&root);
+    if (st != SR_CD_OK || !f) return 0;
     uint32_t n = 0;
     int ok = 1;
     if (data && cap) {
@@ -287,9 +366,12 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
         ok = sz >= 0;
         if (ok) n = (uint32_t)sz;
     }
-    fclose(f);
+    if (fclose(f) != 0) ok = 0;
     if (size) *size = n;
     return ok;
+#else
+    return 0;
+#endif
 #endif
 }
 
@@ -542,9 +624,21 @@ static int dir_exists(const char *dir) {
     if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
         return 0;
     if (!sr_vfs_dir_is_contained(dir, canonical_root)) return 0;
-#endif
     struct stat st;
     return stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
+#else
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char rel[SR_CD_REL_MAX];
+    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    sr_cd_root root;
+    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    sr_cd_status st = sr_cd_dir_is_contained(&root, rel);
+    sr_cd_root_close(&root);
+    return st == SR_CD_OK;
+#else
+    return 0;
+#endif
+#endif
 }
 
 /* Read a host file into a guest PspUtilitySavedataFileData block {buf, bufSize, size, unk}.
@@ -628,84 +722,47 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
     return 0;
 }
 
+/* DELETE family: remove one save directory and everything in it.
+ *
+ * Both destructive savedata paths now speak the host-neutral contained-delete
+ * contract (vfs_contained.h) instead of a host primitive. No absolute pathname
+ * is re-resolved here, and no host that lacks a containment backend gets an
+ * unsafe by-name fallback -- it gets SR_CD_UNSUPPORTED_HOST and deletes
+ * nothing. See vfs_contained.h for the per-backend anchoring proofs. */
 static uint32_t do_delete(const char *game, const char *save) {
-    char dir[PATH_MAX], path[PATH_MAX];
-    save_dir(dir, sizeof(dir), game, save);
-#ifdef _WIN32
-    /* F114-1: verify AND delete through handles. The old flow verified a
-     * handle, then unlinked BY NAME -- a swap between those steps redirected
-     * the unlink (verify->swap->unlink TOCTOU). Here every entry is disposed
-     * through its own verified handle and the directory itself is removed
-     * through a final verified handle; no by-name deletion exists anymore. */
-    wchar_t canonical_root[MAX_PATH * 2];
-    if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
-        return ERR_DELETE_NO_DATA;
-    if (!sr_vfs_dir_is_contained(dir, canonical_root)) return ERR_DELETE_NO_DATA;
-#endif
-    DIR *d = opendir(dir);
-    if (!d) return ERR_DELETE_NO_DATA;
-    struct dirent *de;
-    int ok = 1;
-    while ((de = readdir(d)) != NULL) {
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-        if (!path_join(path, sizeof(path), dir, de->d_name)) { ok = 0; continue; }
-#ifdef _WIN32
-        int was_dir = 0;
-        /* Disposes the entry through the handle whose final path was just
-         * verified. A planted junction is reported as was_dir and fails the
-         * whole delete exactly like the old S_ISDIR branch did. */
-        if (!sr_vfs_delete_contained_leaf(path, canonical_root, &was_dir) || was_dir) ok = 0;
-#else
-        struct stat st;
-        if (stat(path, &st) != 0 || S_ISDIR(st.st_mode) || sd_unlink(path) != 0) ok = 0;
-#endif
+    char rel[SR_CD_REL_MAX];
+    if (!save_rel(rel, sizeof(rel), game, save)) return ERR_DELETE_NO_DATA;
+    sr_cd_root root;
+    sr_cd_status st = sr_cd_root_open(ms_root(), &root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_delete_dir_shallow(&root, rel);
+        sr_cd_root_close(&root);
     }
-    closedir(d);
-#ifdef _WIN32
-    {
-        /* Remove the emptied save directory itself through a verified handle.
-         * FILE_FLAG_OPEN_REPARSE_POINT keeps the disposition on the object the
-         * root actually contains even if the leaf name was swapped to a link
-         * after enumeration. */
-        HANDLE hd;
-        if (!sr_vfs_open_contained_utf8(dir, DELETE | FILE_READ_ATTRIBUTES,
-                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                                        OPEN_EXISTING, canonical_root, &hd)) {
-            return ERR_DELETE_NO_DATA;
-        }
-        int removed = sr_vfs_dispose_by_handle(hd);
-        CloseHandle(hd);
-        if (!removed) ok = 0;
-    }
-#else
-    if (sd_rmdir(dir) != 0) ok = 0;
-#endif
-    return ok ? 0 : ERR_DELETE_NO_DATA;
+    if (sdlog())
+        fprintf(stderr, "savedata: DELETE %s [%s] -> %s\n", rel, sr_cd_backend_name(),
+                sr_cd_status_name(st));
+    return st == SR_CD_OK ? 0 : ERR_DELETE_NO_DATA;
 }
 
 /* ERASE/ERASESECURE: remove just the named data file inside the save dir (PPSSPP DeleteData). */
 static uint32_t do_erase(uint32_t param, const char *game, const char *save) {
-    char dir[PATH_MAX], fileName[16], path[PATH_MAX];
-    save_dir(dir, sizeof(dir), game, save);
+    char rel[SR_CD_REL_MAX], fileName[16];
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
     if (!fileName[0] || !path_sanitize(fileName)) return ERR_RW_NO_DATA;
-    if (!path_join(path, sizeof(path), dir, fileName)) return ERR_RW_NO_DATA;
-#ifdef _WIN32
-    /* F114-1: same handle-bound disposition as do_delete -- the verified handle
-     * is the object erased, so a verify->swap->unlink race has no by-name step
-     * left to win. A directory/link entry fails closed. */
-    wchar_t canonical_root[MAX_PATH * 2];
-    if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
-        return ERR_RW_NO_DATA;
-    int was_dir = 0;
-    if (!sr_vfs_delete_contained_leaf(path, canonical_root, &was_dir) || was_dir)
-        return ERR_RW_NO_DATA;
-    if (sdlog()) fprintf(stderr, "savedata: ERASE %s\n", path);
-    return 0;
-#else
-    if (sdlog()) fprintf(stderr, "savedata: ERASE %s\n", path);
-    return sd_unlink(path) == 0 ? 0 : ERR_RW_NO_DATA;
-#endif
+    if (!save_rel(rel, sizeof(rel), game, save)) return ERR_RW_NO_DATA;
+    sr_cd_root root;
+    sr_cd_status st = sr_cd_root_open(ms_root(), &root);
+    if (st == SR_CD_OK) {
+        /* A directory entry fails closed with SR_CD_IS_DIRECTORY: ERASE names a
+         * file, and the backend proves that through the deletion primitive
+         * itself rather than through a by-name type probe. */
+        st = sr_cd_delete_leaf(&root, rel, fileName);
+        sr_cd_root_close(&root);
+    }
+    if (sdlog())
+        fprintf(stderr, "savedata: ERASE %s/%s [%s] -> %s\n", rel, fileName,
+                sr_cd_backend_name(), sr_cd_status_name(st));
+    return st == SR_CD_OK ? 0 : ERR_RW_NO_DATA;
 }
 
 /* LIST (11): fill idList with this game's save directories. */
@@ -885,20 +942,46 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     return sizes_no_data ? ERR_SIZES_NO_DATA : 0;
 }
 
+static int validate_getsize_entries(uint32_t count, uint32_t entries, uint32_t *span) {
+    if (!span || count > SAVEDATA_MAX_FILE_ENTRIES ||
+        !sr_size_mul_ok(count, SAVEDATA_SIZE_ENTRY_BYTES, span)) {
+        return 0;
+    }
+    if (count > 0 && (!entries || !sr_guest_span_readable(entries, *span))) return 0;
+    return 1;
+}
+
+static int getsize_add_entry(uint64_t *needed, uint32_t entries, uint32_t index) {
+    uint32_t offset, entry;
+    if (!needed || !sr_size_mul_ok(index, SAVEDATA_SIZE_ENTRY_BYTES, &offset) ||
+        !sr_size_add_ok(entries, offset, &entry)) return 0;
+    uint64_t size = MEM_R32(entry) | ((uint64_t)MEM_R32(entry + 4) << 32);
+    if (size > UINT64_MAX - (uint64_t)(CLUSTER - 1u)) return 0;
+    uint64_t rounded = ((size + (uint64_t)(CLUSTER - 1u)) / CLUSTER) * CLUSTER;
+    if (rounded > UINT64_MAX - *needed) return 0;
+    *needed += rounded;
+    return 1;
+}
+
 /* GETSIZE (22): free/needed space for the sizeInfo block. */
 static uint32_t do_getsize(uint32_t param) {
     uint32_t si = MEM_R32(param + SDP_sizeInfo);
     if (!si) return 0;
+    if (!sr_guest_span_readable(si, SAVEDATA_SIZE_INFO_BYTES) ||
+        !sr_guest_span_writable(si, SAVEDATA_SIZE_INFO_BYTES)) return 0x80110381u;
     uint32_t nSec = MEM_R32(si + 0), nNorm = MEM_R32(si + 4);
     uint32_t pSec = MEM_R32(si + 8), pNorm = MEM_R32(si + 12);
+    uint32_t secSpan = 0, normSpan = 0;
+    if (!validate_getsize_entries(nSec, pSec, &secSpan) ||
+        !validate_getsize_entries(nNorm, pNorm, &normSpan)) return 0x80110381u;
     uint64_t needed = CLUSTER + CLUSTER;                    /* dir record + SFO */
-    for (uint32_t i = 0; i < nSec && pSec; i++) {
-        uint64_t sz = MEM_R32(pSec + i * 24u) | ((uint64_t)MEM_R32(pSec + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
+    (void)secSpan;
+    (void)normSpan;
+    for (uint32_t i = 0; i < nSec; i++) {
+        if (!getsize_add_entry(&needed, pSec, i)) return 0x80110381u;
     }
-    for (uint32_t i = 0; i < nNorm && pNorm; i++) {
-        uint64_t sz = MEM_R32(pNorm + i * 24u) | ((uint64_t)MEM_R32(pNorm + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
+    for (uint32_t i = 0; i < nNorm; i++) {
+        if (!getsize_add_entry(&needed, pNorm, i)) return 0x80110381u;
     }
     MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
     MEM_W32(si + 20, FREE_CLUSTERS);                        /* freeSectors */
@@ -922,7 +1005,7 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
     uint32_t list = MEM_R32(param + SDP_saveNameList);
     if ((isList || wild) && list) {
         char ent[24], first[24] = "", dir[PATH_MAX];
-        for (int i = 0; i < 99; i++) {
+        for (uint32_t i = 0; i < SAVEDATA_MAX_FILE_ENTRIES; i++) {
             rd_cstr(list + (uint32_t)i * 20, ent, 21);
             if (!ent[0]) break;
             if (!strcmp(ent, "<>")) continue;

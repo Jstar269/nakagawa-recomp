@@ -286,9 +286,10 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. `SR_CALL_GUEST_STACK` (`src/rt/hle.c`, `src/rt/mpeg.c`) — one shared scratch stack
-   for every nested guest call (see C-4).
-2. `disc.id` duplication (C-3) and the remaining diagnostic-only groups above.
+1. `disc.id` duplication (C-3) and the remaining diagnostic-only groups above.
+
+The former blocker #1, one shared scratch stack for every nested guest call, is
+retired: see C-4.
 
 `SR_DATA_EXPECTED_COUNT` (former blocker #1) is now retired: see C-2.
 
@@ -318,29 +319,67 @@ title configuration; see `tools/test_hle_title_isolation.py` and
 manifest independently validates `disc.id`. Two sources of truth for the same fact.
 `PROFILE_OWNED_CONFIGURATION` — deferred (doctor must keep working with no manifest).
 
-### C-4 — One shared scratch stack for every nested guest call
+### C-4 — One shared scratch stack for every nested guest call — RETIRED
 
 `SR_CALL_GUEST_STACK` (`src/rt/hle.c`) and the equivalent literal in `src/rt/mpeg.c`
-give every nested guest call the same fixed guest stack address. Not title-specific by
-address, but it assumes a guest map in which that address is free, and it makes nested
-callbacks unsafe for any title that nests them. The PSP's real nested-call contract is
-`NOT_ESTABLISHED`; a hardware probe is needed before a design can be chosen.
-`GENERIC_PSP_SEMANTIC` (open question) — deferred deliberately.
+gave every nested guest call the same fixed guest stack address, `0x09df8000`. Three
+consequences were measured executably before the fix
+(`src/rt/hle_thread_selftest.c`): an inner call destroyed the outer body's guest
+locals; two *different* threads each only one level deep collided, because the
+marshalling is scheduler-preemptible at any `SR_YIELD`; and `0x09df8000` was inside
+the descending arena `sceKernelCreateThread` carves guest thread stacks from — the
+fifth default-sized create landed a thread stack on top of it.
 
-### C-5 — `f_00046d14` game-loop entry stub
+`src/rt/nested_frames.c` replaces the single address with per-owner, per-depth frames
+out of a statically reserved 1 MiB region, `[0x09f00000, 0x0a000000)`. That region was
+already an unclaimed hole between the thread-stack arena and the runtime heap, so no
+existing allocation moved; `SR_STACK_ARENA_CEIL` in `src/rt/sched.c` is now *derived*
+from `SR_NESTED_FRAME_BASE` so the exclusion is structural rather than two literals
+that agree by coincidence. Frames carry address-keyed guard bands, a deterministic
+maximum nesting depth, fail-closed refusal on exhaustion, and reclaim on both nonlocal
+exits (`sched_unwind_current` and the `g_hle_jmp` HLE boundary).
 
-`tools/codegen.py` replaces the translated body at `0x00046d14` with an
-immediate `s->pc = s->r[31]` return plus a scheduler-gated trace. The stub is
-`--profile=hst` only (`hst_profile` branch), so a generic or `pl_*` build
-emits the normal translation path (or a fail-closed `sr_unimplemented` if
-untranslatable). This satisfies the north-star (a newly supplied executable
-never inherits the stub), but the stub is still semantic debt: no public
-production-path regression proves the translated body makes forward progress.
-`temporary_compatibility_patch` — title-scoped with enforced non-inheritance
-(`tools/test_codegen_profile_isolation.py` proves `--profile=none` emits
-identical text at `0x00046d14` and its control copy), evidence
-`SOURCE_SHAPE`, retirement “restore translated execution when a
-production-path regression proves progress; keep the trace as diagnostic only”.
+What did **not** change: the register-seeding convention of a nested call (zeroed
+`CpuState`, `$gp` inherited from the caller, `$ra = 0`, `0xe4` VFPU prefix seeds,
+byte-exact caller restore), PSP callback dispatch on the interrupted thread's live
+stack (`sr_callback_dispatch_one`), and the VBLANK interrupt stack at `0x09df0000`.
+
+The PSP's real nested-call contract remains `NOT_ESTABLISHED` — what stack hardware
+hands a GE or MPEG callback still needs a probe. This change makes the runtime's own
+model coherent and non-destructive; it does not claim the model is the console's.
+`GENERIC_PSP_SEMANTIC` (open question on the hardware contract; the runtime-internal
+collision is fixed).
+
+### C-6 — The VBLANK interrupt stack is inside the thread-stack arena
+
+`src/rt/sched.c`'s `deliver_vblank()` seeds `$sp = 0x09df0000` for the interrupt
+frame. That address is inside `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`, so the
+thread-stack allocator can and does hand it out — the same defect class C-4 just
+retired, on a different address. It is recorded as a separate boundary and left
+unchanged here on purpose: the interrupt frame is a nested call on the *interrupted*
+register file with different semantics from the GE/MPEG marshalling, and unifying the
+two would redefine behaviour this change deliberately preserves.
+`test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the present state
+so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — open.
+
+### C-5 — `f_00046d14` game-loop entry stub — retired 2026-08-29
+
+Retired. `tools/codegen.py` previously replaced the translated body at
+`0x00046d14` with an immediate `s->pc = s->r[31]` return plus a
+scheduler-gated trace. Private executable analysis has proven `0x00046d14`
+is an interior basic-block loop header `L_00046d14` inside `f_000468c8_real`
+— not a callable entry, resume/continuation, `jal` or tail target, and not
+present in the current codegen entry catalog — and is reached via
+fall-through and loop back-edges. A clean A/B build removing only the
+codegen branch is byte-identical (`hst_recomp_1.c`
+`B82E0418C5005C34DBBD221F4EE391B3F7CAEF7136F62B3D549422F82D9BD58B`,
+`hst_recomp_funcs.h`
+`49B9153E8AF06D5F0B2B205AA88647434BD6552654C8DEC43B3D59F50AE1161E`,
+`hst.exe` `2AF5F4AB42D7668144B9EEE2C964663CB22836FFD35E967D2ACEC991BEE9F70B`).
+`0x00046d14` now takes the ordinary translated path under every profile; no
+title-address-specific override remains at this address.
+`tools/test_codegen_profile_isolation.py` guards against reintroduction by
+expecting no HST divergence at this address.
 
 ## Reference
 

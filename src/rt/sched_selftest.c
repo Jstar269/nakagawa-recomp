@@ -90,6 +90,7 @@ static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
 void sr_display_advance_vcount(uint32_t elapsed_periods) { (void)elapsed_periods; }
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
+void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
 uint64_t sr_perf_now_ns(void) { return 0; }
 void sr_perf_guest_begin(void) {}
@@ -1575,6 +1576,7 @@ static void test_interrupt_frame_is_restored(void) {
     g_cpu_store.r[16] = 0x33334444u;
     g_cpu_store.r[28] = 0x55556666u;
     g_cpu_store.r[29] = 0x77778888u;
+    s_gp = 0x00abc000u;   /* the module-GP latch, deliberately != the interrupted $gp */
     g_cpu_store.r[31] = 0x9999aaaau;
     g_cpu_store.vfpuCtrl[0] = 0x12345678u;
     CpuState interrupted;
@@ -1593,6 +1595,23 @@ static void test_interrupt_frame_is_restored(void) {
            "handler register mutations do not leak into the interrupted thread");
     expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
            "a source raised by the handler remains pending for its own service path");
+
+    /* SEPARATE BOUNDARY, MEASURED NOT FIXED: the VBLANK interrupt frame is the one
+     * nested-call shape in this runtime that does NOT inherit $gp from the context it
+     * interrupted.  deliver_vblank() restores the interrupted register file and then
+     * overwrites $28 from the file-scope s_gp latch, which sr_yield() updates from
+     * whichever guest context most recently yielded with a non-zero $gp -- any thread,
+     * including a nested GE/MPEG callee.  Every other nested call inherits $gp from its
+     * own caller: sr_callback_dispatch_one() says so explicitly, and the GE/MPEG
+     * marshalling copies save.r[28].  With a single loaded module the two agree, so this
+     * is latent rather than observed; it stops agreeing the moment a second module with
+     * its own GP exists.  Recorded so the provenance is stated instead of assumed, and
+     * so a deliberate change to it fails here rather than drifting. */
+    expect(g_test_handler_seen.r[28] == s_gp,
+           "MEASURED: the VBLANK handler's $gp is the s_gp latch");
+    expect(g_test_handler_seen.r[28] != interrupted.r[28],
+           "MEASURED, NOT FIXED: the VBLANK handler does NOT inherit the interrupted "
+           "thread's own $gp, unlike every other nested call in this runtime");
 }
 
 /* #70 slice A -- paced mode owns its clock, and the owner is the host.

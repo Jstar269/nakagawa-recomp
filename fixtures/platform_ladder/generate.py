@@ -31,6 +31,9 @@ retail title and from fixtures/production_smoke:
     ladder-fpu    L4  scalar-FPU guest consuming the #120 production contract.
     ladder-fs     L5  VFS/file guest reading a source-owned payload through
                       SR_FSDIR, with an open-failure negative control.
+    ladder-title2 T2  production-path callback/thread/event/file/interpreter
+                      fixture with a nine-word result block and a separate
+                      unsupported-NID fatal negative control.
 
 Every workload differs from every other tracked workload in base address,
 entry placement, segment/BSS layout, import identity, or data placement.  None
@@ -83,6 +86,60 @@ L5_PAYLOAD_NAME = "platform_ladder_l5.txt"
 L5_PAYLOAD_BYTES = b"Nakagawa platform ladder L5 source-owned payload\n"
 L5_FAIL_SENTINEL = 0xF51D0001
 L5_BUFFER_SIZE = 0x80
+
+NID_CREATE_CALLBACK = 0xE81CAF8F
+NID_NOTIFY_CALLBACK = 0xC11BA8C4
+NID_SET_EVENT_FLAG = 0x1FB15A32
+NID_WAIT_EVENT_FLAG = 0x402FCF22
+NID_CHECK_CALLBACK = 0x349D6D6C
+LIB_KERNEL_CALLBACK = "ThreadManForUser"
+
+TITLE2_BASE = 0x08A40000
+TITLE2_ENTRY_OFF = 0x20
+TITLE2_GAP_OFF = 0x220
+TITLE2_RESULT_OFF = 0x340
+TITLE2_EVENT_UID_OFF = 0x370
+TITLE2_CALLBACK_UID_OFF = 0x374
+TITLE2_WORKER_UID_OFF = 0x378
+TITLE2_PATH_OFF = 0x500
+TITLE2_EVENT_NAME_OFF = 0x400
+TITLE2_CALLBACK_NAME_OFF = 0x420
+TITLE2_WORKER_NAME_OFF = 0x430
+TITLE2_PAYLOAD_OFF = 0x080
+TITLE2_PAYLOAD_LEN = 69
+TITLE2_PAYLOAD_CHECKSUM = 0x0000188B
+TITLE2_GAP_WORDS = (
+    0x24020007,
+    0x3C0808A4,
+    0x25083558,
+    0x8D090000,
+    0x25290007,
+    0xAD090000,
+    0x01224026,
+    0x03E00008,
+    0x24420000,
+)
+TITLE2_MEM_CELL = 0x08A43558
+TITLE2_MEM_CELL_INIT = 7
+TITLE2_MEM_CELL_EXPECTED = 14
+TITLE2_CALLBACK_OFF = 0x260
+TITLE2_CHECKSUM_OFF = 0x300
+TITLE2_WORKER_OFF = 0x3A0
+TITLE2_DATA_SIZE = 0x55C
+TITLE2_MEM_CELL_OFF = 0x558
+TITLE2_DATA_MARKER = 0x13579BDF
+TITLE2_CALLBACK_MARKER = 0xCBACCA11
+TITLE2_CALLBACK_ARG = 0x2468ACE0
+TITLE2_WORKER_MARKER = 0x00C0FFEE
+TITLE2_IDENTITY_MARKER = 0x54495432
+TITLE2_STATUS_FAILURE = 0xDEAD0001
+TITLE2_UNSUPPORTED_NID = 0xDEAD2F02
+TITLE2_PATH_BYTES = b"ms0:/platform_ladder_title2.txt\0"
+TITLE2_CALLBACK_NAME_BYTES = b"title2_callback\0"
+TITLE2_WORKER_NAME_BYTES = b"title2_worker\0"
+TITLE2_NEGATIVE_BASE = 0x08A80000
+TITLE2_NEGATIVE_ENTRY_OFF = 0x20
+TITLE2_NEGATIVE_DATA_SIZE = 0x340
 
 
 def _r(rs: int, rt: int, rd: int, shift: int, function: int) -> int:
@@ -845,7 +902,376 @@ def build_l5(plan: Plan) -> Asm:
     return a
 
 
-# --- ladder-gap (dedicated AOT-gap chain, floor-expressible) ----------------
+def title2_payload_bytes() -> bytes:
+    return (
+        b"Nakagawa title2 source-owned payload\n"
+        b"config=0x13579bdf\n"
+        b"route=generic\n"
+    )
+
+
+def title2_payload_words() -> dict[int, int]:
+    payload = title2_payload_bytes()
+    blob = bytearray(len(payload))
+    blob[:] = payload
+    return {
+        TITLE2_PAYLOAD_OFF + index: struct.unpack_from("<I", blob, index)[0]
+        for index in range(0, len(blob) - 1, 4)
+    }
+
+
+def title2_payload_trailing() -> dict[int, bytes]:
+    payload = title2_payload_bytes()
+    return {TITLE2_PAYLOAD_OFF + (len(payload) - 1): payload[len(payload) - 1:]}
+
+
+def title2_path_words() -> dict[int, int]:
+    blob = bytearray(len(TITLE2_PATH_BYTES))
+    blob[:] = TITLE2_PATH_BYTES
+    return {
+        TITLE2_PATH_OFF + index: struct.unpack_from("<I", blob, index)[0]
+        for index in range(0, len(blob) - 1, 4)
+    }
+
+
+def title2_path_strings() -> dict[int, bytes]:
+    return {TITLE2_PATH_OFF + (len(TITLE2_PATH_BYTES) - 1): TITLE2_PATH_BYTES[len(TITLE2_PATH_BYTES) - 1:]}
+
+
+def title2_checksum() -> int:
+    return sum(title2_payload_bytes()) & 0xFFFFFFFF
+
+
+def title2_result_expectations(plan: Plan) -> tuple[tuple[int, int], ...]:
+    base = plan.base + plan.data_seg_vaddr + TITLE2_RESULT_OFF
+    values = (
+        TITLE2_DATA_MARKER,
+        TITLE2_CALLBACK_MARKER,
+        0x00000001,
+        TITLE2_WORKER_MARKER,
+        TITLE2_MEM_CELL_EXPECTED,
+        TITLE2_PAYLOAD_LEN,
+        TITLE2_PAYLOAD_CHECKSUM,
+        TITLE2_IDENTITY_MARKER,
+        0x00000000,
+    )
+    return tuple((base + 4 * index, value) for index, value in enumerate(values))
+
+
+def title2_expected(plan: Plan) -> int:
+    # The legacy single-result API remains useful to generic manifest tests;
+    # the production run pins and checks all nine independent words above.
+    return 0
+
+
+def build_title2(plan: Plan) -> Asm:
+    a = Asm()
+
+    def ref(reg: int, off: int) -> None:
+        plan.addr_ref(a, reg, off)
+
+    s_create_ef = plan.stub_address(0)
+    s_create_cb = plan.stub_address(1)
+    s_create_th = plan.stub_address(2)
+    s_start_th = plan.stub_address(3)
+    s_notify_cb = plan.stub_address(4)
+    s_set_ef = plan.stub_address(5)
+    s_wait_ef = plan.stub_address(6)
+    s_check_cb = plan.stub_address(7)
+    s_exit_th = plan.stub_address(8)
+    s_io_open = plan.stub_address(9)
+    s_io_read = plan.stub_address(10)
+    s_io_close = plan.stub_address(11)
+
+    callback_entry = plan.base + TITLE2_CALLBACK_OFF
+    checksum_entry = plan.base + TITLE2_CHECKSUM_OFF
+    worker_entry = plan.base + TITLE2_WORKER_OFF
+    path_abs = plan.base + plan.data_seg_vaddr + TITLE2_PATH_OFF
+    buffer_abs = plan.base + plan.data_seg_vaddr + TITLE2_PAYLOAD_OFF
+    result_abs = plan.base + plan.data_seg_vaddr + TITLE2_RESULT_OFF
+    mem_cell_abs = TITLE2_MEM_CELL
+
+    # These calls are analyzer seeds for functions reached through kernel
+    # object state rather than a direct native call from the entry function.
+    a.call_literal(callback_entry)
+    a.call_literal(checksum_entry)
+    a.call_literal(worker_entry)
+    a.call_literal(plan.base + TITLE2_GAP_OFF)
+
+    a.pad_to(TITLE2_ENTRY_OFF)
+    a.label("entry")
+    a.i(0x09, 29, 29, -64)
+    a.i(0x2B, 29, 31, 60)
+    a.i(0x2B, 29, 0, 16)                 # no timeout for WaitEventFlag
+
+    ref(4, TITLE2_EVENT_NAME_OFF)
+    a.i(0x09, 0, 5, 0)
+    a.i(0x09, 0, 6, 0)
+    a.i(0x09, 0, 7, 0)
+    a.call_literal(s_create_ef)
+    a.rr(2, 0, 16, 0, 0x21)              # s0 = real event UID
+    a.bltz(2, "failure")
+    a.nop()
+    ref(8, TITLE2_EVENT_UID_OFF)
+    a.i(0x2B, 8, 16, 0)
+
+    ref(4, TITLE2_CALLBACK_NAME_OFF)
+    a.load_addr_literal(5, callback_entry)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_create_cb)
+    a.rr(2, 0, 17, 0, 0x21)
+    a.bltz(2, "failure")
+    a.nop()
+    ref(8, TITLE2_CALLBACK_UID_OFF)
+    a.i(0x2B, 8, 17, 0)
+
+    ref(4, TITLE2_WORKER_NAME_OFF)
+    a.load_addr_literal(5, worker_entry)
+    a.i(0x09, 0, 6, 10)                  # higher priority than the entry thread
+    a.li(7, 0x2000)
+    a.call_literal(s_create_th)
+    a.rr(2, 0, 18, 0, 0x21)              # s2 = real worker UID
+    a.bltz(2, "failure")
+    a.nop()
+
+    a.rr(18, 0, 4, 0, 0x21)
+    a.i(0x09, 0, 5, 0)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_start_th)
+    a.bne(2, 0, "failure")
+    a.nop()
+
+    # Synchronous source-owned file I/O.  The buffer starts zeroed in the
+    # guest image; only SR_FSDIR can make the checksum pass.
+    ref(4, TITLE2_PATH_OFF)
+    a.i(0x09, 0, 5, 1)
+    a.i(0x09, 0, 6, 0)
+    a.call_literal(s_io_open)
+    a.rr(2, 0, 19, 0, 0x21)              # s3 = fd
+    a.bltz(2, "failure")
+    a.nop()
+
+    a.rr(19, 0, 4, 0, 0x21)
+    a.load_addr_literal(5, buffer_abs)
+    a.i(0x09, 0, 6, TITLE2_PAYLOAD_LEN)
+    a.call_literal(s_io_read)
+    a.rr(2, 0, 20, 0, 0x21)              # s4 = read length
+    a.rr(19, 0, 4, 0, 0x21)
+    a.call_literal(s_io_close)
+    a.li(9, TITLE2_PAYLOAD_LEN)
+    a.bne(20, 9, "failure")
+    a.nop()
+
+    # The omitted function is entered through the ordinary production
+    # dispatch_call/interpreter boundary.  Its oracle leaves v0=7 and writes
+    # the 7 -> 14 transition into the fixed guest cell.
+    a.li(4, 0x09)
+    a.i(0x09, 0, 5, 0)
+    a.call_literal(plan.base + TITLE2_GAP_OFF)
+    # Ordinary waiting must not pump the callback.  The worker has already
+    # set bit 1, or will wake this call, and only the following CheckCallback
+    # dispatches the pending callback on the primary thread.
+    a.rr(16, 0, 4, 0, 0x21)
+    a.i(0x09, 0, 5, 1)
+    a.i(0x09, 0, 6, 0)
+    a.i(0x09, 0, 7, 0)
+    a.call_literal(s_wait_ef)
+    a.bne(2, 0, "failure")
+    a.nop()
+
+    a.i(0x09, 0, 4, 0)
+    a.call_literal(s_check_cb)
+    a.li(9, 1)
+    a.bne(2, 9, "failure")
+    a.nop()
+
+    ref(8, TITLE2_RESULT_OFF)
+    a.i(0x23, 8, 9, 8)                   # callback count
+    a.li(10, 1)
+    a.bne(9, 10, "failure")
+    a.nop()
+    a.i(0x23, 8, 9, 32)                  # callback's argument/status guard
+    a.bne(9, 0, "failure")
+    a.nop()
+
+    # The checksum helper writes marker, length, and checksum only after
+    # consuming the bytes read above.
+    a.load_addr_literal(4, buffer_abs)
+    a.i(0x09, 0, 5, TITLE2_PAYLOAD_LEN)
+    a.call_literal(checksum_entry)
+    a.load_addr_literal(8, result_abs)
+    a.i(0x23, 8, 9, 32)
+    a.bne(9, 0, "failure")
+    a.nop()
+
+    a.load_addr_literal(8, mem_cell_abs)
+    a.i(0x23, 8, 9, 0)
+    a.load_addr_literal(10, result_abs)
+    a.i(0x2B, 10, 9, 16)                 # word4 = interpreted memory result
+    a.li(9, TITLE2_IDENTITY_MARKER)
+    a.i(0x2B, 10, 9, 28)                 # word7 = fixture identity
+    a.beq(0, 0, "epilogue")
+    a.nop()
+
+    a.label("failure")
+    a.load_addr_literal(8, result_abs)
+    a.li(9, TITLE2_STATUS_FAILURE)
+    a.i(0x2B, 8, 9, 32)
+    a.i(0x09, 0, 2, 1)
+
+    a.label("epilogue")
+    a.i(0x23, 29, 31, 60)
+    a.i(0x09, 29, 29, 64)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+
+    if a.here() * 4 > TITLE2_GAP_OFF:
+        raise RuntimeError(
+            f"title2 primary flow crossed locked interpreter gap at 0x{a.here() * 4:x}"
+        )
+    a.pad_to(TITLE2_GAP_OFF)
+    for word in TITLE2_GAP_WORDS:
+        a.raw(word)
+
+    a.pad_to(TITLE2_CALLBACK_OFF)
+    a.label("callback")
+    a.i(0x09, 29, 29, -32)
+    a.i(0x2B, 29, 31, 28)
+    a.li(8, TITLE2_CALLBACK_ARG)
+    a.bne(5, 8, "callback_bad")
+    a.nop()
+    ref(8, TITLE2_RESULT_OFF)
+    a.li(9, TITLE2_CALLBACK_MARKER)
+    a.i(0x2B, 8, 9, 4)
+    a.i(0x23, 8, 10, 8)
+    a.i(0x09, 10, 10, 1)
+    a.i(0x2B, 8, 10, 8)
+    a.i(0x09, 0, 2, 0)
+    a.beq(0, 0, "callback_done")
+    a.nop()
+    a.label("callback_bad")
+    ref(8, TITLE2_RESULT_OFF)
+    a.li(9, TITLE2_STATUS_FAILURE)
+    a.i(0x2B, 8, 9, 32)
+    a.i(0x09, 0, 2, 1)
+    a.label("callback_done")
+    a.i(0x23, 29, 31, 28)
+    a.i(0x09, 29, 29, 32)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+
+    a.pad_to(TITLE2_CHECKSUM_OFF)
+    a.label("checksum")
+    a.i(0x09, 29, 29, -32)
+    a.i(0x2B, 29, 31, 28)
+    a.rr(4, 0, 16, 0, 0x21)              # s0 = buffer
+    a.rr(5, 0, 17, 0, 0x21)              # s1 = remaining
+    a.rr(5, 0, 18, 0, 0x21)              # s2 = original length
+    a.i(0x09, 0, 9, 0)                    # t1 = checksum
+    a.label("checksum_loop")
+    a.beq(17, 0, "checksum_done")
+    a.nop()
+    a.raw((0x24 << 26) | (16 << 21) | (10 << 16))  # lbu t2, 0(s0)
+    a.rr(9, 10, 9, 0, 0x21)
+    a.i(0x09, 16, 16, 1)
+    a.i(0x09, 17, 17, -1)
+    a.beq(0, 0, "checksum_loop")
+    a.nop()
+    a.label("checksum_done")
+    ref(8, TITLE2_RESULT_OFF)
+    a.i(0x2B, 8, 18, 20)                 # word5 = payload length
+    a.i(0x2B, 8, 9, 24)                  # word6 = checksum
+    a.li(10, TITLE2_PAYLOAD_CHECKSUM)
+    a.bne(9, 10, "checksum_bad")
+    a.nop()
+    a.li(10, TITLE2_PAYLOAD_LEN)
+    a.bne(18, 10, "checksum_bad")
+    a.nop()
+    a.li(10, TITLE2_DATA_MARKER)
+    a.i(0x2B, 8, 10, 0)                  # word0 = expected-data marker
+    a.i(0x09, 0, 2, 0)
+    a.beq(0, 0, "checksum_return")
+    a.nop()
+    a.label("checksum_bad")
+    a.li(10, TITLE2_STATUS_FAILURE)
+    a.i(0x2B, 8, 10, 32)
+    a.i(0x09, 0, 2, 1)
+    a.label("checksum_return")
+    a.i(0x23, 29, 31, 28)
+    a.i(0x09, 29, 29, 32)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+
+    a.pad_to(TITLE2_WORKER_OFF)
+    a.label("worker")
+    a.i(0x09, 29, 29, -32)
+    a.i(0x2B, 29, 31, 28)
+    ref(8, TITLE2_RESULT_OFF)
+    a.li(9, TITLE2_WORKER_MARKER)
+    a.i(0x2B, 8, 9, 12)                  # word3 = worker marker
+    ref(8, TITLE2_CALLBACK_UID_OFF)
+    a.i(0x23, 8, 4, 0)
+    a.li(5, TITLE2_CALLBACK_ARG)
+    a.call_literal(s_notify_cb)
+    a.bne(2, 0, "worker_fail")
+    a.nop()
+    ref(8, TITLE2_EVENT_UID_OFF)
+    a.i(0x23, 8, 4, 0)
+    a.i(0x09, 0, 5, 1)
+    a.call_literal(s_set_ef)
+    a.bne(2, 0, "worker_fail")
+    a.nop()
+    a.i(0x09, 0, 4, 0)
+    a.call_literal(s_exit_th)
+    a.beq(0, 0, "worker_return")
+    a.nop()
+    a.label("worker_fail")
+    ref(8, TITLE2_RESULT_OFF)
+    a.li(9, TITLE2_STATUS_FAILURE)
+    a.i(0x2B, 8, 9, 32)
+    a.i(0x09, 0, 4, 1)
+    a.call_literal(s_exit_th)
+    a.label("worker_return")
+    a.i(0x23, 29, 31, 28)
+    a.i(0x09, 29, 29, 32)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+
+    return a
+
+
+def build_title2_negative(plan: Plan) -> Asm:
+    a = Asm()
+    a.pad_to(TITLE2_NEGATIVE_ENTRY_OFF)
+    a.label("entry")
+    a.call_literal(plan.stub_address(0))
+    return a
+
+
+# --- plans ------------------------------------------------------------------
+
+PLANS: dict[str, Plan] = {}
+
+
+def _register_plans() -> None:
+    PLANS["ladder-zero"] = Plan(
+        name="ladder-zero",
+        game_name="pl_zero",
+        base=L0_BASE,
+        entry_offset=L0_ENTRY_OFF,
+        build_asm=build_l0,
+        imports=[],
+        data_words={},
+        data_strings={},
+        data_file_size=L0_RESULT_OFF + 4,
+        data_mem_size=L0_RESULT_OFF + 4,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L0_RESULT_OFF,
+        expected_value_fn=l0_expected,
+        psp_header=False,
+        data_seg_vaddr=0x4000,
+    )
 
 LG_BASE = 0x08A00000
 LG_ENTRY_OFF = 0x10
@@ -1212,6 +1638,73 @@ def _register_plans() -> None:
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L5_RESULT,
         expected_value_fn=l5_expected_ok,
         env={"SR_DISPATCH_FATAL": "1"},
+    )
+    PLANS["ladder-title2"] = Plan(
+        name="ladder-title2",
+        game_name="pl_title2",
+        base=TITLE2_BASE,
+        entry_offset=TITLE2_ENTRY_OFF,
+        build_asm=build_title2,
+        imports=[
+            (LIB_KERNEL_CALLBACK, [
+                NID_CREATE_EVENT_FLAG,
+                NID_CREATE_CALLBACK,
+                NID_CREATE_THREAD,
+                NID_START_THREAD,
+                NID_NOTIFY_CALLBACK,
+                NID_SET_EVENT_FLAG,
+                NID_WAIT_EVENT_FLAG,
+                NID_CHECK_CALLBACK,
+                NID_EXIT_THREAD,
+            ]),
+            (LIB_IOFILEMGR, [NID_IO_OPEN, NID_IO_READ, NID_IO_CLOSE]),
+        ],
+        data_words={
+            **title2_path_words(),
+            TITLE2_MEM_CELL_OFF: TITLE2_MEM_CELL_INIT,
+        },
+        data_strings={
+            **title2_path_strings(),
+            TITLE2_EVENT_NAME_OFF: b"title2_event\0",
+            TITLE2_CALLBACK_NAME_OFF: TITLE2_CALLBACK_NAME_BYTES,
+            TITLE2_WORKER_NAME_OFF: TITLE2_WORKER_NAME_BYTES,
+        },
+        data_file_size=TITLE2_DATA_SIZE,
+        data_mem_size=TITLE2_DATA_SIZE,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: p.base + p.data_seg_vaddr + TITLE2_RESULT_OFF,
+        expected_value_fn=title2_expected,
+        env={"SR_DISPATCH_FATAL": "1"},
+        label_contract={
+            "entry": TITLE2_ENTRY_OFF,
+            "callback": TITLE2_CALLBACK_OFF,
+            "checksum": TITLE2_CHECKSUM_OFF,
+            "worker": TITLE2_WORKER_OFF,
+        },
+        gap_omit_offset=TITLE2_GAP_OFF,
+        data_text_pointers=[],
+        data_seg_vaddr=0x3000,
+        text_pad_end=TITLE2_WORKER_OFF + 0x100,
+    )
+    PLANS["ladder-title2-negative"] = Plan(
+        name="ladder-title2-negative",
+        game_name="pl_title2_negative",
+        base=TITLE2_NEGATIVE_BASE,
+        entry_offset=TITLE2_NEGATIVE_ENTRY_OFF,
+        build_asm=build_title2_negative,
+        imports=[(LIB_THREADMAN, [TITLE2_UNSUPPORTED_NID])],
+        data_words={},
+        data_strings={},
+        data_file_size=TITLE2_NEGATIVE_DATA_SIZE,
+        data_mem_size=TITLE2_NEGATIVE_DATA_SIZE,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: p.base + p.data_seg_vaddr,
+        expected_value_fn=lambda p: 0,
+        env={"SR_DISPATCH_FATAL": "1"},
+        label_contract={"entry": TITLE2_NEGATIVE_ENTRY_OFF},
+        data_seg_vaddr=0x3000,
     )
 
 
@@ -1581,6 +2074,12 @@ def required_symbols(workload: str) -> tuple[int, ...]:
         symbols += [plan.base + LG_END_OFF]
     if plan.name == "ladder-sched":
         symbols.append(plan.base + L2_WORKER_OFF)
+    if plan.name == "ladder-title2":
+        symbols += [
+            plan.base + TITLE2_CALLBACK_OFF,
+            plan.base + TITLE2_CHECKSUM_OFF,
+            plan.base + TITLE2_WORKER_OFF,
+        ]
     return tuple(symbols)
 
 
@@ -1608,6 +2107,17 @@ def verify(build_dir: Path, workload: str) -> int:
             for offset in range(0, through, 4)
         ]
         _verify_lg_address_topology(image_words, plan)
+    if plan.name == "ladder-title2":
+        gap_words = [
+            struct.unpack_from(
+                "<I", prx, TEXT_FILE_OFFSET + TITLE2_GAP_OFF + 4 * index
+            )[0]
+            for index in range(len(TITLE2_GAP_WORDS))
+        ]
+        if gap_words != list(TITLE2_GAP_WORDS):
+            raise RuntimeError("title2 interpreter gap bytes drifted")
+        if TITLE2_BASE + plan.data_seg_vaddr + TITLE2_MEM_CELL_OFF != TITLE2_MEM_CELL:
+            raise RuntimeError("title2 memory-cell address contract drifted")
 
     image_path = build_dir / f"{stem}_image.bin"
     executable = build_dir / f"{stem}.exe"
@@ -1644,20 +2154,22 @@ def verify(build_dir: Path, workload: str) -> int:
         if f"f_{omitted_addr:08x}" in generated_text:
             raise RuntimeError("AOT omission leaked the gap function into generated C")
         # The omitted address must be reached through the ordinary production
-        # crossings, not a bespoke fixture hook. Under the current #126/#127
+        # crossing, not a bespoke fixture hook. Under the current #126/#127
         # contract a linked CALL carries explicit target and resume_pc through
         # dispatch_call (resume_pc is the call's link value; live $ra is not
-        # the resume descriptor), and a TAIL crossing dispatches a latched
-        # computed target. This workload builds both crossings by design.
+        # the resume descriptor). ladder-gap also exercises a TAIL crossing;
+        # Title-2 intentionally needs only the linked CALL from its primary
+        # production flow.
         call_seam = re.search(
             rf"dispatch_call\(s, 0x{omitted_addr:08x}u, 0x[0-9a-f]{{8}}u\)",
             generated_text,
         )
         tail_seam = f"uint32_t _t = 0x{omitted_addr:08x}u; dispatch(s, _t);" in generated_text
+        required_crossings = ("CALL",) if plan.name == "ladder-title2" else ("CALL", "TAIL")
         missing = [
             name
             for name, present in (("CALL", call_seam), ("TAIL", tail_seam))
-            if not present
+            if name in required_crossings and not present
         ]
         if missing:
             raise RuntimeError(
@@ -1683,17 +2195,45 @@ def verify(build_dir: Path, workload: str) -> int:
 # --- runtime -----------------------------------------------------------------
 
 
+def validate_title2_negative_output(completed) -> None:
+    """Fail closed unless the unsupported import reaches the scheduler fatal path."""
+    combined = completed.stdout + completed.stderr
+    if completed.returncode != 7:
+        raise RuntimeError(
+            f"title2 negative expected exit 7, got {completed.returncode}"
+        )
+    required = (
+        "HLE: unimplemented nid 0xdead2f02 (unknown) (thread uid 0x",
+        '-> add a handler in src/rt/hle.c: sr_hle_register(0xdead2f02u, "sceUnknown", h_...);',
+    )
+    missing = [marker for marker in required if marker not in combined]
+    if missing:
+        raise RuntimeError("title2 negative evidence omits: " + ", ".join(missing))
+    forbidden = (
+        "DRIVER_EXPECT_U32",
+        "PLATFORM_LADDER_RUN workload=ladder-title2-negative status=PASS",
+    )
+    present = [marker for marker in forbidden if marker in combined]
+    if present:
+        raise RuntimeError("title2 negative evidence contains: " + ", ".join(present))
+
+
 def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     plan = effective_plan(workload)
     stem = game_name_of(workload)
     executable = build_dir / f"{stem}.exe"
     image_path = build_dir / f"{stem}_image.bin"
 
-    expected = plan.expected_value()
-    if negative:
-        if workload != "ladder-fs":
-            raise RuntimeError("--negative applies only to ladder-fs")
-        expected = L5_FAIL_SENTINEL
+    if workload == "ladder-title2-negative":
+        if not negative:
+            raise RuntimeError("--negative is required for ladder-title2-negative")
+        expected = None
+    else:
+        expected = plan.expected_value()
+        if negative and workload != "ladder-fs":
+            raise RuntimeError("--negative applies only to ladder-fs and ladder-title2-negative")
+        if negative:
+            expected = L5_FAIL_SENTINEL
 
     fs_root: tempfile.TemporaryDirectory | None = None
     payload: Path | None = None
@@ -1710,11 +2250,13 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     if workload == "ladder-fs":
         fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_fs_")
         if not negative:
-            # The writable-storage VFS flattens the WHOLE guest path into one
-            # host filename beneath SR_FSDIR (vfs_path.h: '/'\\':' ' -> '_'),
-            # so "ms0:/<name>" lands as "ms0__<name>".
             payload = Path(fs_root.name) / ("ms0__" + L5_PAYLOAD_NAME)
             payload.write_bytes(L5_PAYLOAD_BYTES)
+        environment["SR_FSDIR"] = fs_root.name
+    if workload == "ladder-title2":
+        fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_title2_")
+        payload = Path(fs_root.name) / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")
+        payload.write_bytes(title2_payload_bytes())
         environment["SR_FSDIR"] = fs_root.name
     for key, value in plan.env.items():
         environment[key] = value
@@ -1728,8 +2270,16 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
         "none",
         "none",
         "--sched",
-        f"--expect-u32=0x{plan.result_addr():08x}:0x{expected:08x}",
     ]
+    if workload == "ladder-title2-negative":
+        pass
+    elif workload == "ladder-title2":
+        command.extend(
+            f"--expect-u32=0x{address:08x}:0x{value:08x}"
+            for address, value in title2_result_expectations(plan)
+        )
+    else:
+        command.append(f"--expect-u32=0x{plan.result_addr():08x}:0x{expected:08x}")
     try:
         completed = subprocess.run(
             command, cwd=ROOT, env=environment, capture_output=True, text=True, timeout=120
@@ -1744,14 +2294,31 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     write_if_changed(build_dir / f"{stem}.run{log_suffix}.stderr.log", completed.stderr.encode("utf-8"))
     combined = completed.stdout + completed.stderr
 
+    if workload == "ladder-title2-negative":
+        validate_title2_negative_output(completed)
+        print(
+            f"PLATFORM_LADDER_NEGATIVE workload={workload} status=PASS exit=7"
+        )
+        return 0
+
     markers = (
         "BOOT_EVENT phase=init public_safe=1",
         f"BOOT_EVENT phase=image_loaded entry=0x{plan.entry:08x}",
         "sr_register_all: completed",
-        f"DRIVER_EXPECT_U32 addr=0x{plan.result_addr():08x} got=0x{expected:08x} "
-        f"expected=0x{expected:08x} status=PASS",
     )
-    missing = [marker for marker in markers if marker not in combined]
+    expectation_markers = (
+        tuple(
+            f"DRIVER_EXPECT_U32 addr=0x{address:08x} got=0x{value:08x} "
+            f"expected=0x{value:08x} status=PASS"
+            for address, value in title2_result_expectations(plan)
+        )
+        if workload == "ladder-title2"
+        else (
+            f"DRIVER_EXPECT_U32 addr=0x{plan.result_addr():08x} got=0x{expected:08x} "
+            f"expected=0x{expected:08x} status=PASS",
+        )
+    )
+    missing = [marker for marker in (*markers, *expectation_markers) if marker not in combined]
     if missing:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence omits: " + ", ".join(missing))
@@ -1768,10 +2335,16 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     if present:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence contains: " + ", ".join(present))
-    print(
-        f"PLATFORM_LADDER_RUN workload={workload} status=PASS "
-        f"result=0x{plan.result_addr():08x} value=0x{expected:08x}"
-    )
+    if workload == "ladder-title2":
+        print(
+            f"PLATFORM_LADDER_RUN workload={workload} status=PASS "
+            f"result_words={len(title2_result_expectations(plan))}"
+        )
+    else:
+        print(
+            f"PLATFORM_LADDER_RUN workload={workload} status=PASS "
+            f"result=0x{plan.result_addr():08x} value=0x{expected:08x}"
+        )
     return 0
 
 

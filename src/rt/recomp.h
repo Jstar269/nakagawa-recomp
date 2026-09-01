@@ -616,6 +616,9 @@ void     sched_block_on(uint32_t obj);              /* block current thread unti
 void     sched_wait_vblank(void);                   /* block current thread until the next delivered vblank */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
+int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+int      sched_is_intr_context(void);               /* 1 if running in interrupt context, 0 otherwise */
+void     sr_hle_release_thread_resources(uint32_t thread_uid); /* release HLE resources on thread teardown */
 /* Wait-object ids shared between hle.c (wait side) and sched.c (thread-dump side). */
 #define CTRL_WAIT_OBJ 0xC471D000u                   /* sceCtrl blocking reads park on this object */
 uint64_t sched_vtime_us(void);

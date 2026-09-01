@@ -248,6 +248,134 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+NESTED_FRAMES_C = "src/rt/nested_frames.c"
+# Anything that already carries nested_frames.c: naming one of these is as good
+# as naming the file, and a recipe should prefer them.
+NESTED_FRAMES_BUNDLES = (
+    NESTED_FRAMES_C,
+    "$(RT_SRCS)",
+    "$(RT_OBJS)",
+    "$(PORTABLE_CORE_SRCS)",
+    "$(PORTABLE_CORE_OBJS)",
+)
+
+
+def _nested_frame_callers() -> list[str]:
+    """Translation units that need nested_frames.c at link time.
+
+    Direct callers are found by reference, not by a hand-kept list, so a new
+    call site is covered the day it is written.  Indirect ones are the files
+    that #include a direct caller's .c wholesale -- the selftest fixtures do
+    that to get white-box access, and they inherit its undefined symbols.
+    """
+    src = ROOT / "src" / "rt"
+    call = re.compile(r"\bsr_nested_frame_\w+\s*\(")
+    direct = []
+    texts = {}
+    for path in sorted(src.rglob("*.c")):
+        rel = path.relative_to(ROOT).as_posix()
+        texts[rel] = path.read_text(encoding="utf-8", errors="replace")
+        if rel == NESTED_FRAMES_C:
+            continue
+        if call.search(texts[rel]):
+            direct.append(rel)
+    indirect = []
+    for rel, text in texts.items():
+        if rel in direct or rel == NESTED_FRAMES_C:
+            continue
+        for caller in direct:
+            if '#include "%s"' % Path(caller).name in text:
+                indirect.append(rel)
+                break
+    return sorted(set(direct) | set(indirect))
+
+
+def _is_link_statement(text: str) -> bool:
+    """A link command, as opposed to a compile or a prerequisite list.
+
+    Prerequisite lines name sources without ever running the linker, and the
+    per-object rules compile with -c; neither needs the module's definitions.
+    """
+    if " -c " in text or text.rstrip().endswith(" -c"):
+        return False
+    return " -o " in text
+
+
+class NestedFramesLinkDependencyTests(unittest.TestCase):
+    """hle.c, mpeg.c and sched.c call into nested_frames.c, so every recipe that
+    links one of them must also supply it.  This is the same failure shape as
+    the sdl3vk/fbcap guard above: the first version of the module updated
+    RT_SRCS, PORTABLE_CORE_SRCS and the three hle.c selftest recipes but not
+    sched-selftest, which failed to link on `undefined reference to
+    sr_nested_frame_release_owner`.
+    """
+
+    def setUp(self) -> None:
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.lines = _logical_lines(self.makefile)
+
+    def test_module_defines_the_symbols_its_callers_use(self) -> None:
+        module = (ROOT / NESTED_FRAMES_C).read_text(encoding="utf-8")
+        for symbol in ("sr_nested_frame_acquire", "sr_nested_frame_release",
+                       "sr_nested_frame_release_owner", "sr_nested_frame_release_all"):
+            definition = re.compile(rf"^\w[\w \t*]*\b{symbol}\s*\(", re.MULTILINE)
+            self.assertRegex(module, definition, msg=symbol)
+
+    def test_the_caller_set_is_discovered_not_assumed(self) -> None:
+        callers = _nested_frame_callers()
+        for expected in ("src/rt/hle.c", "src/rt/mpeg.c", "src/rt/sched.c"):
+            self.assertIn(expected, callers)
+
+    def test_every_link_of_a_caller_also_supplies_the_module(self) -> None:
+        callers = _nested_frame_callers()
+        offenders = []
+        for number, text in self.lines:
+            if not _is_link_statement(text):
+                continue
+            if not any(caller in text for caller in callers):
+                continue
+            if any(bundle in text for bundle in NESTED_FRAMES_BUNDLES):
+                continue
+            offenders.append(f"Makefile:{number}: {text.strip()}")
+        self.assertEqual(
+            offenders,
+            [],
+            "these Makefile link statements use a nested-frame caller without "
+            f"{NESTED_FRAMES_C}; the link will fail with undefined references to "
+            "sr_nested_frame_*:\n" + "\n".join(offenders),
+        )
+
+    def test_the_guard_rejects_a_recipe_that_drops_the_module(self) -> None:
+        """Failing-before proof: the check must catch the sched-selftest shape."""
+        continuation = chr(92)
+        regressed = _logical_lines(
+            "\n".join(
+                [
+                    "sched-selftest-one:",
+                    "\t$(CC) $(CFLAGS) $(LDFLAGS) -o out.exe " + continuation,
+                    "\t\tsrc/rt/sched_selftest.c src/rt/sr_coro.c $(LIBS)",
+                ]
+            )
+            + "\n"
+        )
+        callers = _nested_frame_callers()
+        offenders = [
+            number
+            for number, text in regressed
+            if _is_link_statement(text)
+            and any(caller in text for caller in callers)
+            and not any(bundle in text for bundle in NESTED_FRAMES_BUNDLES)
+        ]
+        self.assertEqual(offenders, [2])
+
+    def test_a_compile_only_rule_is_not_flagged(self) -> None:
+        """The per-object rule for a caller compiles with -c and links nothing."""
+        self.assertFalse(_is_link_statement(
+            "\t$(CC) $(CFLAGS) $(DEPFLAGS) -c src/rt/hle.c -o $(BUILD_DIR)/hle.o"))
+        self.assertFalse(_is_link_statement(
+            "$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h"))
+
+
 class Atrac3pBuildPortabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

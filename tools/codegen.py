@@ -1950,7 +1950,7 @@ def main(argv):
             return 2
     elf = Elf(elf_path, base=base)
     # Only the primary image may carry an explicit extra executable span (its title's
-    # configuration, from --extra-span or the HST_EXTRA_SPANS seam). Every extra guest
+    # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
@@ -2117,16 +2117,6 @@ def main(argv):
             text = r'''void f_000143b0(CpuState *s) {  /* custom stub: guest sprintf */
     sr_guest_sprintf(s);
 }'''
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00046d14:
-            text = """void f_00046d14(CpuState *s) {  /* temporary game-loop entry stub */
-    if (SR_DBG(SR_DBG_SCHED)) {
-        fprintf(stderr, "GAMELOOP: entered L_00046d14 pc=0x%08x\\n", s->pc);
-        fflush(stderr);
-    }
-    s->pc = s->r[31];
-}"""
             func_texts.append(text); emitted.append(a); continue
 
         if hst_profile and a == 0x0001034c:

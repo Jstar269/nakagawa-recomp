@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "recomp.h"
+#include "nested_frames.h"
 #include "dispatch_table.h"   /* guest code-address table + primitives (issue #45) */
 #include "guest_interp.h"     /* executable-span interpreter floor (issue #116) */
 #include "title_config.h"     /* generic title-binding accessors; no title identity here */
@@ -250,6 +251,11 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
  * masks to [0, 0x0c000000), so this region is fully addressable and calloc-zeroed. */
 #define SR_HEAP_BASE 0x0a000008u
 #define SR_HEAP_END  0x0c000000u  /* exclusive: end of the guest arena */
+/* The nested host->guest call frames (src/rt/nested_frames.c) reserve the 1 MiB
+ * hole between the thread-stack arena ceiling and this heap.  Pin the adjacency
+ * so growing either region downward/upward cannot silently alias the other. */
+_Static_assert(SR_NESTED_FRAME_END <= SR_HEAP_BASE,
+               "the reserved nested-frame region must end at or below the guest heap arena");
 static uint32_t s_heap_bump_ptr = SR_HEAP_BASE;
 static const uint32_t s_heap_bump_end = SR_HEAP_END;
 static uint32_t s_heap_free_list = 0u;

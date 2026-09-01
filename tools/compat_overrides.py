@@ -197,14 +197,6 @@ CODEGEN_CUSTOM_STUBS = [
                 "native implementation preserves PSP EABI varargs placement (r6..r11, then stack), "
                 "including aligned two-word double arguments for floating conversions",
          test="tools/test_guest_printf.py"),
-    dict(address=0x00046d14, category="temporary_compatibility_patch", name="game-loop entry stub",
-         reason="replaces the translated body with an immediate return; the debug line is now "
-                "scheduler-gated, but no public behavioral test proves this stub is safe. Retire "
-                "by restoring the translated body after adding a production-path regression",
-         test="tools/test_codegen_profile_isolation.py",
-         retirement="restore translated execution when the guest's loop entry can be proven to "
-                    "make progress without the stub; keep the scheduler-gated trace as diagnostic "
-                    "only after the body is restored"),
     dict(address=0x0001034c, category="temporary_compatibility_patch", name="skip heap-statistics walk",
          reason="the guest free-list can be incomplete during bring-up; walking it for "
                 "mallinfo-style counters must not block game initialization",
