@@ -1260,6 +1260,8 @@ static void reset_fixture(void) {
     sr_nested_frame_reset();
     sr_hle_test_audio_reset();
     audio_fixture_reset();
+    extern void sr_hle_test_mutex_reset(void);
+    sr_hle_test_mutex_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -7617,6 +7619,508 @@ static void test_msgpipe_safety(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
 }
 
+/* =========================================================================
+ * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
+ * ========================================================================= */
+
+int s_mtx_parks = 0;
+
+typedef struct {
+    uint32_t uid;
+    TCB     *tcb;
+    uint32_t mtx_uid;
+    int      count;
+    uint32_t toptr;
+    int      is_cb;
+    uint32_t ret;
+    int      returned;
+} MtxWaiterCtx;
+
+static void mtx_waiter_fiber_body(void *arg) {
+    MtxWaiterCtx *ctx = (MtxWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->mtx_uid;
+    cpu.r[5] = (uint32_t)ctx->count;
+    cpu.r[6] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? 0x5bf4dd27u : 0xb011b11fu);
+    ctx->returned = 1;
+    s_mtx_parks++;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t mtx_create_raw(uint32_t name_addr, uint32_t attr, int init_count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name_addr;
+    cpu.r[5] = attr;
+    cpu.r[6] = (uint32_t)init_count;
+    return sr_syscall(&cpu, 0xb7d098c6u);
+}
+
+static uint32_t mtx_create(const char *name, uint32_t attr, int init_count) {
+    static uint32_t name_cur = 0x00260000u;
+    name_cur = (name_cur + 64u) & 0x002ffff0u;
+    if (name) {
+        size_t len = strlen(name);
+        for (size_t i = 0; i <= len; i++) {
+            MEM_W8(name_cur + (uint32_t)i, (uint8_t)name[i]);
+        }
+    }
+    return mtx_create_raw(name ? name_cur : 0, attr, init_count);
+}
+
+static uint32_t mtx_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, 0xf8170fbeu);
+}
+
+static uint32_t mtx_lock(uint32_t uid, int count, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    cpu.r[6] = toptr;
+    return sr_syscall(&cpu, 0xb011b11fu);
+}
+
+static uint32_t mtx_trylock(uint32_t uid, int count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    return sr_syscall(&cpu, 0x0ddcd2c9u);
+}
+
+static uint32_t mtx_unlock(uint32_t uid, int count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    return sr_syscall(&cpu, 0x6b30100fu);
+}
+
+static uint32_t mtx_cancel(uint32_t uid, int new_count, uint32_t num_wait_ptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)new_count;
+    cpu.r[6] = num_wait_ptr;
+    return sr_syscall(&cpu, 0x87d9223cu);
+}
+
+static uint32_t mtx_refer(uint32_t uid, uint32_t info_addr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info_addr;
+    return sr_syscall(&cpu, 0xa9c2cb9au);
+}
+
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int      initCount;
+    int      currentCount;
+    int32_t  lockThread;
+    int      numWaitThreads;
+} SceKernelMutexInfoTest;
+
+static int mtx_get_info(uint32_t uid, SceKernelMutexInfoTest *out) {
+    uint32_t buf = 0x00270000u;
+    memset(out, 0, sizeof(*out));
+    MEM_W32(buf, (uint32_t)sizeof(SceKernelMutexInfoTest));
+    uint32_t rc = mtx_refer(uid, buf);
+    if (rc != 0) return 0;
+    out->size = MEM_R32(buf);
+    for (int i = 0; i < 32; i++) out->name[i] = (char)MEM_R8(buf + 4 + i);
+    out->attr = MEM_R32(buf + 0x24);
+    out->initCount = (int)MEM_R32(buf + 0x28);
+    out->currentCount = (int)MEM_R32(buf + 0x2c);
+    out->lockThread = (int32_t)MEM_R32(buf + 0x30);
+    out->numWaitThreads = (int)MEM_R32(buf + 0x34);
+    return 1;
+}
+
+static void test_psp_mutex(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x101u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    SceKernelMutexInfoTest info;
+
+    /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
+    uint32_t m1 = mtx_create("test_mutex", 0, 0);
+    expect(m1 > 0, "T01: CreateMutex with initCount=0 returns valid UID");
+    expect(mtx_get_info(m1, &info) && strcmp(info.name, "test_mutex") == 0 &&
+           info.attr == 0 && info.initCount == 0 && info.currentCount == 0 &&
+           info.lockThread == 0 && info.numWaitThreads == 0,
+           "T01: ReferMutexStatus matches initCount=0 creation");
+
+    uint32_t m2 = mtx_create("init_locked", 0, 1);
+    expect(m2 > 0 && mtx_get_info(m2, &info) && info.initCount == 1 &&
+           info.currentCount == 1 && info.lockThread == (int32_t)cur->uid,
+           "T01: CreateMutex with initCount=1 sets lockThread to caller");
+
+    expect(mtx_create(NULL, 0, 0) == 0x80020001u, "T02: CreateMutex with NULL name returns 0x80020001");
+    expect(mtx_create_raw(0x10000000u, 0, 0) == 0x80020001u, "T02: CreateMutex with unmapped name returns 0x80020001");
+
+    expect(mtx_create("bad_attr1", 0x1000u, 0) == 0x80020191u, "T03: CreateMutex with illegal attr bits returns 0x80020191");
+    expect(mtx_create("bad_attr2", 0x0400u, 0) == 0x80020191u, "T03: CreateMutex with illegal attr 0x0400 returns 0x80020191");
+
+    expect(mtx_create("neg_count", 0, -1) == 0x800201bdu, "T04: non-recursive CreateMutex initCount < 0 returns 0x800201bd");
+    expect(mtx_create("over_count", 0, 2) == 0x800201bdu, "T04: non-recursive CreateMutex initCount > 1 returns 0x800201bd");
+
+    expect(mtx_create("rec_neg", 0x0200u, -1) == 0x800201bdu, "T05: recursive CreateMutex initCount < 0 returns 0x800201bd");
+    uint32_t m_rec = mtx_create("rec_ok", 0x0200u, 5);
+    expect(m_rec > 0 && mtx_get_info(m_rec, &info) && info.initCount == 5 &&
+           info.currentCount == 5 && info.lockThread == (int32_t)cur->uid,
+           "T05: recursive CreateMutex initCount=5 succeeds");
+
+    /* ---- T06: Deletion error handling ---- */
+    expect(mtx_delete(0) == 0x800201c3u, "T06: DeleteMutex 0 returns 0x800201c3");
+    expect(mtx_delete(0xdeadbeefu) == 0x800201c3u, "T06: DeleteMutex invalid UID returns 0x800201c3");
+    expect(mtx_delete(m1) == 0, "T06: DeleteMutex valid UID succeeds");
+    expect(mtx_delete(m1) == 0x800201c3u, "T06: DeleteMutex already deleted UID returns 0x800201c3");
+    mtx_delete(m2);
+    mtx_delete(m_rec);
+
+    /* ---- T08, T09, T10, T11: Uncontended lock, Relock recursive/non-recursive, Overflow ---- */
+    uint32_t m_nr = mtx_create("nr_lock", 0, 0);
+    expect(mtx_lock(m_nr, 1, 0) == 0, "T08: uncontended LockMutex returns 0");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 1 && info.lockThread == (int32_t)cur->uid,
+           "T08: lockThread is caller and currentCount is 1");
+    expect(mtx_lock(m_nr, 1, 0) == 0x800201c8u, "T09: non-recursive relock returns 0x800201c8 (RECURSIVE_NOT_ALLOWED)");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 1, "T09: count unchanged after rejected relock");
+    expect(mtx_unlock(m_nr, 1) == 0, "T08: unlock returns 0");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 0 && info.lockThread == 0, "T08: mutex is unowned");
+    mtx_delete(m_nr);
+
+    uint32_t m_r = mtx_create("r_lock", 0x0200u, 0);
+    expect(mtx_lock(m_r, 2, 0) == 0, "T10: recursive LockMutex count=2 succeeds");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 2 && info.lockThread == (int32_t)cur->uid, "T10: count is 2");
+    expect(mtx_lock(m_r, 3, 0) == 0, "T10: recursive relock count=3 succeeds");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 5, "T10: count is now 5");
+    expect(mtx_lock(m_r, 0x7fffffff, 0) == 0x800201c6u, "T11: recursive relock overflow returns 0x800201c6");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 5, "T11: count unchanged after overflow");
+    expect(mtx_unlock(m_r, 2) == 0 && mtx_get_info(m_r, &info) && info.currentCount == 3,
+           "T10: partial unlock count=2 leaves count 3");
+    expect(mtx_unlock(m_r, 3) == 0 && mtx_get_info(m_r, &info) && info.currentCount == 0 && info.lockThread == 0,
+           "T10: unlock count=3 unlocks mutex completely");
+    mtx_delete(m_r);
+
+    /* ---- T18, T19, T20: TryLock, Context checks, Unlock validations ---- */
+    uint32_t m_try = mtx_create("try_mtx", 0, 0);
+    expect(mtx_trylock(m_try, 1) == 0, "T18: uncontended TryLockMutex returns 0");
+    expect(mtx_get_info(m_try, &info) && info.lockThread == (int32_t)cur->uid, "T18: TryLock acquired lock");
+    int saved_cur = s_cur; s_cur = -1;
+    expect(mtx_trylock(m_try, 1) == 0x80020064u, "MO-02: TryLockMutex in interrupt context returns 0x80020064");
+    s_cur = saved_cur;
+
+    TCB *th2 = fixture_thread(0x102u, TH_READY, 32);
+    s_cur = (int)(th2 - s_tcb);
+    expect(mtx_trylock(m_try, 1) == 0x800201c4u, "T19: contended TryLockMutex returns 0x800201c4 (FAILED_TO_OWN)");
+    expect(mtx_unlock(m_try, 1) == 0x800201c5u, "T20: unlock by non-owner returns 0x800201c5 (MUTEX_NOT_OWNED)");
+    expect(mtx_unlock(m_try, 0) == 0x800201bdu, "T20: unlock count <= 0 returns 0x800201bd");
+    expect(mtx_unlock(m_try, -1) == 0x800201bdu, "T20: unlock count < 0 returns 0x800201bd");
+
+    s_cur = (int)(cur - s_tcb);
+    uint32_t m_uf = mtx_create("uf_mtx", 0x0200u, 1);
+    expect(mtx_unlock(m_uf, 2) == 0x800201c7u, "T20: unlock underflow returns 0x800201c7 (MUTEX_UNLOCK_UNDERFLOW)");
+    mtx_delete(m_uf);
+    expect(mtx_unlock(m_try, 2) == 0x800201bdu, "T20: non-recursive unlock count > 1 returns 0x800201bd");
+    expect(mtx_unlock(m_try, 1) == 0, "T20: valid unlock returns 0");
+    expect(mtx_unlock(m_try, 1) == 0x800201c5u, "T20: unlock unowned mutex returns 0x800201c5");
+    mtx_delete(m_try);
+
+    /* ---- T12: Contended Lock FIFO queue order & direct handoff ---- */
+    uint32_t m_fifo = mtx_create("fifo_mtx", 0, 1);
+    MtxWaiterCtx w1; memset(&w1, 0, sizeof w1);
+    w1.uid = 0x103u; w1.tcb = fixture_thread(w1.uid, TH_READY, 32); w1.tcb->started = 1;
+    w1.mtx_uid = m_fifo; w1.count = 1;
+    w1.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w1, (size_t)4 << 20);
+
+    MtxWaiterCtx w2; memset(&w2, 0, sizeof w2);
+    w2.uid = 0x104u; w2.tcb = fixture_thread(w2.uid, TH_READY, 32); w2.tcb->started = 1;
+    w2.mtx_uid = m_fifo; w2.count = 1;
+    w2.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w2, (size_t)4 << 20);
+
+    s_cur = (int)(w1.tcb - s_tcb);
+    sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 0 && w1.tcb->state == TH_WAIT_OBJ, "T12: waiter 1 blocked");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 0 && w2.tcb->state == TH_WAIT_OBJ, "T12: waiter 2 blocked");
+
+    expect(mtx_get_info(m_fifo, &info) && info.numWaitThreads == 2, "T12: numWaitThreads is 2");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_fifo, 1) == 0, "T12: owner unlocked");
+    expect(mtx_get_info(m_fifo, &info) && info.lockThread == (int32_t)w1.uid &&
+           info.currentCount == 1 && info.numWaitThreads == 1,
+           "T12: direct handoff gave lock to FIFO waiter 1");
+    expect(w1.tcb->state == TH_READY && w2.tcb->state == TH_WAIT_OBJ,
+           "T12: waiter 1 is TH_READY, waiter 2 still TH_WAIT_OBJ");
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 1 && w1.ret == 0, "T12: waiter 1 resumed and acquired lock");
+
+    s_cur = (int)(w1.tcb - s_tcb);
+    expect(mtx_unlock(m_fifo, 1) == 0, "T12: waiter 1 unlocked");
+    expect(mtx_get_info(m_fifo, &info) && info.lockThread == (int32_t)w2.uid &&
+           info.currentCount == 1 && info.numWaitThreads == 0,
+           "T12: direct handoff gave lock to FIFO waiter 2");
+    expect(w2.tcb->state == TH_READY, "T12: waiter 2 is now TH_READY");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 1 && w2.ret == 0, "T12: waiter 2 resumed and acquired lock");
+
+    s_cur = (int)(w2.tcb - s_tcb); mtx_unlock(m_fifo, 1);
+    sr_coro_destroy(w1.tcb->coro); w1.tcb->coro = NULL;
+    sr_coro_destroy(w2.tcb->coro); w2.tcb->coro = NULL;
+    mtx_delete(m_fifo);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T13: Contended Lock PRIORITY queue order ---- */
+    uint32_t m_pri = mtx_create("pri_mtx", 0x0100u, 1);
+    MtxWaiterCtx w_low; memset(&w_low, 0, sizeof w_low);
+    w_low.uid = 0x105u; w_low.tcb = fixture_thread(w_low.uid, TH_READY, 40); w_low.tcb->started = 1;
+    w_low.mtx_uid = m_pri; w_low.count = 1;
+    w_low.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_low, (size_t)4 << 20);
+
+    MtxWaiterCtx w_high; memset(&w_high, 0, sizeof w_high);
+    w_high.uid = 0x106u; w_high.tcb = fixture_thread(w_high.uid, TH_READY, 20); w_high.tcb->started = 1;
+    w_high.mtx_uid = m_pri; w_high.count = 1;
+    w_high.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_high, (size_t)4 << 20);
+
+    s_cur = (int)(w_low.tcb - s_tcb); sr_coro_switch(w_low.tcb->coro);
+    expect(w_low.returned == 0 && w_low.tcb->state == TH_WAIT_OBJ, "T13: low priority waiter blocked");
+
+    s_cur = (int)(w_high.tcb - s_tcb); sr_coro_switch(w_high.tcb->coro);
+    expect(w_high.returned == 0 && w_high.tcb->state == TH_WAIT_OBJ, "T13: high priority waiter blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_pri, 1) == 0, "T13: owner unlocked");
+    expect(mtx_get_info(m_pri, &info) && info.lockThread == (int32_t)w_high.uid && info.numWaitThreads == 1,
+           "T13: PRIORITY queue selected w_high first");
+    expect(w_high.tcb->state == TH_READY && w_low.tcb->state == TH_WAIT_OBJ,
+           "T13: w_high is READY, w_low still WAIT_OBJ");
+
+    s_cur = (int)(w_high.tcb - s_tcb); sr_coro_switch(w_high.tcb->coro);
+    expect(w_high.returned == 1 && w_high.ret == 0, "T13: w_high resumed and acquired lock");
+
+    s_cur = (int)(w_high.tcb - s_tcb);
+    expect(mtx_unlock(m_pri, 1) == 0, "T13: w_high unlocked");
+    expect(mtx_get_info(m_pri, &info) && info.lockThread == (int32_t)w_low.uid && info.numWaitThreads == 0,
+           "T13: w_low acquired lock");
+
+    s_cur = (int)(w_low.tcb - s_tcb); sr_coro_switch(w_low.tcb->coro);
+    expect(w_low.returned == 1 && w_low.ret == 0, "T13: w_low resumed and acquired lock");
+
+    s_cur = (int)(w_low.tcb - s_tcb); mtx_unlock(m_pri, 1);
+    sr_coro_destroy(w_low.tcb->coro); w_low.tcb->coro = NULL;
+    sr_coro_destroy(w_high.tcb->coro); w_high.tcb->coro = NULL;
+    mtx_delete(m_pri);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T14, T15, T16: Timeout cases ---- */
+    uint32_t m_to = mtx_create("to_mtx", 0, 1);
+    uint32_t toptr_0 = 0x00270080u; MEM_W32(toptr_0, 0u);
+    TCB *th_to = fixture_thread(0x107u, TH_READY, 32);
+    s_cur = (int)(th_to - s_tcb);
+    expect(mtx_lock(m_to, 1, toptr_0) == 0x800201a8u, "T14: timeout 0 returns 0x800201a8 immediately");
+    expect(MEM_R32(toptr_0) == 0u, "T14: timeout 0 word unmodified");
+    expect(mtx_get_info(m_to, &info) && info.numWaitThreads == 0, "T14: no waiter enqueued");
+
+    MtxWaiterCtx w_to; memset(&w_to, 0, sizeof w_to);
+    w_to.uid = 0x108u; w_to.tcb = fixture_thread(w_to.uid, TH_READY, 32); w_to.tcb->started = 1;
+    w_to.mtx_uid = m_to; w_to.count = 1;
+    uint32_t toptr_exp = 0x00270084u; MEM_W32(toptr_exp, 50000u);
+    w_to.toptr = toptr_exp;
+    w_to.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_to, (size_t)4 << 20);
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 0 && w_to.tcb->state == TH_WAIT_OBJ, "T15: waiter blocked on timeout");
+
+    s_vtime_us += 60000;
+    w_to.tcb->state = TH_READY;
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 1 && w_to.ret == 0x800201a8u, "T15: waiter returned 0x800201a8 (WAIT_TIMEOUT)");
+    expect(MEM_R32(toptr_exp) == 0u, "T15: remaining timeout written as 0");
+    expect(mtx_get_info(m_to, &info) && info.numWaitThreads == 0, "T15: waiter removed from queue");
+    sr_coro_destroy(w_to.tcb->coro); w_to.tcb->coro = NULL;
+
+    MtxWaiterCtx w_sat; memset(&w_sat, 0, sizeof w_sat);
+    w_sat.uid = 0x109u; w_sat.tcb = fixture_thread(w_sat.uid, TH_READY, 32); w_sat.tcb->started = 1;
+    w_sat.mtx_uid = m_to; w_sat.count = 1;
+    uint32_t toptr_sat = 0x00270088u; MEM_W32(toptr_sat, 100000u);
+    w_sat.toptr = toptr_sat;
+    w_sat.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_sat, (size_t)4 << 20);
+    s_cur = (int)(w_sat.tcb - s_tcb); sr_coro_switch(w_sat.tcb->coro);
+    expect(w_sat.returned == 0 && w_sat.tcb->state == TH_WAIT_OBJ, "T16: waiter blocked on timeout");
+
+    s_vtime_us += 30000;
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_to, 1) == 0, "T16: owner unlocked");
+    s_cur = (int)(w_sat.tcb - s_tcb); sr_coro_switch(w_sat.tcb->coro);
+    expect(w_sat.returned == 1 && w_sat.ret == 0, "T16: waiter returned 0 (acquired)");
+    expect(MEM_R32(toptr_sat) <= 70000u && MEM_R32(toptr_sat) >= 69000u,
+           "T16: remaining usec updated accurately (~70000)");
+    s_cur = (int)(w_sat.tcb - s_tcb); mtx_unlock(m_to, 1);
+    sr_coro_destroy(w_sat.tcb->coro); w_sat.tcb->coro = NULL;
+    mtx_delete(m_to);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T17: Contended Lock with callback queue (LockMutexCB) ---- */
+    uint32_t m_cb = mtx_create("cb_mtx", 0, 1);
+    MtxWaiterCtx w_cb; memset(&w_cb, 0, sizeof w_cb);
+    w_cb.uid = 0x10au; w_cb.tcb = fixture_thread(w_cb.uid, TH_READY, 32); w_cb.tcb->started = 1;
+    w_cb.mtx_uid = m_cb; w_cb.count = 1; w_cb.is_cb = 1;
+    w_cb.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_cb, (size_t)4 << 20);
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 0 && w_cb.tcb->state == TH_WAIT_OBJ, "T17: waiter blocked on LockMutexCB");
+    expect(w_cb.tcb->is_cb_wait == 1, "T17: waiter has is_cb_wait marked");
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_cb, 1) == 0, "T17: owner unlocked");
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 1 && w_cb.ret == 0, "T17: waiter returned 0 (acquired)");
+    expect(w_cb.tcb->is_cb_wait == 0, "T17: waiter cleared is_cb_wait upon return");
+    s_cur = (int)(w_cb.tcb - s_tcb); mtx_unlock(m_cb, 1);
+    sr_coro_destroy(w_cb.tcb->coro); w_cb.tcb->coro = NULL;
+    mtx_delete(m_cb);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T07, T21: CancelMutex, DeleteMutex waiter wakeups & error codes ---- */
+    uint32_t m_del = mtx_create("del_mtx", 0, 1);
+    MtxWaiterCtx w_del; memset(&w_del, 0, sizeof w_del);
+    w_del.uid = 0x10bu; w_del.tcb = fixture_thread(w_del.uid, TH_READY, 32); w_del.tcb->started = 1;
+    w_del.mtx_uid = m_del; w_del.count = 1;
+    w_del.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_del, (size_t)4 << 20);
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 0 && w_del.tcb->state == TH_WAIT_OBJ, "T07: waiter blocked on m_del");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_delete(m_del) == 0, "T07: DeleteMutex succeeded while waiter blocked");
+    expect(w_del.tcb->state == TH_READY, "T07: waiter woke to TH_READY on delete");
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "T07: waiter returned 0x800201b5 (WAIT_DELETE)");
+    sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    uint32_t m_cn = mtx_create("cn_mtx", 0, 1);
+    MtxWaiterCtx w_cn; memset(&w_cn, 0, sizeof w_cn);
+    w_cn.uid = 0x10cu; w_cn.tcb = fixture_thread(w_cn.uid, TH_READY, 32); w_cn.tcb->started = 1;
+    w_cn.mtx_uid = m_cn; w_cn.count = 1;
+    w_cn.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_cn, (size_t)4 << 20);
+    s_cur = (int)(w_cn.tcb - s_tcb); sr_coro_switch(w_cn.tcb->coro);
+    expect(w_cn.returned == 0 && w_cn.tcb->state == TH_WAIT_OBJ, "T21: waiter blocked on m_cn");
+
+    expect(mtx_cancel(m_cn, 2, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=2 returns 0x800201bd");
+    expect(mtx_cancel(m_cn, -1, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=-1 returns 0x800201bd");
+
+    uint32_t num_wait_out = 0x00270090u; MEM_W32(num_wait_out, 0xdeadbeefu);
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_cancel(m_cn, 0, num_wait_out) == 0, "T21: CancelMutex newCount=0 succeeded");
+    expect(MEM_R32(num_wait_out) == 1u, "T21: CancelMutex wrote previous waiter count 1");
+    expect(w_cn.tcb->state == TH_READY, "T21: waiter woke to TH_READY on cancel");
+    s_cur = (int)(w_cn.tcb - s_tcb); sr_coro_switch(w_cn.tcb->coro);
+    expect(w_cn.returned == 1 && w_cn.ret == 0x800201a9u, "T21: waiter returned 0x800201a9 (WAIT_CANCEL)");
+    sr_coro_destroy(w_cn.tcb->coro); w_cn.tcb->coro = NULL;
+    mtx_delete(m_cn);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T22: ReferMutexStatus partial buffers and errors ---- */
+    uint32_t m_ref = mtx_create("ref_probe", 0, 1);
+    uint32_t ref_buf = 0x00270100u;
+    expect(mtx_refer(0, ref_buf) == 0x800201c3u, "T22: ReferMutexStatus invalid UID returns 0x800201c3");
+    expect(mtx_refer(m_ref, 0) == 0x80000103u, "T22: ReferMutexStatus NULL info_addr returns 0x80000103");
+    expect(mtx_refer(m_ref, 0x0c000000u - 2) == 0x80000103u, "T22: ReferMutexStatus unmapped info_addr returns 0x80000103");
+
+    MEM_W32(ref_buf, 0u); MEM_W32(ref_buf + 4, 0xaaaaaaaa);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=0 returns 0");
+    expect(MEM_R32(ref_buf + 4) == 0xaaaaaaaa, "T22: size=0 left buffer untouched");
+
+    MEM_W32(ref_buf, 4u); MEM_W32(ref_buf + 4, 0xbbbbbbbb);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=4 returns 0");
+    expect(MEM_R32(ref_buf) == 56u && MEM_R32(ref_buf + 4) == 0xbbbbbbbb, "T22: size=4 wrote size field only");
+
+    MEM_W32(ref_buf, 12u);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=12 returns 0");
+    expect(MEM_R32(ref_buf) == 56u && memcmp((const void *)((char *)g_mem_base + (ref_buf + 4)), "ref_probe", 8) == 0,
+           "T22: size=12 wrote size and prefix of name");
+    mtx_delete(m_ref);
+
+    /* ---- Lifetime 2: Table growth across yields ---- */
+    uint32_t m_grow = mtx_create("grow_mtx", 0, 1);
+    MtxWaiterCtx w_grow; memset(&w_grow, 0, sizeof w_grow);
+    w_grow.uid = 0x10du; w_grow.tcb = fixture_thread(w_grow.uid, TH_READY, 32); w_grow.tcb->started = 1;
+    w_grow.mtx_uid = m_grow; w_grow.count = 1;
+    w_grow.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_grow, (size_t)4 << 20);
+    s_cur = (int)(w_grow.tcb - s_tcb); sr_coro_switch(w_grow.tcb->coro);
+    expect(w_grow.returned == 0 && w_grow.tcb->state == TH_WAIT_OBJ, "Lifetime 2: waiter blocked on grow_mtx");
+
+    uint32_t filler[128];
+    for (int i = 0; i < 128; i++) filler[i] = mtx_create("filler", 0, 0);
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_grow, 1) == 0, "Lifetime 2: owner unlocked after table reallocation");
+
+    s_cur = (int)(w_grow.tcb - s_tcb); sr_coro_switch(w_grow.tcb->coro);
+    expect(w_grow.returned == 1 && w_grow.ret == 0, "Lifetime 2: waiter acquired lock across table reallocation");
+    s_cur = (int)(w_grow.tcb - s_tcb); mtx_unlock(m_grow, 1);
+    sr_coro_destroy(w_grow.tcb->coro); w_grow.tcb->coro = NULL;
+    mtx_delete(m_grow);
+    for (int i = 0; i < 128; i++) mtx_delete(filler[i]);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- Lifetime 3 & 4: Thread teardown cleanup ---- */
+    TCB *t_exit = fixture_thread(0x10eu, TH_RUNNING, 32); t_exit->started = 1;
+    s_cur = (int)(t_exit - s_tcb);
+    uint32_t m_held1 = mtx_create("held1", 0, 1);
+    uint32_t m_held2 = mtx_create("held2", 0, 1);
+
+    TCB *t_wait_held = fixture_thread(0x10fu, TH_READY, 32); t_wait_held->started = 1;
+    MtxWaiterCtx w_held; memset(&w_held, 0, sizeof w_held);
+    w_held.uid = 0x10fu; w_held.tcb = t_wait_held; w_held.mtx_uid = m_held1; w_held.count = 1;
+    w_held.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_held, (size_t)4 << 20);
+    s_cur = (int)(w_held.tcb - s_tcb); sr_coro_switch(w_held.tcb->coro);
+    expect(w_held.tcb->state == TH_WAIT_OBJ, "Lifetime 3: waiter blocked on held1");
+
+    s_cur = (int)(cur - s_tcb);
+    uint32_t m_other = mtx_create("other", 0, 1);
+    MtxWaiterCtx w_exit; memset(&w_exit, 0, sizeof w_exit);
+    w_exit.uid = t_exit->uid; w_exit.tcb = t_exit; w_exit.mtx_uid = m_other; w_exit.count = 1;
+    w_exit.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_exit, (size_t)4 << 20);
+    s_cur = (int)(w_exit.tcb - s_tcb); sr_coro_switch(w_exit.tcb->coro);
+    expect(w_exit.tcb->state == TH_WAIT_OBJ, "Lifetime 4: t_exit waiting on m_other");
+    expect(mtx_get_info(m_other, &info) && info.numWaitThreads == 1, "Lifetime 4: m_other has 1 waiter");
+
+    sr_hle_release_thread_resources(t_exit->uid);
+
+    expect(mtx_get_info(m_held1, &info) && info.lockThread == (int32_t)t_wait_held->uid && info.numWaitThreads == 0,
+           "Lifetime 3: held1 transferred to waiter on thread exit");
+    expect(t_wait_held->state == TH_READY, "Lifetime 3: waiter on held1 is TH_READY");
+    expect(mtx_get_info(m_held2, &info) && info.lockThread == 0 && info.currentCount == 0,
+           "Lifetime 3: held2 unlocked on thread exit");
+    expect(mtx_get_info(m_other, &info) && info.numWaitThreads == 0,
+           "Lifetime 4: t_exit removed from m_other wait queue");
+
+    s_cur = (int)(w_held.tcb - s_tcb); sr_coro_switch(w_held.tcb->coro);
+    expect(w_held.returned == 1 && w_held.ret == 0, "Lifetime 3: waiter resumed and completed");
+    s_cur = (int)(w_held.tcb - s_tcb); mtx_unlock(m_held1, 1);
+    sr_coro_destroy(w_held.tcb->coro); w_held.tcb->coro = NULL;
+    sr_coro_destroy(w_exit.tcb->coro); w_exit.tcb->coro = NULL;
+    mtx_delete(m_held1);
+    mtx_delete(m_held2);
+    mtx_delete(m_other);
+
+    s_cur = -1;
+}
+
 /* ---- coroutine lifecycle invariants ---------------------------------------------------
  *
  * These read counters recorded by sr_coro.c itself as each operation happened, so they hold
@@ -7657,13 +8161,14 @@ static void check_coroutine_lifecycle(void) {
      * not from the park hook, so this stays a genuine cross-check of the
      * coroutine layer rather than a tautology. */
     {
-        int expected_parks = 8 + ic_expected_parks();
+        extern int s_mtx_parks;
+        int expected_parks = 8 + ic_expected_parks() + s_mtx_parks;
         char msg[224];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ %d returned conformance legs = %d, observed %lu)",
-                 ic_expected_parks(), expected_parks, s_parks);
+                 "+ %d returned conformance legs + %d mutex legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -9365,6 +9870,7 @@ int main(int argc, char **argv) {
     test_sas_state_contracts();
     test_msgpipe_safety();
     test_intr_context_conformance();
+    test_psp_mutex();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

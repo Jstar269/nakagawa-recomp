@@ -434,6 +434,10 @@ int sched_interrupts_enabled(void) {
     return s_interrupts_enabled;
 }
 
+int sched_is_intr_context(void) {
+    return s_cur < 0;
+}
+
 uint32_t sched_suspend_dispatch(void) {
     if (!s_interrupts_enabled) return 0x80020066u; /* SCE_KERNEL_ERROR_CPUDI */
     uint32_t previous = s_dispatch_enabled ? 1u : 0u;
@@ -1112,6 +1116,7 @@ uint32_t g_master_reent = 0x002cf338u; // fallback to default global reent
  * registry at 0x0030a040. */
 extern uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra);
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
+extern void sr_hle_release_thread_resources(uint32_t thread_uid);
 
 /* guest_reent_register: insert (uid, state_ptr) into the guest per-thread reent/state hash
  * rooted at 0x0030aa88.  Used by the host to pre-populate the table for threads that do not
@@ -1324,6 +1329,7 @@ static void sched_release_thread_resources(TCB *t) {
     if (!t || t->resources_released) return;
     if (t->k0_init) unregister_libc_thread(t->k0_init);
     sr_callback_unregister_owner(t->uid);
+    sr_hle_release_thread_resources(t->uid);
     /* Last net under this thread's nested host->guest call frames.  Every normal
      * and error return releases its own frame, and the coro_body unwind path
      * reclaims the chain after a longjmp, so a non-zero count here means a
@@ -1728,6 +1734,7 @@ static int pick_next(void) {
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
+    if (!s_sched_coro || sr_coro_current() == s_sched_coro) return;
     sr_coro_switch(s_sched_coro);
 }
 
@@ -2648,6 +2655,15 @@ void sched_wake(uint32_t obj) {
     for (int i = 0; i < s_ntcb; i++)
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj)
             s_tcb[i].state = TH_READY;
+}
+
+int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
+    TCB *t = tcb_by_uid(thread_uid);
+    if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
+        t->state = TH_READY;
+        return 1;
+    }
+    return 0;
 }
 
 uint64_t sched_vtime_us(void) {

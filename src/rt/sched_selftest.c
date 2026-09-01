@@ -90,6 +90,7 @@ static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
 void sr_display_advance_vcount(uint32_t elapsed_periods) { (void)elapsed_periods; }
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
+void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
 uint64_t sr_perf_now_ns(void) { return 0; }
 void sr_perf_guest_begin(void) {}
