@@ -435,7 +435,7 @@ edited by this documentation change.
 
 ### Nakagawa project Wiki draft
 
-**PSP threading semantics in Nakagawa**
+#### PSP threading semantics in Nakagawa
 
 - Runtime mappings: `src/rt/hle.c` extracts `$a0` through `$a3` directly and
   `stack_arg()` supplies user-call arguments 5 through 8 from `$t0` through
@@ -469,7 +469,7 @@ edited by this documentation change.
 
 ### General PSP recompilation Wiki draft
 
-**PSP ThreadMan and scheduler model**
+#### PSP ThreadMan and scheduler model
 
 - Treat public headers as `PUBLIC_HEADER_FACT`, open implementations as
   `OPEN_FIRMWARE_IMPLEMENTATION`, agreement between emulators as
