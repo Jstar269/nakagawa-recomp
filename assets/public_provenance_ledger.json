@@ -985,7 +985,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bce73b42fe0cc535b04c2d1e330f39016fe19888c744536f3bbf8173db34647c"
+      "sha256": "13f21a520a7c3b4e9eda422aeb5a98fd7d666417b941c05db52e1429b158fda3"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -7639,26 +7639,9 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
-    "candidate_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
+    "candidate_tree": "7d032d0aac705af993aea3cbc85a208ffbfba6f7",
     "refreshed_paths": [
-      "Makefile",
-      "assets/titles/README.md",
-      "assets/titles/synthetic-title2.json",
-      "src/rt/savedata.c",
-      "src/rt/vfs_contained.h",
-      "tools/analyze.py",
-      "tools/codegen.py",
-      "tools/test_analyzer_span_scope.py",
-      "tools/test_generic_title_planning_proof.py",
-      "tools/test_savedata_security.py",
-      "tools/test_title_codegen_plan.py",
-      "tools/test_title_codegen_synthetic.py",
-      "tools/test_title_manager_adapter.py",
-      "tools/test_title_manager_plan.py",
-      "tools/test_title_pspdev_phase5.py",
-      "tools/test_vfs_contained.py",
-      "tools/title_codegen_plan.py",
-      "tools/title_manager_plan.ps1"
+      "docs/research/PSP_THREADING_SEMANTICS.md"
     ]
   }
 }
