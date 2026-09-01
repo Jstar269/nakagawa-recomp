@@ -456,10 +456,13 @@ static int ic_dispatch_intercept(uint32_t target);
 /* Synthetic guest bodies for the nested-guest-call ABI specimen; defined
  * further down, next to the regression that reads what they recorded. */
 static int cbabi_dispatch(CpuState *cpu, uint32_t target);
+/* Synthetic guest bodies for the H2/H3 nested-frame isolation specimens. */
+static int nfi_dispatch(CpuState *cpu, uint32_t target);
 
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
     if (cbabi_dispatch(cpu, target)) return;
+    if (nfi_dispatch(cpu, target)) return;
     if (title_hle_dispatch_intercept(cpu, target)) return;
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
@@ -1254,8 +1257,11 @@ static void reset_fixture(void) {
     s_cpu = &s_cpu_store;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
+    sr_nested_frame_reset();
     sr_hle_test_audio_reset();
     audio_fixture_reset();
+    extern void sr_hle_test_mutex_reset(void);
+    sr_hle_test_mutex_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -5102,15 +5108,15 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Nested guest-call (callback) ABI specimen.
+ * Nested guest-call (callback) frame and ABI specimens.
  *
- * WHAT THIS IS.  Every nested guest call this runtime makes goes through the
- * same marshalling policy: ge_call_guest() and ge_call_guest_rv() in hle.c, and
- * call_guest3() in mpeg.c.  Before this regression existed nothing recorded what
- * that policy actually preserves, so any argument about the MPEG callback stack
- * was an argument about unmeasured behaviour.  These cases enter the production
- * marshalling through sr_hle_test_call_guest() -- a call-through to
- * ge_call_guest_rv(), not a copy of it -- and pin every observable.
+ * WHAT THIS IS.  Every nested host->guest call this runtime makes goes through
+ * the same marshalling policy: ge_call_guest() and ge_call_guest_rv() in hle.c,
+ * and call_guest3() in mpeg.c.  These cases enter the production marshalling
+ * through sr_hle_test_call_guest() / sr_hle_test_call_guest_void() --
+ * call-throughs to those functions, not copies of them -- and pin every
+ * observable: what the callee is handed, what the caller gets back, and which
+ * guest memory the call is allowed to disturb.
  *
  * WHAT IT IS NOT.  This is HOST_TESTED: it states what Nakagawa does today.  It
  * is NOT a PSP contract and must never be read as one.  Public PSP ABI/source
@@ -5119,18 +5125,27 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
  * and $gp and may freely clobber the argument, result and temporary registers),
  * but the exact PSP callback-stack contract relevant to this runtime is
  * unmeasured here and remains CORROBORATIVE_ONLY / NOT_ESTABLISHED.
- * This runtime instead zeroes the whole CpuState, hands the callee one fixed
- * scratch stack, and restores the caller's entire state afterwards.  Those are
- * different models.  Which one the PSP requires is NOT ESTABLISHED and cannot be
- * settled from source; it needs a hardware probe.  Until then this regression's
- * job is to make the current model impossible to change by accident.
+ * This runtime instead zeroes the whole CpuState, hands the callee a runtime-
+ * owned guest frame, and restores the caller's entire state afterwards.  Those
+ * are different models.  Which one the PSP requires is NOT ESTABLISHED and
+ * cannot be settled from source; it needs a hardware probe.  Until then this
+ * regression's job is to make the current model impossible to change by
+ * accident.
+ *
+ * WHAT CHANGED, AND WHAT DID NOT.  The frame handed to a nested call used to be
+ * one fixed guest address, 0x09df8000, shared by every call on every thread at
+ * every depth; it is now a per-owner, per-depth frame out of the reserved region
+ * owned by src/rt/nested_frames.c.  Only $sp moved.  The zeroed CpuState, the
+ * inherited $gp, $ra = 0, the 0xe4 VFPU prefix seeds and the byte-exact caller
+ * restore are unchanged and are asserted below exactly as before.
  *
  * The guest bodies below are synthetic and source-owned.  Only the body is
  * synthetic: the state marshalling under test is production code.
  * --------------------------------------------------------------------------- */
 extern uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
                                        uint32_t a0, uint32_t a1, uint32_t a2);
-extern uint32_t sr_hle_test_call_guest_stack(void);
+extern void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
+                                        uint32_t a0, uint32_t a1, uint32_t a2);
 
 #define CBABI_ENTRY        0x0800ab00u  /* records its incoming state, then mutates everything */
 #define CBABI_NESTED_ENTRY 0x0800ab40u  /* records, makes one nested call, records again */
@@ -5145,6 +5160,10 @@ extern uint32_t sr_hle_test_call_guest_stack(void);
 #define CBABI_LOCAL_OFFSET 16u
 #define CBABI_OUTER_LOCAL  0x0a7e5710u
 #define CBABI_INNER_LOCAL  0xdeadbeefu
+/* A guest word OUTSIDE every nested frame: the shared state a real nested call
+ * exists to update.  Isolating stacks must not isolate this. */
+#define CBABI_SHARED_ADDR  0x08a00000u
+#define CBABI_SHARED_VALUE 0x5eed5eedu
 
 static CpuState s_cbabi_seen[4];     /* incoming state, per invocation */
 static unsigned s_cbabi_calls;
@@ -5153,6 +5172,7 @@ static int s_cbabi_max_depth;
 static uint32_t s_cbabi_outer_sp;
 static uint32_t s_cbabi_inner_sp;
 static uint32_t s_cbabi_outer_local_after_nested;
+static uint32_t s_cbabi_shared_after_nested;
 
 /* Mutate every architectural class a real guest body could touch, so anything
  * the caller-side restore misses shows up as a difference after the call. */
@@ -5184,6 +5204,8 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target) {
         s_cbabi_inner_sp = cpu->r[29];
         /* Exactly what a translated body does with a guest local: store below $sp. */
         MEM_W32(cpu->r[29] - CBABI_LOCAL_OFFSET, CBABI_INNER_LOCAL);
+        /* ... and exactly what it does with shared state: store outside any frame. */
+        MEM_W32(CBABI_SHARED_ADDR, CBABI_SHARED_VALUE);
         cbabi_scribble(cpu, 0x77000000u);
         cpu->r[2] = CBABI_STORE_RETURN;
     } else if (target == CBABI_NEG_ENTRY) {
@@ -5195,6 +5217,7 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target) {
          * nested-callback shape, driven through the same entry point. */
         uint32_t inner = sr_hle_test_call_guest(cpu, CBABI_STORE_ENTRY, 1u, 2u, 3u);
         s_cbabi_outer_local_after_nested = MEM_R32(cpu->r[29] - CBABI_LOCAL_OFFSET);
+        s_cbabi_shared_after_nested = MEM_R32(CBABI_SHARED_ADDR);
         cpu->r[2] = inner == CBABI_STORE_RETURN ? CBABI_NESTED_RETURN : 0xbadbad00u;
     } else {
         cbabi_scribble(cpu, 0x55000000u);
@@ -5213,6 +5236,7 @@ static void cbabi_reset(void) {
     s_cbabi_outer_sp = 0;
     s_cbabi_inner_sp = 0;
     s_cbabi_outer_local_after_nested = 0;
+    s_cbabi_shared_after_nested = 0;
 }
 
 /* Every GPR except the ones the marshalling deliberately populates: the three
@@ -5225,14 +5249,23 @@ static int cbabi_other_gprs_zero(const CpuState *seen) {
     return 1;
 }
 
+/* An address is a usable nested-frame stack pointer when it is inside the
+ * reserved region and sits at the fixed $sp offset within some slot. */
+static int nfi_is_frame_sp(uint32_t sp) {
+    uint32_t base = 0, end = 0;
+    sr_nested_frame_region(&base, &end);
+    if (sp < base || sp >= end) return 0;
+    return ((sp - base) % SR_NESTED_FRAME_STRIDE) == SR_NESTED_FRAME_SP_OFF;
+}
+
 static void test_nested_guest_call_abi(void) {
     CpuState caller, before;
-    const uint32_t scratch = sr_hle_test_call_guest_stack();
-    const uint32_t local_addr = scratch - CBABI_LOCAL_OFFSET;
+    uint32_t region_base = 0, region_end = 0;
 
     reset_fixture();
     sr_hle_init();
     cbabi_reset();
+    sr_nested_frame_region(&region_base, &region_end);
 
     /* A caller state with every class set to something distinctive, so "restored"
      * is a real claim rather than "was zero and stayed zero". */
@@ -5240,7 +5273,7 @@ static void test_nested_guest_call_abi(void) {
     cbabi_scribble(&caller, 0x33000000u);
     caller.r[0] = 0u;                     /* $zero is architecturally fixed */
     caller.r[28] = 0x08800000u;           /* $gp */
-    caller.r[29] = 0x09c00000u;           /* the caller's own stack, distinct from the scratch one */
+    caller.r[29] = 0x09c00000u;           /* the caller's own stack, distinct from any frame */
     caller.r[31] = 0x08123456u;           /* $ra */
     caller.pc = 0x08001000u;
     memcpy(&before, &caller, sizeof(caller));
@@ -5258,10 +5291,10 @@ static void test_nested_guest_call_abi(void) {
                    seen->r[6] == 0xc2c2c2c2u,
                "the three call arguments arrive in $a0/$a1/$a2");
         expect(seen->r[28] == before.r[28], "$gp is inherited from the calling state");
-        expect(seen->r[29] == scratch,
-               "the callee runs on the fixed scratch stack, not the caller's $sp");
+        expect(nfi_is_frame_sp(seen->r[29]),
+               "the callee runs on a reserved nested-call frame, not the caller's $sp");
         expect(seen->r[29] != before.r[29],
-               "the scratch stack is genuinely a different stack from the caller's");
+               "the nested frame is genuinely a different stack from the caller's");
         expect(seen->r[31] == 0u, "$ra is zero: the callee has no guest return address to jump to");
         expect(seen->pc == CBABI_ENTRY, "$pc names the guest entry being dispatched");
         expect(cbabi_other_gprs_zero(seen),
@@ -5295,13 +5328,30 @@ static void test_nested_guest_call_abi(void) {
            "the entire caller CpuState is restored byte-for-byte across the call");
     expect(caller.r[2] == before.r[2],
            "$v0 is restored as well: the callee's result is not left in the caller's registers");
+    expect(sr_nested_frame_live() == 0u,
+           "the nested frame is released when the call returns normally");
+    /* The frame pool is statically reserved guest memory and a static host slot
+     * table: acquiring one must not call the guest allocator.  s_heap_arena_off
+     * is this fixture's guest-malloc bump cursor, so it moves if anything on the
+     * callback-entry path allocates. */
+    {
+        size_t heap_before = s_heap_arena_off;
+        cbabi_reset();
+        (void)sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u);
+        sr_hle_test_call_guest_void(&caller, CBABI_ENTRY, 0u, 0u, 0u);
+        expect(s_cbabi_calls == 2u, "both marshallers dispatched for the allocation probe");
+        expect(s_heap_arena_off == heap_before,
+               "entering a nested guest call allocates no guest heap memory");
+    }
 
     /* ---- guest memory is NOT part of that restoration ---------------------- */
     cbabi_reset();
-    MEM_W32(local_addr, 0u);
+    MEM_W32(CBABI_SHARED_ADDR, 0u);
     (void)sr_hle_test_call_guest(&caller, CBABI_STORE_ENTRY, 0u, 0u, 0u);
-    expect(MEM_R32(local_addr) == CBABI_INNER_LOCAL,
+    expect(MEM_R32(s_cbabi_inner_sp - CBABI_LOCAL_OFFSET) == CBABI_INNER_LOCAL,
            "guest memory written by the callee persists after the call returns");
+    expect(MEM_R32(CBABI_SHARED_ADDR) == CBABI_SHARED_VALUE,
+           "a callee write to shared guest memory outside its frame survives the return");
 
     /* ---- repeated calls do not leak state between invocations -------------- */
     cbabi_reset();
@@ -5310,6 +5360,10 @@ static void test_nested_guest_call_abi(void) {
     expect(s_cbabi_calls == 2u, "the guest body is entered once per call");
     expect(s_cbabi_seen[1].r[4] == 2u && cbabi_other_gprs_zero(&s_cbabi_seen[1]),
            "the second invocation starts from a freshly zeroed state, not the first one's");
+    expect(s_cbabi_seen[0].r[29] == s_cbabi_seen[1].r[29],
+           "sequential (non-overlapping) calls reuse the same frame slot");
+    expect(sr_nested_frame_live() == 0u,
+           "sequential calls each release their frame");
 
     /* ---- a sign-bit result survives unchanged ------------------------------ *
      * The marshalling returns uint32_t, so a guest error code must arrive with
@@ -5323,29 +5377,618 @@ static void test_nested_guest_call_abi(void) {
     expect(sr_hle_test_call_guest(&caller, 0u, 1u, 2u, 3u) == 0u,
            "a null guest entry returns zero");
     expect(s_cbabi_calls == 0u, "a null guest entry dispatches nothing");
+    expect(sr_nested_frame_live() == 0u,
+           "a refused null entry acquires no frame");
 
-    /* ---- nested call: the measured shared-stack hazard --------------------- *
-     * This is the concrete mechanism behind the MPEG scratch-stack question.  The
-     * inner call is handed the SAME fixed stack address as the outer one, so a
-     * word the outer body parked below its own $sp is overwritten by the inner
-     * body before the outer body resumes.  Recorded as a measurement of THIS
-     * runtime, not as a claim about the PSP: whether hardware shares a stack
-     * across nested guest calls is NOT ESTABLISHED, and no production behaviour
-     * is changed on the strength of this test. */
+    /* ---- the void marshaller carries its own acquire/release --------------- */
     cbabi_reset();
     memcpy(&caller, &before, sizeof(caller));
+    sr_hle_test_call_guest_void(&caller, CBABI_STORE_ENTRY, 4u, 5u, 6u);
+    expect(s_cbabi_calls == 1u && s_cbabi_seen[0].r[4] == 4u,
+           "ge_call_guest() dispatches its callee with the same argument marshalling");
+    expect(nfi_is_frame_sp(s_cbabi_seen[0].r[29]),
+           "ge_call_guest() also runs its callee on a reserved nested-call frame");
+    expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
+           "ge_call_guest() restores the caller CpuState byte-for-byte too");
+    expect(sr_nested_frame_live() == 0u, "ge_call_guest() releases its frame");
+
+    /* ---- nested call on ONE thread: the same-thread isolation claim -------- *
+     * This is the shape that used to destroy the outer body's guest locals: both
+     * levels were handed the same fixed address.  They now get distinct frames
+     * at distinct depths, while a write to shared guest memory made by the inner
+     * body still reaches the outer body -- isolation must not become erasure. */
+    cbabi_reset();
+    memcpy(&caller, &before, sizeof(caller));
+    MEM_W32(CBABI_SHARED_ADDR, 0u);
     uint32_t nested_rv = sr_hle_test_call_guest(&caller, CBABI_NESTED_ENTRY, 0u, 0u, 0u);
     expect(nested_rv == CBABI_NESTED_RETURN, "a callback may itself perform a nested guest call");
     expect(s_cbabi_calls == 2u && s_cbabi_max_depth == 2,
            "the nested call really re-entered the marshalling two levels deep");
-    expect(s_cbabi_outer_sp == s_cbabi_inner_sp && s_cbabi_outer_sp == scratch,
-           "outer and inner nested calls are handed the identical scratch stack address");
-    expect(s_cbabi_outer_local_after_nested == CBABI_INNER_LOCAL,
-           "MEASURED HAZARD: the inner call overwrites the outer body's guest stack local");
-    expect(s_cbabi_outer_local_after_nested != CBABI_OUTER_LOCAL,
-           "MEASURED HAZARD: the outer body cannot rely on its guest stack across a nested call");
+    expect(nfi_is_frame_sp(s_cbabi_outer_sp) && nfi_is_frame_sp(s_cbabi_inner_sp),
+           "both nesting levels run on reserved nested-call frames");
+    expect(s_cbabi_outer_sp != s_cbabi_inner_sp,
+           "outer and inner nested calls are handed DIFFERENT guest frames");
+    expect(s_cbabi_outer_local_after_nested == CBABI_OUTER_LOCAL,
+           "the inner call does not overwrite the outer body's guest stack local");
+    expect(s_cbabi_shared_after_nested == CBABI_SHARED_VALUE,
+           "a shared-memory write made by the inner call is visible to the outer body");
+    expect(MEM_R32(CBABI_SHARED_ADDR) == CBABI_SHARED_VALUE,
+           "that shared-memory write also survives the outermost return");
     expect(memcmp(&caller, &before, sizeof(CpuState)) == 0,
            "the outermost caller state is still restored despite the nested re-entry");
+    expect(sr_nested_frame_live() == 0u,
+           "both nesting levels released their frames");
+    expect(sr_nested_frame_guard_failures() == 0u && sr_nested_frame_exhaustions() == 0u &&
+               sr_nested_frame_lifo_violations() == 0u,
+           "the ABI specimen provokes no guard, exhaustion or ordering fault");
+}
+
+/* ---------------------------------------------------------------------------
+ * H2 / H3 specimens, plus the frame pool's own contracts.
+ *
+ * test_nested_guest_call_abi() above covers the SAME-thread nesting hazard.  Two
+ * stronger hazards do not follow from that measurement and were argued from
+ * address arithmetic alone, so they are measured here through production code:
+ *
+ *   H2  Two DIFFERENT guest threads, each only one level deep, collided.  This
+ *       needs the nested call to be scheduler-preemptible, which it is: the
+ *       marshalling refreshes sr_timeslice but installs no scheduler lock, so
+ *       the SR_YIELD that codegen emits at every guest function entry and loop
+ *       back-edge reaches sr_yield(), saves the nested frame into the TCB and
+ *       switches away.  The specimen drives exactly that sequence through the
+ *       real sr_yield() and the real sched_run() resume stores.
+ *
+ *   H3  The frame region must be outside [SR_STACK_ARENA_FLOOR,
+ *       SR_STACK_ARENA_CEIL), the descending arena sceKernelCreateThread carves
+ *       guest thread stacks out of.  Measured by running the production
+ *       allocator, not by re-deriving its arithmetic in the test.
+ *
+ * Both are host measurements of THIS runtime, exactly like the ABI specimen
+ * above; neither states a PSP contract.
+ * --------------------------------------------------------------------------- */
+#define NFI_YIELD_ENTRY    0x0800ac00u  /* writes a local, yields, re-reads the local */
+#define NFI_WRITE_ENTRY    0x0800ac40u  /* writes its own local below $sp and returns */
+#define NFI_RECURSE_ENTRY  0x0800ac80u  /* nests into itself until it is refused */
+#define NFI_OVERFLOW_ENTRY 0x0800acc0u  /* writes into its own low guard band */
+#define NFI_MIRROR_ENTRY   0x0800ace0u  /* writes the NEIGHBOUR slot guard word into its own */
+#define NFI_UNWIND_ENTRY   0x0800ad00u  /* thread body: nested call, then longjmp out */
+#define NFI_JUMP_ENTRY     0x0800ad40u  /* nested callee that calls sched_unwind_current */
+#define NFI_CB_ENTRY       0x0800ad80u  /* PSP callback body that makes a nested call */
+#define NFI_YIELD_RETURN   0x00000051u
+#define NFI_WRITE_RETURN   0x00000052u
+#define NFI_RECURSE_RETURN 0x00000053u
+#define NFI_OVERFLOW_RETURN 0x00000054u
+#define NFI_CB_RETURN      0x00000000u  /* 0 keeps the PSP auto-delete rule off */
+#define NFI_LOCAL_OFFSET   16u
+#define NFI_YIELDER_LOCAL  0x11117777u
+#define NFI_WRITER_LOCAL   0x2222bbbbu
+#define NFI_CB_LOCAL       0x3333ccccu
+
+static uint32_t s_nfi_yielder_sp;
+static uint32_t s_nfi_writer_sp;
+static uint32_t s_nfi_yielder_local_after;
+static uint32_t s_nfi_a_rv, s_nfi_b_rv;
+static unsigned s_nfi_yielder_owner_depth;
+static unsigned s_nfi_writer_owner_depth;
+static unsigned s_nfi_live_while_both_open;
+static int s_nfi_yielder_resumed;
+static int s_nfi_writer_ran;
+
+static unsigned s_nfi_recurse_limit;
+static unsigned s_nfi_recurse_calls;
+static uint32_t s_nfi_recurse_sp[8];
+static unsigned s_nfi_recurse_depth_seen[8];
+static int s_nfi_recurse_refused_at;
+
+static uint32_t s_nfi_overflow_sp;
+static uint32_t s_nfi_overflow_target;
+static uint32_t s_nfi_mirror_value;
+
+static uint32_t s_nfi_unwind_depth_at_jump;
+static int s_nfi_unwind_body_entered;
+static int s_nfi_unwind_returned;      /* must stay 0: the longjmp skips the return */
+
+static uint32_t s_nfi_cb_sp;
+static uint32_t s_nfi_cb_local_after_nested;
+static uint32_t s_nfi_cb_nested_sp;
+static int s_nfi_cb_ran;
+
+static void nfi_reset_observations(void) {
+    s_nfi_yielder_sp = 0;
+    s_nfi_writer_sp = 0;
+    s_nfi_yielder_local_after = 0;
+    s_nfi_a_rv = 0;
+    s_nfi_b_rv = 0;
+    s_nfi_yielder_owner_depth = 0;
+    s_nfi_writer_owner_depth = 0;
+    s_nfi_live_while_both_open = 0;
+    s_nfi_yielder_resumed = 0;
+    s_nfi_writer_ran = 0;
+    s_nfi_recurse_limit = 0;
+    s_nfi_recurse_calls = 0;
+    memset(s_nfi_recurse_sp, 0, sizeof s_nfi_recurse_sp);
+    memset(s_nfi_recurse_depth_seen, 0, sizeof s_nfi_recurse_depth_seen);
+    s_nfi_recurse_refused_at = -1;
+    s_nfi_overflow_sp = 0;
+    s_nfi_overflow_target = 0;
+    s_nfi_mirror_value = 0;
+    s_nfi_unwind_depth_at_jump = 0;
+    s_nfi_unwind_body_entered = 0;
+    s_nfi_unwind_returned = 0;
+    s_nfi_cb_sp = 0;
+    s_nfi_cb_local_after_nested = 0;
+    s_nfi_cb_nested_sp = 0;
+    s_nfi_cb_ran = 0;
+}
+
+static int nfi_dispatch(CpuState *cpu, uint32_t target) {
+    if (target == NFI_YIELD_ENTRY) {
+        s_nfi_yielder_sp = cpu->r[29];
+        s_nfi_yielder_owner_depth = sr_nested_frame_owner_depth(sched_current_uid());
+        /* What a translated body does with a guest local: spill below $sp. */
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_YIELDER_LOCAL);
+        /* The production preemption point.  Nothing in the nested-call
+         * marshalling suspends dispatch or interrupts, so this is reachable
+         * from inside a GE/MPEG callback exactly as written. */
+        sr_yield(cpu);
+        s_nfi_yielder_resumed = 1;
+        s_nfi_yielder_local_after = MEM_R32(cpu->r[29] - NFI_LOCAL_OFFSET);
+        cpu->r[2] = NFI_YIELD_RETURN;
+        return 1;
+    }
+    if (target == NFI_WRITE_ENTRY) {
+        s_nfi_writer_ran = 1;
+        s_nfi_writer_sp = cpu->r[29];
+        s_nfi_writer_owner_depth = sr_nested_frame_owner_depth(sched_current_uid());
+        s_nfi_live_while_both_open = sr_nested_frame_live();
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_WRITER_LOCAL);
+        cpu->r[2] = NFI_WRITE_RETURN;
+        return 1;
+    }
+    if (target == NFI_RECURSE_ENTRY) {
+        unsigned level = cpu->r[4];
+        if (level < 8u) {
+            s_nfi_recurse_sp[level] = cpu->r[29];
+            s_nfi_recurse_depth_seen[level] = sr_nested_frame_owner_depth(sched_current_uid());
+        }
+        s_nfi_recurse_calls++;
+        if (level + 1u < s_nfi_recurse_limit) {
+            uint32_t inner = sr_hle_test_call_guest(cpu, NFI_RECURSE_ENTRY, level + 1u, 0u, 0u);
+            if (inner == 0u && s_nfi_recurse_refused_at < 0)
+                s_nfi_recurse_refused_at = (int)level;
+        }
+        cpu->r[2] = NFI_RECURSE_RETURN;
+        return 1;
+    }
+    if (target == NFI_OVERFLOW_ENTRY || target == NFI_MIRROR_ENTRY) {
+        /* Run off the bottom of the frame: the last word of the low guard band
+         * is the first thing a descending overflow reaches. */
+        uint32_t slot = cpu->r[29] - SR_NESTED_FRAME_SP_OFF;
+        s_nfi_overflow_sp = cpu->r[29];
+        s_nfi_overflow_target = slot + SR_NESTED_FRAME_GUARD - 4u;
+        if (target == NFI_MIRROR_ENTRY) {
+            /* The adversarial shape a constant guard word would miss: write the
+             * value that is CORRECT in the neighbouring slot at the same offset,
+             * i.e. what a bulk guest copy across the region would leave behind.
+             * Only an address-keyed guard rejects this. */
+            s_nfi_mirror_value = MEM_R32(s_nfi_overflow_target - SR_NESTED_FRAME_STRIDE);
+            MEM_W32(s_nfi_overflow_target, s_nfi_mirror_value);
+        } else {
+            MEM_W32(s_nfi_overflow_target, 0xbadf00du);
+        }
+        cpu->r[2] = NFI_OVERFLOW_RETURN;
+        return 1;
+    }
+    if (target == NFI_UNWIND_ENTRY) {
+        s_nfi_unwind_body_entered = 1;
+        (void)sr_hle_test_call_guest(cpu, NFI_JUMP_ENTRY, 0u, 0u, 0u);
+        s_nfi_unwind_returned = 1;    /* unreachable: the callee jumps out */
+        cpu->r[2] = 0;
+        return 1;
+    }
+    if (target == NFI_JUMP_ENTRY) {
+        s_nfi_unwind_depth_at_jump = sr_nested_frame_owner_depth(sched_current_uid());
+        /* The production nonlocal exit recomp.c uses to abandon a guest thread. */
+        sched_unwind_current();
+        cpu->r[2] = 0;                /* unreachable */
+        return 1;
+    }
+    if (target == NFI_CB_ENTRY) {
+        s_nfi_cb_ran = 1;
+        s_nfi_cb_sp = cpu->r[29];
+        MEM_W32(cpu->r[29] - NFI_LOCAL_OFFSET, NFI_CB_LOCAL);
+        /* callback (live stack) -> HLE -> GE nested call (reserved frame). */
+        (void)sr_hle_test_call_guest(cpu, NFI_WRITE_ENTRY, 0u, 0u, 0u);
+        s_nfi_cb_nested_sp = s_nfi_writer_sp;
+        s_nfi_cb_local_after_nested = MEM_R32(cpu->r[29] - NFI_LOCAL_OFFSET);
+        cpu->r[2] = NFI_CB_RETURN;
+        return 1;
+    }
+    return 0;
+}
+
+static void nfi_thread_a_body(void *arg) {
+    (void)arg;
+    s_nfi_a_rv = sr_hle_test_call_guest(s_cpu, NFI_YIELD_ENTRY, 0u, 0u, 0u);
+    selftest_park_on_scheduler();
+}
+
+static void nfi_thread_b_body(void *arg) {
+    (void)arg;
+    s_nfi_b_rv = sr_hle_test_call_guest(s_cpu, NFI_WRITE_ENTRY, 0u, 0u, 0u);
+    selftest_park_on_scheduler();
+}
+
+/* The register/state half of sched_run()'s resume sequence, with the
+ * coroutine-creation policy left to the caller.  Copying the policy would make
+ * the specimen measure the copy; copying these three stores is what makes the
+ * resumed thread see the registers the scheduler really hands it. */
+static void nfi_resume(TCB *t) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    sr_coro_switch(t->coro);
+}
+
+static void test_nested_frames_isolate_concurrent_threads(void) {
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    s_pace_on = 0;
+    s_vbl_next_us = 100000000ull;   /* no VBLANK inside the window under test */
+    s_vbl_event_period_rem = 0;
+
+    TCB *a = fixture_thread(0x1e0u, TH_READY, 32);
+    TCB *b = fixture_thread(0x1e1u, TH_READY, 32);
+    a->started = 1;
+    b->started = 1;
+    a->coro = sr_coro_create(nfi_thread_a_body, NULL, (size_t)4 << 20);
+    b->coro = sr_coro_create(nfi_thread_b_body, NULL, (size_t)4 << 20);
+    expect(a->coro != NULL && b->coro != NULL, "both nested-frame specimen threads got a coroutine");
+    if (!a->coro || !b->coro) return;
+
+    /* Thread A enters a nested guest call and is preempted INSIDE it. */
+    nfi_resume(a);
+    expect(s_nfi_yielder_sp != 0u, "thread A entered the nested guest call");
+    expect(a->state == TH_READY && !s_nfi_yielder_resumed,
+           "thread A was preempted while still inside the nested guest call");
+    expect(a->saved.r[29] == s_nfi_yielder_sp,
+           "the preempted nested frame is what the scheduler saved for thread A");
+    expect(sr_nested_frame_live() == 1u,
+           "thread A still holds its nested frame while it is not running");
+
+    /* Thread B now makes its own depth-1 nested guest call while A's is live. */
+    nfi_resume(b);
+    expect(s_nfi_writer_ran && s_nfi_b_rv == NFI_WRITE_RETURN,
+           "thread B completed its own depth-1 nested guest call");
+    expect(s_nfi_live_while_both_open == 2u,
+           "both threads' nested frames were live at the same moment");
+    expect(s_nfi_yielder_owner_depth == 1u && s_nfi_writer_owner_depth == 1u,
+           "each thread saw itself at nesting depth 1, not a shared depth");
+
+    /* Thread A resumes and reads the local it spilled before being preempted. */
+    nfi_resume(a);
+    expect(s_nfi_yielder_resumed && s_nfi_a_rv == NFI_YIELD_RETURN,
+           "thread A resumed and completed its nested guest call");
+
+    expect(nfi_is_frame_sp(s_nfi_yielder_sp) && nfi_is_frame_sp(s_nfi_writer_sp),
+           "both threads ran on reserved nested-call frames");
+    expect(s_nfi_writer_sp != s_nfi_yielder_sp,
+           "H2: concurrent depth-1 nested calls on different threads get different guest frames");
+    expect(s_nfi_yielder_local_after == NFI_YIELDER_LOCAL,
+           "H2: another thread's nested call does not overwrite this thread's nested guest local");
+    expect(sr_nested_frame_live() == 0u,
+           "both threads released their frames");
+    expect(sr_nested_frame_guard_failures() == 0u,
+           "neither thread's frame reported guard corruption");
+
+    if (a->coro) { sr_coro_destroy(a->coro); a->coro = NULL; }
+    if (b->coro) { sr_coro_destroy(b->coro); b->coro = NULL; }
+    s_cur = -1;
+}
+
+static void test_nested_frame_region_is_reserved_from_thread_stacks(void) {
+    uint32_t base = 0, end = 0;
+    uint32_t colliding_uid = 0, colliding_base = 0, colliding_end = 0;
+    int created = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_nested_frame_region(&base, &end);
+
+    expect(end > base && (end - base) == SR_NESTED_FRAME_SLOTS * SR_NESTED_FRAME_STRIDE,
+           "the reserved nested-frame region is exactly the slot array");
+
+    /* Structural: the arena bounds anything the allocator can ever hand out. */
+    expect(end <= SR_STACK_ARENA_FLOOR || base >= SR_STACK_ARENA_CEIL,
+           "H3: the nested guest-call frame region is outside the thread-stack arena");
+
+    /* Empirical: run the production allocator with the production default stack
+     * size (0 => 0x40000) and look at the ranges it actually produced.  Five
+     * default-sized stacks was enough to land on 0x09df8000 before the region
+     * was reserved, so the loop bound is well past the historical collision. */
+    for (int i = 0; i < 8 && colliding_uid == 0u; i++) {
+        uint32_t uid = sched_create_thread(0x0800dc00u + (uint32_t)i, 40, 0u);
+        TCB *t;
+        if (!uid) break;
+        t = tcb_by_uid(uid);
+        if (!t) break;
+        created++;
+        if (t->stack_base < end && t->stack_base + t->stack_reservation > base) {
+            colliding_uid = uid;
+            colliding_base = t->stack_base;
+            colliding_end = t->stack_base + t->stack_reservation;
+        }
+    }
+    expect(created > 0, "the production thread-stack allocator carved at least one guest stack");
+    {
+        char msg[224];
+        snprintf(msg, sizeof msg,
+                 "H3: no created thread stack overlaps the nested guest-call frame region "
+                 "([0x%08x,0x%08x), %d stacks, first overlap uid=0x%x [0x%08x,0x%08x))",
+                 base, end, created, colliding_uid, colliding_base, colliding_end);
+        expect(colliding_uid == 0u, msg);
+    }
+
+    /* SEPARATE, UNFIXED BOUNDARY, measured here so it stays visible: the VBLANK
+     * interrupt stack is inside the thread-stack arena, exactly as the nested
+     * frames used to be.  This assertion records the present state deliberately
+     * -- if the interrupt stack is ever moved out, this fails and must be
+     * updated rather than silently drifting. */
+    expect(0x09df0000u >= SR_STACK_ARENA_FLOOR && 0x09df0000u < SR_STACK_ARENA_CEIL,
+           "MEASURED, NOT FIXED: the VBLANK interrupt stack 0x09df0000 is still inside "
+           "the thread-stack arena (separate boundary)");
+}
+
+static void test_nested_frame_depth_is_bounded_and_fails_closed(void) {
+    CpuState caller;
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&caller, 0, sizeof caller);
+    caller.r[29] = 0x09c00000u;
+
+    /* Ask for two levels more than the contract allows. */
+    s_nfi_recurse_limit = SR_NESTED_FRAME_MAX_DEPTH + 2u;
+    (void)sr_hle_test_call_guest(&caller, NFI_RECURSE_ENTRY, 0u, 0u, 0u);
+
+    expect(s_nfi_recurse_calls == SR_NESTED_FRAME_MAX_DEPTH,
+           "nesting stops after exactly SR_NESTED_FRAME_MAX_DEPTH guest bodies");
+    expect(s_nfi_recurse_refused_at == (int)(SR_NESTED_FRAME_MAX_DEPTH - 1u),
+           "the refusal happens at the deepest permitted level, not earlier or later");
+    expect(sr_nested_frame_exhaustions() == 1u,
+           "the refused call is counted exactly once as an exhaustion");
+    {
+        int distinct = 1, depths_ok = 1;
+        for (unsigned i = 0; i < SR_NESTED_FRAME_MAX_DEPTH; i++) {
+            if (!nfi_is_frame_sp(s_nfi_recurse_sp[i])) distinct = 0;
+            if (s_nfi_recurse_depth_seen[i] != i + 1u) depths_ok = 0;
+            for (unsigned j = 0; j < i; j++)
+                if (s_nfi_recurse_sp[i] == s_nfi_recurse_sp[j]) distinct = 0;
+        }
+        expect(distinct, "every permitted nesting level ran on its own reserved frame");
+        expect(depths_ok, "each level observed its own depth, counting from 1");
+    }
+    expect(sr_nested_frame_live() == 0u,
+           "unwinding the whole nest releases every frame");
+    expect(sr_nested_frame_owner_depth(0u) == 0u,
+           "the owner's depth returns to zero after the nest unwinds");
+    expect(sr_nested_frame_lifo_violations() == 0u,
+           "the nest released its frames innermost-first");
+
+    /* Pool exhaustion is a separate limit from per-owner depth: hold every slot
+     * under other owners, then a call from a fresh owner must be refused rather
+     * than handed a frame somebody else is standing on. */
+    sr_nested_frame_reset();
+    {
+        int handles[SR_NESTED_FRAME_SLOTS];
+        uint32_t sp = 0;
+        unsigned i, held = 0;
+        for (i = 0; i < SR_NESTED_FRAME_SLOTS; i++) {
+            handles[i] = -1;
+            if (sr_nested_frame_acquire(0x900u + i, &sp, &handles[i])) held++;
+        }
+        expect(held == SR_NESTED_FRAME_SLOTS,
+               "the pool hands out exactly SR_NESTED_FRAME_SLOTS frames");
+        expect(sr_nested_frame_live() == SR_NESTED_FRAME_SLOTS,
+               "all pool slots are accounted for as live");
+        cbabi_reset();
+        expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == 0u,
+               "a nested call with the pool exhausted returns zero");
+        expect(s_cbabi_calls == 0u,
+               "a nested call with the pool exhausted dispatches nothing");
+        expect(sr_nested_frame_exhaustions() == 1u,
+               "the pool-exhaustion refusal is counted");
+        for (i = 0; i < SR_NESTED_FRAME_SLOTS; i++)
+            if (handles[i] >= 0) (void)sr_nested_frame_release(handles[i]);
+        expect(sr_nested_frame_live() == 0u, "releasing every handle empties the pool");
+        cbabi_reset();
+        expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == CBABI_RETURN_VALUE,
+               "the pool is usable again once the frames are returned");
+    }
+    sr_nested_frame_reset();
+}
+
+static void test_nested_frame_guard_detects_overflow(void) {
+    CpuState caller;
+    uint32_t neighbour_sp = 0, neighbour_probe = 0;
+    int neighbour = -1;
+
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&caller, 0, sizeof caller);
+    caller.r[29] = 0x09c00000u;
+
+    /* Hold slot 0 under a different owner so the overflowing call gets slot 1
+     * and there is a real neighbour whose stack must stay intact. */
+    expect(sr_nested_frame_acquire(0x901u, &neighbour_sp, &neighbour),
+           "the neighbour frame was acquired");
+    neighbour_probe = neighbour_sp - NFI_LOCAL_OFFSET;
+    MEM_W32(neighbour_probe, 0xfeedfaceu);
+
+    expect(sr_hle_test_call_guest(&caller, NFI_OVERFLOW_ENTRY, 0u, 0u, 0u) == NFI_OVERFLOW_RETURN,
+           "the overflowing body still returns its value to the HLE caller");
+    expect(s_nfi_overflow_sp != neighbour_sp,
+           "the overflowing call ran on a different frame from the neighbour");
+    expect(sr_nested_frame_guard_failures() == 1u,
+           "running off the bottom of a frame is detected exactly once at release");
+    expect(sr_nested_frame_live() == 1u,
+           "a corrupt frame is still reclaimed: only the neighbour stays live");
+    expect(MEM_R32(neighbour_probe) == 0xfeedfaceu,
+           "the guard band absorbed the overflow; the neighbouring frame is untouched");
+
+    /* Adversarial variant: a write that carries the value the guard band holds
+     * one slot LOWER -- the shape a bulk guest copy across the region leaves.
+     * A constant guard word would accept it; an address-keyed one must not. */
+    expect(sr_hle_test_call_guest(&caller, NFI_MIRROR_ENTRY, 0u, 0u, 0u) == NFI_OVERFLOW_RETURN,
+           "the mirrored-guard body returns its value");
+    expect(s_nfi_mirror_value != 0u,
+           "the mirrored write really copied a guard word from the neighbouring slot");
+    expect(sr_nested_frame_guard_failures() == 2u,
+           "a guard word that is valid one slot away is still rejected in this slot");
+
+    (void)sr_nested_frame_release(neighbour);
+    expect(sr_nested_frame_live() == 0u, "the neighbour frame is released");
+    /* A clean call afterwards must not inherit the previous occupant's verdict. */
+    cbabi_reset();
+    expect(sr_hle_test_call_guest(&caller, CBABI_ENTRY, 0u, 0u, 0u) == CBABI_RETURN_VALUE,
+           "a well-behaved call after a guard failure still runs");
+    expect(sr_nested_frame_guard_failures() == 2u,
+           "a well-behaved call does not report guard corruption");
+    sr_nested_frame_reset();
+}
+
+static void test_nested_frame_survives_thread_unwind(void) {
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    s_stranded_nested_frames = 0;
+
+    TCB *worker = fixture_thread(0x1e4u, TH_READY, 40);
+    worker->entry = NFI_UNWIND_ENTRY;
+    run_worker(worker);
+
+    expect(s_nfi_unwind_body_entered, "the unwinding thread body ran");
+    expect(s_nfi_unwind_depth_at_jump == 1u,
+           "the thread held one nested guest-call frame when it jumped out");
+    expect(s_nfi_unwind_returned == 0,
+           "sched_unwind_current() really left through the longjmp, not by returning");
+    expect(sr_nested_frame_owner_depth(worker->uid) == 0u,
+           "the unwind path reclaimed the thread's nested guest-call frame");
+    expect(sr_nested_frame_live() == 0u,
+           "no frame outlives the nonlocal exit");
+    expect(sr_nested_frame_guard_failures() == 0u,
+           "reclaiming an in-flight frame is not reported as guard corruption");
+    /* Thread teardown carries its own reclaim, so "live == 0" alone cannot tell
+     * whether the UNWIND path did the work.  The teardown net counts what it had
+     * to repair: zero means the unwind hook reclaimed the frame itself. */
+    expect(s_stranded_nested_frames == 0u,
+           "the unwind path -- not the thread-teardown net -- reclaimed the frame");
+
+    if (worker->coro) {
+        sr_coro_destroy(worker->coro);
+        worker->coro = NULL;
+    }
+}
+
+static void test_nested_frame_under_psp_callback_dispatch(void) {
+    CpuState cpu, before;
+    const uint32_t live_sp = 0x09c00000u;
+
+    reset_fixture();
+    sr_hle_init();
+    nfi_reset_observations();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[16] = 0x0badc0deu;          /* a callee-saved register the callback must not lose */
+    cpu.r[28] = 0x08800000u;
+    cpu.r[29] = live_sp;
+    cpu.r[31] = 0x08123456u;
+    cpu.pc = 0x08002000u;
+    memcpy(&before, &cpu, sizeof cpu);
+
+    /* The production PSP-callback frame helper: a nested call on the interrupted
+     * thread's LIVE register file and LIVE stack.  That is deliberately a
+     * different model from the GE/MPEG marshalling and is unchanged here. */
+    uint32_t ret = sr_callback_dispatch_one(&cpu, NFI_CB_ENTRY, 3, 0xaabbccddu, 0x11223344u,
+                                            dispatch);
+
+    expect(s_nfi_cb_ran, "the PSP callback body ran");
+    expect(ret == NFI_CB_RETURN, "the callback's $v0 reaches the dispatcher");
+    expect(s_nfi_cb_sp == live_sp,
+           "PRESERVED: a PSP callback still runs on the interrupted thread's live stack");
+    expect(nfi_is_frame_sp(s_nfi_cb_nested_sp),
+           "a GE nested call made from inside that callback gets a reserved frame");
+    expect(s_nfi_cb_nested_sp != live_sp,
+           "the nested call does not run on the callback's live stack");
+    expect(s_nfi_cb_local_after_nested == NFI_CB_LOCAL,
+           "the callback's own live-stack local survives the nested call it made");
+    expect(memcmp(&cpu, &before, sizeof cpu) == 0,
+           "the interrupted CpuState is restored byte-for-byte through both nesting layers");
+    expect(sr_nested_frame_live() == 0u,
+           "the nested call under a callback released its frame");
+}
+
+/* Frame-handle hygiene: the paths production cannot reach on its own, but which
+ * decide whether a bookkeeping slip corrupts a live frame or is refused.  A
+ * released handle must never resolve again, because the slot behind it is
+ * immediately re-issuable to a different owner. */
+static void test_nested_frame_handle_hygiene(void) {
+    uint32_t sp_a = 0, sp_b = 0, owner = 0, base = 0, sp = 0, floor = 0;
+    unsigned depth = 0;
+    int ha = -1, hb = -1, again = -1;
+
+    reset_fixture();
+    sr_hle_init();
+
+    expect(sr_nested_frame_acquire(0xa10u, &sp_a, &ha), "a frame is acquired");
+    expect(sr_nested_frame_handle_info(ha, &owner, &depth, &base, &sp),
+           "a live handle describes itself");
+    expect(owner == 0xa10u && depth == 1u && sp == sp_a && sp_a == base + SR_NESTED_FRAME_SP_OFF,
+           "the handle reports its owner, depth and the $sp the caller was given");
+    expect(sr_nested_frame_handle_extent(ha, &floor, &sp) &&
+               floor == base + SR_NESTED_FRAME_GUARD && sp > floor,
+           "the usable extent starts above the low guard and ends at $sp");
+    expect(sp - floor == SR_NESTED_FRAME_SP_OFF - SR_NESTED_FRAME_GUARD,
+           "the usable stack is the whole slot minus its guard bands and argument save area");
+
+    expect(sr_nested_frame_release(ha), "releasing an intact frame reports no corruption");
+    expect(!sr_nested_frame_handle_info(ha, NULL, NULL, NULL, NULL),
+           "a released handle no longer resolves");
+    expect(sr_nested_frame_live() == 0u, "the released frame is back in the pool");
+
+    /* The same slot, re-issued to a different owner.  The stale handle from the
+     * previous occupant must not reach it. */
+    expect(sr_nested_frame_acquire(0xa11u, &sp_b, &again), "the slot is re-issued");
+    expect(sp_b == sp_a, "the pool reuses the lowest free slot");
+    expect(again != ha, "a re-issued slot gets a distinct handle");
+    expect(!sr_nested_frame_release(ha), "the stale handle is refused");
+    expect(sr_nested_frame_live() == 1u,
+           "refusing the stale handle did not free the new owner's frame");
+    expect(sr_nested_frame_handle_info(again, &owner, NULL, NULL, NULL) && owner == 0xa11u,
+           "the new owner still holds the slot");
+    expect(!sr_nested_frame_release(-1), "a negative handle is refused");
+    expect(sr_nested_frame_live() == 1u, "a negative handle frees nothing");
+    expect(sr_nested_frame_release(again), "the current handle still works");
+
+    /* Out-of-order release is a bookkeeping fault, not a memory fault: it is
+     * counted and reported, and the slot is still reclaimed. */
+    expect(sr_nested_frame_lifo_violations() == 0u, "no ordering fault so far");
+    expect(sr_nested_frame_acquire(0xa12u, &sp_a, &ha) &&
+               sr_nested_frame_acquire(0xa12u, &sp_b, &hb),
+           "one owner takes two nesting levels");
+    expect(sp_a != sp_b, "the two levels are different frames");
+    (void)sr_nested_frame_release(ha);          /* outer first: wrong order */
+    expect(sr_nested_frame_lifo_violations() == 1u,
+           "releasing the outer frame before the inner one is counted");
+    (void)sr_nested_frame_release(hb);
+    expect(sr_nested_frame_live() == 0u, "both frames are still reclaimed");
+
+    sr_nested_frame_reset();
+    expect(sr_nested_frame_live() == 0u && sr_nested_frame_lifo_violations() == 0u &&
+               sr_nested_frame_guard_failures() == 0u && sr_nested_frame_exhaustions() == 0u,
+           "reset clears the pool and every counter");
 }
 
 /* =========================================================================
@@ -6976,6 +7619,556 @@ static void test_msgpipe_safety(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
 }
 
+/* =========================================================================
+ * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
+ * ========================================================================= */
+
+int s_mtx_parks = 0;
+
+typedef struct {
+    uint32_t uid;
+    TCB     *tcb;
+    uint32_t mtx_uid;
+    int      count;
+    uint32_t toptr;
+    int      is_cb;
+    uint32_t ret;
+    int      returned;
+} MtxWaiterCtx;
+
+static void mtx_waiter_fiber_body(void *arg) {
+    MtxWaiterCtx *ctx = (MtxWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->mtx_uid;
+    cpu.r[5] = (uint32_t)ctx->count;
+    cpu.r[6] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? 0x5bf4dd27u : 0xb011b11fu);
+    ctx->returned = 1;
+    s_mtx_parks++;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t mtx_create_raw(uint32_t name_addr, uint32_t attr, int init_count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name_addr;
+    cpu.r[5] = attr;
+    cpu.r[6] = (uint32_t)init_count;
+    return sr_syscall(&cpu, 0xb7d098c6u);
+}
+
+static uint32_t mtx_create(const char *name, uint32_t attr, int init_count) {
+    static uint32_t name_cur = 0x00260000u;
+    name_cur = (name_cur + 64u) & 0x002ffff0u;
+    if (name) {
+        size_t len = strlen(name);
+        for (size_t i = 0; i <= len; i++) {
+            MEM_W8(name_cur + (uint32_t)i, (uint8_t)name[i]);
+        }
+    }
+    return mtx_create_raw(name ? name_cur : 0, attr, init_count);
+}
+
+static uint32_t mtx_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, 0xf8170fbeu);
+}
+
+static uint32_t mtx_lock(uint32_t uid, int count, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    cpu.r[6] = toptr;
+    return sr_syscall(&cpu, 0xb011b11fu);
+}
+
+static uint32_t mtx_trylock(uint32_t uid, int count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    return sr_syscall(&cpu, 0x0ddcd2c9u);
+}
+
+static uint32_t mtx_unlock(uint32_t uid, int count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)count;
+    return sr_syscall(&cpu, 0x6b30100fu);
+}
+
+static uint32_t mtx_cancel(uint32_t uid, int new_count, uint32_t num_wait_ptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = (uint32_t)new_count;
+    cpu.r[6] = num_wait_ptr;
+    return sr_syscall(&cpu, 0x87d9223cu);
+}
+
+static uint32_t mtx_refer(uint32_t uid, uint32_t info_addr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info_addr;
+    return sr_syscall(&cpu, 0xa9c2cb9au);
+}
+
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int      initCount;
+    int      currentCount;
+    int32_t  lockThread;
+    int      numWaitThreads;
+} SceKernelMutexInfoTest;
+
+static int mtx_get_info(uint32_t uid, SceKernelMutexInfoTest *out) {
+    uint32_t buf = 0x00270000u;
+    memset(out, 0, sizeof(*out));
+    MEM_W32(buf, (uint32_t)sizeof(SceKernelMutexInfoTest));
+    uint32_t rc = mtx_refer(uid, buf);
+    if (rc != 0) return 0;
+    out->size = MEM_R32(buf);
+    for (int i = 0; i < 32; i++) out->name[i] = (char)MEM_R8(buf + 4 + i);
+    out->attr = MEM_R32(buf + 0x24);
+    out->initCount = (int)MEM_R32(buf + 0x28);
+    out->currentCount = (int)MEM_R32(buf + 0x2c);
+    out->lockThread = (int32_t)MEM_R32(buf + 0x30);
+    out->numWaitThreads = (int)MEM_R32(buf + 0x34);
+    return 1;
+}
+
+static void test_psp_mutex(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x101u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    SceKernelMutexInfoTest info;
+
+    /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
+    uint32_t m1 = mtx_create("test_mutex", 0, 0);
+    expect(m1 > 0, "T01: CreateMutex with initCount=0 returns valid UID");
+    expect(mtx_get_info(m1, &info) && strcmp(info.name, "test_mutex") == 0 &&
+           info.attr == 0 && info.initCount == 0 && info.currentCount == 0 &&
+           info.lockThread == 0 && info.numWaitThreads == 0,
+           "T01: ReferMutexStatus matches initCount=0 creation");
+
+    uint32_t m2 = mtx_create("init_locked", 0, 1);
+    expect(m2 > 0 && mtx_get_info(m2, &info) && info.initCount == 1 &&
+           info.currentCount == 1 && info.lockThread == (int32_t)cur->uid,
+           "T01: CreateMutex with initCount=1 sets lockThread to caller");
+
+    expect(mtx_create(NULL, 0, 0) == 0x80020001u, "T02: CreateMutex with NULL name returns 0x80020001");
+    expect(mtx_create_raw(0x10000000u, 0, 0) == 0x80020001u, "T02: CreateMutex with unmapped name returns 0x80020001");
+
+    expect(mtx_create("bad_attr1", 0x1000u, 0) == 0x80020191u, "T03: CreateMutex with illegal attr bits returns 0x80020191");
+    expect(mtx_create("bad_attr2", 0x0400u, 0) == 0x80020191u, "T03: CreateMutex with illegal attr 0x0400 returns 0x80020191");
+
+    expect(mtx_create("neg_count", 0, -1) == 0x800201bdu, "T04: non-recursive CreateMutex initCount < 0 returns 0x800201bd");
+    expect(mtx_create("over_count", 0, 2) == 0x800201bdu, "T04: non-recursive CreateMutex initCount > 1 returns 0x800201bd");
+
+    expect(mtx_create("rec_neg", 0x0200u, -1) == 0x800201bdu, "T05: recursive CreateMutex initCount < 0 returns 0x800201bd");
+    uint32_t m_rec = mtx_create("rec_ok", 0x0200u, 5);
+    expect(m_rec > 0 && mtx_get_info(m_rec, &info) && info.initCount == 5 &&
+           info.currentCount == 5 && info.lockThread == (int32_t)cur->uid,
+           "T05: recursive CreateMutex initCount=5 succeeds");
+
+    /* ---- T06: Deletion error handling ---- */
+    expect(mtx_delete(0) == 0x800201c3u, "T06: DeleteMutex 0 returns 0x800201c3");
+    expect(mtx_delete(0xdeadbeefu) == 0x800201c3u, "T06: DeleteMutex invalid UID returns 0x800201c3");
+    expect(mtx_delete(m1) == 0, "T06: DeleteMutex valid UID succeeds");
+    expect(mtx_delete(m1) == 0x800201c3u, "T06: DeleteMutex already deleted UID returns 0x800201c3");
+    mtx_delete(m2);
+    mtx_delete(m_rec);
+
+    /* ---- T08, T09, T10, T11: Uncontended lock, Relock recursive/non-recursive, Overflow ---- */
+    uint32_t m_nr = mtx_create("nr_lock", 0, 0);
+    expect(mtx_lock(m_nr, 1, 0) == 0, "T08: uncontended LockMutex returns 0");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 1 && info.lockThread == (int32_t)cur->uid,
+           "T08: lockThread is caller and currentCount is 1");
+    expect(mtx_lock(m_nr, 1, 0) == 0x800201c8u, "T09: non-recursive relock returns 0x800201c8 (RECURSIVE_NOT_ALLOWED)");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 1, "T09: count unchanged after rejected relock");
+    expect(mtx_unlock(m_nr, 1) == 0, "T08: unlock returns 0");
+    expect(mtx_get_info(m_nr, &info) && info.currentCount == 0 && info.lockThread == 0, "T08: mutex is unowned");
+    mtx_delete(m_nr);
+
+    uint32_t m_r = mtx_create("r_lock", 0x0200u, 0);
+    expect(mtx_lock(m_r, 2, 0) == 0, "T10: recursive LockMutex count=2 succeeds");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 2 && info.lockThread == (int32_t)cur->uid, "T10: count is 2");
+    expect(mtx_lock(m_r, 3, 0) == 0, "T10: recursive relock count=3 succeeds");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 5, "T10: count is now 5");
+    expect(mtx_lock(m_r, 0x7fffffff, 0) == 0x800201c6u, "T11: recursive relock overflow returns 0x800201c6");
+    expect(mtx_get_info(m_r, &info) && info.currentCount == 5, "T11: count unchanged after overflow");
+    expect(mtx_unlock(m_r, 2) == 0 && mtx_get_info(m_r, &info) && info.currentCount == 3,
+           "T10: partial unlock count=2 leaves count 3");
+    expect(mtx_unlock(m_r, 3) == 0 && mtx_get_info(m_r, &info) && info.currentCount == 0 && info.lockThread == 0,
+           "T10: unlock count=3 unlocks mutex completely");
+    mtx_delete(m_r);
+
+    /* ---- T18, T19, T20: TryLock, Context checks, Unlock validations ---- */
+    uint32_t m_try = mtx_create("try_mtx", 0, 0);
+    expect(mtx_trylock(m_try, 1) == 0, "T18: uncontended TryLockMutex returns 0");
+    expect(mtx_get_info(m_try, &info) && info.lockThread == (int32_t)cur->uid, "T18: TryLock acquired lock");
+    int saved_cur = s_cur; s_cur = -1;
+    expect(mtx_trylock(m_try, 1) == 0x80020064u, "MO-02: TryLockMutex in interrupt context returns 0x80020064");
+    s_cur = saved_cur;
+
+    TCB *th2 = fixture_thread(0x102u, TH_READY, 32);
+    s_cur = (int)(th2 - s_tcb);
+    expect(mtx_trylock(m_try, 1) == 0x800201c4u, "T19: contended TryLockMutex returns 0x800201c4 (FAILED_TO_OWN)");
+    expect(mtx_unlock(m_try, 1) == 0x800201c5u, "T20: unlock by non-owner returns 0x800201c5 (MUTEX_NOT_OWNED)");
+    expect(mtx_unlock(m_try, 0) == 0x800201bdu, "T20: unlock count <= 0 returns 0x800201bd");
+    expect(mtx_unlock(m_try, -1) == 0x800201bdu, "T20: unlock count < 0 returns 0x800201bd");
+
+    s_cur = (int)(cur - s_tcb);
+    uint32_t m_uf = mtx_create("uf_mtx", 0x0200u, 1);
+    expect(mtx_unlock(m_uf, 2) == 0x800201c7u, "T20: unlock underflow returns 0x800201c7 (MUTEX_UNLOCK_UNDERFLOW)");
+    mtx_delete(m_uf);
+    expect(mtx_unlock(m_try, 2) == 0x800201bdu, "T20: non-recursive unlock count > 1 returns 0x800201bd");
+    expect(mtx_unlock(m_try, 1) == 0, "T20: valid unlock returns 0");
+    expect(mtx_unlock(m_try, 1) == 0x800201c5u, "T20: unlock unowned mutex returns 0x800201c5");
+    mtx_delete(m_try);
+
+    uint32_t m_try_rec = mtx_create("try_rec", 0x0200u, 1);
+    expect(mtx_trylock(m_try_rec, 0x7fffffff) == 0x800201c6u,
+           "T18: recursive TryLock overflow returns 0x800201c6");
+    expect(mtx_get_info(m_try_rec, &info) && info.currentCount == 1 &&
+           info.lockThread == (int32_t)cur->uid,
+           "T18: recursive TryLock overflow leaves ownership unchanged");
+    expect(mtx_unlock(m_try_rec, 1) == 0, "T18: recursive TryLock fixture unlocks");
+    mtx_delete(m_try_rec);
+
+    /* ---- T12: Contended Lock FIFO queue order & direct handoff ---- */
+    uint32_t m_fifo = mtx_create("fifo_mtx", 0, 1);
+    MtxWaiterCtx w1; memset(&w1, 0, sizeof w1);
+    w1.uid = 0x103u; w1.tcb = fixture_thread(w1.uid, TH_READY, 32); w1.tcb->started = 1;
+    w1.mtx_uid = m_fifo; w1.count = 1;
+    w1.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w1, (size_t)4 << 20);
+
+    MtxWaiterCtx w2; memset(&w2, 0, sizeof w2);
+    w2.uid = 0x104u; w2.tcb = fixture_thread(w2.uid, TH_READY, 32); w2.tcb->started = 1;
+    w2.mtx_uid = m_fifo; w2.count = 1;
+    w2.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w2, (size_t)4 << 20);
+
+    s_cur = (int)(w1.tcb - s_tcb);
+    sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 0 && w1.tcb->state == TH_WAIT_OBJ, "T12: waiter 1 blocked");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 0 && w2.tcb->state == TH_WAIT_OBJ, "T12: waiter 2 blocked");
+
+    expect(mtx_get_info(m_fifo, &info) && info.numWaitThreads == 2, "T12: numWaitThreads is 2");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_fifo, 1) == 0, "T12: owner unlocked");
+    expect(mtx_get_info(m_fifo, &info) && info.lockThread == (int32_t)w1.uid &&
+           info.currentCount == 1 && info.numWaitThreads == 1,
+           "T12: direct handoff gave lock to FIFO waiter 1");
+    expect(w1.tcb->state == TH_READY && w2.tcb->state == TH_WAIT_OBJ,
+           "T12: waiter 1 is TH_READY, waiter 2 still TH_WAIT_OBJ");
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 1 && w1.ret == 0, "T12: waiter 1 resumed and acquired lock");
+
+    s_cur = (int)(w1.tcb - s_tcb);
+    expect(mtx_unlock(m_fifo, 1) == 0, "T12: waiter 1 unlocked");
+    expect(mtx_get_info(m_fifo, &info) && info.lockThread == (int32_t)w2.uid &&
+           info.currentCount == 1 && info.numWaitThreads == 0,
+           "T12: direct handoff gave lock to FIFO waiter 2");
+    expect(w2.tcb->state == TH_READY, "T12: waiter 2 is now TH_READY");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 1 && w2.ret == 0, "T12: waiter 2 resumed and acquired lock");
+
+    s_cur = (int)(w2.tcb - s_tcb); mtx_unlock(m_fifo, 1);
+    sr_coro_destroy(w1.tcb->coro); w1.tcb->coro = NULL;
+    sr_coro_destroy(w2.tcb->coro); w2.tcb->coro = NULL;
+    mtx_delete(m_fifo);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T13: Contended Lock PRIORITY queue order ---- */
+    uint32_t m_pri = mtx_create("pri_mtx", 0x0100u, 1);
+    MtxWaiterCtx w_low; memset(&w_low, 0, sizeof w_low);
+    w_low.uid = 0x105u; w_low.tcb = fixture_thread(w_low.uid, TH_READY, 40); w_low.tcb->started = 1;
+    w_low.mtx_uid = m_pri; w_low.count = 1;
+    w_low.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_low, (size_t)4 << 20);
+
+    MtxWaiterCtx w_high; memset(&w_high, 0, sizeof w_high);
+    w_high.uid = 0x106u; w_high.tcb = fixture_thread(w_high.uid, TH_READY, 20); w_high.tcb->started = 1;
+    w_high.mtx_uid = m_pri; w_high.count = 1;
+    w_high.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_high, (size_t)4 << 20);
+
+    s_cur = (int)(w_low.tcb - s_tcb); sr_coro_switch(w_low.tcb->coro);
+    expect(w_low.returned == 0 && w_low.tcb->state == TH_WAIT_OBJ, "T13: low priority waiter blocked");
+
+    s_cur = (int)(w_high.tcb - s_tcb); sr_coro_switch(w_high.tcb->coro);
+    expect(w_high.returned == 0 && w_high.tcb->state == TH_WAIT_OBJ, "T13: high priority waiter blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_pri, 1) == 0, "T13: owner unlocked");
+    expect(mtx_get_info(m_pri, &info) && info.lockThread == (int32_t)w_high.uid && info.numWaitThreads == 1,
+           "T13: PRIORITY queue selected w_high first");
+    expect(w_high.tcb->state == TH_READY && w_low.tcb->state == TH_WAIT_OBJ,
+           "T13: w_high is READY, w_low still WAIT_OBJ");
+
+    s_cur = (int)(w_high.tcb - s_tcb); sr_coro_switch(w_high.tcb->coro);
+    expect(w_high.returned == 1 && w_high.ret == 0, "T13: w_high resumed and acquired lock");
+
+    s_cur = (int)(w_high.tcb - s_tcb);
+    expect(mtx_unlock(m_pri, 1) == 0, "T13: w_high unlocked");
+    expect(mtx_get_info(m_pri, &info) && info.lockThread == (int32_t)w_low.uid && info.numWaitThreads == 0,
+           "T13: w_low acquired lock");
+
+    s_cur = (int)(w_low.tcb - s_tcb); sr_coro_switch(w_low.tcb->coro);
+    expect(w_low.returned == 1 && w_low.ret == 0, "T13: w_low resumed and acquired lock");
+
+    s_cur = (int)(w_low.tcb - s_tcb); mtx_unlock(m_pri, 1);
+    sr_coro_destroy(w_low.tcb->coro); w_low.tcb->coro = NULL;
+    sr_coro_destroy(w_high.tcb->coro); w_high.tcb->coro = NULL;
+    mtx_delete(m_pri);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T13b: PRIORITY equal-priority ties remain FIFO ---- */
+    uint32_t m_equal = mtx_create("equal_pri", 0x0100u, 1);
+    MtxWaiterCtx w_eq1; memset(&w_eq1, 0, sizeof w_eq1);
+    w_eq1.uid = 0x118u; w_eq1.tcb = fixture_thread(w_eq1.uid, TH_READY, 20); w_eq1.tcb->started = 1;
+    w_eq1.mtx_uid = m_equal; w_eq1.count = 1;
+    w_eq1.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_eq1, (size_t)4 << 20);
+
+    MtxWaiterCtx w_eq2; memset(&w_eq2, 0, sizeof w_eq2);
+    w_eq2.uid = 0x119u; w_eq2.tcb = fixture_thread(w_eq2.uid, TH_READY, 20); w_eq2.tcb->started = 1;
+    w_eq2.mtx_uid = m_equal; w_eq2.count = 1;
+    w_eq2.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_eq2, (size_t)4 << 20);
+
+    s_cur = (int)(w_eq1.tcb - s_tcb); sr_coro_switch(w_eq1.tcb->coro);
+    expect(w_eq1.tcb->state == TH_WAIT_OBJ, "T13b: first equal-priority waiter blocked");
+    s_cur = (int)(w_eq2.tcb - s_tcb); sr_coro_switch(w_eq2.tcb->coro);
+    expect(w_eq2.tcb->state == TH_WAIT_OBJ, "T13b: second equal-priority waiter blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_equal, 1) == 0, "T13b: equal-priority owner unlocked");
+    expect(mtx_get_info(m_equal, &info) && info.lockThread == (int32_t)w_eq1.uid &&
+           info.numWaitThreads == 1 && w_eq1.tcb->state == TH_READY &&
+           w_eq2.tcb->state == TH_WAIT_OBJ,
+           "T13b: equal-priority tie selects the FIFO-first waiter");
+    s_cur = (int)(w_eq1.tcb - s_tcb); sr_coro_switch(w_eq1.tcb->coro);
+    expect(w_eq1.returned == 1 && w_eq1.ret == 0, "T13b: FIFO-first equal waiter acquired");
+    expect(mtx_unlock(m_equal, 1) == 0, "T13b: FIFO-first equal waiter unlocked");
+    s_cur = (int)(w_eq2.tcb - s_tcb); sr_coro_switch(w_eq2.tcb->coro);
+    expect(w_eq2.returned == 1 && w_eq2.ret == 0, "T13b: FIFO-second equal waiter acquired");
+    mtx_unlock(m_equal, 1);
+    sr_coro_destroy(w_eq1.tcb->coro); w_eq1.tcb->coro = NULL;
+    sr_coro_destroy(w_eq2.tcb->coro); w_eq2.tcb->coro = NULL;
+    mtx_delete(m_equal);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T14, T15, T16: Timeout cases ---- */
+    uint32_t m_to = mtx_create("to_mtx", 0, 1);
+    uint32_t toptr_0 = 0x00270080u; MEM_W32(toptr_0, 0u);
+    TCB *th_to = fixture_thread(0x107u, TH_READY, 32);
+    s_cur = (int)(th_to - s_tcb);
+    expect(mtx_lock(m_to, 1, toptr_0) == 0x800201a8u, "T14: timeout 0 returns 0x800201a8 immediately");
+    expect(MEM_R32(toptr_0) == 0u, "T14: timeout 0 word unmodified");
+    expect(mtx_get_info(m_to, &info) && info.numWaitThreads == 0, "T14: no waiter enqueued");
+
+    MtxWaiterCtx w_to; memset(&w_to, 0, sizeof w_to);
+    w_to.uid = 0x108u; w_to.tcb = fixture_thread(w_to.uid, TH_READY, 32); w_to.tcb->started = 1;
+    w_to.mtx_uid = m_to; w_to.count = 1;
+    uint32_t toptr_exp = 0x00270084u; MEM_W32(toptr_exp, 50000u);
+    w_to.toptr = toptr_exp;
+    w_to.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_to, (size_t)4 << 20);
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 0 && w_to.tcb->state == TH_WAIT_OBJ, "T15: waiter blocked on timeout");
+
+    s_vtime_us += 60000;
+    w_to.tcb->state = TH_READY;
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 1 && w_to.ret == 0x800201a8u, "T15: waiter returned 0x800201a8 (WAIT_TIMEOUT)");
+    expect(MEM_R32(toptr_exp) == 0u, "T15: remaining timeout written as 0");
+    expect(mtx_get_info(m_to, &info) && info.numWaitThreads == 0, "T15: waiter removed from queue");
+    sr_coro_destroy(w_to.tcb->coro); w_to.tcb->coro = NULL;
+
+    MtxWaiterCtx w_sat; memset(&w_sat, 0, sizeof w_sat);
+    w_sat.uid = 0x109u; w_sat.tcb = fixture_thread(w_sat.uid, TH_READY, 32); w_sat.tcb->started = 1;
+    w_sat.mtx_uid = m_to; w_sat.count = 1;
+    uint32_t toptr_sat = 0x00270088u; MEM_W32(toptr_sat, 100000u);
+    w_sat.toptr = toptr_sat;
+    w_sat.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_sat, (size_t)4 << 20);
+    s_cur = (int)(w_sat.tcb - s_tcb); sr_coro_switch(w_sat.tcb->coro);
+    expect(w_sat.returned == 0 && w_sat.tcb->state == TH_WAIT_OBJ, "T16: waiter blocked on timeout");
+
+    s_vtime_us += 30000;
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_to, 1) == 0, "T16: owner unlocked");
+    s_cur = (int)(w_sat.tcb - s_tcb); sr_coro_switch(w_sat.tcb->coro);
+    expect(w_sat.returned == 1 && w_sat.ret == 0, "T16: waiter returned 0 (acquired)");
+    expect(MEM_R32(toptr_sat) <= 70000u && MEM_R32(toptr_sat) >= 69000u,
+           "T16: remaining usec updated accurately (~70000)");
+    s_cur = (int)(w_sat.tcb - s_tcb); mtx_unlock(m_to, 1);
+    sr_coro_destroy(w_sat.tcb->coro); w_sat.tcb->coro = NULL;
+    mtx_delete(m_to);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T17: Contended Lock with callback queue (LockMutexCB) ---- */
+    uint32_t m_cb = mtx_create("cb_mtx", 0, 1);
+    MtxWaiterCtx w_cb; memset(&w_cb, 0, sizeof w_cb);
+    w_cb.uid = 0x10au; w_cb.tcb = fixture_thread(w_cb.uid, TH_READY, 32); w_cb.tcb->started = 1;
+    w_cb.mtx_uid = m_cb; w_cb.count = 1; w_cb.is_cb = 1;
+    w_cb.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_cb, (size_t)4 << 20);
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 0 && w_cb.tcb->state == TH_WAIT_OBJ, "T17: waiter blocked on LockMutexCB");
+    expect(w_cb.tcb->is_cb_wait == 1, "T17: waiter has is_cb_wait marked");
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_cb, 1) == 0, "T17: owner unlocked");
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 1 && w_cb.ret == 0, "T17: waiter returned 0 (acquired)");
+    expect(w_cb.tcb->is_cb_wait == 0, "T17: waiter cleared is_cb_wait upon return");
+    s_cur = (int)(w_cb.tcb - s_tcb); mtx_unlock(m_cb, 1);
+    sr_coro_destroy(w_cb.tcb->coro); w_cb.tcb->coro = NULL;
+    mtx_delete(m_cb);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T07, T21: CancelMutex, DeleteMutex waiter wakeups & error codes ---- */
+    uint32_t m_del = mtx_create("del_mtx", 0, 1);
+    MtxWaiterCtx w_del; memset(&w_del, 0, sizeof w_del);
+    w_del.uid = 0x10bu; w_del.tcb = fixture_thread(w_del.uid, TH_READY, 32); w_del.tcb->started = 1;
+    w_del.mtx_uid = m_del; w_del.count = 1;
+    w_del.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_del, (size_t)4 << 20);
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 0 && w_del.tcb->state == TH_WAIT_OBJ, "T07: waiter blocked on m_del");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_delete(m_del) == 0, "T07: DeleteMutex succeeded while waiter blocked");
+    expect(w_del.tcb->state == TH_READY, "T07: waiter woke to TH_READY on delete");
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "T07: waiter returned 0x800201b5 (WAIT_DELETE)");
+    sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    uint32_t m_cn = mtx_create("cn_mtx", 0, 1);
+    MtxWaiterCtx w_cn; memset(&w_cn, 0, sizeof w_cn);
+    w_cn.uid = 0x10cu; w_cn.tcb = fixture_thread(w_cn.uid, TH_READY, 32); w_cn.tcb->started = 1;
+    w_cn.mtx_uid = m_cn; w_cn.count = 1;
+    w_cn.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_cn, (size_t)4 << 20);
+    s_cur = (int)(w_cn.tcb - s_tcb); sr_coro_switch(w_cn.tcb->coro);
+    expect(w_cn.returned == 0 && w_cn.tcb->state == TH_WAIT_OBJ, "T21: waiter blocked on m_cn");
+
+    expect(mtx_cancel(m_cn, 2, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=2 returns 0x800201bd");
+    expect(mtx_cancel(m_cn, -1, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=-1 returns 0x800201bd");
+
+    uint32_t num_wait_out = 0x00270090u; MEM_W32(num_wait_out, 0xdeadbeefu);
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_cancel(m_cn, 0, 0x0c000000u - 2) == 0x80000103u,
+           "T21: CancelMutex rejects an invalid numWaitThreads pointer");
+    expect(mtx_get_info(m_cn, &info) && info.currentCount == 1 &&
+           info.lockThread == (int32_t)cur->uid && info.numWaitThreads == 1,
+           "T21: invalid CancelMutex output pointer leaves mutex state unchanged");
+    expect(mtx_cancel(m_cn, 0, num_wait_out) == 0, "T21: CancelMutex newCount=0 succeeded");
+    expect(MEM_R32(num_wait_out) == 1u, "T21: CancelMutex wrote previous waiter count 1");
+    expect(w_cn.tcb->state == TH_READY, "T21: waiter woke to TH_READY on cancel");
+    s_cur = (int)(w_cn.tcb - s_tcb); sr_coro_switch(w_cn.tcb->coro);
+    expect(w_cn.returned == 1 && w_cn.ret == 0x800201a9u, "T21: waiter returned 0x800201a9 (WAIT_CANCEL)");
+    sr_coro_destroy(w_cn.tcb->coro); w_cn.tcb->coro = NULL;
+    mtx_delete(m_cn);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- T22: ReferMutexStatus partial buffers and errors ---- */
+    uint32_t m_ref = mtx_create("ref_probe", 0, 1);
+    uint32_t ref_buf = 0x00270100u;
+    expect(mtx_refer(0, ref_buf) == 0x800201c3u, "T22: ReferMutexStatus invalid UID returns 0x800201c3");
+    expect(mtx_refer(m_ref, 0) == 0x80000103u, "T22: ReferMutexStatus NULL info_addr returns 0x80000103");
+    expect(mtx_refer(m_ref, 0x0c000000u - 2) == 0x80000103u, "T22: ReferMutexStatus unmapped info_addr returns 0x80000103");
+
+    MEM_W32(ref_buf, 0u); MEM_W32(ref_buf + 4, 0xaaaaaaaa);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=0 returns 0");
+    expect(MEM_R32(ref_buf + 4) == 0xaaaaaaaa, "T22: size=0 left buffer untouched");
+
+    MEM_W32(ref_buf, 4u); MEM_W32(ref_buf + 4, 0xbbbbbbbb);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=4 returns 0");
+    expect(MEM_R32(ref_buf) == 56u && MEM_R32(ref_buf + 4) == 0xbbbbbbbb, "T22: size=4 wrote size field only");
+
+    MEM_W32(ref_buf, 12u);
+    expect(mtx_refer(m_ref, ref_buf) == 0, "T22: ReferMutexStatus size=12 returns 0");
+    expect(MEM_R32(ref_buf) == 56u && memcmp((const void *)((char *)g_mem_base + (ref_buf + 4)), "ref_probe", 8) == 0,
+           "T22: size=12 wrote size and prefix of name");
+    mtx_delete(m_ref);
+
+    /* ---- Lifetime 2: Table growth across yields ---- */
+    uint32_t m_grow = mtx_create("grow_mtx", 0, 1);
+    MtxWaiterCtx w_grow; memset(&w_grow, 0, sizeof w_grow);
+    w_grow.uid = 0x10du; w_grow.tcb = fixture_thread(w_grow.uid, TH_READY, 32); w_grow.tcb->started = 1;
+    w_grow.mtx_uid = m_grow; w_grow.count = 1;
+    w_grow.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_grow, (size_t)4 << 20);
+    s_cur = (int)(w_grow.tcb - s_tcb); sr_coro_switch(w_grow.tcb->coro);
+    expect(w_grow.returned == 0 && w_grow.tcb->state == TH_WAIT_OBJ, "Lifetime 2: waiter blocked on grow_mtx");
+
+    uint32_t filler[128];
+    for (int i = 0; i < 128; i++) filler[i] = mtx_create("filler", 0, 0);
+    s_cur = (int)(cur - s_tcb);
+    expect(mtx_unlock(m_grow, 1) == 0, "Lifetime 2: owner unlocked after table reallocation");
+
+    s_cur = (int)(w_grow.tcb - s_tcb); sr_coro_switch(w_grow.tcb->coro);
+    expect(w_grow.returned == 1 && w_grow.ret == 0, "Lifetime 2: waiter acquired lock across table reallocation");
+    s_cur = (int)(w_grow.tcb - s_tcb); mtx_unlock(m_grow, 1);
+    sr_coro_destroy(w_grow.tcb->coro); w_grow.tcb->coro = NULL;
+    mtx_delete(m_grow);
+    for (int i = 0; i < 128; i++) mtx_delete(filler[i]);
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- Lifetime 3 & 4: Thread teardown cleanup ---- */
+    TCB *t_exit = fixture_thread(0x10eu, TH_RUNNING, 32); t_exit->started = 1;
+    s_cur = (int)(t_exit - s_tcb);
+    uint32_t m_held1 = mtx_create("held1", 0, 1);
+    uint32_t m_held2 = mtx_create("held2", 0, 1);
+
+    TCB *t_wait_held = fixture_thread(0x10fu, TH_READY, 32); t_wait_held->started = 1;
+    MtxWaiterCtx w_held; memset(&w_held, 0, sizeof w_held);
+    w_held.uid = 0x10fu; w_held.tcb = t_wait_held; w_held.mtx_uid = m_held1; w_held.count = 1;
+    w_held.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_held, (size_t)4 << 20);
+    s_cur = (int)(w_held.tcb - s_tcb); sr_coro_switch(w_held.tcb->coro);
+    expect(w_held.tcb->state == TH_WAIT_OBJ, "Lifetime 3: waiter blocked on held1");
+
+    s_cur = (int)(cur - s_tcb);
+    uint32_t m_other = mtx_create("other", 0, 1);
+    MtxWaiterCtx w_exit; memset(&w_exit, 0, sizeof w_exit);
+    w_exit.uid = t_exit->uid; w_exit.tcb = t_exit; w_exit.mtx_uid = m_other; w_exit.count = 1;
+    w_exit.tcb->coro = sr_coro_create(mtx_waiter_fiber_body, &w_exit, (size_t)4 << 20);
+    s_cur = (int)(w_exit.tcb - s_tcb); sr_coro_switch(w_exit.tcb->coro);
+    expect(w_exit.tcb->state == TH_WAIT_OBJ, "Lifetime 4: t_exit waiting on m_other");
+    expect(mtx_get_info(m_other, &info) && info.numWaitThreads == 1, "Lifetime 4: m_other has 1 waiter");
+
+    sr_hle_release_thread_resources(t_exit->uid);
+
+    expect(mtx_get_info(m_held1, &info) && info.lockThread == (int32_t)t_wait_held->uid && info.numWaitThreads == 0,
+           "Lifetime 3: held1 transferred to waiter on thread exit");
+    expect(t_wait_held->state == TH_READY, "Lifetime 3: waiter on held1 is TH_READY");
+    expect(mtx_get_info(m_held2, &info) && info.lockThread == 0 && info.currentCount == 0,
+           "Lifetime 3: held2 unlocked on thread exit");
+    expect(mtx_get_info(m_other, &info) && info.numWaitThreads == 0,
+           "Lifetime 4: t_exit removed from m_other wait queue");
+
+    s_cur = (int)(w_held.tcb - s_tcb); sr_coro_switch(w_held.tcb->coro);
+    expect(w_held.returned == 1 && w_held.ret == 0, "Lifetime 3: waiter resumed and completed");
+    s_cur = (int)(w_held.tcb - s_tcb); mtx_unlock(m_held1, 1);
+    sr_coro_destroy(w_held.tcb->coro); w_held.tcb->coro = NULL;
+    sr_coro_destroy(w_exit.tcb->coro); w_exit.tcb->coro = NULL;
+    mtx_delete(m_held1);
+    mtx_delete(m_held2);
+    mtx_delete(m_other);
+
+    s_cur = -1;
+}
+
 /* ---- coroutine lifecycle invariants ---------------------------------------------------
  *
  * These read counters recorded by sr_coro.c itself as each operation happened, so they hold
@@ -7016,13 +8209,14 @@ static void check_coroutine_lifecycle(void) {
      * not from the park hook, so this stays a genuine cross-check of the
      * coroutine layer rather than a tautology. */
     {
-        int expected_parks = 6 + ic_expected_parks();
+        extern int s_mtx_parks;
+        int expected_parks = 8 + ic_expected_parks() + s_mtx_parks;
         char msg[224];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
-                 "+ 1 delay body + 2 slice-C waiters + %d returned conformance legs "
-                 "= %d, observed %lu)",
-                 ic_expected_parks(), expected_parks, s_parks);
+                 "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
+                 "+ %d returned conformance legs + %d mutex legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -8679,6 +9873,13 @@ int main(int argc, char **argv) {
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
+    test_nested_frames_isolate_concurrent_threads();
+    test_nested_frame_region_is_reserved_from_thread_stacks();
+    test_nested_frame_depth_is_bounded_and_fails_closed();
+    test_nested_frame_guard_detects_overflow();
+    test_nested_frame_survives_thread_unwind();
+    test_nested_frame_under_psp_callback_dispatch();
+    test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
@@ -8717,6 +9918,7 @@ int main(int argc, char **argv) {
     test_sas_state_contracts();
     test_msgpipe_safety();
     test_intr_context_conformance();
+    test_psp_mutex();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

@@ -63,6 +63,7 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import codegen  # noqa: E402
+import compat_overrides  # noqa: E402
 from host_stubs import HST_SIMPLE_STUBS  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,7 @@ HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
 HST_CUSTOM_STUBS = (
     0x000011B0, 0x0000260C, 0x0000FE3C, 0x0000F538, 0x000101C4, 0x00010738,
-    0x00013524, 0x00015EA0, 0x000143B0, 0x00046D14, 0x0001034C, 0x000468C8,
+    0x00013524, 0x00015EA0, 0x000143B0, 0x0001034C, 0x000468C8,
     0x001D9EB0, 0x00011090, 0x000110DC, 0x000114A8, 0x000114C0, 0x000149A8,
 )
 HST_NULL_BASE = tuple(sorted(codegen.NULL_BASE_WORD_LOADS))
@@ -878,6 +879,194 @@ class GateInventoryTests(unittest.TestCase):
             if (g.func, g.operand, c) in NON_ADDRESS_CONSTANTS
         }
         self.assertEqual(exempted, {31})
+
+
+# ---------------------------------------------------------------------------
+# 6. Retired address invariants & mutant kill suite
+# ---------------------------------------------------------------------------
+
+#: Independent inventory of retired HST override addresses that must NEVER be
+#: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00046D14})
+
+
+def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
+    """Scan all AST Constant nodes (integers and strings) for forbidden retired addresses."""
+    findings: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, int) and node.value in forbidden_addrs:
+                findings.append(f"integer literal {hex(node.value)} at line {getattr(node, 'lineno', '?')}")
+            elif isinstance(node.value, str):
+                for a in forbidden_addrs:
+                    hex_str = f"{a:08x}"
+                    short_hex = f"{a:x}"
+                    if hex_str in node.value.lower() or f"0x{short_hex}" in node.value.lower() or f"f_{hex_str}" in node.value:
+                        findings.append(f"string literal containing 0x{hex_str} at line {getattr(node, 'lineno', '?')}: {node.value[:40]}")
+    return findings
+
+
+_MUTANT_46D14_EXACT_OLD_OVERRIDE = """
+def main(argv):
+    hst_profile = profile == "hst"
+    for a in sorted(catalog):
+        if hst_profile and a == 0x00046d14:
+            text = "void f_00046d14(CpuState *s) { s->pc = s->r[31]; }"
+            func_texts.append(text); emitted.append(a); continue
+"""
+
+_MUTANT_46D14_HELPER_OVERRIDE = """
+def _is_gameloop_entry(addr):
+    return addr == 0x00046D14
+
+def main(argv):
+    hst_profile = profile == "hst"
+    for a in sorted(catalog):
+        if hst_profile and _is_gameloop_entry(a):
+            text = "void f_00046d14(CpuState *s) { s->pc = s->r[31]; }"
+            func_texts.append(text); emitted.append(a); continue
+"""
+
+
+class RetiredAddressGuardTests(unittest.TestCase):
+    """Explicitly lock retired HST overrides/stubs against reintroduction.
+
+    0x00046d14 was retired on 2026-08-29 after static and dynamic analysis
+    proved it is an interior basic-block loop header label (L_00046d14) inside
+    FUN_000468c8 (main_RunGameLoop), not a standalone function or resume entry.
+    These tests enforce independent invariants so that no live metadata, AST
+    helper, or classification change can silently revive an override at this
+    address.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = ast.parse((TOOLS / "codegen.py").read_text(encoding="utf-8"))
+
+    def test_retired_addresses_are_not_in_any_codegen_or_host_stubs_metadata(self):
+        for addr in RETIRED_HST_ADDRESSES:
+            hex_addr = f"0x{addr:08x}"
+            self.assertNotIn(addr, HST_CUSTOM_STUBS, f"{hex_addr} reintroduced into HST_CUSTOM_STUBS")
+            self.assertNotIn(addr, HST_SIMPLE_STUBS, f"{hex_addr} reintroduced into HST_SIMPLE_STUBS")
+            self.assertNotIn(addr, BODY_COUPLED, f"{hex_addr} reintroduced into BODY_COUPLED")
+            self.assertNotIn(addr, COVERED, f"{hex_addr} reintroduced into COVERED")
+            self.assertNotIn(addr, codegen.NULL_BASE_WORD_LOADS, f"{hex_addr} in NULL_BASE_WORD_LOADS")
+            self.assertNotIn(addr, codegen.GUEST_PATCHES, f"{hex_addr} in GUEST_PATCHES")
+            self.assertNotIn(addr, codegen._SV_SPECIAL, f"{hex_addr} in _SV_SPECIAL")
+            self.assertNotIn(addr, codegen.HST_MANUAL_CALLABLES, f"{hex_addr} in HST_MANUAL_CALLABLES")
+            self.assertNotIn(addr, codegen.HST_RESUME_OWNERS, f"{hex_addr} in HST_RESUME_OWNERS (as resume)")
+            self.assertNotIn(addr, codegen.HST_RESUME_OWNERS.values(), f"{hex_addr} in HST_RESUME_OWNERS (as owner)")
+
+    def test_retired_addresses_are_not_in_compat_overrides_manifest(self):
+        active_custom_stubs = {
+            entry["address"] for entry in compat_overrides.CODEGEN_CUSTOM_STUBS
+        }
+        for addr in RETIRED_HST_ADDRESSES:
+            hex_addr = f"0x{addr:08x}"
+            self.assertNotIn(
+                addr, active_custom_stubs,
+                f"{hex_addr} reintroduced into compat_overrides.CODEGEN_CUSTOM_STUBS",
+            )
+
+    def test_retired_addresses_absent_from_codegen_ast(self):
+        findings = scan_ast_literals_for_addrs(self.tree, RETIRED_HST_ADDRESSES)
+        self.assertEqual(
+            findings, [],
+            f"codegen.py AST contains retired address references: {findings}",
+        )
+
+    def test_retired_46d14_cannot_be_classified_in_entry_catalog(self):
+        # 0x000468c8 is the real enclosing function entry discovered by the analyzer.
+        # Even under profile="hst", the catalog must not invent an entry for 0x00046d14.
+        analyzed = set(HST_MANUAL_CALLABLES) | set(HST_RESUME_OWNERS.values()) | {0x000468C8}
+        ranges = [(0, 0x00200000)]
+        for profile in (None, "none", "hst"):
+            catalog = codegen.build_entry_catalog(analyzed, ranges, profile=profile, elf=None)
+            self.assertIn(0x000468C8, catalog)
+            self.assertTrue(catalog[0x000468C8].callable)
+            for addr in RETIRED_HST_ADDRESSES:
+                self.assertNotIn(
+                    addr, catalog,
+                    f"0x{addr:08x} was given a catalog entry under profile={profile}",
+                )
+
+    def test_interior_label_46d14_behavioral_profile_invariance(self):
+        """Emitting an enclosing function containing 0x00046d14 produces identical C across profiles."""
+        words = {
+            0x000468C8: _addiu_sp(-32),
+            0x000468CC: (0x2B << 26) | (29 << 21) | (31 << 16) | 16,  # sw $ra, 16($sp)
+            0x000468D0: (4 << 26) | (((0x00046D14 - (0x000468D0 + 4)) >> 2) & 0xFFFF),  # beq $zero, $zero, 0x46d14
+            0x000468D4: NOP,
+            0x00046D14: LUI_T0,
+            0x00046D18: LW_T0_A0,
+            0x00046D1C: JR_RA,
+            0x00046D20: NOP,
+        }
+        elf = _FakeElf(words)
+        ranges = [(0, 0x00200000)]
+        known = {0x000468C8}
+
+        none_lines = codegen.emit_function(elf, 0x000468C8, ranges, known, profile="none")
+        hst_lines = codegen.emit_function(elf, 0x000468C8, ranges, known, profile="hst")
+
+        none_text = "\n".join(none_lines)
+        hst_text = "\n".join(hst_lines)
+
+        self.assertIn("L_00046d14:", none_text, "L_00046d14 label missing under profile=none")
+        self.assertIn("L_00046d14:", hst_text, "L_00046d14 label missing under profile=hst")
+        self.assertNotIn("void f_00046d14", none_text)
+        self.assertNotIn("void f_00046d14", hst_text)
+        self.assertEqual(
+            none_lines, hst_lines,
+            "Enclosing function containing 0x00046d14 diverged between profile=none and profile=hst",
+        )
+
+    # --- Mutant kills -----------------------------------------------------
+
+    def test_mutant_killed_exact_old_override_restored(self):
+        tree = ast.parse(_MUTANT_46D14_EXACT_OLD_OVERRIDE)
+        findings = scan_ast_literals_for_addrs(tree, RETIRED_HST_ADDRESSES)
+        self.assertTrue(
+            len(findings) > 0 and any("0x00046d14" in f or "0x46d14" in f for f in findings),
+            "Exact old override mutant escaped the retired-address AST scanner",
+        )
+
+    def test_mutant_killed_helper_based_override(self):
+        tree = ast.parse(_MUTANT_46D14_HELPER_OVERRIDE)
+        findings = scan_ast_literals_for_addrs(tree, RETIRED_HST_ADDRESSES)
+        self.assertTrue(
+            len(findings) > 0 and any("0x00046d14" in f or "0x46d14" in f for f in findings),
+            "Helper-based override mutant escaped the retired-address AST scanner",
+        )
+
+    def test_mutant_killed_metadata_only_restore(self):
+        mutant_custom_stubs = (0x00046D14,)
+        self.assertTrue(
+            any(a in mutant_custom_stubs for a in RETIRED_HST_ADDRESSES),
+            "Metadata-only restore mutant was not rejected by RETIRED_HST_ADDRESSES check",
+        )
+
+    def test_mutant_killed_codegen_only_restore(self):
+        tree = ast.parse(_MUTANT_46D14_EXACT_OLD_OVERRIDE)
+        uncovered = uncovered_gated_addresses(tree, COVERED)
+        self.assertIn(
+            0x00046D14, uncovered,
+            "Codegen-only restore mutant was not caught as an uncovered gated address",
+        )
+
+    def test_mutant_killed_synchronized_callable_classification(self):
+        mutant_manual_callables = (0x00046D14,)
+        self.assertTrue(
+            any(a in mutant_manual_callables for a in RETIRED_HST_ADDRESSES),
+            "Synchronized callable mutant was not rejected by RETIRED_HST_ADDRESSES check",
+        )
+
+    def test_mutant_killed_synchronized_resume_classification(self):
+        mutant_resume_owners = {0x00046D14: 0x000468C8}
+        self.assertTrue(
+            any(a in mutant_resume_owners for a in RETIRED_HST_ADDRESSES),
+            "Synchronized resume mutant was not rejected by RETIRED_HST_ADDRESSES check",
+        )
 
 
 if __name__ == "__main__":

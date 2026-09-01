@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
@@ -40,6 +40,7 @@
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
+#include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -4271,6 +4272,12 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
         s_exit_cb_uid = 0;
 }
 
+extern void sr_mutex_release_thread(uint32_t thread_uid);
+
+void sr_hle_release_thread_resources(uint32_t thread_uid) {
+    sr_mutex_release_thread(thread_uid);
+}
+
 uint32_t sr_callback_notify(uint32_t uid, uint32_t notify_arg) {
     int idx = sr_callback_find_in_table(uid);
     if (idx < 0) return 0x800201A1u;
@@ -8266,19 +8273,30 @@ static GeCallback s_ge_cb[16];
 static uint32_t s_ge_list_next = 0;
 
 /* Every nested guest call this runtime makes -- GE callbacks here and the MPEG
- * ring-refill callback in mpeg.c -- runs on this single hard-coded guest stack
- * address rather than on the calling thread's stack.  Naming it does not change
- * that; it makes the shared-stack property greppable and gives the executable
- * regression one place to read the value from.  Whether the PSP shares a stack
- * across nested guest calls is NOT established: see the callback-ABI regression
- * in hle_thread_selftest.c, which measures what this runtime does today. */
-#define SR_CALL_GUEST_STACK 0x09df8000u
-
+ * ring-refill callback in mpeg.c -- runs on a guest stack that is NOT the
+ * calling thread's own $sp.  It used to be one hard-coded address (0x09df8000)
+ * shared by every such call, on every thread, at every depth; nested_frames.c
+ * replaces that with a per-owner, per-depth frame out of a reserved region.
+ *
+ * Only $sp changes here.  The zeroed CpuState, the inherited $gp, $ra = 0, the
+ * 0xe4 VFPU prefix seeds and the full caller-state restore are unchanged, and
+ * whether they match the PSP remains NOT_ESTABLISHED -- see the callback-ABI
+ * regression in hle_thread_selftest.c, which measures what this runtime does. */
 static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST: fn=0x0 (null, skipping)\n"); return; }
+    /* Fail closed BEFORE any caller state is touched: with no frame of its own
+     * there is no correct stack to hand the callee, and dispatching onto a frame
+     * another owner holds is the defect this replaced. */
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
+        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        return;
+    }
     if (ge_log_on())
-        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x\n",
-                fn, a0, a1, a2, sched_current_uid());
+        fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x sp=0x%08x\n",
+                fn, a0, a1, a2, sched_current_uid(), frame_sp);
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
@@ -8287,7 +8305,7 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = SR_CALL_GUEST_STACK;
+    s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8297,16 +8315,24 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
 }
 
 /* Like ge_call_guest but returns the guest function's v0 (r2). Used by HLE
  * stubs that must extract a value from a guest constructor (e.g. the guest
  * malloc f_00000bcc returns the allocated block in r2). */
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x0 (null, skipping)\n"); return 0; }
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
+        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        return 0;
+    }
     if (ge_log_on())
-        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x\n",
-                fn, a0, a1, a2, sched_current_uid());
+        fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x cur_uid=0x%x sp=0x%08x\n",
+                fn, a0, a1, a2, sched_current_uid(), frame_sp);
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
@@ -8315,7 +8341,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = SR_CALL_GUEST_STACK;
+    s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
@@ -8326,6 +8352,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
     return rv;
 }
 
@@ -8340,10 +8367,13 @@ uint32_t sr_hle_test_call_guest(CpuState *s, uint32_t fn,
                                 uint32_t a0, uint32_t a1, uint32_t a2) {
     return ge_call_guest_rv(s, fn, a0, a1, a2);
 }
-/* The nested-call scratch stack is a single hard-coded guest address shared by
- * every such call.  Expose it so the regression states the measured value once
- * instead of duplicating the literal. */
-uint32_t sr_hle_test_call_guest_stack(void) { return SR_CALL_GUEST_STACK; }
+/* Reach the void-returning marshaller too: it carries its own acquire/release
+ * pair, so "both wrappers isolate" is a claim the regression has to test rather
+ * than infer from the one it can already call. */
+void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
+                                 uint32_t a0, uint32_t a1, uint32_t a2) {
+    ge_call_guest(s, fn, a0, a1, a2);
+}
 #endif /* SR_HLE_THREAD_SELFTEST */
 
 /* sceDisplaySetMode: on the real PSP this triggers the display driver to
@@ -10085,6 +10115,531 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
  * measured record of it, so writing a struct here would be invention, not
  * implementation. The gap stays visible until the oracle case measures it. */
 
+/* =========================================================================
+ * PSP Heavyweight Mutex Implementation (SceKernelMutex)
+ * ========================================================================= */
+
+#define PSP_MUTEX_ATTR_FIFO            0x0000u
+#define PSP_MUTEX_ATTR_PRIORITY        0x0100u
+#define PSP_MUTEX_ATTR_ALLOW_RECURSIVE 0x0200u
+#define PSP_MUTEX_LEGAL_ATTR_MASK      0x0BFFu
+
+#define SCE_KERNEL_ERROR_WAIT_CANCEL                0x800201A9u
+#define SCE_KERNEL_ERROR_WAIT_DELETE                0x800201B5u
+#define SCE_KERNEL_ERROR_WAIT_TIMEOUT               0x800201A8u
+#define SCE_KERNEL_ERROR_CAN_NOT_WAIT               0x800201A7u
+#define SCE_KERNEL_ERROR_ILLEGAL_COUNT              0x800201BDu
+#define SCE_KERNEL_ERROR_ILLEGAL_ATTR               0x80020191u
+#define SCE_KERNEL_ERROR_ILLEGAL_ADDR               0x80000103u
+#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT            0x80020064u
+#define SCE_KERNEL_ERROR_NO_MEMORY                  0x80020190u
+#define SCE_KERNEL_ERROR_UNKNOWN_MUTEXID            0x800201C3u
+#define SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN        0x800201C4u
+#define SCE_KERNEL_ERROR_MUTEX_NOT_OWNED            0x800201C5u
+#define SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW        0x800201C6u
+#define SCE_KERNEL_ERROR_MUTEX_UNLOCK_UNDERFLOW      0x800201C7u
+#define SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED 0x800201C8u
+
+typedef struct {
+    uint32_t thread_uid;
+    int      requested_count;
+} MutexWaiter;
+
+typedef struct Mutex {
+    uint32_t     uid;
+    char         name[32];
+    uint32_t     attr;
+    int          init_count;
+    int          current_count;
+    uint32_t     lock_thread;
+    int          num_wait_threads;
+    uint32_t     cancel_seq;
+    MutexWaiter *waiters;
+    int          wait_count;
+    int          wait_cap;
+} Mutex;
+
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int      initCount;
+    int      currentCount;
+    int32_t  lockThread;
+    int      numWaitThreads;
+} SceKernelMutexInfo;
+
+static Mutex **s_mutexes = NULL;
+static size_t  s_mutex_len = 0;
+static size_t  s_mutex_cap = 0;
+
+static Mutex *mutex_find(uint32_t uid) {
+    if (!uid || !s_mutexes) return NULL;
+    for (size_t i = 0; i < s_mutex_len; i++) {
+        if (s_mutexes[i] && s_mutexes[i]->uid == uid)
+            return s_mutexes[i];
+    }
+    return NULL;
+}
+
+static Mutex *mutex_alloc(void) {
+    if (s_mutex_len >= s_mutex_cap) {
+        size_t next;
+        if (s_mutex_cap) {
+            if (s_mutex_cap > SIZE_MAX / 2u) return NULL;
+            next = s_mutex_cap * 2u;
+        } else {
+            next = 64u;
+        }
+        if (next > SIZE_MAX / sizeof(*s_mutexes)) return NULL;
+        Mutex **grown = (Mutex **)realloc(s_mutexes, next * sizeof(*grown));
+        if (!grown) return NULL;
+        for (size_t i = s_mutex_cap; i < next; i++) grown[i] = NULL;
+        s_mutexes = grown;
+        s_mutex_cap = next;
+    }
+    Mutex *m = (Mutex *)calloc(1, sizeof(Mutex));
+    if (!m) return NULL;
+    m->uid = sr_alloc_uid();
+    s_mutexes[s_mutex_len++] = m;
+    return m;
+}
+
+static void mutex_free(Mutex *m) {
+    if (!m) return;
+    for (size_t i = 0; i < s_mutex_len; i++) {
+        if (s_mutexes[i] == m) {
+            s_mutexes[i] = s_mutexes[s_mutex_len - 1];
+            s_mutexes[s_mutex_len - 1] = NULL;
+            s_mutex_len--;
+            break;
+        }
+    }
+    if (m->waiters) free(m->waiters);
+    free(m);
+}
+
+static int mutex_enqueue_waiter(Mutex *m, uint32_t thread_uid, int requested_count) {
+    if (m->wait_count >= m->wait_cap) {
+        int next;
+        if (m->wait_cap) {
+            if (m->wait_cap > INT_MAX / 2) return 0;
+            next = m->wait_cap * 2;
+        } else {
+            next = 4;
+        }
+        if ((size_t)next > SIZE_MAX / sizeof(*m->waiters)) return 0;
+        MutexWaiter *grown = (MutexWaiter *)realloc(m->waiters, (size_t)next * sizeof(*grown));
+        if (!grown) return 0;
+        m->waiters = grown;
+        m->wait_cap = next;
+    }
+    m->waiters[m->wait_count].thread_uid = thread_uid;
+    m->waiters[m->wait_count].requested_count = requested_count;
+    m->wait_count++;
+    m->num_wait_threads++;
+    return 1;
+}
+
+static void mutex_remove_waiter(Mutex *m, uint32_t thread_uid) {
+    for (int i = 0; i < m->wait_count; i++) {
+        if (m->waiters[i].thread_uid == thread_uid) {
+            for (int j = i; j + 1 < m->wait_count; j++) {
+                m->waiters[j] = m->waiters[j + 1];
+            }
+            m->wait_count--;
+            m->num_wait_threads--;
+            break;
+        }
+    }
+}
+
+static int mutex_select_and_dequeue_waiter(Mutex *m, MutexWaiter *out) {
+    if (m->wait_count <= 0) return 0;
+    int best_idx = 0;
+    if (m->attr & PSP_MUTEX_ATTR_PRIORITY) {
+        int best_pri = 0x7FFFFFFF;
+        for (int i = 0; i < m->wait_count; i++) {
+            SrThreadRunStatus rs;
+            if (sched_thread_run_status(m->waiters[i].thread_uid, &rs) == 0) {
+                if ((int)rs.currentPriority < best_pri) {
+                    best_pri = (int)rs.currentPriority;
+                    best_idx = i;
+                }
+            }
+        }
+    }
+    *out = m->waiters[best_idx];
+    for (int j = best_idx; j + 1 < m->wait_count; j++) {
+        m->waiters[j] = m->waiters[j + 1];
+    }
+    m->wait_count--;
+    m->num_wait_threads--;
+    return 1;
+}
+
+void sr_mutex_release_thread(uint32_t thread_uid) {
+    if (!thread_uid || !s_mutexes) return;
+    for (size_t i = 0; i < s_mutex_len; i++) {
+        Mutex *m = s_mutexes[i];
+        if (!m) continue;
+        mutex_remove_waiter(m, thread_uid);
+        if (m->lock_thread == thread_uid) {
+            MutexWaiter next;
+            if (mutex_select_and_dequeue_waiter(m, &next)) {
+                m->lock_thread = next.thread_uid;
+                m->current_count = next.requested_count;
+                sched_wake_one_object_waiter(m->uid, next.thread_uid);
+            } else {
+                m->lock_thread = 0;
+                m->current_count = 0;
+            }
+        }
+    }
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_mutex_reset(void) {
+    if (!s_mutexes) return;
+    for (size_t i = 0; i < s_mutex_len; i++) {
+        if (s_mutexes[i]) {
+            if (s_mutexes[i]->waiters) free(s_mutexes[i]->waiters);
+            free(s_mutexes[i]);
+        }
+    }
+    free(s_mutexes);
+    s_mutexes = NULL;
+    s_mutex_len = 0;
+    s_mutex_cap = 0;
+}
+#endif
+
+static uint32_t h_CreateMutex(CpuState *s) {
+    uint32_t name_addr = A0;
+    uint32_t attr = A1;
+    int init_count = (int)A2;
+
+    if (!name_addr) return 0x80020001u;
+    char name_buf[32];
+    memset(name_buf, 0, sizeof(name_buf));
+    size_t len = 0;
+    while (len < 31) {
+        uint32_t addr;
+        if (!sr_size_add_ok(name_addr, (uint32_t)len, &addr) || !sr_inrange(addr)) {
+            return 0x80020001u;
+        }
+        char c = (char)MEM_R8(addr);
+        if (c == '\0') break;
+        name_buf[len++] = c;
+    }
+    name_buf[len] = '\0';
+
+    if ((attr & ~PSP_MUTEX_LEGAL_ATTR_MASK) != 0 || (attr & 0x0400u) != 0) {
+        return 0x80020191u; /* SCE_KERNEL_ERROR_ILLEGAL_ATTR */
+    }
+
+    if (!(attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE)) {
+        if (init_count < 0 || init_count > 1) return 0x800201BDu;
+    } else {
+        if (init_count < 0) return 0x800201BDu;
+    }
+
+    Mutex *m = mutex_alloc();
+    if (!m) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+
+    memcpy(m->name, name_buf, sizeof(name_buf));
+    m->attr = attr;
+    m->init_count = init_count;
+    m->current_count = init_count;
+    if (init_count > 0) {
+        m->lock_thread = sched_current_uid();
+    } else {
+        m->lock_thread = 0;
+    }
+    return m->uid;
+}
+
+static uint32_t h_DeleteMutex(CpuState *s) {
+    uint32_t uid = A0;
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    sched_wake(uid);
+    mutex_free(m);
+    return 0;
+}
+
+static uint32_t h_LockMutex_impl(CpuState *s, int is_cb) {
+    uint32_t uid = A0;
+    int count = (int)A1;
+    uint32_t toptr = A2;
+
+    if (sched_is_intr_context()) return 0x80020064u; /* SCE_KERNEL_ERROR_ILLEGAL_CONTEXT */
+    if (!sched_wait_permitted()) return 0x800201A7u; /* SCE_KERNEL_ERROR_CAN_NOT_WAIT */
+
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    if (count <= 0) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE) && count > 1)
+        return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+
+    uint32_t cur_thid = sched_current_uid();
+
+    if (m->current_count > 0 && m->lock_thread == cur_thid) {
+        if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE)) {
+            return SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED;
+        }
+        if ((uint64_t)m->current_count + (uint64_t)count > (uint64_t)INT_MAX) {
+            return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
+        }
+        m->current_count += count;
+        return 0;
+    }
+
+    if (m->current_count == 0) {
+        m->current_count = count;
+        m->lock_thread = cur_thid;
+        return 0;
+    }
+
+    uint64_t end_time = 0;
+    int has_timeout = 0;
+    if (toptr) {
+        if (!sr_guest_span_writable(toptr, 4)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) {
+            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+        }
+        sched_vtime_refresh();
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
+
+    uint32_t start_cancel = m->cancel_seq;
+    if (!mutex_enqueue_waiter(m, cur_thid, count)) {
+        return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    }
+
+    m = NULL;
+
+    for (;;) {
+        if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sr_thread_dispatch_callbacks();
+            m = mutex_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            if (m->cancel_seq != start_cancel) {
+                mutex_remove_waiter(m, cur_thid);
+                return SCE_KERNEL_ERROR_WAIT_CANCEL;
+            }
+            if (m->lock_thread == cur_thid) {
+                if (has_timeout) {
+                    sched_vtime_refresh();
+                    uint64_t now = sched_vtime_us();
+                    uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0;
+                    MEM_W32(toptr, rem);
+                }
+                return 0;
+            }
+            m = NULL;
+            continue;
+        }
+
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end_time) {
+                m = mutex_find(uid);
+                if (m) mutex_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            uint32_t remaining = (uint32_t)(end_time - now);
+            if (is_cb) sched_set_current_cb_wait(1);
+            int timed_out = sched_block_on_timeout(uid, remaining);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            m = mutex_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            if (m->cancel_seq != start_cancel) {
+                mutex_remove_waiter(m, cur_thid);
+                return SCE_KERNEL_ERROR_WAIT_CANCEL;
+            }
+            if (m->lock_thread == cur_thid) {
+                sched_vtime_refresh();
+                now = sched_vtime_us();
+                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0;
+                MEM_W32(toptr, rem);
+                return 0;
+            }
+            if (timed_out) {
+                mutex_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+        } else {
+            if (is_cb) sched_set_current_cb_wait(1);
+            sched_block_on(uid);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            m = mutex_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            if (m->cancel_seq != start_cancel) {
+                mutex_remove_waiter(m, cur_thid);
+                return SCE_KERNEL_ERROR_WAIT_CANCEL;
+            }
+            if (m->lock_thread == cur_thid) {
+                return 0;
+            }
+        }
+        m = NULL;
+    }
+}
+
+static uint32_t h_LockMutex(CpuState *s) {
+    return h_LockMutex_impl(s, 0);
+}
+
+static uint32_t h_LockMutexCB(CpuState *s) {
+    return h_LockMutex_impl(s, 1);
+}
+
+static uint32_t h_TryLockMutex(CpuState *s) {
+    uint32_t uid = A0;
+    int count = (int)A1;
+
+    if (sched_is_intr_context()) return 0x80020064u; /* SCE_KERNEL_ERROR_ILLEGAL_CONTEXT */
+
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    if (count <= 0) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE) && count > 1)
+        return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+
+    uint32_t cur_thid = sched_current_uid();
+    if (m->current_count == 0) {
+        m->current_count = count;
+        m->lock_thread = cur_thid;
+        return 0;
+    }
+
+    if (m->lock_thread == cur_thid) {
+        if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE)) {
+            return SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED;
+        }
+        if ((uint64_t)m->current_count + (uint64_t)count > (uint64_t)INT_MAX) {
+            return SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
+        }
+        m->current_count += count;
+        return 0;
+    }
+
+    return SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN;
+}
+
+static uint32_t h_UnlockMutex(CpuState *s) {
+    uint32_t uid = A0;
+    int count = (int)A1;
+
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    if (count <= 0) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE) && count != 1)
+        return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+
+    uint32_t cur_thid = sched_current_uid();
+    if (m->current_count == 0 || m->lock_thread != cur_thid)
+        return SCE_KERNEL_ERROR_MUTEX_NOT_OWNED;
+
+    if (count > m->current_count)
+        return SCE_KERNEL_ERROR_MUTEX_UNLOCK_UNDERFLOW;
+
+    m->current_count -= count;
+    if (m->current_count > 0) {
+        return 0;
+    }
+
+    MutexWaiter next;
+    if (mutex_select_and_dequeue_waiter(m, &next)) {
+        m->lock_thread = next.thread_uid;
+        m->current_count = next.requested_count;
+        sched_wake_one_object_waiter(uid, next.thread_uid);
+        sched_preempt();
+    } else {
+        m->lock_thread = 0;
+    }
+    return 0;
+}
+
+static uint32_t h_CancelMutex(CpuState *s) {
+    uint32_t uid = A0;
+    int new_count = (int)A1;
+    uint32_t num_wait_ptr = A2;
+
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    if (new_count < 0 || new_count > 1) {
+        return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    }
+
+    if (num_wait_ptr && !sr_guest_span_writable(num_wait_ptr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (num_wait_ptr) MEM_W32(num_wait_ptr, (uint32_t)m->num_wait_threads);
+
+    m->cancel_seq++;
+    if (new_count == 1) {
+        m->current_count = 1;
+        m->lock_thread = sched_current_uid();
+    } else {
+        m->current_count = 0;
+        m->lock_thread = 0;
+    }
+
+    m->wait_count = 0;
+    m->num_wait_threads = 0;
+
+    sched_wake(uid);
+    return 0;
+}
+
+static uint32_t h_ReferMutexStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    Mutex *m = mutex_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
+
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) {
+        return 0;
+    }
+
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelMutexInfo) ? input_size : (uint32_t)sizeof(SceKernelMutexInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    SceKernelMutexInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelMutexInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.initCount = m->init_count;
+    info.currentCount = m->current_count;
+    info.lockThread = (int32_t)m->lock_thread;
+    info.numWaitThreads = m->num_wait_threads;
+
+    for (uint32_t i = 0; i < write_len; i++) {
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
+    }
+    return 0;
+}
+
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
     Sync *m = sync_new(); if (!m) return 0x80020000;
@@ -10280,9 +10835,14 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
-    sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateSema);
-    sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_ok);
-    sr_hle_register(0x5bf4dd27, "sceKernelLockMutexCB", h_ok);
+    sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateMutex);
+    sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_DeleteMutex);
+    sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_LockMutex);
+    sr_hle_register(0x5bf4dd27, "sceKernelLockMutexCB", h_LockMutexCB);
+    sr_hle_register(0x0ddcd2c9, "sceKernelTryLockMutex", h_TryLockMutex);
+    sr_hle_register(0x6b30100f, "sceKernelUnlockMutex", h_UnlockMutex);
+    sr_hle_register(0x87d9223c, "sceKernelCancelMutex", h_CancelMutex);
+    sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ReferMutexStatus);
     sr_hle_register(0x19cff145, "sceKernelCreateLwMutex", h_CreateLwMutex);
     sr_hle_register(0xbea46419, "sceKernelLockLwMutex", h_LockLwMutex);
     sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutex);
@@ -10754,12 +11314,6 @@ void sr_hle_init(void) {
     /* Status layout unmeasured -- see the note above h_CreateEventFlag. */
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ok);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ok);
-    /* regular mutexes (also no-ops) */
-    sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_ok);
-    sr_hle_register(0x0ddcd2c9, "sceKernelTryLockMutex", h_ok);
-    sr_hle_register(0x6b30100f, "sceKernelUnlockMutex", h_ok);
-    sr_hle_register(0x87d9223c, "sceKernelCancelMutex", h_ok);
-    sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ok);
 
     /* Registry utility (sceReg) stubs */
     /* Registry utility (sceReg) stubs -- issue #78: all six NIDs were registered under the

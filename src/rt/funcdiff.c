@@ -21,6 +21,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
+#include "nested_frames.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,7 +138,19 @@ int main(int argc, char **argv) {
     RecompFn fn = sr_lookup(target);
     if (!fn) { fprintf(stderr, "no recompiled function at 0x%08x\n", target); return 2; }
     if (sr_trace_open(out, "funcdiff", target) != 0) { fprintf(stderr, "cannot open %s\n", out); return 2; }
-    if (setjmp(g_hle_jmp) == 0) fn(&s);
+    if (setjmp(g_hle_jmp) == 0) {
+        fn(&s);
+    } else {
+        /* sr_hle_call() longjmps here when the plain driver hits an
+         * unimplemented NID.  That jump discards the C frames of any nested
+         * host->guest call in flight, so their guest frames must be reclaimed
+         * explicitly; this driver has no scheduler, hence release_all rather
+         * than the per-owner reclaim coro_body uses. */
+        unsigned reclaimed = sr_nested_frame_release_all();
+        if (reclaimed)
+            fprintf(stderr, "funcdiff: reclaimed %u nested guest-call frame(s) after the "
+                            "HLE-boundary longjmp\n", reclaimed);
+    }
     sr_trace_close();
     fprintf(stderr, "ran 0x%08x from step %llu (hit_hle=%d)\n", target, entry_step, sr_hit_hle);
     return 0;

@@ -14,6 +14,26 @@ GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
 
 
+# ---------------------------------------------------------------------------
+# GENERIC TITLE CONTRACT (title-neutral, host-portable):
+#   GAME_NAME, GAME_ELF, GAME_BASE, GAME_ENTRY, GAME_EXTRA_ELFS, GAME_PSP_HEADER,
+#   TITLE_EXTRA_SPANS (extra executable span, at most one; legacy HST_EXTRA_SPANS
+#   lives only in the HST PROFILE compatibility block below and is ignored for
+#   generic titles), BUILD_DIR, FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are
+#   all derived from a validated title manifest via tools/title_codegen_plan.py or
+#   TITLE_MANIFEST. Default values below are for a generic rebased ELF; HST-specific
+#   defaults live only in the HST PROFILE block that follows and never affect a
+#   generic title.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HST PROFILE (isolated compatibility defaults for the one legacy title).
+#   This block is the ONLY Makefile place that names HST constants (HST span,
+#   module load addresses, psp-header path, O2/O1 tuning). A generic title (including
+#   the three synthetic fixtures) never enters this block unless the
+#   operator explicitly requested GAME_NAME=hst, and a second synthetic title does
+#   not add another conditional here.
+# ---------------------------------------------------------------------------
 ifeq ($(GAME_NAME),hst)
 CODEGEN_PROFILE_ARG := --profile=hst
 GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
@@ -28,12 +48,29 @@ GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
 RUNTIME_OPT ?= -O2
 RECOMP_OPT  ?= -O1
+# HST LEGACY COMPATIBILITY: derive generic TITLE span from legacy HST only when the
+# generic key was never explicitly supplied. Use origin check to distinguish explicit
+# empty (command line `TITLE_EXTRA_SPANS=`) from undefined, so explicit empty stays
+# authoritative and does not fall through to stale legacy state. For non-HST titles
+# this block is not entered and HST_EXTRA_SPANS is ignored completely.
+ifeq ($(origin TITLE_EXTRA_SPANS),undefined)
+TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
+else ifeq ($(origin TITLE_EXTRA_SPANS),default)
+TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
 endif
+endif
+
+# GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
+# authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
+# the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
+# environment value must not affect a generic build.
+TITLE_EXTRA_SPANS ?=
+HST_EXTRA_SPANS ?=
+export TITLE_EXTRA_SPANS
 
 CODEGEN_PROFILE_ARG ?=
 GAME_EXTRA_ELFS ?=
 GAME_PSP_HEADER ?=
-HST_EXTRA_SPANS ?=
 EXTRA_ELF_ARGS  = $(foreach elf,$(GAME_EXTRA_ELFS),--extra-elf=$(elf))
 PSP_HEADER_ARG  = $(if $(strip $(GAME_PSP_HEADER)),--psp-header=$(GAME_PSP_HEADER),)
 # Environment forms: the switch carries no pathname bytes at all.
@@ -105,7 +142,17 @@ GAME_INPUT_PREREQ = $(if $(GAME_INPUT_TRACKED),$(GAME_INPUT_STAMP),)
 # needs a POSIX shell, and Make on Windows falls back to cmd.exe when sh is not on
 # PATH. The span therefore reaches only the primary-image analysis (codegen, VFPU
 # fuzz); rebased extra guest modules never receive it.
-EXTRA_SPAN_ARG  = $(if $(strip $(HST_EXTRA_SPANS)),--extra-span=$(strip $(HST_EXTRA_SPANS)),)
+# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS. For non-HST titles
+# a stale HST_EXTRA_SPANS (environment or make-arg) is ignored completely. For HST
+# the legacy compatibility translation above has already copied HST into TITLE when
+# TITLE was not explicitly supplied, so the effective value still reflects the HST
+# default/legacy without ever reading HST directly here. Explicit empty TITLE stays
+# empty and does not fall through.
+EFFECTIVE_EXTRA_SPANS := $(strip $(TITLE_EXTRA_SPANS))
+EXTRA_SPAN_ARG  = $(if $(strip $(EFFECTIVE_EXTRA_SPANS)),--extra-span=$(strip $(EFFECTIVE_EXTRA_SPANS)),)
+# Preserve legacy variable for profile hash and existing recipes that still expand
+# HST_EXTRA_SPANS directly (HST compatibility). It mirrors the effective span.
+HST_EXTRA_SPANS_EFFECTIVE := $(EFFECTIVE_EXTRA_SPANS)
 
 # GNU Make defines a built-in CC=cc with origin "default". A normal `CC ?= gcc`
 # therefore never takes effect. Treat only that built-in/undefined state as unset,
@@ -365,6 +412,7 @@ _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) 
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/nested_frames.c \
               src/rt/guest_interp.c \
               src/rt/title_config.c \
               src/rt/vfpu_tables.c \
@@ -427,6 +475,7 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/nested_frames.c \
                       src/rt/guest_interp.c \
                       src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
@@ -518,13 +567,14 @@ production-smoke-gap-clean:
 # ---------------------------------------------------------------------------
 # Source-owned second-platform workload ladder.
 #
-# fixtures/platform_ladder/generate.py emits six deliberately non-HST guest
+# fixtures/platform_ladder/generate.py emits seven deliberately non-HST guest
 # identities (see that module's docstring) and drives each one through the
 # ordinary two-phase `all` target with PUBLIC_SAFE=1, no title manifest, no
 # SR_DATAROOT, no extra spans, and no compatibility overrides. Each workload
 # has its own base address, entry placement, import identity, segment/BSS
-# layout, and expected result word. Every workload, ladder-gap included, is an
-# ordinary PASS; no BLOCKED classification exists in this ladder.
+# layout, and expected result word. Every positive workload, ladder-gap
+# included, is an ordinary PASS; the Title-2 unsupported-NID control must exit
+# through the production fatal boundary.
 # ---------------------------------------------------------------------------
 PLATFORM_LADDER_DIR       := build/platform-ladder
 PLATFORM_LADDER_GENERATOR := fixtures/platform_ladder/generate.py
@@ -534,10 +584,12 @@ PL_RELOC_BASE  := 0x088C0000
 PL_SCHED_BASE  := 0x08900000
 PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
+PL_TITLE2_BASE := 0x08A40000
+PL_TITLE2_NEGATIVE_BASE := 0x08A80000
 
-.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-clean
+.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-clean
 
-platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative
+platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative
 
 platform-ladder-zero:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
@@ -630,6 +682,37 @@ platform-ladder-fs:
 # sceIoOpen must fail visibly and the guest must store the failure sentinel.
 platform-ladder-fs-negative:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
+
+platform-ladder-title2:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2 --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_title2 \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.psp \
+		GAME_BASE=$(PL_TITLE2_BASE) \
+		GAME_ENTRY=0x08A40020 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2 \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
+		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+
+# Negative control: a real mapped import stub dispatches an absent NID through
+# sr_syscall() and the production unknown-HLE scheduler boundary must exit 7.
+platform-ladder-title2-negative:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2-negative --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture
+	$(MAKE) all \
+		GAME_NAME=pl_title2_negative \
+		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.prx \
+		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.psp \
+		GAME_BASE=$(PL_TITLE2_NEGATIVE_BASE) \
+		GAME_ENTRY=0x08A80020 \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2-negative \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative --negative
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
@@ -879,10 +962,10 @@ SCHED_SELFTEST_DIR := $(BUILD_DIR)/title-config/$(SCHED_SELFTEST_CONFIG)
 SCHED_SELFTEST_MANIFEST := $(SCHED_SELFTEST_MANIFEST_$(SCHED_SELFTEST_CONFIG))
 SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest $(strip $(SCHED_SELFTEST_MANIFEST)),)
 
-sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
+sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
-		src/rt/sched_selftest.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
+		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
@@ -1042,13 +1125,13 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -1075,13 +1158,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/title_config.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/title_config.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -1106,12 +1189,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)

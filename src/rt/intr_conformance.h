@@ -361,24 +361,24 @@ static const IcProbe kIcMatrix[] = {
   {0, 110, 350, 111}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, IC_RET(0), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 
-/* ---- group E: mutex (registered to h_ok on current main) ----------------- */
+/* ---- group E: mutex ----------------------------------------------------- */
 { "sceKernelLockMutex", 0xb011b11fu, "Bad mutex", ICG_MUTEX, 0,
-  {0, 168, 371, 169}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 168, 371, 169}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201c3u), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelLockMutex", 0xb011b11fu, "Bad count", ICG_MUTEX, 1,
-  {0, 170, 372, 171}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 170, 372, 171}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201bdu), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelLockMutex", 0xb011b11fu, "Valid mutex", ICG_MUTEX, 2,
-  {0, 172, 373, 173}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 172, 373, 173}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelLockMutexCB", 0x5bf4dd27u, "Bad mutex", ICG_MUTEX, 0,
-  {0, 176, 374, 177}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 176, 374, 177}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201c3u), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelLockMutexCB", 0x5bf4dd27u, "Bad count", ICG_MUTEX, 1,
-  {0, 178, 375, 179}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 178, 375, 179}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800201bdu), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelLockMutexCB", 0x5bf4dd27u, "Valid mutex", ICG_MUTEX, 2,
-  {0, 180, 376, 181}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 180, 376, 181}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 
 /* ---- group F: lightweight mutex ----------------------------------------- */

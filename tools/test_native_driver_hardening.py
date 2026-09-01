@@ -310,6 +310,41 @@ int main(int argc, char **argv) {{
         return driver_main(8, argv_fake);
     }}
 
+    if (strcmp(mode, "image_expect_multiple") == 0) {{
+        if (argc < 3) return 106;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020:0x12345678",
+            "--expect-u32=0x08000024:0xaabbccdd"
+        }};
+        return driver_main(9, argv_fake);
+    }}
+
+    if (strcmp(mode, "image_expect_capacity") == 0) {{
+        if (argc < 3) return 107;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none",
+            "--expect-u32=0x08000020:0x00000000",
+            "--expect-u32=0x08000024:0x00000000",
+            "--expect-u32=0x08000028:0x00000000",
+            "--expect-u32=0x0800002c:0x00000000",
+            "--expect-u32=0x08000030:0x00000000",
+            "--expect-u32=0x08000034:0x00000000",
+            "--expect-u32=0x08000038:0x00000000",
+            "--expect-u32=0x0800003c:0x00000000",
+            "--expect-u32=0x08000040:0x00000000",
+            "--expect-u32=0x08000044:0x00000000",
+            "--expect-u32=0x08000048:0x00000000",
+            "--expect-u32=0x0800004c:0x00000000",
+            "--expect-u32=0x08000050:0x00000000",
+            "--expect-u32=0x08000054:0x00000000",
+            "--expect-u32=0x08000058:0x00000000",
+            "--expect-u32=0x0800005c:0x00000000",
+            "--expect-u32=0x08000060:0x00000000"
+        }};
+        return driver_main((int)(sizeof(argv_fake) / sizeof(argv_fake[0])), argv_fake);
+    }}
+
     if (strcmp(mode, "image_expect_mismatch") == 0) {{
         if (argc < 3) return 101;
         char *argv_fake[] = {{
@@ -382,6 +417,7 @@ int main(int argc, char **argv) {{
             zero_file.write_bytes(b"")
             sample_bytes = bytearray(256)
             sample_bytes[0x20:0x24] = (0x12345678).to_bytes(4, "little")
+            sample_bytes[0x24:0x28] = (0xaabbccdd).to_bytes(4, "little")
             sample_img.write_bytes(sample_bytes)
 
             # driver.c reads its fallback entry from the generic title configuration.
@@ -447,6 +483,23 @@ int main(int argc, char **argv) {{
                 "DRIVER_EXPECT_U32 addr=0x08000020 got=0x12345678 expected=0x12345678 status=PASS",
                 expected_img.stderr,
             )
+
+            multiple_img = subprocess.run(
+                [str(exe), "image_expect_multiple", str(sample_img)], capture_output=True, text=True
+            )
+            self.assertEqual(multiple_img.returncode, 0, multiple_img.stderr + multiple_img.stdout)
+            self.assertEqual(multiple_img.stderr.count("DRIVER_EXPECT_U32"), 2)
+            self.assertIn(
+                "DRIVER_EXPECT_U32 addr=0x08000024 got=0xaabbccdd expected=0xaabbccdd status=PASS",
+                multiple_img.stderr,
+            )
+
+            capacity_img = subprocess.run(
+                [str(exe), "image_expect_capacity", str(sample_img)], capture_output=True, text=True
+            )
+            self.assertEqual(capacity_img.returncode, 2, capacity_img.stderr + capacity_img.stdout)
+            self.assertIn("invalid or duplicate --expect-u32 option", capacity_img.stderr)
+            self.assertNotIn("DRIVER_EXPECT_U32", capacity_img.stderr)
 
             mismatched_img = subprocess.run(
                 [str(exe), "image_expect_mismatch", str(sample_img)], capture_output=True, text=True

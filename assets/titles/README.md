@@ -51,11 +51,21 @@ builds one scheduler source against a generic configuration and against each of 
 two, so behavior bound to one fixture's addresses cannot pass as generic. Neither
 fixture reuses any address the runtime previously hardcoded.
 
+- `synthetic-title2.json` is a third source-owned fixture added for the
+  generic-title planning proof: it uses a deliberately distinct synthetic
+  address family (`0x0A4xxxxx`, never HST's `0x003xxxxx` or the other
+  synthetics' `0x088xxxxx`), a distinct module name (`synthetic2.prx` at
+  `0x0A800000`), and disjoint `dispatch_aliases`/`callback_terminators`.
+  It validates that the generic planner accepts a non-HST identity without
+  adding a title-specific conditional, inheriting HST constants, or reading
+  private inputs. Publication-safe and deterministic.
+
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
 span is manifest data, and it reaches `analyze`/`codegen` only through an explicit
-`--extra-span` argument or the `HST_EXTRA_SPANS` seam that the manager fills from
-the validated plan. See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
+`--extra-span` argument or the `HST_EXTRA_SPANS` / `TITLE_EXTRA_SPANS` seam that the manager fills from
+the validated plan (both carry the identical rendering; `TITLE_EXTRA_SPANS` is
+the host-portable generic alias). See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
 `hst-ucus98701.json` is intentionally not checked in: it contains title-specific
 identity, module addresses, and private-route filesystem configuration. The

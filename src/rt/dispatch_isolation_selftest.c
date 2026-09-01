@@ -452,6 +452,99 @@ static CpuState reject_state(void) {
     return s;
 }
 
+
+/* ---------------------------------------------------------------------------
+ * SEPARATE BOUNDARY, MEASURED NOT FIXED: $ra = 0 at the interpreter floor.
+ *
+ * The nested host->guest call marshalling in src/rt/hle.c and src/rt/mpeg.c
+ * seeds $ra = 0 -- "the callee has no guest return address to jump to" -- and
+ * relies on the callee being an AOT body whose C epilogue simply returns.  That
+ * works.  What is NOT the same is a nested callee that is NOT translated and so
+ * runs on the production interpreter floor: its architectural `jr $ra` sets
+ * pc = 0, the interpreter has no CALL boundary to stop at (dispatch() passes
+ * none), and pc = 0 owns no executable span.  The floor rejects, and the public
+ * dispatch() wrapper turns a rejection into process termination.
+ *
+ * This is an ABI question, not a frame-ownership one: giving nested calls a
+ * synthetic return address or a call boundary would redefine the callback ABI,
+ * which the frame-isolation change deliberately does not do.  Recorded here so
+ * the behaviour is measured rather than assumed, and so a later fix has a
+ * failing-before specimen to point at.
+ * --------------------------------------------------------------------------- */
+#define NESTED_RA0_EXEC_START 0x00650000u
+#define NESTED_RA0_EXEC_END   (NESTED_RA0_EXEC_START + 0x10u)
+
+static void test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor(void) {
+    /* addiu v0, zero, 0x1234 ; jr ra ; nop -- the smallest translated-body shape. */
+    static const uint32_t program[] = {
+        0x24021234u, /* addiu v0, zero, 0x1234 */
+        0x03e00008u, /* jr    ra */
+        0x00000000u, /* nop (delay slot) */
+        0x00000000u,
+    };
+    SrGuestInterpFault fault;
+    CpuState s;
+    SrGuestInterpResult result;
+    int dispatch_result;
+
+    for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
+        MEM_W32(NESTED_RA0_EXEC_START + (uint32_t)(i * 4u), program[i]);
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(NESTED_RA0_EXEC_START, NESTED_RA0_EXEC_END),
+          "nested-call ra=0 span registration failed");
+
+    /* Exactly the state ge_call_guest_rv()/call_guest3() hand a callee: zeroed,
+     * three arguments, a frame $sp, $ra = 0, pc = the entry. */
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = 0u;
+    s.pc = NESTED_RA0_EXEC_START;
+    s.vfpuCtrl[0] = 0xe4u; s.vfpuCtrl[1] = 0xe4u;
+
+    result = sr_guest_interp_run(&s, NESTED_RA0_EXEC_START, &fault);
+    CHECK(s.r[2] == 0x00001234u,
+          "the interpreted nested callee did not execute its body (v0=0x%08x)", s.r[2]);
+    CHECK(result != SR_GUEST_INTERP_AOT_HANDOFF && result != SR_GUEST_INTERP_CALL_RETURN,
+          "MEASURED: an interpreted nested callee with $ra=0 unexpectedly returned "
+          "cleanly (%s) -- if this is now a real contract, this record is stale",
+          sr_guest_interp_result_name(result));
+    CHECK(fault.pc == 0u,
+          "MEASURED: the floor rejected somewhere other than the $ra=0 resume PC "
+          "(fault_pc=0x%08x, result=%s)", fault.pc, sr_guest_interp_result_name(result));
+
+    /* The same shape through the production dispatch core.  dispatch_try() is
+     * used rather than dispatch() because the public wrapper terminates the
+     * process on exactly this rejection -- which IS the finding. */
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = 0u;
+    s.pc = NESTED_RA0_EXEC_START;
+    dispatch_result = dispatch_try(&s, NESTED_RA0_EXEC_START);
+    CHECK(dispatch_result < 0,
+          "MEASURED: the dispatch core accepted a nested $ra=0 interpreted return "
+          "(result=%d); the public dispatch() wrapper terminates on a negative result",
+          dispatch_result);
+
+    /* Control: the identical body with a real return address resumes normally,
+     * so the finding is about $ra = 0 and not about the interpreter floor. */
+    g_interp_handoff_hits = 0;
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = PROBE_RA;
+    s.pc = NESTED_RA0_EXEC_START;
+    result = sr_guest_interp_run(&s, NESTED_RA0_EXEC_START, &fault);
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF && s.pc == PROBE_RA &&
+              g_interp_handoff_hits == 1,
+          "CONTROL: the same body with a non-zero $ra did not resume at it "
+          "(%s, pc=0x%08x, hits=%d)",
+          sr_guest_interp_result_name(result), s.pc, g_interp_handoff_hits);
+
+    sr_exec_span_reset();
+}
+
 static void test_interpreter_rejects_unowned_and_invalid_fetches(void) {
     SrGuestInterpFault fault;
     CpuState s;
@@ -931,6 +1024,7 @@ int main(int argc, char **argv) {
     test_aot_call_returns_before_native_continuation();
     test_interpreter_tail_transfers_remain_untyped();
     test_interpreter_rejects_unowned_and_invalid_fetches();
+    test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor();
     test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
     test_retired_bindings_are_inert();

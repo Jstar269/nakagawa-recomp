@@ -61,11 +61,14 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(plan["game_base"], 0)
         self.assertEqual(plan["game_entry"], 0)
         self.assertEqual(plan["codegen_profile"], "hst")
-        self.assertEqual(plan["environment"], {
-            "GAME_BASE": "0x00000000",
-            "GAME_ENTRY": "0x00000000",
-            "HST_EXTRA_SPANS": "0x00303194,0x00306e24",
-        })
+        # Generic contract now emits only TITLE_EXTRA_SPANS (host-portable).
+        # HST_EXTRA_SPANS is legacy and lives only in the HST compatibility layer
+        # (Makefile and PowerShell adapter), not in the generic planner. For HST,
+        # the planner emits TITLE only; the adapter synthesizes HST for legacy consumers.
+        self.assertEqual(plan["environment"]["GAME_BASE"], "0x00000000")
+        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x00000000")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "0x00303194,0x00306e24")
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         self.assertEqual(plan["commands"]["prxload"], [
             "python", "tools/prxload.py", "place_game_here/EBOOT.elf", "0x00000000",
             "--psp-header=place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
@@ -104,7 +107,8 @@ class TitleCodegenPlanTests(unittest.TestCase):
         )
         self.assertEqual(plan["environment"]["GAME_BASE"], "0x08804000")
         self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x08804128")
-        self.assertEqual(plan["environment"]["HST_EXTRA_SPANS"], "")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertNotIn("--profile=hst", plan["commands"]["codegen"])
 

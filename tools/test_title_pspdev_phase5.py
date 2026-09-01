@@ -96,11 +96,10 @@ class PspdevPhase5FixtureTests(unittest.TestCase):
         self.assertEqual(plan["game_entry"], PSPDEV_BASE)
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertEqual(plan["bss_metadata_source"], "elf")
-        self.assertEqual(plan["environment"], {
-            "GAME_BASE": "0x08804000",
-            "GAME_ENTRY": "0x08804000",
-            "HST_EXTRA_SPANS": "",
-        })
+        self.assertEqual(plan["environment"]["GAME_BASE"], "0x08804000")
+        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x08804000")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         codegen = plan["commands"]["codegen"]
         self.assertNotIn("--profile=hst", codegen)
         self.assertFalse([arg for arg in codegen if arg.startswith("--extra-elf=")])
@@ -142,7 +141,8 @@ class PspdevPhase5FixtureTests(unittest.TestCase):
         )
         self.assertEqual(plan["make"]["game_base"], "0x08804000")
         self.assertEqual(plan["make"]["codegen_profile_arg"], "")
-        self.assertEqual(plan["environment"]["HST_EXTRA_SPANS"], "")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
 
     def test_planner_cli_is_byte_deterministic(self) -> None:
         command = [
@@ -161,7 +161,8 @@ class PspdevPhase5FixtureTests(unittest.TestCase):
         self.assertEqual(first.stdout, second.stdout)
         parsed = json.loads(first.stdout)
         self.assertEqual(parsed["game_base"], PSPDEV_BASE)
-        self.assertEqual(parsed["environment"]["HST_EXTRA_SPANS"], "")
+        self.assertEqual(parsed["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", parsed["environment"])
 
     def test_manifest_declares_no_private_or_derived_material(self) -> None:
         rendered = title_manifest.canonical_json(self.manifest).lower()

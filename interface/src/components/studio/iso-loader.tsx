@@ -12,6 +12,8 @@ import {
   Hash,
   Globe,
   Building2,
+  Info,
+  Hammer,
 } from "lucide-react";
 import { useStudio } from "./studio-context";
 import { Panel, SectionHeader, StatPill } from "./ui-bits";
@@ -79,9 +81,23 @@ export function IsoLoader() {
     <div className="space-y-4">
       <SectionHeader
         icon={<Disc3 className="size-4.5" />}
-        title="Game ISO"
-        subtitle="Inspect a Hot Shots Tennis: Get a Grip UMD image locally. Only the ISO9660 metadata and directory sectors needed for inspection are read; the selected file stays in your browser."
+        title="Game ISO Inspector (Browser-Local Only)"
+        subtitle="Inspect an uncompressed PSP UMD image header locally in your browser. Reads ISO9660 volume descriptors and filesystem directory structure. Does not upload, copy, or bind files to the host backend."
       />
+
+      {/* Explicit Browser-Inspector Boundary Notice */}
+      <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs flex items-start gap-2.5">
+        <Info className="size-4 text-primary mt-0.5 shrink-0" />
+        <div className="space-y-1">
+          <span className="font-semibold text-foreground">Local Browser Inspection Boundary</span>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            This tool parses ISO9660 descriptors and directory trees <strong>entirely inside this browser tab</strong>.
+            Selecting an ISO here <strong>does not</strong> copy it to <code className="font-mono text-foreground">place_game_here/ISO/</code>,
+            extract XB archives, decrypt PRX/ELF modules, or trigger native compilation. For native recompilation, place lawfully
+            decrypted binaries in <code className="font-mono text-foreground">place_game_here/</code> on the host machine as verified by Preflight.
+          </p>
+        </div>
+      </div>
 
       {!hasIso ? (
         <>
@@ -92,61 +108,66 @@ export function IsoLoader() {
                 <Disc3 className="size-5 text-primary" />
               </div>
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold">Welcome to Nakagawa Recomp</h3>
+                <h3 className="text-sm font-semibold">ISO Header & Structure Explorer</h3>
                 <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                  Select your legally obtained game ISO to inspect its metadata. The other panels
-                  expose the native build, runtime diagnostics, asset inventory, and experimental
-                  settings; controls without a matching runtime switch are clearly marked as plans.
+                  Select your legally obtained game ISO to inspect its volume descriptor, region, DISC_ID, and internal directory layout.
+                  Native build and execution controls are managed separately in the Recompile & Run tab.
                 </p>
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">Local ISO inspection</span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">Native build control</span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">Runtime telemetry</span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">Asset diagnostics</span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">
+                    Client-side ISO9660 parser
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">
+                    No data leaves browser
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-background/50 border border-border/60">
+                    DISC_ID validation
+                  </span>
                 </div>
               </div>
             </div>
           </div>
-          <Panel title="Drop your ISO" icon={<Upload className="size-4" />}>
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            onClick={() => inputRef.current?.click()}
-            className={`relative cursor-pointer rounded-xl border-2 border-dashed transition-colors court-grid p-8 text-center ${
-              dragOver
-                ? "border-primary bg-primary/10"
-                : "border-border/70 hover:border-primary/50 hover:bg-accent/20"
-            }`}
-          >
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".iso,application/octet-stream"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
+
+          <Panel title="Drop your ISO for Local Inspection" icon={<Upload className="size-4" />}>
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
               }}
-            />
-            <div className="mx-auto size-12 rounded-xl bg-primary/15 border border-primary/30 grid place-items-center mb-3">
-              {loading ? (
-                <Loader2 className="size-5 animate-spin text-primary" />
-              ) : (
-                <Upload className="size-5 text-primary" />
-              )}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              onClick={() => inputRef.current?.click()}
+              className={`relative cursor-pointer rounded-xl border-2 border-dashed transition-colors court-grid p-8 text-center ${
+                dragOver
+                  ? "border-primary bg-primary/10"
+                  : "border-border/70 hover:border-primary/50 hover:bg-accent/20"
+              }`}
+            >
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".iso,application/octet-stream"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleFile(f);
+                }}
+              />
+              <div className="mx-auto size-12 rounded-xl bg-primary/15 border border-primary/30 grid place-items-center mb-3">
+                {loading ? (
+                  <Loader2 className="size-5 animate-spin text-primary" />
+                ) : (
+                  <Upload className="size-5 text-primary" />
+                )}
+              </div>
+              <p className="text-sm font-medium">
+                {loading ? "Inspecting ISO header sectors…" : "Drop your .iso here or click to browse"}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Supports standard ISO9660 PSP images. Parsing occurs strictly within this browser tab memory.
+              </p>
             </div>
-            <p className="text-sm font-medium">
-              {loading ? "Inspecting ISO header…" : "Drop your .iso here or click to browse"}
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Supports uncompressed .iso PSP UMD images. Parsing stays in this browser tab.
-            </p>
-          </div>
-        </Panel>
+          </Panel>
         </>
       ) : (
         <>
@@ -157,10 +178,10 @@ export function IsoLoader() {
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7"
+                className="h-7 text-xs"
                 onClick={() => inputRef.current?.click()}
               >
-                <Upload className="size-3.5 mr-1" /> Replace
+                <Upload className="size-3.5 mr-1" /> Replace ISO
               </Button>
             }
           >
@@ -201,7 +222,7 @@ export function IsoLoader() {
           ) : null}
 
           <Panel
-            title="Title match"
+            title="Title Verification & Host Pipeline Guidance"
             icon={matched ? <CircleCheck className="size-4" /> : <TriangleAlert className="size-4" />}
           >
             {matched ? (
@@ -209,51 +230,71 @@ export function IsoLoader() {
                 <div className="flex items-center gap-2">
                   <CircleCheck className="size-4 text-emerald-400" />
                   <span className="text-sm font-semibold">{isoMeta.matchedTitle}</span>
-                  <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/15">
-                    Verified
+                  <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
+                    Recognized Disc ID
                   </Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <Info label="Developer" value={GAME_PROFILE.developer} />
-                  <Info label="Publisher" value={GAME_PROFILE.publisher} />
-                  <Info label="Release" value={GAME_PROFILE.release} />
-                  <Info label="Platform" value={GAME_PROFILE.platform} />
-                  <Info label="Native res" value={GAME_PROFILE.nativeResolution} />
-                  <Info label="Native FPS" value={GAME_PROFILE.nativeFrameRate} />
-                  <Info label="CPU" value={GAME_PROFILE.cpu} />
-                  <Info label="GPU" value={GAME_PROFILE.gpu} />
+                  <InfoItem label="Developer" value={GAME_PROFILE.developer} />
+                  <InfoItem label="Publisher" value={GAME_PROFILE.publisher} />
+                  <InfoItem label="Release" value={GAME_PROFILE.release} />
+                  <InfoItem label="Platform" value={GAME_PROFILE.platform} />
+                  <InfoItem label="Native res" value={GAME_PROFILE.nativeResolution} />
+                  <InfoItem label="Native FPS" value={GAME_PROFILE.nativeFrameRate} />
+                  <InfoItem label="CPU" value={GAME_PROFILE.cpu} />
+                  <InfoItem label="GPU" value={GAME_PROFILE.gpu} />
                 </div>
-                <Button className="w-full" onClick={() => setSection("graphics")}>
-                  Continue to graphics →
-                </Button>
+
+                <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-xs space-y-1 text-muted-foreground">
+                  <span className="font-semibold text-foreground block">Next Steps for Native Compilation:</span>
+                  <p className="text-[11px] leading-relaxed">
+                    Ensure your decrypted <code className="font-mono text-foreground">EBOOT.elf</code>, PRX modules, and extracted assets
+                    are placed in <code className="font-mono text-foreground">place_game_here/</code> on your computer. You can verify
+                    their status using Workspace Doctor in the Recompile & Run tab.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <Button className="flex-1 gap-1.5" onClick={() => setSection("build")}>
+                    <Hammer className="size-4" /> Open Recompile & Preflight →
+                  </Button>
+                  <Button variant="outline" className="flex-1" onClick={() => setSection("graphics")}>
+                    Inspect Config Settings →
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="space-y-3">
                 <div className="flex items-start gap-2">
                   <TriangleAlert className="size-4 text-amber-400 mt-0.5 shrink-0" />
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    This ISO wasn&apos;t recognized as <em>Hot Shots Tennis: Get a Grip</em>
+                    This ISO was not matched as <em>Hot Shots Tennis: Get a Grip</em>
                     {isoMeta.gameCode ? (
                       <>
-                        {" "}(DISC_ID <span className="font-mono">{isoMeta.gameCode}</span>).
+                        {" "}(detected DISC_ID: <span className="font-mono text-foreground">{isoMeta.gameCode}</span>).
                       </>
                     ) : (
-                      ". No PARAM.SFO DISC_ID was found."
+                      " (no DISC_ID detected in ISO header)."
                     )}
-                    . The recompiler can still process it, but game-specific patches may not apply
-                    correctly.
                   </p>
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  Expected codes:{" "}
+                  Supported game code:{" "}
                   {GAME_PROFILE.gameCodes.map((c) => (
                     <Badge key={c} variant="outline" className="mr-1 font-mono text-[10px] h-5">
                       {c}
                     </Badge>
                   ))}
                 </div>
-                <Button variant="outline" className="w-full" onClick={() => setSection("graphics")}>
-                  Continue anyway →
+                <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-xs text-muted-foreground">
+                  <span className="font-semibold text-foreground block mb-1">Host Recompilation Notice:</span>
+                  <span className="text-[11px] leading-relaxed block">
+                    The native compiler pipeline expects the supported UCUS98701 title assets in{" "}
+                    <code className="font-mono text-foreground">place_game_here/</code>.
+                  </span>
+                </div>
+                <Button variant="outline" className="w-full gap-1.5" onClick={() => setSection("build")}>
+                  <Hammer className="size-4" /> Open Recompile & Preflight →
                 </Button>
               </div>
             )}
@@ -284,7 +325,7 @@ function Row({
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
+function InfoItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-background/30 border border-border/40 px-2 py-1.5">
       <div className="text-[10px] text-muted-foreground uppercase tracking-wide">{label}</div>

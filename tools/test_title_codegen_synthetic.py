@@ -44,11 +44,11 @@ class SyntheticTitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(plan["game_entry"], 0x08800000)
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertEqual(plan["bss_metadata_source"], "elf")
-        self.assertEqual(plan["environment"], {
-            "GAME_BASE": "0x08800000",
-            "GAME_ENTRY": "0x08800000",
-            "HST_EXTRA_SPANS": "",
-        })
+        # Generic planner emits only TITLE_EXTRA_SPANS (portable); HST legacy must not appear.
+        self.assertEqual(plan["environment"]["GAME_BASE"], "0x08800000")
+        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x08800000")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         self.assertEqual(plan["commands"]["codegen"], [
             "python",
             "tools/codegen.py",
@@ -94,7 +94,8 @@ class SyntheticTitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(first.stdout, second.stdout)
         parsed = json.loads(first.stdout)
-        self.assertEqual(parsed["environment"]["HST_EXTRA_SPANS"], "")
+        self.assertEqual(parsed["environment"]["TITLE_EXTRA_SPANS"], "")
+        self.assertNotIn("HST_EXTRA_SPANS", parsed["environment"])
         self.assertNotIn("--profile=hst", parsed["commands"]["codegen"])
 
 

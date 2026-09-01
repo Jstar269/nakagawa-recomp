@@ -43,6 +43,8 @@ EXPECTED_PRX_SHA256 = {
     "ladder-sched": "758971ab4080215d6411f95cf69242658250316c75b1d94a560464bd0e9f51c1",
     "ladder-fpu": "c32d6cf9d99c0369bc3e7f202b43ec36f806ef96777482992f7e9059782f2d90",
     "ladder-fs": "7dea7d6f105f0994dd22164a732dd0666a5d912f657f7c2f6b0b638a5a182ae9",
+    "ladder-title2": "4288b0c5c45d469a8064d481f617d9e8a94de3fc097528901e362798f0bcdc17",
+    "ladder-title2-negative": "60b83d898ce64b55b742aa1c9dd638416609d44a0a1c6291a3034f15322896ce",
 }
 
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
@@ -311,6 +313,150 @@ class MutationKillTests(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertIn("status=PASS", combined)
         self.assertNotIn("xbdata_extracted ...", combined.replace("\n", ""))
+
+
+class Title2ContractTests(unittest.TestCase):
+    """Locked Title-2 production platform-ladder v1 contract."""
+
+    def test_locked_payload_checksum_and_sha256(self):
+        plan = generator.PLANS["ladder-title2"]
+        prx, psp = generator.build_prx(plan)
+        self.assertEqual(generator.title2_checksum(), generator.TITLE2_PAYLOAD_CHECKSUM)
+        payload = generator.title2_payload_bytes()
+        self.assertEqual(len(payload), 69)
+        self.assertEqual(payload, b"Nakagawa title2 source-owned payload\nconfig=0x13579bdf\nroute=generic\n")
+        self.assertEqual(generator.TITLE2_PATH_BYTES, b"ms0:/platform_ladder_title2.txt\0")
+        self.assertEqual(
+            generator.TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_"),
+            "ms0__platform_ladder_title2.txt",
+        )
+        self.assertEqual(generator.hashlib.sha256(prx).hexdigest(), EXPECTED_PRX_SHA256["ladder-title2"])
+        data = generator.data_bytes_for(plan)
+        self.assertEqual(data[generator.TITLE2_PAYLOAD_OFF:generator.TITLE2_PAYLOAD_OFF + len(payload)], bytes(len(payload)))
+
+    def test_locked_gap_words_are_present(self):
+        plan = generator.PLANS["ladder-title2"]
+        prx, _ = generator.build_prx(plan)
+        text_offset = generator.TEXT_FILE_OFFSET + generator.TITLE2_GAP_OFF
+        for index, word in enumerate(generator.TITLE2_GAP_WORDS):
+            actual = struct.unpack_from("<I", prx, text_offset + index * 4)[0]
+            self.assertEqual(actual, word)
+
+    def test_nine_word_result_block_is_address_pinned_and_disjoint(self):
+        plan = generator.PLANS["ladder-title2"]
+        expectations = generator.title2_result_expectations(plan)
+        self.assertEqual(len(expectations), 9)
+        self.assertEqual(
+            [address for address, _ in expectations],
+            [0x08A43340 + 4 * index for index in range(9)],
+        )
+        self.assertEqual(
+            [value for _, value in expectations],
+            [
+                0x13579BDF,
+                0xCBACCA11,
+                0x00000001,
+                0x00C0FFEE,
+                0x0000000E,
+                0x00000045,
+                0x0000188B,
+                0x54495432,
+                0x00000000,
+            ],
+        )
+        result_offsets = range(generator.TITLE2_RESULT_OFF, generator.TITLE2_RESULT_OFF + 9 * 4, 4)
+        self.assertNotIn(generator.TITLE2_MEM_CELL_OFF, result_offsets)
+        self.assertNotEqual(generator.TITLE2_PATH_OFF, generator.TITLE2_RESULT_OFF)
+        self.assertNotEqual(generator.TITLE2_PAYLOAD_OFF, generator.TITLE2_RESULT_OFF)
+
+    def test_title2_positive_contract_uses_real_production_imports(self):
+        plan = generator.PLANS["ladder-title2"]
+        self.assertEqual(plan.game_name, "pl_title2")
+        self.assertEqual(plan.base, 0x08A40000)
+        self.assertEqual(plan.entry, 0x08A40020)
+        self.assertEqual(plan.env, {"SR_DISPATCH_FATAL": "1"})
+        self.assertEqual(
+            plan.flat_nids(),
+            [
+                generator.NID_CREATE_EVENT_FLAG,
+                generator.NID_CREATE_CALLBACK,
+                generator.NID_CREATE_THREAD,
+                generator.NID_START_THREAD,
+                generator.NID_NOTIFY_CALLBACK,
+                generator.NID_SET_EVENT_FLAG,
+                generator.NID_WAIT_EVENT_FLAG,
+                generator.NID_CHECK_CALLBACK,
+                generator.NID_EXIT_THREAD,
+                generator.NID_IO_OPEN,
+                generator.NID_IO_READ,
+                generator.NID_IO_CLOSE,
+            ],
+        )
+        self.assertEqual(
+            generator.TITLE2_BASE + 0x3000 + generator.TITLE2_MEM_CELL_OFF,
+            generator.TITLE2_MEM_CELL,
+        )
+        words, _ = generator.assemble_text(plan)
+        self.assertEqual(words[generator.TITLE2_GAP_OFF // 4:generator.TITLE2_GAP_OFF // 4 + 9], list(generator.TITLE2_GAP_WORDS))
+
+    def test_title2_negative_plan_is_disjoint_and_imports_only_absent_nid(self):
+        plan = generator.PLANS["ladder-title2-negative"]
+        self.assertEqual(plan.base, 0x08A80000)
+        self.assertNotEqual(plan.base, generator.TITLE2_BASE)
+        self.assertEqual(plan.flat_nids(), [generator.TITLE2_UNSUPPORTED_NID])
+        self.assertEqual(generator.hashlib.sha256(generator.build_prx(plan)[0]).hexdigest(), EXPECTED_PRX_SHA256[plan.name])
+
+    def test_memory_cell_mutation_is_oracle(self):
+        plan = generator.PLANS["ladder-title2"]
+        self.assertEqual(generator.TITLE2_MEM_CELL_INIT, 7)
+        self.assertEqual(generator.TITLE2_MEM_CELL_EXPECTED, 14)
+        env = dict(os.environ)
+        env["SR_DATAROOT"] = "."
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import fixtures.platform_ladder.generate as g; "
+             "print(f'cell={g.TITLE2_MEM_CELL_INIT}->{g.TITLE2_MEM_CELL_EXPECTED}')"],
+            capture_output=True, text=True, env=env, cwd=str(ROOT),
+        )
+        self.assertIn("cell=7->14", result.stdout)
+
+    def test_unsupported_nid_is_absent_from_registrations(self):
+        manifest = importlib.import_module("hle_manifest")
+        data = manifest.build_manifest()
+        nids = {
+            int(entry["nid"], 16) if isinstance(entry["nid"], str) else entry["nid"]
+            for entry in data["registrations"]
+        }
+        self.assertNotIn(generator.TITLE2_UNSUPPORTED_NID, nids)
+        needle = f"{generator.TITLE2_UNSUPPORTED_NID:08x}"
+        paths = [
+            ROOT / "src" / "rt" / "hle.c",
+            ROOT / "src" / "nid_names.h",
+            ROOT / "src" / "rt" / "nid_names.h",
+            ROOT / "tools" / "nid_corpus.json",
+        ]
+        for path in paths:
+            if not path.is_file():
+                continue
+            self.assertNotIn(needle, path.read_text(encoding="utf-8").lower(), str(path))
+
+    def test_title2_negative_acceptance_kills_h_ok_mutant(self):
+        """Replacing the unsupported stub with h_ok semantics cannot pass the gate."""
+        plan = generator.PLANS["ladder-title2-negative"]
+        build_dir = ROOT / "build" / "platform-ladder" / plan.name
+        chunks = sorted(build_dir.glob(f"{plan.game_name}_recomp_[0-9]*.c"))
+        if not chunks:
+            self.skipTest("run mingw32-make platform-ladder-title2-negative first")
+        generated = "\n".join(path.read_text(encoding="ascii") for path in chunks)
+        marker = f"sr_syscall(s, 0x{generator.TITLE2_UNSUPPORTED_NID:08x}u);"
+        self.assertIn(marker, generated)
+        mutant = generated.replace(marker, "s->r[2] = 0; /* h_ok mutant */")
+        self.assertNotIn(marker, mutant)
+        completed = subprocess.CompletedProcess(
+            args=["h_ok-mutant"], returncode=0, stdout="", stderr=""
+        )
+        with self.assertRaisesRegex(RuntimeError, "expected exit 7"):
+            generator.validate_title2_negative_output(completed)
 
 
 if __name__ == "__main__":

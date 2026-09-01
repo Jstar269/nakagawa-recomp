@@ -32,6 +32,10 @@ source tree.
   external-input gates.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
   source-owned probes are not hardware acceptance without measured provenance.
+- [`research/PSP_THREADING_SEMANTICS.md`](research/PSP_THREADING_SEMANTICS.md) —
+  frozen CreateThread and StartThread research, bounded evidence classes,
+  corrected 28/5 hardware-oracle design, and local Nakagawa/general Wiki draft
+  text; hardware execution remains `HARDWARE_NOT_RUN`.
 - [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
 
 ## Provenance and publication

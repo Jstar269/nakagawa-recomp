@@ -140,7 +140,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
              "does not match the plan executable base/entry"),
             ("environment-entry", lambda p: p["environment"].update(GAME_ENTRY="0xdeadbeef"),
              "does not match the plan executable base/entry"),
-            ("environment-span", lambda p: p["environment"].update(HST_EXTRA_SPANS=SYNTHETIC_SPAN_TEXT),
+            ("environment-span", lambda p: p["environment"].update(TITLE_EXTRA_SPANS=SYNTHETIC_SPAN_TEXT),
              "does not match the plan extra executable spans"),
             ("make-base", lambda p: p["make"].update(game_base="0"),
              "does not match the plan executable base/entry"),
@@ -175,11 +175,12 @@ class TitleManagerAdapterTests(unittest.TestCase):
             build_dir=Path("build/synthetic"),
             funcs_per_chunk=64,
         )
-        self.assertEqual(plan["environment"]["HST_EXTRA_SPANS"], SYNTHETIC_SPAN_TEXT)
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], SYNTHETIC_SPAN_TEXT)
+        self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         proc = self.run_pwsh("Assert-TitlePlanDerivation $plan | Out-Null; Write-Output 'OK'", plan)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         # Clearing only the projection is drift, and is caught.
-        plan["environment"]["HST_EXTRA_SPANS"] = ""
+        plan["environment"]["TITLE_EXTRA_SPANS"] = ""
         proc = self.run_pwsh("Assert-TitlePlanDerivation $plan | Out-Null", plan)
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
 

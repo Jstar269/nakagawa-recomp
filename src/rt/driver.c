@@ -231,11 +231,12 @@ typedef struct DriverExpectedU32 {
     uint32_t value;
 } DriverExpectedU32;
 
-static int parse_expected_u32(const char *argument, DriverExpectedU32 *expectation) {
+#define DRIVER_MAX_EXPECT_U32 16
+
+static int parse_expected_u32(const char *argument, DriverExpectedU32 *expectations, int count) {
     static const char prefix[] = "--expect-u32=";
-    if (!argument || !expectation || strncmp(argument, prefix, sizeof(prefix) - 1) != 0) {
-        return 0;
-    }
+    if (!argument || !expectations || count <= 0) return 0;
+    if (strncmp(argument, prefix, sizeof(prefix) - 1) != 0) return 0;
     const char *spec = argument + sizeof(prefix) - 1;
     const char *separator = strchr(spec, ':');
     if (!separator || separator == spec || separator[1] == '\0' || strchr(separator + 1, ':')) {
@@ -251,11 +252,34 @@ static int parse_expected_u32(const char *argument, DriverExpectedU32 *expectati
     memcpy(address_text, spec, address_length);
     address_text[address_length] = '\0';
     memcpy(value_text, separator + 1, value_length + 1);
-    if (!parse_hex32(address_text, &expectation->address)
-            || !parse_hex32(value_text, &expectation->value)) {
+    uint32_t address, value;
+    if (!parse_hex32(address_text, &address) || !parse_hex32(value_text, &value)) {
         return 0;
     }
-    expectation->enabled = 1;
+    for (int i = 0; i < count; i++) {
+        if (expectations[i].enabled && expectations[i].address == address) {
+            return 0;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        if (!expectations[i].enabled) {
+            expectations[i].enabled = 1;
+            expectations[i].address = address;
+            expectations[i].value = value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int validate_expectations(DriverExpectedU32 *expectations, int count) {
+    for (int i = 0; i < count; i++) {
+        if (!expectations[i].enabled) continue;
+        if ((expectations[i].address & 3u) != 0 || !sr_guest_span_readable(expectations[i].address, 4)) {
+            fprintf(stderr, "--expect-u32 guest address is unaligned or invalid: 0x%08x\n", expectations[i].address);
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -300,7 +324,8 @@ int main(int argc, char **argv) {
 #endif
     uint32_t entry;
     const char *ref_trace, *out;
-    DriverExpectedU32 expected_u32 = {0, 0, 0};
+    DriverExpectedU32 expectations[DRIVER_MAX_EXPECT_U32];
+    memset(expectations, 0, sizeof(expectations));
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32
@@ -332,7 +357,7 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;
-        if (expected_u32.enabled || !parse_expected_u32(argv[i], &expected_u32)) {
+        if (!parse_expected_u32(argv[i], expectations, DRIVER_MAX_EXPECT_U32)) {
             fprintf(stderr, "invalid or duplicate --expect-u32 option: %s\n", argv[i]);
             return 2;
         }
@@ -395,10 +420,7 @@ int main(int argc, char **argv) {
     out = argv[3];
 have_image:;
     fprintf(stderr, "BOOT_EVENT phase=image_loaded entry=0x%08x\n", entry);
-    if (expected_u32.enabled
-            && ((expected_u32.address & 3u) != 0
-                || !sr_guest_span_readable(expected_u32.address, 4))) {
-        fprintf(stderr, "--expect-u32 guest address is unaligned or invalid: 0x%08x\n", expected_u32.address);
+    if (!validate_expectations(expectations, DRIVER_MAX_EXPECT_U32)) {
         return 2;
     }
 
@@ -491,19 +513,22 @@ have_image:;
 
     fprintf(stderr, "done (hit_hle=%d)\n", sr_hit_hle);
 
-    if (expected_u32.enabled) {
-        uint32_t actual = MEM_R32(expected_u32.address);
-        int matches = actual == expected_u32.value;
+    int any_failure = 0;
+    for (int i = 0; i < DRIVER_MAX_EXPECT_U32; i++) {
+        if (!expectations[i].enabled) continue;
+        uint32_t actual = MEM_R32(expectations[i].address);
+        int matches = actual == expectations[i].value;
         fprintf(
             stderr,
             "DRIVER_EXPECT_U32 addr=0x%08x got=0x%08x expected=0x%08x status=%s\n",
-            expected_u32.address,
+            expectations[i].address,
             actual,
-            expected_u32.value,
+            expectations[i].value,
             matches ? "PASS" : "FAIL"
         );
-        if (!matches) return 3;
+        if (!matches) any_failure = 1;
     }
+    if (any_failure) return 3;
 
     return 0;
 }

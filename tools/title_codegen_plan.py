@@ -7,6 +7,28 @@
 The public manifest supplies source-owned title configuration. Private executable,
 module, and PSP-header paths remain explicit command-line bindings and are never
 written back to the manifest.
+
+GENERIC TITLE CONTRACT (title-neutral, host-portable):
+  - title identifier (manifest id) and kind
+  - build identifier / game_name (portable, no .exe semantics)
+  - executable base/entry and bss_metadata_source
+  - codegen profile selection (none vs hst) and funcs_per_chunk
+  - extra executable spans (title extra spans, portable)
+  - guest module configuration (names and load addresses)
+  - runtime fallback entry (from runtime_bindings or executable entry)
+  - generated-output locations (build_dir/name derived, forward-slash portable)
+  - optional title capabilities (runtime_bindings, disc, etc. when present)
+  Rendered paths use forward slashes and no Windows drive or .exe semantics;
+  the plan JSON itself is host-portable and requires no PowerShell/MSYS2/C:\\ paths.
+
+HST PROFILE (isolated, not in generic planner):
+  - HST disc identity and exact-disc-id policy (retail)
+  - HST private-address values (0-base, synthetic-HST span, module addresses)
+  - HST private-input expectations (psp-header, decrypted modules, ISO)
+  - HST-specific routes/assets and compatibility defaults (HST codegen profile)
+  These are validated only by the HST adapter (tools/title_manager_plan.ps1:
+  Get-HstManifestMakeArgs) and never by the generic planner, which treats every
+  manifest id as equal and fails closed on unknown fields rather than defaulting to HST.
 """
 
 from __future__ import annotations
@@ -122,6 +144,19 @@ def _resolve_codegen_profile(
 
 
 def _span_environment(manifest: dict[str, Any]) -> dict[str, str]:
+    """Project executable addresses and spans into analyzer/make environment.
+
+    GENERIC: GAME_BASE, GAME_ENTRY, and the extra-span rendering are derived
+    solely from the validated manifest's executable block.  No HST constant is
+    consulted; an empty span set renders as the empty string, not an inherited HST default.
+
+    TITLE_EXTRA_SPANS is the host-portable generic key carrying the rendering.
+    The historic HST_EXTRA_SPANS legacy name is NOT emitted here; it lives only
+    in the explicit HST compatibility layer (Makefile `ifeq ($(GAME_NAME),hst)` and
+    PowerShell Get-HstManifestMakeArgs/Push-HstAnalyzerEnvironment) which derives
+    the generic TITLE_EXTRA_SPANS from the legacy variable only for GAME_NAME=hst.
+    Generic and synthetic titles never inherit an HST-named span.
+    """
     executable = manifest["executable"]
     base = executable["base"]
     spans = executable["extra_executable_spans"]
@@ -139,7 +174,7 @@ def _span_environment(manifest: dict[str, Any]) -> dict[str, str]:
     return {
         "GAME_BASE": _hex(base),
         "GAME_ENTRY": _hex(executable["entry"]),
-        "HST_EXTRA_SPANS": rendered,
+        "TITLE_EXTRA_SPANS": rendered,
     }
 
 

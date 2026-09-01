@@ -24,6 +24,10 @@
  * a null/blank backend elsewhere (h264_null.c), libavcodec droppable in later. */
 #include "sr_h264.h"
 #endif
+/* Outside the SR_SDL3VK guard on purpose: call_guest3() is unconditional, so a
+ * declaration that only exists in the SDL3 build is an implicit-declaration
+ * error in every other one (portable-core caught exactly that). */
+#include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -147,8 +151,20 @@ static Mpeg *mpeg_find(uint32_t mpegAddr) {
     return 0;
 }
 
+/* The MPEG ring-refill callback is a nested host->guest call and shares the
+ * frame policy with hle.c's GE marshallers: a per-owner, per-depth frame out of
+ * the reserved region rather than the fixed 0x09df8000 this used to hard-code.
+ * Everything else about the marshalling -- zeroed state, inherited $gp, $ra = 0,
+ * 0xe4 VFPU prefixes, full caller restore -- is unchanged. */
 static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
     if (!s || !fn) return 0;
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
+        fprintf(stderr, "MPEG_CALL_GUEST: fn=0x%08x refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        return 0;
+    }
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
@@ -157,7 +173,7 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     s->r[5] = a1;
     s->r[6] = a2;
     s->r[28] = save.r[28];
-    s->r[29] = 0x09df8000u;
+    s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
@@ -165,6 +181,7 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     uint32_t ret = s->r[2];
     memcpy(s, &save, sizeof(CpuState));
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
     return ret;
 }
 
