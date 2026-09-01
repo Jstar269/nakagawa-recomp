@@ -156,7 +156,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b03c6b23457260facfb9306a97aaacbdf58f7c614c157d516c05b20ead5f111f"
+      "sha256": "a2b9d5594ea82e6b339164f02f4f23ac9180ef20c6a52fc82f6fd0f09c03be52"
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
@@ -1317,7 +1317,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "35a94dfba18c4aba80b55c31a841d2555334376494ed7c7da059aa505decf743"
+      "sha256": "dbfd9512f54bad9902dfc82133588368ae837c26c62a6fe6fb01a4d1346d3d60"
     },
     {
       "path": "interface/package.json",
@@ -1326,7 +1326,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3a074cfb2ac666b4bdeb73d43f6c82fad27b4a08e19cfdbad86a30b04dd918bc"
+      "sha256": "e0a074940c366c28064ecf6ac2d7bd4ba6266ac39aa5150a91f642d7d93b93ca"
     },
     {
       "path": "interface/postcss.config.mjs",
@@ -7639,9 +7639,12 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
-    "candidate_tree": "6b7171e3053f2df69b51d1890953f10341aeb595",
+    "candidate_tree": "c4d1a957ed2bea11f26455600a40e4dd814289b6",
     "refreshed_paths": [
+      ".github/workflows/osv-scanner.yml",
       "docs/research/PSP_THREADING_SEMANTICS.md",
+      "interface/package-lock.json",
+      "interface/package.json",
       "src/rt/vfs_contained_selftest.c"
     ]
   }
