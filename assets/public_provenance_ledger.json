@@ -5116,7 +5116,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fab34acff5530c31e4ac7ed2c3d44e035c4fbcfd68d3cb57a35371e4276bfd4e"
+      "sha256": "291aa7ac9c5c9da022766b557a8978a9334a609a95adba6105f8bf6492704fd6"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -7639,9 +7639,10 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "5814c46a734379e88cd48d7729d4b494106ff569",
-    "candidate_tree": "7d032d0aac705af993aea3cbc85a208ffbfba6f7",
+    "candidate_tree": "6b7171e3053f2df69b51d1890953f10341aeb595",
     "refreshed_paths": [
-      "docs/research/PSP_THREADING_SEMANTICS.md"
+      "docs/research/PSP_THREADING_SEMANTICS.md",
+      "src/rt/vfs_contained_selftest.c"
     ]
   }
 }

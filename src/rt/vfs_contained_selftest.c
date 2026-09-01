@@ -21,6 +21,7 @@
 #include "vfs_contained.h"
 
 #include <stdarg.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -161,9 +162,11 @@ static void nuke(const char *path) {
                 if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
                 char child[1200];
                 fp(child, sizeof(child), "%s/%s", path, de->d_name);
-                struct stat st;
-                if (lstat(child, &st) == 0 && S_ISLNK(st.st_mode)) unlink(child);
-                else nuke(child);
+                /* Unlink is the first operation: it removes files and link
+                 * entries without following them. Only a real directory
+                 * needs recursive descent, and that decision is made from
+                 * the operation's errno rather than a stale pathname check. */
+                if (unlink(child) != 0 && errno == EISDIR) nuke(child);
             }
             closedir(d);
         }
@@ -444,14 +447,13 @@ static int case_legacy_is_redirectable(int *skipped) {
         nuke(victim);
         return 0;
     }
-    /* Exactly the pre-fix sequence. */
+    /* The legacy by-name operation itself is the unsafe boundary: the
+     * intermediate directory link redirects pathname resolution outside the
+     * root. No preliminary check is needed to demonstrate that behavior. */
     fp(through, sizeof(through), "%s/DATA.BIN", save);
-    struct stat st;
     int redirected = 0;
-    if (stat(through, &st) == 0 && !S_ISDIR(st.st_mode)) {
-        if (t_unlink(through) == 0) redirected = 1;
-    }
-    CHECK(redirected, "the legacy stat->unlink sequence was expected to reach the swapped target");
+    if (t_unlink(through) == 0) redirected = 1;
+    CHECK(redirected, "the legacy by-name unlink was expected to reach the swapped target");
     CHECK(!exists(victim_file),
           "legacy demo: the outside victim was expected to be destroyed by the by-name unlink");
     remove_dir_link(save);
