@@ -852,10 +852,14 @@ static void run_dmac_concurrency(int emulated) {
    entire valid prefix and independently rejected a block beginning at the
    next address. */
 /* Allocator-observed top (PSP-3000/6.61-ARK-5.1.0, 512 KiB bounded heap):
-   fixed-address grants succeed through 0x0B700000 and fail from 0x0B740000
-   (surveyor runs, same heap geometry). The v3 premise gate re-verifies at
-   runtime; if the boundary moved, the SKIP records it honestly. */
-#define DMAC_BASELINE_USER_END 0x0b740000u
+   grants through 0x0B700000; failures at 0x0B73F000/0x0B740000/0x0B7FF000/
+   0x0B800000 (surveyor + premise runs, same heap geometry). Candidate end
+   with sanity 64 KiB below in granted territory. The v3 premise gate
+   re-verifies at runtime; if the boundary moved, the SKIP records it. */
+#define DMAC_BASELINE_USER_END 0x0b720000u
+/* Proven-grantable sanity address for the premise gate (granted in prior
+   surveyor runs under the same heap geometry). */
+#define DMAC_SANITY_ADDR 0x0b700000u
 #define DMAC_BOUNDARY_LEAD 0x00000100u
 #define DMAC_BOUNDARY_BLOCK_BASE \
     (DMAC_BASELINE_USER_END - DMAC_MEASURED_PREFIX - DMAC_BOUNDARY_LEAD)
@@ -923,11 +927,11 @@ static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
     /* Phase A: clean-premise check with NO blocks held. The candidate end
        must FAIL a fixed-address alloc (it is the allegedly invalid byte),
-       while a sanity address 4 KiB below must SUCCEED (the fixed-addr
-       mechanism works at all). A grant AT the end means the premise is
-       false (SKIP). A held-block-adjacent check is deliberately NOT used
-       here: measured 4/4, the allocator grants the exact end of a held
-       block while granting nothing there clean (adjacency artifact). */
+       while the sanity address (proven grantable) must SUCCEED (the
+       fixed-addr mechanism works at all). A grant AT the end means the
+       premise is false (SKIP). A held-block-adjacent check is deliberately
+       NOT used here: measured 4/4, the allocator grants the exact end of a
+       held block while granting nothing there clean (adjacency artifact). */
     const uint32_t free_before = (uint32_t)sceKernelMaxFreeMemSize();
     const SceUID probe_end = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-endprobe", PSP_SMEM_Addr, 0x100,
@@ -954,7 +958,7 @@ static void run_dmac_invalid_tail(int emulated) {
     const uint32_t end_err = (uint32_t)probe_end;
     const SceUID probe_sane = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-sanity", PSP_SMEM_Addr, 0x100,
-        (void *)(DMAC_BASELINE_USER_END - 0x1000u));
+        (void *)DMAC_SANITY_ADDR);
     if (probe_sane < 0) {
         emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)probe_sane,
                                 setup_mask, 0);
