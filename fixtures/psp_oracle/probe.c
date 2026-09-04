@@ -920,16 +920,27 @@ static void run_dmac_invalid_tail(int emulated) {
         2, "oracle-dmac-endprobe", PSP_SMEM_Addr, 0x100,
         (void *)DMAC_BASELINE_USER_END);
     if (probe_end >= 0) {
+        /* Granted somewhere: only a grant AT the end falsifies the premise.
+           An elsewhere-grant means the end itself is not free (proceed). */
+        uint8_t *const end_head =
+            (uint8_t *)sceKernelGetBlockHeadAddr(probe_end);
+        const uint32_t granted_at_end =
+            (uint32_t)((uintptr_t)end_head == (uintptr_t)DMAC_BASELINE_USER_END);
         sceKernelFreePartitionMemory(probe_end);
-        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
-        return;
+        if (granted_at_end) {
+            const uint32_t out[] = {0, DMAC_BASELINE_USER_END};
+            emit_record_extended(emulated, "PSP-DMAC-001",
+                                 DMAC_INVALID_CASE_ID, "SKIP", 1u, out, 2);
+            return;
+        }
     }
     const uint32_t end_err = (uint32_t)probe_end;
     const SceUID probe_sane = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-sanity", PSP_SMEM_Addr, 0x100,
         (void *)(DMAC_BASELINE_USER_END - 0x1000u));
     if (probe_sane < 0) {
-        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)probe_sane,
+                                setup_mask, 0);
         return;
     }
     sceKernelFreePartitionMemory(probe_sane);
