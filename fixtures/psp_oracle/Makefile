@@ -54,6 +54,8 @@ else ifeq ($(CASE),thread-exit-delete)
 CASE_ID = 17
 else ifeq ($(CASE),dmac-survey)
 CASE_ID = 18
+else ifeq ($(CASE),ctrl-clock)
+CASE_ID = 19
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

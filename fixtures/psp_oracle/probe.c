@@ -11,6 +11,8 @@
 #include <pspsysmem.h>
 #include <pspthreadman.h>
 #include <psputils.h>
+#include <pspctrl.h>
+#include <psprtc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +44,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_TRANSPORT_WRITE 16
 #define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 17
 #define PSP_ORACLE_CASE_DMAC_SURVEY 18
+#define PSP_ORACLE_CASE_CTRL_CLOCK 19
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -1782,6 +1785,142 @@ static void run_dmac_survey(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
+/* Controller timestamp + clock-domain correlations (main thread only, no
+   threads created). Timestamp units/epoch are NOT assumed: every cell pairs
+   the controller timestamp against sceKernelGetSystemTimeLow so the host
+   derives offset/rate empirically. All deltas are raw u32 wraps (host
+   interprets). 8-iteration summaries use min/max only (no float). */
+#define CC_ITERS 8
+static void run_ctrl_clock(int emulated) {
+    SceCtrlData pad;
+    /* CC-TS-PAIRS: peek timestamp vs system time, back-to-back. */
+    {
+        uint32_t ts_prev = 0, sys_prev = 0, ts0 = 0, sys0 = 0;
+        uint32_t min_dts = 0xffffffffu, max_dts = 0;
+        uint32_t min_dsys = 0xffffffffu, max_dsys = 0;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CC_ITERS; i++) {
+            memset(&pad, 0, sizeof(pad));
+            if (sceCtrlPeekBufferPositive(&pad, 1) < 0) {
+                continue;
+            }
+            const uint32_t sys = sceKernelGetSystemTimeLow();
+            if (n == 0) {
+                ts0 = pad.TimeStamp;
+                sys0 = sys;
+            } else {
+                /* wrap-safe forward deltas via unsigned arithmetic */
+                const uint32_t fwd_ts = pad.TimeStamp - ts_prev;
+                const uint32_t fwd_sys = sys - sys_prev;
+                if (fwd_ts < min_dts) {
+                    min_dts = fwd_ts;
+                }
+                if (fwd_ts > max_dts) {
+                    max_dts = fwd_ts;
+                }
+                if (fwd_sys < min_dsys) {
+                    min_dsys = fwd_sys;
+                }
+                if (fwd_sys > max_dsys) {
+                    max_dsys = fwd_sys;
+                }
+            }
+            ts_prev = pad.TimeStamp;
+            sys_prev = sys;
+            n++;
+        }
+        const uint32_t out[] = {n, min_dts, max_dts, min_dsys, max_dsys, ts0,
+                                sys0};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-ts-pairs",
+                             n > 1 ? "PASS" : "FAIL", n, out, 7);
+    }
+    /* CC-TS-VCOUNT: vcount vs peek timestamp. */
+    {
+        uint32_t v_prev = 0, ts_prev = 0, v0 = 0, ts00 = 0;
+        uint32_t min_dv = 0xffffffffu, max_dv = 0;
+        uint32_t min_dts = 0xffffffffu, max_dts = 0;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CC_ITERS; i++) {
+            const uint32_t v = sceDisplayGetVcount();
+            memset(&pad, 0, sizeof(pad));
+            if (sceCtrlPeekBufferPositive(&pad, 1) < 0) {
+                continue;
+            }
+            if (n == 0) {
+                v0 = v;
+                ts00 = pad.TimeStamp;
+            } else {
+                const uint32_t dv = v - v_prev;
+                const uint32_t dts = pad.TimeStamp - ts_prev;
+                if (dv < min_dv) {
+                    min_dv = dv;
+                }
+                if (dv > max_dv) {
+                    max_dv = dv;
+                }
+                if (dts < min_dts) {
+                    min_dts = dts;
+                }
+                if (dts > max_dts) {
+                    max_dts = dts;
+                }
+            }
+            v_prev = v;
+            ts_prev = pad.TimeStamp;
+            n++;
+        }
+        const uint32_t out[] = {n, min_dv, max_dv, min_dts, max_dts, v0, ts00};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-ts-vcount",
+                             n > 1 ? "PASS" : "FAIL", n, out, 7);
+    }
+    /* CC-SNAPSHOT: one clock-domain anchor row. */
+    {
+        const uint32_t sys = sceKernelGetSystemTimeLow();
+        const uint32_t v = sceDisplayGetVcount();
+        const uint32_t h = sceDisplayGetAccumulatedHcount();
+        uint64_t tick = 0;
+        const int rtc_rc = sceRtcGetCurrentTick(&tick);
+        const uint32_t mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+        const uint32_t out[] = {sys, v, h, (uint32_t)(tick & 0xffffffffu),
+                                (uint32_t)(tick >> 32), mhz,
+                                (uint32_t)rtc_rc};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "clock-snapshot",
+                             rtc_rc == 0 ? "PASS" : "FAIL", sys, out, 7);
+    }
+    /* CC-DELAY: 10 ms DelayThread ground truth. */
+    {
+        const uint32_t before = sceKernelGetSystemTimeLow();
+        sceKernelDelayThread(10000);
+        const uint32_t after = sceKernelGetSystemTimeLow();
+        const uint32_t out[] = {before, after, after - before, 10000u};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "delay-10ms",
+                             "PASS", after - before, out, 4);
+    }
+    /* CC-ZERO: zero-count read behavior. */
+    {
+        memset(&pad, 0, sizeof(pad));
+        const int rc = sceCtrlReadBufferPositive(&pad, 0);
+        const uint32_t out[] = {(uint32_t)pad.TimeStamp};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-zero-count",
+                             "PASS", (uint32_t)rc, out, 1);
+    }
+    /* CC-PEEK-READ: does a consuming read change the timestamp? */
+    {
+        SceCtrlData a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        const int prc = sceCtrlPeekBufferPositive(&a, 1);
+        const int rrc = sceCtrlReadBufferPositive(&b, 1);
+        const uint32_t out[] = {(uint32_t)a.TimeStamp, (uint32_t)b.TimeStamp,
+                                (uint32_t)prc, (uint32_t)rrc};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-peek-read",
+                             (prc >= 0 && rrc >= 0) ? "PASS" : "FAIL",
+                             (uint32_t)(b.TimeStamp - a.TimeStamp), out, 4);
+    }
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -1878,6 +2017,8 @@ int main(int argc, char *argv[]) {
     run_thread_exit_delete(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
     run_dmac_survey(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
+    run_ctrl_clock(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
