@@ -40,6 +40,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
 #define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
 #define PSP_ORACLE_CASE_TRANSPORT_WRITE 16
+#define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 17
+#define PSP_ORACLE_CASE_DMAC_SURVEY 18
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -1601,6 +1603,143 @@ static int run_transport_write_case(int emulated, uint32_t *out) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
+/* Exit/delete boundary matrix: implicit return vs sceKernelExitThread vs
+   sceKernelExitDeleteThread, across positive / zero / small-negative /
+   error-shaped statuses. Each cell observes through sceKernelWaitThreadEnd
+   AND SceKernelThreadInfo.exitStatus, then probes post-state (delete and
+   restart legality). One thread per cell, sequential, immediate exits; NULL
+   waits are against threads that exit at once (deterministic sync).
+   PASS = harness completed and all raw observations captured; raw API
+   outcomes (including errors) are data in result/out*, never converted. */
+#define ED_METHOD_RETURN 0u
+#define ED_METHOD_EXIT 1u
+#define ED_METHOD_EXITDELETE 2u
+static uint32_t g_ed_status;
+static uint32_t g_ed_method;
+static int ed_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    if (g_ed_method == ED_METHOD_EXIT) {
+        sceKernelExitThread((int)g_ed_status);
+        return 0x55; /* unreachable */
+    }
+    if (g_ed_method == ED_METHOD_EXITDELETE) {
+        sceKernelExitDeleteThread((int)g_ed_status);
+        return 0x55; /* unreachable */
+    }
+    return (int)g_ed_status;
+}
+static int run_exit_delete_cell(int emulated, const char *case_id,
+                                uint32_t status, uint32_t method) {
+    uint32_t out[6] = {0xffffffffu, 0xffffffffu, 0xffffffffu,
+                       0xffffffffu, 0xffffffffu, 0xffffffffu};
+    g_ed_status = status;
+    g_ed_method = method;
+    SceUID thid = sceKernelCreateThread(case_id, ed_entry, 32, 0x1000, 0, NULL);
+    if (thid < 0) {
+        emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "FAIL",
+                             (uint32_t)thid, out, 6);
+        return (int)thid;
+    }
+    out[5] = (uint32_t)sceKernelStartThread(thid, 0, NULL);
+    if ((int)out[5] < 0) {
+        sceKernelDeleteThread(thid);
+        emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "FAIL",
+                             out[5], out, 6);
+        return (int)out[5];
+    }
+    out[0] = (uint32_t)sceKernelWaitThreadEnd(thid, NULL);
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (sceKernelReferThreadStatus(thid, &info) == 0) {
+        out[1] = (uint32_t)info.exitStatus;
+        out[2] = (uint32_t)info.status;
+    }
+    out[3] = (uint32_t)sceKernelDeleteThread(thid);
+    out[4] = (uint32_t)sceKernelStartThread(thid, 0, NULL);
+    if (method != ED_METHOD_EXITDELETE && (int)out[4] == 0) {
+        /* Accepted restart: wait for the rerun, then delete, so the launch
+           leaks nothing in-process. */
+        sceKernelWaitThreadEnd(thid, NULL);
+        sceKernelDeleteThread(thid);
+    }
+    emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "PASS",
+                         out[0], out, 6);
+    return 0;
+}
+static void run_thread_exit_delete(int emulated) {
+    static const struct {
+        const char *id;
+        uint32_t status;
+        uint32_t method;
+    } cells[] = {
+        {"ED-R77", 0x00000077u, ED_METHOD_RETURN},
+        {"ED-R00", 0x00000000u, ED_METHOD_RETURN},
+        {"ED-RNEG", 0xffffffefu, ED_METHOD_RETURN},
+        {"ED-RERR", 0x800201acu, ED_METHOD_RETURN},
+        {"ED-X77", 0x00000077u, ED_METHOD_EXIT},
+        {"ED-X00", 0x00000000u, ED_METHOD_EXIT},
+        {"ED-XNEG", 0xffffffefu, ED_METHOD_EXIT},
+        {"ED-XERR", 0x800201acu, ED_METHOD_EXIT},
+        {"ED-D77", 0x00000077u, ED_METHOD_EXITDELETE},
+        {"ED-D00", 0x00000000u, ED_METHOD_EXITDELETE},
+        {"ED-DNEG", 0xffffffefu, ED_METHOD_EXITDELETE},
+        {"ED-DERR", 0x800201acu, ED_METHOD_EXITDELETE},
+    };
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        run_exit_delete_cell(emulated, cells[i].id, cells[i].status,
+                             cells[i].method);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+/* Allocator-observed user-memory boundary survey: redesign input for the
+   invalid-tail precedence cells, whose compiled-in end assumption
+   (0x0A000000) the firmware rejects by successfully allocating there.
+   Scans partition-2 fixed-address allocatability upward, freeing every
+   success immediately. Thread-free, main-thread only; failures are ordinary
+   error codes, never faults. Nothing is written through the surveyed
+   addresses. Emits highest provable base + first failure. */
+#define DMAC_SURVEY_BASE 0x0a000000u
+#define DMAC_SURVEY_STEP 0x00010000u
+#define DMAC_SURVEY_STEPS 32u
+static void run_dmac_survey(int emulated) {
+    uint32_t top_ok = 0;
+    uint32_t first_fail = 0;
+    uint32_t first_err = 0;
+    uint32_t attempts = 0;
+    for (uint32_t i = 0; i < DMAC_SURVEY_STEPS; i++) {
+        const uint32_t base = DMAC_SURVEY_BASE + i * DMAC_SURVEY_STEP;
+        if (base < DMAC_SURVEY_BASE) {
+            break;
+        }
+        attempts++;
+        const SceUID got = sceKernelAllocPartitionMemory(
+            2, "oracle-dmac-survey", PSP_SMEM_Addr, 0x100,
+            (void *)(uintptr_t)base);
+        if (got < 0) {
+            if (first_fail == 0u) {
+                first_fail = base;
+                first_err = (uint32_t)got;
+            }
+            continue;
+        }
+        if (base > top_ok) {
+            top_ok = base;
+        }
+        sceKernelFreePartitionMemory(got);
+    }
+    const uint32_t out[] = {
+        top_ok, first_fail, first_err, attempts, DMAC_SURVEY_STEPS,
+    };
+    emit_record_extended(emulated, "PSP-DMAC-001", "allocator-survey", "PASS",
+                         top_ok, out, sizeof(out) / sizeof(out[0]));
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -1693,6 +1832,10 @@ int main(int argc, char *argv[]) {
                              "host0-write-readback", "FAIL",
                              (uint32_t)tpass, tout, 5);
     }
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
+    run_thread_exit_delete(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+    run_dmac_survey(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

@@ -50,6 +50,10 @@ else ifeq ($(CASE),display-ge-mask)
 CASE_ID = 15
 else ifeq ($(CASE),transport-write)
 CASE_ID = 16
+else ifeq ($(CASE),thread-exit-delete)
+CASE_ID = 17
+else ifeq ($(CASE),dmac-survey)
+CASE_ID = 18
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

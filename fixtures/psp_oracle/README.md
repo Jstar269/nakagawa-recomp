@@ -15,7 +15,9 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
 `CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
-emits `PSP-TRANSPORT-001`/`host0-write-readback`.
+emits `PSP-TRANSPORT-001`/`host0-write-readback`. Lifecycle sessions use
+`CASE=thread-exit-delete` (`PSP-THREAD-EXIT-001`, 12 cells). Allocator
+sessions use `CASE=dmac-survey` (`PSP-DMAC-001`/`allocator-survey`).
 
 ## Transport write-readback (`CASE=transport-write`)
 
@@ -28,6 +30,30 @@ pattern and compares bytes and SHA-256. Only that one path is touched; the
 host removes it after verification. `status=PASS` means the PSP-side
 write/read-back matched; file acceptance additionally requires the host-side
 byte/SHA comparison.
+
+## Thread exit/delete boundary (`CASE=thread-exit-delete`)
+
+Twelve cells: implicit return / `sceKernelExitThread` /
+`sceKernelExitDeleteThread` across `0x77`, `0`, `-17` (`0xffffffef`), and
+`0x800201ac`. Each cell records the `WaitThreadEnd` return, the
+`ReferThreadStatus` exit status and thread state, and the raw results of a
+post-mortem delete and a restart attempt. `ExitDeleteThread` cells
+specifically measure whether the UID is gone (delete/restart raw codes) and
+what a joiner observes. `result` is the `WaitThreadEnd` return; `PASS` means
+the harness completed, not that any outcome matched an expectation. One
+thread per cell, sequential, immediate exits; accepted restarts are
+waited on and deleted so the launch leaks nothing in-process.
+
+## Allocator boundary survey (`CASE=dmac-survey`)
+
+The invalid-tail cells' compiled-in user-end assumption (`0x0A000000`) is
+rejected by the firmware on 64 MiB units (partition 2 allocates there), so
+those cells SKIP by design. This case scans partition-2 fixed-address
+allocatability upward from the old assumption in 64 KiB steps (32 attempts),
+freeing every success immediately, and emits the highest provable base plus
+the first failure. Thread-free and write-free; failures are ordinary error
+codes. Its output is the redesign input for a corrected invalid-tail
+boundary — it settles no DMA semantics itself.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove

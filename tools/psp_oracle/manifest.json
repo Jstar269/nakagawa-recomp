@@ -186,6 +186,41 @@
       "implementation_note": "CASE=transport-write (PSP_ORACLE_CASE 16). Runner deploys the PRX under a distinct host0 name; the written file is removed by the host after verification."
     },
     {
+      "id": "PSP-THREAD-EXIT-001",
+      "status": "implemented",
+      "group": "kernel",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceKernelCreateThread",
+        "sceKernelStartThread",
+        "sceKernelExitThread",
+        "sceKernelExitDeleteThread",
+        "sceKernelWaitThreadEnd",
+        "sceKernelReferThreadStatus",
+        "sceKernelDeleteThread"
+      ],
+      "case_ids": [
+        "ED-R77",
+        "ED-R00",
+        "ED-RNEG",
+        "ED-RERR",
+        "ED-X77",
+        "ED-X00",
+        "ED-XNEG",
+        "ED-XERR",
+        "ED-D77",
+        "ED-D00",
+        "ED-DNEG",
+        "ED-DERR"
+      ],
+      "invariant": "per-cell wait return, exit status, thread state, post-mortem delete and restart codes are recorded raw; ExitDeleteThread was outside all prior measured seams",
+      "issues": [],
+      "risk": "low; one thread per cell, sequential immediate exits, accepted restarts waited and deleted",
+      "reset": "return to PSPLINK after the process exits",
+      "implementation_note": "CASE=thread-exit-delete (PSP_ORACLE_CASE 17). Twelve cells in one launch; creates threads so it is a money-launch class under the one-thread-launch-per-boot rule."
+    },
+    {
       "id": "PSP-IO-001",
       "status": "planned",
       "group": "io",
