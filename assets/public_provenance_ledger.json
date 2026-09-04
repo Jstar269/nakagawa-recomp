@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "34826e448b7c4e214e530c67853915a79e03c626df2a6f46ba66bcdcc5c08140"
+      "sha256": "d2fc06d0e2ac5a6665aeb7ed739048b7e396a987a95d309b5cd93974c11e0ee8"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -715,7 +715,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5d1af6813337d451a2bb23fe8ab97835ede8ae95c294d5817afdd88bff8c2650"
+      "sha256": "57d9d11ba0587e39c1ecf7f2cd14e8a057786cbf52e119708aa09a3e894ee9bf"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -841,7 +841,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ba640ba24280f4bb9ab5e79aab33b57a732ed9dccd18ea85e49983621c0a2476"
+      "sha256": "d98bf8098d6738686e21e97f772bcd68dea8411c0cc940b2564376fc7112078e"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -5265,12 +5265,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ci-path-classification",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a59de1bfac3dbd5974a8c34dd36120116caa6b891502fdcb0903d5ec48038dc6"
+      "sha256": "20dfc189fb855743328e3c98aaff37d25a81d1836a8a03ba0496d16065f1ced9"
     },
     {
       "path": "tools/ci_required.py",
@@ -6327,7 +6327,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "39e9a3d97e2c9aeeeb1fae41f4fc5cc3bd65c4402f6c39198b20adc0c61754d8"
+      "sha256": "b7fa38a27f49820589a4571f5769b7f029fbdab918b957cccf462145bb28445f"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7617,13 +7617,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "aa7af3251685ba391450e616806357fee5eee2c6",
-    "candidate_tree": "37b833bd240f7956a69b105d9e657360dc97e18d",
+    "trusted_tree": "91d0411842fe8dd06b6212fc0dcdb2e968b5d8e4",
+    "candidate_tree": "7b4b37c5aa48ce93ebc412f4d4b168c13d570838",
     "refreshed_paths": [
+      "CLAUDE.md",
+      "docs/CI.md",
       "docs/PUBLICATION_READINESS.md",
-      "interface/package-lock.json",
-      "tools/provenance_ledger.py",
-      "tools/test_provenance_ledger.py"
+      "tools/ci_paths.py",
+      "tools/test_ci_paths.py"
     ]
   }
 }
