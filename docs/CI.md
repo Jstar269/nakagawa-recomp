@@ -100,6 +100,64 @@ These checks have no local equivalent and are never implied by a local pass:
 CodeQL, `dependency-review`, the Betterleaks history scan, the Windows runtime
 compile gate, and the main integration smoke.
 
+## Text, encoding, and line-ending contract
+
+The repository's text bytes are **UTF-8 without BOM, LF, with a final newline**.
+`.gitattributes` (`* text=auto eol=lf`) and `.editorconfig`
+(`charset = utf-8`, `end_of_line = lf`, `insert_final_newline = true`) are the
+authority; this section says how to *produce* bytes that satisfy them.
+
+Git normalises on commit, so the index is clean by construction — a scan of all
+674 tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
+elsewhere: in working trees and in generated artifacts. A checkout polluted with
+CRLF makes every touched file's content hash disagree with the provenance
+ledger, and the resulting wall of `PROVENANCE_CONTENT_MISMATCH` names the
+symptom rather than the cause. That is why `publish_audit` now reports
+`TEXT_LINE_ENDING_CRLF`, `TEXT_ENCODING_BOM`, `TEXT_ENCODING_UTF16` and
+`TEXT_FINAL_NEWLINE` directly, skipping anything binary.
+
+**Python.** Text mode translates `
+` to the host newline unless told otherwise,
+so on Windows `write_text(s, encoding="utf-8")` silently emits CRLF and a
+different SHA-256 than the same code on Linux. Every writer that produces
+canonical, tracked, or hash-participating text must pin it:
+
+```python
+path.write_text(text, encoding="utf-8", newline="
+")   # canonical text
+path.write_bytes(canonical_bytes)                        # already-canonical bytes
+```
+
+`CanonicalWriterTests` asserts this for the canonical writers, so the rule
+cannot quietly regress.
+
+**PowerShell.** Use PowerShell 7+, which the project already requires: in
+Windows PowerShell 5.1 `-Encoding utf8` means UTF-8 **with** BOM, and in 7+ it
+means without. `Set-Content` and `Out-File` also join with the host newline. For
+anything byte-exact, bypass the text pipeline entirely:
+
+```powershell
+[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllBytes($path, $bytes)
+```
+
+**Never route exact bytes through a text pipeline.** `git show ... | Set-Content`
+and `<binary> | Out-File` re-encode and re-line-end their input. To extract exact
+repository bytes use `git archive`, `git cat-file`, or a redirect from a
+binary-safe shell. No tracked script does this today; keep it that way.
+
+**Bash and WSL** must likewise preserve LF and must not rewrite bytes
+incidentally — a heredoc that reflows content is a rewrite.
+
+**Generated evidence outside the worktree** follows the same contract whenever it
+participates in a SHA-256 manifest or a forensic byte comparison, for the obvious
+reason: a manifest that changes with the shell that produced it proves nothing.
+Historical raw or binary capture evidence is never normalised.
+
+The invariant, stated once: **the same logical generated text must produce the
+same bytes and the same SHA-256 whether it came from PowerShell, Windows Python,
+Bash, or WSL.**
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a

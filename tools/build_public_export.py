@@ -326,7 +326,7 @@ def _patch_pre_commit_for_public_scope(export_dir: Path) -> None:
         else:
             lines.append(line)
     if changed:
-        pre_commit_path.write_text("".join(lines), encoding="utf-8")
+        pre_commit_path.write_text("".join(lines), encoding="utf-8", newline="\n")
 
 
 def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = False, dry_run: bool = False) -> bool:
