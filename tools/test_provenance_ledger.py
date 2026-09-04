@@ -645,6 +645,32 @@ class _RefreshFixture:
         shutil.copy2(self.repo / "assets/public_provenance_ledger.json", self.trusted_ledger)
         shutil.copy2(self.repo / "assets/release_manifest.json", self.trusted_manifest)
 
+    def detailed_ledger(self, *, wildcard_only: bool = False) -> Path:
+        """External detailed development ledger matching ``_classification()``.
+
+        Refreshing an implementation class requires this authority, because a
+        public snapshot alone cannot show that its implementation entries are
+        still backed by exact records.  ``wildcard_only`` models the historical
+        public tree, where ``tools/helper.py`` was covered only by the inert
+        ``tools/*`` pattern.
+        """
+        helper = (
+            {"id": "tooling-general", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/*"]}
+            if wildcard_only else
+            {"id": "PROV-HELPER", "classification": "project-authored-independent",
+             "evidence_tier": "H", "paths": ["tools/helper.py"]}
+        )
+        path = self.tmp / ("detailed-wildcard.json" if wildcard_only else "detailed-ledger.json")
+        path.write_text(json.dumps({"records": [
+            helper,
+            {"id": "PROV-EXISTING", "classification": "project-authored-independent",
+             "evidence_tier": "H", "paths": ["src/rt/existing.c"]},
+            {"id": "PROV-ROUTE", "classification": "project-authored-independent",
+             "evidence_tier": "H", "paths": [self.route]},
+        ]}, indent=2) + "\n", encoding="utf-8")
+        return path
+
     source = (
         "// SPDX-License-Identifier: GPL-2.0-or-later\n"
         "/* synthetic fixture - not a retail or private input */\n"
@@ -799,7 +825,11 @@ class ProvenanceRefreshTests(unittest.TestCase):
     def test_existing_attested_path_refreshes_and_audits(self) -> None:
         fixture = _RefreshFixture(self)
         fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 1"), "candidate source edit")
-        result = fixture.refresh("src/rt/existing.c")
+        result = fixture.refresh(
+            "src/rt/existing.c",
+            trusted_ledger=fixture.detailed_ledger(),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
         baseline = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
@@ -904,7 +934,11 @@ class ProvenanceRefreshTests(unittest.TestCase):
             fixture.route_source.replace("return 0", "return 1"),
             "candidate literal bracketed route edit",
         )
-        result = fixture.refresh(fixture.route)
+        result = fixture.refresh(
+            fixture.route,
+            trusted_ledger=fixture.detailed_ledger(),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_new_implementation_path_is_refused(self) -> None:
@@ -1055,7 +1089,11 @@ class ProvenanceRefreshTests(unittest.TestCase):
         fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 5"), "candidate source edit")
         fixture.commit_change("assets/public_provenance_ledger.json", "{\"candidate\": true}\n", "candidate ledger output edit")
         fixture.commit_change("PUBLIC_EXPORT.json", "{\"candidate\": true}\n", "candidate export output edit")
-        result = fixture.refresh("src/rt/existing.c")
+        result = fixture.refresh(
+            "src/rt/existing.c",
+            trusted_ledger=fixture.detailed_ledger(),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
         self.assertIn("entries", refreshed)
@@ -1121,6 +1159,259 @@ class SelfReferentialEntryTests(unittest.TestCase):
             "the export must hash the ledger's real bytes; if this drifts the "
             "circularity above is no longer the reason the digests are omitted",
         )
+
+
+class BaselineReuseTests(unittest.TestCase):
+    """A generated public ledger must be reusable as the next trusted baseline.
+
+    ``refresh-reviewed`` records the candidate tree it read *before* writing the
+    regenerated ledger and export, so a shipped ledger's ``refresh`` block can
+    never name the tree that then contains it.  Rejecting a snapshot on that
+    metadata made every generated baseline permanently unusable while adding no
+    authority -- a snapshot is bound to a tree by its entry hashes, which these
+    tests exercise directly.
+    """
+
+    # -- helpers ---------------------------------------------------------
+    def _generation_one(self, fixture: "_RefreshFixture") -> tuple[str, Path]:
+        """Refresh once, commit the generated outputs, and export the resulting
+        ledger as an external snapshot.  Returns ``(trusted ref, snapshot)``."""
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 1"), "candidate edit")
+        result = fixture.refresh(
+            "src/rt/existing.c",
+            trusted_ledger=fixture.detailed_ledger(),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "provenance: refresh public metadata"],
+                       cwd=fixture.repo, check=True, capture_output=True)
+        trusted_ref = fixture._git("rev-parse", "HEAD")
+        snapshot = fixture.tmp / "generation-one.json"
+        shutil.copy2(fixture.repo / "assets/public_provenance_ledger.json", snapshot)
+        return trusted_ref, snapshot
+
+    def _fails(self, result: subprocess.CompletedProcess, code: str) -> None:
+        self.assertNotEqual(result.returncode, 0, "expected a fail-closed refusal")
+        self.assertIn(code, result.stderr)
+
+    # -- the round trip the old metadata check made impossible ------------
+    def test_generated_snapshot_is_reusable_as_the_next_trusted_baseline(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+
+        recorded = json.loads(snapshot.read_text(encoding="utf-8"))["refresh"]
+        committed_tree = fixture._git("rev-parse", "HEAD^{tree}")
+        self.assertNotEqual(recorded["candidate_tree"], committed_tree,
+                            "the recorded candidate tree predates the generated bytes")
+        self.assertNotEqual(recorded["trusted_tree"], committed_tree)
+
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        result = fixture.refresh(
+            "src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        refreshed = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            {entry["path"] for entry in refreshed["entries"]},
+            {entry["path"]
+             for entry in json.loads(snapshot.read_text(encoding="utf-8"))["entries"]},
+        )
+        self.assertEqual(refreshed["refresh"]["refreshed_paths"], ["src/rt/existing.c"])
+
+    # -- a snapshot is bound to a tree by content, not by metadata --------
+    def test_stale_snapshot_from_another_tree_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, _snapshot = self._generation_one(fixture)
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        # fixture.trusted_ledger is the generation-zero snapshot: correct for the
+        # original baseline, stale for the tree now under refresh.
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref,
+                            trusted_baseline_ledger=fixture.trusted_ledger),
+            "TRUSTED_LEDGER_TREE_MISMATCH")
+
+    def test_snapshot_path_set_must_cover_the_trusted_tree_exactly(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        document = json.loads(snapshot.read_text(encoding="utf-8"))
+        document["entries"] = [e for e in document["entries"] if e["path"] != "docs/guide.md"]
+        short = fixture.tmp / "short.json"
+        short.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=short),
+            "TRUSTED_LEDGER_COVERAGE")
+
+    # -- candidate control of any trusted input still fails closed --------
+    def test_unrequested_candidate_change_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        fixture.commit_change(
+            "tools/helper.py", fixture.helper.replace("return 0", "return 9"), "unrequested")
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot),
+            "CANDIDATE_TREE_STALE")
+
+    def test_candidate_edited_ledger_cannot_self_authorize(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        in_tree = fixture.repo / "assets/public_provenance_ledger.json"
+        forged = json.loads(in_tree.read_text(encoding="utf-8"))
+        for entry in forged["entries"]:
+            if entry["path"] == "tools/helper.py":
+                entry["classification"] = "upstream_derived"
+                entry["evidence"] = {"source": "forged", "record_id": "FORGED"}
+        in_tree.write_text(json.dumps(forged, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "forge own ledger"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+
+        result = fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                                 trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        produced = {e["path"]: e
+                    for e in json.loads(in_tree.read_text(encoding="utf-8"))["entries"]}
+        trusted = {e["path"]: e
+                   for e in json.loads(snapshot.read_text(encoding="utf-8"))["entries"]}
+        self.assertEqual(produced["tools/helper.py"], trusted["tools/helper.py"],
+                         "the candidate's own ledger bytes must be discarded, not honoured")
+        drifted = [path for path, entry in trusted.items()
+                   if path != "src/rt/existing.c" and produced[path] != entry]
+        self.assertEqual(drifted, [], "only the requested path may change")
+
+    def test_candidate_substituted_policy_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        policy_path = fixture.repo / "assets/public_source_profile.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"src/rt/evil.c"})
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "policy substitution"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot),
+            "CANDIDATE_POLICY_MISMATCH")
+
+    def test_candidate_substituted_manifest_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        (fixture.repo / "assets/release_manifest.json").write_text(
+            '{"name": "substituted", "components": []}\n', encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "manifest substitution"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot),
+            "CANDIDATE_TREE_STALE")
+
+    def test_trusted_input_inside_the_candidate_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        smuggled = fixture.repo / "smuggled-baseline.json"
+        shutil.copy2(snapshot, smuggled)
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "smuggle trusted input"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=smuggled),
+            "TRUSTED_INPUT_CANDIDATE_CONTROLLED")
+
+    # -- a new implementation path is still refused -----------------------
+    def test_new_implementation_path_without_a_record_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        fixture._write("src/rt/newthing.c", "int newthing(void) { return 1; }\n")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "new implementation path"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        self._fails(
+            fixture.refresh("src/rt/newthing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot),
+            "NEW_PATH_REFUSED")
+
+    # -- baseline reuse must not resurrect wildcard authority -------------
+    def test_wildcard_backed_snapshot_entry_cannot_reattest_new_bytes(self) -> None:
+        """The historical public tree carries entries minted by the removed
+        ``tools/*`` expansion.  Reusing such a snapshot must not let those
+        entries follow a path onto content they never described."""
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        wildcard_only = fixture.detailed_ledger(wildcard_only=True)
+        self.assertNotIn(
+            "tools/helper.py",
+            provenance_ledger._detailed_records(
+                json.loads(wildcard_only.read_text(encoding="utf-8"))),
+            "the tools/* wildcard must stay inert",
+        )
+        fixture.commit_change(
+            "tools/helper.py", fixture.helper.replace("return 0", "return 9"), "edit helper")
+        self._fails(
+            fixture.refresh("tools/helper.py", trusted_ledger=wildcard_only,
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=snapshot),
+            "TRUSTED_PATH_MISSING")
+
+    def test_snapshot_alone_cannot_refresh_an_implementation_path(self) -> None:
+        """Without the detailed ledger there is nothing to prove the snapshot's
+        implementation class is still backed by an exact record, so the refresh
+        must refuse rather than trust the snapshot's own claim."""
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=snapshot,
+                            trusted_tree=trusted_ref),
+            "TRUSTED_RECORD_REQUIRED")
+
+    # -- deterministic classes keep working from a snapshot alone ---------
+    def test_deterministic_paths_still_refresh_from_a_snapshot_alone(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        fixture.commit_change("docs/guide.md", "# Guide\n\nRevised synthetic fixture.\n",
+                              "documentation edit")
+        result = fixture.refresh("docs/guide.md", trusted_ledger=snapshot,
+                                 trusted_tree=trusted_ref)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {e["path"]: e for e in json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8")
+        )["entries"]}
+        self.assertEqual(entries["docs/guide.md"]["sha256"],
+                         hashlib.sha256((fixture.repo / "docs/guide.md").read_bytes()).hexdigest())
+
+    def test_snapshot_cannot_relabel_implementation_as_documentation(self) -> None:
+        fixture = _RefreshFixture(self)
+        trusted_ref, snapshot = self._generation_one(fixture)
+        document = json.loads(snapshot.read_text(encoding="utf-8"))
+        for entry in document["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "reviewed_documentation"
+                entry["evidence"] = {"source": "relabelled"}
+        relabelled = fixture.tmp / "relabelled.json"
+        relabelled.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change(
+            "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
+        self._fails(
+            fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
+                            trusted_tree=trusted_ref, trusted_baseline_ledger=relabelled),
+            "TRUSTED_PATH_UNQUALIFIED")
 
 
 if __name__ == "__main__":
