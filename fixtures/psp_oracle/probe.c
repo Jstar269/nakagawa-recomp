@@ -57,6 +57,14 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 PSP_HEAP_SIZE_KB(512);
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+/* Same bounded heap as the tails: the default heap demonstrably squats the
+   surveyed range (32/32 clean-fails), while the bounded one leaves the free
+   pool observable. Survey and tails must share heap geometry or their
+   results are incomparable. */
+PSP_HEAP_SIZE_KB(512);
+#endif
+
 /* PPSSPP exposes a pseudo-device that headless builds use to capture test
    output; see Core/HLE/sceIo.cpp. Real hardware has no such device and the
    devctl simply fails, which is how the probe tells the two apart. The same
@@ -1733,7 +1741,7 @@ static void run_thread_exit_delete(int emulated) {
    addresses. Emits highest provable base + first failure. */
 #define DMAC_SURVEY_BASE 0x0a000000u
 #define DMAC_SURVEY_STEP 0x00010000u
-#define DMAC_SURVEY_STEPS 32u
+#define DMAC_SURVEY_STEPS 48u
 static void run_dmac_survey(int emulated) {
     uint32_t top_ok = 0;
     uint32_t first_fail = 0;
