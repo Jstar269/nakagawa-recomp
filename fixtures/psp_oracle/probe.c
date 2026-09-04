@@ -147,6 +147,14 @@ static void emit_record_extended(int emulated, const char *test_id,
         line[used] = '\0';
     }
     emit(emulated, line);
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+    SceUID fd = sceIoOpen("host0:/fpu_vector_log.txt",
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    if (fd >= 0) {
+        sceIoWrite(fd, line, strlen(line));
+        sceIoClose(fd);
+    }
+#endif
 }
 #endif
 
@@ -1930,48 +1938,72 @@ static void run_ctrl_clock(int emulated) {
    use C operators (the compiler selects the sequence — measured as run,
    opcode not pinned). FCR31 exception enables stay OFF throughout (a trap
    would kill the launch); only RM and FS bits are touched, saved/restored
-   per cell. All bit patterns travel as u32 (memcpy-punned, volatile). */
-static uint32_t fpu_get_fcr31(void) {
+   per cell. All bit patterns travel as u32 (memcpy-punned, volatile).
+
+   MAXIMALLY HARDENED v3:
+   1. Boot FCR31 is captured via explicit cfc1 at the entry of main() and
+      recorded as diagnostic data, but NEVER restored during execution
+      (the boot FCR31 has IEEE trap enables active, 0x0E00).
+   2. FCR31 is cleared to 0 (all traps off, flags 0, RM=RN) at the literal
+      first instruction of main() and between every single test cell.
+   3. Explicit compiler memory barriers (":: memory") prevent any reordering.
+   4. Cell index is maintained in volatile g_fpu_cell_index and loaded into
+      $s2 before each cell so any trap records the exact faulting cell index.
+   5. Every record is emitted to unbuffered stdout AND appended to
+      host0:/fpu_vector_log.txt.
+   6. Clean ExitGame only once, zero threads created, 16 expected records.
+*/
+static volatile uint32_t g_fpu_cell_index = 0;
+
+static inline uint32_t fpu_get_fcr31(void) {
     uint32_t v;
-    __asm__ volatile("cfc1 %0, $31" : "=r"(v));
+    __asm__ volatile("cfc1 %0, $31" : "=r"(v) :: "memory");
     return v;
 }
-static void fpu_set_fcr31(uint32_t v) {
-    __asm__ volatile("ctc1 %0, $31" ::"r"(v));
+
+static inline void fpu_set_fcr31(uint32_t v) {
+    __asm__ volatile("ctc1 %0, $31" :: "r"(v) : "memory");
 }
+
 /* Traps OFF, RM=RN: the only FCR31 state FP arithmetic may run under here.
-   The boot FCR31 is never trusted (it may carry exception enables). */
-static void fpu_quiet(void) {
+   The boot FCR31 is never trusted (it carries exception enables 0x0E00). */
+static inline void fpu_quiet(void) {
     fpu_set_fcr31(0);
 }
-/* PINNED: cvt.w.s honors RM. Same FPR in/out is legal. */
-static int32_t fpu_cvt_w_s(float f) {
-    float w = f;
-    __asm__ volatile("cvt.w.s %0, %1" : "+f"(w));
+
+/* PINNED: cvt.w.s honors RM. */
+static inline int32_t fpu_cvt_w_s(float f) {
+    float w;
+    __asm__ volatile("cvt.w.s %0, %1" : "=f"(w) : "f"(f) : "memory");
     int32_t r;
     memcpy(&r, &w, 4);
     return r;
 }
+
 /* PINNED: cvt.s.w int->float. */
-static float fpu_cvt_s_w(int32_t i) {
+static inline float fpu_cvt_s_w(int32_t i) {
     float in;
-    float f;
     memcpy(&in, &i, 4);
-    __asm__ volatile("cvt.s.w %0, %1" : "=f"(f) : "f"(in));
+    float f;
+    __asm__ volatile("cvt.s.w %0, %1" : "=f"(f) : "f"(in) : "memory");
     return f;
 }
-static uint32_t f32_bits(float f) {
+
+static inline uint32_t f32_bits(float f) {
     uint32_t u;
     memcpy(&u, &f, 4);
     return u;
 }
-static float u32_f32(uint32_t u) {
+
+static inline float u32_f32(uint32_t u) {
     float f;
     memcpy(&f, &u, 4);
     return f;
 }
-static void run_fpu_vector(int emulated) {
-    static const uint32_t inputs[12] = {        0x3fc00000u, /* 1.5 */
+
+static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
+    static const uint32_t inputs[12] = {
+        0x3fc00000u, /* 1.5 */
         0x40200000u, /* 2.5 */
         0xbfc00000u, /* -1.5 */
         0xc0200000u, /* -2.5 */
@@ -1984,28 +2016,34 @@ static void run_fpu_vector(int emulated) {
         0x00000000u, /* +0 */
         0x80000000u, /* -0 */
     };
-    const uint32_t saved_fcr = fpu_get_fcr31();
+
+    /* Cell 0: Diagnostic record of inherited boot FCR31. */
+    g_fpu_cell_index = 0;
+    __asm__ volatile("move $s2, %0" :: "r"(0) : "memory");
     {
-        /* Diagnostic: the boot FCR31 (enables/RM/FS as the process found
-           them). No FP op runs under it. */
-        const uint32_t out[] = {saved_fcr};
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-boot-fcr31",
-                             "PASS", saved_fcr, out, 1);
+        const uint32_t out[] = {boot_fcr31};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-boot-fcr31", "PASS", boot_fcr31, out, 1);
     }
-    /* PINNED cells: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
+
+    /* PINNED cells 1..4: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
     for (uint32_t rm = 0; rm < 4; rm++) {
-        fpu_set_fcr31(rm);
+        g_fpu_cell_index = 1 + rm;
+        __asm__ volatile("move $s2, %0" :: "r"(1 + rm) : "memory");
+        fpu_set_fcr31(rm & 3u); /* RM set, all trap enables strictly 0 */
         uint32_t out[12];
         for (uint32_t i = 0; i < 12; i++) {
             out[i] = (uint32_t)fpu_cvt_w_s(u32_f32(inputs[i]));
         }
-        fpu_set_fcr31(saved_fcr);
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet(); /* clear flags, traps remain 0; NEVER restore boot_fcr31 */
         char cid[32];
         snprintf(cid, sizeof(cid), "fpu-cvt-rm%u", (unsigned int)rm);
-        emit_record_extended(emulated, "PSP-FPU-001", cid, "PASS",
-                             (uint32_t)fpu_get_fcr31(), out, 12);
+        emit_record_extended(emulated, "PSP-FPU-001", cid, "PASS", flags, out, 12);
     }
-    /* COMPILER cell: C-cast float->int (compiler selects trunc sequence). */
+
+    /* COMPILER cell 5: C-cast float->int (compiler selects trunc sequence). */
+    g_fpu_cell_index = 5;
+    __asm__ volatile("move $s2, %0" :: "r"(5) : "memory");
     {
         uint32_t out[12];
         fpu_quiet();
@@ -2013,10 +2051,14 @@ static void run_fpu_vector(int emulated) {
             volatile float vf = u32_f32(inputs[i]);
             out[i] = (uint32_t)(int32_t)vf;
         }
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ccast-trunc",
-                             "PASS", (uint32_t)fpu_get_fcr31(), out, 12);
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ccast-trunc", "PASS", flags, out, 12);
     }
-    /* PINNED cell: int->float exactness. */
+
+    /* PINNED cell 6: int->float exactness. */
+    g_fpu_cell_index = 6;
+    __asm__ volatile("move $s2, %0" :: "r"(6) : "memory");
     {
         static const int32_t ints[6] = {0, 1, -1, 0x7fffffff, (int32_t)0x80000000,
                                         123456789};
@@ -2025,10 +2067,12 @@ static void run_fpu_vector(int emulated) {
         for (uint32_t i = 0; i < 6; i++) {
             out[i] = f32_bits(fpu_cvt_s_w(ints[i]));
         }
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-cvt-s-w", "PASS",
-                             (uint32_t)fpu_get_fcr31(), out, 6);
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-cvt-s-w", "PASS", flags, out, 6);
     }
-    /* COMPILER cells: flag/edge arithmetic (volatile C operators). */
+
+    /* COMPILER cells 7..11: flag/edge arithmetic (volatile C operators). */
     {
         struct {
             const char *id;
@@ -2043,7 +2087,9 @@ static void run_fpu_vector(int emulated) {
             {"fpu-flag-inexact", 0.1f, 0.2f, 2},
         };
         for (uint32_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
-            fpu_set_fcr31(0);
+            g_fpu_cell_index = 7 + k;
+            __asm__ volatile("move $s2, %0" :: "r"(7 + k) : "memory");
+            fpu_quiet();
             volatile float va = ops[k].a;
             volatile float vb = ops[k].b;
             volatile float vr = 0;
@@ -2056,30 +2102,34 @@ static void run_fpu_vector(int emulated) {
             }
             const uint32_t bits = f32_bits(vr);
             const uint32_t flags = fpu_get_fcr31();
+            fpu_quiet(); /* clear flags; NEVER restore boot_fcr31 */
             const uint32_t out[] = {bits, flags};
-            emit_record_extended(emulated, "PSP-FPU-001", ops[k].id, "PASS",
-                                 flags, out, 2);
-            fpu_set_fcr31(saved_fcr);
+            emit_record_extended(emulated, "PSP-FPU-001", ops[k].id, "PASS", flags, out, 2);
         }
     }
-    /* COMPILER cell: FTZ contrast (FS=1 vs FS=0) on the underflow op. */
+
+    /* COMPILER cell 12: FTZ contrast (FS=1 vs FS=0) on the underflow op. */
+    g_fpu_cell_index = 12;
+    __asm__ volatile("move $s2, %0" :: "r"(12) : "memory");
     {
         volatile float va = 1e-30f;
         volatile float vb = 1e-30f;
-        fpu_set_fcr31(0);
+        fpu_quiet();
         volatile float r0 = va * vb;
         const uint32_t b0 = f32_bits(r0);
         const uint32_t f0 = fpu_get_fcr31();
-        fpu_set_fcr31(0x01000000u);
+        fpu_set_fcr31(0x01000000u); /* FS=1, all enables strictly 0 */
         volatile float r1 = va * vb;
         const uint32_t b1 = f32_bits(r1);
         const uint32_t f1 = fpu_get_fcr31();
-        fpu_set_fcr31(saved_fcr);
+        fpu_quiet(); /* clear flags and FS */
         const uint32_t out[] = {b0, f0, b1, f1};
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ftz-contrast",
-                             "PASS", b0 ^ b1, out, 4);
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ftz-contrast", "PASS", b0 ^ b1, out, 4);
     }
-    /* COMPILER cell: signed-zero behaviors. */
+
+    /* COMPILER cell 13: signed-zero behaviors. */
+    g_fpu_cell_index = 13;
+    __asm__ volatile("move $s2, %0" :: "r"(13) : "memory");
     {
         volatile float pz = 0.0f;
         volatile float nz = u32_f32(0x80000000u);
@@ -2089,10 +2139,14 @@ static void run_fpu_vector(int emulated) {
             f32_bits(pz + nz), f32_bits(nz + nz), f32_bits(1.0f / pz),
             f32_bits(1.0f / nz), f32_bits(pz * inf), f32_bits(nz * inf),
         };
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-signed-zero",
-                             "PASS", (uint32_t)fpu_get_fcr31(), out, 6);
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-signed-zero", "PASS", flags, out, 6);
     }
-    /* NaN payload propagation through + and *. */
+
+    /* COMPILER cell 14: NaN payload propagation through + and *. */
+    g_fpu_cell_index = 14;
+    __asm__ volatile("move $s2, %0" :: "r"(14) : "memory");
     {
         static const uint32_t nans[3] = {0x7fc00001u, 0x7fffffffu, 0xffc00001u};
         uint32_t out[6];
@@ -2103,10 +2157,19 @@ static void run_fpu_vector(int emulated) {
             out[2 * i] = f32_bits(vn + vo);
             out[2 * i + 1] = f32_bits(vn * vo);
         }
-        emit_record_extended(emulated, "PSP-FPU-001", "fpu-nan-payload",
-                             "PASS", (uint32_t)fpu_get_fcr31(), out, 6);
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-nan-payload", "PASS", flags, out, 6);
     }
-    fpu_set_fcr31(saved_fcr);
+
+    /* Cell 15: Done record confirming all preceding cells executed without trap. */
+    g_fpu_cell_index = 15;
+    __asm__ volatile("move $s2, %0" :: "r"(15) : "memory");
+    fpu_quiet();
+    {
+        const uint32_t out[] = {15};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-done", "PASS", 0, out, 1);
+    }
 }
 #endif
 
@@ -2129,6 +2192,12 @@ static void run_teardown_test(int emulated) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+    /* Capture boot FCR31 immediately at process entry before ANY other code runs */
+    uint32_t boot_fcr31 = 0;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(boot_fcr31) :: "memory");
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+#endif
     const int emulated = emulator_present();
     /* Unbuffered stdout so a probe-induced exception stays attributable to
        the exact record instead of losing buffered output. Zero semantic
@@ -2225,7 +2294,7 @@ int main(int argc, char *argv[]) {
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
     run_ctrl_clock(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
-    run_fpu_vector(emulated);
+    run_fpu_vector(emulated, boot_fcr31);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
 #else
