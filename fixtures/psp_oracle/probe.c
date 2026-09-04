@@ -852,10 +852,10 @@ static void run_dmac_concurrency(int emulated) {
    entire valid prefix and independently rejected a block beginning at the
    next address. */
 /* Allocator-observed top (PSP-3000/6.61-ARK-5.1.0, 512 KiB bounded heap):
-   fixed-address grants succeed through 0x0B700000 and fail at 0x0B800000
+   fixed-address grants succeed through 0x0B700000 and fail from 0x0B740000
    (surveyor runs, same heap geometry). The v3 premise gate re-verifies at
    runtime; if the boundary moved, the SKIP records it honestly. */
-#define DMAC_BASELINE_USER_END 0x0b800000u
+#define DMAC_BASELINE_USER_END 0x0b740000u
 #define DMAC_BOUNDARY_LEAD 0x00000100u
 #define DMAC_BOUNDARY_BLOCK_BASE \
     (DMAC_BASELINE_USER_END - DMAC_MEASURED_PREFIX - DMAC_BOUNDARY_LEAD)
