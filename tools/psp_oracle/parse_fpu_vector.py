@@ -44,16 +44,40 @@ class FpuVectorReport:
     results: dict[str, TestResult]
 
 
-def parse_fpu_vector_output(text: str) -> FpuVectorReport:
+def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuVectorReport:
     """Parse and validate a captured PSP-FPU-001 probe stream."""
     parsed = parse_output(text)
-    fpu_results: dict[str, TestResult] = {}
+    fpu_ordered_results: list[TestResult] = []
+    seen: set[str] = set()
     for r in parsed.results:
         if r.test_id == EXPECTED_TEST_ID:
-            fpu_results[r.case_id] = r
+            if r.case_id in seen:
+                raise ProtocolError(f"duplicate fpu cell: {r.case_id}")
+            seen.add(r.case_id)
+            fpu_ordered_results.append(r)
+
+    fpu_results = {r.case_id: r for r in fpu_ordered_results}
 
     if "fpu-boot-fcr31" not in fpu_results:
         raise ProtocolError("missing required fpu-boot-fcr31 diagnostic cell")
+
+    actual_order = [r.case_id for r in fpu_ordered_results]
+    if require_complete:
+        if actual_order != EXPECTED_CELLS:
+            missing = [cid for cid in EXPECTED_CELLS if cid not in fpu_results]
+            if missing:
+                raise ProtocolError(f"fpu stream incomplete, missing cells: {missing}")
+            extra = [cid for cid in actual_order if cid not in EXPECTED_CELLS]
+            if extra:
+                raise ProtocolError(f"fpu stream contains unexpected cells: {extra}")
+            raise ProtocolError(
+                f"fpu cells out of order: expected {EXPECTED_CELLS}, got {actual_order}"
+            )
+    else:
+        expected_indices = {cid: idx for idx, cid in enumerate(EXPECTED_CELLS)}
+        indices = [expected_indices.get(cid, -1) for cid in actual_order if cid in expected_indices]
+        if any(indices[i] > indices[i + 1] for i in range(len(indices) - 1)):
+            raise ProtocolError(f"fpu cells out of order: {actual_order}")
 
     boot_rec = fpu_results["fpu-boot-fcr31"]
     val_dict = dict(boot_rec.values)
@@ -66,8 +90,10 @@ def parse_fpu_vector_output(text: str) -> FpuVectorReport:
         ftz_dict = dict(ftz_rec.values)
         ftz_delta = int(ftz_dict.get("result", "0"), 0)
 
-    all_passed = all(r.status == "PASS" for r in fpu_results.values()) and (
-        "fpu-done" in fpu_results
+    all_passed = (
+        (len(fpu_results) == len(EXPECTED_CELLS) if require_complete else True)
+        and all(r.status == "PASS" for r in fpu_results.values())
+        and ("fpu-done" in fpu_results)
     )
 
     return FpuVectorReport(

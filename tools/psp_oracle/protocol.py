@@ -190,7 +190,7 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
         _validate_metadata(metadata, line_number=0)
     if not results:
         raise ProtocolError("result stream contains no test records")
-    return ParsedOutput(tuple(sorted(metadata.items())), tuple(sorted(results, key=TestResult.key)))
+    return ParsedOutput(tuple(sorted(metadata.items())), tuple(results))
 
 
 def compare_outputs(psp: ParsedOutput, nakagawa: ParsedOutput) -> dict[str, Any]:

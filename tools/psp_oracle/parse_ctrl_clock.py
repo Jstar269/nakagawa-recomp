@@ -11,7 +11,21 @@ from typing import Any
 
 from .protocol import parse_output, ProtocolError, TestResult
 
-EXPECTED_TEST_ID = "PSP-CTRL-001"
+EXPECTED_TEST_IDS = frozenset({"PSP-CTRL-001", "PSP-SYSTEM-001"})
+
+EXPECTED_SYSTEM_CASES = [
+    "ctrl-ts-pairs",
+    "ctrl-ts-vcount",
+    "clock-snapshot",
+    "delay-10ms",
+    "ctrl-zero-count",
+    "ctrl-peek-read",
+]
+
+EXPECTED_CTRL_CASES = [
+    "ctrl-clock-freqs",
+    "ctrl-delay-calibration",
+]
 
 
 @dataclass(frozen=True)
@@ -24,29 +38,75 @@ class CtrlClockReport:
     results: dict[str, TestResult]
 
 
-def parse_ctrl_clock_output(text: str) -> CtrlClockReport:
-    """Parse and validate a captured PSP-CTRL-001 stream."""
+def parse_ctrl_clock_output(text: str, *, require_complete: bool = True) -> CtrlClockReport:
+    """Parse and validate a captured PSP-CTRL-001 or PSP-SYSTEM-001 stream."""
     parsed = parse_output(text)
-    results: dict[str, TestResult] = {}
+    ordered_results: list[TestResult] = []
+    seen: set[str] = set()
+    active_test_id: str | None = None
+
     for r in parsed.results:
-        if r.test_id == EXPECTED_TEST_ID:
-            results[r.case_id] = r
+        if r.test_id in EXPECTED_TEST_IDS:
+            if active_test_id is None:
+                active_test_id = r.test_id
+            elif r.test_id != active_test_id:
+                raise ProtocolError(f"mixed test_ids in stream: {active_test_id} and {r.test_id}")
+            if r.case_id in seen:
+                raise ProtocolError(f"duplicate ctrl/clock case: {r.case_id}")
+            seen.add(r.case_id)
+            ordered_results.append(r)
+
+    if not ordered_results or active_test_id is None:
+        raise ProtocolError("missing required ctrl/clock test records")
+
+    expected_cases = (
+        EXPECTED_SYSTEM_CASES if active_test_id == "PSP-SYSTEM-001" else EXPECTED_CTRL_CASES
+    )
+    results = {r.case_id: r for r in ordered_results}
+    actual_order = [r.case_id for r in ordered_results]
+
+    if require_complete:
+        if actual_order != expected_cases:
+            missing = [cid for cid in expected_cases if cid not in results]
+            if missing:
+                raise ProtocolError(f"ctrl/clock stream incomplete, missing: {missing}")
+            extra = [cid for cid in actual_order if cid not in expected_cases]
+            if extra:
+                raise ProtocolError(f"ctrl/clock stream contains unexpected cases: {extra}")
+            raise ProtocolError(
+                f"ctrl/clock cases out of order: expected {expected_cases}, got {actual_order}"
+            )
+    else:
+        expected_indices = {cid: idx for idx, cid in enumerate(expected_cases)}
+        indices = [expected_indices.get(cid, -1) for cid in actual_order if cid in expected_indices]
+        if any(indices[i] > indices[i + 1] for i in range(len(indices) - 1)):
+            raise ProtocolError(f"ctrl/clock cases out of order: {actual_order}")
 
     cpu_mhz = 0
     bus_mhz = 0
+    delay_us = 0
+
     if "ctrl-clock-freqs" in results:
-        r_freq = results["ctrl-clock-freqs"]
-        v = dict(r_freq.values)
+        v = dict(results["ctrl-clock-freqs"].values)
         cpu_mhz = int(v.get("out0", "0"), 0)
         bus_mhz = int(v.get("out1", "0"), 0)
 
-    delay_us = 0
+    if "clock-snapshot" in results:
+        v = dict(results["clock-snapshot"].values)
+        cpu_mhz = int(v.get("out5", "0"), 0)
+        bus_mhz = cpu_mhz // 2 if cpu_mhz > 0 else 0
+
     if "ctrl-delay-calibration" in results:
-        r_del = results["ctrl-delay-calibration"]
-        v = dict(r_del.values)
+        v = dict(results["ctrl-delay-calibration"].values)
         delay_us = int(v.get("out0", "0"), 0)
 
-    all_passed = len(results) > 0 and all(r.status == "PASS" for r in results.values())
+    if "delay-10ms" in results:
+        v = dict(results["delay-10ms"].values)
+        delay_us = int(v.get("out2", "0"), 0)
+
+    all_passed = (
+        len(results) == len(expected_cases) if require_complete else len(results) > 0
+    ) and all(r.status == "PASS" for r in results.values())
 
     return CtrlClockReport(
         raw_record_count=len(parsed.results),
