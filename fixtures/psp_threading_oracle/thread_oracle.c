@@ -137,11 +137,15 @@ static PHASE_MAYBE_UNUSED int return_threshold_entry(SceSize args, void *argp) {
 static PHASE_MAYBE_UNUSED int sleep_entry(SceSize args, void *argp) { (void)args; (void)argp; sceKernelSleepThread(); return 0x55; }
 
 // Helper to get thread status via ReferThreadStatus safely bounded.
-// Pre-fills with a sentinel so fields the firmware leaves untouched are
-// distinguishable from firmware-written zeros. The buffer is our own
-// allocation, so this can never read outside it.
+// MUST zero-fill: the firmware reads fields of this struct beyond `size`
+// (HARDWARE_MEASURED 2026-09-03: a 0xA5 pre-fill deterministically crashed
+// sceThreadManager with a data bus error at the same EPC across reboot, while
+// the zero-filled identical call succeeds). The buffer is our own allocation,
+// so this can never read outside it. Consequence: a firmware-unpopulated
+// field reads 0; population is established by VARIATION across requests with
+// different inputs (e.g. attr across CT-A*), never by poison fill.
 static PHASE_MAYBE_UNUSED int try_refer_status(SceUID thid, SceKernelThreadInfo *info, uint32_t *out_status, uint32_t *out_waittype) {
-    memset(info, 0xA5, sizeof(*info));
+    memset(info, 0, sizeof(*info));
     info->size = sizeof(*info);
     int ret = sceKernelReferThreadStatus(thid, info);
     if (ret == 0) {
