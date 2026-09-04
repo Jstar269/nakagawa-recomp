@@ -1741,7 +1741,7 @@ static void run_thread_exit_delete(int emulated) {
    addresses. Emits highest provable base + first failure. */
 #define DMAC_SURVEY_STEPS 4u
 static const uint32_t dmac_survey_bases[DMAC_SURVEY_STEPS] = {
-    0x0b000000u, 0x0b800000u, 0x0c000000u, 0x0d000000u,
+    0x0b200000u, 0x0b400000u, 0x0b600000u, 0x0b700000u,
 };
 static void run_dmac_survey(int emulated) {
     uint32_t top_ok = 0;
