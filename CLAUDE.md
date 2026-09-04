@@ -11,7 +11,8 @@ Use these maintained contracts for current facts:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime and build structure.
 - [`docs/SETUP.md`](docs/SETUP.md) — supported host/toolchain contract.
 - [`docs/CI.md`](docs/CI.md) — local/hosted gate routing and evidence limits.
-- [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md) — public boundary and provenance.
+- [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md) — public boundary, the two
+  provenance authority tiers, and the local readiness sequence to run before opening a PR.
 
 On Windows, use PowerShell 7.6+ (`pwsh`) for project manager commands. Treat missing external
 inputs and unavailable hardware as explicit blocked/not-run evidence. Never invent DCO identity or

@@ -92,6 +92,50 @@ ledger and then attests the export against that regenerated copy. Candidate
 hashes prove bytes, not authorization; only a record in the trusted detailed
 ledger attests a path.
 
+## Two authority tiers
+
+Provenance is not one check. It is two, answering different questions, and a
+change can satisfy one while failing the other.
+
+| Tier | Question | Where it lives | Failure code |
+| --- | --- | --- | --- |
+| Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
+| Blob authority | were these exact bytes at this exact path reviewed? | `reviewed_blobs` in the trusted detailed ledger | `BLOB_UNAPPROVED` |
+
+The distinction is load-bearing. A record authorizes a *path*; it does not
+authorize arbitrary new bytes placed at that path. Without the blob tier an
+author could replace every byte of an authority-backed file and inherit its
+attestation. Path coverage is not content approval.
+
+So changing an implementation-bearing published file needs **both** an exact
+record and a new `reviewed_blobs` entry naming its SHA-256. The record is usually
+already present; the blob approval is a fresh human decision every time the bytes
+change. `tools/provenance_attest_verify.py` enforces the blob tier and is
+runnable locally — run it before claiming a candidate is ready.
+
+An unchanged file needs no approval, so most changes touch this tier not at all.
+
+| Class | Exact record? | Blob approval when bytes change? |
+| --- | --- | --- |
+| `project_authored_attested`, `upstream_derived`, `generated_from_public_source` | yes | **yes** |
+| `reviewed_documentation`, `reviewed_configuration`, `public_factual_metadata`, `reviewed_other` | no, deterministic | no |
+| `synthetic_fixture` (`tools/test_*`) | no, deterministic | no |
+| `unresolved` | cannot be published | — |
+
+An approval must cite the exact record already covering that path and a
+classification agreeing with what authority derives; a mismatch is refused rather
+than accepted. Never create a record just to turn a check green — if no record
+covers the path, that is the finding.
+
+## Every tracked change touches the published surface
+
+Every tracked file in this repository is inside the published surface and the
+provenance ledger carries a content hash for each one, so **any** tracked change
+invalidates the ledger and `PUBLIC_EXPORT.json` until they are refreshed —
+including a documentation-only edit. That is why the publication audit runs
+ungated in the CI hygiene job on every event rather than being path-routed, and
+why a cheap docs-only classification is nonetheless safe.
+
 ## Reviewed refresh of an existing public path
 
 A legitimate edit to an already-qualified public path needs a new

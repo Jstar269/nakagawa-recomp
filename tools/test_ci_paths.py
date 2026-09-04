@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 try:
@@ -43,6 +44,9 @@ class CiPathClassificationTests(unittest.TestCase):
                 self.assertEqual(classify([path])["run_dashboard"], "true")
 
     def test_docs_only_keeps_expensive_jobs_off(self) -> None:
+        # Safe because publication integrity is not path-gated: the ungated
+        # hygiene job audits the generated public metadata on every event.
+        # PublicationCoverageInvariantTests pins that.
         result = classify(["docs/CI.md", "README.md"])
         self.assertEqual(result["docs_only"], "true")
         self.assertEqual(result["run_markdown"], "true")
@@ -473,6 +477,96 @@ class CiPathAdversarialTests(unittest.TestCase):
         """A Windows-style or ./-prefixed path must not fall through to unknown."""
         self.assertEqual(classify(["src\\rt\\hle.c"])["run_native"], "true")
         self.assertEqual(classify(["./docs/CI.md"])["docs_only"], "true")
+
+
+
+class PublicSurfaceRoutingRegressionTests(unittest.TestCase):
+    """Publication integrity must be reachable for any published path.
+
+    The incident: ``interface/package-lock.json`` sits inside the 674-path public
+    surface, and changing it invalidates the public provenance ledger and
+    PUBLIC_EXPORT.json -- yet the classifier consulted a hand-maintained list of
+    "publication-ish" paths that did not mention it. What actually saved that
+    case is that publication integrity is *not* path-gated at all; see
+    PublicationCoverageInvariantTests.
+
+    What these pin is the classifier half: the published surface is derived from
+    the publication policy rather than guessed, and the publication-contract
+    paths route a Python gate instead of feeding a dead output.
+    """
+
+    def test_public_surface_is_derived_from_the_policy_not_a_hardcoded_list(self) -> None:
+        # The lockfile matches none of the hand-written publication predicates,
+        # yet the policy knows it is published.
+        self.assertFalse(ci_paths_module._is_security_publication("interface/package-lock.json"))
+        self.assertTrue(ci_paths_module._is_public_surface("interface/package-lock.json"))
+
+    def test_representative_published_classes_are_all_recognised_as_public(self) -> None:
+        for path in (
+            "interface/package-lock.json",           # reviewed_configuration lockfile
+            "tools/hst_doctor_checks.py",            # implementation
+            "docs/DEBUGGING.md",                     # documentation
+            "interface/package.json",                # configuration
+            "tools/test_hst_doctor.py",              # synthetic fixture
+            "assets/public_provenance_ledger.json",  # generated public metadata
+            "PUBLIC_EXPORT.json",                    # generated public export
+            "assets/public_source_profile.json",     # the policy itself
+            "docs/SETUP.md",                         # a removed path arrives by name
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify([path])["public_surface"], "true")
+
+    def test_security_publication_is_no_longer_a_dead_output(self) -> None:
+        # It was computed and exported while feeding no routing decision at all,
+        # so a change to the publication contract document routed no Python gate.
+        result = classify(["docs/PUBLICATION_READINESS.md"])
+        self.assertEqual(result["security_publication"], "true")
+        self.assertEqual(result["run_python"], "true")
+        self.assertEqual(classify(["tools/publish_audit.py"])["run_python"], "true")
+
+    def test_unreadable_policy_fails_closed_to_public(self) -> None:
+        ci_paths_module._public_policy.cache_clear()
+        try:
+            with mock.patch.object(ci_paths_module, "_public_policy", return_value=None):
+                self.assertTrue(ci_paths_module._is_public_surface("anything/at/all.txt"))
+        finally:
+            ci_paths_module._public_policy.cache_clear()
+
+    def test_a_new_public_path_still_fails_closed_to_full_validation(self) -> None:
+        self.assertEqual(classify(["src/rt/brand_new_thing.c"])["run_python"], "true")
+
+
+class PublicationCoverageInvariantTests(unittest.TestCase):
+    """Publication integrity must never become path-gated.
+
+    Every tracked file is inside the published surface and the ledger carries a
+    content hash for each one, so *any* tracked change invalidates the generated
+    public metadata until it is refreshed. The only reason a docs-only change can
+    safely skip the Python suite is that the publication audit runs ungated on
+    every event. If someone ever path-gates the hygiene job, or drops the audit
+    from the shared pre-commit run, a stale public ledger becomes mergeable --
+    so both facts are pinned here rather than left to a comment.
+    """
+
+    def test_hygiene_job_is_not_path_gated(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8")
+        marker = "\n  markdown:"
+        block = workflow.split("  hygiene:", 1)[1].split(marker, 1)[0]
+        condition = [line for line in block.splitlines() if line.strip().startswith("if:")]
+        self.assertTrue(condition, "hygiene must keep an explicit always() condition")
+        self.assertIn("always()", condition[0])
+        for gate in ("run_python", "run_native", "run_dashboard", "docs_only", "run_markdown"):
+            self.assertNotIn(gate, condition[0],
+                             "hygiene must not be gated on %s: publication integrity would "
+                             "become path-dependent" % gate)
+
+    def test_shared_precommit_run_audits_publication(self) -> None:
+        config = (Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml").read_text(
+            encoding="utf-8")
+        self.assertIn("tools/publish_audit.py", config)
+        self.assertIn("--provenance-self-consistency", config)
+        self.assertIn("tools/policy_sync.py", config)
 
 
 if __name__ == "__main__":
