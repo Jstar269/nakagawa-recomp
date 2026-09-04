@@ -7,12 +7,21 @@ import re
 import subprocess
 import sys
 import tempfile
+import hashlib
+import os
 import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import publish_audit
+
+LF = bytes([10])
+CRLF = bytes([13, 10])
+NUL = bytes([0])
+BOM = bytes([0xEF, 0xBB, 0xBF])
+UTF16LE = bytes([0xFF, 0xFE])
+UTF16BE = bytes([0xFE, 0xFF])
 
 
 
@@ -38,12 +47,13 @@ def hermetic_policy(repo: Path, include_paths, exclude_paths=(), exclude_globs=(
         "include_paths": sorted(set(include_paths)),
     }
     policy_path = repo / "_hermetic_policy.json"
-    policy_path.write_text(json.dumps(document), encoding="utf-8")
+    policy_path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
     export_path = repo / "_hermetic_export.json"
     export_path.write_text(
         json.dumps({"profile": document["name"],
-                    "policy_sha256": publication_policy.canonical_digest(document)}),
+                    "policy_sha256": publication_policy.canonical_digest(document)}) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     return policy_path, export_path
 
@@ -193,7 +203,7 @@ class TestPublishAudit(unittest.TestCase):
             repo_private.mkdir()
 
             secret_file = repo_private / "secret.txt"
-            secret_file.write_text("secret", encoding="utf-8")
+            secret_file.write_text("secret", encoding="utf-8", newline="\n")
 
             symlink_file = repo / "link.txt"
             try:
@@ -236,13 +246,13 @@ class TestPublishAudit(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
 
             lfs_file = repo / "asset.bin"
-            lfs_file.write_text(lfs_pointer, encoding="utf-8")
+            lfs_file.write_text(lfs_pointer, encoding="utf-8", newline="\n")
 
             entries = [
                 publish_audit.GitEntry("100644", "", "0", "asset.bin", "lfs_pointer")
@@ -253,8 +263,8 @@ class TestPublishAudit(unittest.TestCase):
     def test_lfs_attribute_mismatch_detection(self):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / ".gitattributes").write_text("*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8")
-            (repo / "data.dat").write_text("Not an LFS pointer content\n", encoding="utf-8")
+            (repo / ".gitattributes").write_text("*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8", newline="\n")
+            (repo / "data.dat").write_text("Not an LFS pointer content\n", encoding="utf-8", newline="\n")
 
             entries = [publish_audit.GitEntry("100644", "", "0", "data.dat", "file")]
             findings = publish_audit.audit_entries(entries, repo_root=repo, is_candidate_root=True)
@@ -292,7 +302,7 @@ class TestPublishAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             malformed_json = repo / "bad_manifest.json"
-            malformed_json.write_text("{ invalid json }", encoding="utf-8")
+            malformed_json.write_text("{ invalid json }", encoding="utf-8", newline="\n")
 
             findings = publish_audit.audit_entries([], manifest_path=malformed_json)
             self.assertTrue(any(f.code == "MANIFEST_ERROR" for f in findings))
@@ -304,7 +314,7 @@ class TestPublishAudit(unittest.TestCase):
                     {"id": "c2", "source_path": "src/rt/core.c", "license": "GPL-2.0-or-later"},
                 ]
             }
-            dup_json.write_text(json.dumps(dup_data), encoding="utf-8")
+            dup_json.write_text(json.dumps(dup_data), encoding="utf-8", newline="\n")
             findings_dup = publish_audit.audit_entries([], manifest_path=dup_json)
             self.assertTrue(any(f.code == "MANIFEST_DUPLICATE_PATH" for f in findings_dup))
 
@@ -317,7 +327,7 @@ class TestPublishAudit(unittest.TestCase):
                     {"id": "orphan1", "source_path": "non_existent_file.c", "license": "MIT"},
                 ]
             }
-            orphan_json.write_text(json.dumps(orphan_data), encoding="utf-8")
+            orphan_json.write_text(json.dumps(orphan_data), encoding="utf-8", newline="\n")
 
             entries = [publish_audit.GitEntry("100644", "", "0", "LICENSE", "file")]
             findings = publish_audit.audit_entries(entries, manifest_path=orphan_json, repo_root=repo, is_candidate_root=True)
@@ -368,7 +378,7 @@ class TestPublishAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw).resolve()
             fake_scanner = tmp_dir / "publish_audit_copy.py"
-            fake_scanner.write_text(injected_code, encoding="utf-8")
+            fake_scanner.write_text(injected_code, encoding="utf-8", newline="\n")
 
             entries = [publish_audit.GitEntry("100644", "", "0", "publish_audit_copy.py", "file")]
             findings = publish_audit.audit_entries(entries, repo_root=tmp_dir, is_candidate_root=True)
@@ -381,11 +391,11 @@ class TestPublishAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             (repo / "src").mkdir(parents=True)
-            (repo / "src" / "core.c").write_text("# SPDX-License-Identifier: GPL-2.0-or-later\nint x;\n", encoding="utf-8")
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
+            (repo / "src" / "core.c").write_text("# SPDX-License-Identifier: GPL-2.0-or-later\nint x;\n", encoding="utf-8", newline="\n")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
@@ -406,12 +416,12 @@ class TestPublishAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             (repo / "src").mkdir(parents=True)
-            (repo / "src" / "core.c").write_text("# SPDX-License-Identifier: GPL-2.0-or-later\nint x;\n", encoding="utf-8")
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
-            (repo / ".gitignore").write_text(".ruff_cache/\n", encoding="utf-8")
+            (repo / "src" / "core.c").write_text("# SPDX-License-Identifier: GPL-2.0-or-later\nint x;\n", encoding="utf-8", newline="\n")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
+            (repo / ".gitignore").write_text(".ruff_cache/\n", encoding="utf-8", newline="\n")
             (repo / ".ruff_cache").mkdir()
             (repo / ".ruff_cache" / "bin.dat").write_bytes(b"\x00\x01\x02\x03binary-cache-data")
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
@@ -434,12 +444,12 @@ class TestPublishAudit(unittest.TestCase):
         # be pruned from the candidate walk.
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
-            (repo / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
-            (repo / "note.tmp").write_text("tracked despite pattern", encoding="utf-8")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
+            (repo / ".gitignore").write_text("*.tmp\n", encoding="utf-8", newline="\n")
+            (repo / "note.tmp").write_text("tracked despite pattern", encoding="utf-8", newline="\n")
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
@@ -459,10 +469,10 @@ class TestPublishAudit(unittest.TestCase):
         # be reported as an orphan. Outside public-scope auditing it still is.
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
             manifest = repo / "m.json"
             manifest.write_text(
                 json.dumps(
@@ -479,6 +489,7 @@ class TestPublishAudit(unittest.TestCase):
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             entries = [publish_audit.GitEntry("100644", "", "0", "LICENSE", "file")]
             # The manifest component is declared public_scope_included: False but the
@@ -522,18 +533,18 @@ class TestPublishAudit(unittest.TestCase):
 
             target_file = repo / "src" / "core.py"
             (repo / "src").mkdir(parents=True)
-            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8")
-            (repo / "README.md").write_text("README", encoding="utf-8")
-            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8")
+            (repo / "LICENSE").write_text("LICENSE", encoding="utf-8", newline="\n")
+            (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
+            (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
+            (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
 
             # --- Case 1: Index is SAFE, Working tree on disk is UNSAFE (unstaged edit) ---
-            target_file.write_text(safe_content, encoding="utf-8")
+            target_file.write_text(safe_content, encoding="utf-8", newline="\n")
             subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True)
             safe_sha = subprocess.run(["git", "ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
 
             # Modify working tree to be UNSAFE without staging
-            target_file.write_text(unsafe_content, encoding="utf-8")
+            target_file.write_text(unsafe_content, encoding="utf-8", newline="\n")
 
             entries_git = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
             self.assertEqual(len(entries_git), 1)
@@ -546,12 +557,12 @@ class TestPublishAudit(unittest.TestCase):
             self.assertEqual(findings_index, [], "Index audit must pass when indexed blob is safe, ignoring unstaged unsafe working tree edits")
 
             # --- Case 2: Index is UNSAFE, Working tree on disk is SAFE ---
-            target_file.write_text(unsafe_content, encoding="utf-8")
+            target_file.write_text(unsafe_content, encoding="utf-8", newline="\n")
             subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True)
             unsafe_sha = subprocess.run(["git", "ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
 
             # Revert working tree on disk to be SAFE (unstaged)
-            target_file.write_text(safe_content, encoding="utf-8")
+            target_file.write_text(safe_content, encoding="utf-8", newline="\n")
 
             entries_unsafe_index = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
             self.assertEqual(entries_unsafe_index[0].sha, unsafe_sha)
@@ -570,7 +581,7 @@ class TestPublishAudit(unittest.TestCase):
             self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_deleted_disk), "Index audit reads deleted file blob cleanly via git cat-file")
 
             # --- Case 5: Materialized Candidate-Root Disk Semantics ---
-            target_file.write_text(unsafe_content, encoding="utf-8")
+            target_file.write_text(unsafe_content, encoding="utf-8", newline="\n")
             entries_candidate = publish_audit._get_filesystem_entries(repo)
             findings_candidate = publish_audit.audit_entries(entries_candidate, repo_root=repo, is_candidate_root=True)
             self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_candidate), "Candidate-root mode audits disk content directly")
@@ -600,16 +611,18 @@ def _make_publication_fixture_repo(repo: Path) -> Path:
         ("README.md", "README"),
         ("AGENTS.md", "AGENTS"),
     ):
-        (repo / name).write_text(body, encoding="utf-8")
+        # Final newline and explicit LF: the fixture claims to be a tree a clean
+        # audit passes, and the text-hygiene check is part of "clean".
+        (repo / name).write_text(body + "\n", encoding="utf-8", newline="\n")
 
     # main() defaults --manifest to <root>/assets/release_manifest.json and reports a
     # MANIFEST_ERROR when it is absent, so the fixture needs an empty but valid one.
     (repo / "assets").mkdir()
-    (repo / "assets" / "release_manifest.json").write_text('{"components": []}\n', encoding="utf-8")
+    (repo / "assets" / "release_manifest.json").write_text('{"components": []}\n', encoding="utf-8", newline="\n")
 
     target = repo / "src" / "core.py"
     (repo / "src").mkdir()
-    target.write_text(SAFE_SOURCE, encoding="utf-8")
+    target.write_text(SAFE_SOURCE, encoding="utf-8", newline="\n")
 
     # The gate fails closed without a canonical policy, and rejects any path the
     # policy does not classify, so a fixture that is meant to pass has to declare
@@ -631,11 +644,13 @@ def _make_publication_fixture_repo(repo: Path) -> Path:
         "exclude_paths": [],
         "include_paths": sorted(tracked),
     }
-    (repo / "assets" / "public_source_profile.json").write_text(json.dumps(document), encoding="utf-8")
+    (repo / "assets" / "public_source_profile.json").write_text(
+        json.dumps(document) + "\n", encoding="utf-8", newline="\n")
     (repo / "PUBLIC_EXPORT.json").write_text(
         json.dumps({"profile": document["name"],
-                    "policy_sha256": publication_policy.canonical_digest(document)}),
+                    "policy_sha256": publication_policy.canonical_digest(document)}) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
@@ -699,7 +714,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
             target = _make_publication_fixture_repo(repo)
 
             # Staged blob stays clean; only the bytes on disk carry the finding.
-            target.write_text(UNSAFE_SOURCE, encoding="utf-8")
+            target.write_text(UNSAFE_SOURCE, encoding="utf-8", newline="\n")
 
             index_entries = publish_audit._get_git_entries(
                 tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
@@ -730,7 +745,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
             repo = Path(tmp_dir_raw).resolve()
             target = _make_publication_fixture_repo(repo)
 
-            target.write_text(UNSAFE_SOURCE, encoding="utf-8")
+            target.write_text(UNSAFE_SOURCE, encoding="utf-8", newline="\n")
             subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
             target.unlink()
 
@@ -798,7 +813,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
                 )
 
                 # Unstaged tracked edit carrying a publication finding.
-                target.write_text(UNSAFE_SOURCE, encoding="utf-8")
+                target.write_text(UNSAFE_SOURCE, encoding="utf-8", newline="\n")
                 unstaged_codes = [publish_audit.main(list(args)) for args in invocations]
                 self.assertTrue(
                     any(code != 0 for code in unstaged_codes),
@@ -814,7 +829,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
                 )
 
                 # Reverting on disk *and* in the index returns the gate to green.
-                target.write_text(SAFE_SOURCE, encoding="utf-8")
+                target.write_text(SAFE_SOURCE, encoding="utf-8", newline="\n")
                 subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
                 restored_codes = [publish_audit.main(list(args)) for args in invocations]
                 self.assertEqual(
@@ -825,6 +840,122 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
 
     def test_worktree_and_candidate_root_are_mutually_exclusive(self):
         self.assertEqual(publish_audit.main(["--worktree", "--candidate-root", str(publish_audit.ROOT)]), 2)
+
+
+class TextHygieneTests(unittest.TestCase):
+    """Encoding and line-ending drift must be named, not discovered as hash noise.
+
+    `.gitattributes` normalises on commit, so the index is clean by construction
+    and these findings fire almost entirely in worktree audits. That is the case
+    that matters: a CRLF-polluted checkout makes every touched file's content
+    hash disagree with the provenance ledger, and the resulting wall of
+    PROVENANCE_CONTENT_MISMATCH says nothing about the actual cause. This
+    happened, and cost real time, which is why the diagnosis is now a check.
+    """
+
+    def _codes(self, data: bytes, path: str = "sample.txt"):
+        return [f.code for f in publish_audit.check_text_hygiene({path: (data, None)})]
+
+    def test_clean_lf_text_is_silent(self):
+        self.assertEqual(self._codes(b"line one" + LF + b"line two" + LF), [])
+
+    def test_crlf_is_reported(self):
+        self.assertEqual(self._codes(b"a" + CRLF + b"b" + CRLF), ["TEXT_LINE_ENDING_CRLF"])
+
+    def test_utf8_bom_is_reported(self):
+        self.assertEqual(self._codes(BOM + b"line" + LF), ["TEXT_ENCODING_BOM"])
+
+    def test_utf16_both_endiannesses_are_reported(self):
+        self.assertEqual(self._codes(UTF16LE + b"l" + NUL), ["TEXT_ENCODING_UTF16"])
+        self.assertEqual(self._codes(UTF16BE + NUL + b"l"), ["TEXT_ENCODING_UTF16"])
+
+    def test_missing_final_newline_is_reported(self):
+        self.assertEqual(self._codes(b"one" + LF + b"two"), ["TEXT_FINAL_NEWLINE"])
+
+    def test_binary_content_is_never_reported(self):
+        # NUL-bearing data is binary; CRLF inside it is not a line-ending defect.
+        self.assertEqual(self._codes(NUL + b"payload" + CRLF), [])
+
+    def test_exempt_binary_suffix_is_skipped(self):
+        self.assertEqual(self._codes(b"a" + CRLF + b"b", path="assets/x.dat"), [])
+
+    def test_empty_file_is_silent(self):
+        self.assertEqual(self._codes(b""), [])
+
+    def test_real_tracked_binary_asset_is_not_flagged(self):
+        raw = subprocess.run(
+            ["git", "show", ":assets/vfpu/vfpu_log2_lut.dat"],
+            cwd=publish_audit.ROOT, capture_output=True,
+        ).stdout
+        if not raw:
+            self.skipTest("binary LUT unavailable in this checkout")
+        self.assertEqual(self._codes(raw, path="assets/vfpu/vfpu_log2_lut.dat"), [])
+
+
+class CanonicalWriterTests(unittest.TestCase):
+    """Canonical generated text must be byte-identical on every host.
+
+    Windows Python translates "
+" to CRLF in text mode unless newline is given
+    explicitly, so a writer without it produces different bytes -- and a
+    different SHA-256 -- depending on which host an agent happens to run from.
+    Every writer that emits canonical or hash-participating text therefore pins
+    the newline.
+    """
+
+    CANONICAL_WRITERS = (
+        "tools/public_export.py",
+        "tools/provenance_attest_verify.py",
+        "tools/shader_embed.py",
+        "tools/generate_sbom.py",
+        "tools/build_public_export.py",
+        "tools/publish_audit.py",
+    )
+
+    def test_canonical_writers_pin_the_newline(self):
+        pattern = re.compile(r'\.write_text\(((?:[^()]|\([^()]*\))*)\)', re.S)
+        for rel in self.CANONICAL_WRITERS:
+            source = (publish_audit.ROOT / rel).read_text(encoding="utf-8")
+            for match in pattern.finditer(source):
+                args = match.group(1)
+                if "encoding=" not in args:
+                    continue
+                with self.subTest(path=rel, call=args[:60]):
+                    self.assertIn("newline=", args,
+                                  "%s writes canonical text without pinning newline; on Windows "
+                                  "this silently emits CRLF and changes the SHA-256" % rel)
+
+    def test_same_logical_text_yields_the_same_bytes_and_digest(self):
+        # The host-independence invariant, exercised directly: an explicit LF
+        # writer must produce identical bytes to an explicit binary writer, on
+        # any platform this test runs on.
+        text = "alpha" + chr(10) + "beta" + chr(10)
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit = Path(tmp) / "explicit.txt"
+            binary = Path(tmp) / "binary.txt"
+            explicit.write_text(text, encoding="utf-8", newline=chr(10))
+            binary.write_bytes(text.encode("utf-8"))
+            self.assertEqual(explicit.read_bytes(), binary.read_bytes())
+            self.assertEqual(
+                hashlib.sha256(explicit.read_bytes()).hexdigest(),
+                hashlib.sha256(binary.read_bytes()).hexdigest(),
+            )
+            self.assertNotIn(CRLF, explicit.read_bytes())
+
+    def test_host_default_writer_would_differ_on_windows(self):
+        # Pins *why* the rule exists rather than only that it is followed: on a
+        # host whose linesep is CRLF, an unpinned writer diverges. Asserted
+        # conditionally so the test states the same fact on every platform.
+        with tempfile.TemporaryDirectory() as tmp:
+            unpinned = Path(tmp) / "unpinned.txt"
+            unpinned.write_text("a" + chr(10), encoding="utf-8")  # deliberately unpinned:
+            # this call is the defect under test and must NOT be "fixed"
+            produced = unpinned.read_bytes()
+            if os.linesep == chr(13) + chr(10):
+                self.assertIn(CRLF, produced,
+                              "expected host newline translation to be observable here")
+            else:
+                self.assertEqual(produced, b"a" + LF)
 
 
 if __name__ == "__main__":
