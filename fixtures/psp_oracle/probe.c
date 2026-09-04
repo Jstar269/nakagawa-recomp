@@ -1739,19 +1739,17 @@ static void run_thread_exit_delete(int emulated) {
    success immediately. Thread-free, main-thread only; failures are ordinary
    error codes, never faults. Nothing is written through the surveyed
    addresses. Emits highest provable base + first failure. */
-#define DMAC_SURVEY_BASE 0x0a000000u
-#define DMAC_SURVEY_STEP 0x00010000u
-#define DMAC_SURVEY_STEPS 48u
+#define DMAC_SURVEY_STEPS 4u
+static const uint32_t dmac_survey_bases[DMAC_SURVEY_STEPS] = {
+    0x0b000000u, 0x0b800000u, 0x0c000000u, 0x0d000000u,
+};
 static void run_dmac_survey(int emulated) {
     uint32_t top_ok = 0;
     uint32_t first_fail = 0;
     uint32_t first_err = 0;
     uint32_t attempts = 0;
     for (uint32_t i = 0; i < DMAC_SURVEY_STEPS; i++) {
-        const uint32_t base = DMAC_SURVEY_BASE + i * DMAC_SURVEY_STEP;
-        if (base < DMAC_SURVEY_BASE) {
-            break;
-        }
+        const uint32_t base = dmac_survey_bases[i];
         attempts++;
         const SceUID got = sceKernelAllocPartitionMemory(
             2, "oracle-dmac-survey", PSP_SMEM_Addr, 0x100,
