@@ -126,10 +126,13 @@ The invalid-tail cases isolate one API and invalid endpoint per launch:
 
 The Makefile explicitly opts out of expanded memory. At the pinned PSPSDK
 revision this requests the 24 MiB user partition described by the public uOFW
-memory map. Before calling DMAC, the probe reserves the entire final valid
-`0xC000`-byte prefix through `sceKernelAllocPartitionMemory`, checks that the
-returned block begins at the requested address, and verifies that partition 2
-rejects a new allocation beginning at the next address. If any safety check
+memory map. Before calling DMAC, the probe FIRST proves the candidate end
+with no blocks held (a fixed-address alloc there must fail, while a sanity
+alloc 4 KiB below must succeed — a held-block-adjacent check is not used
+because the allocator was measured granting the exact end of a held block
+while granting nothing there clean), THEN reserves the entire final valid
+`0xC000`-byte prefix through `sceKernelAllocPartitionMemory` and checks that
+the returned block begins at the requested address. If any safety check
 fails, it emits `SKIP` and never issues the invalid-tail call. The requested
 size is `0xC001`, so exactly one requested byte lies beyond the
 allocator-proven boundary. No byte outside an owned block is read by the probe

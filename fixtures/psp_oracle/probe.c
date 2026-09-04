@@ -909,6 +909,31 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
 
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
+    /* Phase A: clean-premise check with NO blocks held. The candidate end
+       must FAIL a fixed-address alloc (it is the allegedly invalid byte),
+       while a sanity address 4 KiB below must SUCCEED (the fixed-addr
+       mechanism works at all). A grant AT the end means the premise is
+       false (SKIP). A held-block-adjacent check is deliberately NOT used
+       here: measured 4/4, the allocator grants the exact end of a held
+       block while granting nothing there clean (adjacency artifact). */
+    const SceUID probe_end = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-endprobe", PSP_SMEM_Addr, 0x100,
+        (void *)DMAC_BASELINE_USER_END);
+    if (probe_end >= 0) {
+        sceKernelFreePartitionMemory(probe_end);
+        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        return;
+    }
+    const uint32_t end_err = (uint32_t)probe_end;
+    const SceUID probe_sane = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-sanity", PSP_SMEM_Addr, 0x100,
+        (void *)(DMAC_BASELINE_USER_END - 0x1000u));
+    if (probe_sane < 0) {
+        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        return;
+    }
+    sceKernelFreePartitionMemory(probe_sane);
+    setup_mask |= 4u;
     const SceUID block = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-boundary", PSP_SMEM_Addr,
         DMAC_BOUNDARY_BLOCK_BYTES, (void *)DMAC_BOUNDARY_BLOCK_BASE);
@@ -925,26 +950,6 @@ static void run_dmac_invalid_tail(int emulated) {
         return;
     }
     setup_mask |= 2u;
-
-    /* This allocation is an observational safety gate. A grant AT the
-       requested end address proves the end assumption wrong (SKIP). A grant
-       ELSEWHERE, or a rejection, proves the requested end is not free, so
-       the end holds and the measurement may proceed. The address check is
-       load-bearing: an unverified grant would make the SKIP vacuous. */
-    const SceUID tail_block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-tail-check", PSP_SMEM_Addr, 0x100,
-        (void *)DMAC_BASELINE_USER_END);
-    if (tail_block >= 0) {
-        uint8_t *const tail_head =
-            (uint8_t *)sceKernelGetBlockHeadAddr(tail_block);
-        sceKernelFreePartitionMemory(tail_block);
-        if ((uintptr_t)tail_head == (uintptr_t)DMAC_BASELINE_USER_END) {
-            sceKernelFreePartitionMemory(block);
-            emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
-            return;
-        }
-    }
-    setup_mask |= 4u;
 
     uint8_t *const boundary_prefix = block_head + DMAC_BOUNDARY_LEAD;
     memset(block_head, DMAC_BOUNDARY_GUARD, DMAC_BOUNDARY_LEAD);
@@ -1017,7 +1022,7 @@ static void run_dmac_invalid_tail(int emulated) {
         post_request_changed,
         source_prefix_matches,
         dmac_elapsed_us(start_us, end_us),
-        (uint32_t)tail_block,
+        end_err,
     };
     sceKernelFreePartitionMemory(block);
     emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
