@@ -7,6 +7,7 @@
 #include <pspdmac.h>
 #include <psppower.h>
 #include <pspiofilemgr.h>
+#include <pspiofilemgr_fcntl.h>
 #include <pspsysmem.h>
 #include <pspthreadman.h>
 #include <psputils.h>
@@ -38,6 +39,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT 13
 #define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
 #define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
+#define PSP_ORACLE_CASE_TRANSPORT_WRITE 16
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -1540,6 +1542,65 @@ static void run_display_ge_mask(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
+/* Bidirectional host0 file proof: the PSP writes a fixed 64-byte pattern to a
+   probe-owned disposable path, reads it back, and reports a checksum plus a
+   match flag. The host independently hashes the file it receives. Pattern byte
+   i is (0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF. Only this one path is touched. */
+#define TRANSPORT_PATH "host0:/nakagawa_transport_write.bin"
+#define TRANSPORT_LEN 64u
+static uint32_t transport_fnv1a(const uint8_t *data, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+static int run_transport_write_case(int emulated, uint32_t *out) {
+    uint8_t pattern[TRANSPORT_LEN];
+    uint8_t back[TRANSPORT_LEN];
+    for (uint32_t i = 0; i < TRANSPORT_LEN; i++) {
+        pattern[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));
+    }
+    memset(back, 0, sizeof(back));
+    out[0] = transport_fnv1a(pattern, sizeof(pattern));
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    SceUID fd = sceIoOpen(TRANSPORT_PATH,
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        return (int)fd;
+    }
+    const int written = sceIoWrite(fd, pattern, (SceSize)sizeof(pattern));
+    out[1] = (uint32_t)(written < 0 ? 0 : written);
+    sceIoClose(fd);
+    if (written != (int)sizeof(pattern)) {
+        return -1;
+    }
+    fd = sceIoOpen(TRANSPORT_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        return (int)fd;
+    }
+    const int got = sceIoRead(fd, back, (SceSize)sizeof(back));
+    out[2] = (uint32_t)(got < 0 ? 0 : got);
+    sceIoClose(fd);
+    if (got != (int)sizeof(back)) {
+        return -1;
+    }
+    const uint32_t match =
+        (memcmp(pattern, back, sizeof(pattern)) == 0) ? 1u : 0u;
+    out[3] = match;
+    const int pass = (match == 1u) ? 0 : -1;
+    emit_record_extended(emulated, "PSP-TRANSPORT-001",
+                         "host0-write-readback", match == 1u ? "PASS" : "FAIL",
+                         (uint32_t)pass, out, 5);
+    return pass;
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -1620,6 +1681,14 @@ int main(int argc, char *argv[]) {
     run_display_mask_duty(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
     run_display_ge_mask(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
+    uint32_t tout[5] = {0};
+    const int tpass = run_transport_write_case(emulated, tout);
+    if (tpass != 0) {
+        emit_record_extended(emulated, "PSP-TRANSPORT-001",
+                             "host0-write-readback", "FAIL",
+                             (uint32_t)tpass, tout, 5);
+    }
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

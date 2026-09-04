@@ -164,6 +164,28 @@
       "implementation_note": "All five build variants compile warning-free with the pinned public PSPDEV route. No current-session PSP result is recorded: the local PSPLink endpoint was absent, so issue #23 remains hardware-blocked and runtime semantics are unchanged."
     },
     {
+      "id": "PSP-TRANSPORT-001",
+      "status": "implemented",
+      "group": "transport",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceIoOpen",
+        "sceIoWrite",
+        "sceIoRead",
+        "sceIoClose",
+        "scePowerGetCpuClockFrequencyInt"
+      ],
+      "case_ids": [
+        "host0-write-readback"
+      ],
+      "invariant": "PSP-written bytes read back by the host equal the documented 64-byte pattern (FNV-1a and SHA-256 agree); the CPU clock is reported in the same record",
+      "issues": [],
+      "risk": "low; one probe-owned disposable host0 path only",
+      "reset": "return to PSPLINK after the process exits",
+      "implementation_note": "CASE=transport-write (PSP_ORACLE_CASE 16). Runner deploys the PRX under a distinct host0 name; the written file is removed by the host after verification."
+    },
+    {
       "id": "PSP-IO-001",
       "status": "planned",
       "group": "io",

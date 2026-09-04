@@ -48,6 +48,8 @@ else ifeq ($(CASE),display-mask-duty)
 CASE_ID = 14
 else ifeq ($(CASE),display-ge-mask)
 CASE_ID = 15
+else ifeq ($(CASE),transport-write)
+CASE_ID = 16
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

@@ -14,7 +14,20 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
 of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
-`CASE=display-ge-mask`.
+`CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
+emits `PSP-TRANSPORT-001`/`host0-write-readback`.
+
+## Transport write-readback (`CASE=transport-write`)
+
+The PSP writes a fixed 64-byte pattern (byte `i` =
+`(0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF`) to the probe-owned disposable path
+`host0:/nakagawa_transport_write.bin`, reads it back, and reports FNV-1a,
+written/read-back sizes, a self-match flag, and the CPU clock in MHz
+(`scePowerGetCpuClockFrequencyInt`). The host independently regenerates the
+pattern and compares bytes and SHA-256. Only that one path is touched; the
+host removes it after verification. `status=PASS` means the PSP-side
+write/read-back matched; file acceptance additionally requires the host-side
+byte/SHA comparison.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove
