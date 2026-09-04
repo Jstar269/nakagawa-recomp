@@ -111,11 +111,17 @@ python tools/provenance_ledger.py refresh-reviewed \
 The trusted ledger and policy must be outside the candidate checkout. When the
 trusted baseline is supplied as a worktree, it must also be outside the
 candidate checkout; the refresh outputs may not overwrite that trusted tree. A public
-ledger snapshot is the preferred input when it has already been generated from
-the detailed development ledger; the command also accepts an external detailed
-ledger with exact `records` entries. A detailed ledger may be paired with an
-external baseline public snapshot when preserving the existing public entry
-objects is required. The command never treats the candidate's
+ledger snapshot supplies the existing public entry objects; the command also
+accepts an external detailed ledger with exact `records` entries, and the two
+may be paired so a detailed ledger refreshes an existing snapshot. Refreshing an
+**implementation** class (`project_authored_attested`, `upstream_derived`,
+`generated_from_public_source`) always requires the detailed ledger and an exact
+record for that path: a snapshot alone cannot re-attest new bytes, because
+historical snapshots still carry entries minted by removed fail-open rules and a
+wildcard-derived claim must not follow a path onto content it never described.
+Documentation, configuration, public metadata, and synthetic fixture paths may
+still refresh from a snapshot alone while their deterministic class is unchanged.
+The command never treats the candidate's
 `assets/public_provenance_ledger.json`, policy, manifest, or export as trusted.
 The candidate's current ledger and export may differ from the trusted baseline
 because they are the two generated outputs of this operation; those bytes are
@@ -137,6 +143,15 @@ refresh their hash only when their deterministic class remains unchanged. Only
 the `sha256` values for the listed paths are changed. The output records the
 trusted and candidate tree IDs and the exact refreshed path set without
 inventing a person, DCO trailer, or provenance attestation.
+
+That `refresh` block is audit ancestry, not an identity claim about the tree
+that carries the ledger. The candidate tree it names is the tree read *before*
+the regenerated ledger and export were written, so it can never equal the tree
+that then contains them; a snapshot is instead bound to a tree by content, since
+validation requires every non-control entry hash to equal that tree's blob.
+A generated public ledger is therefore reusable as the next trusted baseline
+once its outputs are committed, and a snapshot from any other tree still fails
+closed on the first hash that disagrees.
 
 For each changed or new path, use this disposition before invoking the command:
 
