@@ -60,6 +60,12 @@ else ifeq ($(CASE),fpu-vector)
 CASE_ID = 20
 else ifeq ($(CASE),teardown-test)
 CASE_ID = 21
+else ifeq ($(CASE),io-matrix)
+CASE_ID = 22
+else ifeq ($(CASE),audio-query)
+CASE_ID = 23
+else ifeq ($(CASE),cache-alias)
+CASE_ID = 24
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -79,7 +85,7 @@ PSP_LARGE_MEMORY = 0
 endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
-LIBS = -lpspdmac -lpsppower -lpspge
+LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)

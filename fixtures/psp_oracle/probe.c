@@ -13,6 +13,7 @@
 #include <psputils.h>
 #include <pspctrl.h>
 #include <psprtc.h>
+#include <pspaudio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -47,6 +48,9 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_CTRL_CLOCK 19
 #define PSP_ORACLE_CASE_FPU_VECTOR 20
 #define PSP_ORACLE_CASE_TEARDOWN_TEST 21
+#define PSP_ORACLE_CASE_IO_MATRIX 22
+#define PSP_ORACLE_CASE_AUDIO_QUERY 23
+#define PSP_ORACLE_CASE_CACHE_ALIAS 24
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -2189,6 +2193,203 @@ static void run_teardown_test(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+static void run_io_matrix(int emulated) {
+    const char *test_path = "host0:/test_io_matrix.tmp";
+    uint32_t out[6];
+
+    /* Cell 1: io-open-create */
+    memset(out, 0xFF, sizeof(out));
+    SceUID fd = sceIoOpen(test_path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    out[0] = (uint32_t)fd;
+    emit_record_extended(emulated, "PSP-IO-001", "io-open-create",
+                         fd >= 0 ? "PASS" : "FAIL", (uint32_t)fd, out, 1);
+
+    if (fd >= 0) {
+        /* Cell 2: io-write */
+        memset(out, 0xFF, sizeof(out));
+        uint8_t wbuf[64];
+        memset(wbuf, 0x5A, sizeof(wbuf));
+        int written = sceIoWrite(fd, wbuf, sizeof(wbuf));
+        int close_rc = sceIoClose(fd);
+        out[0] = (uint32_t)written;
+        out[1] = (uint32_t)close_rc;
+        emit_record_extended(emulated, "PSP-IO-001", "io-write",
+                             (written == 64 && close_rc == 0) ? "PASS" : "FAIL",
+                             (uint32_t)written, out, 2);
+    }
+
+    /* Cell 3: io-read-verify */
+    memset(out, 0xFF, sizeof(out));
+    fd = sceIoOpen(test_path, PSP_O_RDONLY, 0777);
+    if (fd >= 0) {
+        uint8_t rbuf[64];
+        memset(rbuf, 0, sizeof(rbuf));
+        int nread = sceIoRead(fd, rbuf, sizeof(rbuf));
+        int match = 1;
+        for (int i = 0; i < 64; i++) {
+            if (rbuf[i] != 0x5A) { match = 0; break; }
+        }
+        out[0] = (uint32_t)nread;
+        out[1] = (uint32_t)match;
+        emit_record_extended(emulated, "PSP-IO-001", "io-read-verify",
+                             (nread == 64 && match) ? "PASS" : "FAIL",
+                             (uint32_t)nread, out, 2);
+
+        /* Cell 4: io-lseek */
+        memset(out, 0xFF, sizeof(out));
+        SceOff s_set = sceIoLseek(fd, 32, PSP_SEEK_SET);
+        SceOff s_cur = sceIoLseek(fd, -16, PSP_SEEK_CUR);
+        SceOff s_end = sceIoLseek(fd, 0, PSP_SEEK_END);
+        sceIoClose(fd);
+        out[0] = (uint32_t)s_set;
+        out[1] = (uint32_t)s_cur;
+        out[2] = (uint32_t)s_end;
+        emit_record_extended(emulated, "PSP-IO-001", "io-lseek",
+                             (s_set == 32 && s_cur == 16 && s_end == 64) ? "PASS" : "FAIL",
+                             (uint32_t)s_end, out, 3);
+    } else {
+        out[0] = (uint32_t)fd;
+        emit_record_extended(emulated, "PSP-IO-001", "io-read-verify", "FAIL", (uint32_t)fd, out, 1);
+    }
+
+    /* Cell 5: io-append */
+    memset(out, 0xFF, sizeof(out));
+    fd = sceIoOpen(test_path, PSP_O_WRONLY | PSP_O_APPEND, 0777);
+    if (fd >= 0) {
+        uint8_t abuf[32];
+        memset(abuf, 0xA5, sizeof(abuf));
+        int app_written = sceIoWrite(fd, abuf, sizeof(abuf));
+        sceIoClose(fd);
+
+        fd = sceIoOpen(test_path, PSP_O_RDONLY, 0777);
+        SceOff total_sz = sceIoLseek(fd, 0, PSP_SEEK_END);
+        sceIoClose(fd);
+        out[0] = (uint32_t)app_written;
+        out[1] = (uint32_t)total_sz;
+        emit_record_extended(emulated, "PSP-IO-001", "io-append",
+                             (app_written == 32 && total_sz == 96) ? "PASS" : "FAIL",
+                             (uint32_t)total_sz, out, 2);
+    } else {
+        out[0] = (uint32_t)fd;
+        emit_record_extended(emulated, "PSP-IO-001", "io-append", "FAIL", (uint32_t)fd, out, 1);
+    }
+
+    /* Cell 6: io-errors & cleanup */
+    memset(out, 0xFF, sizeof(out));
+    SceUID bad_open = sceIoOpen("host0:/__nonexistent_file_matrix_xyz__.tmp", PSP_O_RDONLY, 0777);
+    int bad_read = sceIoRead(-1, out, 4);
+    int rem_rc = sceIoRemove(test_path);
+    out[0] = (uint32_t)bad_open;
+    out[1] = (uint32_t)bad_read;
+    out[2] = (uint32_t)rem_rc;
+    emit_record_extended(emulated, "PSP-IO-001", "io-errors",
+                         (bad_open < 0 && bad_read < 0 && rem_rc == 0) ? "PASS" : "FAIL",
+                         (uint32_t)bad_open, out, 3);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+static void run_audio_query(int emulated) {
+    uint32_t out[6];
+
+    /* Cell 1: audio-ch-reserve */
+    memset(out, 0xFF, sizeof(out));
+    int res0 = sceAudioChReserve(0, 512, PSP_AUDIO_FORMAT_STEREO);
+    int rest0 = sceAudioGetChannelRestLen(0);
+    out[0] = (uint32_t)res0;
+    out[1] = (uint32_t)rest0;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-reserve",
+                         res0 == 0 ? "PASS" : "FAIL", (uint32_t)res0, out, 2);
+
+    /* Cell 2: audio-ch-release */
+    memset(out, 0xFF, sizeof(out));
+    int rel0 = sceAudioChRelease(0);
+    int rel_again = sceAudioChRelease(0);
+    out[0] = (uint32_t)rel0;
+    out[1] = (uint32_t)rel_again;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-release",
+                         (rel0 == 0 && rel_again < 0) ? "PASS" : "FAIL", (uint32_t)rel0, out, 2);
+
+    /* Cell 3: audio-out2-query */
+    memset(out, 0xFF, sizeof(out));
+    int out2_res = sceAudioOutput2Reserve(512);
+    int out2_rest = sceAudioOutput2GetRestSample();
+    int out2_rel = sceAudioOutput2Release();
+    out[0] = (uint32_t)out2_res;
+    out[1] = (uint32_t)out2_rest;
+    out[2] = (uint32_t)out2_rel;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-out2-query",
+                         (out2_res == 0 && out2_rel == 0) ? "PASS" : "FAIL",
+                         (uint32_t)out2_res, out, 3);
+
+    /* Cell 4: audio-src-reserve */
+    memset(out, 0xFF, sizeof(out));
+    int src_res = sceAudioSRCChReserve(512, 44100, 2);
+    int src_rel = sceAudioSRCChRelease();
+    out[0] = (uint32_t)src_res;
+    out[1] = (uint32_t)src_rel;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-src-reserve",
+                         (src_res == 0 && src_rel == 0) ? "PASS" : "FAIL",
+                         (uint32_t)src_res, out, 2);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+static uint32_t s_cache_buf[64] __attribute__((aligned(64)));
+
+static void run_cache_alias(int emulated) {
+    uint32_t out[6];
+    volatile uint32_t *c_ptr = s_cache_buf;
+    volatile uint32_t *u_ptr = (volatile uint32_t *)((uintptr_t)s_cache_buf | 0x40000000u);
+
+    /* Cell 1: cache-alias-init (Uncached write visible after invalidate) */
+    memset(out, 0xFF, sizeof(out));
+    u_ptr[0] = 0x11223344u;
+    sceKernelDcacheInvalidateRange((void *)c_ptr, 64);
+    uint32_t c_read1 = c_ptr[0];
+    out[0] = u_ptr[0];
+    out[1] = c_read1;
+    out[2] = (c_read1 == 0x11223344u) ? 1u : 0u;
+    emit_record_extended(emulated, "PSP-CACHE-001", "cache-alias-init",
+                         c_read1 == 0x11223344u ? "PASS" : "FAIL", c_read1, out, 3);
+
+    /* Cell 2: cache-writeback-contrast (Cached write vs uncached visibility before/after WB) */
+    memset(out, 0xFF, sizeof(out));
+    c_ptr[0] = 0x55667788u;
+    uint32_t u_before = u_ptr[0];
+    sceKernelDcacheWritebackRange((void *)c_ptr, 64);
+    uint32_t u_after = u_ptr[0];
+    out[0] = u_before;
+    out[1] = u_after;
+    out[2] = (u_after == 0x55667788u) ? 1u : 0u;
+    emit_record_extended(emulated, "PSP-CACHE-001", "cache-writeback-contrast",
+                         u_after == 0x55667788u ? "PASS" : "FAIL", u_after, out, 3);
+
+    /* Cell 3: cache-inval-contrast (Uncached write vs stale cached read before/after inval) */
+    memset(out, 0xFF, sizeof(out));
+    u_ptr[0] = 0x99AABBCCu;
+    uint32_t c_stale = c_ptr[0];
+    sceKernelDcacheInvalidateRange((void *)c_ptr, 64);
+    uint32_t c_fresh = c_ptr[0];
+    out[0] = c_stale;
+    out[1] = c_fresh;
+    out[2] = (c_fresh == 0x99AABBCCu) ? 1u : 0u;
+    emit_record_extended(emulated, "PSP-CACHE-001", "cache-inval-contrast",
+                         c_fresh == 0x99AABBCCu ? "PASS" : "FAIL", c_fresh, out, 3);
+
+    /* Cell 4: cache-wball (Writeback all lines) */
+    memset(out, 0xFF, sizeof(out));
+    c_ptr[1] = 0xDEADBEEFu;
+    sceKernelDcacheWritebackAll();
+    uint32_t u_wball = u_ptr[1];
+    out[0] = u_wball;
+    out[1] = (u_wball == 0xDEADBEEFu) ? 1u : 0u;
+    emit_record_extended(emulated, "PSP-CACHE-001", "cache-wball",
+                         u_wball == 0xDEADBEEFu ? "PASS" : "FAIL", u_wball, out, 2);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -2297,6 +2498,12 @@ int main(int argc, char *argv[]) {
     run_fpu_vector(emulated, boot_fcr31);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+    run_io_matrix(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+    run_audio_query(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+    run_cache_alias(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
