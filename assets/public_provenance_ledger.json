@@ -715,7 +715,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "57d9d11ba0587e39c1ecf7f2cd14e8a057786cbf52e119708aa09a3e894ee9bf"
+      "sha256": "581c074a0231929fe12f7cd709d05dc23a0c5531777426462508a5c5c1016a6c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -5253,12 +5253,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "public-export-builder",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ed43f2bf5440677bc491f201334fe6f83579a2b22b434828ca0d4d7282f5ea37"
+      "sha256": "a9d43f70a56d5908c29091c73abfccec1fe75ca08a70e9e96e3d0715c9d1d91c"
     },
     {
       "path": "tools/ci_paths.py",
@@ -5497,12 +5497,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "sbom-generation",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc7786f58aceaaf6559758971ba1dbfcf08b362f77bcce785b84067aa997f324"
+      "sha256": "be517f2fa2a501d1033238f755c94e1ea92840c1209eb767b920e37c18ad4458"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -6208,12 +6208,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-audit-gate",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f8cbcd18613d387a62d52ad23215e9314c655be4bd87ee36a2e4aeda8bf044b"
+      "sha256": "72136478f586986a93511503cd154ba93994cf9081afb516debfa6a72b4c1a6a"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -6229,12 +6229,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "shader-embed-generator",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a5ef0d99a3faf7f80cf5a6de753f2f8a774550930aca985a08b3c29ec4272154"
+      "sha256": "c8d36eea74cd6643197b1c314da1293e5189126b97fab48fe397b8412b3eceae"
     },
     {
       "path": "tools/sync_drift_check.py",
@@ -7107,7 +7107,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "5c10ef5eb39c062cbfa901c80e6a37c5c4a253afda471cbc3ce7db5714bc1090"
+      "sha256": "fcd1793ca4b4cdc0af6a14cd7ccbab6ccafeb870d823f23926dfb6d9c8b13974"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -7617,14 +7617,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "91d0411842fe8dd06b6212fc0dcdb2e968b5d8e4",
-    "candidate_tree": "7b4b37c5aa48ce93ebc412f4d4b168c13d570838",
+    "trusted_tree": "7ad12e88ce9ae80328147fe0b22e9b5409472e99",
+    "candidate_tree": "4e75c786a253af29b1b747b54aa643057a9a4543",
     "refreshed_paths": [
-      "CLAUDE.md",
       "docs/CI.md",
-      "docs/PUBLICATION_READINESS.md",
-      "tools/ci_paths.py",
-      "tools/test_ci_paths.py"
+      "tools/build_public_export.py",
+      "tools/generate_sbom.py",
+      "tools/publish_audit.py",
+      "tools/shader_embed.py",
+      "tools/test_publish_audit.py"
     ]
   }
 }
