@@ -1938,6 +1938,11 @@ static uint32_t fpu_get_fcr31(void) {
 static void fpu_set_fcr31(uint32_t v) {
     __asm__ volatile("ctc1 %0, $31" ::"r"(v));
 }
+/* Traps OFF, RM=RN: the only FCR31 state FP arithmetic may run under here.
+   The boot FCR31 is never trusted (it may carry exception enables). */
+static void fpu_quiet(void) {
+    fpu_set_fcr31(0);
+}
 /* PINNED: cvt.w.s honors RM. Same FPR in/out is legal. */
 static int32_t fpu_cvt_w_s(float f) {
     float w = f;
@@ -1965,8 +1970,7 @@ static float u32_f32(uint32_t u) {
     return f;
 }
 static void run_fpu_vector(int emulated) {
-    static const uint32_t inputs[12] = {
-        0x3fc00000u, /* 1.5 */
+    static const uint32_t inputs[12] = {        0x3fc00000u, /* 1.5 */
         0x40200000u, /* 2.5 */
         0xbfc00000u, /* -1.5 */
         0xc0200000u, /* -2.5 */
@@ -1980,6 +1984,13 @@ static void run_fpu_vector(int emulated) {
         0x80000000u, /* -0 */
     };
     const uint32_t saved_fcr = fpu_get_fcr31();
+    {
+        /* Diagnostic: the boot FCR31 (enables/RM/FS as the process found
+           them). No FP op runs under it. */
+        const uint32_t out[] = {saved_fcr};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-boot-fcr31",
+                             "PASS", saved_fcr, out, 1);
+    }
     /* PINNED cells: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
     for (uint32_t rm = 0; rm < 4; rm++) {
         fpu_set_fcr31(rm);
@@ -1996,6 +2007,7 @@ static void run_fpu_vector(int emulated) {
     /* COMPILER cell: C-cast float->int (compiler selects trunc sequence). */
     {
         uint32_t out[12];
+        fpu_quiet();
         for (uint32_t i = 0; i < 12; i++) {
             volatile float vf = u32_f32(inputs[i]);
             out[i] = (uint32_t)(int32_t)vf;
@@ -2008,6 +2020,7 @@ static void run_fpu_vector(int emulated) {
         static const int32_t ints[6] = {0, 1, -1, 0x7fffffff, (int32_t)0x80000000,
                                         123456789};
         uint32_t out[6];
+        fpu_quiet();
         for (uint32_t i = 0; i < 6; i++) {
             out[i] = f32_bits(fpu_cvt_s_w(ints[i]));
         }
@@ -2070,6 +2083,7 @@ static void run_fpu_vector(int emulated) {
         volatile float pz = 0.0f;
         volatile float nz = u32_f32(0x80000000u);
         volatile float inf = u32_f32(0x7f800000u);
+        fpu_quiet();
         const uint32_t out[] = {
             f32_bits(pz + nz), f32_bits(nz + nz), f32_bits(1.0f / pz),
             f32_bits(1.0f / nz), f32_bits(pz * inf), f32_bits(nz * inf),
@@ -2081,6 +2095,7 @@ static void run_fpu_vector(int emulated) {
     {
         static const uint32_t nans[3] = {0x7fc00001u, 0x7fffffffu, 0xffc00001u};
         uint32_t out[6];
+        fpu_quiet();
         for (uint32_t i = 0; i < 3; i++) {
             volatile float vn = u32_f32(nans[i]);
             volatile float vo = 1.0f;
