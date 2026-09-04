@@ -36,10 +36,13 @@ class TestPublicCandidate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_raw:
             root = Path(temp_raw)
             for required in publish_audit.REQUIRED_PATHS:
-                (root / required).write_text(required, encoding="utf-8")
+                # Final newline and explicit LF: this fixture is asserted to
+                # produce a clean audit, and text hygiene is part of clean.
+                (root / required).write_text(
+                    required + "\n", encoding="utf-8", newline="\n")
             manifest = root / "assets" / "release_manifest.json"
             manifest.parent.mkdir()
-            manifest.write_text('{"components": []}\n', encoding="utf-8")
+            manifest.write_text('{"components": []}\n', encoding="utf-8", newline="\n")
             # The gate fails closed without a canonical policy and rejects any path
             # the policy does not classify, so this fixture declares its own.
             import publication_policy
@@ -59,12 +62,14 @@ class TestPublicCandidate(unittest.TestCase):
                 ),
             }
             policy_path = root / "_policy.json"
-            policy_path.write_text(json.dumps(document), encoding="utf-8")
+            policy_path.write_text(
+                json.dumps(document) + "\n", encoding="utf-8", newline="\n")
             export_path = root / "PUBLIC_EXPORT.json"
             export_path.write_text(
                 json.dumps({"profile": document["name"],
-                            "policy_sha256": publication_policy.canonical_digest(document)}),
+                            "policy_sha256": publication_policy.canonical_digest(document)}) + "\n",
                 encoding="utf-8",
+                newline="\n",
             )
 
             entries = publish_audit._get_filesystem_entries(root)
