@@ -137,13 +137,17 @@ static PHASE_MAYBE_UNUSED int return_threshold_entry(SceSize args, void *argp) {
 static PHASE_MAYBE_UNUSED int sleep_entry(SceSize args, void *argp) { (void)args; (void)argp; sceKernelSleepThread(); return 0x55; }
 
 // Helper to get thread status via ReferThreadStatus safely bounded.
-// MUST zero-fill: the firmware reads fields of this struct beyond `size`
-// (HARDWARE_MEASURED 2026-09-03: a 0xA5 pre-fill deterministically crashed
-// sceThreadManager with a data bus error at the same EPC across reboot, while
-// the zero-filled identical call succeeds). The buffer is our own allocation,
-// so this can never read outside it. Consequence: a firmware-unpopulated
-// field reads 0; population is established by VARIATION across requests with
-// different inputs (e.g. attr across CT-A*), never by poison fill.
+// Zero-fills: the conservative choice kept after the 2026-09-03 campaign.
+// (An earlier 0xA5 pre-fill was briefly suspected of crashing firmware, but
+// the decisive same-binary back-to-back test REFUTED that: the crash follows
+// the SECOND thread-creating launch of any boot regardless of fill or
+// binary — ExitGame-caught teardown poisons freed thread slots, and the next
+// launch's ThreadMan mutation null-derefs. See reports/psp-hardware-gap-
+// closure-2026-09-03/03_THREADING_ORACLE.md. Zero-fill stays because it is
+// the proven-safe path, not because poison was proven guilty.)
+// The buffer is our own allocation, so this can never read outside it.
+// Consequence: a firmware-unpopulated field reads 0; population is
+// established by VARIATION across requests with different inputs.
 static PHASE_MAYBE_UNUSED int try_refer_status(SceUID thid, SceKernelThreadInfo *info, uint32_t *out_status, uint32_t *out_waittype) {
     memset(info, 0, sizeof(*info));
     info->size = sizeof(*info);
