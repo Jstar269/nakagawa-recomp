@@ -1605,6 +1605,10 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
     const int emulated = emulator_present();
+    /* Unbuffered stdout so a probe-induced exception stays attributable to
+       the exact record instead of losing buffered output. Zero semantic
+       effect on emitted records. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     char line[320];
 
     /* uint32_t is `unsigned long` in the PSP newlib ABI, so %x must be fed an

@@ -702,6 +702,10 @@ int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
     g_emulated = is_emulator();
     pspDebugScreenInit();
+    /* Unbuffered stdout: every record reaches the host link immediately, so a
+       probe-induced exception stays attributable to the exact case instead of
+       losing all buffered records. Zero semantic effect. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     uint32_t run_id = (uint32_t)sceKernelGetSystemTimeLow();
     emit_meta(run_id);
 
