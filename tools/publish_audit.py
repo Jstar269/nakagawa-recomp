@@ -852,6 +852,56 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
     return findings
 
 
+#: Text bytes the repository governs as UTF-8 without BOM, LF, final newline.
+#: `.gitattributes` normalises on commit, so the index is clean by construction
+#: and these findings fire almost entirely in worktree audits -- which is the
+#: point. A CRLF-polluted checkout produces content hashes that disagree with the
+#: provenance ledger, and the resulting wall of PROVENANCE_CONTENT_MISMATCH says
+#: nothing about the real cause. Naming the cause turns a confusing hash failure
+#: into a one-line diagnosis.
+TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg",
+                                          ".gif", ".ico", ".pdf", ".zip", ".ttf",
+                                          ".otf", ".woff", ".woff2", ".spv", ".wav"})
+
+
+def check_text_hygiene(content_map: dict[str, tuple[bytes | None, str | None]]) -> list[Finding]:
+    """Flag encoding and line-ending drift in LF-governed tracked text.
+
+    Deliberately conservative: anything that looks binary, or carries an
+    exempt suffix, is skipped entirely rather than risk a false positive that
+    would train readers to ignore this check.
+    """
+    findings: list[Finding] = []
+    for path in sorted(content_map):
+        data, _ = content_map[path]
+        if not data:
+            continue
+        if PurePosixPath(path).suffix.lower() in TEXT_HYGIENE_EXEMPT_SUFFIXES:
+            continue
+        if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            findings.append(Finding(
+                "TEXT_ENCODING_UTF16", path,
+                "file is UTF-16; repository text is UTF-8 without BOM"))
+            continue
+        if data[:3] == b"\xef\xbb\xbf":
+            findings.append(Finding(
+                "TEXT_ENCODING_BOM", path,
+                "file begins with a UTF-8 BOM; repository text is UTF-8 without BOM"))
+            continue
+        if _is_binary_bytes(data):
+            continue
+        if b"\r\n" in data:
+            findings.append(Finding(
+                "TEXT_LINE_ENDING_CRLF", path,
+                "file contains CRLF; repository text is LF (.gitattributes eol=lf). "
+                "A writer used a host default instead of an explicit LF newline"))
+        if not data.endswith(b"\n"):
+            findings.append(Finding(
+                "TEXT_FINAL_NEWLINE", path,
+                "text file does not end with a newline"))
+    return findings
+
+
 def check_collisions(paths: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     case_map: dict[str, list[str]] = {}
@@ -1540,6 +1590,8 @@ def audit_entries_with_semantics(
         if policy is not None:
             findings.extend(_policy_manifest_findings(policy, manifest_map))
 
+    findings.extend(check_text_hygiene(content_map))
+
     lfs_patterns = _read_git_lfs_attributes(repo_root)
 
     # Check for orphan manifest paths
@@ -2174,7 +2226,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.manifest_out:
         args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
-        args.manifest_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        args.manifest_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote audit manifest to {args.manifest_out}")
 
     if args.csv_out:

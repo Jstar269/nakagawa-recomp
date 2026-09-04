@@ -378,17 +378,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.spdx_out:
         args.spdx_out.parent.mkdir(parents=True, exist_ok=True)
-        args.spdx_out.write_text(json.dumps(spdx23_doc, indent=2) + "\n", encoding="utf-8")
+        args.spdx_out.write_text(json.dumps(spdx23_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote SPDX 2.3 SBOM to {args.spdx_out}")
 
     if args.spdx3_out:
         args.spdx3_out.parent.mkdir(parents=True, exist_ok=True)
-        args.spdx3_out.write_text(json.dumps(spdx301_doc, indent=2) + "\n", encoding="utf-8")
+        args.spdx3_out.write_text(json.dumps(spdx301_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote SPDX 3.0.1 JSON-LD SBOM to {args.spdx3_out}")
 
     if args.cyclonedx_out:
         args.cyclonedx_out.parent.mkdir(parents=True, exist_ok=True)
-        args.cyclonedx_out.write_text(json.dumps(cyclonedx_doc, indent=2) + "\n", encoding="utf-8")
+        args.cyclonedx_out.write_text(json.dumps(cyclonedx_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote CycloneDX 1.5 SBOM to {args.cyclonedx_out}")
 
     if not (args.spdx_out or args.spdx3_out or args.cyclonedx_out):
