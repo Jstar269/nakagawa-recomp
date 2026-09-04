@@ -3,7 +3,7 @@
 
 BUILD_DIR ?= build
 TARGET = $(BUILD_DIR)/phaseb
-OBJS = $(BUILD_DIR)/phaseb.o
+OBJS = $(BUILD_DIR)/phaseb.o $(BUILD_DIR)/mutex_imports.o
 PSP_EBOOT = $(BUILD_DIR)/EBOOT.PBP
 PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 
@@ -16,7 +16,7 @@ BUILD_PRX = 1
 PSP_FW_VERSION = 500
 PSP_EBOOT_TITLE = Nakagawa Phase-B Money Launch
 PSP_EBOOT_ICON = NULL
-LIBS = -lpspge -lpsppower -lpspthreadman_kernel_660
+LIBS = -lpspge -lpsppower
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -26,6 +26,9 @@ include $(PSPSDK)/lib/build.mak
 
 $(BUILD_DIR)/phaseb.o: phaseb.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/mutex_imports.o: mutex_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 .PHONY: EBOOT.PBP
 EBOOT.PBP: $(PSP_EBOOT)

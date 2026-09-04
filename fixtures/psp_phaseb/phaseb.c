@@ -4,11 +4,11 @@
 // Phase-B money binary: exit/delete repeat + heavyweight mutex matrix
 // + nested-callback stack contract + GE callback stack contract.
 // One launch, in-process sequential execution.
-// Fixed order safest-first:
-//   1. Section A: exit/delete repeat (12 cells, proven thread lifecycle logic)
-//   2. Section B: heavyweight mutex matrix (19 cells, synchronization & wait queues)
-//   3. Section C: nested user callback stack contract (6 cells, stack bounds & registers)
-//   4. Section D: GE callback stack contract (4 cells, hardware display list callback)
+// Fixed order safest-first (zero-thread tests first, multi-thread last):
+//   1. Section C: nested user callback stack contract (6 cells, stack bounds & registers)
+//   2. Section D: GE callback stack contract (4 cells, hardware display list callback)
+//   3. Section B: heavyweight mutex matrix (19 cells, bounded helper threads)
+//   4. Section A: exit/delete repeat (12 cells, thread lifecycle stress)
 // Unbuffered stdout + file log (host0:/phaseb_log.txt) ensures every completed
 // cell is banked even if a subsequent experiment faults.
 // Creates threads: exactly ONE thread-creating launch per boot, always LAST.
@@ -64,7 +64,7 @@ typedef struct {
     int     numWaitThreads;
 } SceKernelMutexInfo;
 
-/* Prototypes provided by libpspthreadman_kernel_660 or CFW import resolver */
+/* Prototypes provided by ThreadManForUser */
 SceUID sceKernelCreateMutex(const char *name, SceUInt attr, int initialCount, void *options);
 int    sceKernelDeleteMutex(SceUID uid);
 int    sceKernelLockMutex(SceUID uid, int count, unsigned int *pTimeout);
@@ -75,6 +75,11 @@ int    sceKernelCancelMutex(SceUID uid, int newCount, int *numWaitThreads);
 int    sceKernelReferMutexStatus(SceUID uid, SceKernelMutexInfo *info);
 
 static int g_emulated = 0;
+
+static int phaseb_wait_thread_end(SceUID thid, SceUInt usec) {
+    SceUInt to = usec;
+    return sceKernelWaitThreadEnd(thid, &to);
+}
 
 static int phaseb_emulator_present(void) {
     uint32_t flag = 0;
@@ -172,7 +177,7 @@ static void phaseb_exit_cell(const char *case_id, uint32_t status, uint32_t meth
         phaseb_test(case_id, "FAIL", out[5], out, 6);
         return;
     }
-    out[0] = (uint32_t)sceKernelWaitThreadEnd(thid, NULL);
+    out[0] = (uint32_t)phaseb_wait_thread_end(thid, 500000);
     SceKernelThreadInfo info;
     memset(&info, 0, sizeof(info));
     info.size = sizeof(info);
@@ -183,7 +188,7 @@ static void phaseb_exit_cell(const char *case_id, uint32_t status, uint32_t meth
     out[3] = (uint32_t)sceKernelDeleteThread(thid);
     out[4] = (uint32_t)sceKernelStartThread(thid, 0, NULL);
     if (method != ED_METHOD_EXITDELETE && (int)out[4] == 0) {
-        sceKernelWaitThreadEnd(thid, NULL);
+        phaseb_wait_thread_end(thid, 500000);
         sceKernelDeleteThread(thid);
     }
     phaseb_test(case_id, "PASS", out[0], out, 6);
@@ -406,7 +411,7 @@ static void phaseb_run_section_b(void) {
     g_helper_rc = 0;
     SceUID th_try = sceKernelCreateThread("th_try", helper_trylock_entry, 32, 0x1000, 0, NULL);
     sceKernelStartThread(th_try, 0, NULL);
-    sceKernelWaitThreadEnd(th_try, NULL);
+    phaseb_wait_thread_end(th_try, 500000);
     sceKernelDeleteThread(th_try);
     out[0] = (uint32_t)g_helper_rc;
     phaseb_test("MTX-TRY-FAIL", "PASS", (uint32_t)g_helper_rc, out, 1);
@@ -420,7 +425,7 @@ static void phaseb_run_section_b(void) {
     g_helper_rc = 0;
     SceUID th_to0 = sceKernelCreateThread("th_to0", helper_timeout_zero_entry, 32, 0x1000, 0, NULL);
     sceKernelStartThread(th_to0, 0, NULL);
-    sceKernelWaitThreadEnd(th_to0, NULL);
+    phaseb_wait_thread_end(th_to0, 500000);
     sceKernelDeleteThread(th_to0);
     out[0] = (uint32_t)g_helper_rc;
     phaseb_test("MTX-TO-ZERO", "PASS", (uint32_t)g_helper_rc, out, 1);
@@ -433,7 +438,7 @@ static void phaseb_run_section_b(void) {
     g_helper_rc = 0;
     SceUID th_tof = sceKernelCreateThread("th_tof", helper_timeout_finite_entry, 32, 0x1000, 0, NULL);
     sceKernelStartThread(th_tof, 0, NULL);
-    sceKernelWaitThreadEnd(th_tof, NULL);
+    phaseb_wait_thread_end(th_tof, 500000);
     sceKernelDeleteThread(th_tof);
     out[0] = (uint32_t)g_helper_rc;
     phaseb_test("MTX-TO-FINITE", "PASS", (uint32_t)g_helper_rc, out, 1);
@@ -449,7 +454,7 @@ static void phaseb_run_section_b(void) {
     sceKernelDelayThread(5000); /* 5 ms delay to ensure helper is queued */
     int num_waiting = 0;
     int rc_cancel = sceKernelCancelMutex(m_can, 0, &num_waiting);
-    sceKernelWaitThreadEnd(th_can, NULL);
+    phaseb_wait_thread_end(th_can, 500000);
     sceKernelDeleteThread(th_can);
     out[0] = (uint32_t)rc_cancel;
     out[1] = (uint32_t)g_helper_rc;
@@ -466,7 +471,7 @@ static void phaseb_run_section_b(void) {
     sceKernelStartThread(th_del, 0, NULL);
     sceKernelDelayThread(5000);
     int rc_del = sceKernelDeleteMutex(m_del);
-    sceKernelWaitThreadEnd(th_del, NULL);
+    phaseb_wait_thread_end(th_del, 500000);
     sceKernelDeleteThread(th_del);
     out[0] = (uint32_t)rc_del;
     out[1] = (uint32_t)g_helper_rc;
@@ -485,8 +490,8 @@ static void phaseb_run_section_b(void) {
     sceKernelStartThread(th_f2, 0, NULL);
     sceKernelDelayThread(2000);
     sceKernelUnlockMutex(m_fifo, 1);
-    sceKernelWaitThreadEnd(th_f1, NULL);
-    sceKernelWaitThreadEnd(th_f2, NULL);
+    phaseb_wait_thread_end(th_f1, 500000);
+    phaseb_wait_thread_end(th_f2, 500000);
     sceKernelDeleteThread(th_f1);
     sceKernelDeleteThread(th_f2);
     out[0] = (uint32_t)g_helper_wake_order; /* Expected: waiter1=1, waiter2=2 -> 0x0201 */
@@ -507,8 +512,8 @@ static void phaseb_run_section_b(void) {
     sceKernelStartThread(th_p2, 0, NULL);
     sceKernelDelayThread(2000);
     sceKernelUnlockMutex(m_prio, 1);
-    sceKernelWaitThreadEnd(th_p2, NULL);
-    sceKernelWaitThreadEnd(th_p1, NULL);
+    phaseb_wait_thread_end(th_p2, 500000);
+    phaseb_wait_thread_end(th_p1, 500000);
     sceKernelDeleteThread(th_p1);
     sceKernelDeleteThread(th_p2);
     out[0] = (uint32_t)g_helper_wake_order; /* Higher priority waiter2 wakes first -> 0x0102 */
@@ -773,14 +778,6 @@ int main(int argc, char *argv[]) {
 
     phaseb_meta();
 
-    phaseb_emit("# --- BEGIN SECTION A: EXIT/DELETE REPEAT ---\n");
-    phaseb_run_section_a();
-    phaseb_emit("# --- END SECTION A: EXIT/DELETE REPEAT ---\n");
-
-    phaseb_emit("# --- BEGIN SECTION B: HEAVYWEIGHT MUTEX ---\n");
-    phaseb_run_section_b();
-    phaseb_emit("# --- END SECTION B: HEAVYWEIGHT MUTEX ---\n");
-
     phaseb_emit("# --- BEGIN SECTION C: NESTED CALLBACK STACK ---\n");
     phaseb_run_section_c();
     phaseb_emit("# --- END SECTION C: NESTED CALLBACK STACK ---\n");
@@ -788,6 +785,14 @@ int main(int argc, char *argv[]) {
     phaseb_emit("# --- BEGIN SECTION D: GE CALLBACK STACK ---\n");
     phaseb_run_section_d();
     phaseb_emit("# --- END SECTION D: GE CALLBACK STACK ---\n");
+
+    phaseb_emit("# --- BEGIN SECTION B: HEAVYWEIGHT MUTEX ---\n");
+    phaseb_run_section_b();
+    phaseb_emit("# --- END SECTION B: HEAVYWEIGHT MUTEX ---\n");
+
+    phaseb_emit("# --- BEGIN SECTION A: EXIT/DELETE REPEAT ---\n");
+    phaseb_run_section_a();
+    phaseb_emit("# --- END SECTION A: EXIT/DELETE REPEAT ---\n");
 
     uint32_t summary_out[1] = {41u};
     phaseb_test("PHASEB-COMPLETE", "PASS", 0, summary_out, 1);
