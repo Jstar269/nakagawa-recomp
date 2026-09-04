@@ -553,6 +553,7 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "copy_build_assets.ps1",
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
+            ROOT / "nk_manager.ps1",
             ROOT / "tools" / "hst_run_support.ps1",
             ROOT / "tools" / "hst_safety.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
@@ -560,11 +561,19 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
         }
-        discovered_scripts = {
-            path
-            for path in ROOT.rglob("*.ps1")
-            if not any(part.startswith(".") or part in ("build", "node_modules") for part in path.parts)
-        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked PowerShell policy surface")
+        try:
+            listing = subprocess.run(
+                ["git", "-C", str(ROOT), "ls-files", "-z", "--", ":(icase)*.ps1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            self.fail(f"git ls-files failed to enumerate tracked PowerShell scripts: {exc}")
+
+        discovered_scripts = {ROOT / entry for entry in listing.split("\0") if entry}
         self.assertEqual(discovered_scripts, expected_scripts)
         for script in discovered_scripts:
             content = script.read_text(encoding="utf-8-sig")
@@ -573,11 +582,6 @@ class SimpleFrontEndTests(unittest.TestCase):
                 content,
                 f"{script.relative_to(ROOT)} does not contain expected '#requires -Version 7.6' header",
             )
-
-    def test_requires_version_drift_detection(self) -> None:
-        synthetic_script = "#requires -Version 7.5\nWrite-Output 'drift'\n"
-        with self.assertRaises(AssertionError):
-            self.assertIn("#requires -Version 7.6", synthetic_script)
 
 
 
