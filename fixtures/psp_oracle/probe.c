@@ -916,21 +916,26 @@ static void run_dmac_invalid_tail(int emulated) {
        false (SKIP). A held-block-adjacent check is deliberately NOT used
        here: measured 4/4, the allocator grants the exact end of a held
        block while granting nothing there clean (adjacency artifact). */
+    const uint32_t free_before = (uint32_t)sceKernelMaxFreeMemSize();
     const SceUID probe_end = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-endprobe", PSP_SMEM_Addr, 0x100,
         (void *)DMAC_BASELINE_USER_END);
+    const uint32_t free_after = (uint32_t)sceKernelMaxFreeMemSize();
     if (probe_end >= 0) {
         /* Granted somewhere: only a grant AT the end falsifies the premise.
-           An elsewhere-grant means the end itself is not free (proceed). */
+           An elsewhere-grant means the end itself is not free (proceed).
+           The free-pool delta arbitrates heap-squat vs genuinely-free: a
+           real grant consumes 0x100 from the pool. */
         uint8_t *const end_head =
             (uint8_t *)sceKernelGetBlockHeadAddr(probe_end);
         const uint32_t granted_at_end =
             (uint32_t)((uintptr_t)end_head == (uintptr_t)DMAC_BASELINE_USER_END);
         sceKernelFreePartitionMemory(probe_end);
         if (granted_at_end) {
-            const uint32_t out[] = {0, DMAC_BASELINE_USER_END};
+            const uint32_t out[] = {0, DMAC_BASELINE_USER_END, free_before,
+                                    free_after};
             emit_record_extended(emulated, "PSP-DMAC-001",
-                                 DMAC_INVALID_CASE_ID, "SKIP", 1u, out, 2);
+                                 DMAC_INVALID_CASE_ID, "SKIP", 1u, out, 4);
             return;
         }
     }
