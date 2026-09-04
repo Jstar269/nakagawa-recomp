@@ -7071,7 +7071,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "5d729a137d630dc5344e8b062b8516a58920e08832f7e7e74926359403111df5"
+      "sha256": "ee39c2bda54b96c61615fe55d695eac3b96584cc6acf39533ceaf02e4b673db5"
     },
     {
       "path": "tools/test_public_ci_wiring.py",
@@ -7618,13 +7618,14 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7ad12e88ce9ae80328147fe0b22e9b5409472e99",
-    "candidate_tree": "4e75c786a253af29b1b747b54aa643057a9a4543",
+    "candidate_tree": "5fab6f4320e7aaaeadc517324f2c2f7f4c1ec895",
     "refreshed_paths": [
       "docs/CI.md",
       "tools/build_public_export.py",
       "tools/generate_sbom.py",
       "tools/publish_audit.py",
       "tools/shader_embed.py",
+      "tools/test_public_candidate.py",
       "tools/test_publish_audit.py"
     ]
   }
