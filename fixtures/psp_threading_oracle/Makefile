@@ -30,6 +30,11 @@ $(error unsupported CASE=$(CASE); valid: all ct-attr ct-prio-opt st-args st-life
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_THREADING_CASE=$(CASE_ID)
+# The installed PSPSDK exposes SceKernelThreadInfo.attr and .stackSize, so the
+# harness reads them as observed firmware output (Stage 9). try_refer_status
+# pre-fills with a sentinel, so a field the firmware does not populate reads
+# 0xA5A5A5A5 rather than a fabricated zero.
+CFLAGS += -DPSP_THREAD_INFO_HAS_ATTR -DPSP_THREAD_INFO_HAS_STACKSIZE
 ifdef PSP_THREADING_FULL
 CFLAGS += -DPSP_THREADING_FULL=1
 endif

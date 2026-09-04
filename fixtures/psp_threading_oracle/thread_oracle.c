@@ -136,9 +136,12 @@ static PHASE_MAYBE_UNUSED int return_negative_entry(SceSize args, void *argp) { 
 static PHASE_MAYBE_UNUSED int return_threshold_entry(SceSize args, void *argp) { (void)args; (void)argp; return (int)0x80000000; }
 static PHASE_MAYBE_UNUSED int sleep_entry(SceSize args, void *argp) { (void)args; (void)argp; sceKernelSleepThread(); return 0x55; }
 
-// Helper to get thread status via ReferThreadStatus safely bounded
+// Helper to get thread status via ReferThreadStatus safely bounded.
+// Pre-fills with a sentinel so fields the firmware leaves untouched are
+// distinguishable from firmware-written zeros. The buffer is our own
+// allocation, so this can never read outside it.
 static PHASE_MAYBE_UNUSED int try_refer_status(SceUID thid, SceKernelThreadInfo *info, uint32_t *out_status, uint32_t *out_waittype) {
-    memset(info, 0, sizeof(*info));
+    memset(info, 0xA5, sizeof(*info));
     info->size = sizeof(*info);
     int ret = sceKernelReferThreadStatus(thid, info);
     if (ret == 0) {
