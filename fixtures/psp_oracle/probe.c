@@ -926,16 +926,23 @@ static void run_dmac_invalid_tail(int emulated) {
     }
     setup_mask |= 2u;
 
-    /* This allocation is an observational safety gate.  If partition 2 can
-       allocate at or above the assumed end, no invalid DMA call is issued. */
+    /* This allocation is an observational safety gate. A grant AT the
+       requested end address proves the end assumption wrong (SKIP). A grant
+       ELSEWHERE, or a rejection, proves the requested end is not free, so
+       the end holds and the measurement may proceed. The address check is
+       load-bearing: an unverified grant would make the SKIP vacuous. */
     const SceUID tail_block = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-tail-check", PSP_SMEM_Addr, 0x100,
         (void *)DMAC_BASELINE_USER_END);
     if (tail_block >= 0) {
+        uint8_t *const tail_head =
+            (uint8_t *)sceKernelGetBlockHeadAddr(tail_block);
         sceKernelFreePartitionMemory(tail_block);
-        sceKernelFreePartitionMemory(block);
-        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
-        return;
+        if ((uintptr_t)tail_head == (uintptr_t)DMAC_BASELINE_USER_END) {
+            sceKernelFreePartitionMemory(block);
+            emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+            return;
+        }
     }
     setup_mask |= 4u;
 
