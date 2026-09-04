@@ -46,6 +46,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DMAC_SURVEY 18
 #define PSP_ORACLE_CASE_CTRL_CLOCK 19
 #define PSP_ORACLE_CASE_FPU_VECTOR 20
+#define PSP_ORACLE_CASE_TEARDOWN_TEST 21
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -2109,6 +2110,22 @@ static void run_fpu_vector(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
+/* Teardown-method experiment: does ending main via sceKernelExitDeleteThread
+   (instead of returning into sceKernelExitGame) avoid poisoning the boot's
+   thread table for the NEXT launch? Main-thread only, no other threads.
+   Emits one record, then ExitDeleteThread(0). The DIAGNOSIS is the next
+   launch (any binary): loads+passes => teardown clean; startup-crash =>
+   same poison. NEVER run anything after this except the diagnostic. */
+static void run_teardown_test(int emulated) {
+    const uint32_t self = (uint32_t)sceKernelGetThreadId();
+    const uint32_t out[] = {self};
+    emit_record_extended(emulated, "PSP-TEARDOWN-001", "exitdelete-main",
+                         "PASS", self, out, 1);
+    sceKernelExitDeleteThread(0);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -2209,6 +2226,8 @@ int main(int argc, char *argv[]) {
     run_ctrl_clock(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
     run_fpu_vector(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
+    run_teardown_test(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

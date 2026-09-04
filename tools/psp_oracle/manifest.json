@@ -221,6 +221,25 @@
       "implementation_note": "CASE=thread-exit-delete (PSP_ORACLE_CASE 17). Twelve cells in one launch; creates threads so it is a money-launch class under the one-thread-launch-per-boot rule."
     },
     {
+      "id": "PSP-TEARDOWN-001",
+      "status": "implemented",
+      "group": "kernel",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceKernelGetThreadId",
+        "sceKernelExitDeleteThread"
+      ],
+      "case_ids": [
+        "exitdelete-main"
+      ],
+      "invariant": "the diagnosis is the NEXT launch on the same boot: loads+passes means ExitDelete-main teardown avoids the thread-table poison",
+      "issues": [],
+      "risk": "low-medium; main-thread self-delete is outside all prior runs; the following diagnostic launch decides",
+      "reset": "unknown until measured: ExitDeleteThread on main may or may not return to PSPLINK",
+      "implementation_note": "CASE=teardown-test (PSP_ORACLE_CASE 21). Run nothing after it except one diagnostic launch."
+    },
+    {
       "id": "PSP-IO-001",
       "status": "planned",
       "group": "io",

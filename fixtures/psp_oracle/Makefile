@@ -58,6 +58,8 @@ else ifeq ($(CASE),ctrl-clock)
 CASE_ID = 19
 else ifeq ($(CASE),fpu-vector)
 CASE_ID = 20
+else ifeq ($(CASE),teardown-test)
+CASE_ID = 21
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
