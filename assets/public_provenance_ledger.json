@@ -841,7 +841,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f868e6af283994d34136ec050c4d94cdf9895794f9687f703b18c675d28addd9"
+      "sha256": "ba640ba24280f4bb9ab5e79aab33b57a732ed9dccd18ea85e49983621c0a2476"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -1317,7 +1317,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "dbfd9512f54bad9902dfc82133588368ae837c26c62a6fe6fb01a4d1346d3d60"
+      "sha256": "34b09fee2b68a6d727e194ced2d069359c37bec62a7befd9fd22dedb3a7e48b6"
     },
     {
       "path": "interface/package.json",
@@ -5956,7 +5956,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81669a588945630b282eb8983c92ca11a248832e40d5acbe623353885d9bac95"
+      "sha256": "84b97f876d4b432673920edd7028270d13426425639cb7db8bbb1bc6fb01a7f7"
     },
     {
       "path": "tools/prxload.py",
@@ -6981,7 +6981,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b378471be412d1aeafedf96a43fa93d78cb9bdd06b5b94fce3ece92af0885420"
+      "sha256": "9737d6fc23de72ed16776fc17ce1fd61011610f2590a4cf0923d570479f211f9"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7617,16 +7617,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "6510e7dc5eaf7c7ee4e1e6b4c01e13eaf199d7f7",
-    "candidate_tree": "ab73e142a329eb170a9c6e804aa1c781b74488eb",
+    "trusted_tree": "aa7af3251685ba391450e616806357fee5eee2c6",
+    "candidate_tree": "37b833bd240f7956a69b105d9e657360dc97e18d",
     "refreshed_paths": [
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/intr_conformance.h",
-      "src/rt/recomp.h",
-      "src/rt/sched.c",
-      "src/rt/sched_selftest.c",
-      "tools/import_audit_baseline.json"
+      "docs/PUBLICATION_READINESS.md",
+      "interface/package-lock.json",
+      "tools/provenance_ledger.py",
+      "tools/test_provenance_ledger.py"
     ]
   }
 }
