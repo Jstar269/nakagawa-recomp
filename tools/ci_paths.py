@@ -3,15 +3,26 @@
 
 """Classify a change for the path-gated public CI workflow.
 
-The classifier deliberately errs toward running a gate.  It has no repository or
-game-input dependencies and can be exercised with ``--files`` in unit tests.  In
-GitHub Actions it reads the event payload and the checked-out commit history,
-then writes boolean outputs to ``GITHUB_OUTPUT``.
+The classifier deliberately errs toward running a gate.  It has no game-input
+dependencies and can be exercised with ``--files`` in unit tests.  In GitHub
+Actions it reads the event payload and the checked-out commit history, then
+writes boolean outputs to ``GITHUB_OUTPUT``.
+
+Its one repository dependency is the publication policy.  Whether a path is
+published is a fact the policy already owns, so ``_is_public_surface`` asks the
+policy rather than maintaining a second, drifting list; it fails closed to "in
+the surface" when the policy cannot be read.  It is intentionally not used to
+widen ``run_python`` here: every tracked file is published, so that would make
+the Python gate unconditional and buy nothing, because the publication audit
+already runs ungated in ``hygiene`` on every event.  The output is exported so a
+local readiness check can route the same decision, where no ungated equivalent
+runs.
 """
 
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -96,6 +107,40 @@ def _is_security_publication(path: str) -> bool:
             "tools/modified_file_notice_audit.py",
         }
     )
+
+
+@lru_cache(maxsize=1)
+def _public_policy() -> object | None:
+    """Load the publication policy once, or ``None`` when it is unreadable.
+
+    Imported lazily so that importing this module never depends on the policy
+    parsing cleanly; a broken policy must still let the classifier run and route
+    *everything*, which is what ``_is_public_surface`` does on ``None``.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import publication_policy
+
+        return publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+    except Exception:
+        return None
+
+
+def _is_public_surface(path: str) -> bool:
+    """True when the policy publishes this path.
+
+    Any change to a published path can invalidate the public provenance ledger
+    and ``PUBLIC_EXPORT.json``, so it must route the publication and provenance
+    integrity gates.  Asking the policy keeps this in step with the surface
+    automatically; an unreadable policy fails closed.
+    """
+    policy = _public_policy()
+    if policy is None:
+        return True
+    try:
+        return policy.resolve(path).disposition == "included"
+    except Exception:
+        return True
 
 
 def _is_manager(path: str) -> bool:
@@ -304,6 +349,7 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
     dashboard = force_full or any(_is_dashboard(path) for path in files)
     dependency_metadata = force_full or any(_is_dependency_metadata(path) for path in files)
     security_publication = force_full or any(_is_security_publication(path) for path in files)
+    public_surface = force_full or any(_is_public_surface(path) for path in files)
     manager_powershell = force_full or any(_is_manager(path) for path in files)
     title_manifest = force_full or any(_is_title_manifest(path) for path in files)
     build_system = force_full or any(_is_build_system(path) for path in files)
@@ -313,7 +359,19 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
     markdown = force_full or any(_is_markdown(path) for path in files)
 
     run_native = native_runtime or build_system or manager_powershell or title_manifest or native_tool or workflow_ci
-    run_python = python_tools or run_native or workflow_ci
+    # ``security_publication`` was computed and exported but fed no decision at
+    # all, so a change to the publication contract itself -- docs/PUBLICATION*,
+    # tools/publish_audit.py, the notice audit -- routed no Python gate.  It now
+    # routes one.
+    #
+    # ``public_surface`` deliberately does NOT widen this.  Every tracked file in
+    # this repository is published, so routing on it would make ``run_python``
+    # unconditional and buy nothing: the publication audit that protects the
+    # generated ledger and export runs in the ungated ``hygiene`` job on every
+    # event (see ``PublicationCoverageInvariantTests``).  The output is exported
+    # so a local readiness check can route the same decision, where no ungated
+    # equivalent runs.
+    run_python = python_tools or run_native or workflow_ci or security_publication
     run_windows = run_native
     run_dashboard = dashboard or workflow_ci
     # A normal main push is already covered by its PR. Workflow changes are
@@ -333,6 +391,7 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
         "workflow_ci": str(workflow_ci).lower(),
         "dependency_metadata": str(dependency_metadata).lower(),
         "security_publication": str(security_publication).lower(),
+        "public_surface": str(public_surface).lower(),
         "markdown": str(markdown).lower(),
         "run_python": str(run_python).lower(),
         "run_native": str(run_native).lower(),

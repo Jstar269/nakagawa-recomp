@@ -72,6 +72,34 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+## Local readiness before opening a pull request
+
+Readiness used to be assembled ad hoc and was repeatedly wrong: a locally green
+candidate failed the hosted publication audit, and the repaired candidate then
+failed the hosted *attestation* gate — a verifier that was runnable locally the
+whole time and simply never run. Run all of these, in this order, and treat any
+failure as blocking:
+
+```bash
+python tools/policy_sync.py
+python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python tools/provenance_attest_verify.py --repo . --candidate HEAD --base origin/main     --trusted-ledger <external detailed ledger> --workdir <scratch outside the repo>
+python tools/lint_docs.py
+python -m unittest discover -s tools -p "test_*.py"
+git diff --check origin/main...HEAD
+```
+
+The attestation verifier is the one most easily forgotten and the one that most
+often blocks a merge, because changed implementation bytes need an exact
+reviewed-blob approval that no automated step can grant. See
+[`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for the two authority
+tiers and what each class needs.
+
+These checks have no local equivalent and are never implied by a local pass:
+CodeQL, `dependency-review`, the Betterleaks history scan, the Windows runtime
+compile gate, and the main integration smoke.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a
@@ -91,9 +119,21 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
 - **Draft suppression never rewrites classification.** Only `allow_substantive`
   goes false, including when an unknown path forces full applicability; the path
   facts stay true, so the ready-for-review transition needs no reclassification.
-- **`hygiene` is ungated.** The all-files pre-commit run — which includes the
-  publication safety audit and the Betterleaks scan — executes on every event,
-  so the security and publication boundary is never path-gated.
+- **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
+  run — which includes `publish_audit --provenance-self-consistency`,
+  `policy_sync`, and the Betterleaks scan — executes on every event, so the
+  security and publication boundary is never path-gated. This is what makes the
+  cheap paths safe: every tracked file is inside the published surface and the
+  provenance ledger hashes each one, so *any* change invalidates the generated
+  ledger and `PUBLIC_EXPORT.json` until they are refreshed. A docs-only change
+  may therefore skip the Python suite only because the audit still runs here.
+  `PublicationCoverageInvariantTests` pins both halves so this cannot regress
+  into a path-gated audit.
+- **The published surface is derived, not listed.** `_is_public_surface` asks the
+  publication policy instead of maintaining a second list that can drift; it
+  fails closed to "published" when the policy cannot be read. The `public_surface`
+  output is exported so a local readiness check can route the same decision,
+  where no ungated hygiene equivalent runs.
 
 Test modules use their logical implementation subject for classification:
 `tools/test_<subject>.py` is evaluated through the same subsystem predicates as
