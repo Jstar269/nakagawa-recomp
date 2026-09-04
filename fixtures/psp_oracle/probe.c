@@ -45,6 +45,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 17
 #define PSP_ORACLE_CASE_DMAC_SURVEY 18
 #define PSP_ORACLE_CASE_CTRL_CLOCK 19
+#define PSP_ORACLE_CASE_FPU_VECTOR 20
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -1921,6 +1922,178 @@ static void run_ctrl_clock(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+/* COP1/FPU result vectors (main thread only, no threads created). Two
+   evidence classes, kept distinct in the report: PINNED cells use inline
+   asm for the exact opcode (cvt.w.s/cvt.s.w, FCR31 access); COMPILER cells
+   use C operators (the compiler selects the sequence — measured as run,
+   opcode not pinned). FCR31 exception enables stay OFF throughout (a trap
+   would kill the launch); only RM and FS bits are touched, saved/restored
+   per cell. All bit patterns travel as u32 (memcpy-punned, volatile). */
+static uint32_t fpu_get_fcr31(void) {
+    uint32_t v;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(v));
+    return v;
+}
+static void fpu_set_fcr31(uint32_t v) {
+    __asm__ volatile("ctc1 %0, $31" ::"r"(v));
+}
+/* PINNED: cvt.w.s honors RM. Same FPR in/out is legal. */
+static int32_t fpu_cvt_w_s(float f) {
+    float w = f;
+    __asm__ volatile("cvt.w.s %0, %1" : "+f"(w));
+    int32_t r;
+    memcpy(&r, &w, 4);
+    return r;
+}
+/* PINNED: cvt.s.w int->float. */
+static float fpu_cvt_s_w(int32_t i) {
+    float in;
+    float f;
+    memcpy(&in, &i, 4);
+    __asm__ volatile("cvt.s.w %0, %1" : "=f"(f) : "f"(in));
+    return f;
+}
+static uint32_t f32_bits(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+static float u32_f32(uint32_t u) {
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
+static void run_fpu_vector(int emulated) {
+    static const uint32_t inputs[12] = {
+        0x3fc00000u, /* 1.5 */
+        0x40200000u, /* 2.5 */
+        0xbfc00000u, /* -1.5 */
+        0xc0200000u, /* -2.5 */
+        0x3dccccddu, /* 0.1 */
+        0x501502f9u, /* 1e10 */
+        0xd01502f9u, /* -1e10 */
+        0x7fc00001u, /* quiet NaN, payload 1 */
+        0x7f800000u, /* +Inf */
+        0xff800000u, /* -Inf */
+        0x00000000u, /* +0 */
+        0x80000000u, /* -0 */
+    };
+    const uint32_t saved_fcr = fpu_get_fcr31();
+    /* PINNED cells: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
+    for (uint32_t rm = 0; rm < 4; rm++) {
+        fpu_set_fcr31(rm);
+        uint32_t out[12];
+        for (uint32_t i = 0; i < 12; i++) {
+            out[i] = (uint32_t)fpu_cvt_w_s(u32_f32(inputs[i]));
+        }
+        fpu_set_fcr31(saved_fcr);
+        char cid[32];
+        snprintf(cid, sizeof(cid), "fpu-cvt-rm%u", (unsigned int)rm);
+        emit_record_extended(emulated, "PSP-FPU-001", cid, "PASS",
+                             (uint32_t)fpu_get_fcr31(), out, 12);
+    }
+    /* COMPILER cell: C-cast float->int (compiler selects trunc sequence). */
+    {
+        uint32_t out[12];
+        for (uint32_t i = 0; i < 12; i++) {
+            volatile float vf = u32_f32(inputs[i]);
+            out[i] = (uint32_t)(int32_t)vf;
+        }
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ccast-trunc",
+                             "PASS", (uint32_t)fpu_get_fcr31(), out, 12);
+    }
+    /* PINNED cell: int->float exactness. */
+    {
+        static const int32_t ints[6] = {0, 1, -1, 0x7fffffff, (int32_t)0x80000000,
+                                        123456789};
+        uint32_t out[6];
+        for (uint32_t i = 0; i < 6; i++) {
+            out[i] = f32_bits(fpu_cvt_s_w(ints[i]));
+        }
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-cvt-s-w", "PASS",
+                             (uint32_t)fpu_get_fcr31(), out, 6);
+    }
+    /* COMPILER cells: flag/edge arithmetic (volatile C operators). */
+    {
+        struct {
+            const char *id;
+            float a;
+            float b;
+            uint32_t op; /* 0=mul 1=div 2=add */
+        } const ops[] = {
+            {"fpu-flag-overflow", 1e30f, 1e30f, 0},
+            {"fpu-flag-div0", 1.0f, 0.0f, 1},
+            {"fpu-flag-invalid", 0.0f, 0.0f, 1},
+            {"fpu-flag-underflow", 1e-30f, 1e-30f, 0},
+            {"fpu-flag-inexact", 0.1f, 0.2f, 2},
+        };
+        for (uint32_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
+            fpu_set_fcr31(0);
+            volatile float va = ops[k].a;
+            volatile float vb = ops[k].b;
+            volatile float vr = 0;
+            if (ops[k].op == 0u) {
+                vr = va * vb;
+            } else if (ops[k].op == 1u) {
+                vr = va / vb;
+            } else {
+                vr = va + vb;
+            }
+            const uint32_t bits = f32_bits(vr);
+            const uint32_t flags = fpu_get_fcr31();
+            const uint32_t out[] = {bits, flags};
+            emit_record_extended(emulated, "PSP-FPU-001", ops[k].id, "PASS",
+                                 flags, out, 2);
+            fpu_set_fcr31(saved_fcr);
+        }
+    }
+    /* COMPILER cell: FTZ contrast (FS=1 vs FS=0) on the underflow op. */
+    {
+        volatile float va = 1e-30f;
+        volatile float vb = 1e-30f;
+        fpu_set_fcr31(0);
+        volatile float r0 = va * vb;
+        const uint32_t b0 = f32_bits(r0);
+        const uint32_t f0 = fpu_get_fcr31();
+        fpu_set_fcr31(0x01000000u);
+        volatile float r1 = va * vb;
+        const uint32_t b1 = f32_bits(r1);
+        const uint32_t f1 = fpu_get_fcr31();
+        fpu_set_fcr31(saved_fcr);
+        const uint32_t out[] = {b0, f0, b1, f1};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ftz-contrast",
+                             "PASS", b0 ^ b1, out, 4);
+    }
+    /* COMPILER cell: signed-zero behaviors. */
+    {
+        volatile float pz = 0.0f;
+        volatile float nz = u32_f32(0x80000000u);
+        volatile float inf = u32_f32(0x7f800000u);
+        const uint32_t out[] = {
+            f32_bits(pz + nz), f32_bits(nz + nz), f32_bits(1.0f / pz),
+            f32_bits(1.0f / nz), f32_bits(pz * inf), f32_bits(nz * inf),
+        };
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-signed-zero",
+                             "PASS", (uint32_t)fpu_get_fcr31(), out, 6);
+    }
+    /* NaN payload propagation through + and *. */
+    {
+        static const uint32_t nans[3] = {0x7fc00001u, 0x7fffffffu, 0xffc00001u};
+        uint32_t out[6];
+        for (uint32_t i = 0; i < 3; i++) {
+            volatile float vn = u32_f32(nans[i]);
+            volatile float vo = 1.0f;
+            out[2 * i] = f32_bits(vn + vo);
+            out[2 * i + 1] = f32_bits(vn * vo);
+        }
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-nan-payload",
+                             "PASS", (uint32_t)fpu_get_fcr31(), out, 6);
+    }
+    fpu_set_fcr31(saved_fcr);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -2019,6 +2192,8 @@ int main(int argc, char *argv[]) {
     run_dmac_survey(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
     run_ctrl_clock(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+    run_fpu_vector(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
