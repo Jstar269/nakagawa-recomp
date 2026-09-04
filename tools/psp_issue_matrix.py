@@ -34,27 +34,27 @@ STATES = {
     "MAJOR_FUTURE_WORK",
 }
 
-LEGAL = {27, 98, 99, 102, 104, 149, 152, 154}
+LEGAL = {27, 99, 102, 104, 149, 152, 154}
 UPSTREAM = {248}
 ENVIRONMENT = {54, 105}
-PRIVATE_ROUTE = {31, 32, 33, 35, 139, 153, 196}
-IMPLEMENTATION = {148, 151, 178, 182, 184, 187, 195, 197}
+PRIVATE_ROUTE = {31, 32, 33, 35, 63, 69, 139, 153, 196}
+IMPLEMENTATION = {98, 148, 151, 178, 182, 184, 187, 195, 197}
 LOCAL_ACCEPTANCE = {
     45, 48, 51, 56, 57, 72, 76, 89, 174, 176, 179, 180, 181, 183, 186, 188, 189
 }
 HARDWARE = {
-    1, 2, 3, 13, 14, 16, 20, 23, 24, 26, 34, 36, 38, 40, 44, 55, 61, 62, 63,
-    64, 68, 69, 70, 74, 75, 77, 78, 79, 80, 82, 83, 84, 86, 87, 88, 90, 91,
+    1, 2, 3, 13, 14, 16, 20, 23, 24, 26, 34, 36, 38, 40, 44, 55, 61, 62,
+    64, 68, 70, 74, 75, 77, 78, 79, 80, 82, 83, 84, 86, 87, 88, 90, 91,
     92, 93, 94, 116,
 }
 
 HARDWARE_IDS = {
     **{number: "PSP-KERNEL-001" for number in {1, 2, 3, 13, 14, 16, 20, 26, 61, 74, 79, 84, 88, 92, 93, 116}},
-    **{number: "PSP-IO-001" for number in {55, 63, 68, 72, 91}},
+    **{number: "PSP-IO-001" for number in {55, 68, 72, 91}},
     23: "PSP-DMAC-001",
     **{number: "PSP-DISPLAY-001" for number in {24, 40, 44, 64, 83, 87, 89}},
-    **{number: "PSP-SYSTEM-001" for number in {34, 62, 77, 78, 80, 86, 94}},
-    **{number: "PSP-AUDIO-001" for number in {38, 69, 70, 75}},
+    **{number: "PSP-SYSTEM-001" for number in {34, 62, 70, 77, 78, 80, 86, 94}},
+    **{number: "PSP-AUDIO-001" for number in {38, 75}},
     **{number: "PSP-KERNEL-001" for number in {36, 82, 90}},
 }
 
@@ -123,6 +123,8 @@ def _local_command(state: str, number: int) -> str:
         return "cd interface; npm ci; npm test; npm run lint; npm run typecheck; npm run build"
     if state == "ENVIRONMENT_BLOCKED":
         return "python tools/psp_readiness.py --json"
+    if number == 98:
+        return "python tools/compat_overrides.py --check"
     if number == 182:
         return "python -m unittest discover -s tools -p 'test_ref_*.py' -v"
     if number in {174, 176, 180, 181, 184, 187, 188, 189}:

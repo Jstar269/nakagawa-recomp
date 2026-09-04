@@ -45,6 +45,27 @@ class PspIssueMatrixTests(unittest.TestCase):
         )
         self.assertEqual(matrix["rows"][0]["primary_state"], "MAJOR_FUTURE_WORK")
 
+    def test_issue_routing_cleanup(self) -> None:
+        # Issue 23: Genuine DMAC hardware semantics
+        self.assertEqual(psp_issue_matrix._state(23), "PSP_HARDWARE_READY")
+        self.assertEqual(psp_issue_matrix.HARDWARE_IDS[23], "PSP-DMAC-001")
+
+        # Issue 63: Private-title save/ceremony route, not generic IO
+        self.assertEqual(psp_issue_matrix._state(63), "LOCAL_PRIVATE_ROUTE_READY")
+        self.assertNotIn(63, psp_issue_matrix.HARDWARE_IDS)
+
+        # Issue 69: Private-title model corruption route, not generic audio
+        self.assertEqual(psp_issue_matrix._state(69), "LOCAL_PRIVATE_ROUTE_READY")
+        self.assertNotIn(69, psp_issue_matrix.HARDWARE_IDS)
+
+        # Issue 70: VBLANK / clock rate drift, routes to PSP-SYSTEM-001 (not audio)
+        self.assertEqual(psp_issue_matrix._state(70), "PSP_HARDWARE_READY")
+        self.assertEqual(psp_issue_matrix.HARDWARE_IDS[70], "PSP-SYSTEM-001")
+
+        # Issue 98: Compatibility-override surface, not legal block
+        self.assertEqual(psp_issue_matrix._state(98), "LOCAL_IMPLEMENTATION_READY")
+        self.assertEqual(psp_issue_matrix._local_command("LOCAL_IMPLEMENTATION_READY", 98), "python tools/compat_overrides.py --check")
+
 
 if __name__ == "__main__":
     unittest.main()
