@@ -34,12 +34,19 @@ class CtrlClockReport:
     cpu_freq_mhz: int
     bus_freq_mhz: int
     delay_measured_us: int
+    complete: bool
     all_passed: bool
     results: dict[str, TestResult]
 
 
 def parse_ctrl_clock_output(text: str, *, require_complete: bool = True) -> CtrlClockReport:
-    """Parse and validate a captured PSP-CTRL-001 or PSP-SYSTEM-001 stream."""
+    """Parse and validate a captured PSP-CTRL-001 or PSP-SYSTEM-001 stream.
+
+    ``require_complete`` decides whether an incomplete stream raises or is
+    returned for inspection; it never relaxes a verdict.  ``complete`` is
+    computed from the observed case sequence and gates ``all_passed`` in both
+    modes, so a partial stream can never report ``all_passed``.
+    """
     parsed = parse_output(text)
     ordered_results: list[TestResult] = []
     seen: set[str] = set()
@@ -104,15 +111,17 @@ def parse_ctrl_clock_output(text: str, *, require_complete: bool = True) -> Ctrl
         v = dict(results["delay-10ms"].values)
         delay_us = int(v.get("out2", "0"), 0)
 
-    all_passed = (
-        len(results) == len(expected_cases) if require_complete else len(results) > 0
-    ) and all(r.status == "PASS" for r in results.values())
+    # Completeness is a property of the observed case sequence, never of the
+    # caller's strictness flag.
+    complete = actual_order == expected_cases
+    all_passed = complete and all(r.status == "PASS" for r in results.values())
 
     return CtrlClockReport(
         raw_record_count=len(parsed.results),
         cpu_freq_mhz=cpu_mhz,
         bus_freq_mhz=bus_mhz,
         delay_measured_us=delay_us,
+        complete=complete,
         all_passed=all_passed,
         results=results,
     )

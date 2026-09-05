@@ -48,13 +48,22 @@ class PhaseBReport:
     section_b_count: int
     section_c_count: int
     section_d_count: int
+    summary_present: bool
     completed: bool
     all_passed: bool
     results: dict[str, TestResult]
 
 
 def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBReport:
-    """Parse and validate a captured PSP-PHASEB-001 stream."""
+    """Parse and validate a captured PSP-PHASEB-001 stream.
+
+    ``require_complete=True`` is complete-or-error.  ``require_complete=False``
+    permits *inspection* of an ordered prefix after a crash, and nothing more:
+    ``completed`` means the exact 42-record C-D-B-A + summary sequence was
+    observed, and ``all_passed`` is gated on it in both modes.  The presence of
+    the ``PHASEB-COMPLETE`` summary record is reported separately as
+    ``summary_present`` and never substitutes for completeness.
+    """
     parsed = parse_output(text)
     ordered_results: list[TestResult] = []
     seen: set[str] = set()
@@ -92,9 +101,10 @@ def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBRe
     sec_c = sum(1 for cid in SECTION_C_CASES if cid in results)
     sec_d = sum(1 for cid in SECTION_D_CASES if cid in results)
 
-    completed = (SUMMARY_CASE in results) and (
-        len(results) == len(EXPECTED_ORDERED_CASES) if require_complete else True
-    )
+    # Completeness is a property of the observed case sequence, never of the
+    # caller's strictness flag, and never of the summary record alone.
+    summary_present = SUMMARY_CASE in results
+    completed = actual_order == EXPECTED_ORDERED_CASES
     all_passed = completed and all(r.status == "PASS" for r in results.values())
 
     return PhaseBReport(
@@ -103,6 +113,7 @@ def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBRe
         section_b_count=sec_b,
         section_c_count=sec_c,
         section_d_count=sec_d,
+        summary_present=summary_present,
         completed=completed,
         all_passed=all_passed,
         results=results,

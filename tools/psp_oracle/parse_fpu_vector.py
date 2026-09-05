@@ -40,12 +40,27 @@ class FpuVectorReport:
     boot_fcr31: int
     trap_enables: int
     ftz_contrast_delta: int
+    complete: bool
+    terminal_present: bool
     all_passed: bool
     results: dict[str, TestResult]
 
 
 def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuVectorReport:
-    """Parse and validate a captured PSP-FPU-001 probe stream."""
+    """Parse and validate a captured PSP-FPU-001 probe stream.
+
+    ``require_complete=True`` is complete-or-error: an incomplete, reordered or
+    over-long cell sequence raises :class:`ProtocolError`.
+
+    ``require_complete=False`` permits *inspection* of an ordered prefix so a
+    truncated capture can still be classified.  It does not relax any verdict:
+    ``complete`` is computed from the cell sequence alone and ``all_passed``
+    is gated on it in both modes, so a partial stream can never report
+    ``all_passed``.  Presence of the ``fpu-done`` terminal record is reported
+    separately as ``terminal_present`` and never substitutes for completeness --
+    a probe that emits its terminal record after losing middle records is
+    exactly the shape the transport defect produces.
+    """
     parsed = parse_output(text)
     fpu_ordered_results: list[TestResult] = []
     seen: set[str] = set()
@@ -90,11 +105,12 @@ def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuV
         ftz_dict = dict(ftz_rec.values)
         ftz_delta = int(ftz_dict.get("result", "0"), 0)
 
-    all_passed = (
-        (len(fpu_results) == len(EXPECTED_CELLS) if require_complete else True)
-        and all(r.status == "PASS" for r in fpu_results.values())
-        and ("fpu-done" in fpu_results)
-    )
+    # Completeness is a property of the observed cell sequence, never of the
+    # caller's strictness flag.  ``require_complete`` only decides whether an
+    # incomplete stream raises or is returned for inspection.
+    complete = actual_order == EXPECTED_CELLS
+    terminal_present = "fpu-done" in fpu_results
+    all_passed = complete and all(r.status == "PASS" for r in fpu_results.values())
 
     return FpuVectorReport(
         raw_record_count=len(parsed.results),
@@ -102,6 +118,8 @@ def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuV
         boot_fcr31=boot_fcr,
         trap_enables=enables,
         ftz_contrast_delta=ftz_delta,
+        complete=complete,
+        terminal_present=terminal_present,
         all_passed=all_passed,
         results=fpu_results,
     )

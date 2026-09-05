@@ -162,5 +162,209 @@ class TestPspParsers(unittest.TestCase):
             parse_ctrl_clock_output(stream)
 
 
+class TestPartialStreamsNeverPass(unittest.TestCase):
+    """Regression cover for the non-strict false-PASS defect.
+
+    ``require_complete=False`` exists so a truncated capture can be *inspected*
+    and classified.  It must never be able to produce ``all_passed`` (FPU and
+    Phase-B) or ``completed`` (Phase-B).  Each case below is asserted in the
+    non-strict mode, because strict mode raises before a verdict exists.
+    """
+
+    def _fpu(self, cells: list[str]) -> str:
+        return SAMPLE_META + "".join(_make_fpu_line(cid) for cid in cells)
+
+    def _phaseb(self, cases: list[str]) -> str:
+        return SAMPLE_META + "".join(_make_phaseb_line(cid) for cid in cases)
+
+    # ---- 1. ordinary prefix truncation -------------------------------------
+
+    def test_fpu_ordinary_prefix_truncation_never_passes(self) -> None:
+        for k in range(1, len(FPU_EXPECTED_CELLS)):
+            with self.subTest(records=k):
+                stream = self._fpu(FPU_EXPECTED_CELLS[:k])
+                with self.assertRaises(ProtocolError):
+                    parse_fpu_vector_output(stream, require_complete=True)
+                report = parse_fpu_vector_output(stream, require_complete=False)
+                self.assertEqual(report.cell_count, k)
+                self.assertFalse(report.complete)
+                self.assertFalse(report.all_passed)
+
+    def test_phaseb_ordinary_prefix_truncation_never_passes(self) -> None:
+        # Section C starts the stream, so every 1..41-record prefix is ordinary
+        # (the 42nd record is the PHASEB-COMPLETE summary).
+        for k in range(1, len(PHASEB_EXPECTED_CASES)):
+            with self.subTest(records=k):
+                stream = self._phaseb(PHASEB_EXPECTED_CASES[:k])
+                with self.assertRaises(ProtocolError):
+                    parse_phaseb_output(stream, require_complete=True)
+                report = parse_phaseb_output(stream, require_complete=False)
+                self.assertEqual(len(report.results), k)
+                self.assertFalse(report.completed)
+                self.assertFalse(report.all_passed)
+
+    # ---- 2. terminal-record-containing truncation --------------------------
+
+    def test_fpu_truncation_with_terminal_record_never_passes(self) -> None:
+        # The exact shape the Boot #10 transport defect produces: an ordered
+        # prefix whose last record is the terminal ``fpu-done``.
+        stream = self._fpu(["fpu-boot-fcr31", "fpu-cvt-rm0", "fpu-done"])
+        with self.assertRaises(ProtocolError):
+            parse_fpu_vector_output(stream, require_complete=True)
+        report = parse_fpu_vector_output(stream, require_complete=False)
+        self.assertEqual(report.cell_count, 3)
+        self.assertTrue(report.terminal_present)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.all_passed)
+
+    def test_fpu_every_prefix_plus_terminal_never_passes(self) -> None:
+        for k in range(1, len(FPU_EXPECTED_CELLS) - 1):
+            with self.subTest(records=k):
+                stream = self._fpu(list(FPU_EXPECTED_CELLS[:k]) + ["fpu-done"])
+                report = parse_fpu_vector_output(stream, require_complete=False)
+                self.assertTrue(report.terminal_present)
+                self.assertFalse(report.complete)
+                self.assertFalse(report.all_passed)
+
+    def test_phaseb_truncation_with_summary_record_never_completes(self) -> None:
+        stream = self._phaseb(["CB-ORDINARY-EXEC", "GE-CB-FIRED", "PHASEB-COMPLETE"])
+        with self.assertRaises(ProtocolError):
+            parse_phaseb_output(stream, require_complete=True)
+        report = parse_phaseb_output(stream, require_complete=False)
+        self.assertEqual(len(report.results), 3)
+        self.assertTrue(report.summary_present)
+        self.assertFalse(report.completed)
+        self.assertFalse(report.all_passed)
+
+    def test_phaseb_every_prefix_plus_summary_never_completes(self) -> None:
+        for k in range(1, len(PHASEB_EXPECTED_CASES) - 1):
+            with self.subTest(records=k):
+                cases = list(PHASEB_EXPECTED_CASES[:k]) + ["PHASEB-COMPLETE"]
+                stream = self._phaseb(cases)
+                report = parse_phaseb_output(stream, require_complete=False)
+                self.assertTrue(report.summary_present)
+                self.assertFalse(report.completed)
+                self.assertFalse(report.all_passed)
+
+    # ---- 3. missing middle records, terminal still present -----------------
+
+    def test_fpu_missing_middle_with_terminal_never_passes(self) -> None:
+        dropped = {"fpu-flag-div0", "fpu-cvt-rm2", "fpu-signed-zero"}
+        cells = [cid for cid in FPU_EXPECTED_CELLS if cid not in dropped]
+        stream = self._fpu(cells)
+        with self.assertRaises(ProtocolError):
+            parse_fpu_vector_output(stream, require_complete=True)
+        report = parse_fpu_vector_output(stream, require_complete=False)
+        self.assertEqual(report.cell_count, len(FPU_EXPECTED_CELLS) - 3)
+        self.assertTrue(report.terminal_present)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.all_passed)
+
+    def test_phaseb_missing_middle_with_summary_never_completes(self) -> None:
+        dropped = {"MTX-LK-REC", "GE-CB-STACK", "ED2-D00"}
+        cases = [cid for cid in PHASEB_EXPECTED_CASES if cid not in dropped]
+        stream = self._phaseb(cases)
+        with self.assertRaises(ProtocolError):
+            parse_phaseb_output(stream, require_complete=True)
+        report = parse_phaseb_output(stream, require_complete=False)
+        self.assertEqual(len(report.results), len(PHASEB_EXPECTED_CASES) - 3)
+        self.assertTrue(report.summary_present)
+        self.assertFalse(report.completed)
+        self.assertFalse(report.all_passed)
+
+    def test_fpu_single_missing_cell_with_terminal_never_passes(self) -> None:
+        for dropped in FPU_EXPECTED_CELLS[1:-1]:
+            with self.subTest(dropped=dropped):
+                cells = [cid for cid in FPU_EXPECTED_CELLS if cid != dropped]
+                report = parse_fpu_vector_output(
+                    self._fpu(cells), require_complete=False
+                )
+                self.assertTrue(report.terminal_present)
+                self.assertFalse(report.complete)
+                self.assertFalse(report.all_passed)
+
+    # ---- 4. duplicate terminal ---------------------------------------------
+
+    def test_fpu_duplicate_terminal_rejected_in_both_modes(self) -> None:
+        stream = self._fpu(list(FPU_EXPECTED_CELLS) + ["fpu-done"])
+        with self.assertRaises(ProtocolError):
+            parse_fpu_vector_output(stream, require_complete=True)
+        with self.assertRaises(ProtocolError):
+            parse_fpu_vector_output(stream, require_complete=False)
+
+    def test_phaseb_duplicate_summary_rejected_in_both_modes(self) -> None:
+        stream = self._phaseb(list(PHASEB_EXPECTED_CASES) + ["PHASEB-COMPLETE"])
+        with self.assertRaises(ProtocolError):
+            parse_phaseb_output(stream, require_complete=True)
+        with self.assertRaises(ProtocolError):
+            parse_phaseb_output(stream, require_complete=False)
+
+    # ---- 5. full correct stream still passes -------------------------------
+
+    def test_fpu_full_stream_passes_in_both_modes(self) -> None:
+        stream = self._fpu(list(FPU_EXPECTED_CELLS))
+        for require_complete in (True, False):
+            with self.subTest(require_complete=require_complete):
+                report = parse_fpu_vector_output(
+                    stream, require_complete=require_complete
+                )
+                self.assertEqual(report.cell_count, 16)
+                self.assertTrue(report.complete)
+                self.assertTrue(report.terminal_present)
+                self.assertTrue(report.all_passed)
+
+    def test_phaseb_full_stream_passes_in_both_modes(self) -> None:
+        stream = self._phaseb(list(PHASEB_EXPECTED_CASES))
+        self.assertEqual(len(PHASEB_EXPECTED_CASES), 42)
+        for require_complete in (True, False):
+            with self.subTest(require_complete=require_complete):
+                report = parse_phaseb_output(
+                    stream, require_complete=require_complete
+                )
+                self.assertEqual(len(report.results), 42)
+                self.assertTrue(report.summary_present)
+                self.assertTrue(report.completed)
+                self.assertTrue(report.all_passed)
+
+    # ---- complete-but-failing streams stay measured-and-failed -------------
+
+    def test_fpu_complete_stream_with_fail_cell_is_not_all_passed(self) -> None:
+        stream = SAMPLE_META + "".join(
+            _make_fpu_line(cid).replace("status=PASS", "status=FAIL")
+            if cid == "fpu-flag-div0"
+            else _make_fpu_line(cid)
+            for cid in FPU_EXPECTED_CELLS
+        )
+        report = parse_fpu_vector_output(stream)
+        self.assertTrue(report.complete)
+        self.assertFalse(report.all_passed)
+
+    def test_phaseb_complete_stream_with_fail_case_is_completed_not_passed(self) -> None:
+        stream = SAMPLE_META + "".join(
+            _make_phaseb_line(cid).replace("status=PASS", "status=FAIL")
+            if cid == "MTX-WAIT-FIFO"
+            else _make_phaseb_line(cid)
+            for cid in PHASEB_EXPECTED_CASES
+        )
+        report = parse_phaseb_output(stream)
+        self.assertTrue(report.completed)
+        self.assertFalse(report.all_passed)
+
+    # ---- ctrl/clock carries the same defect class --------------------------
+
+    def test_ctrl_clock_partial_never_passes(self) -> None:
+        line = (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-CTRL-001 "
+            "case_id=ctrl-clock-freqs status=PASS result=0x00000000 "
+            "out0=0x000000de out1=0x0000006f\n"
+        )
+        stream = SAMPLE_META + line
+        with self.assertRaises(ProtocolError):
+            parse_ctrl_clock_output(stream, require_complete=True)
+        report = parse_ctrl_clock_output(stream, require_complete=False)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.all_passed)
+
+
 if __name__ == "__main__":
     unittest.main()
