@@ -2017,10 +2017,11 @@ static void run_ctrl_clock(int emulated) {
       (the boot FCR31 has IEEE trap enables active, 0x0E00).
    2. FCR31 is cleared to 0 (all traps off, flags 0, RM=RN) at the literal
       first instruction of main() and between every single test cell.
-   3. Explicit compiler memory barriers (":: memory") prevent any reordering.
-   4. Cell index is maintained in volatile g_fpu_cell_index and loaded into
-      $s2 before each cell so any trap records the exact faulting cell index.
-   5. Every record is emitted to unbuffered stdout AND appended to
+   4. Cell index is maintained in volatile memory diagnostic marker
+      g_fpu_cell_index before each cell. The unsafe undeclared $s2 register write
+      (which clobbered GCC's emulated local variable in v4) is removed;
+      the volatile memory store guarantees strict sequence ordering and zero
+      register allocation hazards.
       host0:/fpu_vector_log.txt.
    6. Clean ExitGame only once, zero threads created, 16 expected records.
 */
@@ -2090,7 +2091,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* Cell 0: Diagnostic record of inherited boot FCR31. */
     g_fpu_cell_index = 0;
-    __asm__ volatile("move $s2, %0" :: "r"(0) : "memory");
     {
         const uint32_t out[] = {boot_fcr31};
         emit_record_extended(emulated, "PSP-FPU-001", "fpu-boot-fcr31", "PASS", boot_fcr31, out, 1);
@@ -2099,7 +2099,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
     /* PINNED cells 1..4: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
     for (uint32_t rm = 0; rm < 4; rm++) {
         g_fpu_cell_index = 1 + rm;
-        __asm__ volatile("move $s2, %0" :: "r"(1 + rm) : "memory");
         fpu_set_fcr31(rm & 3u); /* RM set, all trap enables strictly 0 */
         uint32_t out[12];
         for (uint32_t i = 0; i < 12; i++) {
@@ -2114,7 +2113,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* COMPILER cell 5: C-cast float->int (compiler selects trunc sequence). */
     g_fpu_cell_index = 5;
-    __asm__ volatile("move $s2, %0" :: "r"(5) : "memory");
     {
         uint32_t out[12];
         fpu_quiet();
@@ -2129,7 +2127,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* PINNED cell 6: int->float exactness. */
     g_fpu_cell_index = 6;
-    __asm__ volatile("move $s2, %0" :: "r"(6) : "memory");
     {
         static const int32_t ints[6] = {0, 1, -1, 0x7fffffff, (int32_t)0x80000000,
                                         123456789};
@@ -2159,7 +2156,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
         };
         for (uint32_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
             g_fpu_cell_index = 7 + k;
-            __asm__ volatile("move $s2, %0" :: "r"(7 + k) : "memory");
             fpu_quiet();
             volatile float va = ops[k].a;
             volatile float vb = ops[k].b;
@@ -2181,7 +2177,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* COMPILER cell 12: FTZ contrast (FS=1 vs FS=0) on the underflow op. */
     g_fpu_cell_index = 12;
-    __asm__ volatile("move $s2, %0" :: "r"(12) : "memory");
     {
         volatile float va = 1e-30f;
         volatile float vb = 1e-30f;
@@ -2200,7 +2195,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* COMPILER cell 13: signed-zero behaviors. */
     g_fpu_cell_index = 13;
-    __asm__ volatile("move $s2, %0" :: "r"(13) : "memory");
     {
         volatile float pz = 0.0f;
         volatile float nz = u32_f32(0x80000000u);
@@ -2217,7 +2211,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* COMPILER cell 14: NaN payload propagation through + and *. */
     g_fpu_cell_index = 14;
-    __asm__ volatile("move $s2, %0" :: "r"(14) : "memory");
     {
         static const uint32_t nans[3] = {0x7fc00001u, 0x7fffffffu, 0xffc00001u};
         uint32_t out[6];
@@ -2235,7 +2228,6 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 
     /* Cell 15: Done record confirming all preceding cells executed without trap. */
     g_fpu_cell_index = 15;
-    __asm__ volatile("move $s2, %0" :: "r"(15) : "memory");
     fpu_quiet();
     {
         const uint32_t out[] = {15};
