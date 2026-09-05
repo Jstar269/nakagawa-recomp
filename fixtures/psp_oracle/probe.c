@@ -108,8 +108,19 @@ static void emit(int emulated, const char *text) {
         sceIoDevctl("emulator:", EMULATOR_DEVCTL_SEND_OUTPUT, (void *)text, (int)strlen(text), NULL, 0);
     } else {
         printf("%s", text);
+        fflush(stdout);
     }
 }
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+#define PROBE_HOST0_LOG "host0:/fpu_vector_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+#define PROBE_HOST0_LOG "host0:/io_matrix_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+#define PROBE_HOST0_LOG "host0:/audio_query_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+#define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
+#endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK || \
@@ -151,14 +162,70 @@ static void emit_record_extended(int emulated, const char *test_id,
         line[used] = '\0';
     }
     emit(emulated, line);
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
-    SceUID fd = sceIoOpen("host0:/fpu_vector_log.txt",
-                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-    if (fd >= 0) {
-        sceIoWrite(fd, line, strlen(line));
-        sceIoClose(fd);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoClose(fd);
+        }
     }
 #endif
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+/* Deferred record buffer.
+   The IO matrix measures IoFileMgr itself and the cache matrix measures
+   dcache line residency across cells.  Emitting a record inside the measured
+   window would perturb the very state under test: `emit_record_extended`
+   opens, writes and closes a `host0:` descriptor, which allocates a fresh
+   SceUID from the same IoFileMgr namespace the IO probe samples, and drives a
+   blocking USB round trip whose kernel and DMA footprint can evict the
+   `s_cache_buf` line whose residency the cache probe samples between cells.
+
+   Records are therefore accumulated as raw values -- no formatting, no
+   syscall, no allocation -- and emitted only after every measurement cell has
+   run.  Capacity is a compile-time constant checked against the largest cell
+   count either probe can emit, so overflow is impossible by construction
+   rather than handled at runtime. */
+#define DEFERRED_MAX_RECORDS 8
+#define DEFERRED_MAX_OUT 6
+
+struct deferred_record {
+    const char *case_id; /* string literal; never freed */
+    const char *status;  /* "PASS" / "FAIL" literal */
+    uint32_t result;
+    uint32_t out[DEFERRED_MAX_OUT];
+    size_t out_count;
+};
+
+static struct deferred_record s_deferred[DEFERRED_MAX_RECORDS];
+static size_t s_deferred_count;
+
+static void defer_record(const char *case_id, const char *status,
+                         uint32_t result, const uint32_t *out,
+                         size_t out_count) {
+    struct deferred_record *rec = &s_deferred[s_deferred_count++];
+    rec->case_id = case_id;
+    rec->status = status;
+    rec->result = result;
+    for (size_t i = 0; i < out_count; i++) {
+        rec->out[i] = out[i];
+    }
+    rec->out_count = out_count;
+}
+
+/* Emit every buffered record in capture order.  Called only after the last
+   measurement cell has completed, so no emission touches measured state. */
+static void flush_deferred(int emulated, const char *test_id) {
+    for (size_t i = 0; i < s_deferred_count; i++) {
+        emit_record_extended(emulated, test_id, s_deferred[i].case_id,
+                             s_deferred[i].status, s_deferred[i].result,
+                             s_deferred[i].out, s_deferred[i].out_count);
+    }
 }
 #endif
 
@@ -2194,6 +2261,9 @@ static void run_teardown_test(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+/* 6 measurement cells + 1 completion sentinel. */
+_Static_assert(DEFERRED_MAX_RECORDS >= 7, "io-matrix needs 7 deferred slots");
+
 static void run_io_matrix(int emulated) {
     const char *test_path = "host0:/test_io_matrix.tmp";
     uint32_t out[6];
@@ -2202,8 +2272,8 @@ static void run_io_matrix(int emulated) {
     memset(out, 0xFF, sizeof(out));
     SceUID fd = sceIoOpen(test_path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     out[0] = (uint32_t)fd;
-    emit_record_extended(emulated, "PSP-IO-001", "io-open-create",
-                         fd >= 0 ? "PASS" : "FAIL", (uint32_t)fd, out, 1);
+    defer_record("io-open-create",
+                 fd >= 0 ? "PASS" : "FAIL", (uint32_t)fd, out, 1);
 
     if (fd >= 0) {
         /* Cell 2: io-write */
@@ -2214,9 +2284,9 @@ static void run_io_matrix(int emulated) {
         int close_rc = sceIoClose(fd);
         out[0] = (uint32_t)written;
         out[1] = (uint32_t)close_rc;
-        emit_record_extended(emulated, "PSP-IO-001", "io-write",
-                             (written == 64 && close_rc == 0) ? "PASS" : "FAIL",
-                             (uint32_t)written, out, 2);
+        defer_record("io-write",
+                     (written == 64 && close_rc == 0) ? "PASS" : "FAIL",
+                     (uint32_t)written, out, 2);
     }
 
     /* Cell 3: io-read-verify */
@@ -2232,9 +2302,9 @@ static void run_io_matrix(int emulated) {
         }
         out[0] = (uint32_t)nread;
         out[1] = (uint32_t)match;
-        emit_record_extended(emulated, "PSP-IO-001", "io-read-verify",
-                             (nread == 64 && match) ? "PASS" : "FAIL",
-                             (uint32_t)nread, out, 2);
+        defer_record("io-read-verify",
+                     (nread == 64 && match) ? "PASS" : "FAIL",
+                     (uint32_t)nread, out, 2);
 
         /* Cell 4: io-lseek */
         memset(out, 0xFF, sizeof(out));
@@ -2245,12 +2315,12 @@ static void run_io_matrix(int emulated) {
         out[0] = (uint32_t)s_set;
         out[1] = (uint32_t)s_cur;
         out[2] = (uint32_t)s_end;
-        emit_record_extended(emulated, "PSP-IO-001", "io-lseek",
-                             (s_set == 32 && s_cur == 16 && s_end == 64) ? "PASS" : "FAIL",
-                             (uint32_t)s_end, out, 3);
+        defer_record("io-lseek",
+                     (s_set == 32 && s_cur == 16 && s_end == 64) ? "PASS" : "FAIL",
+                     (uint32_t)s_end, out, 3);
     } else {
         out[0] = (uint32_t)fd;
-        emit_record_extended(emulated, "PSP-IO-001", "io-read-verify", "FAIL", (uint32_t)fd, out, 1);
+        defer_record("io-read-verify", "FAIL", (uint32_t)fd, out, 1);
     }
 
     /* Cell 5: io-append */
@@ -2267,12 +2337,12 @@ static void run_io_matrix(int emulated) {
         sceIoClose(fd);
         out[0] = (uint32_t)app_written;
         out[1] = (uint32_t)total_sz;
-        emit_record_extended(emulated, "PSP-IO-001", "io-append",
-                             (app_written == 32 && total_sz == 96) ? "PASS" : "FAIL",
-                             (uint32_t)total_sz, out, 2);
+        defer_record("io-append",
+                     (app_written == 32 && total_sz == 96) ? "PASS" : "FAIL",
+                     (uint32_t)total_sz, out, 2);
     } else {
         out[0] = (uint32_t)fd;
-        emit_record_extended(emulated, "PSP-IO-001", "io-append", "FAIL", (uint32_t)fd, out, 1);
+        defer_record("io-append", "FAIL", (uint32_t)fd, out, 1);
     }
 
     /* Cell 6: io-errors & cleanup */
@@ -2283,9 +2353,17 @@ static void run_io_matrix(int emulated) {
     out[0] = (uint32_t)bad_open;
     out[1] = (uint32_t)bad_read;
     out[2] = (uint32_t)rem_rc;
-    emit_record_extended(emulated, "PSP-IO-001", "io-errors",
-                         (bad_open < 0 && bad_read < 0 && rem_rc == 0) ? "PASS" : "FAIL",
-                         (uint32_t)bad_open, out, 3);
+    defer_record("io-errors",
+                 (bad_open < 0 && bad_read < 0 && rem_rc == 0) ? "PASS" : "FAIL",
+                 (uint32_t)bad_open, out, 3);
+
+    /* Every IoFileMgr measurement is now complete.  The completion sentinel
+       carries the number of semantic records actually captured, so a truncated
+       transport is detectable against the emitted stream length. */
+    const uint32_t done_out[1] = {(uint32_t)s_deferred_count};
+    defer_record("io-done", "PASS", 0, done_out, 1);
+
+    flush_deferred(emulated, "PSP-IO-001");
 }
 #endif
 
@@ -2332,10 +2410,17 @@ static void run_audio_query(int emulated) {
     emit_record_extended(emulated, "PSP-AUDIO-001", "audio-src-reserve",
                          (src_res == 0 && src_rel == 0) ? "PASS" : "FAIL",
                          (uint32_t)src_res, out, 2);
+
+    /* Cell 5: Completion sentinel */
+    uint32_t done_out[1] = {4u};
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-done", "PASS", 0, done_out, 1);
 }
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+/* 4 measurement cells + 1 completion sentinel. */
+_Static_assert(DEFERRED_MAX_RECORDS >= 5, "cache-alias needs 5 deferred slots");
+
 static uint32_t s_cache_buf[64] __attribute__((aligned(64)));
 
 static void run_cache_alias(int emulated) {
@@ -2351,8 +2436,8 @@ static void run_cache_alias(int emulated) {
     out[0] = u_ptr[0];
     out[1] = c_read1;
     out[2] = (c_read1 == 0x11223344u) ? 1u : 0u;
-    emit_record_extended(emulated, "PSP-CACHE-001", "cache-alias-init",
-                         c_read1 == 0x11223344u ? "PASS" : "FAIL", c_read1, out, 3);
+    defer_record("cache-alias-init",
+                 c_read1 == 0x11223344u ? "PASS" : "FAIL", c_read1, out, 3);
 
     /* Cell 2: cache-writeback-contrast (Cached write vs uncached visibility before/after WB) */
     memset(out, 0xFF, sizeof(out));
@@ -2363,8 +2448,8 @@ static void run_cache_alias(int emulated) {
     out[0] = u_before;
     out[1] = u_after;
     out[2] = (u_after == 0x55667788u) ? 1u : 0u;
-    emit_record_extended(emulated, "PSP-CACHE-001", "cache-writeback-contrast",
-                         u_after == 0x55667788u ? "PASS" : "FAIL", u_after, out, 3);
+    defer_record("cache-writeback-contrast",
+                 u_after == 0x55667788u ? "PASS" : "FAIL", u_after, out, 3);
 
     /* Cell 3: cache-inval-contrast (Uncached write vs stale cached read before/after inval) */
     memset(out, 0xFF, sizeof(out));
@@ -2375,8 +2460,8 @@ static void run_cache_alias(int emulated) {
     out[0] = c_stale;
     out[1] = c_fresh;
     out[2] = (c_fresh == 0x99AABBCCu) ? 1u : 0u;
-    emit_record_extended(emulated, "PSP-CACHE-001", "cache-inval-contrast",
-                         c_fresh == 0x99AABBCCu ? "PASS" : "FAIL", c_fresh, out, 3);
+    defer_record("cache-inval-contrast",
+                 c_fresh == 0x99AABBCCu ? "PASS" : "FAIL", c_fresh, out, 3);
 
     /* Cell 4: cache-wball (Writeback all lines) */
     memset(out, 0xFF, sizeof(out));
@@ -2385,8 +2470,16 @@ static void run_cache_alias(int emulated) {
     uint32_t u_wball = u_ptr[1];
     out[0] = u_wball;
     out[1] = (u_wball == 0xDEADBEEFu) ? 1u : 0u;
-    emit_record_extended(emulated, "PSP-CACHE-001", "cache-wball",
-                         u_wball == 0xDEADBEEFu ? "PASS" : "FAIL", u_wball, out, 2);
+    defer_record("cache-wball",
+                 u_wball == 0xDEADBEEFu ? "PASS" : "FAIL", u_wball, out, 2);
+
+    /* Every dcache/alias measurement is now complete.  Emission below is the
+       first host0 or stdout activity since the probe began, so no line
+       residency observed above was perturbed by logging. */
+    const uint32_t done_out[1] = {(uint32_t)s_deferred_count};
+    defer_record("cache-done", "PASS", 0, done_out, 1);
+
+    flush_deferred(emulated, "PSP-CACHE-001");
 }
 #endif
 
@@ -2414,6 +2507,16 @@ int main(int argc, char *argv[]) {
              "source_commit=0000000000000000000000000000000000000000 fixture=%s\n",
              emulated ? "ppsspp" : "psp", FIXTURE_BUILD_ID);
     emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoClose(fd);
+        }
+    }
+#endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK
     uint32_t out0 = 0;

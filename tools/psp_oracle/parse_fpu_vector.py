@@ -32,6 +32,14 @@ EXPECTED_CELLS = [
     "fpu-done",
 ]
 
+# ``fpu-done`` is the terminal completion sentinel, not a measurement.  It is
+# never counted as a semantic cell, and it carries the number of semantic cells
+# the probe believes it executed in ``out0``.  The probe emits cells 0..14 and
+# then reports 15, so the sentinel is cross-checkable against the protocol.
+TERMINAL_CELL = "fpu-done"
+SEMANTIC_CELLS = [cid for cid in EXPECTED_CELLS if cid != TERMINAL_CELL]
+EXPECTED_TERMINAL_COUNT = len(SEMANTIC_CELLS)
+
 
 @dataclass(frozen=True)
 class FpuVectorReport:
@@ -109,7 +117,37 @@ def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuV
     # caller's strictness flag.  ``require_complete`` only decides whether an
     # incomplete stream raises or is returned for inspection.
     complete = actual_order == EXPECTED_CELLS
-    terminal_present = "fpu-done" in fpu_results
+    terminal_present = TERMINAL_CELL in fpu_results
+
+    # A terminal record that disagrees with the protocol's semantic cell count
+    # is a corrupted or mismatched stream, not a truncation, so it fails closed
+    # in both strictness modes.  Without this check a sentinel claiming any
+    # count at all would be accepted, and the completion record would carry no
+    # verifiable meaning.
+    if terminal_present:
+        done_values = dict(fpu_results[TERMINAL_CELL].values)
+        if "out0" not in done_values:
+            raise ProtocolError(
+                f"fpu terminal record {TERMINAL_CELL!r} is missing its out0 completion count"
+            )
+        try:
+            claimed_count = int(done_values["out0"], 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"fpu terminal count is not an integer: {done_values['out0']!r}"
+            ) from exc
+        if claimed_count != EXPECTED_TERMINAL_COUNT:
+            raise ProtocolError(
+                f"fpu terminal count mismatch: {TERMINAL_CELL} claims {claimed_count} "
+                f"semantic cells, protocol expects {EXPECTED_TERMINAL_COUNT}"
+            )
+        observed_semantic = len([cid for cid in actual_order if cid != TERMINAL_CELL])
+        if complete and observed_semantic != claimed_count:
+            raise ProtocolError(
+                f"fpu terminal count mismatch: {TERMINAL_CELL} claims {claimed_count} "
+                f"semantic cells, stream carries {observed_semantic}"
+            )
+
     all_passed = complete and all(r.status == "PASS" for r in fpu_results.values())
 
     return FpuVectorReport(

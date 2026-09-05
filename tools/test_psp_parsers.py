@@ -9,7 +9,11 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from psp_oracle.parse_fpu_vector import EXPECTED_CELLS as FPU_EXPECTED_CELLS, parse_fpu_vector_output
+from psp_oracle.parse_fpu_vector import (
+    EXPECTED_CELLS as FPU_EXPECTED_CELLS,
+    EXPECTED_TERMINAL_COUNT,
+    parse_fpu_vector_output,
+)
 from psp_oracle.parse_phaseb import EXPECTED_ORDERED_CASES as PHASEB_EXPECTED_CASES, parse_phaseb_output
 from psp_oracle.parse_ctrl_clock import parse_ctrl_clock_output
 from psp_oracle.protocol import ProtocolError
@@ -364,6 +368,226 @@ class TestPartialStreamsNeverPass(unittest.TestCase):
         report = parse_ctrl_clock_output(stream, require_complete=False)
         self.assertFalse(report.complete)
         self.assertFalse(report.all_passed)
+
+
+class TestDualChannelReconciliation(unittest.TestCase):
+    """Host tests proving the dual-channel evidence contract:
+
+    - partial stdout cannot become semantic PASS;
+    - complete host0 stream can independently establish semantic completeness;
+    - channel mismatch is reported without downgrading an otherwise complete host0 semantic measurement;
+    - stale append logs (duplicate cells) are rejected;
+    - completion count mismatch fails;
+    - duplicate records fail;
+    - reordered records fail;
+    - truncated host0 log fails;
+    - placeholder provenance remains explicitly HOST_ATTESTED rather than stream-attested;
+    - stdout loss can be represented as a transport observation separately from semantic result.
+    """
+
+    def setUp(self) -> None:
+        self.complete_fpu_stream = SAMPLE_META + "".join(
+            _make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS
+        )
+        self.partial_fpu_stdout = (
+            SAMPLE_META + _make_fpu_line("fpu-boot-fcr31")
+        )
+
+    def test_partial_stdout_cannot_become_semantic_pass(self) -> None:
+        """Partial stdout capture (1/16) must fail strict parse and report all_passed=False."""
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(self.partial_fpu_stdout, require_complete=True)
+        self.assertIn("missing cells", str(ctx.exception))
+        report = parse_fpu_vector_output(self.partial_fpu_stdout, require_complete=False)
+        self.assertEqual(report.cell_count, 1)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.terminal_present)
+        self.assertFalse(report.all_passed)
+
+    def test_complete_host0_independently_establishes_completeness(self) -> None:
+        """A complete host0 stream alone establishes semantic completeness and all_passed."""
+        report = parse_fpu_vector_output(self.complete_fpu_stream, require_complete=True)
+        self.assertEqual(report.cell_count, 16)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.terminal_present)
+        self.assertTrue(report.all_passed)
+        self.assertEqual(report.boot_fcr31, 0x00000E00)
+
+    def test_channel_mismatch_reported_without_downgrading_host0_semantic(self) -> None:
+        """Channel mismatch is reported while preserving complete host0 measurement."""
+        stdout_report = parse_fpu_vector_output(self.partial_fpu_stdout, require_complete=False)
+        host0_report = parse_fpu_vector_output(self.complete_fpu_stream, require_complete=True)
+
+        # Stdout channel verdict
+        stdout_transport_status = "PARTIAL_HARDWARE_PREFIX" if not stdout_report.complete else "COMPLETE"
+        self.assertEqual(stdout_transport_status, "PARTIAL_HARDWARE_PREFIX")
+        self.assertFalse(stdout_report.all_passed)
+
+        # Host0 semantic verdict
+        host0_semantic_status = "HARDWARE_MEASURED" if host0_report.all_passed else "FAIL"
+        self.assertEqual(host0_semantic_status, "HARDWARE_MEASURED")
+        self.assertTrue(host0_report.all_passed)
+
+        # Channels do not agree on completeness, but host0 measurement remains valid
+        channels_agree = (stdout_report.cell_count == host0_report.cell_count)
+        self.assertFalse(channels_agree)
+
+    def test_stale_append_log_rejected(self) -> None:
+        """Stale append (log containing records from two runs) produces duplicate cell error."""
+        stale_stream = (
+            SAMPLE_META
+            + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS)
+            + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS)
+        )
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(stale_stream, require_complete=False)
+        self.assertIn("duplicate", str(ctx.exception))
+
+    def test_duplicate_records_fail(self) -> None:
+        """Any duplicate case_id must fail closed."""
+        dup_stream = (
+            SAMPLE_META
+            + _make_fpu_line("fpu-boot-fcr31")
+            + _make_fpu_line("fpu-boot-fcr31")
+        )
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(dup_stream, require_complete=False)
+        self.assertIn("duplicate", str(ctx.exception))
+
+    def test_reordered_records_fail(self) -> None:
+        """Out-of-order records must fail both strict and permissive modes."""
+        reordered = list(FPU_EXPECTED_CELLS)
+        reordered[1], reordered[2] = reordered[2], reordered[1]
+        stream = SAMPLE_META + "".join(_make_fpu_line(cid) for cid in reordered)
+        with self.assertRaises(ProtocolError) as ctx_strict:
+            parse_fpu_vector_output(stream, require_complete=True)
+        self.assertIn("out of order", str(ctx_strict.exception))
+
+        with self.assertRaises(ProtocolError) as ctx_permissive:
+            parse_fpu_vector_output(stream, require_complete=False)
+        self.assertIn("out of order", str(ctx_permissive.exception))
+
+    def test_truncated_host0_log_fails(self) -> None:
+        """Truncated host0 log (missing last N records) must fail strict parse."""
+        for cutoff in [1, 5, 10, 15]:
+            truncated = SAMPLE_META + "".join(
+                _make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS[:cutoff]
+            )
+            with self.assertRaises(ProtocolError):
+                parse_fpu_vector_output(truncated, require_complete=True)
+
+    def _stream_with_sentinel(self, sentinel_line: str) -> str:
+        return SAMPLE_META + "".join(
+            _make_fpu_line(cid) if cid != "fpu-done" else sentinel_line
+            for cid in FPU_EXPECTED_CELLS
+        )
+
+    def test_completion_count_mismatch_fails(self) -> None:
+        """A sentinel whose out0 disagrees with the protocol count fails closed.
+
+        This exercises the parser, not the fixture: an otherwise complete,
+        all-PASS, correctly ordered stream must still be rejected when the
+        terminal record miscounts, in both strictness modes.
+        """
+        bad_sentinel_line = (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 case_id=fpu-done "
+            "status=PASS result=0x00000000 out0=0x0000000a\n"
+        )
+        stream = self._stream_with_sentinel(bad_sentinel_line)
+        for require_complete in (True, False):
+            with self.subTest(require_complete=require_complete):
+                with self.assertRaises(ProtocolError) as ctx:
+                    parse_fpu_vector_output(stream, require_complete=require_complete)
+                self.assertIn("terminal count mismatch", str(ctx.exception))
+
+    def test_completion_sentinel_missing_count_fails(self) -> None:
+        """A terminal record carrying no out0 count is rejected."""
+        no_count_line = (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 case_id=fpu-done "
+            "status=PASS result=0x00000000\n"
+        )
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(self._stream_with_sentinel(no_count_line))
+        self.assertIn("missing its out0", str(ctx.exception))
+
+    def test_correct_sentinel_count_is_accepted(self) -> None:
+        """The count the probe actually emits (15 semantic cells) parses."""
+        report = parse_fpu_vector_output(self.complete_fpu_stream, require_complete=True)
+        claimed = int(dict(report.results["fpu-done"].values)["out0"], 0)
+        self.assertEqual(claimed, EXPECTED_TERMINAL_COUNT)
+        self.assertEqual(claimed, len(FPU_EXPECTED_CELLS) - 1)
+        self.assertTrue(report.all_passed)
+
+    def test_placeholder_provenance_remains_host_attested(self) -> None:
+        """Placeholder fixture metadata produces issues and is HOST_ATTESTED."""
+        from psp_oracle.protocol import parse_output, provenance_issues
+        parsed = parse_output(self.complete_fpu_stream)
+        issues = provenance_issues(parsed.metadata_dict())
+        self.assertTrue(len(issues) > 0)
+        self.assertTrue(any("unknown" in issue for issue in issues))
+        self.assertTrue(any("all-zero" in issue for issue in issues))
+
+    def test_surviving_terminal_after_middle_loss_fails_closed(self) -> None:
+        """The transport-defect shape must not pass.
+
+        A stream that keeps its head and its terminal sentinel but loses the
+        middle records is exactly what a mid-run channel drop produces.  The
+        terminal record must never substitute for the missing measurements.
+        """
+        head = FPU_EXPECTED_CELLS[:3]
+        stream = (
+            SAMPLE_META
+            + "".join(_make_fpu_line(cid) for cid in head)
+            + _make_fpu_line("fpu-done")
+        )
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(stream, require_complete=True)
+        self.assertIn("missing cells", str(ctx.exception))
+
+        report = parse_fpu_vector_output(stream, require_complete=False)
+        self.assertTrue(report.terminal_present)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.all_passed)
+
+    # ---- Mutation tests ----
+
+    def test_mutation_fail_status_in_single_cell_prevents_pass(self) -> None:
+        """Mutating any single cell status from PASS to FAIL prevents all_passed."""
+        for mutant_cell in FPU_EXPECTED_CELLS:
+            with self.subTest(cell=mutant_cell):
+                stream = SAMPLE_META + "".join(
+                    _make_fpu_line(cid).replace("status=PASS", "status=FAIL")
+                    if cid == mutant_cell
+                    else _make_fpu_line(cid)
+                    for cid in FPU_EXPECTED_CELLS
+                )
+                report = parse_fpu_vector_output(stream)
+                self.assertTrue(report.complete)
+                self.assertFalse(report.all_passed)
+
+    def test_mutation_missing_terminal_fails_completeness(self) -> None:
+        """Mutating stream to drop only fpu-done leaves terminal_present False."""
+        stream = SAMPLE_META + "".join(
+            _make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS if cid != "fpu-done"
+        )
+        with self.assertRaises(ProtocolError):
+            parse_fpu_vector_output(stream, require_complete=True)
+        report = parse_fpu_vector_output(stream, require_complete=False)
+        self.assertFalse(report.complete)
+        self.assertFalse(report.terminal_present)
+        self.assertFalse(report.all_passed)
+
+    def test_mutation_alien_case_id_rejected(self) -> None:
+        """Injecting an unknown alien case_id into stream is rejected."""
+        stream = (
+            SAMPLE_META
+            + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS[:5])
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 case_id=fpu-alien-cell status=PASS result=0x0\n"
+            + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS[5:])
+        )
+        with self.assertRaises(ProtocolError) as ctx:
+            parse_fpu_vector_output(stream, require_complete=True)
+        self.assertIn("unexpected cells", str(ctx.exception))
 
 
 if __name__ == "__main__":

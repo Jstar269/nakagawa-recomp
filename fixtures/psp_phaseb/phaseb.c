@@ -94,11 +94,14 @@ static void phaseb_emit(const char *text) {
         sceIoDevctl("emulator:", 2, (void *)text, (int)strlen(text), NULL, 0);
     } else {
         printf("%s", text);
+        fflush(stdout);
     }
-    SceUID fd = sceIoOpen(PHASEB_LOG, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-    if (fd >= 0) {
-        sceIoWrite(fd, text, strlen(text));
-        sceIoClose(fd);
+    if (!g_emulated) {
+        SceUID fd = sceIoOpen(PHASEB_LOG, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, text, strlen(text));
+            sceIoClose(fd);
+        }
     }
 }
 

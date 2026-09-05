@@ -40,6 +40,11 @@ SUMMARY_CASE = "PHASEB-COMPLETE"
 EXPECTED_ALL_CASES = SECTION_C_CASES + SECTION_D_CASES + SECTION_B_CASES + SECTION_A_CASES
 EXPECTED_ORDERED_CASES = EXPECTED_ALL_CASES + [SUMMARY_CASE]
 
+# ``PHASEB-COMPLETE`` is the terminal completion sentinel, never a semantic
+# measurement.  It carries the number of semantic cases the probe believes it
+# executed in ``out0`` (41 = 6 C + 4 D + 19 B + 12 A).
+EXPECTED_TERMINAL_COUNT = len(EXPECTED_ALL_CASES)
+
 
 @dataclass(frozen=True)
 class PhaseBReport:
@@ -104,6 +109,34 @@ def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBRe
     # Completeness is a property of the observed case sequence, never of the
     # caller's strictness flag, and never of the summary record alone.
     summary_present = SUMMARY_CASE in results
+
+    # A summary record disagreeing with the protocol's semantic case count is a
+    # corrupted or mismatched stream, not a truncation, so it fails closed in
+    # both strictness modes.
+    if summary_present:
+        summary_values = dict(results[SUMMARY_CASE].values)
+        if "out0" not in summary_values:
+            raise ProtocolError(
+                f"phaseb terminal record {SUMMARY_CASE!r} is missing its out0 completion count"
+            )
+        try:
+            claimed_count = int(summary_values["out0"], 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"phaseb terminal count is not an integer: {summary_values['out0']!r}"
+            ) from exc
+        if claimed_count != EXPECTED_TERMINAL_COUNT:
+            raise ProtocolError(
+                f"phaseb terminal count mismatch: {SUMMARY_CASE} claims {claimed_count} "
+                f"semantic cases, protocol expects {EXPECTED_TERMINAL_COUNT}"
+            )
+        observed_semantic = len([cid for cid in actual_order if cid != SUMMARY_CASE])
+        if actual_order == EXPECTED_ORDERED_CASES and observed_semantic != claimed_count:
+            raise ProtocolError(
+                f"phaseb terminal count mismatch: {SUMMARY_CASE} claims {claimed_count} "
+                f"semantic cases, stream carries {observed_semantic}"
+            )
+
     completed = actual_order == EXPECTED_ORDERED_CASES
     all_passed = completed and all(r.status == "PASS" for r in results.values())
 
