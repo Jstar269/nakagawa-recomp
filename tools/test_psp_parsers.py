@@ -578,16 +578,65 @@ class TestDualChannelReconciliation(unittest.TestCase):
         self.assertFalse(report.all_passed)
 
     def test_mutation_alien_case_id_rejected(self) -> None:
-        """Injecting an unknown alien case_id into stream is rejected."""
+        """An unknown alien case_id is rejected in BOTH strictness modes.
+
+        An unknown record is never a truncation, so the non-strict inspection
+        mode must not quietly filter it out either.
+        """
         stream = (
             SAMPLE_META
             + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS[:5])
             + "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 case_id=fpu-alien-cell status=PASS result=0x0\n"
             + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS[5:])
         )
-        with self.assertRaises(ProtocolError) as ctx:
-            parse_fpu_vector_output(stream, require_complete=True)
-        self.assertIn("unexpected cells", str(ctx.exception))
+        for strict in (True, False):
+            with self.subTest(require_complete=strict):
+                with self.assertRaises(ProtocolError) as ctx:
+                    parse_fpu_vector_output(stream, require_complete=strict)
+                self.assertIn("unknown cell", str(ctx.exception))
+
+    def test_mutation_foreign_test_id_record_rejected(self) -> None:
+        """A complete run plus one foreign-probe record must not pass.
+
+        Before this, both parsers filtered by ``test_id``, so a complete FPU
+        stream carrying an appended record from a different probe's run parsed
+        as an unqualified pass -- the "two independently valid streams from
+        different run identities" shape.
+        """
+        stream = (
+            SAMPLE_META
+            + "".join(_make_fpu_line(cid) for cid in FPU_EXPECTED_CELLS)
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-IO-001 case_id=io-done status=PASS result=0x0 out0=0x6\n"
+        )
+        for strict in (True, False):
+            with self.subTest(require_complete=strict):
+                with self.assertRaises(ProtocolError) as ctx:
+                    parse_fpu_vector_output(stream, require_complete=strict)
+                self.assertIn("foreign test_id", str(ctx.exception))
+
+    def test_mutation_phaseb_foreign_test_id_record_rejected(self) -> None:
+        stream = (
+            SAMPLE_META
+            + "".join(_make_phaseb_line(cid) for cid in PHASEB_EXPECTED_CASES)
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 case_id=fpu-done status=PASS result=0x0 out0=0xf\n"
+        )
+        for strict in (True, False):
+            with self.subTest(require_complete=strict):
+                with self.assertRaises(ProtocolError) as ctx:
+                    parse_phaseb_output(stream, require_complete=strict)
+                self.assertIn("foreign test_id", str(ctx.exception))
+
+    def test_mutation_phaseb_alien_case_id_rejected(self) -> None:
+        stream = (
+            SAMPLE_META
+            + "".join(_make_phaseb_line(cid) for cid in PHASEB_EXPECTED_CASES[:5])
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-PHASEB-001 case_id=PHB-ALIEN status=PASS result=0x0\n"
+        )
+        for strict in (True, False):
+            with self.subTest(require_complete=strict):
+                with self.assertRaises(ProtocolError) as ctx:
+                    parse_phaseb_output(stream, require_complete=strict)
+                self.assertIn("unknown case", str(ctx.exception))
 
 
 if __name__ == "__main__":

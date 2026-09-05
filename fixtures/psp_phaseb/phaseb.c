@@ -10,7 +10,9 @@
 //   3. Section B: heavyweight mutex matrix (19 cells, bounded helper threads)
 //   4. Section A: exit/delete repeat (12 cells, thread lifecycle stress)
 // Unbuffered stdout + file log (host0:/phaseb_log.txt) ensures every completed
-// cell is banked even if a subsequent experiment faults.
+// cell is banked even if a subsequent experiment faults.  The log is truncated
+// once at launch, before the first measured section, so a run's log is that
+// run's log and never a concatenation across boots.
 // Creates threads: exactly ONE thread-creating launch per boot, always LAST.
 // Test ID PSP-PHASEB-001. No emulator assumption is hardware fact; raw codes
 // are data; PASS = harness completed and measured outcome.
@@ -102,6 +104,28 @@ static void phaseb_emit(const char *text) {
             sceIoWrite(fd, text, strlen(text));
             sceIoClose(fd);
         }
+    }
+}
+
+/* Empty (or create) the device log before the first record of this run.
+
+   Every record afterwards is appended, exactly as before.  Without this the
+   log is append-only across boots, so a second run concatenates onto the
+   first and the host cannot tell a fresh complete run from a stale one plus a
+   partial one.  The four oracle probes already self-truncate at their META
+   write; this is the same step for Phase-B.
+
+   Ordering is safe by construction: this is a single host0 open/close on the
+   main thread before `phaseb_meta`, and therefore before section C -- the
+   first cell of the first measured section.  No measured window is open, no
+   callback is installed, and no helper thread exists yet. */
+static void phaseb_log_reset(void) {
+    if (g_emulated) {
+        return;
+    }
+    SceUID fd = sceIoOpen(PHASEB_LOG, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd >= 0) {
+        sceIoClose(fd);
     }
 }
 
@@ -779,6 +803,7 @@ int main(int argc, char *argv[]) {
     g_emulated = phaseb_emulator_present();
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    phaseb_log_reset();
     phaseb_meta();
 
     phaseb_emit("# --- BEGIN SECTION C: NESTED CALLBACK STACK ---\n");

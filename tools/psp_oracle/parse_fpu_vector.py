@@ -72,12 +72,22 @@ def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuV
     parsed = parse_output(text)
     fpu_ordered_results: list[TestResult] = []
     seen: set[str] = set()
+    known = set(EXPECTED_CELLS)
     for r in parsed.results:
-        if r.test_id == EXPECTED_TEST_ID:
-            if r.case_id in seen:
-                raise ProtocolError(f"duplicate fpu cell: {r.case_id}")
-            seen.add(r.case_id)
-            fpu_ordered_results.append(r)
+        # A foreign test_id or an unknown cell is never a truncation, so both
+        # fail closed in *both* strictness modes.  Filtering them out instead
+        # would let a complete FPU run plus an appended record from another
+        # probe's run parse as an unqualified pass.
+        if r.test_id != EXPECTED_TEST_ID:
+            raise ProtocolError(
+                f"fpu stream carries a foreign test_id {r.test_id!r} (case {r.case_id!r})"
+            )
+        if r.case_id not in known:
+            raise ProtocolError(f"fpu stream contains unknown cell: {r.case_id}")
+        if r.case_id in seen:
+            raise ProtocolError(f"duplicate fpu cell: {r.case_id}")
+        seen.add(r.case_id)
+        fpu_ordered_results.append(r)
 
     fpu_results = {r.case_id: r for r in fpu_ordered_results}
 
@@ -90,9 +100,9 @@ def parse_fpu_vector_output(text: str, *, require_complete: bool = True) -> FpuV
             missing = [cid for cid in EXPECTED_CELLS if cid not in fpu_results]
             if missing:
                 raise ProtocolError(f"fpu stream incomplete, missing cells: {missing}")
-            extra = [cid for cid in actual_order if cid not in EXPECTED_CELLS]
-            if extra:
-                raise ProtocolError(f"fpu stream contains unexpected cells: {extra}")
+            # Unknown cells are rejected above, in both strictness modes, so a
+            # complete-set mismatch that is not a missing cell can only be an
+            # ordering fault.
             raise ProtocolError(
                 f"fpu cells out of order: expected {EXPECTED_CELLS}, got {actual_order}"
             )

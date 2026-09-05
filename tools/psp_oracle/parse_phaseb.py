@@ -72,12 +72,22 @@ def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBRe
     parsed = parse_output(text)
     ordered_results: list[TestResult] = []
     seen: set[str] = set()
+    known = set(EXPECTED_ORDERED_CASES)
     for r in parsed.results:
-        if r.test_id == EXPECTED_TEST_ID:
-            if r.case_id in seen:
-                raise ProtocolError(f"duplicate phaseb case: {r.case_id}")
-            seen.add(r.case_id)
-            ordered_results.append(r)
+        # A foreign test_id or an unknown case is never a truncation, so both
+        # fail closed in *both* strictness modes.  Filtering them out instead
+        # would let a complete Phase-B run plus an appended record from another
+        # run parse as an unqualified pass.
+        if r.test_id != EXPECTED_TEST_ID:
+            raise ProtocolError(
+                f"phaseb stream carries a foreign test_id {r.test_id!r} (case {r.case_id!r})"
+            )
+        if r.case_id not in known:
+            raise ProtocolError(f"phaseb stream contains unknown case: {r.case_id}")
+        if r.case_id in seen:
+            raise ProtocolError(f"duplicate phaseb case: {r.case_id}")
+        seen.add(r.case_id)
+        ordered_results.append(r)
 
     results = {r.case_id: r for r in ordered_results}
     actual_order = [r.case_id for r in ordered_results]
@@ -89,9 +99,9 @@ def parse_phaseb_output(text: str, *, require_complete: bool = True) -> PhaseBRe
                 raise ProtocolError(
                     f"phaseb stream incomplete, missing {len(missing)} cases: {missing[:5]}"
                 )
-            extra = [cid for cid in actual_order if cid not in EXPECTED_ORDERED_CASES]
-            if extra:
-                raise ProtocolError(f"phaseb stream contains unexpected cases: {extra}")
+            # Unknown cases are rejected above, in both strictness modes, so a
+            # complete-set mismatch that is not a missing case can only be an
+            # ordering fault.
             raise ProtocolError(
                 f"phaseb cases out of order: expected {EXPECTED_ORDERED_CASES}, got {actual_order}"
             )
