@@ -222,11 +222,19 @@ still probes registry membership at run time (`sr_hle_test_is_registered`) and r
 `registry-scope` for anything it cannot reach, because calling an unregistered NID would
 `_Exit(7)`.
 
-## Current-`main` classification
+## Snapshot classification (superseded counts — live table is generated)
 
-Measured on `hle_thread_selftest.exe` built from this branch. Every value in the
-"current main" column is the pinned `base[]` entry in `src/rt/intr_conformance.h`,
-asserted on every run.
+Measured on `hle_thread_selftest.exe` built from the captured revision. Every
+value in the snapshot column below is the pinned `base[]` entry in
+`src/rt/intr_conformance.h` **as captured**, asserted on every run at that time.
+
+> **Snapshot boundary.** This table predates the dedicated Mutex handlers
+> (`h_LockMutex`/`h_LockMutexCB` in `src/rt/hle.c`): the 18 Mutex cells it
+> counts as `h_ok` deviations have since moved. The tables are preserved
+> unchanged as historical evidence — do not cite their totals as current.
+> Current counts live in `src/rt/intr_conformance.h` and are enforced by
+> `tools/test_intr_waits_matrix.py`; regenerate the table from there instead
+> of hand-editing the numbers below.
 
 * **CONFORMS** - current main already produces the hardware value.
 * **known deviation** - current main produces a different, exactly pinned value.
@@ -594,6 +602,11 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      valid, both of which satisfy the drive mask, so they are indistinguishable until PR-E's type
      validation exists. A context check placed ahead of that validation would drive the
      invalid-type cells to a third value and register as a **regression**, not a deviation.
+   **Snapshot note (Mutex carve-out superseded).** Dedicated
+   `h_LockMutex`/`h_LockMutexCB` handlers with intr-context and wait-permission
+   validation have since landed in `src/rt/hle.c`, so the 18 LockMutex cells
+   above no longer read `0x00000000`. Their rows keep snapshot values as
+   evidence; read current conformance from `src/rt/intr_conformance.h`.
 4. **PR-D - `ILLEGAL_CONTEXT` from interrupt context (S3+S5).** Requires PR-B/PR-C so the
    handlers already have a context check to extend. After the Mutex, VolatileMem and UMD
    ownership moves it retires the 12 `spin-unbounded` NOT RUN cells plus **18** `intr-ctx`

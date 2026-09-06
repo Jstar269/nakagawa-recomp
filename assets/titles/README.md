@@ -9,7 +9,11 @@ They must not contain:
 - keys, decrypted output, local absolute paths, or private workspace bindings;
 - decompiler output, recovered source, oracle traces, savedata, screenshots, or route evidence.
 
-Private bindings belong in a separate Git-ignored workspace manifest. The
+Private bindings are explicit local inputs — command-line bindings
+(`--game-elf`/`--build-dir`/`--module-dir`/`--psp-header`), `TITLE_MANIFEST=`
+and `GAME_*` on a direct Make line, or `-TitleManifest` plus the
+`place_game_here/` layout for the manager — and are never written back into a
+manifest file. The
 checked-in synthetic manifests prove the schema and validator without claiming
 that the current runtime is general-purpose. HST title configuration remains
 local-only unless a later, separately reviewed publication decision changes the
@@ -63,12 +67,16 @@ fixture reuses any address the runtime previously hardcoded.
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
 span is manifest data, and it reaches `analyze`/`codegen` only through an explicit
-`--extra-span` argument or the `HST_EXTRA_SPANS` / `TITLE_EXTRA_SPANS` seam that the manager fills from
-the validated plan (both carry the identical rendering; `TITLE_EXTRA_SPANS` is
-the host-portable generic alias). See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
+`--extra-span` argument or the `TITLE_EXTRA_SPANS` seam that the manager fills from
+the validated plan (the host-portable generic contract). The HST manager path
+additionally synthesizes the legacy `HST_EXTRA_SPANS` alias for the same value;
+generic titles must use `TITLE_EXTRA_SPANS` only. See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
 `hst-ucus98701.json` is intentionally not checked in: it contains title-specific
-identity, module addresses, and private-route filesystem configuration. The
-opt-in `hst_manager.ps1 -TitleManifest` path may consume a local ignored manifest;
+identity, module addresses, and private-route filesystem configuration. It is
+publication-excluded via `assets/public_source_profile.json`, with an explicit
+`.gitignore` accident guard. The
+opt-in `hst_manager.ps1 -TitleManifest` path may consume a local copy of that
+manifest;
 that does not make the runtime generic or prove portability/correctness for
 another title.

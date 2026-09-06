@@ -20,10 +20,21 @@ Start with a checked-in, versioned manifest under `assets/titles/`. It is the
 public source of title semantics: identity, disc/revision policy, executable
 base/entry, codegen profile, BSS metadata policy, required module names/load
 addresses, and public filesystem/profile requirements. Validate it before using
-it:
+it (this example is copy-pasteable from a public clone):
 
 ```powershell
 python tools/title_manifest.py assets/titles/synthetic.json
+python tools/title_codegen_plan.py assets/titles/synthetic.json --print-protected-digest
+```
+
+The retail HST manifest (`assets/titles/hst-ucus98701.json`) is intentionally
+not checked in and is publication-excluded (see
+[`assets/public_source_profile.json`](../assets/public_source_profile.json));
+a public clone has no copy. With a local copy plus private bindings, the same
+planner drives the HST lane — this second example is private-local-only, not
+runnable from a public clone:
+
+```powershell
 python tools/title_codegen_plan.py assets/titles/hst-ucus98701.json `
   --game-name=hst `
   --game-elf=place_game_here/EBOOT.elf `
@@ -37,24 +48,31 @@ The manifest is not a storage location for absolute paths, usernames, hashes,
 keys, retail bytes, routes, saves, or oracle evidence. Those are private
 workspace bindings supplied locally and remain outside Git.
 
-For the privately route-validated HST title, the opt-in manager path is:
+For the privately route-validated HST title, the opt-in manager path is
+(private-local-only: it requires a local, publication-excluded copy of the
+retail HST manifest, so it is not runnable from a public clone):
 
 ```powershell
 .\hst_manager.ps1 -Action BuildFull `
   -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
-The manager accepts only the checked-in HST manifest in this slice. Every
+The manager accepts only that local HST retail manifest in this slice. Every
 build-facing value comes from the validated plan — the manager keeps no second copy
 of the title contract — and it re-checks the manifest's protected digest immediately
 before running Make, so a manifest edited after planning fails closed rather than
 building half of each contract. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and
 `-FuncsPerChunk` remain operational overrides. An explicit override wins only where
-the contract permits it. Without `-TitleManifest`, the existing HST
-discovery/default path is preserved exactly.
+the contract permits it. The planner default is the single authority for the
+chunk-size default; the matching Make, manager, and codegen fallbacks must agree
+with it rather than define it. Without `-TitleManifest`, the existing HST
+discovery/default path is preserved exactly as a LEGACY_ADAPTER: it exists only
+for the pre-manifest HST workflow and is retired together with that path.
 
-`assets/titles/pspdev-phase5.json` is a second, materially different source-owned
-fixture (`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
+`assets/titles/pspdev-phase5.json` is one of three materially different
+source-owned fixtures (with `synthetic.json` and `synthetic-title2.json`, the
+latter added for the generic-title planning proof)
+(`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
 It proves the planner is genuinely multi-title: a different load base, no guest
 modules, and a different feature surface flow through the same manifest → plan →
 codegen path.
@@ -118,10 +136,13 @@ mingw32-make GAME_NAME=mygame GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0x088
 
 The checked-in `hst_manager.ps1` is still an HST-specific orchestration layer,
 not a generic title runner. The manifest adapter is read-only and currently
-accepts only the checked-in HST manifest; it does not prove runtime portability
+accepts only the local HST retail manifest (publication-excluded, never
+checked in); it does not prove runtime portability
 or correctness for another title. Use Make directly with that title's validated
 manifest and explicit private bindings until a title-specific manager path has
-been deliberately added and verified.
+been deliberately added and verified. Direct Make without a manifest remains an
+explicit non-canonical escape hatch: it bypasses the planner and its protected
+digest, so it carries no title contract.
 
 The first build can be substantially slower than a runtime-only rebuild because codegen must translate the title's MIPS functions and compile the generated translation units.
 
