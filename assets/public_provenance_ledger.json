@@ -5952,11 +5952,11 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "provenance-refresh-workflow-20260827",
-        "evidence_tier": "S",
+        "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "282c48fbf37083edc7065bda4b0b0e5c3b9baad80cfb43b169916beeb071a24a"
+      "sha256": "16ae119fbfd3357b6183bcb908207a0de6f84f3479edb1bbfb55142e55bab4e6"
     },
     {
       "path": "tools/prxload.py",
@@ -6977,7 +6977,7 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "provenance-tooling",
-        "evidence_tier": "S",
+        "evidence_tier": "H",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
@@ -7617,38 +7617,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "92f1cf332519982f7deb13adbb9712372fd32a8f",
-    "candidate_tree": "f86da671798c63a474b4c850782b18196d2f18aa",
+    "trusted_tree": "971c9dca9cb1faf0fbe9b5c81fca05fe91d41348",
+    "candidate_tree": "3c8700685281ee0157e1138b32f5d37d35db1e6f",
     "refreshed_paths": [
-      ".gitignore",
-      "ISSUES.md",
-      "Makefile",
-      "README.md",
-      "assets/titles/README.md",
-      "docs/HARDWARE_ORACLE.md",
-      "docs/IMPORT_AUDIT.md",
-      "docs/PORTING.md",
-      "docs/PSPDEV_LOCAL_VERIFICATION.md",
-      "docs/PSP_INTR_WAITS_MATRIX.md",
-      "docs/README.md",
-      "docs/SETUP.md",
-      "docs/TITLE_CODEGEN_PLAN.md",
-      "docs/TOOLCHAIN_BASELINE_2026-08.md",
-      "docs/research/PSP_THREADING_SEMANTICS.md",
-      "tools/lint_docs.py",
-      "tools/test_generic_title_planning_proof.py",
-      "tools/test_lint_docs.py",
-      "tools/title_manager_plan.ps1"
-    ],
-    "policy_delta": {
-      "include_added": [],
-      "include_removed": [
-        "TODO.md"
-      ],
-      "exclude_added": [],
-      "exclude_removed": [],
-      "rule_changes": []
-    },
-    "blessed_candidate_policy_sha256": "9cb92075605267b64629e30b53cf2f2eae1e3afec019bb606ff43cd3672d7d60"
+      "docs/PUBLICATION_READINESS.md",
+      "tools/provenance_ledger.py",
+      "tools/test_provenance_ledger.py"
+    ]
   }
 }
