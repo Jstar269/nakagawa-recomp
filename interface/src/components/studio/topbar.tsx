@@ -1,13 +1,13 @@
 "use client";
 
-import { CircleDot, Volleyball, Sun, Moon, Hammer } from "lucide-react";
+import { CircleDot, Volleyball, Sun, Moon, Hammer, Play } from "lucide-react";
 import { useStudio } from "./studio-context";
 import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export function Topbar() {
-  const { isoMeta, setSection, requestBuild } = useStudio();
+  const { isoMeta, section, setSection, requestBuild } = useStudio();
   const { theme, toggle: toggleTheme } = useTheme();
   const build = () => {
     setSection("build");
@@ -16,12 +16,24 @@ export function Topbar() {
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 glass">
       <div className="flex items-center gap-3 px-4 h-14">
-        <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center shadow-[0_0_18px_-2px] shadow-primary/40">
+        <div
+          onClick={() => setSection("launcher")}
+          className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center shadow-[0_0_18px_-2px] shadow-primary/40 cursor-pointer hover:scale-105 transition-transform"
+        >
           <Volleyball className="size-4.5" />
         </div>
         <div className="min-w-0 leading-tight">
-          <div className="font-semibold text-sm tracking-tight truncate">Nakagawa Recomp</div>
-          <p className="text-[10px] text-muted-foreground truncate">Local native build, run, and boot diagnostics</p>
+          <div className="font-semibold text-sm tracking-tight truncate flex items-center gap-2">
+            <span>Nakagawa Recomp</span>
+            <Badge variant="outline" className="text-[9px] h-4 px-1 text-primary border-primary/40">
+              {section === "launcher" ? "Player Mode" : "Studio Mode"}
+            </Badge>
+          </div>
+          <p className="text-[10px] text-muted-foreground truncate">
+            {section === "launcher"
+              ? "PC Native Game Launcher & Settings"
+              : "Local native build, run, and boot diagnostics"}
+          </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
           {isoMeta.matchedTitle ? (
@@ -34,9 +46,15 @@ export function Topbar() {
           <Button variant="ghost" size="sm" className="size-8 p-0" onClick={toggleTheme} aria-label="Toggle color theme">
             {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </Button>
-          <Button size="sm" className="h-8 gap-1.5" onClick={build}>
-            <Hammer className="size-3.5" /> BuildFull
-          </Button>
+          {section === "launcher" ? (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => setSection("build")}>
+              <Hammer className="size-3.5" /> Studio Tools
+            </Button>
+          ) : (
+            <Button size="sm" className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs" onClick={() => setSection("launcher")}>
+              <Play className="size-3.5 fill-current" /> Play Game
+            </Button>
+          )}
         </div>
       </div>
     </header>

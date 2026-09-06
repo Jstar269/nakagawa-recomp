@@ -7,6 +7,7 @@ import { Sidebar, MobileNav } from "@/components/studio/sidebar";
 import { Footer } from "@/components/studio/footer";
 import { SummaryRail } from "@/components/studio/summary-rail";
 import { PresetBar } from "@/components/studio/preset-bar";
+import { LauncherPanel } from "@/components/studio/launcher-panel";
 import { IsoLoader } from "@/components/studio/iso-loader";
 import { GraphicsPanel } from "@/components/studio/graphics-panel";
 import { PerformancePanel } from "@/components/studio/performance-panel";
@@ -27,6 +28,7 @@ import { ProfilerPanel } from "@/components/studio/profiler-panel";
 function MainContent() {
   const { section } = useStudio();
   const panels: Record<string, React.ReactNode> = {
+    launcher: <LauncherPanel />,
     iso: <IsoLoader />,
     graphics: <GraphicsPanel />,
     performance: <PerformancePanel />,

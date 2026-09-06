@@ -15,6 +15,7 @@ export interface ManagerRunOptions {
 export interface ManagerLaunchRequest {
   action: DashboardManagerAction;
   run?: ManagerRunOptions;
+  titleManifest?: string;
 }
 
 const ACTION_SET = new Set<string>(DASHBOARD_MANAGER_ACTIONS);
@@ -31,16 +32,27 @@ function rejectUnknownKeys(value: Record<string, unknown>, allowed: Set<string>,
 
 export function parseManagerLaunchRequest(value: unknown): ManagerLaunchRequest {
   if (!isRecord(value)) throw new Error("request body must be a JSON object");
-  rejectUnknownKeys(value, new Set(["action", "run"]), "request");
+  rejectUnknownKeys(value, new Set(["action", "run", "titleManifest"]), "request");
 
   if (typeof value.action !== "string" || !ACTION_SET.has(value.action)) {
     throw new Error(`action must be one of: ${DASHBOARD_MANAGER_ACTIONS.join(", ")}`);
   }
   const action = value.action as DashboardManagerAction;
 
+  let titleManifest: string | undefined = undefined;
+  if (value.titleManifest !== undefined) {
+    if (typeof value.titleManifest !== "string" || value.titleManifest.length === 0 || value.titleManifest.length > 512) {
+      throw new Error("titleManifest must be a non-empty string under 512 characters");
+    }
+    if (/[\r\n\t\0]|\.\.[\\/]/.test(value.titleManifest)) {
+      throw new Error("titleManifest contains invalid characters or traversal");
+    }
+    titleManifest = value.titleManifest;
+  }
+
   if (action !== "Run") {
     if (value.run !== undefined) throw new Error("run options are only valid for the Run action");
-    return { action };
+    return titleManifest ? { action, titleManifest } : { action };
   }
 
   const rawRun = value.run === undefined ? {} : value.run;
@@ -69,7 +81,7 @@ export function parseManagerLaunchRequest(value: unknown): ManagerLaunchRequest 
     throw new Error("run.snapshotInterval must be null or an integer from 1 to 3600");
   }
 
-  return {
+  const result: ManagerLaunchRequest = {
     action,
     run: {
       profile: profile as RunProfile,
@@ -79,12 +91,17 @@ export function parseManagerLaunchRequest(value: unknown): ManagerLaunchRequest 
       snapshotInterval: snapshotInterval === null ? null : Number(snapshotInterval),
     },
   };
+  if (titleManifest) result.titleManifest = titleManifest;
+  return result;
 }
 
 export function managerPowerShellParameters(
   request: ManagerLaunchRequest,
 ): Record<string, string | number | boolean> {
   const parameters: Record<string, string | number | boolean> = { Action: request.action };
+  if (request.titleManifest) {
+    parameters.TitleManifest = request.titleManifest;
+  }
   if (request.action === "Run" && request.run) {
     parameters.Profile = request.run.profile;
     parameters.Duration = request.run.durationSeconds;

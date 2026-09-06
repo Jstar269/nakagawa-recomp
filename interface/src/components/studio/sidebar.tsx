@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Play,
   Disc3,
   Hammer,
   Cpu,
@@ -19,6 +20,7 @@ import { useStudio, type SectionId } from "./studio-context";
 import { Button } from "@/components/ui/button";
 
 const NAV: { id: SectionId; label: string; icon: LucideIcon; hint: string }[] = [
+  { id: "launcher", label: "Play Game", icon: Play, hint: "Game Launcher" },
   { id: "iso", label: "Game ISO", icon: Disc3, hint: "Mount & inspect" },
   { id: "profiler", label: "Perf Profiler", icon: Flame, hint: "Hottest loops & paths" },
   { id: "build", label: "Build & Run", icon: Hammer, hint: "Native manager" },

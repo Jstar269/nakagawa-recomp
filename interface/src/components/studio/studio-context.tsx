@@ -7,6 +7,7 @@ import type { IsoMeta, RecompilerConfig } from "@/lib/recompiler/types";
 import { emptyIsoMeta } from "@/lib/recompiler/profiles";
 
 export type SectionId =
+  | "launcher"
   | "iso"
   | "graphics"
   | "performance"
@@ -107,7 +108,16 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const native = useMemo(() => nativeConfig(), []);
   const [config, setConfig] = useState<RecompilerConfig>(() => defaultConfig("minimal"));
   const [isoMeta, setIsoMeta] = useState<IsoMeta>(() => emptyIsoMeta());
-  const [section, setSection] = useState<SectionId>("iso");
+  const [section, setSection] = useState<SectionId>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const s = params.get("section");
+      if (s && ["launcher", "iso", "graphics", "performance", "limitations", "controllers", "patches", "build", "internals", "assets", "progress", "porting", "troubleshooting", "visual-regression", "test-lab", "build-health", "profiler"].includes(s)) {
+        return s as SectionId;
+      }
+    }
+    return "launcher";
+  });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
