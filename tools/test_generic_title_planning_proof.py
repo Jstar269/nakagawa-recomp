@@ -259,7 +259,7 @@ class HstProfileIsolation(unittest.TestCase):
             self.assertIn(expected_fragment, proc.stdout)
 
     def test_synthetic_title2_is_rejected_by_hst_adapter(self) -> None:
-        """The HST manager accepts only the checked-in HST retail manifest, not synthetics."""
+        """The HST manager accepts only the local HST retail manifest, not synthetics."""
         manifest = _load(SYNTHETIC2)
         plan = title_codegen_plan.build_manager_plan(
             manifest,
@@ -267,7 +267,7 @@ class HstProfileIsolation(unittest.TestCase):
             game_elf=pathlib.Path("build/fixtures/synthetic2.elf"),
             build_dir=pathlib.Path("build/synthetic_title2"),
         )
-        self._run_adapter_reject(plan, "the HST manager accepts only the checked-in HST retail manifest")
+        self._run_adapter_reject(plan, "the HST manager accepts only the local HST retail manifest")
 
     def test_unknown_title_does_not_inherit_hst_constants(self) -> None:
         """A manifest with an unknown id/title_kind gets no HST modules/spans/disc."""
@@ -287,7 +287,7 @@ class HstProfileIsolation(unittest.TestCase):
         self.assertEqual(plan["required_guest_modules"], [])
         self.assertIsNone(plan["disc"])
         # Must still be rejected by HST adapter (mutant: removing isolation would accept it)
-        self._run_adapter_reject(plan, "the HST manager accepts only the checked-in HST retail manifest")
+        self._run_adapter_reject(plan, "the HST manager accepts only the local HST retail manifest")
 
     def test_tampering_title_identity_to_hst_still_fails_due_to_other_pins(self) -> None:
         """Mutant control: even if an attacker flips id to hst-ucus98701-v1, other HST pins catch it."""
