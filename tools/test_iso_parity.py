@@ -139,12 +139,14 @@ class IsoParityTests(unittest.TestCase):
         self.harness_c = self.temp_dir / "parity_harness.c"
         self.exe_path = self.temp_dir / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
 
+        has_launch = (ROOT / "src" / "core" / "nk_launch.c").is_file()
         core_srcs = [
             ROOT / "src" / "core" / "nk_iso.c",
             ROOT / "src" / "core" / "nk_library.c",
-            ROOT / "src" / "core" / "nk_launch.c",
             ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
+        if has_launch:
+            core_srcs.append(ROOT / "src" / "core" / "nk_launch.c")
         if sys.platform == "win32":
             core_srcs.append(ROOT / "src" / "core" / "nk_platform_win32.c")
         else:
@@ -156,7 +158,9 @@ class IsoParityTests(unittest.TestCase):
 #include <assert.h>
 #include "nk_iso.h"
 #include "nk_library.h"
+#if {1 if has_launch else 0}
 #include "nk_launch.h"
+#endif
 
 int main(int argc, char **argv) {{
     if (argc < 2) return 1;
@@ -222,6 +226,7 @@ int main(int argc, char **argv) {{
         return 0;
     }}
 
+#if {1 if has_launch else 0}
     if (strcmp(mode, "launch_test") == 0) {{
         if (argc < 4) return 1;
         const char *repo_root = argv[2];
@@ -244,6 +249,7 @@ int main(int argc, char **argv) {{
         printf("ISO:%s\\n", session.iso_path);
         return 0;
     }}
+#endif
 
     return 2;
 }}
@@ -349,6 +355,8 @@ int main(int argc, char **argv) {{
 
     def test_native_launch_plan(self) -> None:
         """Verify native C launch session resolves mock executable and ISO."""
+        if not (ROOT / "src" / "core" / "nk_launch.c").is_file():
+            self.skipTest("nk_launch.c not present in this slice")
         mock_root = self.temp_dir / "mock_repo"
         bin_dir = mock_root / "build" / "hst"
         bin_dir.mkdir(parents=True, exist_ok=True)
