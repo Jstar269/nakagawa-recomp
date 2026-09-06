@@ -1,0 +1,152 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+
+#include "player_state.h"
+#include <stdio.h>
+#include <string.h>
+
+void player_app_init(PlayerApp *app) {
+    if (!app) return;
+    memset(app, 0, sizeof(*app));
+    app->active_view = VIEW_LIBRARY;
+    app->selected_game_index = -1;
+    app->window_width = 1280;
+    app->window_height = 720;
+    app->dpi_scale = 1.0f;
+    app->should_quit = false;
+
+    /* Default settings */
+    app->settings.resolution_scale = 4; /* 1080p modern default */
+    app->settings.fullscreen = false;
+    app->settings.vsync = true;
+    app->settings.fps_cap = 60;
+    app->settings.master_volume = 80;
+    snprintf(app->settings.controller_name, sizeof(app->settings.controller_name), "DualSense Wireless Controller");
+    app->settings.controller_connected = true;
+    snprintf(app->settings.save_directory, sizeof(app->settings.save_directory), "savedata");
+
+    /* Default preparation state */
+    app->prep_state.stage = STAGE_IDLE;
+    app->prep_state.percentage = 0.0f;
+    app->prep_state.cancellable = true;
+
+    /* Initialize native library */
+    nk_library_init(&app->library);
+    NkResult lib_res = nk_library_load(&app->library, NULL);
+    if (lib_res == NK_OK && app->library.count > 0) {
+        player_app_sync_library(app);
+    }
+}
+
+void player_app_sync_library(PlayerApp *app) {
+    if (!app) return;
+    app->game_count = 0;
+    for (int i = 0; i < app->library.count && i < MAX_LIBRARY_GAMES; i++) {
+        app->games[i] = app->library.entries[i];
+        app->game_count++;
+    }
+    if (app->game_count > 0 && app->selected_game_index < 0) {
+        app->selected_game_index = 0;
+    }
+}
+
+bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
+    if (!app || !game || game->disc_id[0] == '\0') return false;
+
+    /* Update native library struct */
+    nk_library_add_or_update(&app->library, game);
+    nk_library_save(&app->library, NULL);
+
+    player_app_sync_library(app);
+    return true;
+}
+
+void player_app_set_view(PlayerApp *app, PlayerView view) {
+    if (!app) return;
+    app->active_view = view;
+    app->focus_index = 0;
+}
+
+void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view) {
+    if (!app) return;
+    snprintf(app->last_error.error_code, sizeof(app->last_error.error_code), "%s", code ? code : "ERROR_UNKNOWN");
+    snprintf(app->last_error.title, sizeof(app->last_error.title), "%s", title ? title : "Operation Failed");
+    snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
+    snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
+    app->last_error.return_view = return_view;
+    app->active_view = VIEW_ERROR;
+}
+
+void player_app_populate_sample_games(PlayerApp *app) {
+    if (!app) return;
+    if (app->game_count > 0) return; /* Don't overwrite loaded library */
+
+    GameRecord p5;
+    memset(&p5, 0, sizeof(p5));
+    snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
+    snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
+    snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
+    snprintf(p5.iso_path, sizeof(p5.iso_path), "fixtures/pspdev_phase5/disc/game.iso");
+    snprintf(p5.prepared_root, sizeof(p5.prepared_root), "fixtures/pspdev_phase5");
+    snprintf(p5.title_id, sizeof(p5.title_id), "pspdev-phase5-v1");
+    p5.iso_size_bytes = 2097152ULL;
+    p5.status = NK_STATUS_VERIFIED;
+    p5.is_prepared = true;
+    snprintf(p5.last_played, sizeof(p5.last_played), "Ready");
+
+    player_app_add_game(app, &p5);
+}
+
+bool player_app_launch_game(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const GameRecord *game = &app->games[game_index];
+
+    printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
+
+    NkResult res = nk_launch_prepare_session(&app->launch_session, game, ".");
+    if (res != NK_OK) {
+        printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
+        player_app_set_error(
+            app,
+            "RUNTIME_NOT_FOUND",
+            "Recompiled Binary Not Available",
+            app->launch_session.last_error[0] ? app->launch_session.last_error : "The recompiled game binary could not be found under build/hst/ or bin/.",
+            "Return to Library",
+            VIEW_LIBRARY
+        );
+        return false;
+    }
+
+    /* Apply user settings via typed runtime configuration */
+    app->launch_session.config.resolution_scale = app->settings.resolution_scale;
+    app->launch_session.config.fps_cap = app->settings.fps_cap;
+    app->launch_session.config.vsync = app->settings.vsync;
+    app->launch_session.config.fullscreen = app->settings.fullscreen;
+
+    printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
+
+    NkResult start_res = nk_launch_start(&app->launch_session);
+    if (start_res != NK_OK) {
+        printf("[PLAYER] Runtime process spawn failed: %s\n", app->launch_session.last_error);
+        player_app_set_error(
+            app,
+            "PROCESS_SPAWN_FAILED",
+            "Failed to Launch Game",
+            app->launch_session.last_error[0] ? app->launch_session.last_error : "Operating system failed to start the runtime process.",
+            "Return to Library",
+            VIEW_LIBRARY
+        );
+        return false;
+    }
+
+    app->is_game_running = true;
+    printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
+    return true;
+}
+
+void player_app_stop_game(PlayerApp *app) {
+    if (!app || !app->is_game_running) return;
+    printf("[PLAYER] Stopping active game session...\n");
+    nk_launch_stop(&app->launch_session);
+    app->is_game_running = false;
+}
