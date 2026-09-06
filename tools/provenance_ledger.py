@@ -345,6 +345,7 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
             target.parent.mkdir(parents=True, exist_ok=True)
             originals.append((target, target.read_bytes() if target.exists() else None))
         for target, content in resolved:
+            # codeql[suppress: py/clear-text-storage-sensitive-data] Public metadata only (ledger, export, policy); no secrets.
             descriptor, temporary = tempfile.mkstemp(
                 prefix=".provenance-stage-", suffix=".tmp", dir=str(target.parent))
             os.close(descriptor)
