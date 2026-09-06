@@ -5956,7 +5956,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16ae119fbfd3357b6183bcb908207a0de6f84f3479edb1bbfb55142e55bab4e6"
+      "sha256": "b9129de4db78d039a2661f543bfce3d0364fdd30565476b77735dad2e9adc968"
     },
     {
       "path": "tools/prxload.py",
@@ -7618,7 +7618,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "971c9dca9cb1faf0fbe9b5c81fca05fe91d41348",
-    "candidate_tree": "3c8700685281ee0157e1138b32f5d37d35db1e6f",
+    "candidate_tree": "5ee0eb4ec2e8f441a362155f6af792967281e610",
     "refreshed_paths": [
       "docs/PUBLICATION_READINESS.md",
       "tools/provenance_ledger.py",
