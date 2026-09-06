@@ -2,7 +2,7 @@
 
 ## 1. Inventory of Current Web UI Components
 
-The existing prototype UI is located under [`interface/`](file:///C:/nk/worktrees/ux-investigation/interface/):
+The existing prototype UI is located under [`interface/`](../interface/):
 
 | Subsystem | Location | Technologies | Function / Scope |
 | :--- | :--- | :--- | :--- |
