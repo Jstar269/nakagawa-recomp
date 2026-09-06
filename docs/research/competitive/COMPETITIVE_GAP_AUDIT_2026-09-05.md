@@ -13,10 +13,12 @@ Issues. If this file disagrees with any of those, the live authority wins. Compe
 taken from a source-level verification pass at pinned commits (Appendix A) and from public
 release notes where noted; re-verify at the implementation commit before building on any idea.
 
-Review base:
+NAKAGAWA_REVIEW_BASE = `312d1d5d844adce1cd252fb8fd1b6ff6a1553a7b` (public `main`, fetched
+2026-09-05). Every Nakagawa-sourced claim in this snapshot was re-verified against that exact
+commit, not against any local or blocked checkout lineage. An earlier draft written against a
+divergent local checkout was superseded: any claim the public tree could not support was removed
+or relabeled, and no non-public SHA remains as a Nakagawa authority in this PR.
 
-- Nakagawa worktree branch `research/competitive-audit-2026-09-05`, base `12bcc522...`
-  (`origin/main` at `312d1d5d...` when fetched 2026-09-05).
 - Competitor clones: `jessicanataliagta/PSPRecomp` `f6e7d41`; `sp00nznet/psprecomp` `caca759`;
   `wizardengineer/psprecomp` `bd3c33e`; `N64Recomp/RecompFrontend` `b1a1477` (shallow, default
   branch HEADs).
@@ -27,8 +29,10 @@ release, asset, or publication.
 
 ## 1. Position statement
 
-Nakagawa is the deepest single-title PSP recomp bring-up in the field (private HST route plus a
-source-owned public ladder) and simultaneously the least distribution-complete. Its durable
+Among the public PSP recompilation projects reviewed in this dated audit, Nakagawa showed the
+deepest hardware-evidence and single-title bring-up discipline observed by this review (private
+HST route plus a source-owned public ladder), while remaining the least distribution-complete
+of the reviewed set. Its durable
 strengths are evidence discipline (hardware-measured semantics on PSP-3001/6.61-ARK), a
 fail-closed AOT/interpreter execution contract proven by cosimulation with mutation kills, and
 machine-enforced governance (provenance ledger, public-source profile, publication audits,
@@ -57,7 +61,8 @@ implementation, not the architectural ceiling**. Consequences for planning:
    in every known PSP recomp project; HLE there is expected. What must be measured and modelled
    (not approximated) is the *low-level behavior beneath* those boundaries: clocks, VCOUNT/
    VBLANK delivery, interrupt gating, wait/wake semantics, callbacks. This is Nakagawa's existing
-   moat and the layer directly under "measured low-level PSP platform behavior."
+   measured-behavior strength and the layer directly under "measured low-level PSP platform
+   behavior."
 2. **Genuine guest modules should execute when practical.** Where a PSP user module (for
    example libfont, PSMF/`scePsmf*` middleware, or a future dynamic PRX) is supplied as guest
    code, the destination model prefers running that guest code and HLE-ing only the true kernel/
@@ -257,7 +262,8 @@ Items 1–10 are the first tier (months 0–6); items 11–15 are the second tie
    destination model.
 4. **Hardware-conformance expansion.** Productize `tools/psp_oracle` into a reproducible,
    versioned conformance suite growing the measured matrix (audio, UMD/ISO latency, GE
-   interrupts, waits/intr rows). The moat no competitor has.
+   interrupts, waits/intr rows). A differentiator none of the reviewed competitors matched in
+   this review.
 5. **Cross-platform / host-abstraction architecture.** Extract Win32 from `hle.c` and friends
    behind the host layer; make the x86-64-free architectural contract explicit now so ARM64 and
    macOS do not become afterthoughts; Linux end-to-end first, ARM64/macOS gates as portability
@@ -327,8 +333,8 @@ Everything marked "verified" below was read at the pinned commit; everything els
   (`docs/provenance/GENERICITY_CENSUS_20260826.md`, revalidated 2026-08-27; recheck against live
   source — later waves migrated several other groups to typed `runtime_bindings` per
   `docs/PORTING.md`).
-- `hle.c` is ~10.9k lines; the dated census and issue #98 remain the authoritative coupling
-  inventories.
+- `hle.c` is a multi-thousand-line monolith (~11.4k lines at the review base `312d1d5`); the
+  dated census and issue #98 remain the authoritative coupling inventories.
 - The public tree cannot run the private HST route; the source-owned ladder (`production-smoke*`,
   `cosim-selftest`, `platform-ladder`, native selftests) is the honest inner loop.
 
