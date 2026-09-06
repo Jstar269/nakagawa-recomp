@@ -513,7 +513,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -841,6 +841,23 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
+
+PLAYER_EXE ?= build/nakagawa_player.exe
+ifeq ($(OS),Windows_NT)
+PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+else
+PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+endif
+
+PLAYER_CORE_SRCS := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/generated/nk_title_catalog.c $(PLAYER_PLATFORM_SRC)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/generated/nk_title_catalog.h
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_SRCS) -lSDL3 -o $@
+
+player: $(PLAYER_EXE)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
@@ -1441,3 +1458,34 @@ shader-verify:
 
 shader-repro-verify:
 	$(PYTHON) tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
+
+# -----------------------------------------------------------------------------
+# Native Product Core & SDL3 Player Targets
+# -----------------------------------------------------------------------------
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/generated/nk_title_catalog.c
+ifeq ($(OS),Windows_NT)
+PLAYER_PLAT_SOURCES := src/core/nk_platform_win32.c
+PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
+PLAYER_VULKAN_LIB   := -LC:/VulkanSDK/1.4.357.0/Lib -LC:/VulkanSDK/1.4.357.0/lib
+EXE_EXT             := .exe
+else
+PLAYER_PLAT_SOURCES := src/core/nk_platform_posix.c
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
+endif
+
+player:
+	$(CC) -O0 -Wall -Wextra -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(PLAYER_VULKAN_LIB) \
+		src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) -lSDL3 -o build/nakagawa_player$(EXE_EXT)
+
+native-core-tests:
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)
+	./build/test_core_catalog$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
+	./build/test_parsers_hostile$(EXE_EXT)
