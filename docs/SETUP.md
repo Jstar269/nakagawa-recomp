@@ -1,6 +1,8 @@
 # Build and development setup
 
-Nakagawa Recomp's core build is Windows-only. The dashboard is a separate optional web project.
+The supported and tested core build is Windows 11 x64; the host-neutral object
+gate is a portability probe, not Linux support (see
+[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)). The dashboard is a separate optional web project.
 
 ## Supported development baseline
 
@@ -46,7 +48,7 @@ python -m pip install .
 
 This installs the declared tooling dependencies, including `compiledb`.
 
-`glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the core build.
+`glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the Windows core build (a staged CMake target for portability work is tracked separately in [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)).
 
 ### Runtime DLLs (SDL3.dll & vulkan-1.dll)
 
@@ -215,7 +217,7 @@ Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a 
 using this form. HST requires both address values to be zero. The Makefile's generic defaults are
 intentionally not HST defaults.
 
-`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
+`assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
 The requirement is enforced incrementally, not only on a clean tree: the generated title-config
 header is keyed to a content-addressed identity of the effective configuration, so dropping

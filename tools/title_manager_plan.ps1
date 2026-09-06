@@ -27,9 +27,10 @@
         forward-slash rendering is enforced by the Python planner.
 
       HST PROFILE / ADAPTER (Windows HST compatibility, isolated):
-        - Get-HstManifestMakeArgs pins the checked-in HST retail manifest
+        - Get-HstManifestMakeArgs pins the local HST retail manifest
           (hst-ucus98701-v1, UCUS98701, exact-disc-id, 0-base, hst profile,
           psp-header, 0x00303194-0x00306e24 span, three required modules).
+          That file is publication-excluded and never checked in.
         This is the ONLY place that names HST constants. Generic code never
         compares title_manifest_id to hst-... nor inherits HST modules/spans.
         See the function header for the exact pin set.
@@ -321,7 +322,7 @@ function Get-HstManifestMakeArgs {
     # plan's semantics, then pins the one title this manager orchestrates.
     Assert-TitlePlanDerivation $Plan | Out-Null
     if ($Plan.plan_kind -ne 'title-manager-build' -or $Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
-        throw 'the HST manager accepts only the checked-in HST retail manifest'
+        throw 'the HST manager accepts only the local HST retail manifest'
     }
     if ($Plan.game_base -ne 0 -or $Plan.game_entry -ne 0 -or $Plan.codegen_profile -ne 'hst' -or $Plan.bss_metadata_source -ne 'psp-header') {
         throw 'HST manifest protected executable semantics are incompatible'

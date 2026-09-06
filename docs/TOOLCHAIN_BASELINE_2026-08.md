@@ -1,5 +1,13 @@
 # Toolchain baseline — August 2026
 
+STATUS = HISTORICAL / REFERENCE. Captured 2026-08-03/04 at
+`b31f5aa548587350901d7ddef3c4b94fa2e47340`; the live source (`pyproject.toml`,
+`interface/package.json`, `docs/SETUP.md`, the environment doctor) is
+authoritative for current versions. In particular the ESLint (`^10.8.0`) and
+TypeScript (`^7.0.2`) rows below are superseded by the live dashboard
+`package.json`; MSYS2/Vulkan reference versions are capture-time values for
+unpinned-by-design inputs. Do not cite this file as the current toolchain.
+
 Track: dependency/toolchain modernization only. No PSP/runtime semantics changed and no
 private HST routes were run.
 
