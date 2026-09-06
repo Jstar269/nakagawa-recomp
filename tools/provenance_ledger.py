@@ -345,17 +345,13 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
             target.parent.mkdir(parents=True, exist_ok=True)
             originals.append((target, target.read_bytes() if target.exists() else None))
         for target, content in resolved:
-            descriptor, temporary = tempfile.mkstemp(  # codeql[suppress: py/clear-text-storage-sensitive-data] Public metadata only (ledger, export, policy); no secrets.
-                prefix=".provenance-stage-", suffix=".tmp", dir=str(target.parent))
-            os.close(descriptor)
-            os.close(descriptor)
-            temporary_path = Path(temporary)
-            try:
-                temporary_path.write_bytes(content)
-            except OSError:
-                temporary_path.unlink(missing_ok=True)
-                raise
-            staged.append((target, temporary_path))
+            with tempfile.NamedTemporaryFile(
+                prefix=".provenance-stage-", suffix=".tmp", dir=str(target.parent),
+                mode="wb", delete=False
+            ) as tmp:
+                temporary = tmp.name
+                tmp.write(content)
+            staged.append((target, Path(temporary)))
         promoted: list[Path] = []
         try:
             for target, temporary_path in staged:
@@ -370,12 +366,13 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
                     if original is None:
                         target.unlink(missing_ok=True)
                     else:
-                        descriptor, temporary = tempfile.mkstemp(
-                            prefix=".provenance-rollback-", suffix=".tmp", dir=str(target.parent))
-                        os.close(descriptor)
-                        rollback_path = Path(temporary)
-                        rollback_path.write_bytes(original)
-                        os.replace(rollback_path, target)
+                        with tempfile.NamedTemporaryFile(
+                            prefix=".provenance-rollback-", suffix=".tmp", dir=str(target.parent),
+                            mode="wb", delete=False
+                        ) as tmp:
+                            rollback = tmp.name
+                            tmp.write(original)
+                        os.replace(rollback, target)
                 except OSError as restore_error:
                     restore_errors.append(str(restore_error))
             detail = f"{error}"
