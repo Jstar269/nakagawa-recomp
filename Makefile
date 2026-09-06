@@ -845,17 +845,19 @@ atrac3p-objects: $(ATRAC3P_OBJS)
 PLAYER_EXE ?= build/nakagawa_player.exe
 ifeq ($(OS),Windows_NT)
 PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+PLAYER_EXTRA_LIBS   := -lshell32
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_EXTRA_LIBS   :=
 endif
 
-PLAYER_CORE_SRCS := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/generated/nk_title_catalog.c $(PLAYER_PLATFORM_SRC)
+PLAYER_CORE_SRCS := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_SRCS) -lSDL3 -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 player: $(PLAYER_EXE)
 
@@ -1462,7 +1464,7 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core & SDL3 Player Targets
 # -----------------------------------------------------------------------------
-PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c
 ifeq ($(OS),Windows_NT)
 PLAYER_PLAT_SOURCES := src/core/nk_platform_win32.c
 PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
@@ -1474,12 +1476,6 @@ PLAYER_VULKAN_INC   :=
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             :=
 endif
-
-player:
-	$(CC) -O0 -Wall -Wextra -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(PLAYER_VULKAN_LIB) \
-		src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) -lSDL3 -o build/nakagawa_player$(EXE_EXT)
-
 native-core-tests:
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
@@ -1489,3 +1485,10 @@ native-core-tests:
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
 	./build/test_parsers_hostile$(EXE_EXT)
+ifeq ($(OS),Windows_NT)
+	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
+	./build/test_win32_process$(EXE_EXT)
+endif

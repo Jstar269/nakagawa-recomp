@@ -198,6 +198,68 @@ class PublicTitleIsolationTests(unittest.TestCase):
             if f_path.is_file():
                 f_path.unlink()
 
+    def test_included_non_title_json_fails_closed(self) -> None:
+        """A non-title JSON file placed in manifests must be rejected / fail closed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_titles = Path(tmpdir)
+            for mf in self.titles_dir.glob("*.json"):
+                shutil.copy2(mf, tmp_titles / mf.name)
+
+            # Create an arbitrary non-title JSON file (e.g. package.json or config)
+            non_title = {"name": "not-a-title-manifest", "version": "1.0.0", "dependencies": {}}
+            (tmp_titles / "pspdev-phase5.json").write_text(json.dumps(non_title), encoding="utf-8")
+
+            # Must raise when attempting to collect public manifests
+            with self.assertRaises(Exception):
+                title_catalog_codegen.collect_public_manifests(tmp_titles, policy=self.policy)
+
+    def test_malformed_manifest_rejection(self) -> None:
+        """Manifests missing required schema fields or with bad types must be rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_titles = Path(tmpdir)
+            for mf in self.titles_dir.glob("*.json"):
+                shutil.copy2(mf, tmp_titles / mf.name)
+
+            # Malformed manifest: unsupported schema_version 999
+            bad_schema = {
+                "schema_version": 999,
+                "id": "bad-schema-v1",
+                "display_name": "Bad Schema Title",
+                "kind": "synthetic"
+            }
+            (tmp_titles / "pspdev-phase5.json").write_text(json.dumps(bad_schema), encoding="utf-8")
+
+            with self.assertRaises(Exception):
+                title_catalog_codegen.collect_public_manifests(tmp_titles, policy=self.policy)
+
+    def test_private_overlay_has_zero_effect_on_verify(self) -> None:
+        """External private manifest overlays must have zero effect on catalog verify."""
+        # 1. Clean verify must succeed
+        cmd = [sys.executable, str(ROOT / "tools" / "title_catalog_codegen.py"), "--verify"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 0, f"--verify failed on baseline: {proc.stderr}")
+
+        # 2. Simulate private overlay existing outside public assets
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            fake_overlay = {
+                "schema_version": 1,
+                "id": "hst-ucus98701-v1",
+                "display_name": "Hot Shots Tennis Overlay",
+                "kind": "retail",
+                "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"}
+            }
+            json.dump(fake_overlay, f)
+            overlay_path = Path(f.name)
+
+        try:
+            # Re-run verify; external overlay must not touch or alter verification
+            proc2 = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(proc2.returncode, 0, f"--verify failed with external overlay present: {proc2.stderr}")
+            self.assertIn("is up to date", proc2.stdout)
+        finally:
+            if overlay_path.is_file():
+                overlay_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

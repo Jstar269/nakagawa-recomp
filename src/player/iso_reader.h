@@ -16,6 +16,7 @@ typedef struct {
     char error_message[256];
     uint64_t file_size;
     bool is_supported;
+    char matched_title_id[64];
     GameSupportStatus status;
 } IsoInspectResult;
 

@@ -2,9 +2,17 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_launch.h"
+#include "generated/nk_title_catalog.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static inline void safe_copy_path(char *dest, size_t dest_size, const char *src) {
+    if (!dest || dest_size == 0) return;
+    if (!src) { dest[0] = '\0'; return; }
+    strncpy(dest, src, dest_size - 1);
+    dest[dest_size - 1] = '\0';
+}
 
 /* Helper to check candidate binary paths */
 static bool find_candidate_executable(
@@ -13,6 +21,12 @@ static bool find_candidate_executable(
     char *out_path,
     size_t max_len
 ) {
+    /* Candidate 0: Direct executable path passed as root */
+    if (root && nk_platform_file_exists(root) && !nk_platform_dir_exists(root)) {
+        snprintf(out_path, max_len, "%s", root);
+        return true;
+    }
+
     char sep = nk_platform_path_separator();
     char cand[NK_MAX_PATH];
 
@@ -69,6 +83,68 @@ static bool find_candidate_executable(
     return false;
 }
 
+static bool find_candidate_image(
+    const char *working_dir,
+    const char *executable_path,
+    const char *title_id,
+    char *out_path,
+    size_t max_len
+) {
+    char cand[NK_MAX_PATH * 2];
+    char sep = nk_platform_path_separator();
+
+    /* 1. Alongside executable: replace .exe with _image.bin */
+    if (executable_path && *executable_path) {
+        snprintf(cand, sizeof(cand), "%s", executable_path);
+        char *ext = strrchr(cand, '.');
+        if (ext && (strcmp(ext, ".exe") == 0 || strcmp(ext, ".EXE") == 0)) {
+            snprintf(ext, sizeof(cand) - (size_t)(ext - cand), "_image.bin");
+            if (nk_platform_file_exists(cand)) {
+                snprintf(out_path, max_len, "%s", cand);
+                return true;
+            }
+        }
+        /* Or <dir>/hst_image.bin */
+        char dir[NK_MAX_PATH];
+        snprintf(dir, sizeof(dir), "%s", executable_path);
+        char *last_slash = strrchr(dir, '/');
+        if (!last_slash) last_slash = strrchr(dir, '\\');
+        if (last_slash) {
+            *last_slash = '\0';
+            snprintf(cand, sizeof(cand), "%s%chst_image.bin", dir, sep);
+            if (nk_platform_file_exists(cand)) {
+                snprintf(out_path, max_len, "%s", cand);
+                return true;
+            }
+        }
+    }
+
+    /* 2. <working_dir>/build/hst/hst_image.bin */
+    snprintf(cand, sizeof(cand), "%s%cbuild%chst%chst_image.bin", working_dir, sep, sep, sep);
+    if (nk_platform_file_exists(cand)) {
+        snprintf(out_path, max_len, "%s", cand);
+        return true;
+    }
+
+    /* 3. <working_dir>/runtime/hst_image.bin */
+    snprintf(cand, sizeof(cand), "%s%cruntime%chst_image.bin", working_dir, sep, sep);
+    if (nk_platform_file_exists(cand)) {
+        snprintf(out_path, max_len, "%s", cand);
+        return true;
+    }
+
+    /* 4. <working_dir>/build/<title_id>/<title_id>_image.bin */
+    if (title_id && *title_id) {
+        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s_image.bin", working_dir, sep, sep, title_id, sep, title_id);
+        if (nk_platform_file_exists(cand)) {
+            snprintf(out_path, max_len, "%s", cand);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
     const NkGameEntry *game,
@@ -79,6 +155,19 @@ NkResult nk_launch_prepare_session(
 
     const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : ".";
     snprintf(session->working_directory, sizeof(session->working_directory), "%s", root);
+    if (nk_platform_file_exists(root) && !nk_platform_dir_exists(root)) {
+        /* If root is a file, derive working directory from its parent */
+        char *last_sep = strrchr(session->working_directory, '/');
+        if (!last_sep) last_sep = strrchr(session->working_directory, '\\');
+        if (last_sep) {
+            *last_sep = '\0';
+            /* If parent is build/hst, move up to repo root so assets are found */
+            char *up = strstr(session->working_directory, "build");
+            if (up && (up == session->working_directory || up[-1] == '/' || up[-1] == '\\')) {
+                if (up > session->working_directory) up[-1] = '\0';
+            }
+        }
+    }
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
@@ -89,6 +178,7 @@ NkResult nk_launch_prepare_session(
     session->config.vsync = true;
     session->config.benchmark_mode = false;
     session->config.diagnostic_mode = false;
+    session->config.gui_mode = false;
 
     /* 1. Resolve executable */
     if (!find_candidate_executable(root, game->title_id, session->executable_path, sizeof(session->executable_path))) {
@@ -96,12 +186,52 @@ NkResult nk_launch_prepare_session(
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    /* 2. Resolve ISO path */
+    /* 2. Resolve image.bin */
+    find_candidate_image(session->working_directory, session->executable_path, game->title_id, session->image_path, sizeof(session->image_path));
+
+    /* 3. Resolve title catalog entry & addresses */
+    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(session->disc_id);
+    if (!entry) entry = nk_title_catalog_find_by_id(session->title_id);
+    session->base_address = entry ? entry->executable_base : 0;
+    session->entry_point = (entry && entry->executable_entry) ? entry->executable_entry : 0x0029a060;
+
+    /* 4. Resolve data root */
+    char sep = nk_platform_path_separator();
+    if (entry && entry->data_root) {
+        char cand_data[NK_MAX_PATH * 2];
+        int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", session->working_directory, sep, entry->data_root);
+        if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
+            safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
+        }
+    }
+    if (session->dataroot_path[0] == '\0') {
+        /* Check alongside ISO directory: EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted */
+        char iso_dir[NK_MAX_PATH];
+        safe_copy_path(iso_dir, sizeof(iso_dir), game->iso_path);
+        char *s = strstr(iso_dir, "place_game_here");
+        if (s) {
+            s[15] = '\0'; /* truncate to place_game_here */
+            char cand_data[NK_MAX_PATH * 2];
+            int w = snprintf(cand_data, sizeof(cand_data), "%s%cEXTRACTED%cPSP_GAME%cUSRDIR%cxbdata_extracted",
+                             iso_dir, sep, sep, sep, sep);
+            if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
+                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
+            }
+        }
+    }
+
+    /* 5. Resolve font directory */
+    char cand_font[NK_MAX_PATH * 2];
+    int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", session->working_directory, sep);
+    if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {
+        safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
+    }
+
+    /* 6. Resolve ISO path */
     if (nk_platform_file_exists(game->iso_path)) {
         snprintf(session->iso_path, sizeof(session->iso_path), "%s", game->iso_path);
     } else {
         /* Check fallback under prepared_root/disc/game.iso */
-        char sep = nk_platform_path_separator();
         char fallback_iso[NK_MAX_PATH + 32];
         snprintf(fallback_iso, sizeof(fallback_iso), "%s%cdisc%cgame.iso", game->prepared_root, sep, sep);
         if (nk_platform_file_exists(fallback_iso)) {
@@ -134,22 +264,46 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_scale[32];
     char env_vsync[32];
     char env_fatal[32];
+    char env_dataroot[NK_MAX_PATH + 16];
+    char env_font[NK_MAX_PATH + 16];
+    char env_fs[32];
+    char env_memstick[32];
+    char env_tables[64];
+    char sep = nk_platform_path_separator();
 
     snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
     snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
     snprintf(env_ge, sizeof(env_ge), "SR_GPU_GE=1");
-    snprintf(env_debug, sizeof(env_debug), "SR_DEBUG=%s", session->config.benchmark_mode ? "0x20" : "0");
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
     snprintf(env_vsync, sizeof(env_vsync), "SR_VSYNC=%d", session->config.vsync ? 1 : 0);
+    snprintf(env_fs, sizeof(env_fs), "SR_FSDIR=fs");
+    snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=saves");
+    snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
 
-    const char *envp[16];
+    const char *envp[20];
     int env_count = 0;
     envp[env_count++] = env_iso;
     envp[env_count++] = env_fps;
     envp[env_count++] = env_ge;
-    envp[env_count++] = env_debug;
     envp[env_count++] = env_scale;
     envp[env_count++] = env_vsync;
+    envp[env_count++] = env_fs;
+    envp[env_count++] = env_memstick;
+    envp[env_count++] = env_tables;
+
+    if (session->dataroot_path[0]) {
+        snprintf(env_dataroot, sizeof(env_dataroot), "SR_DATAROOT=%s", session->dataroot_path);
+        envp[env_count++] = env_dataroot;
+    }
+    if (session->font_dir[0]) {
+        snprintf(env_font, sizeof(env_font), "SR_FONTDIR=%s", session->font_dir);
+        envp[env_count++] = env_font;
+    }
+
+    if (session->config.benchmark_mode) {
+        snprintf(env_debug, sizeof(env_debug), "SR_DEBUG=0x20");
+        envp[env_count++] = env_debug;
+    }
 
     if (session->config.diagnostic_mode) {
         snprintf(env_fatal, sizeof(env_fatal), "SR_DISPATCH_FATAL=1");
@@ -157,10 +311,30 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     }
     envp[env_count] = NULL;
 
-    const char *argv[] = {
-        session->executable_path,
-        NULL
-    };
+    /* Build command-line arguments */
+    char base_str[32];
+    char entry_str[32];
+    snprintf(base_str, sizeof(base_str), "0x%x", session->base_address);
+    snprintf(entry_str, sizeof(entry_str), "0x%08x", session->entry_point);
+
+    const char *argv[12];
+    int argc = 0;
+    argv[argc++] = session->executable_path;
+
+    if (session->image_path[0]) {
+        argv[argc++] = "--image";
+        argv[argc++] = session->image_path;
+        argv[argc++] = base_str;
+        argv[argc++] = entry_str;
+        argv[argc++] = "none";
+        argv[argc++] = "none";
+        argv[argc++] = session->config.gui_mode ? "--gui" : "--sched";
+    } else {
+        if (session->config.gui_mode) {
+            argv[argc++] = "--gui";
+        }
+    }
+    argv[argc] = NULL;
 
     bool ok = nk_platform_spawn_process(
         session->executable_path,

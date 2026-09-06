@@ -21,6 +21,7 @@ set(CORE_SOURCES
     src/core/nk_iso.c
     src/core/nk_library.c
     src/core/nk_launch.c
+    src/core/nk_title_manifest.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -50,13 +51,39 @@ add_executable(test_parsers_hostile tests/native/test_parsers_hostile.c)
 target_link_libraries(test_parsers_hostile PRIVATE nakagawa_core)
 add_test(NAME parsers_hostile_test COMMAND test_parsers_hostile)
 
+if(WIN32)
+    add_executable(argv_echo_helper tests/native/argv_echo_helper.c)
+    target_link_libraries(argv_echo_helper PRIVATE shell32)
+
+    add_executable(test_win32_process tests/native/test_win32_process.c)
+    target_link_libraries(test_win32_process PRIVATE nakagawa_core)
+    add_test(NAME win32_process_test COMMAND test_win32_process)
+endif()
+
 # -----------------------------------------------------------------------------
 # Native Player Application (SDL3)
 # -----------------------------------------------------------------------------
 option(BUILD_PLAYER "Build the native cross-platform SDL3 player application" ON)
+option(NK_BOOTSTRAP_SDL3 "Enable downloading and compiling pinned official SDL3 release if system package is not found" OFF)
 
 if(BUILD_PLAYER)
-    find_package(SDL3 QUIET)
+    find_package(SDL3 CONFIG QUIET)
+    if(NOT SDL3_FOUND)
+        find_package(SDL3 QUIET)
+    endif()
+
+    if(NOT SDL3_FOUND AND NK_BOOTSTRAP_SDL3)
+        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.2.4")
+        include(FetchContent)
+        FetchContent_Declare(
+            SDL3
+            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.2.4/SDL3-3.2.4.tar.gz"
+            URL_HASH SHA256=2938328317301dfbe30176d79c251733aa5e7ec5c436c800b99ed4da7adcb0f0
+        )
+        set(SDL_TEST OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(SDL3)
+    endif()
 
     set(PLAYER_SOURCES
         src/player/main.c

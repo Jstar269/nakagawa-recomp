@@ -37,6 +37,11 @@ static inline uint16_t read_le16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
+/* Safe helper to read uint32 big-endian */
+static inline uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
 static FILE *nk_iso_fopen(const char *path, const char *mode) {
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wpath[32768];
@@ -101,18 +106,30 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         }
 
         if (strcmp(key, "DISC_ID") == 0 || strcmp(key, "TITLE_ID") == 0) {
+            if (meta->disc_id[0] != '\0') {
+                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                continue;
+            }
             int copy_len = (int)data_len;
             if (copy_len >= (int)sizeof(meta->disc_id)) {
                 copy_len = (int)sizeof(meta->disc_id) - 1;
             }
             snprintf(meta->disc_id, sizeof(meta->disc_id), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
         } else if (strcmp(key, "TITLE") == 0) {
+            if (meta->title_name[0] != '\0') {
+                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                continue;
+            }
             int copy_len = (int)data_len;
             if (copy_len >= (int)sizeof(meta->title_name)) {
                 copy_len = (int)sizeof(meta->title_name) - 1;
             }
             snprintf(meta->title_name, sizeof(meta->title_name), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
         } else if (strcmp(key, "DISC_VERSION") == 0) {
+            if (meta->disc_version[0] != '\0') {
+                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                continue;
+            }
             int copy_len = (int)data_len;
             if (copy_len >= (int)sizeof(meta->disc_version)) {
                 copy_len = (int)sizeof(meta->disc_version) - 1;
@@ -241,8 +258,25 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             }
             if (off + rec_len > read_bytes) break;
 
-            uint32_t extent_lba = read_le32(&dir_buf[off + 2]);
-            uint32_t extent_size = read_le32(&dir_buf[off + 10]);
+            /* ECMA-119 6.8.1.1: Directory record must not cross sector boundary */
+            if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
+                off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
+                continue;
+            }
+
+            uint32_t extent_lba_le = read_le32(&dir_buf[off + 2]);
+            uint32_t extent_lba_be = read_be32(&dir_buf[off + 6]);
+            uint32_t extent_size_le = read_le32(&dir_buf[off + 10]);
+            uint32_t extent_size_be = read_be32(&dir_buf[off + 14]);
+
+            /* Both-endian verification (ECMA-119 7.3.3) */
+            if (extent_lba_le != extent_lba_be || extent_size_le != extent_size_be) {
+                off += rec_len;
+                continue;
+            }
+
+            uint32_t extent_lba = extent_lba_le;
+            uint32_t extent_size = extent_size_le;
             uint8_t name_len = dir_buf[off + 32];
 
             /* Checked arithmetic on candidate extent */
@@ -280,8 +314,25 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                     }
                     if (off + rec_len > read_bytes) break;
 
-                    uint32_t extent_lba = read_le32(&dir_buf[off + 2]);
-                    uint32_t extent_size = read_le32(&dir_buf[off + 10]);
+                    /* ECMA-119 6.8.1.1: Directory record must not cross sector boundary */
+                    if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
+                        off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
+                        continue;
+                    }
+
+                    uint32_t extent_lba_le = read_le32(&dir_buf[off + 2]);
+                    uint32_t extent_lba_be = read_be32(&dir_buf[off + 6]);
+                    uint32_t extent_size_le = read_le32(&dir_buf[off + 10]);
+                    uint32_t extent_size_be = read_be32(&dir_buf[off + 14]);
+
+                    /* Both-endian verification (ECMA-119 7.3.3) */
+                    if (extent_lba_le != extent_lba_be || extent_size_le != extent_size_be) {
+                        off += rec_len;
+                        continue;
+                    }
+
+                    uint32_t extent_lba = extent_lba_le;
+                    uint32_t extent_size = extent_size_le;
                     uint8_t name_len = dir_buf[off + 32];
 
                     uint64_t ext_off = (uint64_t)extent_lba * SECTOR_SIZE;
@@ -453,8 +504,25 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
             }
             if (off + rec_len > read_bytes) break;
 
-            uint32_t ext_lba = read_le32(&dir_buf[off + 2]);
-            uint32_t ext_size = read_le32(&dir_buf[off + 10]);
+            /* ECMA-119 6.8.1.1: Directory record must not cross sector boundary */
+            if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
+                off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
+                continue;
+            }
+
+            uint32_t ext_lba_le = read_le32(&dir_buf[off + 2]);
+            uint32_t ext_lba_be = read_be32(&dir_buf[off + 6]);
+            uint32_t ext_size_le = read_le32(&dir_buf[off + 10]);
+            uint32_t ext_size_be = read_be32(&dir_buf[off + 14]);
+
+            /* Both-endian verification (ECMA-119 7.3.3) */
+            if (ext_lba_le != ext_lba_be || ext_size_le != ext_size_be) {
+                off += rec_len;
+                continue;
+            }
+
+            uint32_t ext_lba = ext_lba_le;
+            uint32_t ext_size = ext_size_le;
             uint8_t name_len = dir_buf[off + 32];
             const char *name = (const char *)&dir_buf[off + 33];
 

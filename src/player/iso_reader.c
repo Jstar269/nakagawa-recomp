@@ -23,6 +23,9 @@ bool iso_inspect_file(const char *iso_path, IsoInspectResult *out_result) {
     snprintf(out_result->disc_version, sizeof(out_result->disc_version), "%s", meta.disc_version);
     out_result->file_size = (uint64_t)meta.file_size_bytes;
     out_result->is_supported = meta.is_supported;
+    if (meta.matched_title && meta.matched_title->id) {
+        snprintf(out_result->matched_title_id, sizeof(out_result->matched_title_id), "%s", meta.matched_title->id);
+    }
     out_result->status = (GameSupportStatus)meta.status;
     out_result->success = true;
 

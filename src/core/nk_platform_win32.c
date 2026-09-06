@@ -131,37 +131,180 @@ bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
 }
 
-/* Helper to escape arguments for Windows command line */
+/* Helper to escape arguments for Windows command line according to Microsoft CRT rules */
 static void append_escaped_arg(char *buf, size_t buf_len, const char *arg) {
+    if (!buf || buf_len == 0 || !arg) return;
+
     size_t cur_len = strlen(buf);
-    if (cur_len + 3 >= buf_len) return;
-
-    bool needs_quotes = false;
-    if (strchr(arg, ' ') || strchr(arg, '\t') || strchr(arg, '\"') || *arg == '\0') {
-        needs_quotes = true;
-    }
-
-    if (!needs_quotes) {
-        snprintf(buf + cur_len, buf_len - cur_len, "%s%s", cur_len > 0 ? " " : "", arg);
-        return;
-    }
-
-    if (cur_len > 0 && cur_len + 1 < buf_len) {
+    if (cur_len > 0) {
+        if (cur_len + 1 >= buf_len) return;
         buf[cur_len++] = ' ';
         buf[cur_len] = '\0';
     }
 
-    if (cur_len + 1 < buf_len) buf[cur_len++] = '\"';
-
-    for (const char *p = arg; *p && cur_len + 2 < buf_len; p++) {
-        if (*p == '\"') {
-            buf[cur_len++] = '\\';
+    /* Check if argument needs quoting according to Windows rules:
+     * Empty string, spaces, tabs, newlines, or double quotes require quoting. */
+    bool needs_quotes = (*arg == '\0');
+    for (const char *p = arg; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\v' || *p == '\"') {
+            needs_quotes = true;
+            break;
         }
-        buf[cur_len++] = *p;
     }
 
-    if (cur_len + 1 < buf_len) buf[cur_len++] = '\"';
+    if (!needs_quotes) {
+        snprintf(buf + cur_len, buf_len - cur_len, "%s", arg);
+        return;
+    }
+
+    if (cur_len + 1 >= buf_len) return;
+    buf[cur_len++] = '\"';
+
+    const char *p = arg;
+    while (*p) {
+        size_t num_backslashes = 0;
+        while (*p == '\\') {
+            num_backslashes++;
+            p++;
+        }
+
+        if (*p == '\"') {
+            /* 2N + 1 backslashes before quote */
+            for (size_t i = 0; i < 2 * num_backslashes + 1 && cur_len + 1 < buf_len; i++) {
+                buf[cur_len++] = '\\';
+            }
+            if (cur_len + 1 < buf_len) {
+                buf[cur_len++] = '\"';
+            }
+            p++;
+        } else if (*p == '\0') {
+            /* 2N backslashes before closing quote */
+            for (size_t i = 0; i < 2 * num_backslashes && cur_len + 1 < buf_len; i++) {
+                buf[cur_len++] = '\\';
+            }
+            break;
+        } else {
+            /* N backslashes before normal character */
+            for (size_t i = 0; i < num_backslashes && cur_len + 1 < buf_len; i++) {
+                buf[cur_len++] = '\\';
+            }
+            if (cur_len + 1 < buf_len) {
+                buf[cur_len++] = *p;
+            }
+            p++;
+        }
+    }
+
+    if (cur_len + 1 < buf_len) {
+        buf[cur_len++] = '\"';
+    }
     buf[cur_len] = '\0';
+}
+
+typedef struct {
+    WCHAR *str;
+    size_t key_len;
+} WEnvVar;
+
+static int env_var_cmp(const void *a, const void *b) {
+    const WEnvVar *va = (const WEnvVar *)a;
+    const WEnvVar *vb = (const WEnvVar *)b;
+    return _wcsicmp(va->str, vb->str);
+}
+
+static WCHAR *build_controlled_unicode_environment(const char * const *envp) {
+    LPWCH parent_env = GetEnvironmentStringsW();
+    if (!parent_env) return NULL;
+
+    size_t capacity = 512;
+    WEnvVar *vars = (WEnvVar *)malloc(capacity * sizeof(WEnvVar));
+    if (!vars) {
+        FreeEnvironmentStringsW(parent_env);
+        return NULL;
+    }
+    size_t count = 0;
+
+    for (LPCWCH p = parent_env; *p; p += wcslen(p) + 1) {
+        if (*p == L'=') continue;
+        LPCWCH eq = wcschr(p, L'=');
+        size_t klen = eq ? (size_t)(eq - p) : wcslen(p);
+
+        if (count >= capacity) {
+            capacity *= 2;
+            WEnvVar *new_vars = (WEnvVar *)realloc(vars, capacity * sizeof(WEnvVar));
+            if (!new_vars) break;
+            vars = new_vars;
+        }
+
+        vars[count].str = _wcsdup(p);
+        vars[count].key_len = klen;
+        if (vars[count].str) count++;
+    }
+    FreeEnvironmentStringsW(parent_env);
+
+    if (envp) {
+        for (int i = 0; envp[i]; i++) {
+            WCHAR witem[4096];
+            if (!utf8_to_wide(envp[i], witem, sizeof(witem) / sizeof(WCHAR))) continue;
+
+            WCHAR *eq = wcschr(witem, L'=');
+            size_t klen = eq ? (size_t)(eq - witem) : wcslen(witem);
+
+            int found_idx = -1;
+            for (size_t j = 0; j < count; j++) {
+                if (vars[j].key_len == klen && _wcsnicmp(vars[j].str, witem, klen) == 0) {
+                    found_idx = (int)j;
+                    break;
+                }
+            }
+
+            if (found_idx >= 0) {
+                free(vars[found_idx].str);
+                vars[found_idx].str = _wcsdup(witem);
+                vars[found_idx].key_len = klen;
+            } else {
+                if (count >= capacity) {
+                    capacity *= 2;
+                    WEnvVar *new_vars = (WEnvVar *)realloc(vars, capacity * sizeof(WEnvVar));
+                    if (!new_vars) break;
+                    vars = new_vars;
+                }
+                vars[count].str = _wcsdup(witem);
+                vars[count].key_len = klen;
+                if (vars[count].str) count++;
+            }
+        }
+    }
+
+    qsort(vars, count, sizeof(WEnvVar), env_var_cmp);
+
+    size_t total_wchars = 1;
+    for (size_t i = 0; i < count; i++) {
+        if (vars[i].str) {
+            total_wchars += wcslen(vars[i].str) + 1;
+        }
+    }
+
+    WCHAR *block = (WCHAR *)malloc(total_wchars * sizeof(WCHAR));
+    if (block) {
+        WCHAR *dest = block;
+        for (size_t i = 0; i < count; i++) {
+            if (vars[i].str) {
+                size_t len = wcslen(vars[i].str);
+                memcpy(dest, vars[i].str, len * sizeof(WCHAR));
+                dest += len;
+                *dest++ = L'\0';
+            }
+        }
+        *dest = L'\0';
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        free(vars[i].str);
+    }
+    free(vars);
+
+    return block;
 }
 
 bool nk_platform_spawn_process(
@@ -174,13 +317,11 @@ bool nk_platform_spawn_process(
     if (!executable_path || !out_process) return false;
     memset(out_process, 0, sizeof(*out_process));
 
-    /* Convert executable path to wide */
     WCHAR wexec[32768];
     if (!utf8_to_wide(executable_path, wexec, sizeof(wexec) / sizeof(WCHAR))) {
         return false;
     }
 
-    /* Build command line string */
     char cmd_line[32768];
     cmd_line[0] = '\0';
 
@@ -197,7 +338,6 @@ bool nk_platform_spawn_process(
         return false;
     }
 
-    /* Working directory to wide */
     WCHAR wwd_buf[32768];
     WCHAR *wwd = NULL;
     if (working_directory && *working_directory) {
@@ -206,30 +346,8 @@ bool nk_platform_spawn_process(
         }
     }
 
-    /* Build wide environment block if provided */
-    WCHAR *wenv_block = NULL;
-    DWORD creation_flags = 0;
-    if (envp && envp[0]) {
-        size_t total_wchars = 0;
-        for (int i = 0; envp[i]; i++) {
-            int needed = MultiByteToWideChar(CP_UTF8, 0, envp[i], -1, NULL, 0);
-            if (needed > 0) total_wchars += (size_t)needed;
-        }
-        total_wchars += 1; /* trailing double null */
-
-        wenv_block = (WCHAR *)malloc(total_wchars * sizeof(WCHAR));
-        if (wenv_block) {
-            WCHAR *dest = wenv_block;
-            for (int i = 0; envp[i]; i++) {
-                int written = MultiByteToWideChar(CP_UTF8, 0, envp[i], -1, dest, (int)(total_wchars - (dest - wenv_block)));
-                if (written > 0) {
-                    dest += written;
-                }
-            }
-            *dest = L'\0';
-            creation_flags |= CREATE_UNICODE_ENVIRONMENT;
-        }
-    }
+    WCHAR *wenv_block = build_controlled_unicode_environment(envp);
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;

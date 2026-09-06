@@ -158,7 +158,34 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     fflush(f);
     fclose(f);
 
-    /* Atomic rename / replace */
+    /* Atomic rename / replace with .bak backup preservation */
+    char bak_path[NK_MAX_PATH + 8];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
+
+    if (nk_platform_file_exists(target)) {
+#if defined(_WIN32) || defined(_WIN64)
+        WCHAR wtarget[32768];
+        WCHAR wbak[32768];
+        MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 32768);
+        MultiByteToWideChar(CP_UTF8, 0, bak_path, -1, wbak, 32768);
+        CopyFileW(wtarget, wbak, FALSE);
+#else
+        FILE *src = fopen(target, "rb");
+        if (src) {
+            FILE *dst = fopen(bak_path, "wb");
+            if (dst) {
+                char copy_buf[4096];
+                size_t n;
+                while ((n = fread(copy_buf, 1, sizeof(copy_buf), src)) > 0) {
+                    fwrite(copy_buf, 1, n, dst);
+                }
+                fclose(dst);
+            }
+            fclose(src);
+        }
+#endif
+    }
+
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wtmp[32768];
     WCHAR wtarget[32768];
@@ -216,22 +243,8 @@ static const char *parse_string_val(const char *p, char *out_val, size_t max_len
     return p;
 }
 
-NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
-    if (!lib) return NK_ERROR_GENERIC;
-    nk_library_init(lib);
-
-    const char *target = file_path;
-    char default_path[NK_MAX_PATH];
-    if (!target) {
-        if (!nk_platform_get_path(NK_PATH_DATA, default_path, sizeof(default_path))) {
-            return NK_ERROR_IO;
-        }
-        int written = snprintf(default_path + strlen(default_path), sizeof(default_path) - strlen(default_path), "%clibrary.json", nk_platform_path_separator());
-        if (written < 0) return NK_ERROR_IO;
-        target = default_path;
-    }
-
-    snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
+    if (!lib || !target) return NK_ERROR_GENERIC;
 
     if (!nk_platform_file_exists(target)) {
         /* Not an error if file doesn't exist yet - library is just empty */
@@ -409,4 +422,52 @@ NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
 
     free(buf);
     return NK_OK;
+}
+
+NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
+    if (!lib) return NK_ERROR_GENERIC;
+    nk_library_init(lib);
+
+    const char *target = file_path;
+    char default_path[NK_MAX_PATH];
+    if (!target) {
+        if (!nk_platform_get_path(NK_PATH_DATA, default_path, sizeof(default_path))) {
+            return NK_ERROR_IO;
+        }
+        int written = snprintf(default_path + strlen(default_path), sizeof(default_path) - strlen(default_path), "%clibrary.json", nk_platform_path_separator());
+        if (written < 0) return NK_ERROR_IO;
+        target = default_path;
+    }
+
+    snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+
+    char bak_path[NK_MAX_PATH + 8];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
+
+    if (!nk_platform_file_exists(target)) {
+        /* Check if backup exists even if primary is missing */
+        if (nk_platform_file_exists(bak_path)) {
+            NkResult bres = nk_library_load_from_file(lib, bak_path);
+            if (bres == NK_OK) {
+                snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+                return NK_OK;
+            }
+        }
+        return NK_OK;
+    }
+
+    NkResult res = nk_library_load_from_file(lib, target);
+    if (res != NK_OK) {
+        /* Primary corrupted or invalid: attempt automatic recovery from .bak */
+        if (nk_platform_file_exists(bak_path)) {
+            nk_library_init(lib);
+            NkResult bres = nk_library_load_from_file(lib, bak_path);
+            if (bres == NK_OK) {
+                snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+                return NK_OK;
+            }
+        }
+    }
+
+    return res;
 }

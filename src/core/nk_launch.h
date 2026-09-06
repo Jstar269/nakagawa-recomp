@@ -20,15 +20,21 @@ typedef struct {
     bool vsync;
     bool benchmark_mode;
     bool diagnostic_mode; /* opt-in fail-closed dispatch validation (SR_DISPATCH_FATAL=1) */
+    bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
 } NkRuntimeConfig;
 
 typedef struct {
     char executable_path[NK_MAX_PATH];
+    char image_path[NK_MAX_PATH];
     char working_directory[NK_MAX_PATH];
     char iso_path[NK_MAX_PATH];
     char prepared_root[NK_MAX_PATH];
+    char dataroot_path[NK_MAX_PATH];
+    char font_dir[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
+    uint32_t base_address;
+    uint32_t entry_point;
 
     /* Runtime configuration */
     NkRuntimeConfig config;

@@ -4,12 +4,18 @@
 #include "player_state.h"
 #include "iso_reader.h"
 #include "ui_renderer.h"
+#include "nk_title_manifest.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
     (void)filter;
@@ -51,11 +57,29 @@ static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
 }
 
 int main(int argc, char *argv[]) {
+#if defined(_WIN32) || defined(_WIN64)
+    SetConsoleOutputCP(CP_UTF8);
+    int wargc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    char **u8_argv = (char **)malloc((size_t)wargc * sizeof(char *));
+    for (int i = 0; i < wargc; i++) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        u8_argv[i] = (char *)malloc((size_t)len);
+        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, u8_argv[i], len, NULL, NULL);
+    }
+    argc = wargc;
+    argv = u8_argv;
+#endif
+
     PlayerApp app;
     player_app_init(&app);
 
     const char *screenshot_path = NULL;
     const char *test_view = NULL;
+    const char *manifest_overlay_path = NULL;
+    const char *initial_iso_path = NULL;
+    const char *runtime_bin_path = NULL;
+    bool launch_now = false;
     int override_w = 1280;
     int override_h = 720;
     bool populate_sample = true;
@@ -65,12 +89,82 @@ int main(int argc, char *argv[]) {
             screenshot_path = argv[i] + 13;
         } else if (strncmp(argv[i], "--view=", 7) == 0) {
             test_view = argv[i] + 7;
+        } else if (strncmp(argv[i], "--manifest-overlay=", 19) == 0) {
+            manifest_overlay_path = argv[i] + 19;
+        } else if (strncmp(argv[i], "--iso=", 6) == 0) {
+            initial_iso_path = argv[i] + 6;
+        } else if (strncmp(argv[i], "--runtime-bin=", 14) == 0) {
+            runtime_bin_path = argv[i] + 14;
+        } else if (strcmp(argv[i], "--launch-now") == 0) {
+            launch_now = true;
         } else if (strncmp(argv[i], "--width=", 8) == 0) {
             override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
             override_h = atoi(argv[i] + 9);
         } else if (strcmp(argv[i], "--empty") == 0) {
             populate_sample = false;
+        }
+    }
+
+    /* Load external manifest overlay if requested */
+    if (manifest_overlay_path) {
+        char err_msg[256];
+        if (nk_title_manifest_load_overlay(manifest_overlay_path, err_msg, sizeof(err_msg))) {
+            printf("[PLAYER] External manifest overlay loaded successfully: %s\n", manifest_overlay_path);
+        } else {
+            fprintf(stderr, "[PLAYER] Failed to load external manifest overlay: %s\n", err_msg);
+            return 1;
+        }
+    }
+
+    /* Inspect initial ISO if requested */
+    if (initial_iso_path) {
+        populate_sample = false;
+        IsoInspectResult res;
+        if (iso_inspect_file(initial_iso_path, &res)) {
+            printf("[PLAYER] Inspected ISO %s -> Disc ID: %s, Title: %s, Supported: %d\n",
+                   initial_iso_path, res.disc_id, res.title_name, res.is_supported ? 1 : 0);
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "%s", res.disc_id);
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "%s", res.title_name);
+            snprintf(app.inspecting_game.disc_version, sizeof(app.inspecting_game.disc_version), "%s", res.disc_version);
+            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "%s", initial_iso_path);
+            if (res.matched_title_id[0]) {
+                snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id), "%s", res.matched_title_id);
+            }
+            app.inspecting_game.iso_size_bytes = res.file_size;
+            app.inspecting_game.status = (NkGameSupportStatus)res.status;
+            app.inspecting_game.is_prepared = true;
+
+            player_app_add_game(&app, &app.inspecting_game);
+
+            if (res.is_supported) {
+                player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
+                if (launch_now) {
+                    printf("[PLAYER] Launching supported title now...\n");
+                    const char *target_root = runtime_bin_path ? runtime_bin_path : ".";
+                    int game_idx = app.game_count - 1;
+                    NkResult lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
+                    if (lres == NK_OK) {
+                        printf("[PLAYER] Launch session prepared successfully!\n");
+                        printf("[PLAYER] Executable: %s\n", app.launch_session.executable_path);
+                        printf("[PLAYER] ISO: %s\n", app.launch_session.iso_path);
+                        NkResult sres = nk_launch_start(&app.launch_session);
+                        if (sres == NK_OK) {
+                            printf("[PLAYER] Child process started! PID: %d\n", app.launch_session.process.process_id);
+                            app.is_game_running = true;
+                        } else {
+                            fprintf(stderr, "[PLAYER] Failed to start runtime: %s\n", app.launch_session.last_error);
+                        }
+                    } else {
+                        fprintf(stderr, "[PLAYER] Failed to prepare launch session: %s\n", app.launch_session.last_error);
+                    }
+                }
+            } else {
+                player_app_set_view(&app, VIEW_UNSUPPORTED_TITLE);
+            }
+        } else {
+            fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", initial_iso_path);
+            return 1;
         }
     }
 
@@ -159,6 +253,21 @@ int main(int argc, char *argv[]) {
             SDL_SetRenderTarget(renderer, NULL);
             SDL_DestroyTexture(target);
         }
+
+        if (app.is_game_running) {
+            printf("[PLAYER] Verifying child process runtime health...\n");
+            SDL_Delay(1000);
+            if (nk_launch_is_running(&app.launch_session)) {
+                printf("[PLAYER] Child process running verified! PID: %d\n", app.launch_session.process.process_id);
+                nk_launch_stop(&app.launch_session);
+                printf("[PLAYER] Child process stopped cleanly after verification.\n");
+            } else {
+                int code = nk_launch_wait(&app.launch_session, 0);
+                printf("[PLAYER] Child process exited with code %d\n", code);
+            }
+            app.is_game_running = false;
+        }
+
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
