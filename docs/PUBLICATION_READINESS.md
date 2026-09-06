@@ -221,6 +221,99 @@ trusted manifest, and then run the non-attesting
 or confirms an exact trusted implementation record. The refresh command does
 not merge or otherwise authorize an unrelated dashboard change.
 
+## Trusted admission of a genuinely new public path
+
+`refresh-reviewed` can only re-attest bytes on a path a trusted baseline
+already authorizes. A genuinely new path has no baseline authority at all, so
+admitting one needs a second, deliberately distinct command:
+`provenance_ledger.py admit-new-reviewed`. It is the initial trusted authority
+for an exact path; `refresh-reviewed` is the subsequent content refresh. The
+two commands fail closed against each other's inputs:
+
+* a path already present in the trusted tree is refused by `admit-new-reviewed`
+  with a pointer to `refresh-reviewed`;
+* a path absent from the trusted tree is refused by `refresh-reviewed` with a
+  pointer to `admit-new-reviewed`;
+* a batch mixing existing and new paths is refused outright -- separate the
+  refresh batch from the admission batch.
+
+The trust boundary is the same as refresh, plus one new external input. All of
+the following must live outside the candidate checkout: the trusted ledger
+(public snapshot and/or the detailed development ledger), the trusted policy,
+the optional trusted manifest, and an **admission authority** document the
+independent reviewer produces after reviewing the exact candidate bytes:
+
+```text
+python tools/provenance_ledger.py admit-new-reviewed \
+  --trusted-ledger <external-trusted-ledger-or-detailed-ledger> \
+  --admission-authority <external-admission-authority.json> \
+  --candidate-tree <clean-candidate-worktree> \
+  --trusted-tree <trusted-baseline-worktree-or-immutable-ref> \
+  --trusted-policy <external-trusted-policy> \
+  --trusted-manifest <external-trusted-manifest> \
+  --paths <exact-new-public-path> [<exact-path> ...]
+```
+
+The admission authority is the candidate-independent review decision. Each
+statement binds one exact repository-relative path to one exact lowercase
+SHA-256 of the bytes the reviewer approved, and names the public classification:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "admission-authority",
+  "reviewed_new_paths": [
+    {"path": "docs/research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md",
+     "sha256": "<64 lowercase hex>",
+     "classification": "reviewed_documentation",
+     "origin": "newly authored Nakagawa research documentation reviewed against public sources"}
+  ]
+}
+```
+
+Candidate bytes can never create their own authority. The command verifies all
+of the following before it writes anything: the candidate worktree is clean;
+the candidate differs from the trusted tree by exactly the admitted path set
+and nothing else; every unrequested blob is byte-identical to the trusted
+baseline; the candidate policy is semantically exactly the external trusted
+policy plus include entries for the admitted paths; each path is absent from
+the trusted tree and present (tracked) in the candidate; each authority digest
+equals the candidate blob's SHA-256; and the trusted public ledger covers the
+complete trusted public tree. The policy include, the ledger entry, and
+`PUBLIC_EXPORT.json` are then regenerated mechanically from the external
+inputs -- never accepted from the candidate -- and the ledger records the
+`admission` block (workflow, trusted/candidate trees, admitted paths, and a
+SHA-256 of the authority document) as audit ancestry.
+
+Authority classes are not one size. Deterministic public material --
+documentation, configuration, public factual metadata, synthetic fixtures and
+source-owned tests -- is admitted from the independent exact-path/exact-bytes
+review alone, and the deterministic classifier derives the class; the entry
+carries no record id. An implementation/source path additionally requires an
+exact `records` entry and an exact `reviewed_blobs` approval naming that path
+and that digest in the external trusted detailed ledger, plus an authority
+statement declaring `origin_kind` (`authored_from_scratch`, `derived_adapted`,
+or `third_party`), an origin statement, and a license basis. Without that
+private-ledger record and blob approval the command refuses (`BLOB_UNAPPROVED`,
+`TRUSTED_PATH_MISSING`, or `TRUSTED_RECORD_REQUIRED`); a documentation-class
+authority can never admit implementation, and anything the trusted policy
+excludes is unadmittable through this route (`ADMISSION_PATH_EXCLUDED`).
+Wildcards, directories, prefix/extension authority, duplicate paths,
+path-traversal spellings, an authority naming different paths or different
+bytes than the candidate carries, candidate-controlled trusted inputs, and
+unrequested candidate mutations all fail closed.
+
+Because this command creates the *initial* entry, the independent reviewer
+must have reviewed the exact bytes before producing the authority document.
+The implementer who authored the candidate does not create the authority;
+separation of duties is a process rule enforced by the machine checks above.
+After admission, commit the regenerated policy/ledger/export, then the release
+process must still copy the resulting ledger to its trusted location, run
+`publish_audit.py` against that external copy and the trusted manifest, and
+run the non-attesting `--provenance-self-consistency` tripwire. Git
+Issues/Projects/Milestones remain the live authority for which paths are
+awaiting admission; this page only defines the route.
+
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted
 gates.
