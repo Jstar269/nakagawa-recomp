@@ -119,8 +119,20 @@ An unchanged file needs no approval, so most changes touch this tier not at all.
 | --- | --- | --- |
 | `project_authored_attested`, `upstream_derived`, `generated_from_public_source` | yes | **yes** |
 | `reviewed_documentation`, `reviewed_configuration`, `public_factual_metadata`, `reviewed_other` | no, deterministic | no |
-| `synthetic_fixture` (`tools/test_*`) | no, deterministic | no |
+| `synthetic_fixture` (non-executable data under `fixtures/`, synthetic tests that are pure data) | no, deterministic | no |
 | `unresolved` | cannot be published | — |
+
+Deterministic classes describe what a file *is* by its path shape, so they can
+never certify executable or security-sensitive content regardless of where it
+sits. Executable tests/tools and source/script files (`*.py`, `*.ps1`, `*.sh`,
+`*.cmd`/`*.bat`, C/C++ and other source suffixes, anything under `src/` or
+`tools/`), CI workflows and actions (`.github/workflows/*`,
+`.github/actions/*`), build and packaging fragments (Makefile, CMake,
+`meson.build`, `*.mk`), and pre-commit hook/config surfaces are admitted or
+refreshed only on implementation-grade authority with an exact record and blob
+approval -- a filename such as `tools/test_*.py` can no more certify an
+executable test as synthetic data than a `docs/` prefix can certify a script as
+documentation (`ADMISSION_CLASS_ESCAPE`).
 
 An approval must cite the exact record already covering that path and a
 classification agreeing with what authority derives; a mismatch is refused rather
@@ -221,6 +233,95 @@ trusted manifest, and then run the non-attesting
 or confirms an exact trusted implementation record. The refresh command does
 not merge or otherwise authorize an unrelated dashboard change.
 
+## Reviewed refresh across an exact publication-policy delta
+
+`refresh-reviewed` also requires the candidate's publication policy to equal
+the trusted tree's policy, which makes a candidate that *also* carries a
+reviewed policy change unrefreshable by the plain route. That is correct for an
+unreviewed substitution, but it is not the same as an **independently blessed
+delta**: the baseline was reviewed under the old policy, and a maintainer or
+independent reviewer has separately reviewed the new policy's exact bytes and
+the exact semantic difference. Issue #156 is the first real case (removing the
+phantom `TODO.md` include entry -- the file was never tracked).
+
+To cross such a delta the executor supplies two additional external inputs:
+`--trusted-candidate-policy` (the blessed candidate policy bytes, never read
+from the candidate tree) and `--policy-delta-authority` (an external document
+binding the baseline digest, the blessed candidate digest, and the exact
+allowed semantic delta):
+
+```text
+python tools/provenance_ledger.py refresh-reviewed \
+  --trusted-ledger <external-trusted-ledger> \
+  --candidate-tree <clean-candidate-worktree-or-immutable-ref> \
+  --trusted-tree <trusted-baseline-worktree-or-immutable-ref> \
+  --trusted-policy <external-baseline-policy> \
+  --trusted-manifest <external-trusted-manifest> \
+  --trusted-candidate-policy <external-blessed-candidate-policy.json> \
+  --policy-delta-authority <external-policy-delta-authority.json> \
+  --paths <exact-existing-public-path> [<exact-path> ...]
+```
+
+```json
+{
+  "schema_version": 1,
+  "kind": "policy-delta-authority",
+  "baseline_policy_sha256": "<sha256 of the trusted baseline policy bytes>",
+  "candidate_policy_sha256": "<sha256 of the blessed candidate policy bytes>",
+  "allowed_delta": {
+    "include_added": [],
+    "include_removed": ["TODO.md"],
+    "exclude_added": [],
+    "exclude_removed": [],
+    "rule_changes": []
+  }
+}
+```
+
+Two policy contexts are kept strictly separate. The **trusted baseline** (its
+tree, its public snapshot) is validated under the **baseline** policy; the
+**candidate output** (tree boundary, refreshed paths, policy ledger entry,
+`PUBLIC_EXPORT.json`) is validated under the **blessed candidate** policy. The
+old snapshot is never re-validated under the new policy, and the new bytes are
+never judged by the old one. The semantic delta is classified element-by-element
+into `include_added`, `include_removed`, `exclude_added`, `exclude_removed`,
+and `rule_changes`, and the computed delta must equal the authority's
+`allowed_delta` exactly -- an extra include removal, an include addition, an
+exclusion change, or any rule/control change (which V1 refuses on its face,
+`POLICY_DELTA_AUTHORITY_INVALID`) fails closed. The policy's own ledger entry is
+then updated to the blessed bytes and `PUBLIC_EXPORT.json` is regenerated under
+the blessed policy; both are mechanical outputs of the trusted inputs, and the
+candidate's own policy ledger entry is never read. A blessed file that equals
+the baseline (`POLICY_DELTA_EMPTY`), an authority whose digests do not match
+the actual files, unpaired flags, candidate-controlled inputs, or a candidate
+whose policy differs from the blessed bytes all fail closed.
+
+The policy file itself is one of the generated outputs of this operation, and
+both it and the ledger/export are written as one transaction (see below); the
+committed policy is then used as the next baseline for later refreshes.
+
+## Transactional control outputs
+
+Every mutating provenance command computes and validates all generated output
+bytes first, stages each file next to its target, promotes the whole group only
+after every stage succeeds, and rolls already-promoted files back to their
+original bytes if any promotion fails. The affected worktree therefore ends in
+the complete old state or the complete new state -- never a hybrid of a new
+policy with an old ledger. The generated control set is:
+
+* `assets/public_provenance_ledger.json` and `PUBLIC_EXPORT.json` for a
+  `refresh-reviewed`;
+* those two plus `assets/public_source_profile.json` for an
+  `admit-new-reviewed` and for a `refresh-reviewed` crossing a blessed policy
+delta.
+
+Ledger ancestry stays a single current record, not a growing second history:
+an `admit-new-reviewed` overwrites any prior `admission` block with the newest
+admission, and a subsequent `refresh-reviewed` drops the `admission` block
+entirely (its `refresh` block records the operation). The admission transaction
+audit lives in the external authority document and the commit that carried it,
+not inside the canonical ledger.
+
 ## Trusted admission of a genuinely new public path
 
 `refresh-reviewed` can only re-attest bytes on a path a trusted baseline
@@ -286,18 +387,28 @@ inputs -- never accepted from the candidate -- and the ledger records the
 SHA-256 of the authority document) as audit ancestry.
 
 Authority classes are not one size. Deterministic public material --
-documentation, configuration, public factual metadata, synthetic fixtures and
-source-owned tests -- is admitted from the independent exact-path/exact-bytes
-review alone, and the deterministic classifier derives the class; the entry
-carries no record id. An implementation/source path additionally requires an
-exact `records` entry and an exact `reviewed_blobs` approval naming that path
-and that digest in the external trusted detailed ledger, plus an authority
-statement declaring `origin_kind` (`authored_from_scratch`, `derived_adapted`,
-or `third_party`), an origin statement, and a license basis. Without that
-private-ledger record and blob approval the command refuses (`BLOB_UNAPPROVED`,
-`TRUSTED_PATH_MISSING`, or `TRUSTED_RECORD_REQUIRED`); a documentation-class
-authority can never admit implementation, and anything the trusted policy
-excludes is unadmittable through this route (`ADMISSION_PATH_EXCLUDED`).
+documentation, configuration, public factual metadata, and non-executable
+synthetic data fixtures -- is admitted from the independent
+exact-path/exact-bytes review alone, and the deterministic classifier derives
+the class; the entry carries no record id. Executable tests/tools, source and
+script files, CI workflows/actions, build/packaging fragments, and pre-commit
+hook/config surfaces can never use a deterministic class even when their path
+resembles one (`ADMISSION_CLASS_ESCAPE`). An implementation/source path
+additionally requires an exact `records` entry and an exact `reviewed_blobs`
+approval naming that path and that digest in the external trusted detailed
+ledger, plus an authority statement declaring `origin_kind`
+(`authored_from_scratch`, `derived_adapted`, or `third_party`), an origin
+statement, and a license basis. The statement's `record_id` must equal the
+exact covering detailed record's id *and* the blob approval's record id, so the
+admission text cannot drift from the trust anchor it claims to cite. Its
+`origin`/`license` fields are descriptive reviewer metadata: they prove the
+reviewer considered origin and license, but they never authorize anything --
+the public entry's class, origin, and license claims derive from the trusted
+detailed record alone. Without the private-ledger record and blob approval the
+command refuses (`BLOB_UNAPPROVED`, `TRUSTED_PATH_MISSING`, or
+`TRUSTED_RECORD_REQUIRED`); a documentation-class authority can never admit
+implementation, and anything the trusted policy excludes is unadmittable
+through this route (`ADMISSION_PATH_EXCLUDED`).
 Wildcards, directories, prefix/extension authority, duplicate paths,
 path-traversal spellings, an authority naming different paths or different
 bytes than the candidate carries, candidate-controlled trusted inputs, and
