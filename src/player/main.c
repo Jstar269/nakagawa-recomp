@@ -152,11 +152,26 @@ int main(int argc, char *argv[]) {
                         if (sres == NK_OK) {
                             printf("[PLAYER] Child process started! PID: %d\n", app.launch_session.process.process_id);
                             app.is_game_running = true;
+                            app.launch_time_ms = SDL_GetTicks();
                         } else {
                             fprintf(stderr, "[PLAYER] Failed to start runtime: %s\n", app.launch_session.last_error);
+                            player_app_set_error(&app, "PROCESS_SPAWN_FAILED", "Failed to Spawn Process",
+                                                 app.launch_session.last_error[0] ? app.launch_session.last_error : "CreateProcess failed.",
+                                                 "Return to Library", VIEW_LIBRARY);
                         }
                     } else {
                         fprintf(stderr, "[PLAYER] Failed to prepare launch session: %s\n", app.launch_session.last_error);
+                        const char *err_code = "RUNTIME_NOT_FOUND";
+                        const char *err_title = "Recompiled Binary Not Available";
+                        if (strstr(app.launch_session.last_error, "manifest") != NULL ||
+                            strstr(app.launch_session.last_error, "profile") != NULL ||
+                            strstr(app.launch_session.last_error, "catalog") != NULL) {
+                            err_code = "MANIFEST_MISMATCH";
+                            err_title = "Title Manifest Mismatch";
+                        }
+                        player_app_set_error(&app, err_code, err_title,
+                                             app.launch_session.last_error[0] ? app.launch_session.last_error : "Launch preparation failed.",
+                                             "Return to Library", VIEW_LIBRARY);
                     }
                 }
             } else {
@@ -202,6 +217,9 @@ int main(int argc, char *argv[]) {
             player_app_set_error(&app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
                                  "Nakagawa could not locate the source ISO file on disk.",
                                  "Locate Game ISO", VIEW_LIBRARY);
+        } else if (strcmp(test_view, "focus") == 0) {
+            app.focus_index = 1;
+            player_app_set_view(&app, VIEW_LIBRARY);
         }
     }
 
@@ -329,10 +347,33 @@ int main(int argc, char *argv[]) {
 
         /* Monitor running game process */
         if (app.is_game_running) {
+            if (app.launch_time_ms == 0) {
+                app.launch_time_ms = SDL_GetTicks();
+            }
             if (!nk_launch_is_running(&app.launch_session)) {
+                uint64_t now_ms = SDL_GetTicks();
+                uint64_t elapsed_ms = now_ms >= app.launch_time_ms ? (now_ms - app.launch_time_ms) : 0;
                 int code = nk_launch_wait(&app.launch_session, 0);
                 app.is_game_running = false;
-                printf("[PLAYER] Game process exited with code %d\n", code);
+                printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code, (unsigned long long)elapsed_ms);
+
+                if (elapsed_ms < 500) {
+                    char err_msg[512];
+                    snprintf(err_msg, sizeof(err_msg),
+                             "Child runtime exited prematurely after %llu ms (exit code %d).\n"
+                             "Process terminated before initialization or scheduler loop could start.",
+                             (unsigned long long)elapsed_ms, code);
+                    player_app_set_error(&app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
+                                         err_msg, "Return to Library", VIEW_LIBRARY);
+                } else if (code != 0) {
+                    char err_msg[512];
+                    snprintf(err_msg, sizeof(err_msg),
+                             "Child runtime process exited abnormally with code %d.\n"
+                             "Check runtime log files for crash traceback or missing symbol details.",
+                             code);
+                    player_app_set_error(&app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
+                                         err_msg, "Return to Library", VIEW_LIBRARY);
+                }
             }
         }
 

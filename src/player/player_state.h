@@ -97,6 +97,7 @@ typedef struct {
     NkLibrary library;
     NkLaunchSession launch_session;
     bool is_game_running;
+    uint64_t launch_time_ms;
 
     /* Navigation & Focus */
     int focus_index; /* current focused UI element index for gamepad/keyboard */

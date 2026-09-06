@@ -62,10 +62,24 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
 
         if param_fmt in (0x0204, 0x0004):  # UTF-8 string
             val_str = raw_val.rstrip(b"\0").decode("utf-8", errors="replace")
-            result[key_name] = val_str
         elif param_fmt == 0x0404:  # Integer
             if len(raw_val) >= 4:
-                result[key_name] = str(struct.unpack_from("<I", raw_val, 0)[0])
+                val_str = str(struct.unpack_from("<I", raw_val, 0)[0])
+            else:
+                val_str = ""
+        else:
+            val_str = ""
+
+        if key_name in result:
+            if result[key_name] != val_str:
+                raise IsoInspectionError(
+                    f"Conflicting duplicate SFO key '{key_name}' rejected as ambiguous: "
+                    f"'{result[key_name]}' vs '{val_str}'"
+                )
+            # Byte-identical duplicate: accepted per documented policy
+            continue
+
+        result[key_name] = val_str
 
     return result
 

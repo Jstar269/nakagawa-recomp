@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "nk_library.h"
 #include "nk_platform.h"
 #include <ctype.h>
@@ -10,6 +12,9 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
 
 static FILE *nk_lib_fopen(const char *path, const char *mode) {
@@ -155,21 +160,62 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     }
 
     fprintf(f, "  ]\n}\n");
-    fflush(f);
+    if (fflush(f) != 0) {
+        fclose(f);
+#if defined(_WIN32) || defined(_WIN64)
+        WCHAR wtmp[32768];
+        MultiByteToWideChar(CP_UTF8, 0, tmp_path, -1, wtmp, 32768);
+        DeleteFileW(wtmp);
+#else
+        remove(tmp_path);
+#endif
+        return NK_ERROR_IO;
+    }
+
+#if defined(_WIN32) || defined(_WIN64)
+    int fd = _fileno(f);
+    if (fd >= 0) {
+        HANDLE hFile = (HANDLE)_get_osfhandle(fd);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(hFile);
+        }
+    }
+#else
+    int fd = fileno(f);
+    if (fd >= 0) {
+        fsync(fd);
+    }
+#endif
     fclose(f);
 
     /* Atomic rename / replace with .bak backup preservation */
     char bak_path[NK_MAX_PATH + 8];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
 
-    if (nk_platform_file_exists(target)) {
 #if defined(_WIN32) || defined(_WIN64)
-        WCHAR wtarget[32768];
-        WCHAR wbak[32768];
-        MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 32768);
-        MultiByteToWideChar(CP_UTF8, 0, bak_path, -1, wbak, 32768);
+    WCHAR wtmp[32768];
+    WCHAR wtarget[32768];
+    WCHAR wbak[32768];
+    MultiByteToWideChar(CP_UTF8, 0, tmp_path, -1, wtmp, 32768);
+    MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 32768);
+    MultiByteToWideChar(CP_UTF8, 0, bak_path, -1, wbak, 32768);
+
+    if (nk_platform_file_exists(target)) {
         CopyFileW(wtarget, wbak, FALSE);
+        if (!ReplaceFileW(wtarget, wtmp, NULL, REPLACEFILE_IGNORE_MERGE_ERRORS, NULL, NULL)) {
+            if (!MoveFileExW(wtmp, wtarget, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                DeleteFileW(wtmp);
+                return NK_ERROR_IO;
+            }
+        }
+    } else {
+        if (!MoveFileExW(wtmp, wtarget, MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(wtmp);
+            return NK_ERROR_IO;
+        }
+    }
 #else
+    if (nk_platform_file_exists(target)) {
         FILE *src = fopen(target, "rb");
         if (src) {
             FILE *dst = fopen(bak_path, "wb");
@@ -183,17 +229,12 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
             }
             fclose(src);
         }
-#endif
     }
 
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wtmp[32768];
-    WCHAR wtarget[32768];
-    MultiByteToWideChar(CP_UTF8, 0, tmp_path, -1, wtmp, 32768);
-    MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 32768);
-    MoveFileExW(wtmp, wtarget, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-#else
-    rename(tmp_path, target);
+    if (rename(tmp_path, target) != 0) {
+        remove(tmp_path);
+        return NK_ERROR_IO;
+    }
 #endif
 
     return NK_OK;

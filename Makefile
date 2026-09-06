@@ -1485,6 +1485,10 @@ native-core-tests:
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
 	./build/test_parsers_hostile$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_manifest_parser.c -o build/test_manifest_parser$(EXE_EXT)
+	./build/test_manifest_parser$(EXE_EXT) --check
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1492,3 +1496,12 @@ ifeq ($(OS),Windows_NT)
 		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
 	./build/test_win32_process$(EXE_EXT)
 endif
+
+PLAYER_SOURCES := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c
+
+player:
+	$(CC) -std=c99 -Wall -Wextra \
+		-Isrc/core -Isrc/core/generated -Isrc/player $(PLAYER_VULKAN_INC) \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) $(PLAYER_SOURCES) \
+		$(PLAYER_VULKAN_LIB) -lSDL3 -lshell32 -o build/nakagawa_player$(EXE_EXT)
+

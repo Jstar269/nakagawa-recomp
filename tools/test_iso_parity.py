@@ -57,6 +57,35 @@ def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
     return bytes(header + entry_table + key_table + data_table)
 
 
+def build_custom_param_sfo(entries: list[tuple[str, int, bytes]]) -> bytes:
+    """Construct a binary PSP PARAM.SFO buffer with arbitrary raw entries (e.g. duplicates)."""
+    key_table = bytearray()
+    data_table = bytearray()
+    entry_table = bytearray()
+
+    for key, fmt, val in entries:
+        k_off = len(key_table)
+        key_table.extend(key.encode("utf-8") + b"\0")
+
+        d_off = len(data_table)
+        d_len = len(val)
+        data_table.extend(val)
+        while len(data_table) % 4 != 0:
+            data_table.append(0)
+
+        entry_table.extend(struct.pack("<HHIII", k_off, fmt, d_len, d_len, d_off))
+
+    header_size = 20
+    key_table_start = header_size + len(entry_table)
+    data_table_start = key_table_start + len(key_table)
+    while data_table_start % 4 != 0:
+        key_table.append(0)
+        data_table_start += 1
+
+    header = struct.pack("<4s4sIII", b"\x00PSF", b"\x01\x01\x00\x00", key_table_start, data_table_start, len(entries))
+    return bytes(header + entry_table + key_table + data_table)
+
+
 def create_test_iso(
     path: Path,
     disc_id: str = "TEST00001",
@@ -80,6 +109,22 @@ def create_test_iso(
     sfo_off = 32 * sector_size
     data[sfo_off : sfo_off + len(sfo_bytes)] = sfo_bytes
 
+    path.write_bytes(data)
+
+
+def create_custom_sfo_iso(path: Path, sfo_bytes: bytes, volume_id: str = "CUSTOM_VOL") -> None:
+    sector_size = 2048
+    num_sectors = 1024
+    data = bytearray(num_sectors * sector_size)
+
+    pvd_off = 16 * sector_size
+    data[pvd_off] = 0x01
+    data[pvd_off + 1 : pvd_off + 6] = b"CD001"
+    data[pvd_off + 6] = 0x01
+    data[pvd_off + 40 : pvd_off + 40 + len(volume_id)] = volume_id.encode("latin-1")
+
+    sfo_off = 32 * sector_size
+    data[sfo_off : sfo_off + len(sfo_bytes)] = sfo_bytes
     path.write_bytes(data)
 
 
@@ -320,6 +365,41 @@ int main(int argc, char **argv) {{
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)
         self.assertIn(str(mock_exe), res.stdout)
         self.assertIn(str(mock_iso), res.stdout)
+
+    def test_duplicate_sfo_keys_parity(self) -> None:
+        """Verify identical duplicate SFO keys accepted and conflicting rejected by both Python and C."""
+        from nk_core.iso_inspect import IsoInspectionError
+
+        # 1. Conflicting keys: Python and Native C must reject
+        sfo_conflict = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"UCUS98701\0"),
+            ("DISC_ID", 0x0204, b"ULUS10001\0"),
+            ("TITLE", 0x0204, b"Test Conflict\0"),
+        ])
+        iso_conflict = self.temp_dir / "conflict.iso"
+        create_custom_sfo_iso(iso_conflict, sfo_conflict)
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_conflict)
+
+        c_conflict = self._run_native_inspect(iso_conflict)
+        self.assertTrue(c_conflict.get("RESULT", "").startswith("ERROR"))
+
+        # 2. Byte-identical keys: Python and Native C must accept
+        sfo_identical = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"UCUS98701\0"),
+            ("DISC_ID", 0x0204, b"UCUS98701\0"),
+            ("TITLE", 0x0204, b"Test Identical\0"),
+        ])
+        iso_identical = self.temp_dir / "identical.iso"
+        create_custom_sfo_iso(iso_identical, sfo_identical)
+
+        py_identical = inspect_iso(iso_identical)
+        self.assertEqual(py_identical.disc_id, "UCUS98701")
+
+        c_identical = self._run_native_inspect(iso_identical)
+        self.assertEqual(c_identical.get("RESULT"), "OK")
+        self.assertEqual(c_identical.get("DISC_ID"), "UCUS98701")
 
 
 if __name__ == "__main__":

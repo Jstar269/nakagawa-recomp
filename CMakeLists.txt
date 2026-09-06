@@ -51,6 +51,10 @@ add_executable(test_parsers_hostile tests/native/test_parsers_hostile.c)
 target_link_libraries(test_parsers_hostile PRIVATE nakagawa_core)
 add_test(NAME parsers_hostile_test COMMAND test_parsers_hostile)
 
+add_executable(test_manifest_parser tests/native/test_manifest_parser.c)
+target_link_libraries(test_manifest_parser PRIVATE nakagawa_core)
+add_test(NAME manifest_parser_test COMMAND test_manifest_parser --check)
+
 if(WIN32)
     add_executable(argv_echo_helper tests/native/argv_echo_helper.c)
     target_link_libraries(argv_echo_helper PRIVATE shell32)

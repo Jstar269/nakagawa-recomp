@@ -260,6 +260,52 @@ class PublicTitleIsolationTests(unittest.TestCase):
             if overlay_path.is_file():
                 overlay_path.unlink()
 
+    def test_overlay_collision_policy(self) -> None:
+        """Section 4: Conflicting overlay on canonical public title must fail closed unless overridden."""
+        reg = TitleRegistry()
+        reg.load_from_directory(self.titles_dir)
+
+        # Create a manifest that conflicts with public title 'synthetic-allegrex-v1'
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            collision = {
+                "schema_version": 1,
+                "id": "synthetic-allegrex-v1",
+                "display_name": "Colliding Overlay",
+                "kind": "synthetic",
+                "executable": {
+                    "base": 142622720,
+                    "entry": 142622720,
+                    "bss_metadata_source": "elf",
+                    "extra_executable_spans": []
+                },
+                "modules": [],
+                "filesystem": {
+                    "data_root": "fixtures/synthetic",
+                    "memory_stick_root": "build/test/memstick",
+                    "device_prefixes": ["host0:", "ms0:"]
+                },
+                "hle_profile": "synthetic-minimal",
+                "codegen_profile": "none",
+                "feature_requirements": ["allegrex-core"],
+                "verification_profile": "synthetic-public",
+            }
+            json.dump(collision, f)
+            f_path = Path(f.name)
+
+        try:
+            # 1. Standard mode: MUST REJECT
+            with self.assertRaises(RuntimeError) as ctx:
+                reg.load_private_manifest(f_path, allow_override=False)
+            self.assertIn("conflicts with public canonical catalog", str(ctx.exception))
+
+            # 2. Explicit developer override mode: ACCEPT
+            profile = reg.load_private_manifest(f_path, allow_override=True)
+            self.assertEqual(profile.id, "synthetic-allegrex-v1")
+            self.assertEqual(profile.name, "Colliding Overlay")
+        finally:
+            if f_path.is_file():
+                f_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

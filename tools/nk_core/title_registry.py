@@ -106,11 +106,34 @@ class TitleRegistry:
                 # Malformed manifests are rejected at load
                 raise RuntimeError(f"Failed loading manifest {json_file}: {exc}") from exc
 
-    def load_private_manifest(self, manifest_file: Path) -> TitleProfile:
+    def load_private_manifest(self, manifest_file: Path, allow_override: bool = False) -> TitleProfile:
         """Explicitly load an external/local private title manifest (e.g. for private testing)."""
         raw = title_manifest.load_manifest(manifest_file)
         validated = title_manifest.validate_manifest(raw)
         profile = title_profile_from_manifest(validated)
+
+        # Collision check against existing public profiles
+        collision = (profile.id in self._profiles)
+        if not collision:
+            for disc_id in profile.disc_ids:
+                norm = self._norm_disc(disc_id)
+                if norm in self._disc_index:
+                    collision = True
+                    break
+
+        if collision:
+            if not allow_override:
+                raise RuntimeError(
+                    f"Overlay identity '{profile.id}' conflicts with public canonical catalog; "
+                    f"override forbidden in standard mode"
+                )
+            else:
+                print(
+                    f"[WARNING] Overriding canonical public title definition for '{profile.id}' "
+                    f"with external private manifest!",
+                    file=sys.stderr
+                )
+
         self.register(profile)
         return profile
 

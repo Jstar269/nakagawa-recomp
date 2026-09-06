@@ -19,6 +19,18 @@ static void write_test_file(const char *path, const void *data, size_t size) {
     fclose(f);
 }
 
+static void fill_dir_chain(uint8_t *sec, size_t target_off) {
+    size_t cur = 0;
+    while (cur < target_off) {
+        size_t step = target_off - cur;
+        if (step > 200) step = 200;
+        sec[cur] = (uint8_t)step;
+        sec[cur + 32] = 1;
+        sec[cur + 33] = '_';
+        cur += step;
+    }
+}
+
 static void test_hostile_library_json(const char *test_dir) {
     char fpath[512];
     NkLibrary lib;
@@ -45,7 +57,6 @@ static void test_hostile_library_json(const char *test_dir) {
     snprintf(fpath, sizeof(fpath), "%s%cunterminated_str.json", test_dir, nk_platform_path_separator());
     const char json_unterminated[] = "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001,\n      \"title_name\": \"test\"\n    }\n  ]\n}";
     write_test_file(fpath, json_unterminated, strlen(json_unterminated));
-    /* Should fail closed or load 0 entries without crashing */
     assert(nk_library_load(&lib, fpath) == NK_OK || nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
     assert(nk_library_count(&lib) == 0);
 
@@ -96,7 +107,6 @@ static void test_hostile_library_json(const char *test_dir) {
 
     /* 7. Backup (.bak) automatic recovery when primary is corrupt */
     printf("[HOSTILE_TEST] Subtest 7: automatic .bak recovery on primary corruption\n"); fflush(stdout);
-    /* Save again to trigger .bak creation */
     NkGameEntry second_entry;
     memset(&second_entry, 0, sizeof(second_entry));
     snprintf(second_entry.disc_id, sizeof(second_entry.disc_id), "TEST00006");
@@ -104,20 +114,47 @@ static void test_hostile_library_json(const char *test_dir) {
     assert(nk_library_add_or_update(&lib, &second_entry) == NK_OK);
     assert(nk_library_save(&lib, fpath) == NK_OK);
 
-    /* Verify .bak exists */
     char bak_path[600];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", fpath);
     assert(nk_platform_file_exists(bak_path));
 
-    /* Corrupt primary file */
     const char corrupt_primary[] = "CORRUPT_INVALID_JSON_CONTENT_TRUNCATED";
     write_test_file(fpath, corrupt_primary, strlen(corrupt_primary));
 
-    /* nk_library_load should automatically fall back to .bak and succeed */
     NkLibrary recovered_lib;
     assert(nk_library_load(&recovered_lib, fpath) == NK_OK);
     assert(nk_library_count(&recovered_lib) >= 1);
     assert(nk_library_find_by_disc_id(&recovered_lib, "TEST00005") != NULL);
+
+    /* 8. Simulated write failure (uncreatable path) */
+    printf("[HOSTILE_TEST] Subtest 8: simulated write failure\n"); fflush(stdout);
+    char bad_write_path[600];
+    snprintf(bad_write_path, sizeof(bad_write_path), "%s%cbad_dir_nonexistent%cuncreatable.json",
+             test_dir, nk_platform_path_separator(), nk_platform_path_separator());
+    assert(nk_library_save(&lib, bad_write_path) == NK_ERROR_IO);
+
+    /* 9. Simulated replace failure (target is an existing directory) */
+    printf("[HOSTILE_TEST] Subtest 9: simulated replace failure\n"); fflush(stdout);
+    char dir_as_target[600];
+    snprintf(dir_as_target, sizeof(dir_as_target), "%.500s%ctarget_is_a_dir", test_dir, nk_platform_path_separator());
+    assert(nk_platform_mkdir_p(dir_as_target));
+    assert(nk_library_save(&lib, dir_as_target) == NK_ERROR_IO);
+    /* Verify that dir_as_target.tmp was cleaned up */
+    char tmp_check[600];
+    snprintf(tmp_check, sizeof(tmp_check), "%.500s.tmp", dir_as_target);
+    assert(!nk_platform_file_exists(tmp_check));
+
+    /* 10. Corrupt primary + corrupt backup: fails closed cleanly without crash */
+    printf("[HOSTILE_TEST] Subtest 10: corrupt primary + corrupt backup clean reset\n"); fflush(stdout);
+    char double_corrupt_path[600];
+    snprintf(double_corrupt_path, sizeof(double_corrupt_path), "%.500s%cdouble_corrupt.json", test_dir, nk_platform_path_separator());
+    char double_bak_path[600];
+    snprintf(double_bak_path, sizeof(double_bak_path), "%.500s.bak", double_corrupt_path);
+    write_test_file(double_corrupt_path, "BAD_PRIMARY", 11);
+    write_test_file(double_bak_path, "BAD_BACKUP", 10);
+    NkLibrary double_corrupt_lib;
+    assert(nk_library_load(&double_corrupt_lib, double_corrupt_path) == NK_ERROR_GENERIC);
+    assert(nk_library_count(&double_corrupt_lib) == 0);
 
     printf("[HOSTILE_TEST] Library JSON tests PASSED!\n");
     fflush(stdout);
@@ -157,7 +194,6 @@ static void test_hostile_iso_parser(const char *test_dir) {
     pvd[0] = 0x01;
     memcpy(&pvd[1], "CD001", 5);
     memcpy(&pvd[40], "TEST_VOL                        ", 32);
-    /* Root dir record at pvd[156] */
     /* Root extent LBA = 10000 (exceeds 18 sectors!) */
     pvd[158] = 0x10;
     pvd[159] = 0x27;
@@ -169,8 +205,6 @@ static void test_hostile_iso_parser(const char *test_dir) {
     pvd[168] = 0x00;
     pvd[169] = 0x00;
     write_test_file(fpath, hostile_iso, sizeof(hostile_iso));
-
-    /* Must fail closed gracefully and not crash or attempt huge seek */
     assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
 
     /* 5. Extraction with hostile depth */
@@ -184,21 +218,20 @@ static void test_hostile_iso_parser(const char *test_dir) {
     snprintf(fpath, sizeof(fpath), "%s%csector_cross.iso", test_dir, nk_platform_path_separator());
     uint8_t cross_iso[18 * 2048];
     memset(cross_iso, 0, sizeof(cross_iso));
-    /* PVD at 16 */
     uint8_t *pvd_cross = &cross_iso[16 * 2048];
     pvd_cross[0] = 0x01;
     memcpy(&pvd_cross[1], "CD001", 5);
     memcpy(&pvd_cross[40], "SECTOR_CROSS_VOL                ", 32);
-    /* Root dir at LBA 17, size 2048 */
     pvd_cross[158] = 17; pvd_cross[159] = 0; pvd_cross[160] = 0; pvd_cross[161] = 0;
     pvd_cross[162] = 0; pvd_cross[163] = 0; pvd_cross[164] = 0; pvd_cross[165] = 17;
     pvd_cross[166] = 0x00; pvd_cross[167] = 0x08; pvd_cross[168] = 0; pvd_cross[169] = 0;
     pvd_cross[170] = 0; pvd_cross[171] = 0; pvd_cross[172] = 0x08; pvd_cross[173] = 0x00;
-    /* In sector 17, put record at byte 2040 with rec_len = 34 (crosses 2048 boundary) */
     uint8_t *sec17 = &cross_iso[17 * 2048];
-    sec17[2040] = 34;
+    fill_dir_chain(sec17, 2040);
+    sec17[2040] = 34; /* 2040 + 34 = 2074 > 2048 -> crosses boundary! */
     write_test_file(fpath, cross_iso, sizeof(cross_iso));
-    assert(nk_iso_inspect(fpath, &meta) == NK_OK || nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
+    /* MUST be rejected with NK_ERROR_INVALID_ISO */
+    assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
 
     /* 7. Both-endian disagreement (ECMA-119 7.3.3) */
     printf("[HOSTILE_TEST] Subtest 7: both-endian disagreement\n"); fflush(stdout);
@@ -209,75 +242,126 @@ static void test_hostile_iso_parser(const char *test_dir) {
     pvd_endian[0] = 0x01;
     memcpy(&pvd_endian[1], "CD001", 5);
     memcpy(&pvd_endian[40], "ENDIAN_TEST_VOL                 ", 32);
-    /* Root dir at LBA 17 */
     pvd_endian[158] = 17; pvd_endian[159] = 0; pvd_endian[160] = 0; pvd_endian[161] = 0;
     pvd_endian[162] = 0; pvd_endian[163] = 0; pvd_endian[164] = 0; pvd_endian[165] = 17;
     pvd_endian[166] = 0x00; pvd_endian[167] = 0x08; pvd_endian[168] = 0; pvd_endian[169] = 0;
     pvd_endian[170] = 0; pvd_endian[171] = 0; pvd_endian[172] = 0x08; pvd_endian[173] = 0x00;
-    /* Directory record for PSP_GAME at sector 17, but LE LBA and BE LBA disagree */
     uint8_t *sec17_endian = &endian_iso[17 * 2048];
     sec17_endian[0] = 42; /* rec_len */
     sec17_endian[2] = 18; sec17_endian[3] = 0; sec17_endian[4] = 0; sec17_endian[5] = 0; /* LE = 18 */
     sec17_endian[6] = 0; sec17_endian[7] = 0; sec17_endian[8] = 0x03; sec17_endian[9] = 0xE7; /* BE = 999 (DISAGREEMENT) */
-    sec17_endian[10] = 0x00; sec17_endian[11] = 0x08; sec17_endian[12] = 0; sec17_endian[13] = 0; /* Size LE = 2048 */
-    sec17_endian[14] = 0; sec17_endian[15] = 0; sec17_endian[16] = 0x08; sec17_endian[17] = 0x00; /* Size BE = 2048 */
-    sec17_endian[32] = 8; /* name_len */
+    sec17_endian[10] = 0x00; sec17_endian[11] = 0x08; sec17_endian[12] = 0; sec17_endian[13] = 0;
+    sec17_endian[14] = 0; sec17_endian[15] = 0; sec17_endian[16] = 0x08; sec17_endian[17] = 0x00;
+    sec17_endian[32] = 8;
     memcpy(&sec17_endian[33], "PSP_GAME", 8);
     write_test_file(fpath, endian_iso, sizeof(endian_iso));
-    /* nk_iso_inspect must reject the record with mismatched endians */
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath, &meta) == NK_OK);
-    /* Since PSP_GAME record was rejected, disc_id falls back to volume ID */
     assert(strcmp(meta.volume_id, "ENDIAN_TEST_VOL") == 0);
 
-    /* 8. Duplicate SFO keys (preserve first valid, ignore hostile duplicate) */
-    printf("[HOSTILE_TEST] Subtest 8: duplicate SFO keys\n"); fflush(stdout);
-    snprintf(fpath, sizeof(fpath), "%s%cdup_sfo_keys.iso", test_dir, nk_platform_path_separator());
+    /* 8. Duplicate SFO keys */
+    printf("[HOSTILE_TEST] Subtest 8a: conflicting duplicate SFO keys (must reject as ambiguous)\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cdup_sfo_conflict.iso", test_dir, nk_platform_path_separator());
     uint8_t dup_iso[18 * 2048];
     memset(dup_iso, 0, sizeof(dup_iso));
-    /* Sector 16: PVD */
     uint8_t *pvd_dup = &dup_iso[16 * 2048];
     pvd_dup[0] = 0x01;
     memcpy(&pvd_dup[1], "CD001", 5);
     memcpy(&pvd_dup[40], "DUP_SFO_VOL                     ", 32);
-    /* Root dir at 17 */
     pvd_dup[158] = 17; pvd_dup[165] = 17;
     pvd_dup[167] = 0x08; pvd_dup[172] = 0x08;
 
-    /* Construct synthetic SFO with two DISC_ID keys in sector 17 */
     uint8_t *sfo = &dup_iso[17 * 2048];
     sfo[0] = 0x00; sfo[1] = 'P'; sfo[2] = 'S'; sfo[3] = 'F';
-    sfo[4] = 0x01; sfo[5] = 0x01; /* Version 1.1 */
-    /* key_table_off = 20 + 2 * 16 = 52 */
+    sfo[4] = 0x01; sfo[5] = 0x01;
     sfo[8] = 52; sfo[9] = 0; sfo[10] = 0; sfo[11] = 0;
-    /* data_table_off = 52 + 16 = 68 */
     sfo[12] = 68; sfo[13] = 0; sfo[14] = 0; sfo[15] = 0;
-    /* entry_count = 2 */
     sfo[16] = 2; sfo[17] = 0; sfo[18] = 0; sfo[19] = 0;
 
-    /* Entry 0: key offset 0 ("DISC_ID"), data_len = 10, data_offset = 0 ("UCUS98701\0") */
     sfo[20] = 0; sfo[21] = 0;
     sfo[24] = 10; sfo[25] = 0; sfo[26] = 0; sfo[27] = 0;
     sfo[32] = 0; sfo[33] = 0; sfo[34] = 0; sfo[35] = 0;
 
-    /* Entry 1: key offset 8 ("DISC_ID"), data_len = 10, data_offset = 10 ("MALICIOUS\0") */
     sfo[36] = 8; sfo[37] = 0;
     sfo[40] = 10; sfo[41] = 0; sfo[42] = 0; sfo[43] = 0;
     sfo[48] = 10; sfo[49] = 0; sfo[50] = 0; sfo[51] = 0;
 
-    /* Key table at 52: "DISC_ID\0" (8 bytes), "DISC_ID\0" (8 bytes) */
     memcpy(&sfo[52], "DISC_ID\0", 8);
     memcpy(&sfo[60], "DISC_ID\0", 8);
 
-    /* Data table at 68: "UCUS98701\0", "MALICIOUS\0" */
     memcpy(&sfo[68], "UCUS98701\0", 10);
     memcpy(&sfo[78], "MALICIOUS\0", 10);
 
     write_test_file(fpath, dup_iso, sizeof(dup_iso));
     memset(&meta, 0, sizeof(meta));
-    assert(nk_iso_inspect(fpath, &meta) == NK_OK);
-    /* First valid key must be preserved */
+    /* Conflicting duplicate keys MUST be rejected with NK_ERROR_INVALID_ISO */
+    assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
+
+    printf("[HOSTILE_TEST] Subtest 8b: byte-identical duplicate SFO keys (must accept)\n"); fflush(stdout);
+    char fpath_identical[512];
+    snprintf(fpath_identical, sizeof(fpath_identical), "%s%cdup_sfo_identical.iso", test_dir, nk_platform_path_separator());
+    memcpy(&sfo[78], "UCUS98701\0", 10); /* Same byte-identical value */
+    write_test_file(fpath_identical, dup_iso, sizeof(dup_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_identical, &meta) == NK_OK);
     assert(strcmp(meta.disc_id, "UCUS98701") == 0);
+
+    /* 9. ECMA-119 6.8.1.1 Sector Boundary Edge Cases */
+    printf("[HOSTILE_TEST] Subtest 9a: valid sector padding (rec_len = 0 at byte 2040)\n"); fflush(stdout);
+    char fpath_pad[512];
+    snprintf(fpath_pad, sizeof(fpath_pad), "%s%csector_padding.iso", test_dir, nk_platform_path_separator());
+    uint8_t pad_iso[19 * 2048];
+    memset(pad_iso, 0, sizeof(pad_iso));
+    uint8_t *pvd_pad = &pad_iso[16 * 2048];
+    pvd_pad[0] = 0x01;
+    memcpy(&pvd_pad[1], "CD001", 5);
+    memcpy(&pvd_pad[40], "PAD_VOL                         ", 32);
+    pvd_pad[158] = 17; pvd_pad[165] = 17;
+    pvd_pad[166] = 0x00; pvd_pad[167] = 0x10; /* 4096 bytes (2 sectors: 17 and 18) */
+    pvd_pad[172] = 0x10; pvd_pad[173] = 0x00;
+    /* In sector 17, fill chain up to 2000, and byte 2000 is 0 (padding) */
+    fill_dir_chain(&pad_iso[17 * 2048], 2000);
+    pad_iso[17 * 2048 + 2000] = 0; /* padding */
+    /* In sector 18 (offset 18*2048), put valid record */
+    pad_iso[18 * 2048 + 0] = 34;
+    write_test_file(fpath_pad, pad_iso, sizeof(pad_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_pad, &meta) == NK_OK);
+
+    printf("[HOSTILE_TEST] Subtest 9b: record exactly ending at sector edge (rec_len 48 at 2000)\n"); fflush(stdout);
+    char fpath_edge[512];
+    snprintf(fpath_edge, sizeof(fpath_edge), "%s%csector_edge.iso", test_dir, nk_platform_path_separator());
+    fill_dir_chain(&pad_iso[17 * 2048], 2000);
+    pad_iso[17 * 2048 + 2000] = 48; /* 2000 + 48 = 2048 (exact edge) */
+    write_test_file(fpath_edge, pad_iso, sizeof(pad_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_edge, &meta) == NK_OK);
+
+    printf("[HOSTILE_TEST] Subtest 9c: one-byte-over boundary (rec_len 49 at 2000 -> 2049)\n"); fflush(stdout);
+    char fpath_over[512];
+    snprintf(fpath_over, sizeof(fpath_over), "%s%csector_over.iso", test_dir, nk_platform_path_separator());
+    fill_dir_chain(&pad_iso[17 * 2048], 2000);
+    pad_iso[17 * 2048 + 2000] = 49; /* 2000 + 49 = 2049 > 2048 */
+    write_test_file(fpath_over, pad_iso, sizeof(pad_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_over, &meta) == NK_ERROR_INVALID_ISO);
+
+    printf("[HOSTILE_TEST] Subtest 9d: absurd record length (rec_len 255 at 2000)\n"); fflush(stdout);
+    char fpath_absurd[512];
+    snprintf(fpath_absurd, sizeof(fpath_absurd), "%s%csector_absurd.iso", test_dir, nk_platform_path_separator());
+    fill_dir_chain(&pad_iso[17 * 2048], 2000);
+    pad_iso[17 * 2048 + 2000] = 255;
+    write_test_file(fpath_absurd, pad_iso, sizeof(pad_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_absurd, &meta) == NK_ERROR_INVALID_ISO);
+
+    printf("[HOSTILE_TEST] Subtest 9e: truncated next sector (root size 4096 but file 18 sectors)\n"); fflush(stdout);
+    char fpath_trunc[512];
+    snprintf(fpath_trunc, sizeof(fpath_trunc), "%s%csector_trunc.iso", test_dir, nk_platform_path_separator());
+    /* Write only 18 sectors: sector 17 exists, but sector 18 does not! */
+    write_test_file(fpath_trunc, pad_iso, 18 * 2048);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_trunc, &meta) == NK_ERROR_INVALID_ISO);
 
     printf("[HOSTILE_TEST] ISO parser tests PASSED!\n");
 }

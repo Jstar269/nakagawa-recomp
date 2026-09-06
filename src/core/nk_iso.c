@@ -105,36 +105,49 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
             continue;
         }
 
+        char val_buf[256];
+        int copy_len = (int)data_len;
+        if (copy_len >= (int)sizeof(val_buf)) {
+            copy_len = (int)sizeof(val_buf) - 1;
+        }
+        snprintf(val_buf, sizeof(val_buf), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+
         if (strcmp(key, "DISC_ID") == 0 || strcmp(key, "TITLE_ID") == 0) {
             if (meta->disc_id[0] != '\0') {
-                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                if (strcmp(meta->disc_id, val_buf) != 0) {
+                    snprintf(meta->error_message, sizeof(meta->error_message),
+                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.32s' vs '%.32s'",
+                        key, meta->disc_id, val_buf);
+                    return false;
+                }
+                /* Identical duplicate: accept per policy */
                 continue;
             }
-            int copy_len = (int)data_len;
-            if (copy_len >= (int)sizeof(meta->disc_id)) {
-                copy_len = (int)sizeof(meta->disc_id) - 1;
-            }
-            snprintf(meta->disc_id, sizeof(meta->disc_id), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+            snprintf(meta->disc_id, sizeof(meta->disc_id), "%.31s", val_buf);
         } else if (strcmp(key, "TITLE") == 0) {
             if (meta->title_name[0] != '\0') {
-                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                if (strcmp(meta->title_name, val_buf) != 0) {
+                    snprintf(meta->error_message, sizeof(meta->error_message),
+                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.64s' vs '%.64s'",
+                        key, meta->title_name, val_buf);
+                    return false;
+                }
+                /* Identical duplicate: accept per policy */
                 continue;
             }
-            int copy_len = (int)data_len;
-            if (copy_len >= (int)sizeof(meta->title_name)) {
-                copy_len = (int)sizeof(meta->title_name) - 1;
-            }
-            snprintf(meta->title_name, sizeof(meta->title_name), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+            snprintf(meta->title_name, sizeof(meta->title_name), "%.127s", val_buf);
         } else if (strcmp(key, "DISC_VERSION") == 0) {
             if (meta->disc_version[0] != '\0') {
-                /* Hostile / duplicate SFO key: ignore subsequent conflicting duplicate */
+                if (strcmp(meta->disc_version, val_buf) != 0) {
+                    snprintf(meta->error_message, sizeof(meta->error_message),
+                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.16s' vs '%.16s'",
+                        key, meta->disc_version, val_buf);
+                    return false;
+                }
+                /* Identical duplicate: accept per policy */
                 continue;
             }
-            int copy_len = (int)data_len;
-            if (copy_len >= (int)sizeof(meta->disc_version)) {
-                copy_len = (int)sizeof(meta->disc_version) - 1;
-            }
-            snprintf(meta->disc_version, sizeof(meta->disc_version), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+            snprintf(meta->disc_version, sizeof(meta->disc_version), "%.15s", val_buf);
         }
     }
 
@@ -256,12 +269,21 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                 off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
                 continue;
             }
-            if (off + rec_len > read_bytes) break;
-
             /* ECMA-119 6.8.1.1: Directory record must not cross sector boundary */
             if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
-                off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
-                continue;
+                snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                    "Malformed ISO: directory record length %u at offset %zu crosses 2048-byte sector boundary (ECMA-119 6.8.1.1)",
+                    (unsigned int)rec_len, off);
+                free(dir_buf);
+                fclose(f);
+                return NK_ERROR_INVALID_ISO;
+            }
+            if (off + rec_len > read_bytes) {
+                snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                    "Malformed ISO: directory record truncated before sector end");
+                free(dir_buf);
+                fclose(f);
+                return NK_ERROR_INVALID_ISO;
             }
 
             uint32_t extent_lba_le = read_le32(&dir_buf[off + 2]);
@@ -312,12 +334,21 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                         off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
                         continue;
                     }
-                    if (off + rec_len > read_bytes) break;
-
                     /* ECMA-119 6.8.1.1: Directory record must not cross sector boundary */
                     if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
-                        off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
-                        continue;
+                        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                            "Malformed ISO: PSP_GAME directory record length %u at offset %zu crosses 2048-byte sector boundary (ECMA-119 6.8.1.1)",
+                            (unsigned int)rec_len, off);
+                        free(dir_buf);
+                        fclose(f);
+                        return NK_ERROR_INVALID_ISO;
+                    }
+                    if (off + rec_len > read_bytes) {
+                        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                            "Malformed ISO: PSP_GAME directory record truncated before sector end");
+                        free(dir_buf);
+                        fclose(f);
+                        return NK_ERROR_INVALID_ISO;
                     }
 
                     uint32_t extent_lba_le = read_le32(&dir_buf[off + 2]);
@@ -358,7 +389,13 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             if (sfo_buf) {
                 nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
                 if (fread(sfo_buf, 1, sfo_size, f) == sfo_size) {
-                    parse_sfo_buffer(sfo_buf, sfo_size, out_meta);
+                    if (!parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                        if (out_meta->error_message[0] != '\0') {
+                            free(sfo_buf);
+                            fclose(f);
+                            return NK_ERROR_INVALID_ISO;
+                        }
+                    }
                 }
                 free(sfo_buf);
             }
@@ -375,7 +412,13 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             /* Search for SFO magic */
             for (size_t i = 0; i + 20 <= bytes_read; i++) {
                 if (memcmp(scan_buf + i, SFO_MAGIC, 4) == 0) {
-                    parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta);
+                    if (!parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
+                        if (out_meta->error_message[0] != '\0') {
+                            free(scan_buf);
+                            fclose(f);
+                            return NK_ERROR_INVALID_ISO;
+                        }
+                    }
                     if (out_meta->disc_id[0] != '\0') break;
                 }
             }

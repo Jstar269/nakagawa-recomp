@@ -106,11 +106,20 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     NkResult res = nk_launch_prepare_session(&app->launch_session, game, ".");
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
+        const char *err_code = "RUNTIME_NOT_FOUND";
+        const char *err_title = "Recompiled Binary Not Available";
+        if (strstr(app->launch_session.last_error, "manifest") != NULL ||
+            strstr(app->launch_session.last_error, "profile") != NULL ||
+            strstr(app->launch_session.last_error, "catalogue") != NULL ||
+            strstr(app->launch_session.last_error, "catalog") != NULL) {
+            err_code = "MANIFEST_MISMATCH";
+            err_title = "Title Manifest Mismatch";
+        }
         player_app_set_error(
             app,
-            "RUNTIME_NOT_FOUND",
-            "Recompiled Binary Not Available",
-            app->launch_session.last_error[0] ? app->launch_session.last_error : "The recompiled game binary could not be found under build/hst/ or bin/.",
+            err_code,
+            err_title,
+            app->launch_session.last_error[0] ? app->launch_session.last_error : "The recompiled game binary or configuration could not be found.",
             "Return to Library",
             VIEW_LIBRARY
         );
@@ -132,7 +141,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
             app,
             "PROCESS_SPAWN_FAILED",
             "Failed to Launch Game",
-            app->launch_session.last_error[0] ? app->launch_session.last_error : "Operating system failed to start the runtime process.",
+            app->launch_session.last_error[0] ? app->launch_session.last_error : "Operating system failed to start the runtime process (CreateProcess failed).",
             "Return to Library",
             VIEW_LIBRARY
         );
@@ -140,6 +149,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     }
 
     app->is_game_running = true;
+    app->launch_time_ms = 0;
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
     return true;
 }
