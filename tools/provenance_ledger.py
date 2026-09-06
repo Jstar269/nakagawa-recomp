@@ -307,10 +307,26 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
 
     All bytes are computed by the caller before this helper runs.  The helper
     creates every parent directory, stages every file next to its target,
-    promotes the whole group with ``os.replace``, and rolls the already-
-    promoted files back to their original bytes if any promotion fails, so the
-    worktree ends in the complete old state or the complete new state -- never
-    a hybrid.
+    promotes the staged files one by one with ``os.replace``, and attempts to
+    roll the already-promoted files back to their original bytes if any
+    promotion fails.
+
+    This is staged multi-file replacement with rollback on *detected*
+    promotion failure -- not crash/power-loss durability, and not a guarantee
+    of complete-old-or-complete-new under every OS/storage failure: if the
+    rollback itself fails, or on power loss or a crash between promotions, the
+    worktree can hold a hybrid.  That residual is fail-closed downstream rather
+    than trusted: the external attestation re-validates the ledger/export/policy
+    digest cross-checks, so partially written controls are rejected instead of
+    being read as authority.  No fsync durability is claimed.
+
+    The bytes written are *public metadata only* (provenance ledger, export
+    manifest, publication policy) containing hashes, paths, and policy
+    configuration -- no secrets or private keys.  CodeQL's taint analysis
+    conservatively flags the temporary-file write as a potential clear-text
+    secret store; this is a false positive for the public-metadata-only
+    callers of this helper.
+    # codeql[suppress: py/clear-text-storage-sensitive-data]
     """
     if not writes:
         return
