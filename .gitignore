@@ -37,6 +37,11 @@
 *.trace
 /tools/reference_hashes.json
 
+# Local retail title manifest — carries HST guest-address bindings and private-route
+# configuration. Intentionally never checked in and publication-excluded (see
+# assets/public_source_profile.json); this rule is only the local accident guard.
+/assets/titles/hst-ucus98701.json
+
 # Local VFPU game-derived corpora — generated from private ELF inputs, never committed.
 # tools/vfpu_words.txt was originally checked in but is excluded here because it was
 # extracted from the private eboot.elf (446 words = exact distinct compute/prefix set

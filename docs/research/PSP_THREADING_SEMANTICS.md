@@ -7,18 +7,25 @@ comparators, measured observations, disagreements, and the next hardware
 oracle work. It is intentionally title-neutral.
 
 **Status:** `PSP_THREADING_ORACLE_DESIGN = FROZEN / RESEARCH COMPLETE`.
-`HARDWARE_EXECUTION = NOT RUN` (`HARDWARE_NOT_RUN`). The CreateThread and
+`CT/ST-ORACLE_EXECUTION = NOT RUN` (`HARDWARE_NOT_RUN`). The CreateThread and
 StartThread hardware-oracle specifications below are frozen design material,
-not execution results. No emulator agreement is firmware fact.
+not execution results. No emulator agreement is firmware fact. This scope is
+narrow: the lifecycle, callback-boundary, and ABI facts reused under
+[Established evidence](#established-evidence) are separately
+`HARDWARE_MEASURED` in their own bounded scopes and are not covered by this
+`NOT RUN`.
 
 The next phase is outside this documentation task: harness implementation,
 explicit hardware authorization, global hardware-lock acquisition, and
 controlled campaign execution. None of those actions is performed here.
 
-**Review base:** Nakagawa commit
-[`d8b0d4f0581ad4a3a09c973b1ecb393846bc0420`](https://github.com/Jstar269/nakagawa-recomp/tree/d8b0d4f0581ad4a3a09c973b1ecb393846bc0420/).
+**Review base:** Nakagawa commit `d8b0d4f0581ad4a3a09c973b1ecb393846bc0420`
+(a pre-republication base; it is not in the sanitized public history, so it is
+named here as plain text rather than linked).
 Source behavior must be rechecked against a newer source head before this note
-is used as an implementation review.
+is used as an implementation review; the live files are
+[`src/rt/hle.c`](../../src/rt/hle.c) and
+[`src/rt/sched.c`](../../src/rt/sched.c).
 
 ## How to read this note
 
@@ -78,8 +85,8 @@ The following sources are deliberately kept separate by evidence class.
 | [PSPSDK ThreadMan reference](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Generated public API reference and cross-check. | `PUBLIC_HEADER_FACT`; generated documentation may omit implementation semantics. |
 | [PPSSPP ThreadMan implementation](https://github.com/hrydgard/ppsspp/blob/master/Core/HLE/sceKernelThread.cpp) | Open implementation comparator for thread state, stack setup, arguments, and register modeling. | `OPEN_FIRMWARE_IMPLEMENTATION`; the moving branch is not a PSP measurement. |
 | [JPCSP `ThreadManForUser`](https://github.com/jpcsp/jpcsp/blob/master/src/jpcsp/HLE/modules/ThreadManForUser.java) | Independent open implementation comparator. | `OPEN_FIRMWARE_IMPLEMENTATION`; source behavior is not a hardware oracle. |
-| [Nakagawa `src/rt/hle.c` at the review base](https://github.com/Jstar269/nakagawa-recomp/blob/d8b0d4f0581ad4a3a09c973b1ecb393846bc0420/src/rt/hle.c) | Guest ABI extraction and HLE route ownership. | `SOURCE_VERIFIED_NAKAGAWA`. |
-| [Nakagawa `src/rt/sched.c` at the review base](https://github.com/Jstar269/nakagawa-recomp/blob/d8b0d4f0581ad4a3a09c973b1ecb393846bc0420/src/rt/sched.c) | Current scheduler model and lifecycle implementation. | `SOURCE_VERIFIED_NAKAGAWA`; not a claim of firmware equivalence. |
+| [Nakagawa `src/rt/hle.c`](../../src/rt/hle.c) (live file; supersedes the `d8b0d4f` review-base snapshot, which is not in public history) | Guest ABI extraction and HLE route ownership. | `SOURCE_VERIFIED_NAKAGAWA`. |
+| [Nakagawa `src/rt/sched.c`](../../src/rt/sched.c) (live file; supersedes the `d8b0d4f` review-base snapshot) | Current scheduler model and lifecycle implementation. | `SOURCE_VERIFIED_NAKAGAWA`; not a claim of firmware equivalence. |
 | [Nakagawa PSP oracle fixture boundary](../../fixtures/psp_oracle/README.md) | Public-safe fixture protocol, scalar evidence rules, and existing bounded status notes. | Source-owned method and recorded evidence remain distinct from planned work. |
 
 ## CreateThread
@@ -464,8 +471,8 @@ edited by this documentation change.
 - Campaign design: the corrected minimum is 28 unique cases, 6 controls, 22
   discriminators, 28 records, and 5 launches, with one-repeat totals of 56
   records and 10 launches. The full consolidated totals remain 59 unique
-  cases, 71 records, and 13 launches; those totals were not freshly recounted
-  for this correction. `HARDWARE_EXECUTION = NOT RUN`.
+   cases, 71 records, and 13 launches; those totals were not freshly recounted
+   for this correction. `CT/ST-ORACLE_EXECUTION = NOT RUN`.
 
 ### General PSP recompilation Wiki draft
 

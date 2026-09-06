@@ -22,12 +22,18 @@ title manifest  ->  title_manifest.validate_manifest  ->  validated manifest
                 ->  codegen.py / analyze.py
 ```
 
-The planner is the only place a manifest becomes build configuration. PowerShell
+The planner is the only place a manifest becomes build configuration on the
+manager path. PowerShell
 adapts that plan to a process invocation and re-derives nothing of its own: it
 checks that each build-facing projection (`make.*`, `environment.*`) follows from
 the plan's own semantic fields, then pins the single title the HST manager
 orchestrates. Make consumes explicit values and contributes no title-specific
 default beyond the direct-build HST bindings at the top of the `Makefile`.
+A manifest-less direct Make invocation bypasses the planner and its protected
+digest entirely; it is an explicit non-canonical escape hatch, not a second
+title contract. The planner default is the single authority for the chunk-size
+default (`funcs_per_chunk`); the matching Make, manager, and codegen fallbacks
+must agree with it rather than define it.
 
 The compiled runtime is a second consumer of the same validated configuration, on
 its own branch of the same ownership chain:
@@ -114,15 +120,16 @@ Current fail-closed limits are deliberate:
 - only the generator's current `hst` and `none` profile choices are accepted.
 
 The manager adapter is deliberately fail-closed: this slice accepts only the
-checked-in HST manifest for HST manager actions, and it rejects unsupported plan
+local HST retail manifest (publication-excluded, never checked in) for HST manager actions, and it rejects unsupported plan
 versions, unknown plan fields, malformed digests, projections that disagree with
 the plan's semantics, a manifest that changed after planning, missing required
 private bindings, and unsupported span/profile configurations before Make runs.
 This does not make the runtime general-purpose or prove a private HST build or
 route.
 
-`assets/titles/pspdev-phase5.json` is a second, materially different source-owned
-fixture (PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) driven through the same
+`assets/titles/pspdev-phase5.json` is one of three materially different
+source-owned fixtures (with `synthetic.json` and `synthetic-title2.json`;
+PSPDEV/PSPSDK sources in `fixtures/pspdev_phase5`) driven through the same
 planner; see `tools/test_title_pspdev_phase5.py`. The adapter's own contract is
 covered by `tools/test_title_manager_adapter.py` and the digest by
 `tools/test_title_protected_digest.py`, all using public manifests only.
@@ -374,7 +381,10 @@ role global or accessor directly.
 
 ### HST
 
-HST's real values live only in the local, Git-ignored `assets/titles/hst-ucus98701.json`
+HST's real values live only in the local `assets/titles/hst-ucus98701.json` —
+intentionally never checked in and publication-excluded via
+`assets/public_source_profile.json`, with an explicit `.gitignore` accident
+guard (see the titles README)
 and reach the build through `hst_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
 direct Make line). They are deliberately not encoded in the `Makefile`, in `src/rt`, or
 in any checked-in manifest.
