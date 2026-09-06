@@ -7,18 +7,31 @@
 #include <ctype.h>
 #include <string.h>
 
-static const NkTitleEntry *s_private_overlay_entry = NULL;
+#define NK_CATALOG_MAX_OVERLAYS 8
+static const NkTitleEntry *s_private_overlay_entries[NK_CATALOG_MAX_OVERLAYS];
+static int s_private_overlay_count = 0;
 
 void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry) {
-    s_private_overlay_entry = overlay_entry;
+    if (!overlay_entry) return;
+    for (int i = 0; i < s_private_overlay_count; i++) {
+        if (s_private_overlay_entries[i] == overlay_entry ||
+            (s_private_overlay_entries[i]->id && overlay_entry->id &&
+             strcmp(s_private_overlay_entries[i]->id, overlay_entry->id) == 0)) {
+            s_private_overlay_entries[i] = overlay_entry;
+            return;
+        }
+    }
+    if (s_private_overlay_count < NK_CATALOG_MAX_OVERLAYS) {
+        s_private_overlay_entries[s_private_overlay_count++] = overlay_entry;
+    }
 }
 
 void nk_title_catalog_clear_overlay(void) {
-    s_private_overlay_entry = NULL;
+    s_private_overlay_count = 0;
 }
 
 const NkTitleEntry *nk_title_catalog_get_overlay(void) {
-    return s_private_overlay_entry;
+    return s_private_overlay_count > 0 ? s_private_overlay_entries[s_private_overlay_count - 1] : NULL;
 }
 
 static const NkModuleDefinition s_modules_title_1[] = {
@@ -104,19 +117,23 @@ const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id) {
     normalize_disc_id(disc_id, norm, sizeof(norm));
     if (!norm[0]) return NULL;
 
-    /* 1. Check in-memory private overlay first */
-    if (s_private_overlay_entry && s_private_overlay_entry->primary_disc_id) {
-        char ov_norm[32];
-        normalize_disc_id(s_private_overlay_entry->primary_disc_id, ov_norm, sizeof(ov_norm));
-        if (strcmp(norm, ov_norm) == 0) {
-            return s_private_overlay_entry;
+    /* 1. Check in-memory private overlays first (most recently registered first) */
+    for (int i = s_private_overlay_count - 1; i >= 0; i--) {
+        const NkTitleEntry *ov = s_private_overlay_entries[i];
+        if (!ov) continue;
+        if (ov->primary_disc_id) {
+            char ov_norm[32];
+            normalize_disc_id(ov->primary_disc_id, ov_norm, sizeof(ov_norm));
+            if (strcmp(norm, ov_norm) == 0) {
+                return ov;
+            }
         }
-        if (s_private_overlay_entry->compatible_disc_ids) {
-            for (int c = 0; s_private_overlay_entry->compatible_disc_ids[c]; c++) {
+        if (ov->compatible_disc_ids) {
+            for (int c = 0; ov->compatible_disc_ids[c]; c++) {
                 char cp_norm[32];
-                normalize_disc_id(s_private_overlay_entry->compatible_disc_ids[c], cp_norm, sizeof(cp_norm));
+                normalize_disc_id(ov->compatible_disc_ids[c], cp_norm, sizeof(cp_norm));
                 if (strcmp(norm, cp_norm) == 0) {
-                    return s_private_overlay_entry;
+                    return ov;
                 }
             }
         }
@@ -147,9 +164,10 @@ const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id) {
 
 const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id) {
     if (!title_id || !*title_id) return NULL;
-    if (s_private_overlay_entry && s_private_overlay_entry->id) {
-        if (strcmp(title_id, s_private_overlay_entry->id) == 0) {
-            return s_private_overlay_entry;
+    for (int i = s_private_overlay_count - 1; i >= 0; i--) {
+        const NkTitleEntry *ov = s_private_overlay_entries[i];
+        if (ov && ov->id && strcmp(title_id, ov->id) == 0) {
+            return ov;
         }
     }
     for (int i = 0; i < nk_title_catalog_count; i++) {
