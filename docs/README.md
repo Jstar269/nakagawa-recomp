@@ -90,7 +90,7 @@ in this slice; classification comes first, directory moves separately.
 | `provenance/GENERICITY_CENSUS_20260826.md` | REFERENCE | Dated evidence; live source authoritative |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle NOT_RUN |
-| `research/project-truth/` | REFERENCE | Frozen audit snapshots, never architectural authority |
+| `research/project-truth/` | REFERENCE (reserved) | Reserved for frozen audit snapshots admitted via [issue #155](https://github.com/Jstar269/nakagawa-recomp/issues/155); no snapshot ships in this change |
 | `OSPS_BASELINE.md` | HISTORICAL | Pre-republication snapshot; do not cite as status |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
