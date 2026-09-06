@@ -608,8 +608,9 @@ class ProvenanceFailClosedTest(unittest.TestCase):
 class _RefreshFixture:
     """Small real Git repository with a trusted baseline ledger."""
 
-    def __init__(self, testcase: unittest.TestCase) -> None:
+    def __init__(self, testcase: unittest.TestCase, excluded: tuple[str, ...] = ()) -> None:
         self.tmp = Path(testcase.enterContext(tempfile.TemporaryDirectory()))
+        self.excluded = excluded
         self.repo = self.tmp / "candidate"
         self.repo.mkdir()
         for argv in (
@@ -645,14 +646,19 @@ class _RefreshFixture:
         shutil.copy2(self.repo / "assets/public_provenance_ledger.json", self.trusted_ledger)
         shutil.copy2(self.repo / "assets/release_manifest.json", self.trusted_manifest)
 
-    def detailed_ledger(self, *, wildcard_only: bool = False) -> Path:
+    def detailed_ledger(
+        self, *, wildcard_only: bool = False, approvals: list[dict] | None = None,
+        extra_records: list[dict] | None = None,
+    ) -> Path:
         """External detailed development ledger matching ``_classification()``.
 
         Refreshing an implementation class requires this authority, because a
         public snapshot alone cannot show that its implementation entries are
         still backed by exact records.  ``wildcard_only`` models the historical
         public tree, where ``tools/helper.py`` was covered only by the inert
-        ``tools/*`` pattern.
+        ``tools/*`` pattern.  ``approvals`` adds ``reviewed_blobs`` exact-bytes
+        approvals, which a genuinely new implementation path needs before it
+        can be admitted.
         """
         helper = (
             {"id": "tooling-general", "classification": "project-authored-independent",
@@ -661,14 +667,20 @@ class _RefreshFixture:
             {"id": "PROV-HELPER", "classification": "project-authored-independent",
              "evidence_tier": "H", "paths": ["tools/helper.py"]}
         )
-        path = self.tmp / ("detailed-wildcard.json" if wildcard_only else "detailed-ledger.json")
-        path.write_text(json.dumps({"records": [
+        records = [
             helper,
             {"id": "PROV-EXISTING", "classification": "project-authored-independent",
              "evidence_tier": "H", "paths": ["src/rt/existing.c"]},
             {"id": "PROV-ROUTE", "classification": "project-authored-independent",
              "evidence_tier": "H", "paths": [self.route]},
-        ]}, indent=2) + "\n", encoding="utf-8")
+        ]
+        if extra_records:
+            records.extend(extra_records)
+        document: dict = {"records": records}
+        if approvals:
+            document["reviewed_blobs"] = approvals
+        path = self.tmp / ("detailed-wildcard.json" if wildcard_only else "detailed-ledger.json")
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         return path
 
     source = (
@@ -715,7 +727,7 @@ class _RefreshFixture:
             "default_disposition": "REJECT",
             "exclude_prefixes": [],
             "exclude_globs": [],
-            "exclude_paths": [],
+            "exclude_paths": sorted(self.excluded),
             "include_paths": sorted(included),
         }
         self._write("assets/public_source_profile.json", json.dumps(policy, indent=2) + "\n")
@@ -802,6 +814,59 @@ class _RefreshFixture:
             "--trusted-ledger", str(trusted_ledger or self.trusted_ledger),
             "--candidate-tree", str(self.repo), "--trusted-tree", trusted_tree or self.baseline,
             "--trusted-policy", str(self.trusted_policy),
+            "--trusted-manifest", str(trusted_manifest or self.trusted_manifest), "--paths", *paths,
+        ]
+        if trusted_baseline_ledger is not None:
+            argv[argv.index("--paths"):argv.index("--paths")] = [
+                "--trusted-baseline-ledger", str(trusted_baseline_ledger),
+            ]
+        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+
+    def _extend_policy(self, *new_paths: str) -> None:
+        """Commit a candidate policy that includes exactly the new paths."""
+        policy_path = self.repo / "assets" / "public_source_profile.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | set(new_paths))
+        self.commit_change(
+            "assets/public_source_profile.json",
+            json.dumps(policy, indent=2) + "\n",
+            "candidate policy includes admitted path(s)",
+        )
+
+    def add_new_path(self, relative: str, content: str, message: str = "candidate new path") -> str:
+        """Commit a new tracked path (and its policy include) on the candidate."""
+        self._write(relative, content)
+        subprocess.run(["git", "add", relative], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
+        self._extend_policy(relative)
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def admission_authority(self, *statements: dict) -> Path:
+        """External admission-authority document binding exact paths and digests."""
+        path = self.tmp / "admission-authority.json"
+        path.write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "admission-authority",
+            "reviewed_new_paths": list(statements),
+        }, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def admit(
+        self,
+        *paths: str,
+        authority: Path,
+        trusted_ledger: Path | None = None,
+        trusted_baseline_ledger: Path | None = None,
+        trusted_tree: str | None = None,
+        trusted_manifest: Path | None = None,
+        trusted_policy: Path | None = None,
+    ) -> subprocess.CompletedProcess:
+        argv = [
+            sys.executable, str(REFRESH_TOOL), "admit-new-reviewed",
+            "--trusted-ledger", str(trusted_ledger or self.trusted_ledger),
+            "--admission-authority", str(authority),
+            "--candidate-tree", str(self.repo), "--trusted-tree", trusted_tree or self.baseline,
+            "--trusted-policy", str(trusted_policy or self.trusted_policy),
             "--trusted-manifest", str(trusted_manifest or self.trusted_manifest), "--paths", *paths,
         ]
         if trusted_baseline_ledger is not None:
@@ -1099,6 +1164,556 @@ class ProvenanceRefreshTests(unittest.TestCase):
         self.assertIn("entries", refreshed)
         exported = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
         self.assertIn("included_content_sha256", exported)
+
+
+class TrustedAdmissionTests(unittest.TestCase):
+    """``admit-new-reviewed``: initial trusted authority for genuinely new paths.
+
+    The candidate that introduces a new file must not be the source of the
+    authority that admits it.  Every admission below therefore runs against an
+    external admission-authority document naming exact path + exact digest, an
+    external trusted policy, and an external trusted ledger, and refuses every
+    softer substitute.
+    """
+
+    NEW_DOC = "docs/research/competitive/gap_snapshot.md"
+
+    def _doc_statement(self, path: str, digest: str, **extra: object) -> dict:
+        return {
+            "path": path,
+            "sha256": digest,
+            "classification": "reviewed_documentation",
+            "origin": "synthetic fixture documentation; independent review of public sources",
+            **extra,
+        }
+
+    def _commit_outputs(self, fixture: _RefreshFixture) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "provenance: admit public metadata"],
+                       cwd=fixture.repo, check=True, capture_output=True)
+        return fixture._git("rev-parse", "HEAD")
+
+    def _post_admit_audit(self, fixture: _RefreshFixture) -> None:
+        # The candidate policy is now the extended policy; audit against it.
+        shutil.copy2(
+            fixture.repo / "assets/public_source_profile.json", fixture.trusted_policy)
+        shutil.copy2(
+            fixture.repo / "assets/public_provenance_ledger.json", fixture.trusted_ledger)
+
+    def _entry(self, fixture: _RefreshFixture, path: str) -> dict:
+        document = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        return next(entry for entry in document["entries"] if entry["path"] == path)
+
+    # -- positive: deterministic documentation ------------------------------
+    def test_new_documentation_path_is_admitted_from_authority_alone(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Research snapshot\n\nSynthetic fixture.\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        baseline_entries = len(json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))["entries"])
+
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        entry = self._entry(fixture, self.NEW_DOC)
+        self.assertEqual(entry["classification"], "reviewed_documentation")
+        self.assertEqual(entry["sha256"], digest)
+        self.assertNotIn("record_id", entry["evidence"])
+        refreshed = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(refreshed["entries"]), baseline_entries + 1)
+        self.assertEqual(refreshed["admission"]["workflow"], "admit-new-reviewed")
+        self.assertEqual(refreshed["admission"]["admitted_paths"], [self.NEW_DOC])
+        self.assertEqual(refreshed["admission"]["trusted_tree"],
+                         fixture._git("rev-parse", f"{fixture.baseline}^{{tree}}"))
+        self.assertEqual(len(refreshed["admission"]["authority_sha256"]), 64)
+        self.assertNotIn("refresh", refreshed, "admission output must not masquerade as a refresh")
+
+        export = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
+        self.assertEqual(export["provenance_ledger_sha256"], hashlib.sha256(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()).hexdigest())
+        policy = json.loads((fixture.repo / "assets/public_source_profile.json").read_text(encoding="utf-8"))
+        self.assertIn(self.NEW_DOC, policy["include_paths"])
+
+        self._commit_outputs(fixture)
+        self._post_admit_audit(fixture)
+        audit = fixture.audit("--provenance-self-consistency")
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+
+    def test_multiple_new_docs_admitted_in_one_exact_batch(self) -> None:
+        fixture = _RefreshFixture(self)
+        second = "docs/research/competitive/action_register.md"
+        digest_a = fixture.add_new_path(self.NEW_DOC, "# Snapshot A\n")
+        digest_b = fixture.add_new_path(second, "# Register B\n")
+        authority = fixture.admission_authority(
+            self._doc_statement(self.NEW_DOC, digest_a),
+            self._doc_statement(second, digest_b),
+        )
+        result = fixture.admit(self.NEW_DOC, second, authority=authority)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        paths = {entry["path"] for entry in entries["entries"]}
+        self.assertIn(self.NEW_DOC, paths)
+        self.assertIn(second, paths)
+
+    def test_new_synthetic_fixture_is_admitted_deterministically(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_test = "tools/test_admission_fixture.py"
+        content = (
+            "# SPDX-License-Identifier: GPL-3.0-or-later\n"
+            "# synthetic fixture - no retail or private input\n"
+            "def nothing():\n    return 0\n"
+        )
+        digest = fixture.add_new_path(new_test, content)
+        authority = fixture.admission_authority({
+            "path": new_test, "sha256": digest,
+            "classification": "synthetic_fixture",
+            "origin": "explicitly synthetic source-owned fixture",
+        })
+        result = fixture.admit(new_test, authority=authority)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._entry(fixture, new_test)["classification"], "synthetic_fixture")
+
+    # -- positive: implementation with stronger external evidence -----------
+    def test_new_implementation_path_requires_record_and_blob_approval(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_module.c"
+        content = (
+            "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+            "// synthetic fixture - independent implementation\n"
+            "int new_module(void) { return 0; }\n"
+        )
+        digest = fixture.add_new_path(new_src, content)
+        record = {"id": "PROV-NEWMODULE", "classification": "project-authored-independent",
+                  "evidence_tier": "H", "paths": [new_src]}
+        detailed = fixture.detailed_ledger(
+            extra_records=[record],
+            approvals=[{"path": new_src, "sha256": digest,
+                        "classification": "project-authored-independent",
+                        "record_id": "PROV-NEWMODULE"}],
+        )
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch",
+            "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation authored from scratch; no upstream bytes",
+            "record_id": "PROV-NEWMODULE",
+        })
+        result = fixture.admit(
+            new_src, authority=authority, trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entry = self._entry(fixture, new_src)
+        self.assertEqual(entry["classification"], "project_authored_attested")
+        self.assertEqual(entry["evidence"]["record_id"], "PROV-NEWMODULE")
+        self.assertEqual(entry["sha256"], digest)
+
+        self._commit_outputs(fixture)
+        self._post_admit_audit(fixture)
+        self.assertEqual(fixture.audit("--provenance-self-consistency").returncode, 0)
+
+    # -- negative: path discipline -----------------------------------------
+    def test_existing_path_is_refused_with_refresh_remedy(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("docs/guide.md", "# Changed guide\n", "edit an existing path")
+        digest = hashlib.sha256((fixture.repo / "docs/guide.md").read_bytes()).hexdigest()
+        authority = fixture.admission_authority(self._doc_statement("docs/guide.md", digest))
+        result = fixture.admit("docs/guide.md", authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_PATH_EXISTING", result.stderr)
+        self.assertIn("refresh-reviewed", result.stderr)
+
+    def test_new_path_is_still_refused_by_refresh(self) -> None:
+        """A genuinely new path cannot slip through the refresh route."""
+        fixture = _RefreshFixture(self)
+        fixture._write(self.NEW_DOC, "# Snapshot\n")
+        subprocess.run(["git", "add", self.NEW_DOC], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "candidate new path, policy untouched"],
+                       cwd=fixture.repo, check=True, capture_output=True)
+        result = fixture.refresh(self.NEW_DOC)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any(code in result.stderr for code in ("NEW_PATH_REFUSED", "CANDIDATE_PUBLIC_BOUNDARY")),
+            result.stderr,
+        )
+        self.assertIn("admit-new-reviewed", result.stderr)
+
+    def test_mixed_new_and_existing_batch_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        existing_digest = hashlib.sha256(
+            (fixture.repo / "docs/guide.md").read_bytes()).hexdigest()
+        authority = fixture.admission_authority(
+            self._doc_statement(self.NEW_DOC, digest),
+            self._doc_statement("docs/guide.md", existing_digest),
+        )
+        result = fixture.admit(self.NEW_DOC, "docs/guide.md", authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_PATH_EXISTING", result.stderr)
+
+    def test_wildcard_and_traversal_paths_are_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        for bad in ("docs/*", "docs/research/competitive/", "../outside.md",
+                    "docs\\backslash.md", "a/../b.md", "docs//double.md"):
+            with self.subTest(path=bad):
+                result = fixture.admit(bad, authority=authority)
+                self.assertNotEqual(result.returncode, 0, bad)
+                self.assertTrue(
+                    any(code in result.stderr for code in
+                        ("ADMISSION_PATH_NOT_EXACT", "ADMISSION_AUTHORITY_SCOPE",
+                         "ADMISSION_AUTHORITY_INVALID", "ADMISSION_PATH_DUPLICATE",
+                         "CANDIDATE_PATH_MISSING")),
+                    result.stderr)
+
+    def test_duplicate_requested_path_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_PATH_DUPLICATE", result.stderr)
+
+    def test_nonexistent_candidate_path_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = hashlib.sha256(b"no such bytes").hexdigest()
+        authority = fixture.admission_authority(self._doc_statement(
+            "docs/research/missing.md", digest))
+        result = fixture.admit("docs/research/missing.md", authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE_PATH_MISSING", result.stderr)
+
+    def test_excluded_private_class_is_refused(self) -> None:
+        private = "docs/private/plan.md"
+        fixture = _RefreshFixture(self, excluded=(private,))
+        digest = fixture.add_new_path(private, "# Private\n")
+        authority = fixture.admission_authority(self._doc_statement(private, digest))
+        result = fixture.admit(private, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_PATH_EXCLUDED", result.stderr)
+
+    # -- negative: authority discipline ------------------------------------
+    def test_authority_for_path_a_cannot_admit_path_b(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest_a = fixture.add_new_path(self.NEW_DOC, "# Snapshot A\n")
+        other = "docs/research/competitive/other.md"
+        digest_b = fixture.add_new_path(other, "# Snapshot B\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest_a))
+        result = fixture.admit(other, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_AUTHORITY_SCOPE", result.stderr)
+
+    def test_authority_for_old_bytes_cannot_admit_new_bytes(self) -> None:
+        fixture = _RefreshFixture(self)
+        fixture.add_new_path(self.NEW_DOC, "# Original bytes\n")
+        stale_digest = hashlib.sha256(b"# Old content that no longer exists\n").hexdigest()
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, stale_digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_HASH_MISMATCH", result.stderr)
+
+    def test_doc_class_authority_cannot_admit_implementation(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        authority = fixture.admission_authority(self._doc_statement(new_src, digest))
+        result = fixture.admit(new_src, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_CLASS_MISMATCH", result.stderr)
+
+    def test_implementation_without_blob_approval_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                  "evidence_tier": "H", "paths": [new_src]}
+        detailed = fixture.detailed_ledger(extra_records=[record])  # record, no approval
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation",
+        })
+        result = fixture.admit(
+            new_src, authority=authority, trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BLOB_UNAPPROVED", result.stderr)
+
+    def test_implementation_without_exact_record_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        detailed = fixture.detailed_ledger()  # no record for new_src
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation",
+        })
+        result = fixture.admit(
+            new_src, authority=authority, trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_PATH_MISSING", result.stderr)
+
+    def test_implementation_with_snapshot_only_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation",
+        })
+        result = fixture.admit(new_src, authority=authority)  # snapshot only
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_RECORD_REQUIRED", result.stderr)
+
+    def test_implementation_without_origin_evidence_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                  "evidence_tier": "H", "paths": [new_src]}
+        detailed = fixture.detailed_ledger(
+            extra_records=[record],
+            approvals=[{"path": new_src, "sha256": digest,
+                        "classification": "project-authored-independent",
+                        "record_id": "PROV-NEWWIDGET"}],
+        )
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch",  # no license, no origin text
+        })
+        result = fixture.admit(
+            new_src, authority=authority, trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_AUTHORITY_INCOMPLETE", result.stderr)
+
+    def test_blob_approval_citing_wrong_record_or_class_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                  "evidence_tier": "H", "paths": [new_src]}
+        for approval, code in (
+            ({"path": new_src, "sha256": digest,
+              "classification": "project-authored-independent",
+              "record_id": "PROV-EXISTING"}, "BLOB_APPROVAL_RECORD_MISMATCH"),
+            ({"path": new_src, "sha256": digest,
+              "classification": "derived-translated",
+              "record_id": "PROV-NEWWIDGET"}, "BLOB_APPROVAL_CLASS_MISMATCH"),
+        ):
+            with self.subTest(code=code):
+                detailed = fixture.detailed_ledger(
+                    extra_records=[record], approvals=[approval])
+                authority = fixture.admission_authority({
+                    "path": new_src, "sha256": digest,
+                    "classification": "project_authored_attested",
+                    "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+                    "origin": "synthetic fixture implementation",
+                })
+                result = fixture.admit(
+                    new_src, authority=authority, trusted_ledger=detailed,
+                    trusted_baseline_ledger=fixture.trusted_ledger,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(code, result.stderr)
+
+    def test_authority_inside_candidate_is_candidate_controlled(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        smuggled = fixture.repo / "docs/research/admission-authority.json"
+        smuggled.write_text(json.dumps({
+            "schema_version": 1, "kind": "admission-authority",
+            "reviewed_new_paths": [self._doc_statement(self.NEW_DOC, digest)],
+        }), encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "smuggle authority"], cwd=fixture.repo,
+                       check=True, capture_output=True)
+        result = fixture.admit(self.NEW_DOC, authority=smuggled)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_CANDIDATE_CONTROLLED", result.stderr)
+
+    def test_candidate_ledger_or_policy_cannot_be_trusted_inputs(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        in_tree = fixture.repo / "assets/public_provenance_ledger.json"
+        result = fixture.admit(self.NEW_DOC, authority=authority,
+                               trusted_ledger=in_tree)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_CANDIDATE_CONTROLLED", result.stderr)
+        policy_in_tree = fixture.repo / "assets/public_source_profile.json"
+        result = fixture.admit(
+            self.NEW_DOC, authority=authority,
+            trusted_policy=policy_in_tree)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_INPUT_CANDIDATE_CONTROLLED", result.stderr)
+
+    # -- negative: tree discipline -----------------------------------------
+    def test_candidate_with_extra_unrequested_change_is_stale(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        fixture.commit_change("src/rt/existing.c", fixture.source.replace("return 0", "return 7"),
+                              "unrequested existing-path edit")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE_TREE_STALE", result.stderr)
+
+    def test_candidate_adding_an_unadmitted_file_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        fixture.add_new_path("docs/research/competitive/unadmitted.md", "# Unadmitted\n")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_TREE_SCOPE", result.stderr)
+
+    def test_candidate_policy_adding_an_unadmitted_include_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        fixture._extend_policy("docs/research/competitive/unadmitted.md")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_POLICY_MISMATCH", result.stderr)
+
+    def test_candidate_forged_controls_are_replaced_not_trusted(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        fixture.commit_change("assets/public_provenance_ledger.json", "{\"candidate\": true}\n",
+                              "candidate forged ledger")
+        fixture.commit_change("PUBLIC_EXPORT.json", "{\"candidate\": true}\n",
+                              "candidate forged export")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refreshed = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        self.assertIn("entries", refreshed)
+        self.assertIn("admission", refreshed)
+        exported = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
+        self.assertIn("included_content_sha256", exported)
+
+    def test_stale_trusted_baseline_ledger_fails_closed(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        # The candidate's own policy/ledger state is irrelevant; corrupt the
+        # trusted baseline snapshot by dropping a required entry.
+        document = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        document["entries"] = [e for e in document["entries"] if e["path"] != "docs/guide.md"]
+        short = fixture.tmp / "short-snapshot.json"
+        short.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority, trusted_ledger=short)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_LEDGER_COVERAGE", result.stderr)
+
+    def test_authority_digest_must_be_lowercase_full_sha256(self) -> None:
+        fixture = _RefreshFixture(self)
+        digest = fixture.add_new_path(self.NEW_DOC, "# Snapshot\n")
+        authority = fixture.admission_authority(self._doc_statement(
+            self.NEW_DOC, digest.upper()))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_AUTHORITY_INVALID", result.stderr)
+
+    # -- load-bearing mutations --------------------------------------------
+    def test_bytes_binding_guard_is_load_bearing_mutation(self) -> None:
+        """A mutant that drops the authority digest check must be killed."""
+        fixture = _RefreshFixture(self)
+        fixture.add_new_path(self.NEW_DOC, "# Actual bytes\n")
+        other_digest = hashlib.sha256(b"# Completely different bytes\n").hexdigest()
+        authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, other_digest))
+        result = fixture.admit(self.NEW_DOC, authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADMISSION_HASH_MISMATCH", result.stderr)
+
+        mutant_root = fixture.tmp / "mutant-bytes"
+        (mutant_root / "tools").mkdir(parents=True)
+        mutant_source = REFRESH_TOOL.read_text(encoding="utf-8")
+        needle = "if statement[\"sha256\"] != candidate_hash:"
+        self.assertIn(needle, mutant_source)
+        mutant_source = mutant_source.replace(needle, "if False:  # mutation removes the bytes check", 1)
+        (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
+        shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
+        shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        mutant = subprocess.run(
+            [
+                sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"),
+                "admit-new-reviewed",
+                "--trusted-ledger", str(fixture.trusted_ledger),
+                "--admission-authority", str(authority),
+                "--candidate-tree", str(fixture.repo), "--trusted-tree", fixture.baseline,
+                "--trusted-policy", str(fixture.trusted_policy),
+                "--trusted-manifest", str(fixture.trusted_manifest),
+                "--paths", self.NEW_DOC,
+            ], cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(mutant.returncode, 0, mutant.stderr)
+
+    def test_blob_approval_guard_is_load_bearing_mutation(self) -> None:
+        """A mutant that drops the reviewed-blob requirement must be killed."""
+        fixture = _RefreshFixture(self)
+        new_src = "src/rt/new_widget.c"
+        digest = fixture.add_new_path(new_src, fixture.source)
+        record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                  "evidence_tier": "H", "paths": [new_src]}
+        detailed = fixture.detailed_ledger(extra_records=[record])  # record but NO approval
+        authority = fixture.admission_authority({
+            "path": new_src, "sha256": digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation",
+        })
+        result = fixture.admit(
+            new_src, authority=authority, trusted_ledger=detailed,
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BLOB_UNAPPROVED", result.stderr)
+
+        mutant_root = fixture.tmp / "mutant-approval"
+        (mutant_root / "tools").mkdir(parents=True)
+        mutant_source = REFRESH_TOOL.read_text(encoding="utf-8")
+        needle = "approval = approvals.get((path, candidate_hash))"
+        self.assertIn(needle, mutant_source)
+        mutant_source = mutant_source.replace(
+            needle,
+            "approval = {\"record_id\": \"PROV-NEWWIDGET\", \"classification\": \"project-authored-independent\"}  # mutation invents approval",
+            1,
+        )
+        (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
+        shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
+        shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        mutant = subprocess.run(
+            [
+                sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"),
+                "admit-new-reviewed",
+                "--trusted-ledger", str(detailed),
+                "--admission-authority", str(authority),
+                "--candidate-tree", str(fixture.repo), "--trusted-tree", fixture.baseline,
+                "--trusted-policy", str(fixture.trusted_policy),
+                "--trusted-manifest", str(fixture.trusted_manifest),
+                "--trusted-baseline-ledger", str(fixture.trusted_ledger),
+                "--paths", new_src,
+            ], cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
 
 class SelfReferentialEntryTests(unittest.TestCase):

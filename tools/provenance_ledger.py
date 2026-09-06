@@ -37,6 +37,22 @@ from the detailed ledger or by supplying an externally trusted copy.
 
 The detailed development ledger may stay outside the public tree and is never
 synthesized when absent.
+
+Two mutually exclusive workflows mutate this evidence:
+
+* ``refresh-reviewed`` refreshes the content hash of an *existing* trusted
+  public path whose authority (exact record or deterministic class) is
+  already established.  It refuses any path that is not already in the
+  trusted tree;
+* ``admit-new-reviewed`` establishes the initial trusted authority for a
+  *genuinely new* exact path.  It refuses any path that is already in the
+  trusted tree (that is a refresh), refuses mixed batches, and requires an
+  external *admission authority* document -- never candidate-authored -- that
+  independently names the exact path and the exact SHA-256 of the bytes an
+  independent reviewer approved.  Candidate bytes therefore can never create
+  their own authority: policy include, ledger entry, and export are all
+  mechanical outputs derived from the external trusted policy, the external
+  admission authority, and the external trusted ledger.
 """
 
 from __future__ import annotations
@@ -47,6 +63,7 @@ import json
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 try:
@@ -747,8 +764,16 @@ def _validate_candidate_against_trusted(
         public_added = [path for path in added if policy.resolve(path).disposition == "included"]
         implementation_added = [path for path in added if is_implementation_path(path)]
         if implementation_added:
-            raise RefreshError("NEW_PATH_REFUSED", f"candidate adds implementation path {implementation_added[0]}")
-        raise RefreshError("CANDIDATE_PUBLIC_BOUNDARY", f"candidate adds a path outside the trusted tree: {added[0]}")
+            raise RefreshError(
+                "NEW_PATH_REFUSED",
+                f"candidate adds implementation path {implementation_added[0]}; "
+                "admit-new-reviewed is the route for a genuinely new exact path",
+            )
+        raise RefreshError(
+            "CANDIDATE_PUBLIC_BOUNDARY",
+            f"candidate adds a path outside the trusted tree: {added[0]}; "
+            "admit-new-reviewed is the route for a genuinely new exact path",
+        )
     if removed:
         raise RefreshError("CANDIDATE_TREE_SCOPE_CHANGED", f"candidate removes a path from the trusted tree: {removed[0]}")
 
@@ -948,7 +973,11 @@ def refresh_reviewed(
     )
     for path in normalized_paths:
         if path not in trusted.blobs:
-            raise RefreshError("NEW_PATH_REFUSED", f"refresh path is not present in the trusted tree: {path}")
+            raise RefreshError(
+                "NEW_PATH_REFUSED",
+                f"refresh path is not present in the trusted tree: {path}; "
+                "admit-new-reviewed is the route for a genuinely new exact path",
+            )
         if path not in candidate.blobs:
             raise RefreshError("CANDIDATE_PATH_MISSING", f"refresh path is not present in the candidate tree: {path}")
         if policy.resolve(path).disposition != "included":
@@ -1047,9 +1076,518 @@ def refresh_reviewed(
     }
 
 
+# ---------------------------------------------------------------------------
+# Trusted admission of genuinely new public paths (``admit-new-reviewed``)
+# ---------------------------------------------------------------------------
+#
+# ``refresh-reviewed`` changes hashes for paths a trusted baseline already
+# authorizes. A genuinely new path has no baseline authority at all, so
+# admitting one is a different operation with a different trust requirement:
+# the candidate that introduced the bytes must not be the source of the
+# authority that admits them.
+#
+# The new command therefore takes an external *admission authority* document
+# that independently names each exact path together with the exact SHA-256 of
+# the bytes an independent reviewer approved. Path + bytes + class are the
+# whole admission; the command derives the policy include, the ledger entry,
+# and the export from that authority plus the external trusted policy and
+# ledger, and it refuses every softer form of authority: wildcards,
+# directories, prefix/extension records, candidate-authored ledger entries,
+# candidate policy/export bytes, and authority that names different paths or
+# different bytes than the candidate actually carries.
+#
+# Authority classes are distinct:
+#
+# * deterministic public material (documentation, configuration, synthetic
+#   fixtures/tests) is admitted from the independent path+hash review alone;
+#   the deterministic classifier derives the class and the entry carries no
+#   record id;
+# * implementation/source paths require, in addition, an exact record in the
+#   external trusted detailed ledger and a ``reviewed_blobs`` approval naming
+#   this exact path and this exact digest, so the private authority -- not
+#   the admission document and not the candidate -- supplies path and blob
+#   authority;
+# * prohibited/private classes are unadmittable: any path the trusted policy
+#   excludes fails closed here.
+#
+# No identity is invented: the output records the trusted/candidate trees,
+# the admitted paths, and a SHA-256 of the admission-authority bytes for
+# audit ancestry, and never fabricates a person, DCO trailer, or attestation.
+
+ADMISSION_KIND = "admission-authority"
+ADMISSION_SCHEMA_VERSION = 1
+
+#: Origin shapes an implementation-class admission must declare.  The value is
+#: reviewed by the independent authority, never inferred from the candidate.
+ADMISSION_ORIGIN_KINDS = frozenset({"authored_from_scratch", "derived_adapted", "third_party"})
+
+
+def _read_admission_authority(
+    path: Path,
+    *,
+    candidate_root: Path,
+    requested: set[str],
+) -> dict[str, dict]:
+    """Read and validate the external admission authority document.
+
+    Returns ``{path: statement}`` where every statement names an exact path
+    with an exact lowercase SHA-256 and a supported public classification.
+    The authority must live outside the candidate tree and must name exactly
+    the requested path set -- no extras (an authority for path A cannot admit
+    path B) and no omissions.
+    """
+    trusted = _external_input(path, candidate_root=candidate_root, label="admission authority")
+    document = _read_json_file(trusted, code="ADMISSION_AUTHORITY_INVALID")
+    if document.get("kind") != ADMISSION_KIND:
+        raise RefreshError(
+            "ADMISSION_AUTHORITY_INVALID",
+            f"admission authority must declare kind {ADMISSION_KIND!r}",
+        )
+    if document.get("schema_version") != ADMISSION_SCHEMA_VERSION:
+        raise RefreshError(
+            "ADMISSION_AUTHORITY_INVALID",
+            f"admission authority schema_version must be {ADMISSION_SCHEMA_VERSION}",
+        )
+    statements = document.get("reviewed_new_paths")
+    if not isinstance(statements, list) or not statements:
+        raise RefreshError(
+            "ADMISSION_AUTHORITY_INVALID",
+            "admission authority carries no reviewed_new_paths statements",
+        )
+    result: dict[str, dict] = {}
+    for statement in statements:
+        if not isinstance(statement, dict):
+            raise RefreshError("ADMISSION_AUTHORITY_INVALID", "admission statement is malformed")
+        path = _exact_path(statement.get("path"), code="ADMISSION_AUTHORITY_INVALID")
+        digest = statement.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise RefreshError(
+                "ADMISSION_AUTHORITY_INVALID", f"admission statement for {path} has no lowercase sha256"
+            )
+        classification = statement.get("classification")
+        if classification not in ALLOWED_CLASSES or classification == "unresolved":
+            raise RefreshError(
+                "ADMISSION_AUTHORITY_INVALID",
+                f"admission statement for {path} names unsupported classification {classification!r}",
+            )
+        if path in result:
+            raise RefreshError(
+                "ADMISSION_AUTHORITY_INVALID", f"admission authority names {path} more than once"
+            )
+        result[path] = {
+            "sha256": digest,
+            "classification": classification,
+            "origin_kind": statement.get("origin_kind"),
+            "origin": statement.get("origin"),
+            "license": statement.get("license"),
+            "record_id": statement.get("record_id"),
+        }
+    if set(result) != requested:
+        missing = sorted(requested - set(result))
+        extra = sorted(set(result) - requested)
+        detail = (
+            f"missing {missing[0]!r}" if missing else f"unexpected {extra[0]!r}"
+        )
+        raise RefreshError(
+            "ADMISSION_AUTHORITY_SCOPE",
+            f"admission authority must name exactly the requested paths ({detail})",
+        )
+    return result
+
+
+def _blob_approval_map(document: dict) -> dict[tuple[str, str], dict]:
+    """Map ``(path, sha256)`` to a trusted detailed-ledger blob approval.
+
+    A detailed record authorizes a *path*; a blob approval authorizes these
+    exact bytes at that path.  ``admit-new-reviewed`` needs the latter for
+    implementation-class admission because the bytes being admitted are new
+    and have never been approved under any earlier public snapshot.
+    """
+    approvals: dict[tuple[str, str], dict] = {}
+    entries = document.get("reviewed_blobs")
+    if not isinstance(entries, list):
+        return approvals
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        digest = entry.get("sha256")
+        if not isinstance(path, str) or not isinstance(digest, str):
+            continue
+        if any(character in path for character in "*?"):
+            raise RefreshError("TRUSTED_LEDGER_INVALID", "a blob approval path contains a wildcard")
+        path = _exact_path(path, code="TRUSTED_LEDGER_INVALID")
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise RefreshError("TRUSTED_LEDGER_INVALID", f"a blob approval for {path} has no lowercase sha256")
+        key = (path, digest)
+        if key in approvals:
+            raise RefreshError("TRUSTED_LEDGER_INVALID", f"duplicate blob approval for {path} at one digest")
+        approvals[key] = entry
+    return approvals
+
+
+def _extended_policy_bytes(trusted_policy: Path, admitted_paths: set[str]) -> tuple[bytes, dict]:
+    """Mechanically extend the external trusted policy with the admitted paths.
+
+    The include addition is a deterministic consequence of the admission
+    authority naming those exact paths; it is generated here, never accepted
+    from the candidate.  Exclusion rules are untouched, so an excluded path
+    can never become include-eligible through this route.
+    """
+    document = _read_json_file(trusted_policy, code="TRUSTED_POLICY_INVALID")
+    document["include_paths"] = sorted(set(document["include_paths"]) | set(admitted_paths))
+    return _canonical_json_bytes(document), document
+
+
+def admit_new_reviewed(
+    *,
+    trusted_ledger: Path,
+    admission_authority: Path,
+    candidate_tree: str,
+    trusted_tree: str,
+    paths: list[str],
+    trusted_policy: Path,
+    trusted_manifest: Path | None = None,
+    trusted_baseline_ledger: Path | None = None,
+) -> dict:
+    """Admit genuinely new exact public paths from external trusted inputs only.
+
+    Every input that carries authority -- the trusted ledger, the trusted
+    policy, the optional trusted manifest, and the admission authority -- must
+    live outside the candidate tree.  The candidate's own ledger, policy,
+    export, and provenance records are never trusted inputs; the candidate
+    policy is accepted only when it is semantically exactly the external
+    trusted policy plus include entries for the admitted paths, and its
+    ledger/export bytes are regenerated mechanically from the trusted inputs.
+    """
+
+    raw_paths = [_exact_path(path, code="ADMISSION_PATH_NOT_EXACT") for path in paths]
+    if len(raw_paths) != len(set(raw_paths)):
+        raise RefreshError("ADMISSION_PATH_DUPLICATE", "requested admission paths must not repeat")
+    normalized_paths = sorted(set(raw_paths))
+    if not normalized_paths:
+        raise RefreshError("ADMISSION_PATH_REQUIRED", "at least one exact new path is required")
+    for path in normalized_paths:
+        if path in REFRESH_CONTROL_PATHS:
+            raise RefreshError("ADMISSION_PATH_FORBIDDEN", f"generated/control path cannot be admitted: {path}")
+        if is_implementation_path(path) and not path.startswith(("src/", "tools/")):
+            # Root-level scripts are implementation by suffix too; nothing to
+            # special-case -- the classifier decides below.
+            pass
+
+    candidate = _resolve_tree_selector(candidate_tree, default_repo=ROOT, role="candidate")
+    controlled_root = (candidate.worktree_root or candidate.repo_root).resolve()
+    trusted = _resolve_tree_selector(trusted_tree, default_repo=candidate.repo_root, role="trusted")
+    if trusted.worktree_root is not None and (
+        _path_is_within(trusted.worktree_root, controlled_root, resolve=False)
+        or _path_is_within(trusted.worktree_root, controlled_root, resolve=True)
+    ):
+        raise RefreshError(
+            "TRUSTED_TREE_CANDIDATE_CONTROLLED",
+            "trusted tree worktree is inside the candidate tree",
+        )
+
+    trusted_ledger_path = _external_input(trusted_ledger, candidate_root=controlled_root, label="trusted ledger")
+    trusted_policy_path = _external_input(trusted_policy, candidate_root=controlled_root, label="trusted policy")
+    trusted_baseline_path = None
+    if trusted_baseline_ledger is not None:
+        trusted_baseline_path = _external_input(
+            trusted_baseline_ledger, candidate_root=controlled_root, label="trusted baseline ledger"
+        )
+    trusted_manifest_path = None
+    if trusted_manifest is not None:
+        trusted_manifest_path = _external_input(
+            trusted_manifest, candidate_root=controlled_root, label="trusted manifest"
+        )
+    authority = _read_admission_authority(
+        admission_authority,
+        candidate_root=controlled_root,
+        requested=set(normalized_paths),
+    )
+    authority_path = _external_input(admission_authority, candidate_root=controlled_root, label="admission authority")
+    authority_bytes = authority_path.read_bytes()
+
+    try:
+        policy = _load_publication_policy(trusted_policy_path)
+    except Exception as error:
+        raise RefreshError("TRUSTED_POLICY_INVALID", "trusted policy is invalid") from error
+    policy_raw = trusted_policy_path.read_bytes()
+    if trusted.blobs.get("assets/public_source_profile.json") != policy_raw:
+        raise RefreshError("TRUSTED_POLICY_MISMATCH", "trusted tree does not contain the trusted policy bytes")
+
+    # -- per-path admission preconditions ----------------------------------
+    for path in normalized_paths:
+        if path in trusted.blobs:
+            raise RefreshError(
+                "ADMISSION_PATH_EXISTING",
+                f"{path} is already present in the trusted tree; use refresh-reviewed for an existing path",
+            )
+        if path not in candidate.blobs:
+            raise RefreshError("CANDIDATE_PATH_MISSING", f"admission path is not present in the candidate tree: {path}")
+        disposition = policy.resolve(path).disposition
+        if disposition == "excluded":
+            raise RefreshError(
+                "ADMISSION_PATH_EXCLUDED",
+                f"{path} is excluded by the trusted publication policy and cannot be admitted",
+            )
+        if disposition == "included":
+            raise RefreshError(
+                "ADMISSION_POLICY_MISMATCH",
+                f"{path} is already included by the trusted policy but absent from the trusted tree",
+            )
+        candidate_hash = hashlib.sha256(candidate.blobs[path]).hexdigest()
+        statement = authority[path]
+        if statement["sha256"] != candidate_hash:
+            raise RefreshError(
+                "ADMISSION_HASH_MISMATCH",
+                f"admission authority approved different bytes for {path}; candidate hash is {candidate_hash}",
+            )
+
+    # -- candidate tree differs from trusted only by the admitted paths -----
+    candidate_paths = set(candidate.blobs)
+    trusted_paths = set(trusted.blobs)
+    removed = sorted(trusted_paths - candidate_paths)
+    if removed:
+        raise RefreshError("CANDIDATE_TREE_SCOPE_CHANGED", f"candidate removes a path from the trusted tree: {removed[0]}")
+    added = sorted(candidate_paths - trusted_paths)
+    if added != normalized_paths:
+        unexpected = sorted(set(added) - set(normalized_paths))
+        raise RefreshError(
+            "ADMISSION_TREE_SCOPE",
+            f"candidate adds a path outside the admitted set: {unexpected[0] if unexpected else added[0]}",
+        )
+    for path in sorted(candidate_paths & trusted_paths):
+        if path in REFRESH_CONTROL_PATHS:
+            # Policy is validated semantically below; ledger and export are
+            # regenerated outputs whose candidate bytes are never trusted.
+            continue
+        if candidate.blobs[path] != trusted.blobs[path]:
+            raise RefreshError(
+                "CANDIDATE_TREE_STALE",
+                f"candidate changed unrequested path {path}; admission changes must be explicit",
+            )
+
+    # -- candidate policy is the trusted policy plus exactly the admits -----
+    extended_bytes, extended_document = _extended_policy_bytes(trusted_policy_path, set(normalized_paths))
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as _tmp_policy:
+        _tmp_policy.write(extended_bytes.decode("utf-8"))
+        _tmp_policy_path = Path(_tmp_policy.name)
+    try:
+        extended_policy = _load_publication_policy(_tmp_policy_path)
+    finally:
+        _tmp_policy_path.unlink(missing_ok=True)
+
+    candidate_policy_raw = candidate.blobs.get("assets/public_source_profile.json")
+    if candidate_policy_raw is None:
+        raise RefreshError("CANDIDATE_POLICY_MISSING", "candidate tree has no publication policy")
+    try:
+        candidate_policy_document = json.loads(candidate_policy_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RefreshError("ADMISSION_POLICY_MISMATCH", "candidate policy is not valid JSON") from error
+    if candidate_policy_document != extended_document:
+        raise RefreshError(
+            "ADMISSION_POLICY_MISMATCH",
+            "candidate policy must equal the trusted policy plus include entries for exactly the admitted paths",
+        )
+
+    if trusted_manifest_path is not None:
+        candidate_manifest = candidate.blobs.get("assets/release_manifest.json")
+        trusted_tree_manifest = trusted.blobs.get("assets/release_manifest.json")
+        trusted_manifest_raw = trusted_manifest_path.read_bytes()
+        if trusted_tree_manifest != trusted_manifest_raw:
+            raise RefreshError("TRUSTED_MANIFEST_MISMATCH", "trusted tree differs from the trusted manifest")
+        if candidate_manifest != trusted_manifest_raw:
+            raise RefreshError("TRUSTED_MANIFEST_MISMATCH", "candidate manifest differs from trusted manifest")
+
+    # -- trusted ledger: public snapshot and/or detailed development ledger ---
+    # The detailed ledger carries ``records`` (path authority) and
+    # ``reviewed_blobs`` (exact-bytes approval); both must be read from the
+    # same external document before it is swapped for a baseline snapshot.
+    trusted_document = _read_json_file(trusted_ledger_path, code="TRUSTED_LEDGER_INVALID")
+    detailed_records: dict[str, dict] | None = None
+    approvals: dict[tuple[str, str], dict] = {}
+    has_entries = "entries" in trusted_document
+    has_records = "records" in trusted_document
+    if has_entries and has_records:
+        raise RefreshError("TRUSTED_LEDGER_INVALID", "trusted ledger cannot mix public entries and detailed records")
+    if has_entries:
+        _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted ledger")
+    elif has_records:
+        detailed_records = _detailed_records(trusted_document)
+        approvals = _blob_approval_map(trusted_document)
+        if trusted_baseline_path is not None:
+            trusted_document = _read_json_file(trusted_baseline_path, code="TRUSTED_LEDGER_INVALID")
+            _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted baseline ledger")
+    else:
+        raise RefreshError("TRUSTED_LEDGER_INVALID", "trusted ledger must contain entries or detailed records")
+
+    # -- per-path class + authority ----------------------------------------
+    new_entries: list[dict] = []
+    implementation_admitted = False
+    for path in normalized_paths:
+        statement = authority[path]
+        classification = statement["classification"]
+        candidate_hash = hashlib.sha256(candidate.blobs[path]).hexdigest()
+        derived_class, derived_evidence = _class_for(path, None)
+        if classification in DETERMINISTIC_REFRESH_CLASSES:
+            if derived_class != classification or derived_class == "unresolved":
+                raise RefreshError(
+                    "ADMISSION_CLASS_MISMATCH",
+                    f"{path} is not {classification}; deterministic classification derives {derived_class!r}",
+                )
+            evidence = derived_evidence
+        else:
+            if classification not in REFRESHABLE_CLASSES:
+                raise RefreshError(
+                    "ADMISSION_CLASS_MISMATCH",
+                    f"{path} cannot be admitted as {classification!r}",
+                )
+            implementation_admitted = True
+            if detailed_records is None:
+                raise RefreshError(
+                    "TRUSTED_RECORD_REQUIRED",
+                    f"implementation-class admission requires the trusted detailed ledger: {path}",
+                )
+            record = detailed_records.get(path)
+            if record is None:
+                raise RefreshError(
+                    "TRUSTED_PATH_MISSING",
+                    f"trusted detailed ledger has no exact record for {path}",
+                )
+            if statement["origin_kind"] not in ADMISSION_ORIGIN_KINDS:
+                raise RefreshError(
+                    "ADMISSION_AUTHORITY_INCOMPLETE",
+                    f"implementation admission for {path} must declare a supported origin_kind",
+                )
+            if not isinstance(statement["origin"], str) or not statement["origin"].strip():
+                raise RefreshError(
+                    "ADMISSION_AUTHORITY_INCOMPLETE",
+                    f"implementation admission for {path} must declare an origin statement",
+                )
+            if not isinstance(statement["license"], str) or not statement["license"].strip():
+                raise RefreshError(
+                    "ADMISSION_AUTHORITY_INCOMPLETE",
+                    f"implementation admission for {path} must declare a license basis",
+                )
+            public_class, evidence = _refresh_class_for(path, record)
+            if public_class != classification:
+                raise RefreshError(
+                    "ADMISSION_CLASS_MISMATCH",
+                    f"trusted detailed record class {public_class!r} disagrees with admitted {classification!r} for {path}",
+                )
+            approval = approvals.get((path, candidate_hash))
+            if approval is None:
+                raise RefreshError(
+                    "BLOB_UNAPPROVED",
+                    f"implementation-class admission requires an exact reviewed-blob approval for {path} at sha256 {candidate_hash}",
+                )
+            expected_record = record["id"]
+            if approval.get("record_id") != expected_record:
+                raise RefreshError(
+                    "BLOB_APPROVAL_RECORD_MISMATCH",
+                    f"blob approval for {path} cites a record that is not the exact covering record",
+                )
+            approved_class, _ = _class_for(path, {"classification": approval.get("classification"), "id": None})
+            if approved_class != classification:
+                raise RefreshError(
+                    "BLOB_APPROVAL_CLASS_MISMATCH",
+                    f"blob approval for {path} authorizes class {approved_class!r}, not {classification!r}",
+                )
+        entry = {"path": path, "classification": classification, "evidence": evidence,
+                 "sha256": candidate_hash}
+        new_entries.append(entry)
+
+    # -- compose the output ledger -----------------------------------------
+    # Baseline entries come from the public snapshot (``has_entries``, or the
+    # snapshot paired with a detailed ledger via ``trusted_baseline_path``) so
+    # an admission changes only what it must; with a detailed ledger alone the
+    # baseline is regenerated from the trusted tree and its records.
+    if has_entries or trusted_baseline_path is not None:
+        document = json.loads(json.dumps(trusted_document, ensure_ascii=False))
+    else:
+        assert detailed_records is not None
+        generated = _ledger_from_detailed(tree=trusted, policy=extended_policy, records=detailed_records)
+        document = json.loads(json.dumps(generated, ensure_ascii=False))
+    document_entries = {entry["path"]: entry for entry in document["entries"]}
+    for path in normalized_paths:
+        if path in document_entries:
+            raise RefreshError("TRUSTED_PATH_MISSING", f"trusted ledger already carries an entry for {path}")
+    # The publication policy is itself a mechanical output of this command (it
+    # gains include entries for exactly the admitted paths), so its ledger
+    # entry must track the regenerated bytes rather than the trusted policy
+    # bytes the snapshot recorded.
+    policy_entry = document_entries.get("assets/public_source_profile.json")
+    if policy_entry is None:
+        raise RefreshError("TRUSTED_LEDGER_INVALID", "trusted ledger has no entry for the publication policy")
+    policy_entry["sha256"] = hashlib.sha256(extended_bytes).hexdigest()
+    document["entries"] = sorted(document["entries"] + new_entries, key=lambda entry: entry["path"])
+    document["admission"] = {
+        "workflow": "admit-new-reviewed",
+        "trusted_tree": trusted.tree_sha,
+        "candidate_tree": candidate.tree_sha,
+        "admitted_paths": normalized_paths,
+        "authority_sha256": hashlib.sha256(authority_bytes).hexdigest(),
+    }
+    errors = validate_ledger(document, require_hashes=True, require_resolved=True)
+    if errors:
+        raise RefreshError("ADMISSION_OUTPUT_INVALID", errors[0])
+    # Bind every admitted entry to the exact bytes the authority approved.
+    # Existing snapshot entries were already bound to the trusted tree above,
+    # and every non-admitted candidate path is byte-identical to that tree, so
+    # no further all-entries sweep is needed -- control-file entries describe
+    # the trusted bytes, which legitimately differ from the regenerated ones.
+    for entry in new_entries:
+        actual = hashlib.sha256(candidate.blobs[entry["path"]]).hexdigest()
+        if entry["sha256"] != actual:
+            raise RefreshError("ADMISSION_OUTPUT_INVALID",
+                               f"output hash does not match candidate bytes for {entry['path']}")
+
+    ledger_bytes = _canonical_json_bytes(document)
+    export_bytes = _refresh_export_bytes(candidate=candidate, policy=extended_policy, ledger_bytes=ledger_bytes)
+
+    # -- write the three mechanical outputs --------------------------------
+    if candidate.worktree_root is None:
+        raise RefreshError("ADMISSION_OUTPUT_REQUIRED", "admission requires a clean candidate worktree to write its outputs")
+    candidate_root = candidate.worktree_root.resolve()
+    trusted_inputs = [
+        path for path in (
+            trusted_ledger_path, trusted_policy_path, trusted_baseline_path,
+            trusted_manifest_path, authority_path,
+        ) if path is not None
+    ]
+    written: dict[str, bytes] = {
+        "assets/public_provenance_ledger.json": ledger_bytes,
+        "PUBLIC_EXPORT.json": export_bytes,
+        "assets/public_source_profile.json": extended_bytes,
+    }
+    for relative, bytes_value in written.items():
+        target = candidate_root / relative
+        target = target.resolve()
+        if not _path_is_within(target, candidate_root, resolve=True):
+            raise RefreshError("ADMISSION_OUTPUT_INVALID", "output escapes the candidate worktree")
+        if any(target == trusted_input.resolve() for trusted_input in trusted_inputs):
+            raise RefreshError("ADMISSION_OUTPUT_INVALID", "output would overwrite a trusted input")
+    try:
+        for relative, bytes_value in written.items():
+            target = candidate_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(bytes_value)
+    except OSError as error:
+        raise RefreshError("ADMISSION_OUTPUT_ERROR", "cannot write admitted public artifacts") from error
+    return {
+        "candidate_tree": candidate.tree_sha,
+        "trusted_tree": trusted.tree_sha,
+        "paths": normalized_paths,
+        "implementation_admitted": implementation_admitted,
+        "ledger": document,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=("refresh-reviewed",))
+    parser.add_argument(
+        "command", nargs="?", choices=("refresh-reviewed", "admit-new-reviewed"),
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--implementation-ledger",
@@ -1065,34 +1603,42 @@ def main(argv: list[str] | None = None) -> int:
         "--trusted-ledger",
         type=Path,
         help=(
-            "refresh-reviewed: external trusted public ledger snapshot or detailed ledger; "
-            "never read from the candidate tree"
+            "refresh-reviewed / admit-new-reviewed: external trusted public ledger snapshot or "
+            "detailed ledger; never read from the candidate tree"
         ),
     )
     parser.add_argument(
         "--trusted-baseline-ledger",
         type=Path,
-        help="refresh-reviewed: optional external public snapshot paired with a detailed ledger",
+        help="refresh-reviewed / admit-new-reviewed: optional external public snapshot paired with a detailed ledger",
     )
     parser.add_argument(
         "--candidate-tree",
         type=str,
-        help="refresh-reviewed: clean candidate worktree path or immutable Git tree-ish",
+        help="refresh-reviewed / admit-new-reviewed: clean candidate worktree path or immutable Git tree-ish",
     )
     parser.add_argument(
         "--trusted-tree",
         type=str,
-        help="refresh-reviewed: maintainer-selected baseline worktree path or immutable Git tree-ish",
+        help="refresh-reviewed / admit-new-reviewed: maintainer-selected baseline worktree path or immutable Git tree-ish",
     )
     parser.add_argument(
         "--trusted-policy",
         type=Path,
-        help="refresh-reviewed: external trusted publication policy",
+        help="refresh-reviewed / admit-new-reviewed: external trusted publication policy",
     )
     parser.add_argument(
         "--trusted-manifest",
         type=Path,
-        help="refresh-reviewed: optional external trusted release manifest",
+        help="refresh-reviewed / admit-new-reviewed: optional external trusted release manifest",
+    )
+    parser.add_argument(
+        "--admission-authority",
+        type=Path,
+        help=(
+            "admit-new-reviewed: external admission-authority document naming each exact new path, "
+            "its approved SHA-256, and its public classification; never read from the candidate tree"
+        ),
     )
     parser.add_argument(
         "--export-output",
@@ -1102,9 +1648,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--paths",
         nargs="+",
-        help="refresh-reviewed: explicit exact implementation paths to refresh",
+        help=(
+            "refresh-reviewed / admit-new-reviewed: explicit exact implementation paths to refresh "
+            "or exact new public paths to admit"
+        ),
     )
     args = parser.parse_args(argv)
+    if args.command == "admit-new-reviewed":
+        missing = [
+            name for name, value in (
+                ("--trusted-ledger", args.trusted_ledger),
+                ("--admission-authority", args.admission_authority),
+                ("--candidate-tree", args.candidate_tree),
+                ("--trusted-tree", args.trusted_tree),
+                ("--trusted-policy", args.trusted_policy),
+                ("--paths", args.paths),
+            ) if value is None
+        ]
+        if missing:
+            print(
+                f"provenance ledger admission: ADMISSION_ARGUMENT_REQUIRED: missing {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            result = admit_new_reviewed(
+                trusted_ledger=args.trusted_ledger,
+                admission_authority=args.admission_authority,
+                candidate_tree=args.candidate_tree,
+                trusted_tree=args.trusted_tree,
+                paths=args.paths,
+                trusted_policy=args.trusted_policy,
+                trusted_manifest=args.trusted_manifest,
+                trusted_baseline_ledger=args.trusted_baseline_ledger,
+            )
+        except RefreshError as error:
+            print(f"provenance ledger admission: {error.code}: {error}", file=sys.stderr)
+            return 1
+        print(
+            "provenance ledger admission: admitted "
+            f"{len(result['paths'])} exact new path(s); generated "
+            f"{len(result['ledger']['entries'])} entries; candidate_tree={result['candidate_tree']}"
+        )
+        return 0
     if args.command == "refresh-reviewed":
         missing = [
             name for name, value in (
