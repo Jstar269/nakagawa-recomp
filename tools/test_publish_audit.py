@@ -408,6 +408,113 @@ class TestPublishAudit(unittest.TestCase):
             findings = publish_audit.audit_entries(entries, repo_root=repo, is_candidate_root=True)
             self.assertFalse(any(f.code == "MAGIC_UNKNOWN" for f in findings))
 
+    def _make_junction(self, link: Path, target: Path) -> bool:
+        """Create an NTFS junction; junctions need no elevation on Windows."""
+        created = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return created.returncode == 0
+
+    @unittest.skipUnless(
+        os.name == "nt" and hasattr(os.path, "isjunction"),
+        "NTFS junction regression requires Windows junction support",
+    )
+    def test_candidate_scan_prunes_ntfs_junctions(self):
+        # A junction is not reported by Path.is_symlink(), so a candidate scan
+        # that only prunes symlinks descends through the junction and hashes
+        # file content that lives outside the candidate root. Containment is a
+        # property of where content physically is, not of what Git recorded.
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            temp_root = Path(tmp_dir_raw).resolve()
+            repo = temp_root / "repo"
+            outside = temp_root / "outside"
+            repo.mkdir()
+            outside.mkdir()
+            (repo / "inside.txt").write_text("inside", encoding="utf-8")
+            (outside / "sentinel.txt").write_text("outside", encoding="utf-8")
+
+            junction = repo / "linked"
+            if not self._make_junction(junction, outside):
+                self.skipTest("cannot create NTFS junction")
+
+            self.assertFalse(junction.is_symlink())
+            self.assertTrue(os.path.isjunction(junction))
+            self.assertEqual(publish_audit._filesystem_link_on_path(junction), junction)
+
+            entries = publish_audit._get_filesystem_entries(repo)
+            paths = [entry.path for entry in entries]
+            self.assertIn("inside.txt", paths)
+            self.assertIn("linked", paths)
+            self.assertNotIn("linked/sentinel.txt", paths, f"scan crossed junction: {paths}")
+
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+            git_entries = publish_audit._get_git_entries(
+                tracked_only=False,
+                repo_root=repo,
+                content_source=publish_audit.CONTENT_WORKTREE,
+            )
+            git_paths = [entry.path for entry in git_entries]
+            self.assertIn("inside.txt", git_paths)
+            self.assertIn("linked", git_paths)
+            self.assertNotIn("linked/sentinel.txt", git_paths, f"git scan crossed junction: {git_paths}")
+
+            root_junction = temp_root / "root-linked"
+            if self._make_junction(root_junction, repo):
+                with self.assertRaisesRegex(RuntimeError, "candidate root must not be a filesystem link"):
+                    publish_audit._get_filesystem_entries(root_junction)
+
+    @unittest.skipUnless(
+        os.name == "nt" and hasattr(os.path, "isjunction"),
+        "NTFS junction regression requires Windows junction support",
+    )
+    def test_tracked_file_below_junction_is_flagged_not_read(self):
+        # Git for Windows happily tracks a regular file below a junction. The
+        # entry therefore stays enumerated (Git owns that truth), but the audit
+        # must never read its bytes through the junction: the working-tree blob
+        # is the link target, which flags the entry instead of smuggling
+        # out-of-root content into the candidate blob set.
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            temp_root = Path(tmp_dir_raw).resolve()
+            repo = temp_root / "repo"
+            outside = temp_root / "outside"
+            repo.mkdir()
+            outside.mkdir()
+            (repo / "inside.txt").write_text("inside", encoding="utf-8")
+            (outside / "sentinel.txt").write_text("outside", encoding="utf-8")
+
+            junction = repo / "linked"
+            if not self._make_junction(junction, outside):
+                self.skipTest("cannot create NTFS junction")
+
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+
+            entries = publish_audit._get_git_entries(
+                tracked_only=True,
+                repo_root=repo,
+                content_source=publish_audit.CONTENT_WORKTREE,
+            )
+            by_path = {entry.path: entry for entry in entries}
+            self.assertIn("linked/sentinel.txt", by_path)
+            smuggled = by_path["linked/sentinel.txt"]
+            self.assertEqual(smuggled.working_mode, "120000", "tracked junction descendant must be flagged as a link")
+
+            blobs = publish_audit.read_worktree_blobs([smuggled], repo_root=repo)
+            content = blobs["linked/sentinel.txt"][0]
+            self.assertIsNotNone(content)
+            self.assertNotEqual(content, b"outside", "audit read out-of-root bytes through a junction")
+
+    def test_link_boundary_rejects_lexical_escape(self):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            root = Path(tmp_dir_raw).resolve()
+            with self.assertRaisesRegex(RuntimeError, "audit path escapes root"):
+                publish_audit._filesystem_link_on_path(root.parent / "outside.txt", root)
+
     def test_candidate_scan_skips_gitignored_untracked_scaffolding(self):
         # Contributor tooling leaves gitignored scaffolding in a materialized
         # candidate (e.g. .ruff_cache/ after running pre-commit). The candidate

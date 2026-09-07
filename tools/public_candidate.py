@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         metadata = materialize(args.ref, args.destination, args.profile.resolve())
-        findings = audit_candidate(args.destination.resolve(), args.provenance_ledger.resolve())
+        findings = audit_candidate(args.destination.absolute(), args.provenance_ledger.resolve())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
         print(f"public candidate: FAIL: {error}")
         return 2

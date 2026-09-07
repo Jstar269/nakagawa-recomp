@@ -277,6 +277,36 @@ def _read_git_lfs_attributes(repo_root: Path = ROOT) -> set[str]:
     return patterns
 
 
+def _filesystem_link_on_path(path: Path, root: Path | None = None) -> Path | None:
+    """Return the first symlink or host directory-link on *path*, if any.
+
+    ``os.walk(..., followlinks=False)`` prunes POSIX directory symlinks, but on
+    Windows an NTFS junction is not reported by ``Path.is_symlink()`` and the
+    walk otherwise descends through it.  Keep that host distinction behind one
+    seam so every audit path uses the same fail-closed link classification.  A
+    root also makes Git-reported descendants safe: Git may enumerate a regular
+    file below a junction even though the final file is not itself a link.
+    """
+    candidates = [path]
+    if root is not None:
+        root_absolute = root.absolute()
+        try:
+            relative = path.absolute().relative_to(root_absolute)
+        except ValueError as error:
+            raise RuntimeError(f"audit path escapes root: {path}") from error
+        current = root_absolute
+        candidates = [current]
+        for part in relative.parts:
+            current /= part
+            candidates.append(current)
+
+    isjunction = getattr(os.path, "isjunction", None)
+    for candidate in candidates:
+        if candidate.is_symlink() or (isjunction is not None and isjunction(candidate)):
+            return candidate
+    return None
+
+
 def _get_git_entries(
     tracked_only: bool = False,
     repo_root: Path = ROOT,
@@ -302,7 +332,7 @@ def _get_git_entries(
 
                 full_p = repo_root / rel_path
                 working_mode = ""
-                if full_p.is_symlink():
+                if _filesystem_link_on_path(full_p, repo_root) is not None:
                     working_mode = "120000"
                 elif full_p.is_file():
                     st = full_p.stat()
@@ -338,9 +368,22 @@ def _get_git_entries(
                 full_p = repo_root / rel_path
                 mode_str = "100644"
                 kind = "file"
-                if full_p.is_symlink():
-                    mode_str = "120000"
-                    kind = "symlink"
+                link_path = _filesystem_link_on_path(full_p, repo_root)
+                if link_path is not None:
+                    link_rel = link_path.relative_to(repo_root).as_posix()
+                    if link_rel not in tracked_paths:
+                        entries.append(
+                            GitEntry(
+                                mode="120000",
+                                sha="",
+                                stage="0",
+                                path=link_rel,
+                                kind="symlink",
+                                working_mode="120000",
+                            )
+                        )
+                        tracked_paths.add(link_rel)
+                    continue
                 elif full_p.is_file():
                     if full_p.stat().st_mode & 0o111:
                         mode_str = "100755"
@@ -365,6 +408,8 @@ def _get_git_entries(
 
 def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
     """Describe a materialized candidate directory without consulting Git index."""
+    if _filesystem_link_on_path(repo_root) is not None:
+        raise RuntimeError(f"candidate root must not be a filesystem link: {repo_root}")
     entries: list[GitEntry] = []
     for directory, dirnames, filenames in os.walk(repo_root, followlinks=False):
         base = Path(directory)
@@ -372,7 +417,7 @@ def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
         dirnames[:] = [name for name in dirnames if name not in _VCS_METADATA_DIRS]
         for name in list(dirnames):
             path = base / name
-            if path.is_symlink():
+            if _filesystem_link_on_path(path, repo_root) is not None:
                 rel = path.relative_to(repo_root).as_posix()
                 entries.append(GitEntry("120000", "", "0", rel, "symlink", working_mode="120000"))
                 dirnames.remove(name)
@@ -381,7 +426,7 @@ def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
             rel = path.relative_to(repo_root).as_posix()
             mode = "100644"
             kind = "file"
-            if path.is_symlink():
+            if _filesystem_link_on_path(path, repo_root) is not None:
                 mode = "120000"
                 kind = "symlink"
             elif path.stat().st_mode & 0o111:
@@ -454,9 +499,10 @@ def read_indexed_blob(
     disk_path = repo_root / entry.path
 
     if entry.kind == "symlink":
-        if disk_path.is_symlink():
+        link_path = _filesystem_link_on_path(disk_path, repo_root)
+        if link_path is not None:
             try:
-                target = disk_path.readlink()
+                target = link_path.readlink()
                 return str(target).encode("utf-8"), None
             except OSError as exc:
                 return None, f"failed to read symlink target: {exc}"
@@ -491,7 +537,7 @@ def read_indexed_blob(
             return None, f"failed to execute git cat-file: {exc}"
 
     # Fallback for untracked prospective files (sha is empty)
-    if disk_path.is_file() and not disk_path.is_symlink():
+    if disk_path.is_file() and _filesystem_link_on_path(disk_path, repo_root) is None:
         try:
             return disk_path.read_bytes(), None
         except OSError as exc:
@@ -511,9 +557,10 @@ def read_indexed_blobs_batch(
     for entry in entries:
         disk_path = repo_root / entry.path
         if entry.kind == "symlink":
-            if disk_path.is_symlink():
+            link_path = _filesystem_link_on_path(disk_path, repo_root)
+            if link_path is not None:
                 try:
-                    target = disk_path.readlink()
+                    target = link_path.readlink()
                     result[entry.path] = (str(target).encode("utf-8"), None)
                     continue
                 except OSError as exc:
@@ -526,7 +573,7 @@ def read_indexed_blobs_batch(
         if entry.sha:
             shas_to_query.append((entry.path, entry.sha))
         else:
-            if disk_path.is_file() and not disk_path.is_symlink():
+            if disk_path.is_file() and _filesystem_link_on_path(disk_path, repo_root) is None:
                 try:
                     result[entry.path] = (disk_path.read_bytes(), None)
                 except OSError as exc:
@@ -608,9 +655,10 @@ def read_worktree_blobs(
         if entry.kind == "gitlink":
             result[entry.path] = (entry.sha.encode("utf-8"), None)
             continue
-        if disk_path.is_symlink():
+        link_path = _filesystem_link_on_path(disk_path, repo_root)
+        if link_path is not None:
             try:
-                result[entry.path] = (str(disk_path.readlink()).encode("utf-8"), None)
+                result[entry.path] = (str(link_path.readlink()).encode("utf-8"), None)
             except OSError as exc:
                 result[entry.path] = (None, f"failed to read symlink target: {exc}")
             continue
@@ -636,8 +684,11 @@ def read_candidate_file(
     disk_path = candidate_root / entry.path
 
     if entry.kind == "symlink":
+        link_path = _filesystem_link_on_path(disk_path, candidate_root)
+        if link_path is None:
+            return None, "candidate link entry is not a filesystem link"
         try:
-            target = disk_path.readlink()
+            target = link_path.readlink()
             return str(target).encode("utf-8"), None
         except OSError as exc:
             return None, f"failed to read candidate symlink target: {exc}"
@@ -2150,7 +2201,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    audit_repo_root = args.repo_root.resolve() if args.repo_root else ROOT
+    audit_repo_root = args.repo_root.absolute() if args.repo_root else ROOT
     committed_audit_root: Path | None = None
     committed_tree_sha: str | None = None
     if args.committed_tree:
@@ -2161,7 +2212,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         audit_root = committed_audit_root
     else:
-        audit_root = args.candidate_root.resolve() if args.candidate_root else audit_repo_root
+        audit_root = args.candidate_root.absolute() if args.candidate_root else audit_repo_root
     manifest_path = args.manifest or (audit_root / "assets" / "release_manifest.json")
     is_exhaustive = args.candidate_tree or bool(args.manifest_out) or bool(args.csv_out) or args.public_scope
     is_cand_root = bool(args.candidate_root)
