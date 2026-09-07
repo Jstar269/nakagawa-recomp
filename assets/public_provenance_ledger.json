@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9cb92075605267b64629e30b53cf2f2eae1e3afec019bb606ff43cd3672d7d60"
+      "sha256": "46815f3a1b287d8503615c00e9cd071399913492a478fc20f0558910b3f7fa7b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -986,6 +986,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "48299cc1e20ce3e495418738d9eca1e06421abde8279f79ffbcd6099b56ee1fc"
+    },
+    {
+      "path": "docs/research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "d3a74d88fe1a121d9ec5a6a304177f4a79b7b7795f6157e86f6c33f12d4795d7"
+    },
+    {
+      "path": "docs/research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "e7cd5bb6f0413e58092a174f73fb6c29f16def8fdce9394260b9b336b1f9d631"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -7624,5 +7642,15 @@
       "tools/provenance_ledger.py",
       "tools/test_provenance_ledger.py"
     ]
+  },
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "3c8d87069474f24bff8ebaac822079c1600b8d8e",
+    "candidate_tree": "ec8f390f4a48e39dd7fb19827a19713f1715be30",
+    "admitted_paths": [
+      "docs/research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md",
+      "docs/research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md"
+    ],
+    "authority_sha256": "f40994e2db420bece23ae3a5d592e36bc001c13063949d87c592e555568d455b"
   }
 }
