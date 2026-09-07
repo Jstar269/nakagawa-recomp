@@ -841,7 +841,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d98bf8098d6738686e21e97f772bcd68dea8411c0cc940b2564376fc7112078e"
+      "sha256": "372b3fc5b4242ebf5edac2cae6a4045360b86f20e6314c97d68816c06e979a91"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -5956,7 +5956,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84b97f876d4b432673920edd7028270d13426425639cb7db8bbb1bc6fb01a7f7"
+      "sha256": "7996b6911f46fc3c34224e2580e783ebc4953cd85cada4f0f4537802bc33ebc0"
     },
     {
       "path": "tools/prxload.py",
@@ -6981,7 +6981,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9737d6fc23de72ed16776fc17ce1fd61011610f2590a4cf0923d570479f211f9"
+      "sha256": "a3560badd61832a2a7c4bdadce9dc01d9e7591704cbe1bb8d176a379658fc9ee"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7617,38 +7617,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "92f1cf332519982f7deb13adbb9712372fd32a8f",
-    "candidate_tree": "f86da671798c63a474b4c850782b18196d2f18aa",
+    "trusted_tree": "971c9dca9cb1faf0fbe9b5c81fca05fe91d41348",
+    "candidate_tree": "9d9217043c1bd1fc34050f9f48b78cfa3ea9e16c",
     "refreshed_paths": [
-      ".gitignore",
-      "ISSUES.md",
-      "Makefile",
-      "README.md",
-      "assets/titles/README.md",
-      "docs/HARDWARE_ORACLE.md",
-      "docs/IMPORT_AUDIT.md",
-      "docs/PORTING.md",
-      "docs/PSPDEV_LOCAL_VERIFICATION.md",
-      "docs/PSP_INTR_WAITS_MATRIX.md",
-      "docs/README.md",
-      "docs/SETUP.md",
-      "docs/TITLE_CODEGEN_PLAN.md",
-      "docs/TOOLCHAIN_BASELINE_2026-08.md",
-      "docs/research/PSP_THREADING_SEMANTICS.md",
-      "tools/lint_docs.py",
-      "tools/test_generic_title_planning_proof.py",
-      "tools/test_lint_docs.py",
-      "tools/title_manager_plan.ps1"
-    ],
-    "policy_delta": {
-      "include_added": [],
-      "include_removed": [
-        "TODO.md"
-      ],
-      "exclude_added": [],
-      "exclude_removed": [],
-      "rule_changes": []
-    },
-    "blessed_candidate_policy_sha256": "9cb92075605267b64629e30b53cf2f2eae1e3afec019bb606ff43cd3672d7d60"
+      "docs/PUBLICATION_READINESS.md",
+      "tools/provenance_ledger.py",
+      "tools/test_provenance_ledger.py"
+    ]
   }
 }
