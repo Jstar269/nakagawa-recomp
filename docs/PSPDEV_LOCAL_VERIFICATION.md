@@ -187,5 +187,6 @@ Return an exact-head report containing:
 - confirmation that no private/game-derived material was read or pushed;
 - `PRIME-TIME READY: YES` or `NO` under the project's engineering definition.
 
-Do not push generated audit outputs. Do not merge. DCO is intentionally not
-enforced during the current private-development phase.
+Do not push generated audit outputs. Do not merge without review. DCO sign-off
+follows the current public governance rules (`CONTRIBUTING.md`,
+`docs/DCO_POLICY.md`); there is no private-development-phase exemption.

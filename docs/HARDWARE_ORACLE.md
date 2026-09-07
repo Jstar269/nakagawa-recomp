@@ -14,6 +14,40 @@ are estimates and labelled as such. This document is a plan in the same sense as
 > (`CODEGEN_ORACLE`/`MICROTEST_ORACLE` capture on real silicon), which the scalar probe does not
 > provide.
 
+## Measured to date (index — exact cells only, do not generalize)
+
+The loops below are proposals. These cells are already measured; they are not
+proposals. Each claim covers only the exact fixture named:
+
+- **DMA concurrency** (live record: issue #23): on the qualified
+  PSP-3000-series / 6.61 / ARK-5.1.0 route (2026-08-27), a second-context
+  `sceDmacTryMemcpy` returned BUSY (`0x80000021`) in 64/64 trials while the
+  first transfer was pending, and a concurrent blocking `sceDmacMemcpy`
+  waited and returned 0 in 64/64 trials. Invalid-tail
+  full-span-validation-vs-truncation precedence remains NOT_MEASURED (the
+  probe's setup gate SKIPped; the assumed boundary was invalid for the
+  64 MiB route), and main keeps its conservative behavior there.
+- **VFPU fixtures** (live record: issue #40): Group A vhdp/vdot NaN/Inf
+  matrix, 13 records PASS across 4 launches in two sessions; Group B 91-cell
+  overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
+  route and date. Bulk random differential fuzz (Loop A) remains unbuilt, and
+  the PPSSPP-derived-table warning stands for every unmeasured encoding.
+- **Display/vblank masking** (detail: `ARCHITECTURE.md` display-mask section
+  and the shipped `PSP-DISPLAY-001` oracle results): masked-window behavior is
+  HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
+  12/12 per delay); enabled-starved behavior stays CORROBORATIVE_ONLY and the
+  software/hardware renderers stay non-oracles.
+
+One console is one data point; see §11. Nothing here closes issue #70
+(residual VBLANK delivery/coalescing) or generalizes to unmeasured cells.
+
+> **Tracker numbering.** Bare `#N` references in the loops below are
+> **pre-republication tracker numbers**, not current public tracker mappings:
+> the sanitized public repository restarted GitHub's single issue/PR sequence,
+> so a bare number here may resolve to an unrelated live public object. The
+> measured index above names live issues in words (`issue #23`); read every
+> other bare number as a historical identifier.
+
 ## 1. The gap this closes
 
 `tools/verify_gates.py` reports, verbatim:
@@ -86,6 +120,8 @@ VFPU is under-documented, `assets/vfpu/` tables are PPSSPP-derived, and PPSSPP a
 of it. Generate random (opcode, prefix, register state) → execute on hardware → compare against
 `sr_vfpu_interp` → minimize → regression test. Fully mechanical, no game content, serves #36.
 Target prefixes, NaN propagation, rounding modes, `vrot`, divide-by-zero, denormals.
+Bulk fuzz is still unbuilt; the measured Group-A/Group-B fixture cells indexed
+above are the exception, not the rule.
 
 ### Loop B — Per-opcode microtests (lowest integration cost)
 
@@ -97,6 +133,13 @@ its oracle at hardware turns the microtest gate into a real gate.
 Where "PPSSPP does X" is explicitly not proof: #1 callbacks, #2 mutex/LwMutex, #13 semaphore
 waiter cancellation, #14 async I/O, #16 FPL/thread-stack lifetime, #64 VBLANK sub-interrupts, #88
 interrupt pending state. Bespoke per probe, but it is where the unanswered questions live.
+Measured-index carve-outs (these cells need no new probe): #2 mutex context
+expectations are now implemented against (dedicated handlers in `src/rt/hle.c`;
+see the intr-conformance snapshot), and display-mask/vcount coalescing is
+HARDWARE_MEASURED per the index above. The loops remain for the unmeasured
+remainder — VBLANK sub-interrupts beyond the masked-window cells, async I/O,
+FPL/thread-stack lifetime, and interrupt pending state stay NOT_MEASURED until
+a probe measures them.
 
 ## 5. Device choice: PSP vs PS Vita
 
