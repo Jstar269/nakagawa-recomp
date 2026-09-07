@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -349,6 +352,167 @@ class TitleManifestTests(unittest.TestCase):
         value["profile_zero"]["acceptance"]["status"] = "ready"
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
             title_manifest.validate_manifest(value)
+
+
+class NativeTitleIdentityTests(unittest.TestCase):
+    """Compile/execute the canonical projection using source-owned inputs."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="native-title-identity-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.titles = self.root / "assets" / "titles"
+        self.titles.mkdir(parents=True)
+        shutil.copyfile(ROOT / "assets/public_source_profile.json",
+                        self.root / "assets/public_source_profile.json")
+        for name in ("synthetic.json", "synthetic-title2.json", "pspdev-phase5.json"):
+            shutil.copyfile(ROOT / "assets/titles" / name, self.titles / name)
+        self.fixture = title_manifest.load_manifest(self.titles / "synthetic.json")
+
+    def compile_run(self, header: str, body: str) -> bytes:
+        compiler = shutil.which(os.environ.get("CC", "gcc"))
+        if compiler is None:
+            self.fail("native identity regression requires a C compiler (CC or gcc)")
+        (self.root / "catalog.h").write_bytes(header.encode("ascii"))
+        (self.root / "probe.c").write_bytes(
+            ('#include "catalog.h"\n#include <assert.h>\n#include <stdio.h>\n'
+             'int main(void) {\n' + body + '\nreturn 0;\n}\n').encode("ascii"))
+        exe = self.root / ("probe.exe" if os.name == "nt" else "probe")
+        subprocess.run([compiler, "-std=c99", "-Wall", "-Wextra", "-Werror",
+                        str(self.root / "probe.c"), "-o", str(exe)],
+                       check=True, capture_output=True, timeout=60)
+        return subprocess.run([str(exe)], check=True, capture_output=True, timeout=10).stdout
+
+    def retail(self, title_id: str = "retail-fixture") -> dict:
+        value = copy.deepcopy(self.fixture)
+        value.pop("profile_zero", None)
+        value["kind"] = "retail"
+        value["id"] = title_id
+        value["disc"] = {"id": "TEST12345", "region": "NA",
+                         "revision_policy": "explicit-compatible-revisions",
+                         "compatible_revisions": ["TEST12346"]}
+        return value
+
+    def test_native_strings_and_identity_lookups_preserve_the_manifest(self) -> None:
+        value = self.retail()
+        value["display_name"] = 'Path\\backslash "quote" café 日本 ??/A'
+        second = title_manifest.load_manifest(self.titles / "synthetic-title2.json")
+        header = title_manifest.render_native_title_catalog([value, second])
+        actual = self.compile_run(header, r'''
+const NkTitleIdentity *title = nk_title_identity_by_id("retail-fixture");
+assert(NK_TITLE_IDENTITY_COUNT == 2);
+assert(title && title->disc_id_count == 2);
+assert(nk_title_identity_by_disc("TEST12345") == title);
+assert(nk_title_identity_by_disc("TEST12346") == title);
+assert(!nk_title_identity_by_disc("TEST12344"));
+assert(!nk_title_identity_by_disc("TEST12347"));
+assert(!nk_title_identity_by_disc("TEST1234"));
+assert(!nk_title_identity_by_disc("TEST123450"));
+assert(!nk_title_identity_by_disc("test12345"));
+assert(!nk_title_identity_by_disc("TEST-12345"));
+assert(!nk_title_identity_by_disc("TEST00002"));
+assert(!nk_title_identity_by_disc(NULL));
+assert(!nk_title_identity_by_id(NULL));
+assert(!nk_title_identity_by_id("retail-fixture-extra"));
+assert(!nk_title_identity_by_id(""));
+const NkTitleIdentity *synthetic = nk_title_identity_by_id("synthetic-title2-v1");
+assert(synthetic && synthetic->disc_id_count == 0 && !synthetic->disc_ids);
+assert(strlen(title->manifest_sha256) == 64);
+fputs(title->display_name, stdout);
+''')
+        self.assertEqual(actual, value["display_name"].encode("utf-8"))
+
+    def test_public_projection_compiles_and_has_no_inferred_disc_ids(self) -> None:
+        header = title_manifest.public_native_title_catalog(self.root)
+        self.compile_run(header, r'''
+assert(NK_TITLE_IDENTITY_COUNT == 3);
+assert(nk_title_identity_by_id("synthetic-allegrex-v1"));
+assert(nk_title_identity_by_id("synthetic-title2-v1"));
+assert(nk_title_identity_by_id("pspdev-phase5-v1"));
+assert(!nk_title_identity_by_disc("TEST00001"));
+assert(!nk_title_identity_by_disc("TEST00002"));
+assert(!nk_title_identity_by_disc("TEST00005"));
+''')
+
+    def test_empty_catalog_is_valid_c_and_never_matches(self) -> None:
+        self.compile_run(title_manifest.render_native_title_catalog([]), r'''
+assert(NK_TITLE_IDENTITY_COUNT == 0);
+assert(!nk_title_identity_by_id("anything"));
+assert(!nk_title_identity_by_disc("TEST12345"));
+''')
+
+    def test_duplicate_title_or_disc_identities_are_rejected(self) -> None:
+        first = self.retail()
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate title"):
+            title_manifest.render_native_title_catalog([first, first])
+        second = self.retail("another-title")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate disc"):
+            title_manifest.render_native_title_catalog([first, second])
+        second["disc"] = {"id": "TEST12346", "region": "NA",
+                          "revision_policy": "exact-disc-id"}
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate disc"):
+            title_manifest.render_native_title_catalog([first, second])
+
+    def test_private_and_unclassified_files_are_not_read(self) -> None:
+        before = title_manifest.public_native_title_catalog(self.root)
+        for name in ("hst-ucus98701.json", "unclassified.json"):
+            (self.titles / name).write_bytes(b"not JSON: private fixture marker")
+        self.assertEqual(before, title_manifest.public_native_title_catalog(self.root))
+        self.assertNotIn("private fixture marker", before)
+
+    def test_missing_or_malformed_included_input_fails_closed(self) -> None:
+        path = self.titles / "synthetic.json"
+        path.write_bytes(b'{"schema_version":1,"schema_version":1}')
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON"):
+            title_manifest.public_native_title_catalog(self.root)
+        path.unlink()
+        with self.assertRaises((title_manifest.TitleManifestError, OSError)):
+            title_manifest.public_native_title_catalog(self.root)
+
+    def test_included_alias_is_rejected_without_reading_target(self) -> None:
+        path = self.titles / "synthetic.json"
+        target = self.root / "external.json"
+        target.write_bytes(b"private alias target")
+        path.unlink()
+        try:
+            path.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"host cannot create symlink: {exc}")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "symbolic links"):
+            title_manifest.public_native_title_catalog(self.root)
+
+    def test_canonical_order_and_formatting_do_not_change_output(self) -> None:
+        other = title_manifest.load_manifest(self.titles / "synthetic-title2.json")
+        self.assertEqual(title_manifest.render_native_title_catalog([self.fixture, other]),
+                         title_manifest.render_native_title_catalog([other, self.fixture]))
+        before = title_manifest.public_native_title_catalog(self.root)
+        (self.titles / "synthetic.json").write_bytes(
+            json.dumps(self.fixture, indent=4).encode("utf-8"))
+        self.assertEqual(before, title_manifest.public_native_title_catalog(self.root))
+        self.fixture["executable"]["entry"] += 4
+        (self.titles / "synthetic.json").write_bytes(json.dumps(self.fixture).encode("utf-8"))
+        self.assertNotEqual(before, title_manifest.public_native_title_catalog(self.root),
+                            "digest must bind even non-projected contract fields")
+
+    def test_malformed_schema_is_rejected_before_projection(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["unrecognized"] = True
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "unknown field"):
+            title_manifest.render_native_title_catalog([value])
+
+    def test_cli_emits_only_generated_ascii_and_preserves_old_mode(self) -> None:
+        script = ROOT / "tools/title_manifest.py"
+        result = subprocess.run([sys.executable, str(script), "--print-public-catalog"],
+                                capture_output=True, check=True, timeout=15)
+        self.assertEqual(result.stdout, title_manifest.public_native_title_catalog(ROOT).encode("ascii"))
+        self.assertEqual(result.stderr, b"")
+        result = subprocess.run([sys.executable, str(script), str(self.titles / "synthetic.json")],
+                                capture_output=True, check=True, timeout=15)
+        self.assertIn(b"OK: synthetic-allegrex-v1", result.stdout)
+        result = subprocess.run([sys.executable, str(script), "--print-public-catalog",
+                                 str(self.titles / "synthetic.json")], capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
 
 
 if __name__ == "__main__":

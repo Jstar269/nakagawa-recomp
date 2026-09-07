@@ -706,7 +706,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e894b7022d23b438187d1027ea5fa827bb2c7d664b40cd5e9a6bd16efcea77b8"
+      "sha256": "512e311ba3ab1430617d15184c78213b22bf9b6a9ae27012005ed66345e66b82"
     },
     {
       "path": "docs/CI.md",
@@ -7260,7 +7260,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7b2ee99a926b87cccb8e2a7e44b894b92905a2ee26bfaa98dc6af6c6248ff0ad"
+      "sha256": "3f04d3ef83ba4bfb28ff58bdaa9971409b08e14e0ca565acf2a1511daf32335d"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -7452,7 +7452,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "109892d0539dc8e4c9b975f224ce56f16c205a585a6b3110f4346162beaf9e07"
+      "sha256": "a577884d2b5064d3b06e79e16910852d234a16c685cc403d28010c4aa253b212"
     },
     {
       "path": "tools/title_runtime_config.py",
@@ -7635,22 +7635,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "971c9dca9cb1faf0fbe9b5c81fca05fe91d41348",
-    "candidate_tree": "9d9217043c1bd1fc34050f9f48b78cfa3ea9e16c",
+    "trusted_tree": "f7d79cb3623451122da7f9863f6fa896cd3bdcdc",
+    "candidate_tree": "fa99584c5714ddd96d85cfad24cd77b3ac0705b1",
     "refreshed_paths": [
-      "docs/PUBLICATION_READINESS.md",
-      "tools/provenance_ledger.py",
-      "tools/test_provenance_ledger.py"
+      "docs/ARCHITECTURE.md",
+      "tools/test_title_manifest.py",
+      "tools/title_manifest.py"
     ]
-  },
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "3c8d87069474f24bff8ebaac822079c1600b8d8e",
-    "candidate_tree": "ec8f390f4a48e39dd7fb19827a19713f1715be30",
-    "admitted_paths": [
-      "docs/research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md",
-      "docs/research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md"
-    ],
-    "authority_sha256": "f40994e2db420bece23ae3a5d592e36bc001c13063949d87c592e555568d455b"
   }
 }
