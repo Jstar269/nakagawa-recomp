@@ -305,15 +305,34 @@ committed policy is then used as the next baseline for later refreshes.
 Every mutating provenance command computes and validates all generated output
 bytes first, stages each file next to its target, promotes the whole group only
 after every stage succeeds, and rolls already-promoted files back to their
-original bytes if any promotion fails. The affected worktree therefore ends in
-the complete old state or the complete new state -- never a hybrid of a new
-policy with an old ledger. The generated control set is:
+original bytes if any promotion fails. On a *detected* promotion failure the
+affected worktree therefore ends in the complete old state, never a hybrid of a
+new policy with an old ledger. This is staged replacement with rollback, not
+crash or power-loss durability: if the rollback itself fails, or the process
+dies between promotions, a hybrid can survive on disk. That residual is
+fail-closed downstream rather than trusted -- the external attestation
+re-validates the ledger/export/policy digest cross-checks, so partially written
+controls are rejected instead of being read as authority. The generated control
+set is:
 
 * `assets/public_provenance_ledger.json` and `PUBLIC_EXPORT.json` for a
   `refresh-reviewed`;
 * those two plus `assets/public_source_profile.json` for an
   `admit-new-reviewed` and for a `refresh-reviewed` crossing a blessed policy
 delta.
+
+A generated control is written to the literal path the publication policy
+names, or not at all. The candidate's own control files are exempt from the
+unrequested-change rule -- they are this operation's outputs -- so a candidate
+*can* commit whatever it likes at those names, including a symlink. Containment
+already refuses an output that leaves the candidate worktree; the write path
+additionally refuses a symlinked component anywhere below the candidate root
+and any target that is a symlink or not a regular file, so an in-worktree alias
+can never steer a mechanical write onto another candidate file
+(`REFRESH_OUTPUT_INVALID`, `ADMISSION_OUTPUT_INVALID`). Staging files are
+created inside the target's own directory, written through the descriptor that
+created them rather than reopened by name, and swept whether the write
+succeeds, fails, or is rolled back.
 
 Ledger ancestry stays a single current record, not a growing second history:
 an `admit-new-reviewed` overwrites any prior `admission` block with the newest
