@@ -106,6 +106,30 @@ The scaffold is not a claim that the complete profile-zero route is runnable yet
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 
+### Native title recognition projection
+
+`python tools/title_manifest.py --print-public-catalog` emits an immutable C99
+header from the explicitly included manifests in `assets/titles/`. The canonical
+validator owns the schema; there is no second native title registry to maintain.
+Excluded and unclassified files are not read, missing included files fail, and
+symbolic-link/junction input paths are rejected. Run generation on a quiescent
+checkout; these checks do not provide filesystem race isolation or provenance
+attestation. Capture subprocess stdout as bytes to preserve the generated LF text.
+
+The projection contains only title ID, display name, kind, canonical manifest
+SHA-256, and explicit primary/compatible disc IDs. It preserves UTF-8 strings
+through C compilation, rejects duplicate identities, and invents no disc IDs for
+synthetic or homebrew titles. Native lookups use exact identifiers. The digest
+also changes when non-projected manifest fields change; it identifies input
+content and does not authorize it.
+
+Recognition is not compatibility, preparation readiness, or permission to launch.
+The existing manifest-to-plan and runtime-configuration generators retain those
+separate responsibilities. Private overlays require their own explicit local
+binding and collision policy in a future host consumer. The current player
+prototype is not integrated by this projection. Source-owned tests generate,
+compile, and execute the header; no retail input is required.
+
 ## Directory Layout
 
 ```text
