@@ -302,6 +302,28 @@ def _read_policy_delta_authority(
     return {key: sorted(set(allowed[key])) for key in sorted(expected_keys)}
 
 
+def _control_path(root: Path, relative: str, *, code: str) -> Path:
+    """Return ``root/relative``, refusing any symlinked component below ``root``.
+
+    The generated control files live at fixed, policy-named paths inside the
+    candidate worktree.  A candidate that turns one of those names -- or a
+    directory on the way to one -- into a symlink would redirect a mechanical
+    write to a path the operator never named.  Containment already refuses a
+    redirect that *leaves* the worktree; this refuses the alias itself, so a
+    generated control always lands on the literal path the policy names and
+    can never be steered onto another candidate file.
+    """
+    current = root
+    for part in PurePosixPath(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise RefreshError(
+                code,
+                f"candidate control path {relative} is a symlink or lies below one",
+            )
+    return current
+
+
 def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> None:
     """Transactionally replace a group of generated control files.
 
@@ -320,13 +342,22 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
     digest cross-checks, so partially written controls are rejected instead of
     being read as authority.  No fsync durability is claimed.
 
-    The bytes written are *public metadata only* (provenance ledger, export
-    manifest, publication policy) containing hashes, paths, and policy
-    configuration -- no secrets or private keys.  CodeQL's taint analysis
-    conservatively flags the temporary-file write as a potential clear-text
-    secret store; this is a false positive for the public-metadata-only
-    callers of this helper.
-    # codeql[suppress: py/clear-text-storage-sensitive-data]
+    Every target must be absent or a regular file.  A symlink -- or any other
+    non-regular entry -- is refused rather than followed, so a generated
+    control file is never written through an alias to some other path.  The
+    staging file is created inside the target's own directory and written
+    through the descriptor ``tempfile`` opened for it, never reopened by name,
+    so no window exists in which the staged path could be swapped between
+    creation and write.
+
+    The bytes written are the generated public control artifacts: the
+    provenance ledger, the export manifest, and (for admission) the extended
+    publication policy.  Each is derived only from the external trusted inputs
+    and the candidate tree's own *public* blobs, and each is committed to the
+    public repository verbatim, so no private material can reach a staged
+    file.  ``tools/test_provenance_ledger.py`` asserts that payload provenance
+    and these alias/cleanup properties directly, rather than asserting them
+    here in prose.
     """
     if not writes:
         return
@@ -334,7 +365,11 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
     for target, content in writes:
         if not isinstance(content, bytes):
             raise RefreshError(code, "atomic output content must be bytes")
+        if target.is_symlink():
+            raise RefreshError(code, "atomic output target is a symlink")
         absolute = target.resolve()
+        if absolute.exists() and not absolute.is_file():
+            raise RefreshError(code, "atomic output target is not a regular file")
         if any(absolute == other for other, _ in resolved):
             raise RefreshError(code, "atomic output group repeats a target file")
         resolved.append((absolute, content))
@@ -347,11 +382,13 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
         for target, content in resolved:
             with tempfile.NamedTemporaryFile(
                 prefix=".provenance-stage-", suffix=".tmp", dir=str(target.parent),
-                mode="wb", delete=False
-            ) as tmp:
-                temporary = tmp.name
-                tmp.write(content)
-            staged.append((target, Path(temporary)))
+                mode="wb", delete=False,
+            ) as handle:
+                # Register the staged path *before* writing to it: a failed or
+                # partial write must still be swept by the ``finally`` below,
+                # never left beside the control file it was staging for.
+                staged.append((target, Path(handle.name)))
+                handle.write(content)
         promoted: list[Path] = []
         try:
             for target, temporary_path in staged:
@@ -366,13 +403,18 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
                     if original is None:
                         target.unlink(missing_ok=True)
                     else:
-                        with tempfile.NamedTemporaryFile(
-                            prefix=".provenance-rollback-", suffix=".tmp", dir=str(target.parent),
-                            mode="wb", delete=False
-                        ) as tmp:
-                            rollback = tmp.name
-                            tmp.write(original)
-                        os.replace(rollback, target)
+                        rollback_path: Path | None = None
+                        try:
+                            with tempfile.NamedTemporaryFile(
+                                prefix=".provenance-rollback-", suffix=".tmp",
+                                dir=str(target.parent), mode="wb", delete=False,
+                            ) as handle:
+                                rollback_path = Path(handle.name)
+                                handle.write(original)
+                            os.replace(rollback_path, target)
+                        finally:
+                            if rollback_path is not None:
+                                rollback_path.unlink(missing_ok=True)
                 except OSError as restore_error:
                     restore_errors.append(str(restore_error))
             detail = f"{error}"
@@ -1449,8 +1491,12 @@ def refresh_reviewed(
         if any(path == trusted_input.resolve() for trusted_input in trusted_inputs):
             raise RefreshError("REFRESH_OUTPUT_INVALID", "output would overwrite a trusted input")
     if candidate.worktree_root is not None:
-        standard_output = (candidate.worktree_root / "assets" / "public_provenance_ledger.json").resolve()
-        standard_export = (candidate.worktree_root / "PUBLIC_EXPORT.json").resolve()
+        standard_output = _control_path(
+            candidate.worktree_root, "assets/public_provenance_ledger.json",
+            code="REFRESH_OUTPUT_INVALID").resolve()
+        standard_export = _control_path(
+            candidate.worktree_root, "PUBLIC_EXPORT.json",
+            code="REFRESH_OUTPUT_INVALID").resolve()
         if output != standard_output or export_output != standard_export:
             raise RefreshError("REFRESH_OUTPUT_INVALID", "worktree outputs must be the canonical public ledger and export")
     else:
@@ -2004,7 +2050,8 @@ def admit_new_reviewed(
     }
     targets: list[tuple[Path, bytes]] = []
     for relative, bytes_value in written.items():
-        target = (candidate_root / relative).resolve()
+        target = _control_path(
+            candidate_root, relative, code="ADMISSION_OUTPUT_INVALID").resolve()
         if not _path_is_within(target, candidate_root, resolve=True):
             raise RefreshError("ADMISSION_OUTPUT_INVALID", "output escapes the candidate worktree")
         if any(target == trusted_input.resolve() for trusted_input in trusted_inputs):

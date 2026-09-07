@@ -2695,6 +2695,8 @@ class TransactionalOutputTests(unittest.TestCase):
         self.assertEqual(status, "", f"worktree must be clean after rollback: {status}")
         stray = [
             path.name for path in fixture.repo.rglob(".provenance-stage-*")]
+        stray += [
+            path.name for path in fixture.repo.rglob(".provenance-rollback-*")]
         self.assertEqual(stray, [], "staged temporaries must be cleaned up")
 
     def test_refresh_promotion_failure_rolls_back_every_file(self) -> None:
@@ -2860,6 +2862,220 @@ class TransactionalOutputTests(unittest.TestCase):
             (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
         self.assertEqual(refreshed["admission"]["admitted_paths"], [second],
                          "admission metadata must describe the newest admission only")
+
+
+class GeneratedControlWriteTests(unittest.TestCase):
+    """Where and how the mechanical control writes are allowed to land.
+
+    CodeQL alert #27 on PR #157 (``py/clear-text-storage-sensitive-data``,
+    CWE-312/315/359) pointed at the staged write inside
+    ``_write_controls_atomic``.  Its five reported sources were all the
+    ``trusted_document`` read from the external trusted ledger, which CodeQL
+    classifies as a secret purely because the identifier matches its
+    ``maybeSecret`` name heuristic (``.*trusted.*``) -- not because any secret
+    is present.  These tests replace that assertion with evidence, on both
+    halves of the concern the rule names:
+
+    * *payload* -- what the generated controls may contain.  Only public
+      derivations reach them; no private authority field does.
+    * *destination* -- where a generated control may be written.  The write
+      lands on the literal policy-named path or is refused; it is never
+      followed through an alias onto some other file.
+    """
+
+    def _require_symlinks(self, directory: Path) -> None:
+        """Skip on hosts that cannot create symlinks (unprivileged Windows)."""
+        probe = directory / ".symlink-probe"
+        try:
+            probe.symlink_to("probe-target")
+        except (OSError, NotImplementedError) as error:  # pragma: no cover - host dependent
+            self.skipTest(f"host cannot create symlinks: {error}")
+        finally:
+            if probe.is_symlink() or probe.exists():
+                probe.unlink()
+
+    # -- destination ------------------------------------------------------
+    def test_symlinked_control_target_is_refused(self) -> None:
+        """A symlink is refused, not followed onto whatever it names."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._require_symlinks(root)
+            victim = root / "victim.txt"
+            victim.write_bytes(b"original victim bytes\n")
+            alias = root / "control.json"
+            alias.symlink_to(victim.name)
+
+            with self.assertRaises(provenance_ledger.RefreshError) as ctx:
+                provenance_ledger._write_controls_atomic(
+                    [(alias, b'{"generated": true}\n')], code="REFRESH_OUTPUT_ERROR")
+            self.assertEqual(ctx.exception.code, "REFRESH_OUTPUT_ERROR")
+            self.assertIn("symlink", str(ctx.exception))
+            self.assertEqual(victim.read_bytes(), b"original victim bytes\n")
+
+    def test_non_regular_control_target_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "control.json"
+            target.mkdir()
+            with self.assertRaises(provenance_ledger.RefreshError) as ctx:
+                provenance_ledger._write_controls_atomic(
+                    [(target, b"{}\n")], code="REFRESH_OUTPUT_ERROR")
+            self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_control_path_refuses_an_aliased_component(self) -> None:
+        """Neither the control file nor a directory above it may be an alias."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._require_symlinks(root)
+            (root / "real").mkdir()
+            (root / "assets").symlink_to(root / "real", target_is_directory=True)
+            with self.assertRaises(provenance_ledger.RefreshError) as ctx:
+                provenance_ledger._control_path(
+                    root, "assets/public_provenance_ledger.json",
+                    code="REFRESH_OUTPUT_INVALID")
+            self.assertEqual(ctx.exception.code, "REFRESH_OUTPUT_INVALID")
+
+            (root / "PUBLIC_EXPORT.json").symlink_to(root / "real" / "elsewhere.json")
+            with self.assertRaises(provenance_ledger.RefreshError):
+                provenance_ledger._control_path(
+                    root, "PUBLIC_EXPORT.json", code="REFRESH_OUTPUT_INVALID")
+
+            # The ordinary, un-aliased path still resolves normally.
+            self.assertEqual(
+                provenance_ledger._control_path(
+                    root, "real/elsewhere.json", code="REFRESH_OUTPUT_INVALID"),
+                root / "real" / "elsewhere.json",
+            )
+
+    def test_aliased_candidate_control_cannot_redirect_a_refresh(self) -> None:
+        """End to end: a candidate that aliases a control file is refused.
+
+        The generated controls are exempt from the unrequested-change rule, so
+        a candidate *can* commit whatever it likes at those two paths.  Turning
+        one into a symlink must not turn the mechanical write into a write on
+        the file it names.
+        """
+        fixture = _RefreshFixture(self)
+        self._require_symlinks(fixture.repo)
+        victim = fixture.repo / "docs" / "guide.md"
+        victim_bytes = victim.read_bytes()
+        export = fixture.repo / "PUBLIC_EXPORT.json"
+        export.unlink()
+        try:
+            export.symlink_to(Path("docs") / "guide.md")
+        except (OSError, NotImplementedError) as error:  # pragma: no cover - host dependent
+            self.skipTest(f"host cannot create symlinks: {error}")
+        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "candidate aliases its export"],
+                       cwd=fixture.repo, check=True, capture_output=True)
+        mode = subprocess.run(
+            ["git", "ls-files", "-s", "PUBLIC_EXPORT.json"], cwd=fixture.repo,
+            check=True, capture_output=True, text=True).stdout.split(" ", 1)[0]
+        if mode != "120000":  # pragma: no cover - host dependent
+            self.skipTest("Git did not record a symlink on this host")
+
+        with self.assertRaises(provenance_ledger.RefreshError) as ctx:
+            provenance_ledger.refresh_reviewed(
+                trusted_ledger=fixture.trusted_ledger,
+                candidate_tree=str(fixture.repo),
+                trusted_tree=fixture.baseline,
+                paths=["docs/guide.md"],
+                trusted_policy=fixture.trusted_policy,
+                trusted_manifest=fixture.trusted_manifest,
+            )
+        self.assertEqual(ctx.exception.code, "REFRESH_OUTPUT_INVALID")
+        self.assertEqual(victim.read_bytes(), victim_bytes,
+                         "the aliased-to file must not receive the generated export")
+
+    # -- staging residue ---------------------------------------------------
+    def test_failed_staging_write_leaves_no_partial_temporary(self) -> None:
+        """A staging write that fails must not leave bytes beside the target.
+
+        The staged path is registered before the write precisely so the sweep
+        covers a write that never completed; without that, a partial control
+        file is left in the worktree next to the real one.
+        """
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("docs/guide.md", "# Guide\n\nRevised.\n", "doc edit")
+        real_named = provenance_ledger.tempfile.NamedTemporaryFile
+
+        def failing_named(*args, **kwargs):
+            handle = real_named(*args, **kwargs)
+
+            def refuse(_data: bytes) -> int:
+                raise OSError("injected staging write failure")
+
+            handle.write = refuse
+            return handle
+
+        with mock.patch.object(provenance_ledger.tempfile, "NamedTemporaryFile",
+                               side_effect=failing_named):
+            with self.assertRaises(OSError):
+                provenance_ledger.refresh_reviewed(
+                    trusted_ledger=fixture.trusted_ledger,
+                    candidate_tree=str(fixture.repo),
+                    trusted_tree=fixture.baseline,
+                    paths=["docs/guide.md"],
+                    trusted_policy=fixture.trusted_policy,
+                    trusted_manifest=fixture.trusted_manifest,
+                )
+        stray = sorted(path.name for path in fixture.repo.rglob(".provenance-*"))
+        self.assertEqual(stray, [], "a failed staging write must leave no temporary behind")
+
+    # -- payload -----------------------------------------------------------
+    def test_no_private_authority_field_reaches_a_generated_control(self) -> None:
+        """Only the record id and evidence tier cross the private boundary.
+
+        The refresh reads a private detailed authority.  Everything that
+        document carries beyond the machine-comparable trust anchor -- owner
+        lanes, behaviour sources, upstream paths, review notes -- is private
+        operational material and must not appear in the ledger or the export
+        the command writes.
+        """
+        fixture = _RefreshFixture(self)
+        markers = {
+            "owner_lane": "PRIVATE-LANE-MARKER",
+            "upstream_paths": ["PRIVATE-UPSTREAM-MARKER"],
+            "behavior_sources": ["PRIVATE-BEHAVIOR-MARKER"],
+            "uncertainty": ["PRIVATE-UNCERTAINTY-MARKER"],
+            "reviewer_note": "PRIVATE-NOTE-MARKER",
+        }
+        detailed = fixture.tmp / "private-detailed.json"
+        detailed.write_text(json.dumps({"records": [
+            {"id": "PROV-HELPER", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["tools/helper.py"], **markers},
+            {"id": "PROV-EXISTING", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": ["src/rt/existing.c"], **markers},
+            {"id": "PROV-ROUTE", "classification": "project-authored-independent",
+             "evidence_tier": "S", "paths": [fixture.route], **markers},
+        ]}, indent=2) + "\n", encoding="utf-8")
+
+        fixture.commit_change("tools/helper.py", fixture.helper + "# revised\n", "helper edit")
+        result = fixture.refresh("tools/helper.py", trusted_ledger=detailed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        written = "".join(
+            (fixture.repo / relative).read_text(encoding="utf-8")
+            for relative in ("assets/public_provenance_ledger.json", "PUBLIC_EXPORT.json")
+        )
+        for marker in ("PRIVATE-LANE-MARKER", "PRIVATE-UPSTREAM-MARKER",
+                       "PRIVATE-BEHAVIOR-MARKER", "PRIVATE-UNCERTAINTY-MARKER",
+                       "PRIVATE-NOTE-MARKER"):
+            self.assertNotIn(marker, written, f"{marker} leaked into a generated control")
+        # The private authority's own location is not public data either.
+        self.assertNotIn(str(detailed), written)
+        self.assertNotIn(detailed.name, written)
+
+        ledger = json.loads(
+            (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        entry = next(item for item in ledger["entries"] if item["path"] == "tools/helper.py")
+        self.assertEqual(entry["classification"], "project_authored_attested")
+        self.assertEqual(
+            sorted(entry["evidence"]),
+            ["authorship", "evidence_tier", "record_id", "source", "upstream_attribution"],
+        )
+        self.assertEqual(entry["evidence"]["record_id"], "PROV-HELPER")
+        self.assertEqual(entry["evidence"]["evidence_tier"], "S",
+                         "the public tier must be the private record's tier, verbatim")
 
 
 if __name__ == "__main__":
