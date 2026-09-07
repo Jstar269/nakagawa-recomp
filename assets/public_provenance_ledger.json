@@ -841,7 +841,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe64ed92f2fa18352f6a53ff748754ede5ecdaefe53927e5bc6f8df7ea6de82a"
+      "sha256": "372b3fc5b4242ebf5edac2cae6a4045360b86f20e6314c97d68816c06e979a91"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -5952,11 +5952,11 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "provenance-refresh-workflow-20260827",
-        "evidence_tier": "H",
+        "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b9129de4db78d039a2661f543bfce3d0364fdd30565476b77735dad2e9adc968"
+      "sha256": "7996b6911f46fc3c34224e2580e783ebc4953cd85cada4f0f4537802bc33ebc0"
     },
     {
       "path": "tools/prxload.py",
@@ -6977,11 +6977,11 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "provenance-tooling",
-        "evidence_tier": "H",
+        "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f87926c1320e71213297f6a23de947b77c6af0f55c84d40fcf75983b6de6414a"
+      "sha256": "a3560badd61832a2a7c4bdadce9dc01d9e7591704cbe1bb8d176a379658fc9ee"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7618,7 +7618,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "971c9dca9cb1faf0fbe9b5c81fca05fe91d41348",
-    "candidate_tree": "5ee0eb4ec2e8f441a362155f6af792967281e610",
+    "candidate_tree": "9d9217043c1bd1fc34050f9f48b78cfa3ea9e16c",
     "refreshed_paths": [
       "docs/PUBLICATION_READINESS.md",
       "tools/provenance_ledger.py",
