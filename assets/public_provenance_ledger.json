@@ -5664,7 +5664,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4d3488273c04356a353e216e192ede2afb439a189ae838fe34d1f49960d3b71"
+      "sha256": "edb6219762bd07f5e2697b7f3f332dc3817e7a235a5944b7c042d686fcb38979"
     },
     {
       "path": "tools/hst_run_support.ps1",
@@ -6726,7 +6726,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "20524ed63ab5bc885d4f4d14c9cc50f60cce865744757b32c388fb1faf73e6d4"
+      "sha256": "29a1a8fe85e4f3495e1f97430cd4f39dc4856869cb6c6413be0ca39067a13833"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7635,11 +7635,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "b239c0085bfad1021424d7d2164e0e060cd1df99",
-    "candidate_tree": "b18b26ec8ec2a11adf70d9db6e12f11b202eb1c8",
+    "trusted_tree": "9e5edf8dbdfec50c0f5d9e40c6694b29079c1ee6",
+    "candidate_tree": "bb252dad793bd58c0275adca4e745bf41cfb4d04",
     "refreshed_paths": [
-      "src/rt/savedata.c",
-      "tools/test_savedata_spans.py"
+      "tools/hst_doctor_core.py",
+      "tools/test_hst_doctor_hardening.py"
     ]
   }
 }
