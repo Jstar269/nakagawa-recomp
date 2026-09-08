@@ -4839,7 +4839,7 @@
         "license": "see NOTICE.md",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3041e7c9d5bfdeacbc3b758331c227a9a9592db468e1d6e9c19d7c3ad0d74035"
+      "sha256": "cce3d968f3a68faeed3c859b1503a0030d0ea05b3c3cf0f373d9286195a182e7"
     },
     {
       "path": "src/rt/sched.c",
@@ -7161,7 +7161,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ddd84ab2aadda2a54ace6de03ba0f7cf19ba5db11dc3813268a4d6a940ab0ae4"
+      "sha256": "e6158b3e15643df43c2919ea0ab2d6cc5a014acb5baf7f6578cdb97b4aabae65"
     },
     {
       "path": "tools/test_sbom.py",
@@ -7635,12 +7635,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "f7d79cb3623451122da7f9863f6fa896cd3bdcdc",
-    "candidate_tree": "fa99584c5714ddd96d85cfad24cd77b3ac0705b1",
+    "trusted_tree": "b239c0085bfad1021424d7d2164e0e060cd1df99",
+    "candidate_tree": "b18b26ec8ec2a11adf70d9db6e12f11b202eb1c8",
     "refreshed_paths": [
-      "docs/ARCHITECTURE.md",
-      "tools/test_title_manifest.py",
-      "tools/title_manifest.py"
+      "src/rt/savedata.c",
+      "tools/test_savedata_spans.py"
     ]
   }
 }
