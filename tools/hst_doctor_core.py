@@ -15,6 +15,7 @@ from typing import Iterable, Sequence
 
 EXPECTED_DISC_ID = "UCUS98701"
 EXPECTED_ELF_MACHINE = 8  # EM_MIPS
+PT_LOAD = 1
 EXPECTED_VFPU_FILES = {
     "vfpu_asin_lut65536.dat": 1536,
     "vfpu_asin_lut_deltas.dat": 517448,
@@ -251,9 +252,11 @@ def _parse_elf(path: Path) -> tuple[dict[str, int] | None, str | None]:
                     )
                     if p_offset + p_filesz < p_offset or p_offset + p_filesz > size:
                         return None, f"program segment {index} extends beyond the file"
-                    if p_memsz < p_filesz:
+                    # For loadable segments, memory image must accommodate file image (p_filesz <= p_memsz).
+                    # Non-loadable segments (e.g. processor-specific metadata) are not memory mapped.
+                    if p_type == PT_LOAD and p_memsz < p_filesz:
                         return None, f"program segment {index} has p_memsz < p_filesz"
-                    if p_type == 1:
+                    if p_type == PT_LOAD:
                         loads += 1
         except OSError as exc:
             return None, f"cannot read program headers: {exc}"

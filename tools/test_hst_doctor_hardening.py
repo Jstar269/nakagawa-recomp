@@ -32,6 +32,47 @@ def write_pe(path: Path, *, pe_offset: int = 0x80) -> None:
     path.write_bytes(data)
 
 
+def write_synthetic_elf(
+    path: Path,
+    segments: list[tuple[int, int, int]],
+    *,
+    machine: int = 8,
+    file_padding: int = 0,
+) -> None:
+    phoff = 52
+    phentsize = 32
+    data_offset = phoff + phentsize * len(segments)
+    header = bytearray(52)
+    header[:4] = b"\x7fELF"
+    header[4] = 1  # ELF32
+    header[5] = 1  # little-endian
+    header[6] = 1  # version 1
+    struct.pack_into("<HHI", header, 16, 2, machine, 1)
+    struct.pack_into("<III", header, 24, 0, phoff, 0)
+    struct.pack_into("<I", header, 36, 0)
+    struct.pack_into("<HHHHHH", header, 40, 52, phentsize, len(segments), 40, 0, 0)
+    phdrs = bytearray()
+    curr_offset = data_offset
+    for index, (p_type, filesz, memsz) in enumerate(segments):
+        phdrs.extend(
+            struct.pack(
+                "<8I",
+                p_type,
+                curr_offset,
+                index * 0x1000,
+                index * 0x1000,
+                filesz,
+                memsz,
+                5,
+                0x10,
+            )
+        )
+        curr_offset += filesz
+    payload = b"\0" * (curr_offset - data_offset + file_padding)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(header) + bytes(phdrs) + payload)
+
+
 class FormatHardeningTests(unittest.TestCase):
     def test_rejects_pe_header_offset_outside_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -58,6 +99,40 @@ class FormatHardeningTests(unittest.TestCase):
             metadata, error = hst_doctor._validate_iso(path)
             self.assertIsNone(metadata)
             self.assertIn("expected primary", error or "")
+
+    def test_accepts_non_load_segment_with_filesz_greater_than_memsz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "non_load.elf"
+            # Segment 0: PT_LOAD (type 1) with filesz <= memsz
+            # Segment 1: processor-specific non-PT_LOAD (type 0x700000a1) with filesz > memsz
+            write_synthetic_elf(
+                path,
+                [(1, 16, 16), (0x700000A1, 32, 0)],
+            )
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(error)
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["load_segments"], 1)
+
+    def test_rejects_pt_load_segment_with_filesz_greater_than_memsz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_load.elf"
+            # Segment 0: PT_LOAD (type 1) with filesz > memsz
+            write_synthetic_elf(path, [(1, 32, 16)])
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(metadata)
+            self.assertIn("has p_memsz < p_filesz", error or "")
+
+    def test_rejects_segment_extending_beyond_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "overflow.elf"
+            write_synthetic_elf(path, [(1, 64, 64)])
+            data = path.read_bytes()
+            path.write_bytes(data[:-10])
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(metadata)
+            self.assertIn("extends beyond the file", error or "")
 
 
 class InputPairHardeningTests(unittest.TestCase):
