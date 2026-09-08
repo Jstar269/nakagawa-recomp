@@ -277,6 +277,21 @@ def _read_git_lfs_attributes(repo_root: Path = ROOT) -> set[str]:
     return patterns
 
 
+def _is_contained_in_root(path: Path | str, root: Path | str) -> bool:
+    """Verify that path physically resolves strictly inside root.
+
+    Uses os.path.realpath to resolve all symlinks, NTFS junctions, 8.3 short-name
+    aliases, and reparse points, then asserts canonical prefix containment.
+    """
+    try:
+        resolved_path = os.path.realpath(path)
+        resolved_root = os.path.realpath(root)
+        common = os.path.commonpath([resolved_path, resolved_root])
+        return os.path.normcase(common) == os.path.normcase(resolved_root)
+    except (ValueError, OSError):
+        return False
+
+
 def _filesystem_link_on_path(path: Path, root: Path | None = None) -> Path | None:
     """Return the first symlink or host directory-link on *path*, if any.
 
@@ -303,6 +318,8 @@ def _filesystem_link_on_path(path: Path, root: Path | None = None) -> Path | Non
     isjunction = getattr(os.path, "isjunction", None)
     for candidate in candidates:
         if candidate.is_symlink() or (isjunction is not None and isjunction(candidate)):
+            return candidate
+        if root is not None and not _is_contained_in_root(candidate, root):
             return candidate
     return None
 
@@ -498,8 +515,8 @@ def read_indexed_blob(
     """Read exact byte content of a Git index entry via git cat-file -p <sha>."""
     disk_path = repo_root / entry.path
 
-    if entry.kind == "symlink":
-        link_path = _filesystem_link_on_path(disk_path, repo_root)
+    link_path = _filesystem_link_on_path(disk_path, repo_root)
+    if entry.kind == "symlink" or entry.working_mode == "120000" or link_path is not None:
         if link_path is not None:
             try:
                 target = link_path.readlink()
@@ -518,6 +535,7 @@ def read_indexed_blob(
                     return res.stdout, None
             except Exception:
                 pass
+        return None, "entry is a filesystem link or descendant of a link"
 
     if entry.kind == "gitlink":
         return entry.sha.encode("utf-8"), None
@@ -556,8 +574,8 @@ def read_indexed_blobs_batch(
 
     for entry in entries:
         disk_path = repo_root / entry.path
-        if entry.kind == "symlink":
-            link_path = _filesystem_link_on_path(disk_path, repo_root)
+        link_path = _filesystem_link_on_path(disk_path, repo_root)
+        if entry.kind == "symlink" or entry.working_mode == "120000" or link_path is not None:
             if link_path is not None:
                 try:
                     target = link_path.readlink()
@@ -566,6 +584,9 @@ def read_indexed_blobs_batch(
                 except OSError as exc:
                     result[entry.path] = (None, f"failed to read symlink target: {exc}")
                     continue
+            elif entry.sha:
+                shas_to_query.append((entry.path, entry.sha))
+            continue
         elif entry.kind == "gitlink":
             result[entry.path] = (entry.sha.encode("utf-8"), None)
             continue

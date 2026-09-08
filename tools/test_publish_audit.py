@@ -509,6 +509,58 @@ class TestPublishAudit(unittest.TestCase):
             self.assertIsNotNone(content)
             self.assertNotEqual(content, b"outside", "audit read out-of-root bytes through a junction")
 
+            index_blob, _ = publish_audit.read_indexed_blob(smuggled, repo_root=repo)
+            self.assertNotEqual(index_blob, b"outside", "index mode read out-of-root bytes through a junction")
+            batch_blobs = publish_audit.read_indexed_blobs_batch([smuggled], repo_root=repo)
+            self.assertNotEqual(batch_blobs["linked/sentinel.txt"][0], b"outside", "batch index read out-of-root bytes")
+
+    @unittest.skipUnless(
+        os.name == "nt" and hasattr(os.path, "isjunction"),
+        "NTFS junction regression requires Windows junction support",
+    )
+    def test_8_3_alias_junction_is_flagged_and_refused(self):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            temp_root = Path(tmp_dir_raw).resolve()
+            repo = temp_root / "repo"
+            outside = temp_root / "outside"
+            repo.mkdir()
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret", encoding="utf-8")
+
+            junction = repo / "long_junction_dir"
+            if not self._make_junction(junction, outside):
+                self.skipTest("cannot create NTFS junction")
+
+            short_alias = repo / "LONG_J~1"
+            self.assertIsNotNone(publish_audit._filesystem_link_on_path(junction / "secret.txt", repo))
+            self.assertFalse(publish_audit._is_contained_in_root(junction / "secret.txt", repo))
+            self.assertFalse(publish_audit._is_contained_in_root(short_alias / "secret.txt", repo))
+
+    @unittest.skipUnless(
+        os.name == "nt" and hasattr(os.path, "isjunction"),
+        "NTFS junction regression requires Windows junction support",
+    )
+    def test_ancestor_junction_containment(self):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            temp_root = Path(tmp_dir_raw).resolve()
+            real_repo = temp_root / "real_repo"
+            real_repo.mkdir()
+            (real_repo / "inside.txt").write_text("inside", encoding="utf-8")
+            outside = temp_root / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_text("outside", encoding="utf-8")
+
+            ancestor_junc = temp_root / "ancestor_junc"
+            if not self._make_junction(ancestor_junc, real_repo):
+                self.skipTest("cannot create NTFS junction")
+
+            out_junc = real_repo / "out_junc"
+            if not self._make_junction(out_junc, outside):
+                self.skipTest("cannot create NTFS junction")
+
+            self.assertTrue(publish_audit._is_contained_in_root(ancestor_junc / "inside.txt", ancestor_junc))
+            self.assertFalse(publish_audit._is_contained_in_root(ancestor_junc / "out_junc" / "secret.txt", ancestor_junc))
+
     def test_link_boundary_rejects_lexical_escape(self):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             root = Path(tmp_dir_raw).resolve()
