@@ -24,6 +24,7 @@ from typing import Sequence
 
 from hst_doctor_core import Report, _parse_elf, _validate_iso, _validate_pe_x64
 from hst_doctor_checks import (
+    check_agent_identity,
     check_build_products,
     check_build_profile,
     check_platform,
@@ -122,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.scope in {"repo", "all"}:
         check_repository_contract(report)
+        check_agent_identity(report)
     if args.scope in {"build", "run", "all"}:
         check_platform(report)
     if args.scope in {"build", "all"}:

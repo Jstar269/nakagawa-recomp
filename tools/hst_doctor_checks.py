@@ -698,6 +698,57 @@ def check_build_products(report: Report) -> None:
         report.fail("BUILD_IMAGE", "Missing or empty build/hst/hst_image.bin", path=image, remediation="Run the full code-generation pipeline.")
 
 
+def _git_config(root: Path, scope: str, key: str) -> str | None:
+    """Read one git config value, or None when git is unavailable or unset."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", scope, "--get", key],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = proc.stdout.strip()
+    return value or None
+
+
+def check_agent_identity(report: Report) -> None:
+    """Repository-local commit identity must be the human maintainer's.
+
+    Automated sessions have written a repository-local ``[user]`` block here,
+    which silently re-authors every later commit in this checkout and in every
+    worktree sharing it. AGENTS.md already forbids inventing a contributor
+    identity; this check makes the leftover visible instead of trusting that
+    each tool honoured the contract. Nothing is rewritten automatically: the
+    fix is ``git config --remove-section user`` so the global identity applies.
+    """
+    root = report.root
+    local_name = _git_config(root, "--local", "user.name")
+    local_email = _git_config(root, "--local", "user.email")
+    if local_name is None and local_email is None:
+        report.pass_(
+            "GIT_IDENTITY",
+            "No repository-local commit identity override; the global identity applies",
+        )
+        return
+
+    shown = f"{local_name or '(unset)'} <{local_email or '(unset)'}>"
+    global_name = _git_config(root, "--global", "user.name")
+    global_email = _git_config(root, "--global", "user.email")
+    if (local_name, local_email) == (global_name, global_email):
+        report.info(
+            "GIT_IDENTITY",
+            f"Repository-local commit identity matches the global identity: {shown}",
+        )
+        return
+
+    report.warn(
+        "GIT_IDENTITY",
+        "Repository-local commit identity overrides the global one and will author "
+        f"every commit in this checkout and its worktrees as {shown}. If an automated "
+        "session set this, clear it with 'git config --remove-section user'.",
+    )
+
+
 def check_repository_contract(report: Report) -> None:
     root = report.root
     required = (

@@ -289,6 +289,21 @@ def find_repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def build_artifact_dir():
+    """Directory the attached runtime writes its diagnostic artifacts into.
+
+    Mirrors the Makefile's BUILD_DIR (build/$(GAME_NAME)), which the runtime
+    receives as -DSR_BUILD_DIR. Honour an explicit SR_BUILD_DIR first, then
+    GAME_NAME, and only then fall back to the historical build/hst so an
+    existing HST workflow keeps working unchanged.
+    """
+    explicit = os.environ.get("SR_BUILD_DIR")
+    if explicit:
+        return explicit if os.path.isabs(explicit) else os.path.join(find_repo_root(), explicit)
+    game = os.environ.get("GAME_NAME") or "hst"
+    return os.path.join(find_repo_root(), "build", game)
+
+
 def get_symbol_rvas(exe_path):
     """Resolve g_mem/s_cpu RVAs from the attached executable via nm.
 
@@ -588,8 +603,8 @@ class MemoryDebugger:
             kernel32.CloseHandle(h_process)
 
         status = "running"
-        status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
-        exit_file = os.path.join(find_repo_root(), "build", "hst", "exited.flag")
+        status_file = os.path.join(build_artifact_dir(), "paused.flag")
+        exit_file = os.path.join(build_artifact_dir(), "exited.flag")
         if os.path.exists(exit_file):
             status = "exited"
         elif os.path.exists(status_file):
@@ -625,7 +640,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtSuspendProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(), "paused.flag")
             with open(status_file, "w") as f:
                 f.write("1")
             return {"success": True, "status": "paused", "mode": "process"}
@@ -647,7 +662,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtResumeProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(), "paused.flag")
             if os.path.exists(status_file):
                 os.remove(status_file)
             return {"success": True, "status": "running", "mode": "process"}
@@ -907,7 +922,7 @@ class MemoryDebugger:
                 "error": "failed to write register at host 0x%016x" % target_addr}
 
     def trace_exit(self):
-        dump_path = os.path.join(find_repo_root(), "build", "hst", "crash_dump.bin")
+        dump_path = os.path.join(build_artifact_dir(), "crash_dump.bin")
         if not os.path.exists(dump_path):
             return {"error": "crash_dump.bin not found. Did the game exit?"}
 
