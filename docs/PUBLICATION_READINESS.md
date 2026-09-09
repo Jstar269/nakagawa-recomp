@@ -287,8 +287,11 @@ never judged by the old one. The semantic delta is classified element-by-element
 into `include_added`, `include_removed`, `exclude_added`, `exclude_removed`,
 and `rule_changes`, and the computed delta must equal the authority's
 `allowed_delta` exactly -- an extra include removal, an include addition, an
-exclusion change, or any rule/control change (which V1 refuses on its face,
-`POLICY_DELTA_AUTHORITY_INVALID`) fails closed. The policy's own ledger entry is
+exclusion change, or any rule/control change fails closed. V1 additionally
+refuses exclusion-list and rule/control changes on their face
+(`POLICY_DELTA_AUTHORITY_INVALID`): only exact include-list deltas are
+authorizable, because adding an exclusion can hide a tracked path from public
+audit while removing one can expose private/prohibited material. The policy's own ledger entry is
 then updated to the blessed bytes and `PUBLIC_EXPORT.json` is regenerated under
 the blessed policy; both are mechanical outputs of the trusted inputs, and the
 candidate's own policy ledger entry is never read. A blessed file that equals
@@ -296,24 +299,35 @@ the baseline (`POLICY_DELTA_EMPTY`), an authority whose digests do not match
 the actual files, unpaired flags, candidate-controlled inputs, or a candidate
 whose policy differs from the blessed bytes all fail closed.
 
-The policy file itself is one of the generated outputs of this operation, and
-both it and the ledger/export are written as one transaction (see below); the
-committed policy is then used as the next baseline for later refreshes.
+The policy file is an input to this operation, not a second output: the
+candidate tree must already carry the blessed bytes (bound by digest), and
+only the ledger entry plus `PUBLIC_EXPORT.json` are regenerated from them.
+The committed policy is then used as the next baseline for later refreshes.
+(Admission, by contrast, mechanically writes a regenerated policy gaining
+exactly the admitted include entries.)
 
 ## Transactional control outputs
 
 Every mutating provenance command computes and validates all generated output
-bytes first, stages each file next to its target, promotes the whole group only
-after every stage succeeds, and rolls already-promoted files back to their
-original bytes if any promotion fails. The affected worktree therefore ends in
-the complete old state or the complete new state -- never a hybrid of a new
-policy with an old ledger. The generated control set is:
+bytes first, stages each file next to its target, promotes the staged files
+one by one, and attempts to roll already-promoted files back to their
+original bytes if a promotion failure is detected. This is staged multi-file
+replacement with rollback on detected failure -- not crash or power-loss
+durability, and not a guarantee of complete-old-or-complete-new under every
+OS/storage failure: if the rollback itself fails, or on a crash between
+promotions, the worktree can hold a hybrid. That residual is fail-closed
+rather than trusted, because the external attestation re-validates the
+ledger/export/policy digest cross-checks instead of reading partially
+written controls as authority. The affected worktree therefore ends in the
+complete old state for every process-detected write failure. The generated
+control set is:
 
 * `assets/public_provenance_ledger.json` and `PUBLIC_EXPORT.json` for a
-  `refresh-reviewed`;
-* those two plus `assets/public_source_profile.json` for an
-  `admit-new-reviewed` and for a `refresh-reviewed` crossing a blessed policy
-delta.
+  `refresh-reviewed` (a refresh crossing a blessed policy delta validates the
+  candidate policy file against the blessed bytes but does not rewrite it --
+  it already carries them);
+* those two plus a regenerated `assets/public_source_profile.json` for an
+  `admit-new-reviewed` only.
 
 Ledger ancestry stays a single current record, not a growing second history:
 an `admit-new-reviewed` overwrites any prior `admission` block with the newest
@@ -386,11 +400,19 @@ inputs -- never accepted from the candidate -- and the ledger records the
 `admission` block (workflow, trusted/candidate trees, admitted paths, and a
 SHA-256 of the authority document) as audit ancestry.
 
-Authority classes are not one size. Deterministic public material --
-documentation, configuration, public factual metadata, and non-executable
-synthetic data fixtures -- is admitted from the independent
-exact-path/exact-bytes review alone, and the deterministic classifier derives
-the class; the entry carries no record id. Executable tests/tools, source and
+Authority classes are not one size. Deterministic public material is admitted
+from the independent exact-path/exact-bytes review alone **only through a
+positively-inert allowlist** (documentation under `docs/`/`interface/`/
+`assets/` by `.md`/`.txt` type, synthetic data fixtures under `fixtures/` by
+data type, title manifests under `assets/titles/` by schema JSON, a fixed set
+of inert root config names, non-workflow `.github/` data files, and
+`font/README.md`): the entry carries no record id, and the proven class must
+equal the claimed one. Anything not positively inert -- unknown families,
+ambiguous config, and every build/package/installer surface (`package.json`,
+`pyproject.toml`, task/just files, Dockerfiles, devcontainer and requirements
+files, TS configs and friends) -- falls closed to implementation-grade
+authority even when the broad deterministic classifier would label it
+configuration. Executable tests/tools, source and
 script files, CI workflows/actions, build/packaging fragments, and pre-commit
 hook/config surfaces can never use a deterministic class even when their path
 resembles one (`ADMISSION_CLASS_ESCAPE`). An implementation/source path

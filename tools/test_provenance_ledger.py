@@ -2205,10 +2205,10 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
     baseline only when an external executor blesses the exact candidate policy
     bytes (``--trusted-candidate-policy``) and an external
     ``--policy-delta-authority`` document binds the baseline and candidate
-    digests plus the exact allowed semantic delta.  The trusted baseline is
+    digests plus the exact allowed semantic delta.      The trusted baseline is
     always validated under the baseline policy; the candidate output under the
-    blessed candidate policy.  V1 authorizes include/exclude path-list deltas
-    only.
+    blessed candidate policy.  V1 authorizes exact include path-list deltas
+    only; exclusion-list and rule/control changes are refused on their face.
     """
 
     def _entry(self, fixture: _RefreshFixture, path: str) -> dict:
@@ -2860,6 +2860,282 @@ class TransactionalOutputTests(unittest.TestCase):
             (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
         self.assertEqual(refreshed["admission"]["admitted_paths"], [second],
                          "admission metadata must describe the newest admission only")
+
+
+class ReviewHardeningTests(unittest.TestCase):
+    """Independent-review hardening for admission and policy-delta V1.
+
+    V1 authorizes exact include-list deltas only; deterministic admission is
+    allowlisted to positively inert (family, type) pairs; the trusted baseline
+    is always validated under the baseline policy; rollback failure is
+    reported, never trusted.
+    """
+
+    # -- V1 refuses exclusion-list authority on its face ---------------------
+    def _exclude_mutation_case(self, mutate):
+        fixture = _RefreshFixture(self, excluded=("docs/private/plan.md",))
+        fixture.commit_change("docs/guide.md", "# Guide\n\nRevised.\n", "doc edit")
+        policy_path = fixture.repo / "assets/public_source_profile.json"
+        baseline_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        mutant = json.loads(json.dumps(baseline_policy))
+        mutate(mutant)
+        fixture.commit_change(
+            "assets/public_source_profile.json",
+            json.dumps(mutant, indent=2) + "\n", "exclude mutation",
+        )
+        return fixture, baseline_policy
+
+    def test_exclude_addition_authority_is_rejected_at_load(self) -> None:
+        """An authority that allows an exclusion addition is invalid on its face."""
+        fixture, _ = self._exclude_mutation_case(
+            lambda mutant: mutant["exclude_paths"].append("docs/secret.md"))
+        blessed = fixture.external_policy_copy()
+        authority = fixture.policy_delta_authority(
+            baseline_policy=fixture.trusted_policy, candidate_policy=blessed,
+            allowed={
+                "include_added": [], "include_removed": [],
+                "exclude_added": ["docs/secret.md"], "exclude_removed": [],
+                "rule_changes": [],
+            },
+        )
+        result = fixture.refresh(
+            "docs/guide.md",
+            trusted_candidate_policy=blessed, policy_delta_authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("POLICY_DELTA_AUTHORITY_INVALID", result.stderr)
+
+    def test_exclude_removal_authority_is_rejected_at_load(self) -> None:
+        """An authority that allows an exclusion removal is invalid on its face."""
+        fixture, _ = self._exclude_mutation_case(
+            lambda mutant: mutant["exclude_paths"].remove("docs/private/plan.md"))
+        blessed = fixture.external_policy_copy()
+        authority = fixture.policy_delta_authority(
+            baseline_policy=fixture.trusted_policy, candidate_policy=blessed,
+            allowed={
+                "include_added": [], "include_removed": [],
+                "exclude_added": [], "exclude_removed": ["docs/private/plan.md"],
+                "rule_changes": [],
+            },
+        )
+        result = fixture.refresh(
+            "docs/guide.md",
+            trusted_candidate_policy=blessed, policy_delta_authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("POLICY_DELTA_AUTHORITY_INVALID", result.stderr)
+
+    # -- deterministic admission allowlist -----------------------------------
+    ESCAPE_SURFACES = (
+        ("package.json", '{"scripts": {"x": "evil"}}\n', "reviewed_configuration"),
+        ("pyproject.toml", '[build-system]\nrequires = ["evil"]\n', "reviewed_configuration"),
+        ("Taskfile.yml", 'tasks:\n  x:\n    cmds: [evil]\n', "reviewed_configuration"),
+        (".devcontainer/devcontainer.json", '{"postCreateCommand": "evil"}\n',
+         "reviewed_configuration"),
+        ("requirements.txt", "evil\n", "reviewed_documentation"),
+        ("docs/requirements.txt", "evil\n", "reviewed_documentation"),
+        ("docs/Dockerfile", "FROM x\nRUN evil\n", "reviewed_documentation"),
+        ("interface/tsconfig.json", '{"compilerOptions": {}}\n', "reviewed_configuration"),
+        (".npmrc", "registry=https://evil.invalid/\n", "reviewed_configuration"),
+        ("fixtures/pipeline.yaml", "steps: [evil]\n", "synthetic_fixture"),
+        ("mk/notes.txt", "build note\n", "reviewed_configuration"),
+        ("docs/runbook.config.yaml", "steps: [evil]\n", "reviewed_documentation"),
+    )
+
+    def test_executable_config_surfaces_require_implementation_authority(self) -> None:
+        """Build/package/installer surfaces must not admit deterministically,
+        even when the broad classifier would label them configuration."""
+        for new_path, content, claimed in self.ESCAPE_SURFACES:
+            with self.subTest(path=new_path):
+                fixture = _RefreshFixture(self)
+                digest = fixture.add_new_path(new_path, content)
+                authority = fixture.admission_authority({
+                    "path": new_path, "sha256": digest,
+                    "classification": claimed,
+                    "origin": "synthetic fixture escape probe",
+                })
+                result = fixture.admit(new_path, authority=authority)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ADMISSION_CLASS_ESCAPE", result.stderr)
+                document = json.loads(
+                    (fixture.repo / "assets/public_provenance_ledger.json"
+                     ).read_text(encoding="utf-8"))
+                self.assertNotIn(
+                    new_path, {entry["path"] for entry in document["entries"]})
+
+    ALLOWLISTED_SHAPES = (
+        ("docs/deep/note.md", "# Note\n", "reviewed_documentation"),
+        ("fixtures/blob.bin", "synthetic-bytes", "synthetic_fixture"),
+        ("assets/titles/t.json", '{"id": "t"}\n', "public_factual_metadata"),
+        (".gitignore", "build/\n", "reviewed_configuration"),
+            (".github/ISSUE_TEMPLATE/bug.md", "# Bug\n", "reviewed_documentation"),
+        (".github/dependabot.yml", "version: 2\n", "reviewed_configuration"),
+    )
+
+    def test_allowlisted_shapes_still_admit_deterministically(self) -> None:
+        for new_path, content, claimed in self.ALLOWLISTED_SHAPES:
+            with self.subTest(path=new_path):
+                fixture = _RefreshFixture(self)
+                digest = fixture.add_new_path(new_path, content)
+                authority = fixture.admission_authority({
+                    "path": new_path, "sha256": digest,
+                    "classification": claimed,
+                    "origin": "synthetic fixture allowlist probe",
+                })
+                result = fixture.admit(new_path, authority=authority)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                document = json.loads(
+                    (fixture.repo / "assets/public_provenance_ledger.json"
+                     ).read_text(encoding="utf-8"))
+                entry = next(
+                    entry for entry in document["entries"]
+                    if entry["path"] == new_path)
+                self.assertEqual(entry["classification"], claimed)
+
+    def test_allowlist_agrees_with_broad_classifier(self) -> None:
+        """Every allowlisted pair must derive the same class from the broad
+        classifier, so admission never invents a class refresh would reject."""
+        matrix = (
+            ("docs/a.md", "reviewed_documentation"),
+            ("docs/a.txt", "reviewed_documentation"),
+            ("README.md", "reviewed_documentation"),
+            ("fixtures/a.json", "synthetic_fixture"),
+            ("fixtures/a.dat", "synthetic_fixture"),
+            ("fixtures/a.expected", "synthetic_fixture"),
+            ("assets/titles/a.json", "public_factual_metadata"),
+            ("assets/README.md", "reviewed_documentation"),
+            (".gitignore", "reviewed_configuration"),
+            (".github/x.md", "reviewed_documentation"),
+            (".github/dependabot.yml", "reviewed_configuration"),
+            ("interface/README.md", "reviewed_documentation"),
+            ("font/README.md", "reviewed_documentation"),
+        )
+        for path, expected in matrix:
+            with self.subTest(path=path):
+                self.assertEqual(
+                    provenance_ledger._deterministic_admission_class(path),
+                    expected)
+                self.assertEqual(
+                    provenance_ledger._class_for(path, None)[0], expected)
+
+    def test_non_allowlisted_shapes_fall_closed(self) -> None:
+        for path in (
+            "package.json", "docs/Dockerfile", ".github/CODEOWNERS",
+            "mk/notes.txt", "interface/tsconfig.json", "assets/data.bin",
+            "NEWFILE", "docs/a.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(
+                    provenance_ledger._deterministic_admission_class(path))
+
+    # -- baseline policy separation ------------------------------------------
+    def test_trusted_snapshot_validated_under_baseline_policy(self) -> None:
+        """The trusted snapshot must be judged under the baseline policy even
+        though the candidate is judged under the extended one."""
+        fixture = _RefreshFixture(self)
+        new_doc = "docs/baseline-policy.md"
+        fixture.add_new_path(new_doc, "# Baseline policy\n")
+        digest = hashlib.sha256(
+            (fixture.repo / new_doc).read_bytes()).hexdigest()
+        authority = fixture.admission_authority({
+            "path": new_doc, "sha256": digest,
+            "classification": "reviewed_documentation",
+            "origin": "synthetic fixture documentation",
+        })
+        seen: list[str] = []
+        real_validate = provenance_ledger._validate_public_snapshot
+
+        def recording_validate(document, *, tree, policy, label):
+            seen.append(policy.digest)
+            return real_validate(
+                document, tree=tree, policy=policy, label=label)
+
+        with mock.patch.object(
+                provenance_ledger, "_validate_public_snapshot",
+                side_effect=recording_validate):
+            provenance_ledger.admit_new_reviewed(
+                trusted_ledger=fixture.trusted_ledger,
+                admission_authority=authority,
+                candidate_tree=str(fixture.repo),
+                trusted_tree=fixture.baseline,
+                paths=[new_doc],
+                trusted_policy=fixture.trusted_policy,
+                trusted_manifest=fixture.trusted_manifest,
+            )
+        baseline_digest = publication_policy.load_policy(
+            fixture.trusted_policy).digest
+        self.assertTrue(seen, "trusted snapshot validation must run")
+        for digest_value in seen:
+            self.assertEqual(digest_value, baseline_digest)
+        extended_digest = publication_policy.load_policy(
+            fixture.repo / "assets/public_source_profile.json").digest
+        self.assertNotEqual(
+            extended_digest, baseline_digest,
+            "test discriminates: the extended policy must differ")
+
+    # -- rollback failure ------------------------------------------------------
+    def test_rollback_failure_is_reported_not_trusted(self) -> None:
+        """If the rollback itself fails, the error must say the tree may be
+        hybrid; partially written controls are never presented as success."""
+        fixture = _RefreshFixture(self)
+        fixture.commit_change("docs/guide.md", "# Guide\n\nRevised.\n", "doc edit")
+        real_replace = provenance_ledger.os.replace
+        calls = {"count": 0}
+
+        def flaky_replace(source, destination):
+            calls["count"] += 1
+            if calls["count"] in (2, 3):
+                raise OSError("injected promotion and rollback failure")
+            return real_replace(source, destination)
+
+        with mock.patch.object(provenance_ledger.os, "replace",
+                               side_effect=flaky_replace):
+            with self.assertRaises(provenance_ledger.RefreshError) as ctx:
+                provenance_ledger.refresh_reviewed(
+                    trusted_ledger=fixture.trusted_ledger,
+                    candidate_tree=str(fixture.repo),
+                    trusted_tree=fixture.baseline,
+                    paths=["docs/guide.md"],
+                    trusted_policy=fixture.trusted_policy,
+                    trusted_manifest=fixture.trusted_manifest,
+                )
+        self.assertEqual(ctx.exception.code, "REFRESH_OUTPUT_ERROR")
+        self.assertIn("rollback additionally failed", str(ctx.exception))
+        stray = [
+            path.name for path in fixture.repo.rglob(".provenance-stage-*")]
+        self.assertEqual(stray, [], "staged temporaries must be cleaned up")
+        rollback_stray = [
+            path.name for path in fixture.repo.rglob(".provenance-rollback-*")]
+        self.assertEqual(rollback_stray, [], "rollback temporaries must be cleaned up")
+
+    # -- delta set semantics ---------------------------------------------------
+    def test_include_reorder_is_not_a_delta(self) -> None:
+        baseline = {"include_paths": ["b", "a"], "exclude_paths": []}
+        candidate = {"include_paths": ["a", "b"], "exclude_paths": []}
+        self.assertEqual(
+            provenance_ledger._classify_policy_delta(baseline, candidate),
+            {"include_added": [], "include_removed": [],
+             "exclude_added": [], "exclude_removed": [], "rule_changes": []})
+
+    def test_forged_snapshot_relabel_does_not_enable_record_free_refresh(self) -> None:
+        """A snapshot that relabels an implementation path as documentation
+        must not unlock a record-free refresh: the deterministic claim is
+        re-derived from the path rule, not trusted from the entry label."""
+        fixture = _RefreshFixture(self)
+        document = json.loads(
+            fixture.trusted_ledger.read_text(encoding="utf-8"))
+        for entry in document["entries"]:
+            if entry["path"] == "src/rt/existing.c":
+                entry["classification"] = "reviewed_documentation"
+                entry["evidence"] = {"source": "forged relabel"}
+        forged = fixture.tmp / "forged-snapshot.json"
+        forged.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        fixture.commit_change(
+            "src/rt/existing.c",
+            fixture.source.replace("return 0", "return 2"), "second edit")
+        result = fixture.refresh(
+            "src/rt/existing.c", trusted_ledger=forged,
+            trusted_tree=fixture.baseline)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUSTED_PATH_UNQUALIFIED", result.stderr)
 
 
 if __name__ == "__main__":

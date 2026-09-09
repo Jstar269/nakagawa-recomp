@@ -47,10 +47,11 @@ Two mutually exclusive workflows mutate this evidence:
 * ``refresh-reviewed`` additionally accepts an *independently blessed
   candidate policy* (``--trusted-candidate-policy``) paired with a
   ``--policy-delta-authority`` document that binds the exact semantic delta
-  (include/exclude path-list changes only in V1) against the baseline
+  (exact include path-list changes only in V1; exclusion and rule/control
+  changes are refused on their face) against the baseline
   policy.  The trusted baseline is always validated under the baseline
   trusted policy; the candidate output is validated under the blessed
-  candidate policy, and the policy ledger entry and ``PUBLIC_EXPORT.json``
+  candidate policy, and the policy ledger entry plus ``PUBLIC_EXPORT.json``
   are regenerated from the blessed bytes.  Neither the candidate tree nor
   the candidate's own ledger can authorize the delta: the blessed file and
   its authority are external inputs selected by the independent executor;
@@ -65,11 +66,13 @@ Two mutually exclusive workflows mutate this evidence:
   admission authority, and the external trusted ledger.
 
 All mutations write their generated control files (publication policy where
-applicable, provenance ledger, export) through one transactional helper: every
-output is computed and validated first, staged next to its target, promoted
-only after all stages succeed, and rolled back if any promotion fails, so the
-candidate worktree ends in either the complete old state or the complete new
-state -- never a hybrid.
+applicable, provenance ledger, export) through one staged-replacement helper:
+every output is computed and validated first, staged next to its target, and
+promoted one by one, with a best-effort rollback of already-promoted files if
+a promotion failure is detected.  That bounds process-detected write failures
+to the old state; it is not crash/power-loss durability, and a hybrid left by
+a failed rollback or a crash is fail-closed downstream because external
+attestation re-validates every cross-check instead of trusting file presence.
 """
 
 from __future__ import annotations
@@ -179,6 +182,121 @@ def _admission_requires_implementation(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in HARDENED_ADMISSION_SUFFIXES
 
 
+#: Deterministic admission allowlist: positively inert (path family, file
+#: type) pairs.  A genuinely new path admits on a deterministic class ONLY
+#: through this table; anything else needs implementation-grade authority
+#: (exact trusted detailed record plus reviewed-blob approval), even when the
+#: broad deterministic classifier would label it configuration or
+#: documentation.  In particular, build/package/installer configuration
+#: (``package.json``, ``pyproject.toml``, ``Taskfile``/``Justfile``,
+#: ``Dockerfile*``, ``devcontainer.json``, ``requirements*.txt``,
+#: ``tsconfig`` and friends, any ``*.json``/``*.yaml`` that could steer a
+#: build or package step) is executable-surface until an
+#: implementation-grade review says otherwise -- the broad ``_class_for``
+#: configuration rule describes grandfathered entries, it does not prove
+#: inertness for admission.  Every allowlisted pair agrees with
+#: ``_class_for(path, None)`` (pinned by test); admission never invents a
+#: class the classifier would not derive.
+ADMISSION_DOC_SUFFIXES = frozenset({".md", ".txt"})
+ADMISSION_DOC_NAMES = frozenset({"README.md", "NOTICE.md", "LICENSE"})
+ADMISSION_FIXTURE_SUFFIXES = frozenset(
+    {".md", ".txt", ".json", ".jsonc", ".dat", ".bin", ".expected"})
+ADMISSION_ROOT_CONFIG_NAMES = frozenset({
+    ".gitignore", ".gitattributes", ".editorconfig", ".clang-format",
+    ".clangd", ".markdownlint-cli2.jsonc",
+})
+ADMISSION_ASSETS_DOC_SUFFIXES = frozenset({".md", ".txt"})
+
+
+#: Executable build/package/installer configuration: admitting one of these
+#: on a deterministic class would certify executable-surface content without
+#: implementation-grade review.  Matched anywhere in the tree, including under
+#: ``docs/`` or another otherwise inert family.
+EXECUTABLE_CONFIG_NAMES = frozenset({
+    "package.json", "package-lock.json", "npm-shrinkwrap.json",
+    "pyproject.toml", "setup.cfg", "tox.ini",
+    "taskfile.yml", "taskfile.yaml", "taskfile.dist.yml",
+    "devcontainer.json",
+    "build.gradle", "settings.gradle", "pom.xml",
+    "justfile",
+    ".npmrc", ".yarnrc", ".yarnrc.yml", ".pypirc",
+})
+
+
+def _is_executable_config_name(name: str, suffix: str) -> bool:
+    """True for filenames that steer a build, package, install, or dev-
+    environment step however inert their directory looks."""
+    lower = name.lower()
+    if lower in EXECUTABLE_CONFIG_NAMES:
+        return True
+    if lower.startswith("dockerfile") or lower.startswith("justfile"):
+        return True
+    if lower.startswith("taskfile."):
+        return True
+    if lower == "requirements.txt" or (
+            lower.startswith("requirements") and suffix == ".txt"):
+        return True
+    if (lower.startswith("tsconfig.") or lower.startswith("jsconfig.")) and suffix == ".json":
+        return True
+    return ".config." in lower and suffix == ".json"
+
+
+def _deterministic_admission_class(path: str) -> str | None:
+    """Positively inert admission class for a new path, or None.
+
+    Returns the deterministic class the path may be admitted under -- always
+    the class the broad classifier derives, so admission never invents one --
+    or None when the path is not positively proven inert.  Unknown families,
+    ambiguous config, executable-config filenames in any directory, and every
+    executable surface fall closed to implementation authority.  Deliberately
+    narrower than ``_class_for``: the broad classifier describes
+    grandfathered entries, while admission must prove inertness up front.
+    """
+    pure = PurePosixPath(path)
+    name = pure.name
+    suffix = pure.suffix.lower()
+    if _is_executable_config_name(name, suffix):
+        return None
+    # Every literal below agrees with ``_class_for(path, None)`` (pinned by
+    # test): the allowlist decides inertness, never the class value.
+    if "/" not in path:
+        if name in ADMISSION_ROOT_CONFIG_NAMES:
+            return "reviewed_configuration"
+        if name in ADMISSION_DOC_NAMES:
+            return "reviewed_documentation"
+        return None
+    family = path.split("/", 1)[0]
+    if family == "docs":
+        if suffix in ADMISSION_DOC_SUFFIXES or name in ADMISSION_DOC_NAMES:
+            return "reviewed_documentation"
+        return None
+    if family == "fixtures":
+        if suffix in ADMISSION_FIXTURE_SUFFIXES:
+            return "synthetic_fixture"
+        return None
+    if family == "assets":
+        if path.startswith("assets/titles/") and suffix == ".json":
+            return "public_factual_metadata"
+        if suffix in ADMISSION_ASSETS_DOC_SUFFIXES:
+            return "reviewed_documentation"
+        return None
+    if family == "interface":
+        if suffix in ADMISSION_DOC_SUFFIXES or name in ADMISSION_DOC_NAMES:
+            return "reviewed_documentation"
+        return None
+    if family == ".github":
+        # Mirrors the broad classifier's own suffix split: prose files are
+        # documentation, data files are configuration.
+        if suffix in ADMISSION_DOC_SUFFIXES:
+            return "reviewed_documentation"
+        if suffix in {".yml", ".yaml"}:
+            return "reviewed_configuration"
+        return None
+    if path == "font/README.md":
+        return "reviewed_documentation"
+    return None
+
+
 def _policy_value_equal(baseline: object, candidate: object) -> bool:
     """Canonical value equality for policy fields other than the path lists.
 
@@ -236,10 +354,11 @@ def _read_policy_delta_authority(
 
     The authority binds the exact baseline digest, the exact blessed candidate
     policy digest, and the exact allowed semantic delta.  V1 refuses any
-    allowed rule change: rule/control fields are bound by key name only, which
-    is too weak to authorize a whole replacement of that rule surface -- the
-    candidate policy must differ from the baseline only by explicit
-    include/exclude path-list entries.
+    allowed rule change and any allowed exclusion-list change: rule/control
+    fields are bound by key name only, which is too weak to authorize a whole
+    replacement of that rule surface, and exclusion edits can hide audit scope
+    or expose prohibited material -- the candidate policy must differ from the
+    baseline only by explicit include path-list entries.
     """
     trusted = _external_input(path, candidate_root=candidate_root, label="policy delta authority")
     document = _read_json_file(trusted, code="POLICY_DELTA_AUTHORITY_INVALID")
@@ -299,18 +418,37 @@ def _read_policy_delta_authority(
             "POLICY_DELTA_AUTHORITY_INVALID",
             "V1 refuses rule/control policy changes: allowed rule_changes must be empty",
         )
+    # V1 authorizes exact include-list changes only.  Adding an exclusion can
+    # hide a tracked path from public audit; removing one can expose
+    # private/prohibited material.  Neither has a first real use case, so both
+    # are refused on their face here rather than merely requiring an exact
+    # match below.
+    if allowed["exclude_added"] or allowed["exclude_removed"]:
+        raise RefreshError(
+            "POLICY_DELTA_AUTHORITY_INVALID",
+            "V1 refuses exclusion-list policy changes: allowed exclude_added "
+            "and exclude_removed must both be empty",
+        )
     return {key: sorted(set(allowed[key])) for key in sorted(expected_keys)}
 
 
 def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> None:
-    """Transactionally replace a group of generated control files.
+    """Replace a group of generated control files with rollback on failure.
 
     All bytes are computed by the caller before this helper runs.  The helper
     creates every parent directory, stages every file next to its target,
-    promotes the whole group with ``os.replace``, and rolls the already-
-    promoted files back to their original bytes if any promotion fails, so the
-    worktree ends in the complete old state or the complete new state -- never
-    a hybrid.
+    promotes the staged files one by one with ``os.replace``, and attempts to
+    roll the already-promoted files back to their original bytes if any
+    promotion fails.
+
+    This is staged multi-file replacement with rollback on *detected*
+    promotion failure -- not a guaranteed complete-old-or-complete-new
+    filesystem transaction: if the rollback itself fails, or on power loss or
+    a crash between promotions, the worktree can hold a hybrid.  That residual
+    is fail-closed downstream rather than trusted: the external attestation
+    re-validates the ledger/export/policy digest cross-checks, so partially
+    written controls are rejected instead of being read as authority.  No
+    fsync durability is claimed.
     """
     if not writes:
         return
@@ -357,8 +495,11 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
                             prefix=".provenance-rollback-", suffix=".tmp", dir=str(target.parent))
                         os.close(descriptor)
                         rollback_path = Path(temporary)
-                        rollback_path.write_bytes(original)
-                        os.replace(rollback_path, target)
+                        try:
+                            rollback_path.write_bytes(original)
+                            os.replace(rollback_path, target)
+                        finally:
+                            rollback_path.unlink(missing_ok=True)
                 except OSError as restore_error:
                     restore_errors.append(str(restore_error))
             detail = f"{error}"
@@ -1668,10 +1809,6 @@ def admit_new_reviewed(
     for path in normalized_paths:
         if path in REFRESH_CONTROL_PATHS:
             raise RefreshError("ADMISSION_PATH_FORBIDDEN", f"generated/control path cannot be admitted: {path}")
-        if is_implementation_path(path) and not path.startswith(("src/", "tools/")):
-            # Root-level scripts are implementation by suffix too; nothing to
-            # special-case -- the classifier decides below.
-            pass
 
     candidate = _resolve_tree_selector(candidate_tree, default_repo=ROOT, role="candidate")
     controlled_root = (candidate.worktree_root or candidate.repo_root).resolve()
@@ -1809,13 +1946,18 @@ def admit_new_reviewed(
     if has_entries and has_records:
         raise RefreshError("TRUSTED_LEDGER_INVALID", "trusted ledger cannot mix public entries and detailed records")
     if has_entries:
-        _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted ledger")
+        # The trusted baseline snapshot is validated under the BASELINE
+        # trusted policy -- never under the mechanically extended policy.
+        # The extension exists only to judge the candidate side; letting it
+        # govern the trusted side would let a future extension rule silently
+        # redefine what the baseline was bound to.
+        _validate_public_snapshot(trusted_document, tree=trusted, policy=policy, label="trusted ledger")
     elif has_records:
         detailed_records = _detailed_records(trusted_document)
         approvals = _blob_approval_map(trusted_document)
         if trusted_baseline_path is not None:
             trusted_document = _read_json_file(trusted_baseline_path, code="TRUSTED_LEDGER_INVALID")
-            _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted baseline ledger")
+            _validate_public_snapshot(trusted_document, tree=trusted, policy=policy, label="trusted baseline ledger")
     else:
         raise RefreshError("TRUSTED_LEDGER_INVALID", "trusted ledger must contain entries or detailed records")
 
@@ -1842,6 +1984,25 @@ def admit_new_reviewed(
                     f"{path} is executable/security-sensitive tooling and cannot be admitted on a "
                     f"deterministic {classification!r} class; implementation-class admission requires "
                     "an exact trusted record and a reviewed-blob approval",
+                )
+            # Deterministic admission is allowlisted, not merely non-denied:
+            # the path must be positively proven inert (family + file type),
+            # and the proven class must equal the claimed one.  Unknown or
+            # ambiguous config (build/package/installer surfaces, novel
+            # families, novel suffixes) falls closed to implementation
+            # authority even when no denylist rule names it.
+            allowed_class = _deterministic_admission_class(path)
+            if allowed_class is None:
+                raise RefreshError(
+                    "ADMISSION_CLASS_ESCAPE",
+                    f"{path} is not positively inert and cannot be admitted on a "
+                    f"deterministic {classification!r} class; implementation-class admission requires "
+                    "an exact trusted record and a reviewed-blob approval",
+                )
+            if allowed_class != classification:
+                raise RefreshError(
+                    "ADMISSION_CLASS_MISMATCH",
+                    f"{path} admits as {allowed_class!r}, not {classification!r}",
                 )
             if statement.get("record_id") is not None:
                 raise RefreshError(
@@ -1934,7 +2095,9 @@ def admit_new_reviewed(
         document = json.loads(json.dumps(trusted_document, ensure_ascii=False))
     else:
         assert detailed_records is not None
-        generated = _ledger_from_detailed(tree=trusted, policy=extended_policy, records=detailed_records)
+        # The regenerated baseline is derived under the BASELINE trusted
+        # policy (see above): the extension judges only the candidate side.
+        generated = _ledger_from_detailed(tree=trusted, policy=policy, records=detailed_records)
         document = json.loads(json.dumps(generated, ensure_ascii=False))
     document_entries = {entry["path"]: entry for entry in document["entries"]}
     for path in normalized_paths:
