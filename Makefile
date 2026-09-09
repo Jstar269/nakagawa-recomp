@@ -195,6 +195,12 @@ LDFLAGS ?= -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
 LIBS       ?= -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lole32 -lwinmm
 
 BUILD_DIR  ?= build/$(GAME_NAME)
+# The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
+# that produced them, not to a fixed title. Without this the runtime wrote them to a
+# literal build/hst/, so every non-HST build either scribbled into another title's
+# output directory or silently dropped the dump when that directory did not exist.
+# Deferred on purpose: a recursive $(MAKE) BUILD_DIR=... override retargets it too.
+CFLAGS += -DSR_BUILD_DIR=\"$(BUILD_DIR)\"
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still

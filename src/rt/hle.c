@@ -27,6 +27,13 @@
 #ifndef _MSC_EXTENSIONS
 #define _MSC_EXTENSIONS  /* for _Exit on MSVC; harmless under MinGW */
 #endif
+/* Output directory of THIS build, supplied by the Makefile as -DSR_BUILD_DIR. It is
+ * only ever used to place host-side diagnostic artifacts (the ExitGame crash dump and
+ * exit flag) next to the executable that produced them. It carries no title identity
+ * and no PSP semantics. The fallback keeps a direct compile of this file working. */
+#ifndef SR_BUILD_DIR
+#define SR_BUILD_DIR "build/hst"
+#endif
 #include "recomp.h"
 #include "iso.h"
 #include "pgf_api.h"
@@ -1455,8 +1462,14 @@ static uint32_t h_ExitGame(CpuState *s) {
      * runtime observable; that legacy diagnostic path allowed execution after ExitGame. */
     sr_trace_close();
 
-    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace */
-    FILE *f_dump = fopen("build/hst/crash_dump.bin", "wb");
+    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace.
+     * SR_BUILD_DIR is the build's own output directory (Makefile: BUILD_DIR), so a
+     * generic or second title writes its own dump instead of a literal build/hst/.
+     * The fallback keeps a hand-rolled compile that does not define it working. */
+    char sr_dump_path[512], sr_flag_path[512];
+    snprintf(sr_dump_path, sizeof sr_dump_path, "%s/crash_dump.bin", SR_BUILD_DIR);
+    snprintf(sr_flag_path, sizeof sr_flag_path, "%s/exited.flag", SR_BUILD_DIR);
+    FILE *f_dump = fopen(sr_dump_path, "wb");
     if (f_dump) {
         fwrite(s, 1, sizeof(CpuState), f_dump);
         uint32_t sp_base = s->r[29] & 0xFFFF0000u;
@@ -1465,7 +1478,7 @@ static uint32_t h_ExitGame(CpuState *s) {
         }
         fclose(f_dump);
     }
-    FILE *f_flag = fopen("build/hst/exited.flag", "w");
+    FILE *f_flag = fopen(sr_flag_path, "w");
     if (f_flag) {
         fprintf(f_flag, "1\n");
         fclose(f_flag);
@@ -10126,9 +10139,9 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
 
 #define SCE_KERNEL_ERROR_WAIT_CANCEL                0x800201A9u
 #define SCE_KERNEL_ERROR_WAIT_DELETE                0x800201B5u
-#define SCE_KERNEL_ERROR_WAIT_TIMEOUT               0x800201A8u
-#define SCE_KERNEL_ERROR_CAN_NOT_WAIT               0x800201A7u
-#define SCE_KERNEL_ERROR_ILLEGAL_COUNT              0x800201BDu
+/* WAIT_TIMEOUT, CAN_NOT_WAIT and ILLEGAL_COUNT are already defined above, next to
+ * the PSPAutotests oracle citations that establish their values. Re-defining them
+ * here produced three -Wmacro-redefined warnings on every build of this file. */
 #define SCE_KERNEL_ERROR_ILLEGAL_ATTR               0x80020191u
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR               0x80000103u
 #define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT            0x80020064u
