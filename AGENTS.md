@@ -125,6 +125,9 @@ the issue numbers are navigation, not a substitute for source evidence:
   `git worktree remove --force` rule.
 - Delete a temporary merged/superseded branch only after verifying it is not checked out elsewhere,
   has no unpushed commits, and contains no retained evidence. Never delete an active persistent lane.
+- Never write a repository-local git identity. A `[user]` block in the checkout silently
+  re-authors every later commit here and in every worktree sharing it, including other
+  agents' and the maintainer's. Use the host's existing identity or stop and report.
 - Push only to `origin` when the mission explicitly includes a PR. Never reconnect public branches
   to private-history refs.
 
