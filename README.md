@@ -150,6 +150,7 @@ Start at [`docs/README.md`](docs/README.md).
 - **Broader PSP research/reference:** [recomp.jaycast.net](https://recomp.jaycast.net/) covers generalized PSP recompilation and hardware research.
 - **GitHub Issues:** canonical actionable work items and acceptance criteria where curated public issues exist.
 - [`ISSUES.md`](ISSUES.md): concise current-status dashboard.
+- [`AGENTS.md`](AGENTS.md): the operating contract every automated contributor must follow before changing anything here.
 
 ## Legal and provenance
 
@@ -168,4 +169,4 @@ This is an independent compatibility/research project. Product and game names ar
 
 ## Contributing and security
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before submitting changes. The repository does not yet claim a release-grade security posture; arbitrary PSP/game inputs should be treated as untrusted until the parser/span hardening campaign is complete.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before submitting changes. Automated contributors must also read [AGENTS.md](AGENTS.md). Attribution for inherited work is recorded in [CREDITS.md](CREDITS.md) and [DEDICATION.md](DEDICATION.md). The repository does not yet claim a release-grade security posture; arbitrary PSP/game inputs should be treated as untrusted until the parser/span hardening campaign is complete.

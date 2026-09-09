@@ -14,6 +14,10 @@ of truth for implementation details.
   provenance disposition, private-input or hardware needs, and the smallest proving evidence.
 - Never use stale handoff notes, copied chat summaries, ignored local configuration, or a research
   page as authority when live source or GitHub disagrees.
+- A scoped agent-instruction file that a build tool generates is not a policy source. `next dev`
+  writes `interface/AGENTS.md` and `interface/CLAUDE.md`; they are ignored, not tracked, and
+  carry no authority here even when a more-specific path would normally win. This contract
+  is the only agent authority in the repository.
 - A read-only review or diagnosis does not create a branch, worktree, commit, PR, or external
   mutation. Report the boundary and stop when no implementation was requested.
 
@@ -125,6 +129,9 @@ the issue numbers are navigation, not a substitute for source evidence:
   `git worktree remove --force` rule.
 - Delete a temporary merged/superseded branch only after verifying it is not checked out elsewhere,
   has no unpushed commits, and contains no retained evidence. Never delete an active persistent lane.
+- Never write a repository-local git identity. A `[user]` block in the checkout silently
+  re-authors every later commit here and in every worktree sharing it, including other
+  agents' and the maintainer's. Use the host's existing identity or stop and report.
 - Push only to `origin` when the mission explicitly includes a PR. Never reconnect public branches
   to private-history refs.
 
@@ -148,7 +155,7 @@ At minimum, when applicable, run:
 ```powershell
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-pre-commit run --all-files
+python -m pre_commit run --all-files
 ```
 
 The workflow's `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full

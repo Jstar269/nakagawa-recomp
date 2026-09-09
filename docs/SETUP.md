@@ -281,10 +281,15 @@ baseline Ruff correctness, large files, secret detection, and the publication au
 
 ```powershell
 python -m pip install pre-commit
-pre-commit install
-pre-commit install --hook-type pre-push
-pre-commit run --all-files
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+python -m pre_commit run --all-files
 ```
+
+Invoked as `python -m pre_commit` rather than the bare `pre-commit` console script: pip
+installs that script into a user `Scripts/` directory that is frequently absent from `PATH` on
+Windows, so the bare form fails with "command not found" immediately after a successful install.
+The module form works regardless of `PATH`.
 
 These hooks install their own pinned Ruff and Betterleaks environments. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in

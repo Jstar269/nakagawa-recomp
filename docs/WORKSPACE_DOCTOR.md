@@ -17,6 +17,7 @@ Use a narrower scope when diagnosing one layer:
 .\hst.ps1 Doctor -Scope repo
 .\hst.ps1 Doctor -Scope inputs
 .\hst.ps1 Doctor -Scope build
+.\hst.ps1 Doctor -Scope products
 .\hst.ps1 Doctor -Scope run
 ```
 
