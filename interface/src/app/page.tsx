@@ -23,6 +23,7 @@ import { VisualRegressionPanel } from "@/components/studio/visual-regression-pan
 import { TestLabPanel } from "@/components/studio/test-lab-panel";
 import { BuildHealthPanel } from "@/components/studio/build-health-panel";
 import { ProfilerPanel } from "@/components/studio/profiler-panel";
+import { OnboardingTour } from "@/components/studio/onboarding-tour";
 
 function MainContent() {
   const { section } = useStudio();
@@ -72,14 +73,14 @@ function StudioShell() {
   return (
     <div className="min-h-screen flex flex-col">
       <Topbar />
-      <div className="flex-1 w-full">
+      <div className="flex-1 w-full pb-16">
         <div className="mx-auto max-w-[1500px] px-4 py-4">
           <MobileNav />
           <div className="grid grid-cols-1 lg:grid-cols-[248px_minmax(0,1fr)_320px] gap-4 mt-3 lg:mt-4">
             <div className="hidden lg:block sticky top-[72px] self-start max-h-[calc(100vh-88px)]">
               <Sidebar />
             </div>
-            <main className="min-w-0 space-y-4">
+            <main id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none">
               {showPresets ? <PresetBar /> : null}
               <MainContent />
             </main>
@@ -90,6 +91,7 @@ function StudioShell() {
         </div>
       </div>
       <Footer onRecompile={() => setSection("build")} />
+      <OnboardingTour />
     </div>
   );
 }

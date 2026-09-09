@@ -101,14 +101,12 @@ export function BuildPanel() {
     void refreshInspect();
   }, [refreshInspect]);
 
-  // Evaluate toolchain and input prerequisites from Doctor report.
-  // Fail closed while no valid report exists: until preflight produces
-  // evidence, the shared gate (consumed by the topbar CTA) stays locked.
+  // Evaluate toolchain and input prerequisites from Doctor report
   const buildPrereqs = useMemo(() => {
     if (!doctorReport) {
       return {
         ready: false,
-        missing: ["Waiting for Workspace Doctor preflight…"] as string[],
+        missing: ["Workspace Doctor has not produced a valid report yet."],
       };
     }
     const missing: string[] = [];
@@ -135,18 +133,22 @@ export function BuildPanel() {
     };
   }, [doctorReport]);
 
-  // Publish the gate decision so other surfaces (topbar CTA) respect the same
-  // prerequisites as this panel instead of dispatching a build blind.
-  useEffect(() => {
-    setBuild({
-      buildPrereqs,
-      buildHint: buildPrereqs.ready
-        ? null
-        : (buildPrereqs.missing[0] ?? "Resolve Workspace Doctor action items before building."),
-    });
-  }, [buildPrereqs, setBuild]);
+  const blockedReason = doctorReport
+    ? buildPrereqs.missing[0] ?? "Resolve Workspace Doctor action items before starting a task."
+    : "Waiting for Workspace Doctor to finish; actions stay locked until preflight is valid.";
 
   async function realBuild(action: ManagerAction, runOptions?: RunOptions) {
+    if (realStatus === "running") return;
+    if (!buildPrereqs.ready) {
+      setActiveActionNote(blockedReason);
+      return;
+    }
+    if (action === "Run" && !binaryInfo?.exists) {
+      setActiveActionNote("Run requires a built hst.exe. Complete BuildFull or BuildFast first.");
+      return;
+    }
+
+    setActiveActionNote(null);
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
 
@@ -403,24 +405,34 @@ export function BuildPanel() {
 
         {/* Prerequisite Warnings */}
         {!buildPrereqs.ready && (
-          <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 mb-3 text-xs space-y-1.5">
+          <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 mb-3 text-xs space-y-1.5" role="status">
             <div className="flex items-center gap-1.5 font-semibold text-amber-300">
               <AlertTriangle className="size-4 text-amber-400 shrink-0" />
-              <span>Build Prerequisites Action Items Detected</span>
+              <span>{doctorReport ? "Build Prerequisites Action Items Detected" : "Build actions locked pending preflight"}</span>
             </div>
             <p className="text-[11px] text-amber-200/80 leading-relaxed">
-              Some prerequisites validated by Workspace Doctor are missing or incomplete. Builds may fail if required tools or game inputs are absent:
+              {doctorReport
+                ? "Some prerequisites validated by Workspace Doctor are missing or incomplete. Resolve the reported items before starting a manager task:"
+                : "Workspace Doctor is still running or unavailable. The controls unlock only after a valid report is loaded."}
             </p>
-            <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-300/90 font-mono">
-              {buildPrereqs.missing.slice(0, 4).map((item, idx) => (
-                <li key={idx} className="truncate">{item}</li>
-              ))}
-              {buildPrereqs.missing.length > 4 && (
-                <li>…and {buildPrereqs.missing.length - 4} more (see Preflight above)</li>
-              )}
-            </ul>
+            {doctorReport ? (
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-300/90 font-mono">
+                {buildPrereqs.missing.slice(0, 4).map((item, idx) => (
+                  <li key={idx} className="truncate">{item}</li>
+                ))}
+                {buildPrereqs.missing.length > 4 && (
+                  <li>…and {buildPrereqs.missing.length - 4} more (see Preflight above)</li>
+                )}
+              </ul>
+            ) : null}
           </div>
         )}
+
+        {activeActionNote ? (
+          <div className="rounded-lg border border-primary/30 bg-primary/10 p-2.5 mb-3 text-[11px] text-primary" role="status" aria-live="polite">
+            {activeActionNote}
+          </div>
+        ) : null}
 
         {/* Executable Guard Warning if user wants to run without binary */}
         {!binaryExists && (
@@ -444,8 +456,8 @@ export function BuildPanel() {
               variant="outline"
               className="gap-1.5"
               onClick={() => void realBuild("BuildFast")}
-              disabled={running}
-              title="Incremental build that preserves reusable generated and compiled work"
+              disabled={running || !buildPrereqs.ready}
+              title={buildPrereqs.ready ? "Incremental build that preserves reusable generated and compiled work" : blockedReason}
             >
               <Cpu className="size-3.5 text-ball" /> BuildFast
             </Button>
@@ -454,8 +466,8 @@ export function BuildPanel() {
               variant="outline"
               className="gap-1.5 bg-primary/10 border-primary/30 hover:bg-primary/20 text-primary"
               onClick={() => void realBuild("BuildFull")}
-              disabled={running}
-              title="Full pipeline: MIPS codegen, chunk creation, and binary compilation"
+              disabled={running || !buildPrereqs.ready}
+              title={buildPrereqs.ready ? "Full pipeline: MIPS codegen, chunk creation, and binary compilation" : blockedReason}
             >
               <Zap className="size-3.5" /> BuildFull (Codegen + Build)
             </Button>
@@ -464,8 +476,8 @@ export function BuildPanel() {
               variant="outline"
               className="gap-1.5"
               onClick={() => void realBuild("Test")}
-              disabled={running}
-              title="Run native selftest and regression verification"
+              disabled={running || !buildPrereqs.ready}
+              title={buildPrereqs.ready ? "Run native selftest and regression verification" : blockedReason}
             >
               <FlaskConical className="size-3.5 text-cyan-400" /> Selftest
             </Button>
@@ -483,8 +495,8 @@ export function BuildPanel() {
                 if (!binaryExists) return;
                 void realBuild("Run");
               }}
-              disabled={running || !binaryExists}
-              title={binaryExists ? "Launch hst.exe with GUI" : "Requires built hst.exe"}
+              disabled={running || !binaryExists || !buildPrereqs.ready}
+              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Launch hst.exe with GUI" : "Requires built hst.exe"}
             >
               <Play className="size-3.5" /> Run Standard GUI
             </Button>
@@ -502,8 +514,8 @@ export function BuildPanel() {
                   snapshotInterval: 20,
                 });
               }}
-              disabled={running || !binaryExists}
-              title={binaryExists ? "Capture 15s snapshots headlessly" : "Requires built hst.exe"}
+              disabled={running || !binaryExists || !buildPrereqs.ready}
+              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Capture 15s snapshots headlessly" : "Requires built hst.exe"}
             >
               <Play className="size-3.5" /> Capture 15s snapshots
             </Button>

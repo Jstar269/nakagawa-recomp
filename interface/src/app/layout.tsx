@@ -67,6 +67,12 @@ export default function RootLayout({
         className="antialiased bg-background text-foreground min-h-screen"
         style={{ fontFamily: SYSTEM_SANS }}
       >
+        <a
+          href="#main-content"
+          className="sr-only fixed left-3 top-3 z-[200] rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-lg focus:not-sr-only focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          Skip to main content
+        </a>
         {children}
         <Toaster />
       </body>

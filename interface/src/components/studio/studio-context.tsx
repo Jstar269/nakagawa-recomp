@@ -6,23 +6,36 @@ import { defaultConfig, nativeConfig } from "@/lib/recompiler/defaults";
 import type { IsoMeta, RecompilerConfig } from "@/lib/recompiler/types";
 import { emptyIsoMeta } from "@/lib/recompiler/profiles";
 
-export type SectionId =
-  | "iso"
-  | "graphics"
-  | "performance"
-  | "limitations"
-  | "controllers"
-  | "patches"
-  | "build"
-  | "internals"
-  | "progress"
-  | "porting"
-  | "troubleshooting"
-  | "assets"
-  | "visual-regression"
-  | "test-lab"
-  | "build-health"
-  | "profiler";
+export const SECTION_IDS = [
+  "iso",
+  "graphics",
+  "performance",
+  "limitations",
+  "controllers",
+  "patches",
+  "build",
+  "internals",
+  "progress",
+  "porting",
+  "troubleshooting",
+  "assets",
+  "visual-regression",
+  "test-lab",
+  "build-health",
+  "profiler",
+] as const;
+
+export type SectionId = (typeof SECTION_IDS)[number];
+
+function isSectionId(value: string | null): value is SectionId {
+  return value !== null && SECTION_IDS.includes(value as SectionId);
+}
+
+function sectionFromLocation(): SectionId | null {
+  if (typeof window === "undefined") return null;
+  const value = new URL(window.location.href).searchParams.get("section");
+  return isSectionId(value) ? value : null;
+}
 
 export interface ProfileSummary {
   id: string;
@@ -116,7 +129,21 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const native = useMemo(() => nativeConfig(), []);
   const [config, setConfig] = useState<RecompilerConfig>(() => defaultConfig("minimal"));
   const [isoMeta, setIsoMeta] = useState<IsoMeta>(() => emptyIsoMeta());
-  const [section, setSection] = useState<SectionId>("iso");
+  // Keep the first render stable for SSR, then restore the selected panel from
+  // the URL so a diagnostic view can be bookmarked or shared.
+  const [section, setCurrentSection] = useState<SectionId>("iso");
+  const setSection = useCallback((next: SectionId) => {
+    setCurrentSection(next);
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    if (next === "iso") {
+      url.searchParams.delete("section");
+    } else {
+      url.searchParams.set("section", next);
+    }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -138,6 +165,17 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const lastSnapshotRef = useRef<number>(0);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+
+  useEffect(() => {
+    const initialSection = sectionFromLocation();
+    if (initialSection) setCurrentSection(initialSection);
+
+    const onPopState = () => {
+      setCurrentSection(sectionFromLocation() ?? "iso");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const syncUndoFlags = useCallback(() => {
     setCanUndo(undoStackRef.current.length > 0);

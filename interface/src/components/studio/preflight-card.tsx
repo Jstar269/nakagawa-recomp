@@ -201,8 +201,9 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
         <button
           type="button"
           onClick={() => setStatusFilter(statusFilter === "passing" ? "all" : "passing")}
+          aria-pressed={statusFilter === "passing"}
           className={cn(
-            "rounded-lg border p-2 text-left transition-colors",
+            "rounded-lg border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             statusFilter === "passing"
               ? "border-emerald-500 bg-emerald-500/15"
               : "border-border/60 bg-background/40 hover:border-emerald-500/50",
@@ -217,8 +218,9 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
         <button
           type="button"
           onClick={() => setStatusFilter(statusFilter === "failing" ? "all" : "failing")}
+          aria-pressed={statusFilter === "failing"}
           className={cn(
-            "rounded-lg border p-2 text-left transition-colors",
+            "rounded-lg border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             statusFilter === "failing"
               ? "border-rose-500 bg-rose-500/15"
               : "border-border/60 bg-background/40 hover:border-rose-500/50",
@@ -233,8 +235,9 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
         <button
           type="button"
           onClick={() => setStatusFilter(statusFilter === "warning" ? "all" : "warning")}
+          aria-pressed={statusFilter === "warning"}
           className={cn(
-            "rounded-lg border p-2 text-left transition-colors",
+            "rounded-lg border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             statusFilter === "warning"
               ? "border-amber-500 bg-amber-500/15"
               : "border-border/60 bg-background/40 hover:border-amber-500/50",
@@ -271,9 +274,11 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
               ).map((tab) => (
                 <button
                   key={tab.id}
+                  type="button"
                   onClick={() => setCategory(tab.id)}
+                  aria-pressed={category === tab.id}
                   className={cn(
-                    "px-2 py-1 rounded text-[11px] font-medium transition-colors",
+                    "px-2 py-1 rounded text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     category === tab.id
                       ? "bg-primary/20 text-primary border border-primary/30"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/40",
@@ -380,6 +385,7 @@ function CheckResultItem({ result }: { result: DoctorResult }) {
 
   const style = badgeStyle[result.status] ?? badgeStyle.INFO;
   const hasExtra = Boolean(result.detail || result.remediation || result.path);
+  const detailId = `doctor-detail-${result.code.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
   return (
     <div
@@ -392,9 +398,12 @@ function CheckResultItem({ result }: { result: DoctorResult }) {
           : "border-border/30 bg-background/30",
       )}
     >
-      <div
-        className={cn("flex items-start justify-between gap-2", hasExtra && "cursor-pointer")}
+      <button
+        type="button"
+        className={cn("w-full flex items-start justify-between gap-2 text-left", hasExtra && "cursor-pointer")}
         onClick={() => hasExtra && setExpanded(!expanded)}
+        aria-expanded={hasExtra ? expanded : undefined}
+        aria-controls={hasExtra ? detailId : undefined}
       >
         <div className="flex items-start gap-2 min-w-0">
           {style.icon}
@@ -417,15 +426,15 @@ function CheckResultItem({ result }: { result: DoctorResult }) {
             {result.status}
           </Badge>
           {hasExtra && (
-            <button type="button" className="text-muted-foreground hover:text-foreground">
+            <span className="text-muted-foreground hover:text-foreground" aria-hidden="true">
               {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            </button>
+            </span>
           )}
         </div>
-      </div>
+      </button>
 
       {expanded && hasExtra && (
-        <div className="mt-2 pt-2 border-t border-border/30 space-y-1.5 text-[11px] font-mono leading-relaxed pl-5">
+        <div id={detailId} className="mt-2 pt-2 border-t border-border/30 space-y-1.5 text-[11px] font-mono leading-relaxed pl-5">
           {result.detail && (
             <div className="text-muted-foreground/90">
               <span className="text-muted-foreground font-semibold font-sans">Detail: </span>
