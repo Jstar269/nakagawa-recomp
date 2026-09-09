@@ -14,6 +14,10 @@ of truth for implementation details.
   provenance disposition, private-input or hardware needs, and the smallest proving evidence.
 - Never use stale handoff notes, copied chat summaries, ignored local configuration, or a research
   page as authority when live source or GitHub disagrees.
+- A scoped agent-instruction file that a build tool generates is not a policy source. `next dev`
+  writes `interface/AGENTS.md` and `interface/CLAUDE.md`; they are ignored, not tracked, and
+  carry no authority here even when a more-specific path would normally win. This contract
+  is the only agent authority in the repository.
 - A read-only review or diagnosis does not create a branch, worktree, commit, PR, or external
   mutation. Report the boundary and stop when no implementation was requested.
 
