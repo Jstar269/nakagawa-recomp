@@ -200,7 +200,11 @@ BUILD_DIR  ?= build/$(GAME_NAME)
 # literal build/hst/, so every non-HST build either scribbled into another title's
 # output directory or silently dropped the dump when that directory did not exist.
 # Deferred on purpose: a recursive $(MAKE) BUILD_DIR=... override retargets it too.
-CFLAGS += -DSR_BUILD_DIR=\"$(BUILD_DIR)\"
+# `override` on purpose as well: a plain += is discarded when a caller passes CFLAGS on the
+# command line, and hle.c would then fall back to a literal build/hst/ and silently restore
+# the cross-title overwrite this define exists to prevent. Failing quietly there is worse
+# than ignoring a custom flag, so this one define is not caller-overridable.
+override CFLAGS += -DSR_BUILD_DIR=\"$(BUILD_DIR)\"
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
@@ -277,7 +281,11 @@ PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_unavailable.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
-CFLAGS += -DSR_PUBLIC_SAFE
+# override for the same reason as SR_BUILD_DIR above, and because it is now required:
+# once any append to CFLAGS uses override, GNU make ignores later ordinary assignments to
+# it. Losing this define is the worse failure of the two -- a PUBLIC_SAFE build would stop
+# declaring itself, and the production-smoke evidence check fails on exactly that.
+override CFLAGS += -DSR_PUBLIC_SAFE
 endif
 
 include mk/build_common.mk
