@@ -273,7 +273,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0123ad266759a4bef5e3b29105260be005cc9c57dfebcdab7e2d4f701788000a"
+      "sha256": "aeb15d5ea0137c829fb5eb9e2156ca652e6f668872b9b4ac3e89a23e519eb592"
     },
     {
       "path": "NOTICE.md",
@@ -4590,7 +4590,7 @@
         "license": "see NOTICE.md",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "291355e61437f8448a7a1c7149232fddc5346233486e96b58cb47a69b5a5c0f5"
+      "sha256": "fae212176d815cc3f80221fa1aa4d6fc060f9d49d100cadf6c89ba9a3828d60b"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -7635,18 +7635,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "cc3194eb05b05e16c61049035fe076387f0ff986",
-    "candidate_tree": "c94facf99170d8ed7034cfe73418682004024bb4",
+    "trusted_tree": "bf877d2c87edc8cc384e46fe3154800fda74a484",
+    "candidate_tree": "e00096812574b900386067d3b33701bb5455312d",
     "refreshed_paths": [
-      "AGENTS.md",
-      "CLAUDE.md",
-      "CONTRIBUTING.md",
-      "README.md",
-      "docs/PUBLICATION_READINESS.md",
-      "docs/README.md",
-      "docs/SETUP.md",
-      "docs/WORKSPACE_DOCTOR.md",
-      "interface/.gitignore"
+      "Makefile",
+      "src/rt/hle.c"
     ]
   }
 }
