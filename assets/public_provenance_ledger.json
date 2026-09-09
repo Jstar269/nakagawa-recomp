@@ -1335,7 +1335,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "34b09fee2b68a6d727e194ced2d069359c37bec62a7befd9fd22dedb3a7e48b6"
+      "sha256": "3c67c04f7cf8cce7589ddbe3ade0cbdbc76d9d5ade301026b1f433d44b10a04f"
     },
     {
       "path": "interface/package.json",
@@ -7635,11 +7635,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "9e5edf8dbdfec50c0f5d9e40c6694b29079c1ee6",
-    "candidate_tree": "bb252dad793bd58c0275adca4e745bf41cfb4d04",
+    "trusted_tree": "3005d9815d58809b3a5687b00a2b3663a64ea535",
+    "candidate_tree": "1e168b450d9885f02a5943c44e52a9e8b38c1325",
     "refreshed_paths": [
-      "tools/hst_doctor_core.py",
-      "tools/test_hst_doctor_hardening.py"
+      "interface/package-lock.json"
     ]
   }
 }
