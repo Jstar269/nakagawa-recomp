@@ -201,7 +201,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b68d7c89b3e8054bc84b31a857ed7fd921ed5af8503f9a2c5f6f9e54fabb391c"
+      "sha256": "a2f2ef853b63551711d3da4aff06f1d1c0c6ec14812d117e12bec651a5e6bcc9"
     },
     {
       "path": "CLAUDE.md",
@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d2fc06d0e2ac5a6665aeb7ed739048b7e396a987a95d309b5cd93974c11e0ee8"
+      "sha256": "58dd5b74aa7d38b45b17192327dee456b7f428a3407e0285fccdc199a6bc012d"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -228,7 +228,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e9f2e05019a8507e03edf3f83c0e8d50b9aa4f36fba7b52b2446155d49ae1163"
+      "sha256": "b984566b2238dc0764242e9db84b118e4d422820a790dfadabb8a50c8e25a8a3"
     },
     {
       "path": "CREDITS.md",
@@ -299,7 +299,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cfc2db426cfd86ea06c0466ac65bbdaa3032eeddf39efcc2364f12b95503ac51"
+      "sha256": "20b4efffcd4a9b778bb4f707df3d6eb67894de5e71a43eeeacdc044a7af886f5"
     },
     {
       "path": "SECURITY.md",
@@ -841,7 +841,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "372b3fc5b4242ebf5edac2cae6a4045360b86f20e6314c97d68816c06e979a91"
+      "sha256": "c217a8bab1409085d34661f550250d7e2b2fb06043532401120ffd70e0ebb02d"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -859,7 +859,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "52a6aed61f35c344435cf5dd0f33b919b5a26b8401d0fe3ea91160f2ec1aba3e"
+      "sha256": "b753a43bd0733533c28638c7f18e7ed36d5b03e4847ea06ea5f5b885199e4282"
     },
     {
       "path": "docs/SETUP.md",
@@ -868,7 +868,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "80a1459464194c3417ae1b891edb94f234f984b6ca005e102a6c78c226aa0985"
+      "sha256": "5ed4263e56396edb655e045aa0cb82cc47d58f19e94eac7face6e58ef410a6cf"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -913,7 +913,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "afcbb9eaf2bdbdc2447560fe9f3cc4985f75cdffed2a569224a9abf748dc30d0"
+      "sha256": "87f2fbb0f96be7b0eccdb914c050a5d37b66ed6c3178e1779104d92fb02e2589"
     },
     {
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
@@ -1290,7 +1290,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b8dee2c5fcb593203b765bcdfdedfce76ed1ee48a616597a4ee44bc47ec693a3"
+      "sha256": "9faa27591d62d7dfefc74602535343b360c579be5530d1638646a4ec9ca5e01d"
     },
     {
       "path": "interface/README.md",
@@ -7635,10 +7635,18 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "3005d9815d58809b3a5687b00a2b3663a64ea535",
-    "candidate_tree": "1e168b450d9885f02a5943c44e52a9e8b38c1325",
+    "trusted_tree": "cc3194eb05b05e16c61049035fe076387f0ff986",
+    "candidate_tree": "c94facf99170d8ed7034cfe73418682004024bb4",
     "refreshed_paths": [
-      "interface/package-lock.json"
+      "AGENTS.md",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "README.md",
+      "docs/PUBLICATION_READINESS.md",
+      "docs/README.md",
+      "docs/SETUP.md",
+      "docs/WORKSPACE_DOCTOR.md",
+      "interface/.gitignore"
     ]
   }
 }
