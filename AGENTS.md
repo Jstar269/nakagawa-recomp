@@ -151,7 +151,7 @@ At minimum, when applicable, run:
 ```powershell
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-pre-commit run --all-files
+python -m pre_commit run --all-files
 ```
 
 The workflow's `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full

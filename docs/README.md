@@ -37,6 +37,11 @@ source tree.
   corrected 28/5 hardware-oracle design, and local Nakagawa/general Wiki draft
   text; the frozen CT/ST oracle campaign itself remains `HARDWARE_NOT_RUN`
   while reused lifecycle/callback/ABI facts are separately measured.
+- [`research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md`](research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md)
+  and [`research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md`](research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md)
+  — dated architecture comparison against other recompilation projects, and the
+  action register derived from it. Both cite files in *other* repositories; treat
+  them as a snapshot of that comparison, not as this project's status.
 - [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
 
 ## Provenance and publication
@@ -90,6 +95,8 @@ in this slice; classification comes first, directory moves separately.
 | `provenance/GENERICITY_CENSUS_20260826.md` | REFERENCE | Dated evidence; live source authoritative |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle NOT_RUN |
+| `research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md` | REFERENCE | Dated cross-project comparison; cites other repositories, not this one |
+| `research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md` | REFERENCE | Dated action register derived from that audit; live issues authoritative |
 | `research/project-truth/` | REFERENCE (reserved) | Reserved for frozen audit snapshots admitted via [issue #155](https://github.com/Jstar269/nakagawa-recomp/issues/155); no snapshot ships in this change |
 | `OSPS_BASELINE.md` | HISTORICAL | Pre-republication snapshot; do not cite as status |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |

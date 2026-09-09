@@ -86,9 +86,9 @@ The repository also provides shared pre-commit hooks:
 
 ```powershell
 python -m pip install pre-commit
-pre-commit install
-pre-commit install --hook-type pre-push
-pre-commit run --all-files
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+python -m pre_commit run --all-files
 ```
 
 The external-oracle `make verify` path requires inputs that are intentionally not in the repository.

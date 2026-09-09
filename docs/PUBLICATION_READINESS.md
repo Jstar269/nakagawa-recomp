@@ -169,7 +169,13 @@ trusted baseline is supplied as a worktree, it must also be outside the
 candidate checkout; the refresh outputs may not overwrite that trusted tree. A public
 ledger snapshot supplies the existing public entry objects; the command also
 accepts an external detailed ledger with exact `records` entries, and the two
-may be paired so a detailed ledger refreshes an existing snapshot. Refreshing an
+may be paired so a detailed ledger refreshes an existing snapshot. When pairing
+them the detailed ledger goes to `--trusted-ledger` and the public snapshot to
+`--trusted-baseline-ledger`, not the other way round; `--implementation-ledger`
+belongs to the generate flow and is not read here. `--trusted-tree` accepts a Git
+tree-ish, so the immutable `origin/main` the candidate branched from is a valid
+baseline, while a plain exported directory is rejected because it is not a
+repository. Refreshing an
 **implementation** class (`project_authored_attested`, `upstream_derived`,
 `generated_from_public_source`) always requires the detailed ledger and an exact
 record for that path: a snapshot alone cannot re-attest new bytes, because
@@ -177,6 +183,21 @@ historical snapshots still carry entries minted by removed fail-open rules and a
 wildcard-derived claim must not follow a path onto content it never described.
 Documentation, configuration, public metadata, and synthetic fixture paths may
 still refresh from a snapshot alone while their deterministic class is unchanged.
+
+Two consequences are worth stating plainly, because both look like tool faults:
+
+* A refresh aborts with `CANDIDATE_TREE_STALE` when the candidate tree changes any
+  path that was not named in `--paths`. A branch that mixes deterministic-class and
+  implementation-class edits therefore cannot be refreshed as one unit; it has to be
+  split along the class boundary, because only part of it can be refreshed at all.
+* An implementation path whose public entry exists but which has **no record in the
+  detailed ledger** cannot be refreshed by anyone, and fails with `TRUSTED_PATH_MISSING`.
+  Such entries exist: they were minted by the retired `tools/*` wildcard expansion and
+  the `interface/` configuration prefix, and the fail-closed rules deliberately refuse to
+  carry them onto new bytes. Editing one of those paths blocks the publication gate until
+  a genuine record is authored for it. Authoring that record is a maintainer attestation
+  about who wrote the code; an agent must stop with `PROVENANCE_UNRESOLVED` instead.
+
 The command never treats the candidate's
 `assets/public_provenance_ledger.json`, policy, manifest, or export as trusted.
 The candidate's current ledger and export may differ from the trusted baseline
