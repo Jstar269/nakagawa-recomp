@@ -292,6 +292,24 @@ def _is_contained_in_root(path: Path | str, root: Path | str) -> bool:
         return False
 
 
+def _is_host_junction(path: Path) -> bool:
+    """True for an NTFS junction, as distinct from a symlink.
+
+    A symlink's target text is tracked content -- it is literally the blob Git
+    stores and would publish -- so it is auditable. A junction is host state
+    Git never records, and its target is an absolute local path, so it must not
+    be treated as content. ``os.path.isjunction`` exists only on newer Pythons
+    and only reports true on Windows.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is None:
+        return False
+    try:
+        return bool(isjunction(path)) and not path.is_symlink()
+    except OSError:
+        return False
+
+
 def _filesystem_link_on_path(path: Path, root: Path | None = None) -> Path | None:
     """Return the first symlink or host directory-link on *path*, if any.
 
@@ -515,31 +533,18 @@ def read_indexed_blob(
     """Read exact byte content of a Git index entry via git cat-file -p <sha>."""
     disk_path = repo_root / entry.path
 
-    link_path = _filesystem_link_on_path(disk_path, repo_root)
-    if entry.kind == "symlink" or entry.working_mode == "120000" or link_path is not None:
-        if link_path is not None:
-            try:
-                target = link_path.readlink()
-                return str(target).encode("utf-8"), None
-            except OSError as exc:
-                return None, f"failed to read symlink target: {exc}"
-        elif entry.sha:
-            try:
-                res = subprocess.run(
-                    ["git", "cat-file", "-p", entry.sha],
-                    cwd=repo_root,
-                    capture_output=True,
-                    check=False,
-                )
-                if res.returncode == 0:
-                    return res.stdout, None
-            except Exception:
-                pass
-        return None, "entry is a filesystem link or descendant of a link"
-
     if entry.kind == "gitlink":
         return entry.sha.encode("utf-8"), None
 
+    # An index audit is bound to the indexed blob, so the recorded sha always
+    # wins. A worktree copy replaced by a symlink -- or a tracked regular file
+    # that now sits below a junction -- would otherwise substitute the link
+    # target text for the staged bytes, letting a content scan clear benign
+    # link text while the tree being published holds something else entirely.
+    # For an index entry that genuinely *is* a symlink (mode 120000) the blob
+    # content is the target text, so the same read is correct there too. The
+    # worktree link is reported separately by the audit rather than by changing
+    # which bytes are read.
     if entry.sha:
         try:
             res = subprocess.run(
@@ -574,23 +579,12 @@ def read_indexed_blobs_batch(
 
     for entry in entries:
         disk_path = repo_root / entry.path
-        link_path = _filesystem_link_on_path(disk_path, repo_root)
-        if entry.kind == "symlink" or entry.working_mode == "120000" or link_path is not None:
-            if link_path is not None:
-                try:
-                    target = link_path.readlink()
-                    result[entry.path] = (str(target).encode("utf-8"), None)
-                    continue
-                except OSError as exc:
-                    result[entry.path] = (None, f"failed to read symlink target: {exc}")
-                    continue
-            elif entry.sha:
-                shas_to_query.append((entry.path, entry.sha))
-            continue
-        elif entry.kind == "gitlink":
+        if entry.kind == "gitlink":
             result[entry.path] = (entry.sha.encode("utf-8"), None)
             continue
 
+        # See read_indexed_blob: the indexed blob is authoritative for an index
+        # audit, whatever the worktree copy has since become.
         if entry.sha:
             shas_to_query.append((entry.path, entry.sha))
         else:
@@ -708,11 +702,20 @@ def read_candidate_file(
         link_path = _filesystem_link_on_path(disk_path, candidate_root)
         if link_path is None:
             return None, "candidate link entry is not a filesystem link"
+        # A junction's target is an absolute host path that Git never stores,
+        # so it is not the entry's content and must not become its bytes: it
+        # would flow into hashes, content previews and finding details, and a
+        # junction into a private directory would then print that path into
+        # audit and CI logs. Refuse it generically. A real symlink's target text
+        # *is* the blob Git would publish, so it is still returned and still
+        # analysed for containment.
+        if _is_host_junction(link_path):
+            return None, "candidate link is a host directory junction and was not followed"
         try:
             target = link_path.readlink()
-            return str(target).encode("utf-8"), None
         except OSError as exc:
             return None, f"failed to read candidate symlink target: {exc}"
+        return str(target).encode("utf-8"), None
 
     if disk_path.is_file():
         try:
@@ -1769,8 +1772,30 @@ def audit_entries_with_semantics(
 
         path = repo_root / rel
 
-        # Check symlink
-        if entry.kind == "symlink" or entry.working_mode == "120000":
+        # An index audit now reads the indexed blob even when the worktree copy
+        # has become a link, so the divergence itself is reported here rather
+        # than silently changing which bytes were scanned.
+        if (
+            content_source == CONTENT_INDEX
+            and entry.kind != "symlink"
+            and entry.working_mode == "120000"
+        ):
+            entry_findings.append(Finding(
+                "WORKTREE_LINK", rel,
+                "tracked regular file is a filesystem link, or lies below one, in the "
+                "working tree; the audit read the indexed blob",
+            ))
+
+        # Check symlink. The target text is only in raw_bytes when the bytes
+        # being audited are a link's: an index entry whose own mode is 120000,
+        # or a worktree/candidate read of a link. For an index audit of a
+        # tracked regular file shadowed by a link, raw_bytes is now the staged
+        # file content, which must not be reinterpreted as a target.
+        link_bytes_are_target = (
+            entry.kind == "symlink"
+            or (content_source != CONTENT_INDEX and entry.working_mode == "120000")
+        )
+        if link_bytes_are_target:
             try:
                 target_str = raw_bytes.decode("utf-8") if raw_bytes else ""
                 target_pure = PurePosixPath(target_str)
@@ -1780,7 +1805,13 @@ def audit_entries_with_semantics(
                     entry_findings.append(Finding("SYMLINK_ESCAPE", rel, "symlink target contains relative escape ('..')"))
                 resolved = (path.parent / target_pure).resolve()
                 if not resolved.is_relative_to(repo_root.resolve()):
-                    entry_findings.append(Finding("SYMLINK_ESCAPE", rel, f"symlink target {resolved} escapes repository root"))
+                    # The resolved target is an absolute host path, and on
+                    # Windows a junction into a private directory resolves to
+                    # exactly the kind of path this audit exists to keep out of
+                    # published output. Both non-JSON CLIs print a finding's
+                    # detail verbatim into audit and CI logs, so state the
+                    # containment failure without echoing where it pointed.
+                    entry_findings.append(Finding("SYMLINK_ESCAPE", rel, "symlink target escapes repository root"))
             except (OSError, ValueError):
                 entry_findings.append(Finding("SYMLINK_UNREADABLE", rel, "unreadable symlink target"))
 

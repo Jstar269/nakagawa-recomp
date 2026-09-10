@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import subprocess
 import sys
@@ -408,6 +408,30 @@ class TestPublishAudit(unittest.TestCase):
             findings = publish_audit.audit_entries(entries, repo_root=repo, is_candidate_root=True)
             self.assertFalse(any(f.code == "MAGIC_UNKNOWN" for f in findings))
 
+    @staticmethod
+    def _short_name(path: Path) -> str | None:
+        """The directory's real 8.3 alias, or None when the volume made none.
+
+        GetShortPathNameW is the authority: it returns the aliased path when one
+        exists and the input unchanged when the volume has 8.3 creation
+        disabled. Parsing `dir /x` was tried and is wrong -- the `/b` bare
+        format omits the short-name column entirely, so every lookup silently
+        reported None and the alias case was never exercised.
+        """
+        if os.name != "nt":
+            return None
+        import ctypes
+
+        get_short = ctypes.windll.kernel32.GetShortPathNameW
+        get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        get_short.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(1024)
+        written = get_short(str(path), buffer, len(buffer))
+        if written == 0 or written >= len(buffer):
+            return None
+        alias = PurePath(buffer.value).name
+        return alias or None
+
     def _make_junction(self, link: Path, target: Path) -> bool:
         """Create an NTFS junction; junctions need no elevation on Windows."""
         created = subprocess.run(
@@ -504,15 +528,107 @@ class TestPublishAudit(unittest.TestCase):
             smuggled = by_path["linked/sentinel.txt"]
             self.assertEqual(smuggled.working_mode, "120000", "tracked junction descendant must be flagged as a link")
 
+            # A worktree audit must not follow the junction off the volume: the
+            # bytes out there are not tracked content.
             blobs = publish_audit.read_worktree_blobs([smuggled], repo_root=repo)
             content = blobs["linked/sentinel.txt"][0]
             self.assertIsNotNone(content)
             self.assertNotEqual(content, b"outside", "audit read out-of-root bytes through a junction")
 
-            index_blob, _ = publish_audit.read_indexed_blob(smuggled, repo_root=repo)
-            self.assertNotEqual(index_blob, b"outside", "index mode read out-of-root bytes through a junction")
+            # An index audit is the opposite case, and refusing to read here
+            # would be the more dangerous behaviour. `git add -A` walked the
+            # junction and hashed the out-of-root file *into the index*, so
+            # those bytes are staged for publication. The audit must therefore
+            # read exactly the indexed blob, so every content scanner inspects
+            # what would actually be published, and flag the junction
+            # separately -- rather than substitute a refusal and leave the
+            # staged bytes unscanned.
+            staged = subprocess.run(
+                ["git", "cat-file", "-p", ":linked/sentinel.txt"],
+                cwd=repo, capture_output=True, check=True,
+            ).stdout
+            self.assertEqual(staged, b"outside", "precondition: git staged the smuggled bytes")
+
+            index_blob, index_err = publish_audit.read_indexed_blob(smuggled, repo_root=repo)
+            self.assertIsNone(index_err)
+            self.assertEqual(index_blob, staged, "index mode must read the indexed blob")
             batch_blobs = publish_audit.read_indexed_blobs_batch([smuggled], repo_root=repo)
-            self.assertNotEqual(batch_blobs["linked/sentinel.txt"][0], b"outside", "batch index read out-of-root bytes")
+            self.assertEqual(batch_blobs["linked/sentinel.txt"][0], staged,
+                             "batch index mode must read the indexed blob")
+
+            index_entries = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo,
+                content_source=publish_audit.CONTENT_INDEX,
+            )
+            findings = publish_audit.audit_entries(index_entries, repo_root=repo)
+            smuggled_findings = {f.code for f in findings if f.path == "linked/sentinel.txt"}
+            self.assertIn("WORKTREE_LINK", smuggled_findings,
+                          "the junction descendant must be reported, not silently read")
+            # Proof the scanners actually saw the staged bytes: this finding can
+            # only come from inspecting the newline-less content itself.
+            self.assertIn("TEXT_FINAL_NEWLINE", smuggled_findings)
+            for finding in findings:
+                self.assertNotIn(str(outside), finding.detail,
+                                 "no finding may render the junction's host target")
+
+    @unittest.skipUnless(
+        os.name == "nt" and hasattr(os.path, "isjunction"),
+        "NTFS junction regression requires Windows junction support",
+    )
+    def test_junction_target_is_never_rendered_or_returned_as_content(self):
+        """A junction's absolute host target must not reach bytes or findings.
+
+        A candidate containing a junction into a private directory would
+        otherwise print that local path into audit and CI logs: the target was
+        returned as the entry's bytes and interpolated into the SYMLINK_ESCAPE
+        detail, which both non-JSON CLIs render verbatim.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            temp_root = Path(tmp_dir_raw).resolve()
+            candidate = temp_root / "candidate"
+            private = temp_root / "private-inputs"
+            candidate.mkdir()
+            private.mkdir()
+            (private / "secret.txt").write_text("secret", encoding="utf-8")
+
+            junction = candidate / "linked"
+            if not self._make_junction(junction, private):
+                self.skipTest("cannot create NTFS junction")
+
+            entry = publish_audit.GitEntry("120000", "", "0", "linked", "symlink")
+            content, error = publish_audit.read_candidate_file(entry, candidate)
+            self.assertIsNone(content, "a junction target must not become entry content")
+            self.assertIsNotNone(error)
+            self.assertNotIn(str(private), error)
+            self.assertNotIn("private-inputs", error)
+
+            findings = publish_audit.audit_entries(
+                [entry], repo_root=candidate, is_candidate_root=True
+            )
+            self.assertTrue(findings, "the junction must still produce findings")
+            for finding in findings:
+                self.assertNotIn(str(private), finding.detail)
+                self.assertNotIn("private-inputs", finding.detail)
+
+            # A real symlink is the contrasting case: its target text is the
+            # blob Git stores, so it stays readable and stays analysed.
+            link = candidate / "plain.txt"
+            try:
+                link.symlink_to(private / "secret.txt")
+            except (OSError, NotImplementedError):
+                return
+            plain = publish_audit.GitEntry("120000", "", "0", "plain.txt", "symlink")
+            text, text_error = publish_audit.read_candidate_file(plain, candidate)
+            self.assertIsNone(text_error)
+            self.assertIsNotNone(text)
+            escapes = publish_audit.audit_entries(
+                [plain], repo_root=candidate, is_candidate_root=True
+            )
+            self.assertTrue(any(f.code == "SYMLINK_ESCAPE" for f in escapes),
+                            "an escaping symlink must still be reported")
+            for finding in escapes:
+                self.assertNotIn(str(private), finding.detail,
+                                 "the escape finding must not render the host target")
 
     @unittest.skipUnless(
         os.name == "nt" and hasattr(os.path, "isjunction"),
@@ -531,9 +647,20 @@ class TestPublishAudit(unittest.TestCase):
             if not self._make_junction(junction, outside):
                 self.skipTest("cannot create NTFS junction")
 
-            short_alias = repo / "LONG_J~1"
             self.assertIsNotNone(publish_audit._filesystem_link_on_path(junction / "secret.txt", repo))
             self.assertFalse(publish_audit._is_contained_in_root(junction / "secret.txt", repo))
+
+            # 8.3 alias creation is a per-volume setting and is commonly
+            # disabled. Assuming the alias is "LONG_J~1" tests a path that does
+            # not exist, which realpath then leaves lexically inside the root --
+            # so the assertion failed on exactly the volumes that have no alias
+            # capable of escaping. Ask the filesystem for the real short name
+            # and skip the alias case when the volume created none.
+            short_name = self._short_name(junction)
+            if short_name is None or short_name.casefold() == junction.name.casefold():
+                self.skipTest("volume did not create an 8.3 alias for the junction")
+            short_alias = repo / short_name
+            self.assertTrue(short_alias.exists(), f"expected alias {short_name} to exist")
             self.assertFalse(publish_audit._is_contained_in_root(short_alias / "secret.txt", repo))
 
     @unittest.skipUnless(
