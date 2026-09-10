@@ -107,7 +107,6 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/ROADMAP.md",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
-    "docs/provenance/INDEPENDENCE_BACKLOG.md",
 }
 
 # Frozen document-truth snapshots are evidence of a past sweep, not maintained
