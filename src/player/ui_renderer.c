@@ -263,7 +263,7 @@ static void render_inspecting(SDL_Renderer *ren, PlayerApp *app, const UiInput *
     draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "ISO INSPECTOR", COLOR_AMBER);
     draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Inspecting PSP Disc Image...", 2.0f, COLOR_TEXT_WHITE);
     draw_text(ren, card_x + 32.0f, card_y + 120.0f, "Reading ISO9660 Primary Volume Descriptor and PARAM.SFO...", 1.2f, COLOR_TEXT_MUTED);
-    
+
     draw_progress_bar(ren, card_x + 32.0f, card_y + 160.0f, card_w - 64.0f, 16.0f, 45.0f);
     draw_text(ren, card_x + 32.0f, card_y + 190.0f, "File: HotShotsTennis.iso (1.20 GB)", 1.0f, COLOR_TEXT_DIM);
 
@@ -349,7 +349,7 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
 
     /* Real progress indicators */
     draw_progress_bar(ren, card_x + 32.0f, card_y + 160.0f, card_w - 64.0f, 20.0f, app->prep_state.percentage);
-    
+
     char count_str[128];
     snprintf(count_str, sizeof(count_str), "%d / %d items processed (%.1f%%)", app->prep_state.completed_items, app->prep_state.total_items, app->prep_state.percentage);
     draw_text(ren, card_x + 32.0f, card_y + 196.0f, count_str, 1.2f, COLOR_TEXT_WHITE);
