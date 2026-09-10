@@ -1134,9 +1134,8 @@
       "path": "font/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "replacement-pgf-binaries",
-        "evidence_tier": "N"
+        "source": "public documentation review",
+        "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
       "sha256": "dc727119bf0e214ac9e17cb903a8c10ed10de32e397f526e1c7e95ee454e699f"
     },
@@ -5755,7 +5754,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7996b6911f46fc3c34224e2580e783ebc4953cd85cada4f0f4537802bc33ebc0"
+      "sha256": "fa724a45e994302fe972103875888959514d7724a1249877c34cc908a76805af"
     },
     {
       "path": "tools/prxload.py",
@@ -6700,7 +6699,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a3560badd61832a2a7c4bdadce9dc01d9e7591704cbe1bb8d176a379658fc9ee"
+      "sha256": "3d0937f94b10c74ce1a9e3cc582287f70217991a03b54e39e475f0fef1e18181"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7283,10 +7282,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "25fea3d2ef1dff6d8dee1b5488bfbf291ebbac7a",
-    "candidate_tree": "f576658005fc4bdf3a5b9e72728398ada5d9f0f7",
+    "trusted_tree": "2140355aeff23c41ca30a9674e4f87ec31a7af89",
+    "candidate_tree": "f78aaa4214a59c27d7a1155e97cadd7796bc70a4",
     "refreshed_paths": [
-      "Makefile"
+      "tools/provenance_ledger.py",
+      "tools/test_provenance_ledger.py"
     ]
   }
 }
