@@ -289,6 +289,39 @@ def find_repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def build_artifact_dir(exe_path=None):
+    """Directory the attached runtime writes its diagnostic artifacts into.
+
+    The Makefile links the executable into BUILD_DIR and compiles that same
+    BUILD_DIR in as SR_BUILD_DIR, so the executable's own parent directory is
+    the artifact directory in both supported shapes:
+
+      * default relative BUILD_DIR (build/<game>) launched from the repository
+        root, where the runtime's relative fopen resolves to exactly that; and
+      * an overridden absolute BUILD_DIR, where the compiled path is absolute
+        and the working directory is irrelevant.
+
+    Use the executable's parent verbatim. Reducing it to a name and rebuilding
+    it under <repo>/build would invent a directory for any custom root, and
+    deriving it from ambient GAME_NAME or SR_BUILD_DIR would follow an unrelated
+    build when the shell inherited another one.
+
+    Known limitation: a --pid attach to a runtime that was started from some
+    other working directory *and* built with a relative BUILD_DIR writes its
+    artifacts under that working directory instead, and this helper will not
+    find them. Resolving that needs the process working directory, which is not
+    available here; the runtime would have to resolve SR_BUILD_DIR to an
+    absolute path at startup for it to be knowable.
+    """
+    if exe_path:
+        return os.path.dirname(os.path.abspath(exe_path))
+    explicit = os.environ.get("SR_BUILD_DIR")
+    if explicit:
+        return explicit if os.path.isabs(explicit) else os.path.join(find_repo_root(), explicit)
+    game = os.environ.get("GAME_NAME") or "hst"
+    return os.path.join(find_repo_root(), "build", game)
+
+
 def get_symbol_rvas(exe_path):
     """Resolve g_mem/s_cpu RVAs from the attached executable via nm.
 
@@ -412,6 +445,17 @@ MUTATING_ACTIONS = frozenset(("pause", "resume", "write_mem", "write_cpu"))
 
 
 class MemoryDebugger:
+    def attached_exe_path(self):
+        """Path of the executable this session is attached to, or None.
+
+        None when simulated or offline, which is exactly when the caller should
+        fall back to the environment rather than guess at a build directory.
+        """
+        info = getattr(self, "proc_info", None)
+        if not info:
+            return None
+        return info.get("exe_path") or None
+
     def __init__(self, simulate=False, mutate=False, pid=None):
         self.mutate_enabled = bool(mutate)
         self.is_simulated = bool(simulate)
@@ -588,8 +632,9 @@ class MemoryDebugger:
             kernel32.CloseHandle(h_process)
 
         status = "running"
-        status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
-        exit_file = os.path.join(find_repo_root(), "build", "hst", "exited.flag")
+        artifacts = build_artifact_dir(self.attached_exe_path())
+        status_file = os.path.join(artifacts, "paused.flag")
+        exit_file = os.path.join(artifacts, "exited.flag")
         if os.path.exists(exit_file):
             status = "exited"
         elif os.path.exists(status_file):
@@ -625,7 +670,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtSuspendProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(self.attached_exe_path()), "paused.flag")
             with open(status_file, "w") as f:
                 f.write("1")
             return {"success": True, "status": "paused", "mode": "process"}
@@ -647,7 +692,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtResumeProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(self.attached_exe_path()), "paused.flag")
             if os.path.exists(status_file):
                 os.remove(status_file)
             return {"success": True, "status": "running", "mode": "process"}
@@ -907,7 +952,7 @@ class MemoryDebugger:
                 "error": "failed to write register at host 0x%016x" % target_addr}
 
     def trace_exit(self):
-        dump_path = os.path.join(find_repo_root(), "build", "hst", "crash_dump.bin")
+        dump_path = os.path.join(build_artifact_dir(self.attached_exe_path()), "crash_dump.bin")
         if not os.path.exists(dump_path):
             return {"error": "crash_dump.bin not found. Did the game exit?"}
 

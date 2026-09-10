@@ -698,6 +698,225 @@ def check_build_products(report: Report) -> None:
         report.fail("BUILD_IMAGE", "Missing or empty build/hst/hst_image.bin", path=image, remediation="Run the full code-generation pipeline.")
 
 
+class _GitConfigError(Exception):
+    """The configuration could not be inspected, as distinct from being unset."""
+
+
+def _git_config(root: Path, scope: str, key: str, *, as_bool: bool = False) -> str | None:
+    """Read one git config value. None means *unset*; never means *unknown*.
+
+    `git config --get` exits 1 for an unset key and uses other nonzero codes for
+    real failures -- git missing, the repository refused as unsafe, a malformed
+    config. Collapsing those into None would let a failed lookup report the same
+    clean PASS as a genuinely clean checkout, which is the opposite of what this
+    check exists to do, so anything but 0 or 1 raises.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", scope,
+             *(("--type=bool",) if as_bool else ()), "--get", key],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise _GitConfigError(f"could not run git config: {error}") from error
+    if proc.returncode == 1:
+        return None
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        raise _GitConfigError(detail[0] if detail else f"git config exited {proc.returncode}")
+    # Exit 0 means the key exists, even when its value is empty. An empty
+    # [user] entry is still an override and still breaks commits, so it must not
+    # collapse into the same None that means "no key at all".
+    return proc.stdout.strip()
+
+
+_IDENTITY_SECTIONS = ("user", "author", "committer")
+
+
+def _git_config_values(root: Path, scope: str, key: str) -> list[tuple[str, str]]:
+    """Every value for *key* in *scope*, as (origin, value) in Git's own order.
+
+    Three details matter and each was a real defect:
+
+    * ``--includes`` is required. Without it an ``include.path`` directive in
+      ``.git/config`` hides an identity that Git nonetheless resolves and
+      authors commits with, so the check reported a clean PASS against a
+      checkout that was actively re-authoring.
+    * ``--get-all`` is required. ``--get`` collapses a multi-valued key to its
+      last value, which reads as a single setting that one ``--unset`` would
+      clear -- and ``--unset`` refuses a multi-valued key outright.
+    * ``--show-origin`` says which file each value came from, which is what
+      makes remediation safe: a value inside an included file cannot be removed
+      through this scope, so the remedy must name the include rather than emit
+      a command Git would reject.
+
+    An empty list means unset. Anything other than exit 0 or 1 raises, so a
+    failed lookup can never read as a clean checkout.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", scope,
+             "--includes", "--show-origin", "--get-all", key],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise _GitConfigError(f"could not run git config: {error}") from error
+    if proc.returncode == 1:
+        return []
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        raise _GitConfigError(detail[0] if detail else f"git config exited {proc.returncode}")
+
+    values: list[tuple[str, str]] = []
+    for line in proc.stdout.split("\n"):
+        if not line:
+            continue
+        origin_field, separator, value = line.partition("\t")
+        if not separator:
+            continue
+        # Origins are reported as "<type>:<name>", e.g. "file:.git/config".
+        _, _, origin = origin_field.partition(":")
+        values.append((origin, value.rstrip("\r")))
+    return values
+
+
+def _scope_config_file(root: Path, scope: str) -> str | None:
+    """Absolute path of the file *scope* itself writes, for origin comparison."""
+    relative = "config.worktree" if scope == "--worktree" else "config"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", relative],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return os.path.abspath(os.path.join(str(root), proc.stdout.strip()))
+
+
+def check_agent_identity(report: Report) -> None:
+    """Repository commit identity must come from the host, not from this checkout.
+
+    Automated sessions have written a repository-local identity here, which
+    silently re-authors every later commit in this checkout and in every
+    worktree sharing it. AGENTS.md section 3 already forbids inventing a
+    contributor identity; this makes the leftover visible rather than trusting
+    each tool to have honoured the contract.
+
+    Git resolves a commit's identity from ``user.*``, and lets ``author.*`` and
+    ``committer.*`` override it per role, in the per-worktree file, the
+    repository-local file, or anything either of those includes. All of that is
+    inspected, because a check that looked only at ``user.*`` in only
+    ``--local`` passed a checkout whose ``.git/config`` re-authored every commit.
+    """
+    root = report.root
+    # (scope, key) -> (effective value, every origin, how many values)
+    found: dict[tuple[str, str], tuple[str, list[str], int]] = {}
+    own_files: dict[str, str | None] = {}
+    try:
+        worktree_scope = _git_config(
+            root, "--local", "extensions.worktreeConfig", as_bool=True) == "true"
+        for scope in ("--worktree", "--local"):
+            # Without extensions.worktreeConfig, `git config --worktree` is
+            # documented to behave exactly as --local. Reading it as its own
+            # scope would report every .git/config value twice and emit a
+            # `--worktree --unset-all` remedy that Git refuses.
+            if scope == "--worktree" and not worktree_scope:
+                continue
+            own_files[scope] = _scope_config_file(root, scope)
+            for section in _IDENTITY_SECTIONS:
+                for name in ("name", "email"):
+                    key = f"{section}.{name}"
+                    values = _git_config_values(root, scope, key)
+                    if not values:
+                        continue
+                    origins: list[str] = []
+                    for origin, _value in values:
+                        if origin not in origins:
+                            origins.append(origin)
+                    found[(scope, key)] = (values[-1][1], origins, len(values))
+        global_name = _git_config(root, "--global", "user.name")
+        global_email = _git_config(root, "--global", "user.email")
+    except _GitConfigError as error:
+        report.warn(
+            "GIT_IDENTITY",
+            "Could not inspect the commit identity, so a stray repository-local "
+            f"override cannot be ruled out: {error}",
+        )
+        return
+
+    if not found:
+        report.pass_(
+            "GIT_IDENTITY",
+            "No repository-local commit identity override; the global identity applies",
+        )
+        return
+
+    def _display(value: str) -> str:
+        return "(empty)" if value == "" else value
+
+    shown = ", ".join(
+        f"{scope.lstrip('-')}:{key}={_display(value)}"
+        + (f" ({count} values)" if count > 1 else "")
+        for (scope, key), (value, _origins, count) in found.items())
+
+    # Only a complete, single-valued user.name/user.email pair can be "the same
+    # as the global identity". An author.* or committer.* key has no global
+    # counterpart being duplicated, and a partial pair still changes behaviour,
+    # so both fall through to the stronger wording.
+    matches = ({(key, value) for (_scope, key), (value, _o, count) in found.items()
+                if count == 1} == {("user.name", global_name), ("user.email", global_email)})
+    detail = ("currently the same as the global identity, but it pins this checkout "
+              "to that value if the global one ever changes"
+              if matches else
+              "overrides the global identity and will author or commit as itself "
+              "in this checkout and every worktree sharing it")
+
+    # Remediation must clear every populated key in every scope that carries
+    # one: clearing only the highest-precedence scope leaves the next one
+    # immediately effective. Keys are cleared individually rather than by
+    # section, so an unrelated user.signingkey survives, and with --unset-all,
+    # because --unset refuses a key holding more than one value.
+    commands: list[str] = []
+    includes: list[str] = []
+    for (scope, key), (_value, origins, _count) in found.items():
+        own = own_files.get(scope)
+        for origin in origins:
+            absolute = os.path.abspath(os.path.join(str(root), origin))
+            if own and absolute == own:
+                command = f"git config {scope} --unset-all {key}"
+                if command not in commands:
+                    commands.append(command)
+                continue
+            # A value inside an included file cannot be removed through this
+            # scope, so name the include rather than emit a command Git would
+            # reject. Report it relative to the repository when it lives there;
+            # an include from elsewhere on the host is described without its
+            # path, because this summary gets pasted into issues and logs.
+            try:
+                relative = os.path.relpath(absolute, str(root))
+            except ValueError:
+                relative = ""
+            label = (relative if relative and not relative.startswith("..")
+                     else "a config file outside the repository")
+            if label not in includes:
+                includes.append(label)
+
+    remedy = ""
+    if commands:
+        remedy = (" If an automated session set this, clear it with '"
+                  + " && ".join(commands) + "'.")
+    if includes:
+        remedy += (" Some values come from an included config ("
+                   + ", ".join(includes)
+                   + "), which this scope cannot unset: remove the include.path"
+                   " directive or edit that file. Run 'git config --show-origin"
+                   " --get-all user.email' to list the exact locations.")
+    report.warn("GIT_IDENTITY",
+                f"Repository commit identity is set here ({shown}) and {detail}.{remedy}")
+
+
 def check_repository_contract(report: Report) -> None:
     root = report.root
     required = (

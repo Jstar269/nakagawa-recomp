@@ -5635,24 +5635,24 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d69cd82fe820be660586d9a2448bf51c69e6abe64c8ac5aaf04c5817237d1517"
+      "sha256": "13fd28a01aa08dfcfcd8f5c16cd240cb6a3ba023cad2fccdce2f3a34982fd939"
     },
     {
       "path": "tools/hst_doctor_checks.py",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac59867a767290a8e0fabf713611eea0482abb69d159aba2e545666c6bbb29f8"
+      "sha256": "94eeb9ea17f90d500aa250355cd201bf0139808a922353f285bf4e19da2125f1"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -5781,12 +5781,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "059e41666c47bb7d8c6c26a93724bf169dc9b9200eb294c7215fe9f940214273"
+      "sha256": "8078f1f31666eceed62bc4a581a6d12200f1a03323ff9643177e798adb86db8c"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -6726,7 +6726,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "29a1a8fe85e4f3495e1f97430cd4f39dc4856869cb6c6413be0ca39067a13833"
+      "sha256": "00bd1bb929ff8ad2c98fa37a848a37202e44378cce3e474693b0831f7fbce5a5"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7635,11 +7635,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "bf877d2c87edc8cc384e46fe3154800fda74a484",
-    "candidate_tree": "e00096812574b900386067d3b33701bb5455312d",
+    "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
+    "candidate_tree": "f3b754c42324b50abeff89e54d67240d211a4b8b",
     "refreshed_paths": [
-      "Makefile",
-      "src/rt/hle.c"
+      "tools/hst_doctor.py",
+      "tools/hst_doctor_checks.py",
+      "tools/mem_debug.py",
+      "tools/test_hst_doctor_hardening.py"
     ]
   }
 }
