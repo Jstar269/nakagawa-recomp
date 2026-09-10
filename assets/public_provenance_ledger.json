@@ -5652,7 +5652,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8b9e67c0e4655bcf1b869b6a9a1c0b6da4dbc626e6b177296634bb2b1ed47d9"
+      "sha256": "94eeb9ea17f90d500aa250355cd201bf0139808a922353f285bf4e19da2125f1"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -6726,7 +6726,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "dc5b0edac46a409da3e1fc080ead2d28f472a56794ed09987cf830d5c2d5a145"
+      "sha256": "00bd1bb929ff8ad2c98fa37a848a37202e44378cce3e474693b0831f7fbce5a5"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7636,7 +7636,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
-    "candidate_tree": "f166383489c4a81ceefea4dbfd77e41f301272be",
+    "candidate_tree": "f3b754c42324b50abeff89e54d67240d211a4b8b",
     "refreshed_paths": [
       "tools/hst_doctor.py",
       "tools/hst_doctor_checks.py",
