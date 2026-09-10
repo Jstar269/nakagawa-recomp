@@ -702,7 +702,7 @@ class _GitConfigError(Exception):
     """The configuration could not be inspected, as distinct from being unset."""
 
 
-def _git_config(root: Path, scope: str, key: str) -> str | None:
+def _git_config(root: Path, scope: str, key: str, *, as_bool: bool = False) -> str | None:
     """Read one git config value. None means *unset*; never means *unknown*.
 
     `git config --get` exits 1 for an unset key and uses other nonzero codes for
@@ -713,7 +713,8 @@ def _git_config(root: Path, scope: str, key: str) -> str | None:
     """
     try:
         proc = subprocess.run(
-            ["git", "-C", str(root), "config", scope, "--get", key],
+            ["git", "-C", str(root), "config", scope,
+             *(("--type=bool",) if as_bool else ()), "--get", key],
             capture_output=True, text=True, timeout=15, check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
@@ -730,89 +731,85 @@ def _git_config(root: Path, scope: str, key: str) -> str | None:
 
 
 def check_agent_identity(report: Report) -> None:
-    """Repository-local commit identity must be the human maintainer's.
+    """Repository commit identity must come from the host, not from this checkout.
 
-    Automated sessions have written a repository-local ``[user]`` block here,
-    which silently re-authors every later commit in this checkout and in every
-    worktree sharing it. AGENTS.md already forbids inventing a contributor
-    identity; this check makes the leftover visible instead of trusting that
-    each tool honoured the contract. Nothing is rewritten automatically: the
-    fix is ``git config --remove-section user`` so the global identity applies.
+    Automated sessions have written a repository-local identity here, which
+    silently re-authors every later commit in this checkout and in every worktree
+    sharing it. AGENTS.md section 3 already forbids inventing a contributor
+    identity; this makes the leftover visible rather than trusting each tool to
+    have honoured the contract.
+
+    Git takes a commit's identity from user.*, and lets author.* and committer.*
+    override it per role, in either the per-worktree or the repository-local
+    file. Any of those six in either scope is an override, so all of them are
+    inspected -- checking only user.* in only --local would report a clean PASS
+    against a checkout that is actively re-authoring commits.
     """
     root = report.root
-    def _override(key: str) -> tuple[str | None, str]:
-        """Effective non-global value for *key*, and the scope it came from.
-
-        With extensions.worktreeConfig enabled, `git config --worktree` writes a
-        per-worktree file that --local does not read, so an agent could pin an
-        identity in a scope this check never looked at. Worktree scope wins over
-        repository scope in git, so it is consulted first.
-        """
-        for scope in ("--worktree", "--local"):
-            try:
-                value = _git_config(root, scope, key)
-            except _GitConfigError:
-                if scope == "--worktree":
-                    continue  # not a worktree, or the extension is off
-                raise
-            if value is not None:
-                return value, scope.lstrip("-")
-        return None, "none"
-
+    scopes = ("--worktree", "--local")
+    sections = ("user", "author", "committer")
+    found: list[tuple[str, str, str]] = []   # (scope, "section.key", value)
     try:
-        local_name, name_scope = _override("user.name")
-        local_email, email_scope = _override("user.email")
+        worktree_scope = _git_config(
+            root, "--local", "extensions.worktreeConfig", as_bool=True) == "true"
+        for scope in scopes:
+            if scope == "--worktree" and not worktree_scope:
+                # Without extensions.worktreeConfig, `git config --worktree` is
+                # documented to behave exactly as --local. Reading it anyway would
+                # report every .git/config value twice, once under a scope that
+                # does not exist, and would emit a `--worktree --unset` remedy
+                # that git refuses. --local already covers this case.
+                continue
+            for section in sections:
+                for key in ("name", "email"):
+                    value = _git_config(root, scope, f"{section}.{key}")
+                    if value is not None:
+                        found.append((scope.lstrip("-"), f"{section}.{key}", value))
         global_name = _git_config(root, "--global", "user.name")
         global_email = _git_config(root, "--global", "user.email")
     except _GitConfigError as error:
         report.warn(
             "GIT_IDENTITY",
-            f"Could not inspect the commit identity, so a stray repository-local "
+            "Could not inspect the commit identity, so a stray repository-local "
             f"override cannot be ruled out: {error}",
         )
         return
-    if local_name is None and local_email is None:
+
+    if not found:
         report.pass_(
             "GIT_IDENTITY",
             "No repository-local commit identity override; the global identity applies",
         )
         return
 
-    def _remedy(name_scope: str, email_scope: str) -> str:
-        """The command that actually clears the identity that was found.
+    def _display(value: str) -> str:
+        return "(empty)" if value == "" else value
 
-        `--remove-section user` targets repository-local config, so suggesting it
-        for a worktree-scope identity fails with "no such section" and leaves the
-        override in place -- an agent could follow the fix exactly and still have
-        its commits re-authored. Name each scope that actually holds a key, and
-        keep them separate when name and email were set in different ones.
-        """
-        scopes = sorted({s for s in (name_scope, email_scope) if s != "none"})
-        if not scopes:
-            return "git config --remove-section user"
-        return " && ".join(
-            f"git config --{s} --remove-section user" if s != "local"
-            else "git config --remove-section user" for s in scopes)
-
-    def _display(value: str | None) -> str:
-        return "(empty)" if value == "" else (value or "(unset)")
-
-    scope = name_scope if name_scope != "none" else email_scope
-    shown = (f"{_display(local_name)} <{_display(local_email)}>"
-             + (f" [{scope} scope]" if scope not in ("none", "local") else ""))
-    matches = (local_name, local_email) == (global_name, global_email)
-    # A local override is unwanted even when it currently agrees with the global
-    # identity: it pins this checkout to today's value, so a later change to the
-    # global identity silently stops applying here. Warn either way.
+    shown = ", ".join(f"{scope}:{key}={_display(v)}" for scope, key, v in found)
+    # Only a user.name/user.email pair can be "the same as the global identity".
+    # An author.* or committer.* key has no global counterpart being duplicated,
+    # and a partial pair still changes behaviour, so both fall through to the
+    # stronger wording.
+    matches = ({(k, v) for _, k, v in found} ==
+               {("user.name", global_name), ("user.email", global_email)})
     detail = ("currently the same as the global identity, but it pins this checkout "
               "to that value if the global one ever changes"
               if matches else
-              "overrides the global identity and will author every commit in this "
-              "checkout and its worktrees")
+              "overrides the global identity and will author or commit as itself "
+              "in this checkout and every worktree sharing it")
+
+    # Remediation must clear every populated key in every scope it was found in.
+    # Clearing only the highest-precedence scope leaves the next one immediately
+    # effective, so the identity keeps applying. Keys are unset individually
+    # rather than by section, because --remove-section user would also discard
+    # unrelated settings such as user.signingkey.
+    commands = " && ".join(
+        f"git config{' --worktree' if scope == 'worktree' else ' --local'} --unset {key}"
+        for scope, key, _ in found)
     report.warn(
         "GIT_IDENTITY",
-        f"Repository-local commit identity {shown} {detail}. If an automated session "
-        f"set this, clear it with '{_remedy(name_scope, email_scope)}'.",
+        f"Repository commit identity is set here ({shown}) and {detail}. "
+        f"If an automated session set this, clear it with '{commands}'.",
     )
 
 

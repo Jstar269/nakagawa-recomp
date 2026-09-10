@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -400,6 +401,120 @@ class SetupMatrixScenariosTests(unittest.TestCase):
         eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
         self.assertIsNotNone(eboot_elf_res)
         self.assertEqual(eboot_elf_res.status, "PASS")
+
+
+class AgentIdentityChecks(unittest.TestCase):
+    """A repository-local commit identity must be reported, whichever key carries it.
+
+    The check exists because automated sessions have left an identity behind in
+    this workspace, silently re-authoring later commits. Two ways of failing it
+    are easy and were both found on review: looking only at `user.*` when Git
+    also honours `author.*` and `committer.*`, and reporting only the
+    highest-precedence scope so the remediation leaves a lower one effective.
+    """
+
+    def _repo(self, tmp: str, *config: tuple[str, ...]) -> Path:
+        root = Path(tmp) / "repo"
+        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+        for args in config:
+            subprocess.run(["git", "-C", str(root), "config", *args],
+                           check=True, capture_output=True)
+        return root
+
+    def _run(self, root: Path):
+        report = hst_doctor.Report(root, "identity")
+        hst_doctor_checks.check_agent_identity(report)
+        results = [r for r in report.results if r.code == "GIT_IDENTITY"]
+        self.assertEqual(len(results), 1, "the check must report exactly once")
+        return results[0]
+
+    def test_clean_checkout_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._run(self._repo(tmp)).status, "PASS")
+
+    def test_unrelated_user_key_is_not_an_identity(self) -> None:
+        """user.signingkey is not an identity, and must not be reported as one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.signingkey", "ABCD1234"))
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_local_user_identity_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.name", "opencode"),
+                              ("user.email", "opencode@nakagawa.local"))
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("opencode@nakagawa.local", result.summary)
+
+    def test_author_and_committer_keys_are_reported(self) -> None:
+        """Git honours author.*/committer.* over user.*, so both must be inspected.
+
+        Reproduced against Git 2.43: a repository-local author.email authors
+        every commit in the checkout while user.email is unset entirely.
+        """
+        for key in ("author.name", "author.email", "committer.name", "committer.email"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                root = self._repo(tmp, (key, "bot@x.invalid"))
+                result = self._run(root)
+                self.assertEqual(result.status, "WARN")
+                self.assertIn(key, result.summary)
+
+    def test_empty_value_is_still_an_override(self) -> None:
+        """An empty [user] entry breaks commits; it must not read as unset."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.email", ""))
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("(empty)", result.summary)
+
+    def test_worktree_scope_is_not_double_reported_when_extension_is_off(self) -> None:
+        """Without extensions.worktreeConfig, --worktree *is* --local in Git.
+
+        Reading it as a separate scope reports every .git/config value twice and
+        emits a `--worktree --unset` remedy that Git refuses.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.name", "localguy"))
+            summary = self._run(root).summary
+            self.assertNotIn("worktree:", summary)
+            self.assertNotIn("--worktree", summary)
+
+    def test_remediation_clears_every_populated_scope(self) -> None:
+        """The emitted commands must leave no identity behind, in either scope.
+
+        Clearing only the higher-precedence worktree value leaves the common
+        .git/config identity immediately effective, which is the failure this
+        asserts against: the remedy is run verbatim and the check must then pass.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(
+                tmp,
+                ("extensions.worktreeConfig", "true"),
+                ("user.name", "localguy"), ("user.email", "l@x.invalid"),
+                ("committer.name", "cbot"),
+                ("--worktree", "user.name", "wtguy"),
+                ("--worktree", "author.email", "w@x.invalid"),
+            )
+            summary = self._run(root).summary
+            self.assertIn("worktree:user.name=wtguy", summary)
+            self.assertIn("local:user.name=localguy", summary)
+            commands = re.search(r"clear it with '(.+)'\.$", summary)
+            self.assertIsNotNone(commands, "the warning must carry a remediation")
+            for command in commands.group(1).split(" && "):
+                self.assertTrue(command.startswith("git config "), command)
+                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_uninspectable_config_warns_rather_than_passing(self) -> None:
+        """A failed lookup must never read as a clean checkout."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "not-a-repo"
+            root.mkdir()
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("cannot be ruled out", result.summary)
 
 
 if __name__ == "__main__":
