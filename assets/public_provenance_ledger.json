@@ -5652,7 +5652,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "870c539347e90e233a9f3f32054c59453afc4066fe827f095771f61576c97fd7"
+      "sha256": "c1d6db16930b85e27a17c2e9a79d67b9ed50789afab6d8b59ff953802bf26384"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -5786,7 +5786,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf57d37b290bfd1389fdd4e610da3cc40f275110a26b7837880e2c61c1ae3bc5"
+      "sha256": "8078f1f31666eceed62bc4a581a6d12200f1a03323ff9643177e798adb86db8c"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -7636,7 +7636,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
-    "candidate_tree": "1741cb498f7eb7cf6a97db087ac3d6954e1032e5",
+    "candidate_tree": "1f863d4a354fcfd526928449f6a10229e60705a4",
     "refreshed_paths": [
       "tools/hst_doctor.py",
       "tools/hst_doctor_checks.py",
