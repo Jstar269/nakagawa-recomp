@@ -1,5 +1,10 @@
 # UI Baseline: Visual and Functional State Inventory
 
+> **Publication status:** The 20 PNG captures referenced by this inventory are
+> retained internally and are not published with this landing. This README is
+> the published text inventory; the capture files are illustrative evidence
+> only.
+
 ## 1. Overview & Capture Environment
 
 This directory records the visual and functional baseline of Nakagawa Recomp's user interfaces prior to native migration.

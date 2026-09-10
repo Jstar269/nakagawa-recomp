@@ -62,7 +62,6 @@ else ifeq ($(origin TITLE_EXTRA_SPANS),default)
 TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
 endif
 endif
-
 # GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
 # authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
 # the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
@@ -842,22 +841,31 @@ portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
 
-PLAYER_EXE ?= build/nakagawa_player.exe
 ifeq ($(OS),Windows_NT)
 PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
 PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
+PLAYER_VULKAN_LIB   := -LC:/VulkanSDK/1.4.357.0/Lib -LC:/VulkanSDK/1.4.357.0/lib
+EXE_EXT             := .exe
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_EXTRA_LIBS   :=
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
 endif
 
-PLAYER_CORE_SRCS := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c $(PLAYER_PLATFORM_SRC)
+PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 player: $(PLAYER_EXE)
 
@@ -1462,20 +1470,8 @@ shader-repro-verify:
 	$(PYTHON) tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
 
 # -----------------------------------------------------------------------------
-# Native Product Core & SDL3 Player Targets
+# Native Product Core Tests
 # -----------------------------------------------------------------------------
-PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c
-ifeq ($(OS),Windows_NT)
-PLAYER_PLAT_SOURCES := src/core/nk_platform_win32.c
-PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
-PLAYER_VULKAN_LIB   := -LC:/VulkanSDK/1.4.357.0/Lib -LC:/VulkanSDK/1.4.357.0/lib
-EXE_EXT             := .exe
-else
-PLAYER_PLAT_SOURCES := src/core/nk_platform_posix.c
-PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   :=
-EXE_EXT             :=
-endif
 native-core-tests:
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
@@ -1496,12 +1492,3 @@ ifeq ($(OS),Windows_NT)
 		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
 	./build/test_win32_process$(EXE_EXT)
 endif
-
-PLAYER_SOURCES := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c
-
-player:
-	$(CC) -std=c99 -Wall -Wextra \
-		-Isrc/core -Isrc/core/generated -Isrc/player $(PLAYER_VULKAN_INC) \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) $(PLAYER_SOURCES) \
-		$(PLAYER_VULKAN_LIB) -lSDL3 -lshell32 -o build/nakagawa_player$(EXE_EXT)
-
