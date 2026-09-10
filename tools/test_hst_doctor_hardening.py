@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -506,6 +507,64 @@ class AgentIdentityChecks(unittest.TestCase):
                                       capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
             self.assertEqual(self._run(root).status, "PASS")
+
+    def test_multi_valued_key_is_cleared_with_unset_all(self) -> None:
+        """A key holding two values needs --unset-all; --unset refuses it.
+
+        Reproduced against Git 2.43: `git config --unset user.email` on a
+        doubled key warns "has multiple values", exits 5, and leaves both in
+        place, so the emitted remedy silently did nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            for value in ("first@x.invalid", "second@x.invalid"):
+                subprocess.run(["git", "-C", str(root), "config", "--add",
+                                "user.email", value], check=True, capture_output=True)
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("(2 values)", result.summary)
+            commands = re.search(r"clear it with '(.+?)'\.", result.summary)
+            self.assertIsNotNone(commands)
+            self.assertIn("--unset-all", commands.group(1))
+            for command in commands.group(1).split(" && "):
+                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_identity_from_an_include_is_reported(self) -> None:
+        """An included identity authors commits, so it must not read as clean.
+
+        Verified against Git 2.43: with `include.path` pointing at a file that
+        sets user.name/user.email, `git config --local --get user.email` reports
+        nothing while `git commit` authors as the included identity. The remedy
+        must name the include rather than emit an unset this scope cannot honour.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            include = root / ".git" / "identity.inc"
+            include.write_text(
+                "[user]\n\tname = IncludedBot\n\temail = included@x.invalid\n",
+                encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "config", "include.path",
+                            "identity.inc"], check=True, capture_output=True)
+
+            # Confirm the premise on this Git before asserting on the check.
+            effective = subprocess.run(
+                ["git", "-C", str(root), "config", "--get", "user.email"],
+                capture_output=True, text=True, check=False,
+                env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                     "GIT_CONFIG_SYSTEM": os.devnull})
+            self.assertEqual(effective.stdout.strip(), "included@x.invalid",
+                             "precondition: Git resolves the included identity")
+
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("included@x.invalid", result.summary)
+            self.assertIn("included config", result.summary)
+            # The include cannot be unset through --local, so no command may
+            # claim to clear it.
+            self.assertNotIn("--unset-all user.email", result.summary)
 
     def test_uninspectable_config_warns_rather_than_passing(self) -> None:
         """A failed lookup must never read as a clean checkout."""
