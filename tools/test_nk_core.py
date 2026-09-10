@@ -30,6 +30,45 @@ from nk_core import (
 )
 
 
+def _build_param_sfo(disc_id: str, title: str = "Synthetic Test Title",
+                     version: str = "1.00") -> bytes:
+    """Build a real PSP PARAM.SFO structure.
+
+    The fixture used to embed the bare disc-id string and rely on the inspector
+    scanning raw image bytes for it. That path is a guess, not evidence, and no
+    longer satisfies the registry -- so a fixture that wants a *supported* disc
+    has to present the structure a real disc presents.
+    """
+    entries = [
+        ("DISC_ID", 0x0204, disc_id.encode("utf-8") + bytes([0])),
+        ("DISC_VERSION", 0x0204, version.encode("utf-8") + bytes([0])),
+        ("TITLE", 0x0204, title.encode("utf-8") + bytes([0])),
+    ]
+    entries.sort(key=lambda e: e[0])
+
+    key_table = bytearray()
+    data_table = bytearray()
+    entry_table = bytearray()
+    for key, fmt, val in entries:
+        k_off = len(key_table)
+        key_table.extend(key.encode("utf-8") + bytes([0]))
+        d_off = len(data_table)
+        d_len = len(val)
+        data_table.extend(val)
+        while len(data_table) % 4 != 0:
+            data_table.append(0)
+        entry_table.extend(struct.pack("<HHIII", k_off, fmt, d_len, d_len, d_off))
+
+    key_table_start = 20 + len(entry_table)
+    data_table_start = key_table_start + len(key_table)
+    while data_table_start % 4 != 0:
+        key_table.append(0)
+        data_table_start += 1
+    header = struct.pack("<4s4sIII", bytes([0]) + b"PSF", bytes([1, 1, 0, 0]),
+                         key_table_start, data_table_start, len(entries))
+    return bytes(header + entry_table + key_table + data_table)
+
+
 def _create_mock_iso(path: Path, disc_id: str = "TEST00001", volume_id: str = "SYNTHETIC_GAME") -> None:
     """Create a minimal valid ISO9660 image with PVD and disc ID signature."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,9 +81,11 @@ def _create_mock_iso(path: Path, disc_id: str = "TEST00001", volume_id: str = "S
         vol_bytes = volume_id.encode("latin-1")[:32].ljust(32)
         pvd[40:72] = vol_bytes
         f.write(pvd)
-        # Embed Disc ID in sector 17
+        # Sector 17: a real PARAM.SFO, so identity comes from parsed structure
+        # rather than from a raw byte match somewhere in the image.
+        sfo = _build_param_sfo(disc_id)
         sec17 = bytearray(2048)
-        sec17[0 : len(disc_id)] = disc_id.encode("ascii")
+        sec17[0 : len(sfo)] = sfo
         f.write(sec17)
         # Pad up to 1.5 MiB to satisfy min size
         remaining = (1536 * 1024) - (18 * 2048)

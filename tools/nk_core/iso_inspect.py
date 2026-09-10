@@ -125,6 +125,15 @@ def inspect_iso(
         title = sfo_dict.get("TITLE", "")
         version = sfo_dict.get("DISC_VERSION", "1.00")
 
+        # Identity provenance. Only a parsed PARAM.SFO structure is evidence of
+        # what this disc is. Every fallback below recovers a *guess* from raw
+        # image bytes -- a disc id occurring somewhere in 64 MiB of data is not
+        # evidence that the disc is that title. A guess may be reported, but it
+        # must never satisfy the registry and mark the disc supported.
+        # The native reader applies the same rule (src/core/nk_iso.c,
+        # identity_structured); the two must agree or ISO parity breaks.
+        identity_structured = bool(disc_id)
+
         # Fallback if SFO was compressed or not in the first 64 MiB: check known signatures
         if not disc_id:
             for profile in reg.all_profiles():
@@ -163,7 +172,7 @@ def inspect_iso(
         elif upper_disc.startswith("UCAS") or upper_disc.startswith("ULAS"):
             region = "ASIA"
 
-        matched = reg.lookup_by_disc_id(disc_id)
+        matched = reg.lookup_by_disc_id(disc_id) if identity_structured else None
 
         return IsoMetadata(
             disc_id=disc_id,

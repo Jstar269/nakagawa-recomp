@@ -23,6 +23,11 @@
 #define SECTOR_SIZE 2048
 #define PVD_SECTOR 16
 #define NK_ISO_MAX_DEPTH 16
+/* Upper bound on a directory extent we are willing to buffer. A recorded size
+   above this is treated as unusable and replaced by a conservative window.
+   Both readers must agree: two different limits for the same field mean the
+   inspect and extract paths disagree about what a valid image looks like. */
+#define NK_ISO_MAX_DIR_BYTES (512u * 1024u)
 
 /* SFO Header Magic: \x00PSF */
 static const uint8_t SFO_MAGIC[4] = { 0x00, 'P', 'S', 'F' };
@@ -245,7 +250,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     /* Search for PARAM.SFO by reading root directory and PSP_GAME */
     uint32_t root_lba = read_le32(&pvd[158]);
     uint32_t root_size = read_le32(&pvd[166]);
-    if (root_size > 512 * 1024 || root_size == 0) root_size = 4 * SECTOR_SIZE;
+    if (root_size > NK_ISO_MAX_DIR_BYTES || root_size == 0) root_size = 4 * SECTOR_SIZE;
 
     /* Check root directory 64-bit bounds */
     uint64_t root_offset = (uint64_t)root_lba * SECTOR_SIZE;
@@ -318,8 +323,15 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     uint32_t sfo_lba = 0;
     uint32_t sfo_size = 0;
 
+    /* True only when disc_id came from a parsed, validated PARAM.SFO structure.
+       A disc id recovered by scanning raw image bytes is a guess: the byte
+       sequence "TEST00001" occurring anywhere in 64 MiB of image data is not
+       evidence that this disc is that title. Such an id may be reported, but it
+       must never satisfy the catalog and mark the disc supported/verified. */
+    bool identity_structured = false;
+
     if (psp_game_lba > 0) {
-        if (psp_game_size > 512 * 1024 || psp_game_size == 0) psp_game_size = 4 * SECTOR_SIZE;
+        if (psp_game_size > NK_ISO_MAX_DIR_BYTES || psp_game_size == 0) psp_game_size = 4 * SECTOR_SIZE;
         uint64_t psp_game_offset = (uint64_t)psp_game_lba * SECTOR_SIZE;
 
         if (psp_game_offset <= file_size && (uint64_t)psp_game_size <= file_size - psp_game_offset) {
@@ -368,7 +380,12 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
 
                     uint64_t ext_off = (uint64_t)extent_lba * SECTOR_SIZE;
                     if (ext_off <= file_size && (uint64_t)extent_size <= file_size - ext_off) {
-                        if (name_len >= 9 && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0) {
+                        /* ECMA-119 7.5.1: a file identifier is NAME;VERSION, so
+                           "PARAM.SFO" may legitimately appear as "PARAM.SFO;1".
+                           Accept only those two forms -- a bare prefix test also
+                           matches PARAM.SFOO and any longer name sharing it. */
+                        if (name_len >= 9 && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0
+                            && (name_len == 9 || dir_buf[off + 33 + 9] == ';')) {
                             sfo_lba = extent_lba;
                             sfo_size = extent_size;
                             break;
@@ -389,7 +406,9 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             if (sfo_buf) {
                 nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
                 if (fread(sfo_buf, 1, sfo_size, f) == sfo_size) {
-                    if (!parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                    if (parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                        if (out_meta->disc_id[0] != 0) identity_structured = true;
+                    } else {
                         if (out_meta->error_message[0] != '\0') {
                             free(sfo_buf);
                             fclose(f);
@@ -412,7 +431,9 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             /* Search for SFO magic */
             for (size_t i = 0; i + 20 <= bytes_read; i++) {
                 if (memcmp(scan_buf + i, SFO_MAGIC, 4) == 0) {
-                    if (!parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
+                    if (parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
+                        if (out_meta->disc_id[0] != 0) identity_structured = true;
+                    } else {
                         if (out_meta->error_message[0] != '\0') {
                             free(scan_buf);
                             fclose(f);
@@ -443,7 +464,9 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     }
 
     /* Look up in native title catalog */
-    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(out_meta->disc_id);
+    const NkTitleEntry *entry = identity_structured
+        ? nk_title_catalog_find_by_disc_id(out_meta->disc_id)
+        : NULL;
     if (entry) {
         out_meta->is_supported = true;
         out_meta->matched_title = entry;
@@ -489,7 +512,7 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
     /* Parse root dir */
     uint32_t cur_lba = read_le32(&pvd[158]);
     uint32_t cur_size = read_le32(&pvd[166]);
-    if (cur_size > 1024 * 1024 || cur_size == 0) cur_size = 4 * SECTOR_SIZE;
+    if (cur_size > NK_ISO_MAX_DIR_BYTES || cur_size == 0) cur_size = 4 * SECTOR_SIZE;
 
     uint64_t cur_offset = (uint64_t)cur_lba * SECTOR_SIZE;
     if (cur_offset > file_size || (uint64_t)cur_size > file_size - cur_offset) {

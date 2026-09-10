@@ -363,6 +363,33 @@ static void test_hostile_iso_parser(const char *test_dir) {
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_trunc, &meta) == NK_ERROR_INVALID_ISO);
 
+    /* 10. Raw-scan identity must not satisfy the catalog.
+       A valid image with no PARAM.SFO anywhere, but carrying the ASCII bytes of
+       a catalog-known disc id in its data. The id may be reported as a guess;
+       it must NOT mark the disc supported or verified, because a byte sequence
+       occurring somewhere in an image is not evidence of disc identity. */
+    char fpath_scan[512];
+    snprintf(fpath_scan, sizeof(fpath_scan), "%s%cscan_identity.iso", test_dir, nk_platform_path_separator());
+    static uint8_t scan_iso[20 * 2048];
+    memset(scan_iso, 0, sizeof(scan_iso));
+    uint8_t *spvd = &scan_iso[16 * 2048];
+    spvd[0] = 0x01;
+    memcpy(&spvd[1], "CD001", 5);
+    memcpy(&spvd[40], "SCANPROBE_VOL                   ", 32);
+    /* Root extent LBA = 17 (an empty directory sector), size = 2048 */
+    spvd[158] = 17; spvd[159] = 0; spvd[160] = 0; spvd[161] = 0;
+    spvd[166] = 0x00; spvd[167] = 0x08; spvd[168] = 0; spvd[169] = 0;
+    /* Catalog-known disc id present only as loose bytes, with no SFO structure */
+    memcpy(&scan_iso[18 * 2048], "TEST00001", 9);
+    write_test_file(fpath_scan, scan_iso, sizeof(scan_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_scan, &meta) == NK_OK);
+    assert(strcmp(meta.disc_id, "TEST00001") == 0);   /* still reported */
+    assert(meta.is_supported == false);               /* but never trusted */
+    assert(meta.status != NK_STATUS_VERIFIED);
+    assert(meta.matched_title == NULL);
+
+
     printf("[HOSTILE_TEST] ISO parser tests PASSED!\n");
 }
 
