@@ -6190,12 +6190,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ce62eb74c5f3fe5a7547c3ccaad3e6d365e18c3b118b0c86835424ef0c99c27"
+      "sha256": "aa1e9ea4c7f7d04922cdcabef3914b70f1c8c9e61a880ae297b874acea025f7f"
     },
     {
       "path": "tools/public_export.py",
@@ -6231,7 +6231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72136478f586986a93511503cd154ba93994cf9081afb516debfa6a72b4c1a6a"
+      "sha256": "4bd44f72c7bdd1635bf34e6b757cd4a50d36768827f5366381157ef1ef7a4652"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -7125,7 +7125,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "fcd1793ca4b4cdc0af6a14cd7ccbab6ccafeb870d823f23926dfb6d9c8b13974"
+      "sha256": "4d8c8818cef0eccb38e39e4b769bc5a8ab2107c803ef8667b979a6a4bf0fcb04"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -7635,13 +7635,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
-    "candidate_tree": "f3b754c42324b50abeff89e54d67240d211a4b8b",
+    "trusted_tree": "56cbcbef6d7e38171d37659dff45d39058c62103",
+    "candidate_tree": "8bde48c7c7fb63d7bcf88af7ef0f73d2db19a7a8",
     "refreshed_paths": [
-      "tools/hst_doctor.py",
-      "tools/hst_doctor_checks.py",
-      "tools/mem_debug.py",
-      "tools/test_hst_doctor_hardening.py"
+      "tools/public_candidate.py",
+      "tools/publish_audit.py",
+      "tools/test_publish_audit.py"
     ]
   }
 }
