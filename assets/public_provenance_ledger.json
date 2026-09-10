@@ -5652,7 +5652,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1d6db16930b85e27a17c2e9a79d67b9ed50789afab6d8b59ff953802bf26384"
+      "sha256": "f8b9e67c0e4655bcf1b869b6a9a1c0b6da4dbc626e6b177296634bb2b1ed47d9"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -6726,7 +6726,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "29a1a8fe85e4f3495e1f97430cd4f39dc4856869cb6c6413be0ca39067a13833"
+      "sha256": "dc5b0edac46a409da3e1fc080ead2d28f472a56794ed09987cf830d5c2d5a145"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7636,11 +7636,12 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
-    "candidate_tree": "1f863d4a354fcfd526928449f6a10229e60705a4",
+    "candidate_tree": "f166383489c4a81ceefea4dbfd77e41f301272be",
     "refreshed_paths": [
       "tools/hst_doctor.py",
       "tools/hst_doctor_checks.py",
-      "tools/mem_debug.py"
+      "tools/mem_debug.py",
+      "tools/test_hst_doctor_hardening.py"
     ]
   }
 }
