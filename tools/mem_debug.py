@@ -292,30 +292,29 @@ def find_repo_root():
 def build_artifact_dir(exe_path=None):
     """Directory the attached runtime writes its diagnostic artifacts into.
 
-    The runtime compiles SR_BUILD_DIR from the Makefile's BUILD_DIR, which is
-    *relative* (build/$(GAME_NAME)), and hands it straight to fopen. Windows
-    therefore resolves it against the runtime's working directory, not against
-    the executable. For a run started from the repository root -- the normal
-    case, and the only one the manager produces -- those coincide, because the
-    executable itself lives at build/<game>/<game>.exe.
+    The Makefile links the executable into BUILD_DIR and compiles that same
+    BUILD_DIR in as SR_BUILD_DIR, so the executable's own parent directory is
+    the artifact directory in both supported shapes:
 
-    So the reliable part of the executable path is the *game name*, not the
-    directory: take the game from the attached executable and resolve it the way
-    the runtime does, against the repository root. That keeps this bound to the
-    process actually attached rather than to ambient GAME_NAME or SR_BUILD_DIR
-    inherited from an unrelated build, without pretending the artifacts sit
-    beside the binary.
+      * default relative BUILD_DIR (build/<game>) launched from the repository
+        root, where the runtime's relative fopen resolves to exactly that; and
+      * an overridden absolute BUILD_DIR, where the compiled path is absolute
+        and the working directory is irrelevant.
 
-    Known limitation: a --pid attach to a runtime started from some other
-    working directory writes its artifacts under that directory instead, and
-    this helper will not find them. Detecting that needs the process working
-    directory, which is not available here; the runtime would have to resolve
-    SR_BUILD_DIR to an absolute path at startup for it to be knowable.
+    Use the executable's parent verbatim. Reducing it to a name and rebuilding
+    it under <repo>/build would invent a directory for any custom root, and
+    deriving it from ambient GAME_NAME or SR_BUILD_DIR would follow an unrelated
+    build when the shell inherited another one.
+
+    Known limitation: a --pid attach to a runtime that was started from some
+    other working directory *and* built with a relative BUILD_DIR writes its
+    artifacts under that working directory instead, and this helper will not
+    find them. Resolving that needs the process working directory, which is not
+    available here; the runtime would have to resolve SR_BUILD_DIR to an
+    absolute path at startup for it to be knowable.
     """
     if exe_path:
-        game = os.path.basename(os.path.dirname(os.path.abspath(exe_path)))
-        if game:
-            return os.path.join(find_repo_root(), "build", game)
+        return os.path.dirname(os.path.abspath(exe_path))
     explicit = os.environ.get("SR_BUILD_DIR")
     if explicit:
         return explicit if os.path.isabs(explicit) else os.path.join(find_repo_root(), explicit)

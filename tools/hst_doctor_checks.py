@@ -778,6 +778,22 @@ def check_agent_identity(report: Report) -> None:
         )
         return
 
+    def _remedy(name_scope: str, email_scope: str) -> str:
+        """The command that actually clears the identity that was found.
+
+        `--remove-section user` targets repository-local config, so suggesting it
+        for a worktree-scope identity fails with "no such section" and leaves the
+        override in place -- an agent could follow the fix exactly and still have
+        its commits re-authored. Name each scope that actually holds a key, and
+        keep them separate when name and email were set in different ones.
+        """
+        scopes = sorted({s for s in (name_scope, email_scope) if s != "none"})
+        if not scopes:
+            return "git config --remove-section user"
+        return " && ".join(
+            f"git config --{s} --remove-section user" if s != "local"
+            else "git config --remove-section user" for s in scopes)
+
     def _display(value: str | None) -> str:
         return "(empty)" if value == "" else (value or "(unset)")
 
@@ -796,7 +812,7 @@ def check_agent_identity(report: Report) -> None:
     report.warn(
         "GIT_IDENTITY",
         f"Repository-local commit identity {shown} {detail}. If an automated session "
-        "set this, clear it with 'git config --remove-section user'.",
+        f"set this, clear it with '{_remedy(name_scope, email_scope)}'.",
     )
 
 
