@@ -723,8 +723,10 @@ def _git_config(root: Path, scope: str, key: str) -> str | None:
     if proc.returncode != 0:
         detail = (proc.stderr or "").strip().splitlines()
         raise _GitConfigError(detail[0] if detail else f"git config exited {proc.returncode}")
-    value = proc.stdout.strip()
-    return value or None
+    # Exit 0 means the key exists, even when its value is empty. An empty
+    # [user] entry is still an override and still breaks commits, so it must not
+    # collapse into the same None that means "no key at all".
+    return proc.stdout.strip()
 
 
 def check_agent_identity(report: Report) -> None:
@@ -738,9 +740,28 @@ def check_agent_identity(report: Report) -> None:
     fix is ``git config --remove-section user`` so the global identity applies.
     """
     root = report.root
+    def _override(key: str) -> tuple[str | None, str]:
+        """Effective non-global value for *key*, and the scope it came from.
+
+        With extensions.worktreeConfig enabled, `git config --worktree` writes a
+        per-worktree file that --local does not read, so an agent could pin an
+        identity in a scope this check never looked at. Worktree scope wins over
+        repository scope in git, so it is consulted first.
+        """
+        for scope in ("--worktree", "--local"):
+            try:
+                value = _git_config(root, scope, key)
+            except _GitConfigError:
+                if scope == "--worktree":
+                    continue  # not a worktree, or the extension is off
+                raise
+            if value is not None:
+                return value, scope.lstrip("-")
+        return None, "none"
+
     try:
-        local_name = _git_config(root, "--local", "user.name")
-        local_email = _git_config(root, "--local", "user.email")
+        local_name, name_scope = _override("user.name")
+        local_email, email_scope = _override("user.email")
         global_name = _git_config(root, "--global", "user.name")
         global_email = _git_config(root, "--global", "user.email")
     except _GitConfigError as error:
@@ -757,7 +778,12 @@ def check_agent_identity(report: Report) -> None:
         )
         return
 
-    shown = f"{local_name or '(unset)'} <{local_email or '(unset)'}>"
+    def _display(value: str | None) -> str:
+        return "(empty)" if value == "" else (value or "(unset)")
+
+    scope = name_scope if name_scope != "none" else email_scope
+    shown = (f"{_display(local_name)} <{_display(local_email)}>"
+             + (f" [{scope} scope]" if scope not in ("none", "local") else ""))
     matches = (local_name, local_email) == (global_name, global_email)
     # A local override is unwanted even when it currently agrees with the global
     # identity: it pins this checkout to today's value, so a later change to the

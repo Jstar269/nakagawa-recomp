@@ -292,24 +292,30 @@ def find_repo_root():
 def build_artifact_dir(exe_path=None):
     """Directory the attached runtime writes its diagnostic artifacts into.
 
-    Mirrors the Makefile's BUILD_DIR (build/$(GAME_NAME)), which the runtime
-    receives as -DSR_BUILD_DIR and writes its ExitGame crash dump and exit flag
-    into.
+    The runtime compiles SR_BUILD_DIR from the Makefile's BUILD_DIR, which is
+    *relative* (build/$(GAME_NAME)), and hands it straight to fopen. Windows
+    therefore resolves it against the runtime's working directory, not against
+    the executable. For a run started from the repository root -- the normal
+    case, and the only one the manager produces -- those coincide, because the
+    executable itself lives at build/<game>/<game>.exe.
 
-    The executable actually attached to is the authority, not the ambient
-    environment. A shell or dashboard can carry GAME_NAME or SR_BUILD_DIR from a
-    completely different build; trusting those while attached elsewhere would
-    read another build's crash dump, report its stale status, or drop this
-    session's pause marker into it. Since the runtime places the artifacts
-    beside its own executable, the executable's directory is the answer whenever
-    one is known.
+    So the reliable part of the executable path is the *game name*, not the
+    directory: take the game from the attached executable and resolve it the way
+    the runtime does, against the repository root. That keeps this bound to the
+    process actually attached rather than to ambient GAME_NAME or SR_BUILD_DIR
+    inherited from an unrelated build, without pretending the artifacts sit
+    beside the binary.
 
-    The environment is consulted only when no executable is known -- an offline
-    or simulated session -- and the historical build/hst remains the last
-    fallback so an existing HST workflow is unchanged.
+    Known limitation: a --pid attach to a runtime started from some other
+    working directory writes its artifacts under that directory instead, and
+    this helper will not find them. Detecting that needs the process working
+    directory, which is not available here; the runtime would have to resolve
+    SR_BUILD_DIR to an absolute path at startup for it to be knowable.
     """
     if exe_path:
-        return os.path.dirname(os.path.abspath(exe_path))
+        game = os.path.basename(os.path.dirname(os.path.abspath(exe_path)))
+        if game:
+            return os.path.join(find_repo_root(), "build", game)
     explicit = os.environ.get("SR_BUILD_DIR")
     if explicit:
         return explicit if os.path.isabs(explicit) else os.path.join(find_repo_root(), explicit)
