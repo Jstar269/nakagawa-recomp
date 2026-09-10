@@ -672,6 +672,16 @@ def read_worktree_blobs(
             continue
         link_path = _filesystem_link_on_path(disk_path, repo_root)
         if link_path is not None:
+            # Same rule as read_candidate_file: a junction's target is an
+            # absolute host path Git never stores, so it is not this entry's
+            # content and must not become its audited bytes -- doing so records
+            # that path's length and SHA-256 into the JSON and CSV output. A
+            # real symlink's target text *is* the blob Git would publish, so it
+            # stays readable and stays analysed.
+            if _is_host_junction(link_path):
+                result[entry.path] = (
+                    None, "path lies on a host directory junction and was not followed")
+                continue
             try:
                 result[entry.path] = (str(link_path.readlink()).encode("utf-8"), None)
             except OSError as exc:

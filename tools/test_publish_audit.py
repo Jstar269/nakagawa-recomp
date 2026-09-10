@@ -529,11 +529,17 @@ class TestPublishAudit(unittest.TestCase):
             self.assertEqual(smuggled.working_mode, "120000", "tracked junction descendant must be flagged as a link")
 
             # A worktree audit must not follow the junction off the volume: the
-            # bytes out there are not tracked content.
-            blobs = publish_audit.read_worktree_blobs([smuggled], repo_root=repo)
-            content = blobs["linked/sentinel.txt"][0]
-            self.assertIsNotNone(content)
-            self.assertNotEqual(content, b"outside", "audit read out-of-root bytes through a junction")
+            # bytes out there are not tracked content. It must also not fall
+            # back to the junction's own target, which is an absolute host path
+            # Git never stores -- returning that recorded its length and
+            # SHA-256 as the entry's audited bytes. The refusal is generic.
+            content, worktree_error = publish_audit.read_worktree_blobs(
+                [smuggled], repo_root=repo)["linked/sentinel.txt"]
+            self.assertNotEqual(content, b"outside",
+                                "audit read out-of-root bytes through a junction")
+            self.assertIsNone(content, "a junction target must not become audited bytes")
+            self.assertIsNotNone(worktree_error)
+            self.assertNotIn(str(outside), worktree_error)
 
             # An index audit is the opposite case, and refusing to read here
             # would be the more dangerous behaviour. `git add -A` walked the
@@ -601,6 +607,20 @@ class TestPublishAudit(unittest.TestCase):
             self.assertIsNotNone(error)
             self.assertNotIn(str(private), error)
             self.assertNotIn("private-inputs", error)
+
+            # The worktree reader is a separate path to the same leak: it takes
+            # the ancestor junction's readlink() and records that host path's
+            # length and SHA-256 as the entry's audited bytes. Redacting only
+            # the candidate reader left this one open.
+            descendant = publish_audit.GitEntry(
+                "100644", "", "0", "linked/secret.txt", "file", working_mode="120000")
+            blobs = publish_audit.read_worktree_blobs([descendant], repo_root=candidate)
+            worktree_content, worktree_error = blobs["linked/secret.txt"]
+            self.assertIsNone(worktree_content,
+                              "a junction target must not become worktree content")
+            self.assertIsNotNone(worktree_error)
+            self.assertNotIn(str(private), worktree_error)
+            self.assertNotIn("private-inputs", worktree_error)
 
             findings = publish_audit.audit_entries(
                 [entry], repo_root=candidate, is_candidate_root=True
