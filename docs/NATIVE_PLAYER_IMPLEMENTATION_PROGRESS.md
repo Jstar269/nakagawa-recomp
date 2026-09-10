@@ -11,6 +11,7 @@ This milestone was executed under the strict **LLE / Original Guest Execution** 
 $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ \text{GENERIC HLE} \succ \text{TITLE PATCHES (TOWARD ZERO)}$$
 
 ### Key Accomplishments
+
 1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
 2. **Clean-Room Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
@@ -26,6 +27,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 ## 2. Visual Baseline vs. Native Player Results
 
 ### Baseline Web Interface (Archived in `docs/ui-baseline/`)
+
 - `01_web_player_mode.png`: Web Player Landing
 - `02_web_studio_iso_loader.png`: ISO Loader (Browser drag-and-drop, sandbox-constrained)
 - `03_web_studio_pipeline_build.png`: Build & Recompile Pipeline
@@ -36,6 +38,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 - `08_web_studio_internals.png`: Chunks & Span Inspector
 
 ### Native Player Screenshot Matrix (Captured via `python tools/capture_native_screenshots.py`)
+
 | View State | Native Artifact | Resolution | Provenance & Validation |
 | :--- | :--- | :--- | :--- |
 | Empty Library | `native_01_empty_library.png` | 1280×720 | Clean CTA for ISO selection; title support disclosure |
@@ -55,6 +58,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 ## 3. Native UI Regression Matrix Status (Audit & Evidence Strength Alignment)
 
 The matrix distinguishes between architectural staging, implementation completeness, and verified execution:
+
 - `PIPELINE_STAGE_EXISTS`: A state/step is declared in UI/data structures, but backend execution is not yet integrated.
 - `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. clean-room KIRK decryption) does not yet exist.
 - `PLAN_VERIFIED`: Launch session data/environment parameters construct correctly in unit tests.
@@ -97,16 +101,19 @@ The matrix distinguishes between architectural staging, implementation completen
 ## 5. Verification Commands
 
 ### Native Compilation
+
 ```powershell
 mingw32-make player
 ```
 
 ### Visual Verification
+
 ```powershell
 python tools/capture_native_screenshots.py
 ```
 
 ### Test Suite Execution
+
 ```powershell
 python -m unittest discover -s tools -p "test_nk_core.py" -v
 python -m unittest tools/test_build_truth.py -v

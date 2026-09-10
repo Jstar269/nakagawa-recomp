@@ -12,11 +12,11 @@ The existing prototype UI is located under [`interface/`](../interface/):
 | **Pipeline Panel** | `components/studio/pipeline-panel.tsx` | React, SSE | Triggers `tools/recompile.ps1` / `hst_manager.ps1` (`BuildFull`, `BuildFast`) |
 | **Process Manager** | `lib/recompiler/manager-process.ts` | Node.js `child_process.spawn`, `taskkill.exe` | Background process registry, log ring buffer, clean process cancellation |
 | **Process API** | `app/api/recompiler/manager/route.ts` | Next.js API route | Streams stdout/stderr over SSE; validates `ManagerLaunchRequest` |
-| **Preflight Doctor**| `app/api/recompiler/doctor/route.ts` | Node.js, `tools/hst_doctor.py` | Runs workspace diagnostics and returns structured JSON report |
+| **Preflight Doctor** | `app/api/recompiler/doctor/route.ts` | Node.js, `tools/hst_doctor.py` | Runs workspace diagnostics and returns structured JSON report |
 | **Inspector Panel** | `components/studio/inspector-panel.tsx` | React, JSON editor | Memory watchpoint management and interactive memory inspector |
 | **VRAM Viewer** | `components/studio/vram-panel.tsx` | React canvas | Renders PSP VRAM buffers, GE textures, and framebuffers |
-| **Benchmarks Panel**| `components/studio/benchmarks-panel.tsx` | React, SVG visualizer | Visualizes generated-PC call counts, block hotspots, and performance data |
-| **Shader Regression**| `components/studio/shader-panel.tsx` | Node.js, SPIR-V probes | Compares GPU shader pipelines against software reference rasters |
+| **Benchmarks Panel** | `components/studio/benchmarks-panel.tsx` | React, SVG visualizer | Visualizes generated-PC call counts, block hotspots, and performance data |
+| **Shader Regression** | `components/studio/shader-panel.tsx` | Node.js, SPIR-V probes | Compares GPU shader pipelines against software reference rasters |
 | **Fuzz Lab** | `components/studio/fuzz-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
 | **Terminal Drawer** | `components/studio/terminal-drawer.tsx` | React, ANSI parser | Live streaming terminal drawer for build and engine logs |
 
@@ -30,9 +30,9 @@ The existing prototype UI is located under [`interface/`](../interface/):
   3. External web browser connects over HTTP.
   4. Server spawns `powershell.exe` / `pwsh.exe` subprocesses for manager tasks.
 * **Dependency Footprint:**
-  - Node.js 24 LTS runtime + npm 11.
-  - ~378 KB `package-lock.json` with hundreds of transitive npm packages.
-  - Generates ~400 MB of `node_modules`.
+  * Node.js 24 LTS runtime + npm 11.
+  * ~378 KB `package-lock.json` with hundreds of transitive npm packages.
+  * Generates ~400 MB of `node_modules`.
 
 ---
 
@@ -90,13 +90,16 @@ graph TD
 ```
 
 ### Phase 1: Decoupling & Portable Core (Completed in Current Worktree)
+
 * Business logic (ISO inspection, title registry, transactional preparation, launch planning) has been fully decoupled from the web UI and implemented in the standalone, portable `tools/nk_core/` library and `tools/nk_cli.py`.
 * A dedicated **Player Mode** (`launcher-panel.tsx`) with a top-level mode toggle was added to `interface/` to prototype the streamlined end-user flow.
 
 ### Phase 2: Native SDL3 Launcher & In-Engine Overlay
+
 * Build the native SDL3 Game Library window with `IFileDialog` / native platform file picker.
 * Wire `nk_core` into the native launcher.
 * Embed an in-engine overlay into the SDL3 Vulkan swapchain for the in-game pause menu.
 
 ### Phase 3: Feature Parity & Complete Retirement of Web Components
+
 * Once the native SDL3 launcher implements game selection, preparation, settings, and developer diagnostics, completely retire and remove the `interface/` directory and Node.js dependencies from the repository.

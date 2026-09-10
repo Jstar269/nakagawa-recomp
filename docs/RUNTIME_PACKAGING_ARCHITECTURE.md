@@ -5,12 +5,12 @@
 Nakagawa Recomp is evolving from developer-centric tooling into an authentic cross-platform PSP recompilation platform.
 The ultimate end-user experience target is:
 
-```
+~~~text
 Download/install Nakagawa Recomp
   → Select legally owned PSP ISO
   → Instant recognition & authentic local preparation
   → Launch & Play
-```
+~~~
 
 A crucial design decision is how the native player (`nakagawa_player`) and the game execution runtime relate to each other at packaging and execution time.
 
@@ -19,6 +19,7 @@ A crucial design decision is how the native player (`nakagawa_player`) and the g
 ## 2. Evaluation of Architectural Options
 
 ### Option A: Monolithic Multi-Title Executable
+
 A single executable contains the UI launcher, the generic PSP runtime, the AOT recompilation chunks for all supported titles, and all HLE/LLE subsystems.
 
 * **Advantages:**
@@ -31,6 +32,7 @@ A single executable contains the UI launcher, the generic PSP runtime, the AOT r
   * **LLE/Fidelity violation:** Guest memory arena mappings (e.g. 192 MiB fixed address reservations) would conflict if multiple titles or sessions were managed in the same address space.
 
 ### Option B: Core Engine + Dynamic Title Plug-in (`.dll` / `.so`)
+
 The native player loads a generic runtime engine, which dynamically loads a title-specific shared library (`hst_recomp.dll`, `phase5_recomp.so`) providing the entry points and chunk dispatch tables.
 
 * **Advantages:**
@@ -41,8 +43,10 @@ The native player loads a generic runtime engine, which dynamically loads a titl
   * **Shared address space risks:** Like Option A, guest memory arena collisions and unhandled guest exceptions still jeopardize host launcher stability.
 
 ### Option C: Isolated Process per Title + Native Host Launcher (Adopted Architecture)
+
 The native player (`nakagawa_player`) acts as an authentic front-end and library manager. When a game is launched, it constructs a typed `NkLaunchSession` and spawns the title's standalone recompiled runtime as an isolated child process via `nk_platform_spawn_process`.
 Communication and handoff occur via:
+
 * Clean environment variables: `PSP_ISO`, `SR_FPS_CAP`, `SR_GPU_GE=1`, `SR_DEBUG`, `SR_DISPATCH_FATAL=1`.
 * Process lifecycle tracking: native wait, status queries, and graceful termination.
 
@@ -57,6 +61,7 @@ Communication and handoff occur via:
 ## 3. Concrete Implementation in `src/core/`
 
 The adopted architecture is implemented in:
+
 * `src/core/nk_types.h`: `NkGameEntry`, `NkResult`.
 * `src/core/nk_platform.h`: `NkProcessHandle`, `nk_platform_spawn_process`, `nk_platform_is_process_running`, `nk_platform_wait_process`.
 * `src/core/nk_platform_win32.c`: Win32 `CreateProcessA` with environment block generation and wait handles.

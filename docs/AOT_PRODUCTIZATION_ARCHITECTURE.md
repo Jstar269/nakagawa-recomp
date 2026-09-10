@@ -3,18 +3,21 @@
 ## 1. The Core Problem
 
 In developer environments, static recompilation uses:
-```
+
+~~~text
 Game ISO/ELF
   → Python static analyzer (tools/codegen.py)
   → Dynamic C chunks (build/<game>/<game>_recomp_*.c)
   → Host C compiler (GCC 16 / Clang / MSVC) + GNU Make
   → Native executable (build/<game>/<game>.exe)
-```
+~~~
+
 For common end users, requiring **Git, Python, MSYS2, GNU Make, or a C compiler** is a critical adoption barrier.
 The product vision requires:
-```
+
+~~~text
 Nakagawa Program + User's Game ISO → Play
-```
+~~~
 
 ---
 
@@ -35,7 +38,9 @@ Nakagawa Program + User's Game ISO → Play
 ## 3. In-Depth Analysis of Viable Options
 
 ### Option C: Build-Time AOT Engine + End-User Asset Extraction (Recommended Primary)
+
 In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into clean-room release packages.
+
 * **How It Works:**
   1. The distributed binary contains the recompiled code structure without proprietary game assets, textures, sounds, or movies.
   2. When the user loads their ISO in `nakagawa_player`, the player validates the disc hash and extracts the required private game assets (`USRDIR/xbdata`, audio files, saves) into the user's local app data directory.
@@ -47,12 +52,15 @@ In this model, Nakagawa maintainers/packagers compile the verified title executa
   * Completely clean legally: no proprietary game bytes are distributed.
 
 ### Option A: Bundled Embedded Host Compiler (The "Compile-on-Import" Route)
+
 For titles requiring dynamic or local recompilation from novel ISO revisions:
+
 * A tiny, self-contained C compiler (such as a trimmed LLVM/Clang or TinyCC) is embedded inside Nakagawa's installation directory (`bin/toolchain/`).
 * When an un-recompiled ISO is imported, the native core executes code generation and invokes the bundled compiler in the background with truthful progress reporting.
 * **Tradeoffs:** Adds 20–40 MB to the installer, but gives total autonomy without installing system-wide SDKs.
 
 ### Option E: Embedded Cranelift MIPS-to-Host Code Generator (Long-Term North Star)
+
 * Replace the `MIPS -> C -> Host Machine Code` two-stage pipeline with a direct `MIPS AST -> Cranelift IR -> Host Native Machine Code` in-process compiler.
 * **Advantages:**
   * Native execution speed without intermediate C files or external compiler invocations.

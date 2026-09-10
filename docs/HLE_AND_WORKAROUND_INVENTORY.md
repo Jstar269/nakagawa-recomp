@@ -13,6 +13,7 @@ In accordance with the authentic guest execution doctrine, Nakagawa Recomp track
 | **Tier 5** | `PATCH/WORKAROUND` | Fake-success stubs (returning 0 without implementing semantics), loop iteration caps, register clobber guards, and bypasses. | **ELIMINATE $\to 0$** |
 
 ### The Cardinal Rule of Lower Layers
+
 For every existing or proposed HLE routine, developers and agents must answer:
 > **"Why can this behavior not instead be implemented one layer lower?"**
 
@@ -52,24 +53,28 @@ Title Configuration Overrides (src/rt/title_config.c):
 ### 3.1 Title-Specific Memory Writes and Bypasses (Tier 4)
 
 #### 1. `libfont.prx` Initialization Bypass & Compat Flag
+
 - **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and `src/rt/title_config.c` (`libfont_ready_flag_addr`).
 - **Mechanism:** When the game loads `libfont.prx`, `hle.c` intercepts the path, refuses to execute `module_start` (`f_32200000`), and writes `1u` into guest address `0x00304290` (`libfont_ready_flag_addr`).
 - **Root Cause:** When `f_32200000` was previously executed, it blocked indefinitely on an unconditional `sceKernelWaitSema`.
 - **Lower-Level Solution:** Fix the semaphore initial count and thread scheduling in `src/rt/sched.c` so `libfont.prx` initializes naturally, then remove the hardcoded memory poke.
 
 #### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
+
 - **Location:** `src/rt/hle.c` (`h_StartModule`).
 - **Mechanism:** Explicitly skips calling `f_32280000` (`psmf`) and `f_322f8868` (`libpsmfplayer`).
 - **Root Cause:** Sony SDK initialization assumes low-level kernel callbacks and ring buffer allocation.
 - **Lower-Level Solution:** Provide faithful kernel memory partition allocation (`sceKernelAllocPartitionMemory`) and let the genuine PSMF modules execute their lifecycle.
 
 #### 3. `INIT_LANG` Hardcoded Japanese Language Injection
+
 - **Location:** `src/rt/recomp.c` (`g_exact_hooks[]`, address `0x00304290`).
 - **Mechanism:** Hook intercepts dispatch to `0x00304290` and writes `1` (Japanese language ID) directly into guest memory.
 - **Root Cause:** Game reads system language without going through the documented `sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE)`.
 - **Lower-Level Solution:** Move this into a generic PSP registry/system configuration provider (`sceReg` / `sceUtility`) that initializes the system parameter partition accurately in guest memory before execution begins.
 
 #### 4. Module Table Walker Bypass (`MODTABLE_WALK`)
+
 - **Location:** `src/rt/recomp.c` (`hook_modtable_walk` at `0x0000ef40` and `0x002cf338`).
 - **Mechanism:** Intercepts table iteration over reentrancy structures.
 - **Root Cause:** Table entries point to data addresses that generated false dispatch misses.
@@ -80,12 +85,14 @@ Title Configuration Overrides (src/rt/title_config.c):
 ### 3.2 Register Clobber Guards and Loop Caps (Tier 5)
 
 #### 1. `INIT_WALKER_GUARD` (Callee-Saved `$s0` / `$r16` Preservation)
+
 - **Location:** `src/rt/recomp.c` (lines 2040–2075).
 - **Mechanism:** Saves `s->r[16]` before dispatching to address `0x00000fdc` and forcefully restores it upon return if modified.
 - **Root Cause:** A MIPS ABI violation in recompiled code or compiler optimization where a callee corrupted callee-saved register `$s0`.
 - **Lower-Level Solution:** Audit the recompiled functions called by `0x00000fdc` in `tools/codegen.py` to ensure standard MIPS calling conventions preserve `$s0`–`$s7` across function boundaries.
 
 #### 2. `WALKER_CAP` Iteration Limit
+
 - **Location:** `src/rt/recomp.c` (around line 1593).
 - **Mechanism:** Counts iterations in the initialization loop at `L_00000940` and forcefully breaks the loop after 2048 cycles.
 - **Root Cause:** The loop iterates across a table expecting a null sentinel that was uninitialized or laid out differently in guest memory.
@@ -130,4 +137,5 @@ timeline
 ```
 
 ### The Invariant for Future Work
+
 Every migration step must be accompanied by an automated regression test in `tools/` that executes both the positive and negative paths to prove that guest code executes correctly without synthetic intervention.

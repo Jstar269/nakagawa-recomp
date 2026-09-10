@@ -32,6 +32,7 @@ Titles are modeled as **declarative title profiles** managed by a portable **Tit
 > **Regional Independence Note:** Regional releases (e.g. EU vs US) are distinct binaries. Different regional releases may have different code layouts, relocation offsets, and function entry points. They cannot be assumed binary-compatible without individual verification.
 
 ### 2.1 Good Profile Data (Declarative Structural Metadata)
+
 - **Disc Identity:** Disc ID (e.g. `TEST00001`, `UCUS98701`), region, disc version, disc title.
 - **Executable Inventory:** Executable paths on disc (`SYSDIR/EBOOT.BIN`, `BOOT.BIN`).
 - **Module Inventory:** Required PRX module filenames and dependencies (`libfont.prx`, `scePsmf_library.prx`).
@@ -40,7 +41,9 @@ Titles are modeled as **declarative title profiles** managed by a portable **Tit
 - **Preparation & Runtime Version:** Versioned toolchain markers and verification digests.
 
 ### 2.2 Prohibited Profile Fields (Compatibility Hacks)
+
 Title profiles must **never** contain fields equivalent to:
+
 - `patch_x` / `hook_address_y`
 - `fake_return_z`
 - `replace_module_with_hle`
@@ -87,6 +90,7 @@ When a new PSP game fails to boot or encounters an issue on Nakagawa, the proble
 ## 4. Title Agnosticism in the User Interface
 
 The desktop UI and player frontend are 100% title-agnostic:
+
 1. The UI interacts solely with the `TitleRegistry` and `IsoInspector`.
 2. When the user drops an ISO, the ISO inspector reads `PARAM.SFO` directly from the raw disc bytes and queries `TitleRegistry.find_by_disc_id(disc_id)`.
 3. If matched, the UI displays the title's official metadata and launches the generic preparation engine.

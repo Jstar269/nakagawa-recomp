@@ -5,9 +5,9 @@
 > [!IMPORTANT]
 > **SUPERSEDED ARCHITECTURAL NOTE:**
 > An earlier iteration of this document proposed wholesale High-Level Emulation (HLE) bridges for `libfont.prx`, `scePsmf_library.prx`, and `scePsmfP_library.prx`, as well as replacing the Sony PGF font engine with `stb_truetype.h`.
-> 
+>
 > **Those recommendations are formally superseded and rejected as permanent architectural solutions.**
-> 
+>
 > Under the project's guiding doctrine:
 > $$\text{CORRECTNESS / FIDELITY} > \text{ARCHITECTURAL CLEANLINESS} > \text{GENERALITY} > \text{SHORT-TERM EASE}$$
 > Nakagawa Recomp prioritizes **genuine guest execution** over convenience. Bypassing authentic guest middleware, hardcoding memory flags, and substituting TrueType rasterization introduces subtle visual defects, UI text clipping, and architectural fragmentation.
@@ -30,6 +30,7 @@
 ## 3. Deep Technical Analysis of LLE Gaps
 
 ### 3.1 Retail EBOOT and PRX Cryptography
+
 * **The Blocker:** Physical UMDs and PSN packages store executables in `~SCE` and `~PSP` encrypted containers. `tools/codegen.py` disassembles standard MIPS ELF sections and fails closed on encrypted headers.
 * **Why External Decryptors Fall Short:** Standalone tools like `pspdecrypt` only handle standard Kirk Command 1 games and reject dynamic library PRXs signed with secondary Kirk tags (`0x01` / `0x0D`).
 * **The LLE Solution:**
@@ -41,10 +42,11 @@
 ---
 
 ### 3.2 Executing Original PRX Middleware (`libfont`, `scePsmf`)
+
 * **Why Wholesale HLE Was Rejected:**
-  - In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a hardcoded guest memory address (`sr_title_config_libfont_ready_flag_addr`).
-  - This was done because executing `module_start` hung on an unconditional `WaitSema`.
-  - Replacing the modules with host HLE bypassed genuine guest state machines, introduced timing discrepancies, and required ongoing title-specific maintenance.
+  * In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a hardcoded guest memory address (`sr_title_config_libfont_ready_flag_addr`).
+  * This was done because executing `module_start` hung on an unconditional `WaitSema`.
+  * Replacing the modules with host HLE bypassed genuine guest state machines, introduced timing discrepancies, and required ongoing title-specific maintenance.
 * **The LLE Solution:**
   1. **Identify the Kernel Root Cause:** The hang in `f_32200000` (`libfont` `module_start`) occurred because the semaphore was initialized with a count of 0, and the expected signaling thread was either delayed or unmapped.
   2. **Harden the Scheduler & Semaphores:** Audit `src/rt/sched.c` to ensure exact PSP kernel semantics for `sceKernelCreateSema`, `sceKernelWaitSema`, and thread context switching.
@@ -54,35 +56,38 @@
 ---
 
 ### 3.3 Font Subsystem: PGF Fidelity vs. TrueType Approximation
+
 * **Why TrueType (`stb_truetype`) Substitution Was Rejected:**
-  - TrueType font metrics (advance width, ascent, descent, kerning pairs) differ from Sony's proprietary PGF rasterizer.
-  - In fixed-width game menus, character selection screens, and HUD elements, TTF fonts cause text overflow, improper line wrapping, and clipping.
-  - PGF supports customized subpixel baseline alignment and embedded shadow offsets that standard TTF engines do not emulate accurately.
+  * TrueType font metrics (advance width, ascent, descent, kerning pairs) differ from Sony's proprietary PGF rasterizer.
+  * In fixed-width game menus, character selection screens, and HUD elements, TTF fonts cause text overflow, improper line wrapping, and clipping.
+  * PGF supports customized subpixel baseline alignment and embedded shadow offsets that standard TTF engines do not emulate accurately.
 * **The Authentic PGF Path:**
-  - The game calls `libfont.prx` to load PGF fonts.
-  - The system fonts (`jpn0.pgf`, `ltn0.pgf`) reside in PSP firmware `flash0:/font/`, not on the game disc.
-  - **Honest Prerequisite Policy:** We state truthfully that 100% authentic typography requires a user-supplied firmware font dump.
-  - Nakagawa may offer a clearly labeled, non-authentic fallback font provider for developers without firmware files, but it will never be masqueraded as an authentic LLE replacement.
+  * The game calls `libfont.prx` to load PGF fonts.
+  * The system fonts (`jpn0.pgf`, `ltn0.pgf`) reside in PSP firmware `flash0:/font/`, not on the game disc.
+  * **Honest Prerequisite Policy:** We state truthfully that 100% authentic typography requires a user-supplied firmware font dump.
+  * Nakagawa may offer a clearly labeled, non-authentic fallback font provider for developers without firmware files, but it will never be masqueraded as an authentic LLE replacement.
 
 ---
 
 ### 3.4 PSMF Video Subsystem: Downward Dependency Boundary
+
 * **Preserving Original Middleware:** `scePsmf_library.prx` and `scePsmfP_library.prx` contain the authentic demuxing, timestamp synchronization, and ring-buffer management logic.
 * **The Proper Hardware Boundary:**
-  - Guest PSMF code delegates low-level bitstream decoding to `sceMpeg` / `sceVideocodec`.
-  - On real hardware, this is processed by the Media Engine (ME).
-  - In Nakagawa, the HLE boundary is established at `sceMpeg`:
-    - Guest PRXs demux the streams and manage buffers.
-    - Nakagawa takes the elementary AVC/H.264 video NAL units from `sceMpeg` and dispatches them to host hardware decoders (Vulkan Video / Media Foundation).
-    - Audio NAL units (ATRAC3plus) are decoded via clean-room host audio routines and written back into guest memory buffers.
+  * Guest PSMF code delegates low-level bitstream decoding to `sceMpeg` / `sceVideocodec`.
+  * On real hardware, this is processed by the Media Engine (ME).
+  * In Nakagawa, the HLE boundary is established at `sceMpeg`:
+    * Guest PRXs demux the streams and manage buffers.
+    * Nakagawa takes the elementary AVC/H.264 video NAL units from `sceMpeg` and dispatches them to host hardware decoders (Vulkan Video / Media Foundation).
+    * Audio NAL units (ATRAC3plus) are decoded via clean-room host audio routines and written back into guest memory buffers.
 
 ---
 
 ### 3.5 XB Archive & Filesystem Invariants
+
 * **Preserving PSP-Visible Filesystem Invariants:**
-  - Direct XB access must be implemented as a transparent block driver in `src/rt/iso.c`.
-  - The guest program must observe identical file paths, file sizes, seek offsets, partial reads, and error codes (`SCE_ERROR_ERRNO_FILE_NOT_FOUND`).
-  - No game-specific path aliases or asset redirects may leak into generic guest execution.
+  * Direct XB access must be implemented as a transparent block driver in `src/rt/iso.c`.
+  * The guest program must observe identical file paths, file sizes, seek offsets, partial reads, and error codes (`SCE_ERROR_ERRNO_FILE_NOT_FOUND`).
+  * No game-specific path aliases or asset redirects may leak into generic guest execution.
 
 ---
 
