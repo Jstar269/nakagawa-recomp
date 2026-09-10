@@ -74,7 +74,13 @@ export function summarizeDoctorReport(report: DoctorReport | null, state: Doctor
     return { kind: "loading", label: "CHECKING…", detail: "Doctor check in progress" };
   }
   if (state !== "ready" || !report || !isDoctorReportPayload(report)) {
-    return { kind: "unavailable", label: "UNAVAILABLE", detail: "Doctor unavailable — retrying" };
+    return {
+      kind: "unavailable",
+      label: "UNAVAILABLE",
+      detail: report
+        ? "Doctor unreachable — retrying; last good report retained"
+        : "Doctor unavailable — retrying",
+    };
   }
   if (report.counts.FAIL > 0) {
     return {
@@ -123,8 +129,11 @@ export function SummaryRail() {
 
   const refresh = useCallback(async () => {
     const requestId = ++refreshSequence.current;
-    setDoctor(null);
-    setDoctorState("loading");
+    // Polls must not clear the last good report: on a healthy workspace the
+    // badge would otherwise flash "UNAVAILABLE — retrying" every 4 seconds
+    // while each check runs. Keep the current report (if any) visible and
+    // only show CHECKING while no valid report exists yet.
+    setDoctorState((state) => (state === "ready" ? "ready" : "loading"));
     const [bootResponse, binaryResponse, doctorResponse] = await Promise.all([
       fetch("/api/recompiler/boot", { cache: "no-store" }).catch(() => null),
       fetch("/api/recompiler/run", { cache: "no-store" }).catch(() => null),
@@ -138,6 +147,8 @@ export function SummaryRail() {
         setDoctor(data);
         setDoctorState("ready");
       } catch {
+        // A real failed attempt: surface unavailable even if a previous
+        // report exists (the report itself is retained for context).
         setDoctorState("unavailable");
       }
     } else {

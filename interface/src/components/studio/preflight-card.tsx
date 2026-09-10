@@ -18,7 +18,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { DoctorReport, DoctorResult, DoctorStatus } from "@/lib/recompiler/doctor";
+// Type-only import: doctor.ts uses node built-ins (child_process) and must
+// never enter the browser bundle as a runtime dependency.
+import type { ClassifiedDoctorFailure, DoctorReport, DoctorResult, DoctorStatus } from "@/lib/recompiler/doctor";
 
 type CategoryFilter = "all" | "toolchain" | "inputs" | "products" | "runtime" | "repo";
 type StatusFilter = "all" | "failing" | "warning" | "passing";
@@ -61,7 +63,8 @@ interface PreflightCardProps {
 export function PreflightCard({ onReportLoaded, className, defaultCollapsed = false }: PreflightCardProps) {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ClassifiedDoctorFailure | null>(null);
+  const [showFailureDetail, setShowFailureDetail] = useState(false);
   const [category, setCategory] = useState<CategoryFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
@@ -69,17 +72,37 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
 
   const fetchDoctor = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setFailure(null);
+    setShowFailureDetail(false);
     try {
       const res = await fetch("/api/recompiler/doctor?scope=all", { cache: "no-store" });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.detail ?? data?.error ?? "doctor diagnostic query failed");
+        // The route classifies failures server-side (single source of truth);
+        // only salvage whatever fields arrived, without importing the
+        // classifier here: doctor.ts uses node built-ins and is server-only.
+        setFailure({
+          reason: typeof data?.reason === "string" ? data.reason : "unknown",
+          title: typeof data?.title === "string" ? data.title : "The preflight check could not run",
+          explanation: typeof data?.explanation === "string" ? data.explanation : "",
+          nextAction: typeof data?.nextAction === "string" ? data.nextAction : "Use Refresh to retry.",
+          diagnostic: typeof data?.detail === "string" ? data.detail : null,
+        });
+        onReportLoaded?.(null);
+        return;
       }
       setReport(data as DoctorReport);
       onReportLoaded?.(data as DoctorReport);
     } catch (err) {
-      setError(String(err));
+      // Transport-level failure (dashboard offline, non-JSON response, etc.)
+      // — distinct from a classified server-side failure.
+      setFailure({
+        reason: "unknown",
+        title: "Could not reach the preflight check",
+        explanation: "The dashboard did not answer the diagnostic query.",
+        nextAction: "Confirm the dashboard is running (npm run dev in the interface folder), then use Refresh to retry.",
+        diagnostic: err instanceof Error ? err.message : String(err),
+      });
       onReportLoaded?.(null);
     } finally {
       setLoading(false);
@@ -272,14 +295,45 @@ export function PreflightCard({ onReportLoaded, className, defaultCollapsed = fa
           </div>
 
           {/* Results List */}
-          {error ? (
+          {failure ? (
             <div className="rounded-lg border border-rose-500/40 bg-rose-950/20 p-3 text-xs text-rose-300">
-              {error}
+              <div className="flex items-start gap-2">
+                <AlertCircle className="size-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1 min-w-0">
+                  <p className="font-semibold text-rose-200">{failure.title}</p>
+                  {failure.explanation ? (
+                    <p className="text-rose-200/80 leading-relaxed">{failure.explanation}</p>
+                  ) : null}
+                  {failure.nextAction ? (
+                    <p className="text-rose-100/90 leading-relaxed">
+                      <span className="font-semibold">Next step: </span>
+                      {failure.nextAction}
+                    </p>
+                  ) : null}
+                  {failure.diagnostic ? (
+                    <div>
+                      <button
+                        type="button"
+                        className="text-[10px] font-mono text-muted-foreground hover:text-foreground underline"
+                        onClick={() => setShowFailureDetail(!showFailureDetail)}
+                        aria-expanded={showFailureDetail}
+                      >
+                        {showFailureDetail ? "Hide technical detail" : "Show technical detail"}
+                      </button>
+                      {showFailureDetail ? (
+                        <pre className="mt-1 max-h-32 overflow-y-auto thin-scroll rounded border border-rose-500/20 bg-black/40 p-2 font-mono text-[10px] whitespace-pre-wrap break-all text-rose-200/80">
+                          {failure.diagnostic}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             </div>
           ) : loading && !report ? (
             <div className="text-center py-6 text-xs text-muted-foreground flex items-center justify-center gap-2">
               <RefreshCw className="size-3.5 animate-spin" />
-              Running workspace diagnostics (tools/hst_doctor.py)...
+              Running workspace diagnostics…
             </div>
           ) : filteredResults.length === 0 ? (
             <div className="text-center py-6 text-xs text-muted-foreground">

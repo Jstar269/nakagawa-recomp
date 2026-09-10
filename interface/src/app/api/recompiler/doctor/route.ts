@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findRepoRoot } from "@/lib/recompiler/runner";
-import { parseDoctorScope, runDoctor } from "@/lib/recompiler/doctor";
+import { classifyDoctorFailure, parseDoctorScope, runDoctor } from "@/lib/recompiler/doctor";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 
 export const runtime = "nodejs";
@@ -30,6 +30,21 @@ export async function GET(req: NextRequest) {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
-    return NextResponse.json({ error: "doctor-failed", detail: String(error) }, { status: 500 });
+    // Classify route-level failures (the diagnostic never produced a report)
+    // so clients can show plain-language remediation. The raw diagnostic is
+    // preserved verbatim for a developer-facing detail view.
+    const rawDetail = String(error);
+    const classified = classifyDoctorFailure(rawDetail);
+    return NextResponse.json(
+      {
+        error: "doctor-failed",
+        reason: classified.reason,
+        title: classified.title,
+        explanation: classified.explanation,
+        nextAction: classified.nextAction,
+        detail: rawDetail,
+      },
+      { status: 500 },
+    );
   }
 }

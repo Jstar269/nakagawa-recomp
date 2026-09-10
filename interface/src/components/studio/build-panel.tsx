@@ -101,9 +101,16 @@ export function BuildPanel() {
     void refreshInspect();
   }, [refreshInspect]);
 
-  // Evaluate toolchain and input prerequisites from Doctor report
+  // Evaluate toolchain and input prerequisites from Doctor report.
+  // Fail closed while no valid report exists: until preflight produces
+  // evidence, the shared gate (consumed by the topbar CTA) stays locked.
   const buildPrereqs = useMemo(() => {
-    if (!doctorReport) return { ready: true, missing: [] as string[] };
+    if (!doctorReport) {
+      return {
+        ready: false,
+        missing: ["Waiting for Workspace Doctor preflight…"] as string[],
+      };
+    }
     const missing: string[] = [];
     for (const res of doctorReport.results) {
       if (res.status === "FAIL") {
@@ -127,6 +134,17 @@ export function BuildPanel() {
       missing,
     };
   }, [doctorReport]);
+
+  // Publish the gate decision so other surfaces (topbar CTA) respect the same
+  // prerequisites as this panel instead of dispatching a build blind.
+  useEffect(() => {
+    setBuild({
+      buildPrereqs,
+      buildHint: buildPrereqs.ready
+        ? null
+        : (buildPrereqs.missing[0] ?? "Resolve Workspace Doctor action items before building."),
+    });
+  }, [buildPrereqs, setBuild]);
 
   async function realBuild(action: ManagerAction, runOptions?: RunOptions) {
     eventSourceRef.current?.close();
