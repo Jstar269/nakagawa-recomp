@@ -79,6 +79,16 @@ The verified native host contract is the Windows contract in
 - PowerShell 7.6 or newer; Windows PowerShell 5.1 is not supported.
 - CPython 3.14.x.
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
+
+> **Reproducibility caveat, verified by a clean-clone run.** On at least one
+> Windows host the build succeeded *without* the documented MSYS2 SDL3
+> package: the Vulkan SDK ships an SDL3 subset, and because the Makefile adds
+> `-I$(VULKAN_SDK)/Include`, `-lSDL3` was satisfied by
+> `C:/VulkanSDK/<version>/Lib/SDL3.lib` instead. This was proven from the
+> linker map, not inferred. The build therefore appears to work on machines
+> that never installed the documented dependency, and would break on a machine
+> with MSYS2 SDL3 but no Vulkan SDK. Do not treat a successful build as proof
+> that the documented toolchain contract was satisfied.
 - A current Vulkan SDK and Vulkan-capable GPU.
 
 The optional dashboard additionally requires Node.js 24.18.1 or newer and npm

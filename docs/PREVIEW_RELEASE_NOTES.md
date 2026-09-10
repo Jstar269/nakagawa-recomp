@@ -27,8 +27,9 @@ The public, game-input-free production smoke is the headline:
 - **No preparation pipeline is connected in this build.** This preview cannot
   run a retail PSP game. Do not read the synthetic executables, the dashboard,
   or the ISO inspector as gameplay evidence.
-- The exact base used for this preview does not contain the native `player`
-  target or `src/player`, so no player binary is shipped.
+- No player binary is shipped. The base carries a `player` make target but
+  none of the `src/player` sources it compiles, so `mingw32-make player`
+  cannot succeed on this base. The sources land separately.
 - The preview is verified on Windows 11 x64 only. It makes no Linux or macOS
   support claim.
 - Retail executables, ISOs, assets, decrypted modules, generated retail C,
