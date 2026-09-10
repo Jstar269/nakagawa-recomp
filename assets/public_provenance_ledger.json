@@ -684,9 +684,11 @@
       "path": "copy_build_assets.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "doctor-and-host-preflight-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e11ae46fb0b7875aec4120a2f7b8d3d05a16d207af4c4c60c2204a5eef207f03"
     },
@@ -1258,9 +1260,11 @@
       "path": "hst.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "doctor-and-host-preflight-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8c4496d320b374ea5ed1a8e62abfed7d417471e7c9dc2cac3999251128814264"
     },
@@ -1268,9 +1272,11 @@
       "path": "hst_manager.ps1",
       "classification": "project_authored_attested",
       "evidence": {
-        "source": "public provenance census",
-        "authorship": "independent project implementation",
-        "upstream_attribution": "see file headers, NOTICE.md, and implementation ledger"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "doctor-and-host-preflight-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "83a7ae4f1af3b5ee34dc6e4182cf353acb866586f32a920f766714c8b2609067"
     },
@@ -1375,10 +1381,13 @@
     },
     {
       "path": "interface/public/logo.svg",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-000",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8506450e8ef647695d218c4b3245ef573f9c6473783f372eef87fdba9bd47eac"
     },
@@ -1393,73 +1402,97 @@
     },
     {
       "path": "interface/scripts/prepare-standalone.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-001",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1c41bf04160688a03497213ddc7768ac3ae1d658eb173e7d9c49f7588dfbff29"
     },
     {
       "path": "interface/scripts/start-standalone.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-002",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "59c246308a1bd9bd17b459253d85426563758719fdff7e6b2d736e1fd94ca6ba"
     },
     {
       "path": "interface/src/app/api/recompiler/assets/file/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-003",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "642ecadc76736e873f245d09977002f0d96238bdc453326c17d7e4db3f5f45d6"
     },
     {
       "path": "interface/src/app/api/recompiler/assets/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-004",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "45be21f9a6645a2542d8dd61ebddffe39f9cef916824ffc2ec0eee5944f9be49"
     },
     {
       "path": "interface/src/app/api/recompiler/boot/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-005",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "422188c6ec3ea6c4ebbb445995c68b774e05fb4678aa02b43c3d670fe46f50eb"
     },
     {
       "path": "interface/src/app/api/recompiler/config/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-006",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1a64e562d1c5ace22639b6af6bfefa7f2b6482677014b4a679fcd6441bcd7611"
     },
     {
       "path": "interface/src/app/api/recompiler/debug/console/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-007",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3af3e21d4f0cde92a399b3de3b835f7fe7ff4a8b6e43e64506f832eaf390169a"
     },
     {
       "path": "interface/src/app/api/recompiler/debug/nid-audit/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-008",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "13db436e5944b1d97837115c9390f04f539486ce657737c271901a8d8f3fc7a5"
     },
@@ -1477,226 +1510,301 @@
     },
     {
       "path": "interface/src/app/api/recompiler/issues/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-009",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "17545abcd710e64a14825b62391c50a57a3e260736effaf1493810f1c29092dd"
     },
     {
       "path": "interface/src/app/api/recompiler/log/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-010",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7b8155b8c36dbfb82d169c274c6347f2ddc881225be9d7a8d9248d5d1422abe2"
     },
     {
       "path": "interface/src/app/api/recompiler/manager/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-011",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "fe306a07062a53257fe7123a74010d666203f242459cc058a3eaa4bd013854b9"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/[id]/export/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-012",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7b3cd068af96f57965db3e723f3ee8cafc7a5fb5168582f443595fe61a112f7c"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/[id]/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-013",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6417e85b0420f64ecb616b7368c6b19ec58b1b7e946eb5fd1f570e00fe5d2396"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-014",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "be0391c4caa903e29994326d117df5a454ce6eb46e7d35649e5ed0de9c16b692"
     },
     {
       "path": "interface/src/app/api/recompiler/progress/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-015",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f47be58a5ff02ccfb15c7f0dbc94dc7d8c3677e4371f9cca76027a0a676d8ed4"
     },
     {
       "path": "interface/src/app/api/recompiler/run/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-016",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6e7666b67b14848b0af5c519841cee8eedb00545d21d786617b06210a139b8a8"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/export/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-017",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c1587ca3bad4db350b2b3950a8b88758c85f2e0c97a1b455a9189dff65c5b37b"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/profiler/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-018",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "4de1cf0ad385438137d659e5fd42abae3a073f66a7ecc6408fca520180ef31e5"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-019",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9c5c972ea48d748d18ac40ad321d07ba10b4bd338a2863d00bb639fc557aacb8"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/trends/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-020",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b91bdc4c079938325da33e09926269a4e4c438d38231f6ec15275f4c9ceded63"
     },
     {
       "path": "interface/src/app/api/recompiler/tests/fuzz/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-021",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "15d55827e8e1bc06a1242ca3199f95e64c4e680cceaf2732de296afc4e9eacea"
     },
     {
       "path": "interface/src/app/api/recompiler/tests/microtest/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-022",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5e917796b7770c02bd9477865febcf1f7b8624f17e5a706b487bc7ad05eaebf6"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/image/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-023",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ab88a27592f7f7375584077a7e01b17995132efd331b56d2bafbd8052ddaf47d"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/report/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-024",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "befeb70b1462152a01394a93cffbb523acbbfd6a7a6f428cf5576ae250609ddf"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/variance/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-025",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b9e9a71d28964c502918fa13e68d05e6936c690a97a32b2d14d949cd38fccae4"
     },
     {
       "path": "interface/src/app/api/recompiler/watchpoints/profiles/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-026",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ea841ff035f14bdffff81092cdf12ffa5f31a95a3bc3ac52c43635d00b9cdfa3"
     },
     {
       "path": "interface/src/app/api/recompiler/watchpoints/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-027",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6937d006f922a1afa227973247bb37fb6f5e89baec991f03ecb2640fefe03a63"
     },
     {
       "path": "interface/src/app/api/route.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-028",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e195f2f4f1e2e3b084989bfd7fc6caa458c1e826d26390502c489a64f3b6c7b6"
     },
     {
       "path": "interface/src/app/globals.css",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-029",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "836779f2e3bab2b00869708af30b9ca5dbd454aca74de63e74891ad37046f13b"
     },
     {
       "path": "interface/src/app/layout.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-030",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6322cdd7e55ba3ea6378add1d1678bec46dfa898a7baeece8877355b622b8280"
     },
     {
       "path": "interface/src/app/page.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-031",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7f2adcecfb0d2836abea65397bfd9f5f19d1b566e319f0221ca1e7051275d92a"
     },
     {
       "path": "interface/src/components/studio/assets-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-032",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3538513988f984a30ad2ddf415e733e624ff42b7c15fc786575516b90141ff53"
     },
     {
       "path": "interface/src/components/studio/build-health-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-033",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7f32186584efef06bcfedc0961ab2e8b215b4e852369a3a21d7def34a3e92c4e"
     },
@@ -1714,82 +1822,109 @@
     },
     {
       "path": "interface/src/components/studio/config-diff.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-034",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0f80fc6e41e2f095bbd6cd7ad2197427bf6b8b95e515b33abba72a0c91a13538"
     },
     {
       "path": "interface/src/components/studio/controllers-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-035",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b8cdf6688c088c086790baa2c63425144a926484e3eb6d1392954d1b11d13b87"
     },
     {
       "path": "interface/src/components/studio/court-preview.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-036",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b1af5ff924fd559dbbc215e4e54d656fbc98e2f9e3ad214ca2c0fb587f707019"
     },
     {
       "path": "interface/src/components/studio/execution-console.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-037",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3b1689eb241ab17bf3592ad707eeb26b6434754949b097f6c6d2734c47abf826"
     },
     {
       "path": "interface/src/components/studio/footer.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-038",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c09180afdbe5e1e3cde5d01c705f40b90138379f4685ff7488801c63e9e6dd70"
     },
     {
       "path": "interface/src/components/studio/gamepad-detector.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-039",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9211dc076540c1f5c3370cc4d34d00ba62cdc416b83cb8906ec2814bcfe32040"
     },
     {
       "path": "interface/src/components/studio/graphics-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-040",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9db6fab607ced1111ee2da62756bc0e823efa4a906c906ff81f9e770a4585905"
     },
     {
       "path": "interface/src/components/studio/internals-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-041",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "68dccc5db80575b12716f855bdaa829941d44a6db67dd6e8bd122a5a4a051b17"
     },
     {
       "path": "interface/src/components/studio/iso-file-tree.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-042",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1c56ee3bf502427a648bda3628da702fad7f1284f7362ba77394a4231ecb7546"
     },
@@ -1807,55 +1942,73 @@
     },
     {
       "path": "interface/src/components/studio/limitations-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-043",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ceb2264e6e0b4ebb210af8e0c0b69f44277b2afa2903248e7e0d8a12b22be56f"
     },
     {
       "path": "interface/src/components/studio/nid-audit-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-044",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b43af2851297b0ec665879dd7753b18c9bcfde868cad703299bdd2800bbec85d"
     },
     {
       "path": "interface/src/components/studio/onboarding-tour.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-045",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3f1c0578117ca9abad16b2686593b875e788dbdd1df5256fcb6262c383c701de"
     },
     {
       "path": "interface/src/components/studio/patches-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-046",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1a847f997fcf828f33bf143f53ce68f19857e5d7cf7d43ee53ecbad091a6cf05"
     },
     {
       "path": "interface/src/components/studio/performance-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-047",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c3a8680d18110e786ed62c79ec85ddb59babc08c71d4c694ae93cf6624ef9006"
     },
     {
       "path": "interface/src/components/studio/porting-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-048",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "44c3e8fe1d56f82b4cf476da9e2435c67e3a028a56f675c2d6b291d217928cf4"
     },
@@ -1873,64 +2026,85 @@
     },
     {
       "path": "interface/src/components/studio/preset-bar.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-049",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "513fa34cd217c49e478e035f703f19ef8e66a5599abe1ef957dd5ceda62dec7a"
     },
     {
       "path": "interface/src/components/studio/profile-switcher.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-050",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "67eacb55737f60717bb12690878c1301259b6202f89a1d7525bacb7ce0053b93"
     },
     {
       "path": "interface/src/components/studio/profiler-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-051",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "07544d76eeee07f03981c5bff681d103189ade76882066699a214992ab708743"
     },
     {
       "path": "interface/src/components/studio/progress-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-052",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "319124ac60895fb7105796b63b547c000cd7a78790c6ee3aa23dfe800dab7290"
     },
     {
       "path": "interface/src/components/studio/share-dialog.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-053",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "83847d8232aa7c185da9c9bdbf073e4f2091bed3379f51239d026af2177fd0d8"
     },
     {
       "path": "interface/src/components/studio/sidebar.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-054",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e4946c32c035380c083740796d3a126de5081edf389134d5bfd77fead7ede8ef"
     },
     {
       "path": "interface/src/components/studio/studio-context.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-studio-shell-00",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "4989924e1bfed3165cc1d48e237d2aadea67a7351430544e6a5b5eb072eaf632"
     },
@@ -1948,343 +2122,514 @@
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-055",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a4bf3c48b42d22d5fd5dc579770abbbd80bcaec0595e931bd6c9dd1058aedab3"
     },
     {
       "path": "interface/src/components/studio/topbar.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-studio-shell-01",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "072c3f0288a980ae34d2e7c975261dec2ca93f8c362a35af183f025916fd5cc0"
     },
     {
       "path": "interface/src/components/studio/troubleshooting-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-056",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e1a9f0f67caa6aa9dc9dcdd6c7313cfe60606896dd8418dbe474310e90de19f7"
     },
     {
       "path": "interface/src/components/studio/ui-bits.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-057",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f74a4957be42d0376caae764c8a04650b095e61649e5d05176bfdb36221f76e4"
     },
     {
       "path": "interface/src/components/studio/visual-regression-panel.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-058",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "fdbd321186cfbe0054a8f7ba4bd1ac03aaaacaaa2265f8f0cf326d8c9617f415"
     },
     {
       "path": "interface/src/components/studio/vram-viewer.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-059",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a6c0ed30a614fe35df8478651ead9e00ff678610a4a508a2a72fa2ac74d697c7"
     },
     {
       "path": "interface/src/components/ui/alert-dialog.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "59967c334f56dd44100e49b1fc18db428e7f15f5a28b9c2c4f9a3b7dcb4db4b7"
     },
     {
       "path": "interface/src/components/ui/alert.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "49d8311589b810b106aada8ef7b13f70b2b1f68cfce4e1458b7f31a191f420e9"
     },
     {
       "path": "interface/src/components/ui/badge.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "f41c11fc13e9a1f1b849349cb51b137ddd27de0a17c5339675c789d58f556cc4"
     },
     {
       "path": "interface/src/components/ui/button.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "82403231e33fd3d45b111e5e819df194cdfa7cef9a726770185724a60bd20932"
     },
     {
       "path": "interface/src/components/ui/dialog.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "491a87bfae8f28773624d353bf56b9288d0852413e814d508e0d086dc7b06edb"
     },
     {
       "path": "interface/src/components/ui/dropdown-menu.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "9b346378821ba06f9501e4571fd7678cd8819d6833f833daff72bec699565c06"
     },
     {
       "path": "interface/src/components/ui/input.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "6628e8fde207857b9ba08910d386eeea8213d7d745b4e0ae8b95332b52730db9"
     },
     {
       "path": "interface/src/components/ui/label.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "9ec42c8a57e82311118b794318409ee02b2cebfa49ba6cce8457cff6448cd471"
     },
     {
       "path": "interface/src/components/ui/progress.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "e7a89220fb49e18d6613956781cfd5eb38d5da36379e93f5fc90ccec127dc871"
     },
     {
       "path": "interface/src/components/ui/select.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "8795c9fac7c48d565ff6c47cbf4cca8bfefe25d8cb3d7e7aeba36855739a76ab"
     },
     {
       "path": "interface/src/components/ui/slider.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "55140ef92c201c82d530dede076603611fbfb2cdc899e4d8459b58f6cbb2b235"
     },
     {
       "path": "interface/src/components/ui/switch.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "17f2390d98e8ce4d9e90155eac1918266914d6a9ada7c276b5d1c917cef0e969"
     },
     {
       "path": "interface/src/components/ui/toast.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "de232035f4f40233aaddcd130ff494c72cda864e91109244bf55331da13d9a96"
     },
     {
       "path": "interface/src/components/ui/toaster.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "05e5b3eb44dce90b44e42ca3b4bdc582c5f4bf1652e38237ff7276aa6bd66d8f"
     },
     {
       "path": "interface/src/components/ui/toggle-group.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "09eebce0dcbac76f860d4b6df5261c4f385f5ba233f88a0cd8dde91b1772abeb"
     },
     {
       "path": "interface/src/components/ui/toggle.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "b201563ea8cdef3680a3d9bf272cfc5918a5ab6e1079d7ff8d6273df7fce2849"
     },
     {
       "path": "interface/src/components/ui/tooltip.tsx",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "8d8a3645f547334b759341daf94a20b12a8ba17e8de4ad6e4e1c64b38842c1e3"
     },
     {
       "path": "interface/src/hooks/use-gamepads.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-060",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f6f87e010f7b976afefc97bfca2e13666651eddce6b83665318f802052e1455d"
     },
     {
       "path": "interface/src/hooks/use-keyboard-shortcuts.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-061",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "772b109e22cb815a80871f42c42d89eeba1d7dfe14f6bec86c487d453106bba5"
     },
     {
       "path": "interface/src/hooks/use-mobile.ts",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "f6a4791d0586c106823b45212b1928b1f36ef9ae00d5ab9317cdc83cbdf65238"
     },
     {
       "path": "interface/src/hooks/use-theme.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-062",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "fb1f70bf27f82a25fb6396649df4806e8e3d2d820bc7f11aa67bc0fa9e36fc49"
     },
     {
       "path": "interface/src/hooks/use-toast.ts",
-      "classification": "reviewed_configuration",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shadcn-ui-dashboard-primitives",
+        "evidence_tier": "N",
+        "upstream": "shadcn/ui",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "996f0b576c5695f1219655f0e12326648710e4ce41401fa0eeb458430b71eaa0"
     },
     {
       "path": "interface/src/lib/db.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-063",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3b668c1e2c238dea4881bfcea5e03cc0c1eb6f7ecc161c965af7464c6905af37"
     },
     {
       "path": "interface/src/lib/format.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-064",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "be478d1cbb1cc63d2c4a796c0bc13f5e68ff272fd24c60180c5b55299dd3aed3"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-065",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ed0ff34338be416da6266627294169916d76fe0cb6e59691c1f2b00efcfc3e47"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-066",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5c7137875910bb33ab3166e9c959be13a186bb91eefc74f5f36be289f90115cf"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-067",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "132968c33607d95277dde44f23a4624376cc73120970357691a585b957aa6211"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-068",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8abf65176fb9e4d5ed4469029711302e3a9180a13511729c52ea4f3ea73483c5"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-069",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "03bc37529e1e1ca5e4936ebbe25d6a9321abff1200177457edf26b3d25bcd029"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-070",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c96310ba512d5453b200dd509feb79029499c15b294a1cfbdbce3f2945e9520e"
     },
     {
       "path": "interface/src/lib/recompiler/defaults.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-071",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5798c14a64a90f100bf98b04bae3fec8c1e67ddcf3f707dddfde854f77dee493"
     },
     {
       "path": "interface/src/lib/recompiler/diff.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-072",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8a4703b7711316d4b62f647a998e5e8e20fe3722eb4e18a3071dc90a871e6cfb"
     },
@@ -2314,334 +2659,445 @@
     },
     {
       "path": "interface/src/lib/recompiler/iso.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-073",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "79981e6a246ea6480588c07bf8203553b4f87cc0b4430d664ce9f0a8911323b8"
     },
     {
       "path": "interface/src/lib/recompiler/local-request.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-074",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9ca8c2280d35cf0f48df99f984cf2fd9eb03190f79c922080df1e63f3ab39b78"
     },
     {
       "path": "interface/src/lib/recompiler/manager-contract.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-075",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9bf23f78b1407de6206400a2ac8d8fb5ed05271c36a4cb3abe46d5bb028ba52b"
     },
     {
       "path": "interface/src/lib/recompiler/manager-process.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-076",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b0ed079b8a8de4608836d0a0cc05d7d267c38dbf9f940c45a94e9a6ec183d585"
     },
     {
       "path": "interface/src/lib/recompiler/manager-process.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-077",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "2bb305ef6083083b5521ec6408644ce24e8f34eaaadecbb95dce14febba3bfe0"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-078",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "57888d4353915e4b260fe2faea4202726d29e450757b3ea99625e837ae96479d"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-079",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1d0a6963712ae204600d038fc8c43e6cd756a9af128a10b675f8cd1bf64e9cf6"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-080",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "bfea5b10caad8f7f4f306fc30e3bfb156f4302ecf6689ba0e4978c9a0a0bdaa6"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-081",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5a030a1248dc3fed59496b8a68f6bc2f5f41afc75729de0b0ccfe66b877c0b0f"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-082",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "4dcffb735c8c3945bee2d1d063574f041ed9de444bdcb4b766229630befae65e"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-083",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "590ee8f6f9766b440878262c352aba0e7cf9462df89828d7dab50ca575447d87"
     },
     {
       "path": "interface/src/lib/recompiler/presets.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-084",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "34a2505397ddc5148a6d28891caeb39616bfbdd98b589f46e7689dedaf56779f"
     },
     {
       "path": "interface/src/lib/recompiler/profile-store.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-085",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "607ae6987eaa3e1063c347e591514140063abd444904a4b2669161198f757a31"
     },
     {
       "path": "interface/src/lib/recompiler/profile-store.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-086",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5bc88e9f84b0a51954d5e1f3fc1255fb48113137d7237eda674aeead10e777b0"
     },
     {
       "path": "interface/src/lib/recompiler/profiles.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-087",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9c9ea1d94aa39e4f5882e6375e8f331b535cc052b06b49c22e0cf27938ea7a40"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-088",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e1741b4d54648371deb11aef403a53d97c99da7a77b3b365154fd1b5663b48de"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-089",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "dada16655edd0a6c687f8ed2116ced0858b535bb21c65113b3e53302809641d7"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-090",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "62fe6c25f6f33c84fa08493f05c345cf84f2d0c4f5c3667b29599e4c07ff94e3"
     },
     {
       "path": "interface/src/lib/recompiler/real-data.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-091",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "57321a5bb920c2d3ae35d015ed0223bdf8915e412b622484aef7df3d97816d8d"
     },
     {
       "path": "interface/src/lib/recompiler/route-integrity.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-092",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0e181404496f30b5f698b4333d11ae4492d33312181c6d293a65b72748b37c1c"
     },
     {
       "path": "interface/src/lib/recompiler/runner.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-093",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d8526704bf7d36efd18b23e4a3e7ba7db1eedbf179366a1b8b3137dd6d819d63"
     },
     {
       "path": "interface/src/lib/recompiler/share.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-094",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c8cc97a2e03170542c799dd6036ba9058097859a8e48c295005cecc0fba98830"
     },
     {
       "path": "interface/src/lib/recompiler/telemetry.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-095",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "945df292d7297582fc00f69ed64524fac3ba1cc51556a73c5975baff357a52a5"
     },
     {
       "path": "interface/src/lib/recompiler/types.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-096",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b754329d9ae0825561e83d1f6766e3faf59404c4cf90eeaa1c99b6a13fb9b021"
     },
     {
       "path": "interface/src/lib/recompiler/visual-regression-route.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-097",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "670c8d478cb3da87037c6e1307efa70560ca93ef7554315c49ca6ec2adbd5cd7"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-098",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "66bb3fd186ccb7589e3a5826848cd8249eb8b19be4f562ea0200deb2d30bbf6f"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-099",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "51198e1fbea4db1d982c04bdbc861df001b3d7066ca64b5c8bb494dbd3e63df6"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-100",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "52cf588b932ef075b9e3bfac9c12b473b68cbdf5346d463d13d0078a68607e8b"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-101",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a37a656d5aa4981b2e96d8b957210ee63564649005a1035822b6d32ac7de17f0"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-102",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "aed5cbda4d8bbd864d0dcb4ba818fdee001535b3a9c1a01b68f22d835bde19e6"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-103",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "442d67ad82cc6a6594f12431731f57831da302d2a24115c1c2c102b9f796c606"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.test.mjs",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-104",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c37fae2647b696546ef94620a2c778a4e61d4c827621d3777fd351957a63bb6a"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.test.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-105",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d639dcdcef7e2c2dc79e350ec0b7d09773f5daf97e16d7ba82ffcbb537f2ab81"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-106",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b72986e58c806ed546af4653dcdd4c971c6fbd1a9cb17456b8c6f2323b20bbc6"
     },
     {
       "path": "interface/src/lib/recompiler/zip.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-107",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3373b0231493c98dc4a8e9ec2ead5ffd978856020330beab4d2b97715f85dd02"
     },
     {
       "path": "interface/src/lib/utils.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-108",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7c8c3dfc0cdd370d44932828eb067ef771c8fe7996693221d5d4b90af6d54f2d"
     },
     {
       "path": "interface/src/proxy.ts",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-109",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "128280f239286a50d3e513c90bfca5afbd3495ce89c01b7a4715ff84d8ae925e"
     },
@@ -4078,9 +4534,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "sal063",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "02df75887b8869483e49ef8b404224bd8cf84e31227a58e3503db1682625d519"
     },
@@ -4586,9 +5044,21 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-core",
         "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "ppsspp",
+        "upstream_paths": [
+          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
+          "Core/HLE/sceCtrl.cpp (sample ring)",
+          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
+          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
+          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
+          "Core/HLE/sceMpeg.cpp (delay constants)",
+          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
+          "GPU/GPU.h (GE_STATUS layout)",
+          "Core/HW/Display.cpp (hCountPerVblank)"
+        ],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "fae212176d815cc3f80221fa1aa4d6fc060f9d49d100cadf6c89ba9a3828d60b"
     },
@@ -4822,9 +5292,16 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "ppsspp",
+        "upstream_paths": [
+          "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
+          "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
+          "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
+          "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
+        ],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "e15804e04f10442e93a9d771a109867d7b6b58cd8574e3503688dee99537e60f"
     },
@@ -4835,9 +5312,14 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "savedata",
         "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "ppsspp",
+        "upstream_paths": [
+          "Core/Dialog/SavedataParam.h",
+          "Core/Dialog/SavedataParam.cpp"
+        ],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "cce3d968f3a68faeed3c859b1503a0030d0ea05b3c3cf0f373d9286195a182e7"
     },
@@ -4848,9 +5330,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "scheduler",
         "evidence_tier": "H",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "sal063",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "68259873923705fc120a3f8ba35f38555a28f5f8ee83efaa994b1d8240bf9d9f"
     },
@@ -5200,9 +5684,13 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "sal063",
+        "upstream_paths": [
+          "tools/"
+        ],
+        "upstream_revision": "da17b0e",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "1d93817976e82ca8239afcb415595be4d5705da131b669161c8439b54fd62740"
     },
@@ -5211,7 +5699,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5223,7 +5711,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5235,7 +5723,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5247,7 +5735,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5259,7 +5747,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5295,7 +5783,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5309,9 +5797,13 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "sal063",
+        "upstream_paths": [
+          "tools/"
+        ],
+        "upstream_revision": "da17b0e",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "baf4641f0f7cc7c19fbeb90a4d6d2ca811f937c28e4a08bbf10e7ca0069f036f"
     },
@@ -5349,7 +5841,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "title-input-and-asset-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5385,7 +5877,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5397,7 +5889,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5409,7 +5901,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "title-input-and-asset-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5438,7 +5930,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5450,7 +5942,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5462,7 +5954,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5503,7 +5995,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5527,7 +6019,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ghidra-interop-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5539,7 +6031,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ghidra-interop-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5551,7 +6043,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ghidra-interop-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5563,7 +6055,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ghidra-interop-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5575,7 +6067,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "ghidra-interop-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5587,7 +6079,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5599,7 +6091,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5611,7 +6103,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5671,7 +6163,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5683,7 +6175,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5695,7 +6187,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5707,7 +6199,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5728,7 +6220,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5740,7 +6232,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5810,7 +6302,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5822,7 +6314,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "import-and-nid-audit-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5875,7 +6367,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5887,7 +6379,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5899,7 +6391,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -5945,7 +6437,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6106,7 +6598,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6190,7 +6682,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6202,7 +6694,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6214,7 +6706,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -6259,7 +6751,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7488,7 +7980,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "title-input-and-asset-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7500,7 +7992,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "build-and-ci-gate-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7512,7 +8004,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7524,7 +8016,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "publication-and-provenance-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7536,7 +8028,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7548,7 +8040,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "debug-and-analysis-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7601,7 +8093,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7613,7 +8105,7 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "doctor-and-host-preflight-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -7625,23 +8117,12 @@
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "tooling-general",
+        "record_id": "title-input-and-asset-tooling-20260909",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
       "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "7954b72c697ff57907547ef98a5a4a2a845611e5",
-    "candidate_tree": "f3b754c42324b50abeff89e54d67240d211a4b8b",
-    "refreshed_paths": [
-      "tools/hst_doctor.py",
-      "tools/hst_doctor_checks.py",
-      "tools/mem_debug.py",
-      "tools/test_hst_doctor_hardening.py"
-    ]
-  }
+  ]
 }
