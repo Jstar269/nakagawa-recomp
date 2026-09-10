@@ -698,15 +698,31 @@ def check_build_products(report: Report) -> None:
         report.fail("BUILD_IMAGE", "Missing or empty build/hst/hst_image.bin", path=image, remediation="Run the full code-generation pipeline.")
 
 
+class _GitConfigError(Exception):
+    """The configuration could not be inspected, as distinct from being unset."""
+
+
 def _git_config(root: Path, scope: str, key: str) -> str | None:
-    """Read one git config value, or None when git is unavailable or unset."""
+    """Read one git config value. None means *unset*; never means *unknown*.
+
+    `git config --get` exits 1 for an unset key and uses other nonzero codes for
+    real failures -- git missing, the repository refused as unsafe, a malformed
+    config. Collapsing those into None would let a failed lookup report the same
+    clean PASS as a genuinely clean checkout, which is the opposite of what this
+    check exists to do, so anything but 0 or 1 raises.
+    """
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), "config", scope, "--get", key],
             capture_output=True, text=True, timeout=15, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        raise _GitConfigError(f"could not run git config: {error}") from error
+    if proc.returncode == 1:
         return None
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        raise _GitConfigError(detail[0] if detail else f"git config exited {proc.returncode}")
     value = proc.stdout.strip()
     return value or None
 
@@ -722,8 +738,18 @@ def check_agent_identity(report: Report) -> None:
     fix is ``git config --remove-section user`` so the global identity applies.
     """
     root = report.root
-    local_name = _git_config(root, "--local", "user.name")
-    local_email = _git_config(root, "--local", "user.email")
+    try:
+        local_name = _git_config(root, "--local", "user.name")
+        local_email = _git_config(root, "--local", "user.email")
+        global_name = _git_config(root, "--global", "user.name")
+        global_email = _git_config(root, "--global", "user.email")
+    except _GitConfigError as error:
+        report.warn(
+            "GIT_IDENTITY",
+            f"Could not inspect the commit identity, so a stray repository-local "
+            f"override cannot be ruled out: {error}",
+        )
+        return
     if local_name is None and local_email is None:
         report.pass_(
             "GIT_IDENTITY",
@@ -732,20 +758,19 @@ def check_agent_identity(report: Report) -> None:
         return
 
     shown = f"{local_name or '(unset)'} <{local_email or '(unset)'}>"
-    global_name = _git_config(root, "--global", "user.name")
-    global_email = _git_config(root, "--global", "user.email")
-    if (local_name, local_email) == (global_name, global_email):
-        report.info(
-            "GIT_IDENTITY",
-            f"Repository-local commit identity matches the global identity: {shown}",
-        )
-        return
-
+    matches = (local_name, local_email) == (global_name, global_email)
+    # A local override is unwanted even when it currently agrees with the global
+    # identity: it pins this checkout to today's value, so a later change to the
+    # global identity silently stops applying here. Warn either way.
+    detail = ("currently the same as the global identity, but it pins this checkout "
+              "to that value if the global one ever changes"
+              if matches else
+              "overrides the global identity and will author every commit in this "
+              "checkout and its worktrees")
     report.warn(
         "GIT_IDENTITY",
-        "Repository-local commit identity overrides the global one and will author "
-        f"every commit in this checkout and its worktrees as {shown}. If an automated "
-        "session set this, clear it with 'git config --remove-section user'.",
+        f"Repository-local commit identity {shown} {detail}. If an automated session "
+        "set this, clear it with 'git config --remove-section user'.",
     )
 
 
