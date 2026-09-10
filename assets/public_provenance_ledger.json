@@ -6231,7 +6231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f5428c2852a177b00aef61005b3361c6eb600faa2d9ea974dca2dd35626fd78"
+      "sha256": "4bd44f72c7bdd1635bf34e6b757cd4a50d36768827f5366381157ef1ef7a4652"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -7125,7 +7125,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "67ebfdde093fc5e8712f431d74cf3528988ec3b5cf7f17cada1cb4833f409a50"
+      "sha256": "4d8c8818cef0eccb38e39e4b769bc5a8ab2107c803ef8667b979a6a4bf0fcb04"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -7636,7 +7636,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "56cbcbef6d7e38171d37659dff45d39058c62103",
-    "candidate_tree": "e52e9667ebd1fcd0a5cb33a205e01ee282ea7ec2",
+    "candidate_tree": "8bde48c7c7fb63d7bcf88af7ef0f73d2db19a7a8",
     "refreshed_paths": [
       "tools/public_candidate.py",
       "tools/publish_audit.py",
