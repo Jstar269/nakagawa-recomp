@@ -137,6 +137,17 @@ export function BuildPanel() {
     ? buildPrereqs.missing[0] ?? "Resolve Workspace Doctor action items before starting a task."
     : "Waiting for Workspace Doctor to finish; actions stay locked until preflight is valid.";
 
+  // Publish the gate decision so other surfaces (the topbar CTA) respect the
+  // same prerequisites as this panel instead of dispatching a build blind.
+  useEffect(() => {
+    setBuild({
+      buildPrereqs,
+      buildHint: buildPrereqs.ready
+        ? null
+        : (buildPrereqs.missing[0] ?? "Resolve Workspace Doctor action items before building."),
+    });
+  }, [buildPrereqs, setBuild]);
+
   async function realBuild(action: ManagerAction, runOptions?: RunOptions) {
     if (realStatus === "running") return;
     if (!buildPrereqs.ready) {

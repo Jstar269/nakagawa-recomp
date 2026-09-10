@@ -7,10 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export function Topbar() {
-  const { isoMeta, section, buildStatus, setSection, requestBuild } = useStudio();
+  // Shared gate published by BuildPanel from the Workspace Doctor preflight.
+  // Undefined until the build panel mounts and reports its decision; a
+  // disabled control with an explanatory title teaches, so the CTA always
+  // stays visible and routes to the Build section where preflight runs.
+  const { isoMeta, section, buildStatus, buildPrereqs, buildHint, setSection, requestBuild } = useStudio();
   const { theme, toggle: toggleTheme } = useTheme();
+  const preflightReady = buildPrereqs?.ready ?? false;
   const startBuild = () => {
     setSection("build");
+    if (!preflightReady) return;
     requestBuild();
   };
   const openTour = () => window.dispatchEvent(new Event("hst-restart-tour"));
@@ -25,8 +31,12 @@ export function Topbar() {
       ? {
           label: buildRunning ? "Build running…" : "BuildFull",
           onClick: startBuild,
-          disabled: buildRunning,
-          title: buildRunning ? "A native manager task is already running" : "Start the full native build pipeline",
+          disabled: buildRunning || !preflightReady,
+          title: !preflightReady
+            ? (buildHint ?? "Waiting for Workspace Doctor preflight; Build unlocks after the preflight check completes.")
+            : buildRunning
+              ? "A native manager task is already running"
+              : "Start the full native build pipeline",
         }
       : isoMeta.matchedTitle
         ? {
