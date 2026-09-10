@@ -3080,3 +3080,53 @@ class GeneratedControlWriteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeneratorClassMappingRegressions(unittest.TestCase):
+    """Two defects that stopped the ledger generator writing anything.
+
+    Both were found while refreshing a real merge queue, and both failed
+    closed rather than silently mislabelling, which is why they surfaced as a
+    refusal and a verifier finding rather than a bad ledger.
+    """
+
+    def test_generated_project_owned_has_a_mapping(self):
+        """An unmapped classification fell through to the fail-closed default.
+
+        ``generated-project-owned`` is a real classification in the record
+        vocabulary, but ``_class_for`` had no branch for it, so a path
+        carrying it resolved to ``unresolved``.  The generator then refused to
+        write any ledger at all, which blocked every change touching such a
+        path.
+        """
+        record = {
+            "id": "native-player-000",
+            "classification": "generated-project-owned",
+            "evidence_tier": "S",
+        }
+        classification, evidence = provenance_ledger._class_for(
+            "src/core/generated/nk_title_catalog.c", record
+        )
+        self.assertNotEqual(classification, "unresolved")
+        self.assertEqual(classification, "generated_from_public_source")
+        self.assertIn(classification, provenance_ledger.ALLOWED_CLASSES)
+        self.assertEqual(evidence["record_id"], "native-player-000")
+
+    def test_record_independent_paths_agree_across_both_code_paths(self):
+        """The full generator and the refresh path must emit identical evidence.
+
+        ``font/README.md`` is classified by its path before any record is
+        consulted.  ``_refresh_class_for`` used to rebuild evidence from the
+        record anyway, so the two paths emitted different evidence for
+        byte-identical content and the attestation verifier reported
+        CLAIM_UNBACKED on an otherwise-correct entry.
+        """
+        record = {
+            "id": "replacement-pgf-binaries",
+            "classification": "project-authored-independent",
+            "evidence_tier": "N",
+        }
+        generated = provenance_ledger._class_for("font/README.md", record)
+        refreshed = provenance_ledger._refresh_class_for("font/README.md", record)
+        self.assertEqual(generated, refreshed)
+        self.assertIsNone(refreshed[1].get("record_id"))
