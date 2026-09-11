@@ -15,15 +15,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import publication_policy
 import title_manifest
+from . import synthetic_disc_ids
 from .types import TitleProfile
 
 # Map synthetic titles to test disc IDs for synthetic ISO test harnesses
-SYNTHETIC_DISC_ID_MAP = {
-    "synthetic-allegrex-v1": "TEST00001",
-    "synthetic-title2-v1": "TEST00002",
-    "pspdev-phase5-v1": "TEST00005",
-    "display-smoke-v1": "TEST00006",
-}
+# Re-exported from the single home so this module and
+# tools/title_catalog_codegen.py cannot drift apart again.
+SYNTHETIC_DISC_ID_MAP = synthetic_disc_ids.SYNTHETIC_DISC_IDS
 
 
 def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
@@ -37,8 +35,16 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         disc_ids = [disc_info["id"]] + disc_info.get("compatible_revisions", [])
         regions = [disc_info.get("region", "UNKNOWN")]
     elif kind == "synthetic":
-        synth_disc = SYNTHETIC_DISC_ID_MAP.get(t_id, "TEST00000")
-        disc_ids = [synth_disc]
+        # A public synthetic title has an assigned disc id; a PRIVATE overlay
+        # loaded from outside this repository has none, and that is not an error
+        # -- it simply has no disc id and is reachable by title id alone. What
+        # must not happen is the old behaviour of substituting a shared
+        # "TEST00000" for every unassigned title, which made any two of them
+        # collide with each other and with the public catalog. The strict
+        # title_manifest.synthetic_disc_id() is for catalog generation, where an
+        # unassigned PUBLIC manifest really is a mistake.
+        assigned = synthetic_disc_ids.SYNTHETIC_DISC_IDS.get(t_id)
+        disc_ids = [assigned] if assigned else []
         regions = ["TEST"]
     else:
         disc_ids = []

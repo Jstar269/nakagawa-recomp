@@ -15,8 +15,24 @@
 #endif
 
 int main(void) {
-    printf("[NATIVE_TEST] Verifying public title catalog count...\n");
-    assert(nk_title_catalog_count == 4);
+    /* Catalog SIZE is deliberately not asserted here. It is a literal that every
+       new public title has to come back and edit, and it never caught anything:
+       tools/title_catalog_codegen.py --verify and the codegen drift test already
+       prove the catalog matches assets/titles/ exactly. What the native side can
+       usefully check is that the table it compiled is internally coherent. */
+    printf("[NATIVE_TEST] Verifying public title catalog integrity...\n");
+    assert(nk_title_catalog_count > 0);
+    for (int i = 0; i < nk_title_catalog_count; i++) {
+        const NkTitleEntry *e = &nk_title_catalog_entries[i];
+        assert(e->id != NULL && e->id[0] != '\0');
+        assert(e->display_name != NULL && e->display_name[0] != '\0');
+        assert(e->primary_disc_id != NULL && e->primary_disc_id[0] != '\0');
+        /* Every disc id resolves, and resolves to THIS entry. Two entries sharing
+           a disc id used to be reachable: unassigned synthetic titles all shared a
+           "TEST00000" sentinel, so lookup silently returned whichever came first. */
+        assert(nk_title_catalog_find_by_disc_id(e->primary_disc_id) == e);
+        assert(nk_title_catalog_find_by_id(e->id) == e);
+    }
 
     printf("[NATIVE_TEST] Verifying public source-owned title lookups...\n");
     const NkTitleEntry *t_synth1 = nk_title_catalog_find_by_disc_id("TEST00001");

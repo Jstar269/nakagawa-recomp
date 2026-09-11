@@ -20,43 +20,62 @@ import title_catalog_codegen
 from nk_core.title_registry import TitleRegistry
 
 
-class SyntheticDiscIdMapTests(unittest.TestCase):
-    """The synthetic disc-id assignment exists in two modules.
+class SyntheticDiscIdTests(unittest.TestCase):
+    """Synthetic disc-id assignment has exactly one home and fails closed.
 
-    tools/title_catalog_codegen.py emits it into the native catalog and
-    tools/nk_core/title_registry.py resolves it for the Python tooling. They had
-    already drifted once: a title present in one and absent from the other falls
-    back to the shared "TEST00000" sentinel, and because every unmapped
-    synthetic gets that SAME sentinel, the second one to appear collides with
-    the first and the overlay loader reports a conflict with the public catalog
-    that does not exist.
+    It used to live in two private copies -- one in tools/title_catalog_codegen.py
+    for the native catalog, one in tools/nk_core/title_registry.py for the Python
+    tooling -- and they drifted. Both then fell back to a SHARED "TEST00000"
+    sentinel for an unassigned title, so the second unassigned title to appear
+    collided with the first: the registry reported a conflict with the public
+    canonical catalog that did not exist, and the native catalog emitted two
+    entries claiming one disc id.
     """
 
-    def test_maps_agree(self) -> None:
+    def test_both_modules_use_the_canonical_assignment(self) -> None:
         import title_catalog_codegen
-        from nk_core import title_registry
+        from nk_core import synthetic_disc_ids, title_registry
 
-        self.assertEqual(
-            title_catalog_codegen.SYNTHETIC_DISC_ID_MAP,
-            title_registry.SYNTHETIC_DISC_ID_MAP,
-            "the codegen and registry synthetic disc-id maps have drifted; an id "
-            "missing from either falls back to the shared TEST00000 sentinel",
-        )
+        self.assertIs(title_catalog_codegen.SYNTHETIC_DISC_ID_MAP,
+                      synthetic_disc_ids.SYNTHETIC_DISC_IDS)
+        self.assertIs(title_registry.SYNTHETIC_DISC_ID_MAP,
+                      synthetic_disc_ids.SYNTHETIC_DISC_IDS)
 
-    def test_every_public_synthetic_manifest_is_mapped(self) -> None:
+    def test_the_generic_manifest_module_does_not_own_it(self) -> None:
+        """tools/title_manifest.py is a generic helper and must not name a title.
+
+        That is the contract tools/test_generic_title_planning_proof.py enforces,
+        and it is the reason this assignment does not live there despite being
+        manifest-shaped data.
+        """
+        import title_manifest
+
+        self.assertFalse(hasattr(title_manifest, "SYNTHETIC_DISC_IDS"))
+
+    def test_unassigned_synthetic_title_fails_closed(self) -> None:
+        from nk_core import synthetic_disc_ids
+
+        with self.assertRaisesRegex(synthetic_disc_ids.SyntheticDiscIdError,
+                                    "has no assigned disc id"):
+            synthetic_disc_ids.synthetic_disc_id("a-title-nobody-assigned-v1")
+
+    def test_assignments_are_unique(self) -> None:
+        from nk_core import synthetic_disc_ids
+
+        values = list(synthetic_disc_ids.SYNTHETIC_DISC_IDS.values())
+        self.assertEqual(len(values), len(set(values)),
+                         "two synthetic titles share a disc id")
+
+    def test_every_public_synthetic_manifest_is_assigned(self) -> None:
         import json
-        import title_catalog_codegen
+        from nk_core import synthetic_disc_ids
 
         for manifest in sorted((ROOT / "assets" / "titles").glob("*.json")):
             data = json.loads(manifest.read_text(encoding="utf-8"))
             if data.get("kind") != "synthetic":
                 continue
-            self.assertIn(
-                data["id"],
-                title_catalog_codegen.SYNTHETIC_DISC_ID_MAP,
-                f"{manifest.name} is synthetic but has no explicit disc id, so it "
-                f"would share the TEST00000 sentinel with every other unmapped title",
-            )
+            # Fails closed rather than returning a sentinel.
+            synthetic_disc_ids.synthetic_disc_id(data["id"])
 
 
 class TitleCatalogTests(unittest.TestCase):
@@ -151,6 +170,10 @@ class TitleCatalogTests(unittest.TestCase):
         cat_h = ROOT / "src" / "core" / "generated" / "nk_title_catalog.h"
         cat_c = ROOT / "src" / "core" / "generated" / "nk_title_catalog.c"
 
+        # Derived from the manifests, not a literal: adding a public title
+        # should not require editing a number in a test harness.
+        expected_titles = len(sorted((ROOT / "assets" / "titles").glob("*.json")))
+
         test_c_source = f"""#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -159,7 +182,7 @@ class TitleCatalogTests(unittest.TestCase):
 
 int main(void) {{
     printf("Catalog count: %d\\n", nk_title_catalog_count);
-    assert(nk_title_catalog_count == 4);
+    assert(nk_title_catalog_count == {expected_titles});
 
     /* Test synthetic title lookups in public catalog */
     const NkTitleEntry *t_synth = nk_title_catalog_find_by_disc_id("TEST00001");

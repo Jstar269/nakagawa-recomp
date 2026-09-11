@@ -51,6 +51,37 @@ or a human legal decision.
    Actions behavior, DCO, and maintainer authorization are verified separately
    against the actual destination repository.
 
+## Refreshing after an ordinary change
+
+For the common case -- you changed tracked files and need the ledger and export
+to describe them again -- use the helper, which runs the steps in the one order
+that converges:
+
+```bash
+python tools/provenance_refresh.py \
+    --implementation-ledger <private-authority>/docs/provenance/IMPLEMENTATION_PROVENANCE.json
+```
+
+It stages the worktree before generating (the generator reads the **index**,
+never the worktree), stages the regenerated ledger before rebuilding the export
+(`PUBLIC_EXPORT.json` takes `provenance_ledger_sha256` from the **worktree**
+ledger and `included_content_sha256` from the index), and then audits both legs.
+Doing these out of order produces a stale-export or hash-mismatch finding that
+looks like a content problem, so the natural response is to re-run the same wrong
+sequence; `--export-output` in particular is **silently ignored** in full-build
+mode, because it belongs to the `refresh-reviewed` / `admit-new-reviewed`
+subcommands.
+
+The helper deliberately does not create records or approve blobs -- admission is
+not a hash refresh, an approval keys on `(path, exact sha256)`, and both live in
+the maintainer-controlled authority. It also refuses to widen `include_paths`
+without `--apply-policy`, because putting a file on the public surface is a
+publication decision rather than a build step.
+
+Push the private authority **before** pushing the branch: the hosted attestation
+fetches the authority from its GitHub repository at run time, so a branch pushed
+first reports every changed blob as unapproved.
+
 ## Reproducible local sequence
 
 ```text
