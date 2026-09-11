@@ -44,6 +44,13 @@ typedef struct {
     void *native_handle;
     int process_id;
     bool is_active;
+    /* A POSIX child can only be reaped once. nk_platform_is_process_running
+       reaps it to learn that it exited, which would otherwise throw the exit
+       status away and leave nk_platform_wait_process nothing to report. The
+       status is cached here instead. Win32 keeps the handle open and reads the
+       code on demand, so it never sets these. */
+    bool has_cached_exit;
+    int cached_exit_code;
 } NkProcessHandle;
 
 /* Spawn a child process with specified arguments, environment variables, and working directory.

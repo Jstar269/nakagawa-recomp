@@ -189,6 +189,93 @@ class NkCoreTests(unittest.TestCase):
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
 
+    def test_preparation_preserves_compatible_revision_identity(self) -> None:
+        """A disc matched through a compatible revision keeps its own identity.
+
+        Preparation used to name the target directory, the manifest disc_id and
+        the result after profile.disc_ids[0] no matter which ID the disc
+        actually carried. Two compatible revisions therefore installed over one
+        another and both claimed to be the primary disc, so the revision the
+        user prepared could not be told apart from -- or could silently replace
+        -- the other one.
+        """
+        registry = TitleRegistry(include_defaults=True)
+        base = registry.lookup_by_disc_id("TEST00001")
+        self.assertIsNotNone(base)
+
+        # Same title, now also matching a second (compatible) disc ID.
+        registry.register(
+            TitleProfile(
+                id=base.id,
+                name=base.name,
+                disc_ids=["TEST00001", "TEST00003"],
+                regions=list(base.regions),
+                executable_base=base.executable_base,
+                executable_entry=base.executable_entry,
+                fallback_entry=base.fallback_entry,
+                required_modules=list(base.required_modules),
+                archive_format=base.archive_format,
+                archive_relpath=base.archive_relpath,
+                save_namespace=base.save_namespace,
+                runtime_profile=base.runtime_profile,
+                codegen_profile=base.codegen_profile,
+                min_iso_bytes=base.min_iso_bytes,
+            )
+        )
+
+        dest_root = self.temp_dir / "installed_games"
+        engine = PreparationEngine(base_dir=self.temp_dir, registry=registry)
+
+        primary_iso = self.temp_dir / "primary.iso"
+        _create_mock_iso(primary_iso, disc_id="TEST00001")
+        revision_iso = self.temp_dir / "revision.iso"
+        _create_mock_iso(revision_iso, disc_id="TEST00003")
+
+        primary = engine.prepare_game(primary_iso, destination_root=dest_root)
+        revision = engine.prepare_game(revision_iso, destination_root=dest_root)
+
+        self.assertTrue(primary.success)
+        self.assertTrue(revision.success)
+
+        # Each revision keeps the disc ID that was actually read from the disc.
+        self.assertEqual(primary.disc_id, "TEST00001")
+        self.assertEqual(revision.disc_id, "TEST00003")
+
+        # And lands in its own directory rather than overwriting the other.
+        self.assertNotEqual(primary.prepared_root, revision.prepared_root)
+        self.assertTrue(primary.prepared_root.is_dir())
+        self.assertTrue(revision.prepared_root.is_dir())
+        self.assertEqual(primary.prepared_root.name, "TEST00001")
+        self.assertEqual(revision.prepared_root.name, "TEST00003")
+
+        with open(revision.manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        self.assertEqual(manifest["disc_id"], "TEST00003")
+        self.assertEqual(manifest["title_id"], base.id)
+
+    def test_preparation_rejects_disc_id_outside_the_matched_profile(self) -> None:
+        """The disc-supplied ID becomes a directory name, so it stays on a known set.
+
+        PARAM.SFO is untrusted input. Preparation only accepts an ID the matched
+        profile already declares, which is what keeps a hostile disc from
+        steering the install path.
+        """
+        registry = TitleRegistry(include_defaults=True)
+        engine = PreparationEngine(base_dir=self.temp_dir, registry=registry)
+
+        # A disc ID that normalizes onto TEST00001 but is not the declared form.
+        iso_file = self.temp_dir / "aliased.iso"
+        _create_mock_iso(iso_file, disc_id="TEST-00001")
+
+        dest_root = self.temp_dir / "installed_games"
+        result = engine.prepare_game(iso_file, destination_root=dest_root)
+
+        self.assertTrue(result.success)
+        # Falls back to the profile's declared primary rather than using the
+        # disc's own spelling as a path component.
+        self.assertEqual(result.disc_id, "TEST00001")
+        self.assertEqual(result.prepared_root.name, "TEST00001")
+
     def test_preparation_engine_cancellation(self) -> None:
         iso_file = self.temp_dir / "synthetic.iso"
         _create_mock_iso(iso_file, disc_id="TEST00001")

@@ -438,10 +438,15 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
         }
 
         if (entry_failed) {
-            if (p) {
-                while (*p && *p != '}') p++;
-            }
-        } else if (entry.disc_id[0] != '\0') {
+            /* A malformed member invalidates the WHOLE file, not just this
+               entry. Scanning to the closing brace and continuing returned
+               NK_OK with the game silently dropped, so nk_library_load never
+               reached its .bak recovery and the next save made the loss
+               permanent. Fail closed so the backup path actually runs. */
+            free(buf);
+            return NK_ERROR_GENERIC;
+        }
+        if (entry.disc_id[0] != '\0') {
             lib->entries[lib->count++] = entry;
         }
 
@@ -521,6 +526,12 @@ NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
                 return NK_OK;
             }
         }
+        /* Neither the primary nor the backup loaded. A failed parse can still
+           have accumulated the entries it read before giving up, and those are
+           not a library a caller may act on -- saving them back would write the
+           truncation to disk. Hand back an empty library with the error. */
+        nk_library_init(lib);
+        snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
     }
 
     return res;

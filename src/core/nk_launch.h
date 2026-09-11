@@ -31,6 +31,13 @@ typedef struct {
     char prepared_root[NK_MAX_PATH];
     char dataroot_path[NK_MAX_PATH];
     char font_dir[NK_MAX_PATH];
+    /* Memory Stick root handed to the runtime as SR_MEMSTICK. Resolved by
+       nk_launch_prepare_session to a directory that is known to be writable;
+       a caller with a user-configured save location may overwrite it with an
+       absolute path before nk_launch_start. Never empty after a successful
+       prepare: the runtime must not be told to write saves somewhere it
+       cannot. */
+    char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
     uint32_t base_address;

@@ -101,8 +101,13 @@ class PublicTitleIsolationTests(unittest.TestCase):
             unclass_file.write_text(json.dumps(unclassified), encoding="utf-8")
 
             # Collect public manifests using the real publication policy
+            # collect_public_manifests now refuses an out-of-repository
+            # directory outright, because a path outside ROOT has no
+            # publication-policy identity. These manifests are verbatim copies
+            # of the tracked ones, so this test states explicitly which
+            # in-repository directory's decisions apply to the copies.
             manifest_files, validated_titles = title_catalog_codegen.collect_public_manifests(
-                tmp_titles, policy=self.policy
+                tmp_titles, policy=self.policy, policy_dir=self.titles_dir
             )
 
             collected_names = [p.name for p in manifest_files]
@@ -210,8 +215,38 @@ class PublicTitleIsolationTests(unittest.TestCase):
             (tmp_titles / "pspdev-phase5.json").write_text(json.dumps(non_title), encoding="utf-8")
 
             # Must raise when attempting to collect public manifests
+            # policy_dir keeps this exercising manifest VALIDATION rejection
+            # rather than the new out-of-repository refusal.
             with self.assertRaises(Exception):
+                title_catalog_codegen.collect_public_manifests(
+                    tmp_titles, policy=self.policy, policy_dir=self.titles_dir
+                )
+
+    def test_out_of_repository_manifest_dir_fails_closed(self) -> None:
+        """A manifest outside ROOT must not borrow a tracked path's policy decision."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_titles = Path(tmpdir)
+            # Schema-valid, but NOT the tracked bytes of that name. Before the
+            # fix this was named assets/titles/synthetic.json for policy
+            # purposes, inherited that path's INCLUDED decision, and was
+            # emitted into the public catalog with no record of its own.
+            forged = json.loads((self.titles_dir / "synthetic.json").read_text(encoding="utf-8"))
+            forged["display_name"] = "Forged Out-Of-Tree Title"
+            (tmp_titles / "synthetic.json").write_text(json.dumps(forged), encoding="utf-8")
+
+            with self.assertRaises(ValueError) as ctx:
                 title_catalog_codegen.collect_public_manifests(tmp_titles, policy=self.policy)
+            self.assertIn("outside the repository root", str(ctx.exception))
+
+    def test_policy_dir_outside_repository_is_refused(self) -> None:
+        """The explicit mapping cannot itself point outside the repository."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_titles = Path(tmpdir)
+            with self.assertRaises(ValueError) as ctx:
+                title_catalog_codegen.collect_public_manifests(
+                    tmp_titles, policy=self.policy, policy_dir=tmp_titles
+                )
+            self.assertIn("not inside the repository root", str(ctx.exception))
 
     def test_malformed_manifest_rejection(self) -> None:
         """Manifests missing required schema fields or with bad types must be rejected."""
@@ -229,8 +264,12 @@ class PublicTitleIsolationTests(unittest.TestCase):
             }
             (tmp_titles / "pspdev-phase5.json").write_text(json.dumps(bad_schema), encoding="utf-8")
 
+            # policy_dir keeps this exercising manifest VALIDATION rejection
+            # rather than the new out-of-repository refusal.
             with self.assertRaises(Exception):
-                title_catalog_codegen.collect_public_manifests(tmp_titles, policy=self.policy)
+                title_catalog_codegen.collect_public_manifests(
+                    tmp_titles, policy=self.policy, policy_dir=self.titles_dir
+                )
 
     def test_private_overlay_has_zero_effect_on_verify(self) -> None:
         """External private manifest overlays must have zero effect on catalog verify."""

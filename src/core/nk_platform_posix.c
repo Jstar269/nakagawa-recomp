@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -218,22 +219,92 @@ bool nk_platform_is_process_running(NkProcessHandle *process) {
     if (res == 0) {
         return true;
     }
+    /* This call just reaped the child, so it is the only chance to read the
+       exit status: a second waitpid fails with ECHILD. Cache it so a following
+       nk_platform_wait_process reports the real code instead of -1. */
+    if (res == pid && WIFEXITED(status)) {
+        process->cached_exit_code = WEXITSTATUS(status);
+        process->has_cached_exit = true;
+    }
     process->is_active = false;
     return false;
 }
 
+/* nk_platform.h reserves a negative timeout for an infinite wait; every
+   nonnegative value is a real deadline, and the Win32 backend honours it via
+   WaitForSingleObject. Discarding it here and always blocking meant a caller
+   such as nk_launch_wait(..., 5000) hung forever on POSIX whenever the runtime
+   stalled, with no way to recover -- the opposite of what the timeout is for.
+
+   POSIX has no portable "wait for this child, but only for so long" primitive.
+   sigtimedwait on SIGCHLD is close, but SIGCHLD belongs to the whole process
+   and a host application may already handle it, so consuming it here would
+   break code this backend does not own. Polling with a short bounded sleep is
+   correct on every POSIX target and costs nothing on a wait already measured
+   in seconds. */
+static bool deadline_passed(const struct timespec *deadline) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return true;
+    if (now.tv_sec != deadline->tv_sec) return now.tv_sec > deadline->tv_sec;
+    return now.tv_nsec >= deadline->tv_nsec;
+}
+
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
     if (!process) return -1;
-    pid_t pid = (pid_t)(intptr_t)process->native_handle;
-    (void)timeout_ms; /* Simple blocking wait for now on POSIX */
-
-    int status = 0;
-    pid_t res = waitpid(pid, &status, 0);
-    process->is_active = false;
-    if (res == pid && WIFEXITED(status)) {
-        return WEXITSTATUS(status);
+    if (process->has_cached_exit) {
+        return process->cached_exit_code;
     }
-    return -1;
+    pid_t pid = (pid_t)(intptr_t)process->native_handle;
+    int status = 0;
+
+    if (timeout_ms < 0) {
+        pid_t res;
+        do {
+            res = waitpid(pid, &status, 0);
+        } while (res < 0 && errno == EINTR);
+        process->is_active = false;
+        if (res == pid && WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        }
+        return -1;
+    }
+
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+        /* No usable clock: refuse to convert a bounded wait into an unbounded
+           one. Report failure rather than blocking indefinitely. */
+        return -1;
+    }
+    deadline.tv_sec += (time_t)(timeout_ms / 1000);
+    deadline.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    for (;;) {
+        pid_t res = waitpid(pid, &status, WNOHANG);
+        if (res == pid) {
+            process->is_active = false;
+            if (WIFEXITED(status)) {
+                return WEXITSTATUS(status);
+            }
+            return -1;
+        }
+        if (res < 0) {
+            if (errno == EINTR) continue;
+            process->is_active = false;
+            return -1;
+        }
+        if (deadline_passed(&deadline)) {
+            /* Timed out with the child still alive. is_active stays true and
+               the handle stays valid, so the caller can wait again or
+               terminate -- the same state WAIT_TIMEOUT leaves on Win32. */
+            return -1;
+        }
+        struct timespec slice = { 0, 2L * 1000L * 1000L }; /* 2 ms */
+        nanosleep(&slice, NULL);
+    }
 }
 
 void nk_platform_terminate_process(NkProcessHandle *process) {
@@ -248,6 +319,8 @@ void nk_platform_close_process(NkProcessHandle *process) {
     process->native_handle = NULL;
     process->process_id = 0;
     process->is_active = false;
+    process->has_cached_exit = false;
+    process->cached_exit_code = 0;
 }
 
 #endif /* !_WIN32 */

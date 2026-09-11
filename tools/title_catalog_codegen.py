@@ -61,20 +61,54 @@ def compute_manifest_digest(manifest_files: List[Path]) -> str:
 def collect_public_manifests(
     manifest_dir: Path,
     policy: Optional[publication_policy.Policy] = None,
+    policy_dir: Optional[Path] = None,
 ) -> Tuple[List[Path], List[Dict[str, Any]]]:
-    """Collect ONLY public-eligible title manifests according to publication policy."""
+    """Collect ONLY public-eligible title manifests according to publication policy.
+
+    Publication policy is decided per tracked repository PATH. A manifest that
+    lives outside ROOT has no policy identity at all, so this fails closed.
+    Synthesising ``assets/titles/<filename>`` for such a file handed it the
+    inclusion decision recorded for the tracked manifest of the same name: a
+    modified copy of ``synthetic.json`` staged in a scratch directory borrowed
+    the decision for ``assets/titles/synthetic.json`` and could be emitted into
+    the public generated catalog with no path-specific trusted record of its
+    own.
+
+    ``policy_dir`` is the explicit opt-in for callers that deliberately stage
+    copies of tracked manifests elsewhere -- the isolation tests do exactly
+    this. It names the in-repository directory whose policy decisions apply to
+    the staged copies, must itself be inside ROOT, and is never passed by
+    ``main``, so the command-line path always fails closed.
+    """
     if policy is None:
         policy_path = ROOT / "assets" / "public_source_profile.json"
         policy = publication_policy.load_policy(policy_path)
+
+    staged_under: Optional[str] = None
+    if policy_dir is not None:
+        try:
+            staged_under = policy_dir.resolve().relative_to(ROOT).as_posix()
+        except ValueError:
+            raise ValueError(
+                f"policy_dir {policy_dir} is not inside the repository root {ROOT}; "
+                "an out-of-repository directory carries no publication policy to lend."
+            )
 
     all_json = sorted(manifest_dir.glob("*.json"))
     public_files: List[Path] = []
 
     for mf in all_json:
         try:
-            rel = mf.relative_to(ROOT).as_posix()
+            rel = mf.resolve().relative_to(ROOT).as_posix()
         except ValueError:
-            rel = f"assets/titles/{mf.name}"
+            if staged_under is None:
+                raise ValueError(
+                    f"manifest {mf} lies outside the repository root {ROOT}; "
+                    "publication policy is decided per tracked path and must not be "
+                    "inferred from a file name. Point --manifest-dir at a directory "
+                    "inside the repository, or pass an explicit policy_dir."
+                )
+            rel = f"{staged_under}/{mf.name}"
 
         res = policy.resolve(rel)
         if res.is_excluded:
@@ -380,7 +414,13 @@ def main() -> int:
     policy_path = ROOT / "assets" / "public_source_profile.json"
     policy = publication_policy.load_policy(policy_path)
 
-    manifest_files, titles = collect_public_manifests(args.manifest_dir, policy=policy)
+    try:
+        manifest_files, titles = collect_public_manifests(args.manifest_dir, policy=policy)
+    except ValueError as exc:
+        # Fail closed with a readable message rather than a traceback: this is
+        # the publication-policy refusal, not an internal error.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     if not manifest_files:
         print(f"ERROR: No public .json title manifests found in {args.manifest_dir}", file=sys.stderr)
         return 1

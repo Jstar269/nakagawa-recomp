@@ -395,6 +395,22 @@ static void test_manifest_mutations(void) {
     assert(!nk_title_manifest_parse_buffer(retail_no_disc, strlen(retail_no_disc), false, &entry, err, sizeof(err)));
     assert(strstr(err, "retail kind requires disc object") != NULL);
 
+    /* 16. Trailing comma in an object -> REJECT
+     *
+     * Python's json module rejects {"a":1,}. The native parser consumed the
+     * comma, returned to the top of its loop and accepted the closing brace,
+     * so a manifest could exist that only the native overlay loader would
+     * take -- a differential-parser divergence, which is exactly what the
+     * two implementations are meant not to have. */
+    const char *obj_trailing_comma = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\",}";
+    assert(!nk_title_manifest_parse_buffer(obj_trailing_comma, strlen(obj_trailing_comma), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "Trailing comma") != NULL);
+
+    /* 17. Trailing comma in an array -> REJECT (same state transition) */
+    const char *arr_trailing_comma = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\",]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(!nk_title_manifest_parse_buffer(arr_trailing_comma, strlen(arr_trailing_comma), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "Trailing comma") != NULL);
+
     printf("[MANIFEST_TEST] Schema mutation tests PASSED!\n");
 }
 

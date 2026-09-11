@@ -14,6 +14,27 @@ static inline void safe_copy_path(char *dest, size_t dest_size, const char *src)
     dest[dest_size - 1] = '\0';
 }
 
+/* Confirm a directory exists and can actually be written to.
+ *
+ * nk_platform_dir_exists answers a different question: a directory under
+ * Program Files or /usr/lib exists and is still unwritable for the user the
+ * runtime runs as. Save data that silently fails to persist is worse than a
+ * launch that reports it has nowhere to write, so this probes for real. */
+static bool ensure_writable_dir(const char *path) {
+    if (!path || !*path) return false;
+    if (!nk_platform_dir_exists(path) && !nk_platform_mkdir_p(path)) return false;
+
+    char probe[NK_MAX_PATH * 2];
+    int w = snprintf(probe, sizeof(probe), "%s%c.nk_write_probe", path, nk_platform_path_separator());
+    if (w <= 0 || (size_t)w >= sizeof(probe)) return false;
+
+    FILE *f = fopen(probe, "wb");
+    if (!f) return false;
+    fclose(f);
+    remove(probe);
+    return true;
+}
+
 /* Helper to check candidate binary paths */
 static bool find_candidate_executable(
     const char *root,
@@ -93,12 +114,38 @@ static bool find_candidate_image(
     char cand[NK_MAX_PATH * 2];
     char sep = nk_platform_path_separator();
 
-    /* 1. Alongside executable: replace .exe with _image.bin */
+    /* 1. Alongside executable: <executable without extension>_image.bin
+     *
+     * This used to run only when the name ended in .exe, so a normal
+     * extensionless Linux or macOS binary such as /opt/nakagawa/bin/my-title
+     * never probed /opt/nakagawa/bin/my-title_image.bin. For a non-HST title
+     * the later hard-coded probes miss it too, so the runtime was started with
+     * no --image at all and src/rt/driver.c exited through its
+     * insufficient-arguments path.
+     *
+     * Only a dot in the FINAL path component can be an extension:
+     * /opt/nakagawa.d/bin/my-title has a dot but no extension, and a leading
+     * dot (.hidden) names the file rather than separating an extension. */
     if (executable_path && *executable_path) {
         snprintf(cand, sizeof(cand), "%s", executable_path);
-        char *ext = strrchr(cand, '.');
-        if (ext && (strcmp(ext, ".exe") == 0 || strcmp(ext, ".EXE") == 0)) {
-            snprintf(ext, sizeof(cand) - (size_t)(ext - cand), "_image.bin");
+        char *base = strrchr(cand, '/');
+        char *base_alt = strrchr(cand, sep);
+        if (base_alt && (!base || base_alt > base)) base = base_alt;
+        base = base ? base + 1 : cand;
+
+        char *ext = strrchr(base, '.');
+        char *suffix_at = NULL;
+        if (ext && ext != base) {
+            /* Windows executables carry .exe; replace whatever extension the
+             * host uses so the sibling name matches the build's convention. */
+            suffix_at = ext;
+        } else {
+            /* No extension: append directly. */
+            suffix_at = cand + strlen(cand);
+        }
+        size_t used = (size_t)(suffix_at - cand);
+        if (used + sizeof("_image.bin") <= sizeof(cand)) {
+            snprintf(suffix_at, sizeof(cand) - used, "_image.bin");
             if (nk_platform_file_exists(cand)) {
                 snprintf(out_path, max_len, "%s", cand);
                 return true;
@@ -227,6 +274,46 @@ NkResult nk_launch_prepare_session(
         safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
     }
 
+    /* 5b. Resolve a writable Memory Stick root.
+     *
+     * SR_MEMSTICK was hard-coded to the relative path "saves", which the
+     * runtime resolves under its own working directory. A packaged install
+     * below a read-only location -- Program Files, /usr/lib, a signed app
+     * bundle -- therefore could not create save data at all, and every title
+     * was routed into the same unintended root. Prefer the title catalog's own
+     * memory_stick_root when that location is genuinely writable, which keeps
+     * the documented per-title developer layout working from a repository
+     * checkout; otherwise use the platform per-user save directory with a
+     * per-disc subdirectory, which is writable by construction and keeps
+     * titles apart. */
+    session->memstick_root[0] = 0;
+    if (entry && entry->memory_stick_root && *entry->memory_stick_root) {
+        char cand_ms[NK_MAX_PATH * 2];
+        int w = snprintf(cand_ms, sizeof(cand_ms), "%s%c%s",
+                         session->working_directory, sep, entry->memory_stick_root);
+        if (w > 0 && (size_t)w < sizeof(session->memstick_root) && ensure_writable_dir(cand_ms)) {
+            safe_copy_path(session->memstick_root, sizeof(session->memstick_root), cand_ms);
+        }
+    }
+    if (session->memstick_root[0] == 0) {
+        char saves_root[NK_MAX_PATH];
+        if (nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root))) {
+            const char *slot = session->disc_id[0] ? session->disc_id
+                             : (session->title_id[0] ? session->title_id : "unidentified");
+            char cand_ms[NK_MAX_PATH * 2];
+            int w = snprintf(cand_ms, sizeof(cand_ms), "%s%c%s", saves_root, sep, slot);
+            if (w > 0 && (size_t)w < sizeof(session->memstick_root) && ensure_writable_dir(cand_ms)) {
+                safe_copy_path(session->memstick_root, sizeof(session->memstick_root), cand_ms);
+            }
+        }
+    }
+    if (session->memstick_root[0] == 0) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "No writable save location: neither the install directory nor the "
+                 "per-user save directory could be created or written.");
+        return NK_ERROR_IO;
+    }
+
     /* 6. Resolve ISO path */
     if (nk_platform_file_exists(game->iso_path)) {
         snprintf(session->iso_path, sizeof(session->iso_path), "%s", game->iso_path);
@@ -267,7 +354,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_dataroot[NK_MAX_PATH + 16];
     char env_font[NK_MAX_PATH + 16];
     char env_fs[32];
-    char env_memstick[32];
+    char env_memstick[NK_MAX_PATH + 16];
     char env_tables[64];
     char sep = nk_platform_path_separator();
 
@@ -277,7 +364,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
     snprintf(env_vsync, sizeof(env_vsync), "SR_VSYNC=%d", session->config.vsync ? 1 : 0);
     snprintf(env_fs, sizeof(env_fs), "SR_FSDIR=fs");
-    snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=saves");
+    snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=%s", session->memstick_root);
     snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
 
     const char *envp[20];
@@ -288,7 +375,12 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_scale;
     envp[env_count++] = env_vsync;
     envp[env_count++] = env_fs;
-    envp[env_count++] = env_memstick;
+    /* A session assembled by hand rather than by nk_launch_prepare_session may
+       carry no resolved root; leaving SR_MEMSTICK unset lets the runtime apply
+       its own default instead of being pointed at an empty path. */
+    if (session->memstick_root[0]) {
+        envp[env_count++] = env_memstick;
+    }
     envp[env_count++] = env_tables;
 
     if (session->dataroot_path[0]) {

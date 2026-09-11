@@ -99,6 +99,11 @@ typedef struct {
     bool is_game_running;
     uint64_t launch_time_ms;
 
+    /* Set by the renderer when a control asks for the host file dialog. The
+       renderer has no SDL_Window and must stay free of platform dialog calls,
+       so it raises this and the event loop in main.c consumes it. */
+    bool request_file_picker;
+
     /* Navigation & Focus */
     int focus_index; /* current focused UI element index for gamepad/keyboard */
     int active_tab;   /* for settings: 0=Display, 1=Audio, 2=Controller, 3=Logs */
@@ -117,6 +122,12 @@ void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
+
+/* Index of the library entry carrying this disc ID, or -1 if there is none.
+   nk_library_add_or_update updates an existing record IN PLACE, so the entry
+   just written is not necessarily the last one; callers that need the record
+   they have just added must look it up rather than assume it was appended. */
+int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
 
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);

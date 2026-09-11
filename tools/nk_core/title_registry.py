@@ -90,9 +90,15 @@ class TitleRegistry:
         for json_file in sorted(directory.glob("*.json")):
             if policy is not None:
                 try:
-                    rel = json_file.relative_to(ROOT).as_posix()
+                    rel = json_file.resolve().relative_to(ROOT).as_posix()
                 except ValueError:
-                    rel = f"assets/titles/{json_file.name}"
+                    # Same hole as tools/title_catalog_codegen.py had: naming
+                    # the file assets/titles/<name> lent an untracked manifest
+                    # the inclusion decision recorded for the tracked file of
+                    # that name. A path outside ROOT has no policy identity, so
+                    # it is not public-eligible. A caller that means to load an
+                    # external directory passes enforce_public_policy=False.
+                    continue
                 res = policy.resolve(rel)
                 if res.is_excluded or res.disposition != publication_policy.INCLUDED:
                     continue

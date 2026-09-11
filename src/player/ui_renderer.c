@@ -215,7 +215,11 @@ static void render_empty_library(SDL_Renderer *ren, PlayerApp *app, const UiInpu
     draw_text(ren, card_x + 32.0f, card_y + 180.0f, "Supports registered PSP titles and synthetic test fixtures.", 1.0f, COLOR_TEXT_DIM);
 
     if (draw_button(ren, card_x + 32.0f, card_y + 240.0f, 260.0f, 48.0f, "+ ADD PSP GAME ISO", true, in)) {
-        player_app_set_view(app, VIEW_INSPECTING);
+        /* Ask for the host file dialog. Switching straight to VIEW_INSPECTING
+           left mouse-only users on a screen with no way to choose a file and
+           no visible hint that the undocumented O shortcut exists. The view
+           change now happens in the dialog callback, once a file is chosen. */
+        app->request_file_picker = true;
     }
 }
 
@@ -294,7 +298,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     }
 
     if (draw_button(ren, hero_x + 272.0f, hero_y + 248.0f, 220.0f, 54.0f, "ADD ANOTHER ISO", false, in)) {
-        player_app_set_view(app, VIEW_INSPECTING);
+        /* Same dead end as the empty-library button: this control exists to
+           pick a file, so it must open the picker. */
+        app->request_file_picker = true;
     }
 
     /* Lower Library Strip */
@@ -390,8 +396,17 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     if (draw_button(ren, card_x + 32.0f, card_y + 260.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in)) {
         /* Do not mark the game prepared: no preparation has run. The entry
          * keeps the status reported by the ISO inspection. */
-        player_app_add_game(app, &app->inspecting_game);
-        player_app_set_view(app, VIEW_LIBRARY);
+        if (player_app_add_game(app, &app->inspecting_game)) {
+            player_app_set_view(app, VIEW_LIBRARY);
+        } else {
+            /* The add was rejected or never persisted. Saying nothing would
+               show the title in the library until the next restart dropped
+               it. */
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                 "The title could not be stored. The library may be full, or the "
+                                 "user data directory is not writable.",
+                                 "Return to Library", VIEW_LIBRARY);
+        }
     }
     if (draw_button(ren, card_x + 310.0f, card_y + 260.0f, 140.0f, 50.0f, "BACK", false, in)) {
         player_app_set_view(app, VIEW_LIBRARY);

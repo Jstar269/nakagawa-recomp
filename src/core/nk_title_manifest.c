@@ -12,6 +12,32 @@
 #include <windows.h>
 #endif
 
+/* ASCII-only case-insensitive compare.
+ *
+ * strcasecmp is POSIX and _stricmp is Win32, so every call site needed its own
+ * #if -- and under -std=c99 on Linux strcasecmp is not declared at all, which
+ * left the native build emitting an implicit-declaration warning there while
+ * staying clean on Windows. Both are also locale-sensitive: in a Turkish
+ * locale 'I' and 'i' do not fold onto each other, so whether two manifest
+ * module names counted as duplicates depended on the host's locale. Manifest
+ * identifiers are ASCII by schema, so fold them as ASCII and keep the answer
+ * the same on every host. */
+static int nk_ascii_lower(int c) {
+    return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+static int nk_ascii_casecmp(const char *a, const char *b) {
+    if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
+    while (*a && *b) {
+        int ca = nk_ascii_lower((unsigned char)*a);
+        int cb = nk_ascii_lower((unsigned char)*b);
+        if (ca != cb) return ca - cb;
+        a++;
+        b++;
+    }
+    return nk_ascii_lower((unsigned char)*a) - nk_ascii_lower((unsigned char)*b);
+}
+
 #define MAX_MODULES 32
 #define MAX_COMPAT_DISC_IDS 16
 #define NK_MANIFEST_MAX_OVERLAYS 8
@@ -355,9 +381,21 @@ static JsonNode *parse_object(JsonParser *p, int depth) {
     }
     node->type = JSON_OBJECT;
 
+    /* A comma is a separator, not a terminator. Returning to the top of the
+       loop after consuming one and then accepting '}' made the native parser
+       admit {"a":1,}, which Python's json module rejects -- breaking the
+       differential parser contract and allowing a manifest that only the
+       native overlay loader would accept. */
+    bool after_comma = false;
+
     while (true) {
         char c = peek_char(p);
         if (c == '}') {
+            if (after_comma) {
+                set_error(p, "Trailing comma before '}' in object");
+                json_free(node);
+                return NULL;
+            }
             p->pos++;
             return node;
         }
@@ -418,6 +456,7 @@ static JsonNode *parse_object(JsonParser *p, int depth) {
         char next = peek_char(p);
         if (next == ',') {
             p->pos++;
+            after_comma = true;
             continue;
         } else if (next == '}') {
             p->pos++;
@@ -444,9 +483,18 @@ static JsonNode *parse_array(JsonParser *p, int depth) {
     }
     node->type = JSON_ARRAY;
 
+    /* Same state transition as the object parser: a consumed comma must be
+       followed by another element, never by the closing bracket. */
+    bool after_comma = false;
+
     while (true) {
         char c = peek_char(p);
         if (c == ']') {
+            if (after_comma) {
+                set_error(p, "Trailing comma before ']' in array");
+                json_free(node);
+                return NULL;
+            }
             p->pos++;
             return node;
         }
@@ -479,6 +527,7 @@ static JsonNode *parse_array(JsonParser *p, int depth) {
         char next = peek_char(p);
         if (next == ',') {
             p->pos++;
+            after_comma = true;
             continue;
         } else if (next == ']') {
             p->pos++;
@@ -1074,11 +1123,7 @@ bool nk_title_manifest_parse_buffer(
             JsonNode *pm = mods_node->u.arr.items[prev];
             JsonNode *pname = obj_get(pm, "name");
             if (pname && pname->type == JSON_STRING) {
-#if defined(_WIN32) || defined(_WIN64)
-                if (_stricmp(pname->u.str_val, mname->u.str_val) == 0)
-#else
-                if (strcasecmp(pname->u.str_val, mname->u.str_val) == 0)
-#endif
+                if (nk_ascii_casecmp(pname->u.str_val, mname->u.str_val) == 0)
                 {
                     if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: duplicate module name under case-insensitive comparison", i);
                     json_free(root);
@@ -1180,11 +1225,7 @@ bool nk_title_manifest_parse_buffer(
             return false;
         }
         for (size_t prev = 0; prev < p; prev++) {
-#if defined(_WIN32) || defined(_WIN64)
-            if (_stricmp(pfx_node->u.arr.items[prev]->u.str_val, ps) == 0)
-#else
-            if (strcasecmp(pfx_node->u.arr.items[prev]->u.str_val, ps) == 0)
-#endif
+            if (nk_ascii_casecmp(pfx_node->u.arr.items[prev]->u.str_val, ps) == 0)
             {
                 if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: duplicate device prefix", p);
                 json_free(root);

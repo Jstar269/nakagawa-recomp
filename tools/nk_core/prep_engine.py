@@ -108,10 +108,25 @@ class PreparationEngine:
                 total=100,
             )
 
-            # Determine destination
+            # Determine destination.
+            #
+            # A profile with compatible_revisions matches through any of its
+            # disc IDs, but this always used profile.disc_ids[0]. Two compatible
+            # revisions therefore installed over each other in one directory and
+            # both recorded the primary ID, losing the identity actually read
+            # from the disc and potentially replacing the wrong revision. Keep
+            # the inspected ID.
+            #
+            # The ID comes from the disc's own PARAM.SFO, so it is untrusted
+            # input and becomes a directory name below. Accepting only an ID the
+            # matched profile already declares keeps it to a known-good set,
+            # which is also what makes traversal impossible here.
+            inspected_disc_id = (iso_meta.disc_id or "").strip()
+            disc_id = inspected_disc_id if inspected_disc_id in profile.disc_ids else profile.disc_ids[0]
+
             games_root = destination_root or (self.base_dir / "games")
-            target_dir = games_root / profile.disc_ids[0]
-            staging_dir = games_root / f".staging_{profile.disc_ids[0]}_{int(time.time())}"
+            target_dir = games_root / disc_id
+            staging_dir = games_root / f".staging_{disc_id}_{int(time.time())}"
 
             if staging_dir.exists():
                 shutil.rmtree(staging_dir, ignore_errors=True)
@@ -178,7 +193,7 @@ class PreparationEngine:
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "engine_version": PREP_ENGINE_VERSION,
                 "title_id": profile.id,
-                "disc_id": profile.disc_ids[0],
+                "disc_id": disc_id,
                 "title_name": profile.name,
                 "iso_path": str(iso),
                 "iso_size": iso_meta.size_bytes,
@@ -222,7 +237,7 @@ class PreparationEngine:
 
             return PreparationResult(
                 success=True,
-                disc_id=profile.disc_ids[0],
+                disc_id=disc_id,
                 prepared_root=target_dir,
                 manifest_path=final_manifest,
                 elapsed_ms=elapsed_ms,

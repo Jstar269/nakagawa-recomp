@@ -1485,10 +1485,23 @@ native-core-tests:
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_manifest_parser.c -o build/test_manifest_parser$(EXE_EXT)
 	./build/test_manifest_parser$(EXE_EXT) --check
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_launch_resolution.c -o build/test_launch_resolution$(EXE_EXT)
+	./build/test_launch_resolution$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/player_state.c \
+		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
+	./build/test_player_state$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
 	./build/test_win32_process$(EXE_EXT)
+else
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
+	./build/test_posix_process$(EXE_EXT)
 endif

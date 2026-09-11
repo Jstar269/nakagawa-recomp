@@ -54,12 +54,30 @@ void player_app_sync_library(PlayerApp *app) {
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || game->disc_id[0] == '\0') return false;
 
-    /* Update native library struct */
-    nk_library_add_or_update(&app->library, game);
-    nk_library_save(&app->library, NULL);
+    /* Both results used to be discarded before returning an unconditional
+       true, so a rejected insert (the 64-entry limit) or an unwritable or full
+       user-data directory still reported success. The entry then vanished on
+       the next start, having never been persisted. Report what actually
+       happened instead. */
+    NkResult add_res = nk_library_add_or_update(&app->library, game);
+    if (add_res != NK_OK) {
+        player_app_sync_library(app);
+        return false;
+    }
 
+    NkResult save_res = nk_library_save(&app->library, NULL);
     player_app_sync_library(app);
-    return true;
+    return save_res == NK_OK;
+}
+
+int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
+    if (!app || !disc_id || disc_id[0] == 0) return -1;
+    for (int i = 0; i < app->game_count; i++) {
+        if (strcmp(app->games[i].disc_id, disc_id) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 void player_app_set_view(PlayerApp *app, PlayerView view) {

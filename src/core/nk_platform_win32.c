@@ -420,6 +420,8 @@ void nk_platform_close_process(NkProcessHandle *process) {
     }
     process->process_id = 0;
     process->is_active = false;
+    process->has_cached_exit = false;
+    process->cached_exit_code = 0;
 }
 
 #endif /* _WIN32 */

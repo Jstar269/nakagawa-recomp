@@ -136,15 +136,43 @@ int main(int argc, char *argv[]) {
             /* is_prepared intentionally NOT set: no preparation has run in this
              * build; the entry keeps the inspection-reported status. */
 
-            player_app_add_game(&app, &app.inspecting_game);
+            /* Persist only a qualified title. The interactive flow offers ADD
+               TO LIBRARY solely on the supported-title screen, so opening an
+               unsupported image through --iso or a file association used to
+               add it to the library permanently while the very next view said
+               the title was not qualified. */
+            bool stored = res.is_supported && player_app_add_game(&app, &app.inspecting_game);
 
-            if (res.is_supported) {
+            if (res.is_supported && !stored) {
+                fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
+                        app.inspecting_game.disc_id);
+                player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                     "The title could not be stored. The library may be full, "
+                                     "or the user data directory is not writable.",
+                                     "Return to Library", VIEW_LIBRARY);
+            } else if (stored) {
                 player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
                 if (launch_now) {
                     printf("[PLAYER] Launching supported title now...\n");
                     const char *target_root = runtime_bin_path ? runtime_bin_path : ".";
-                    int game_idx = app.game_count - 1;
-                    NkResult lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
+                    /* nk_library_add_or_update updates an existing record in
+                       place rather than appending it, so in a library holding
+                       several games the last entry is a DIFFERENT title
+                       whenever this disc was already known. Taking
+                       app.game_count - 1 therefore prepared and launched some
+                       other game while the console said it was launching the
+                       requested ISO. Find the entry by its inspected disc ID. */
+                    int game_idx = player_app_find_game_by_disc_id(&app, app.inspecting_game.disc_id);
+                    NkResult lres;
+                    if (game_idx < 0) {
+                        memset(&app.launch_session, 0, sizeof(app.launch_session));
+                        snprintf(app.launch_session.last_error, sizeof(app.launch_session.last_error),
+                                 "Inspected disc %s is not present in the library after adding it.",
+                                 app.inspecting_game.disc_id);
+                        lres = NK_ERROR_FILE_NOT_FOUND;
+                    } else {
+                        lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
+                    }
                     if (lres == NK_OK) {
                         printf("[PLAYER] Launch session prepared successfully!\n");
                         printf("[PLAYER] Executable: %s\n", app.launch_session.executable_path);
@@ -345,6 +373,14 @@ int main(int argc, char *argv[]) {
                 default:
                     break;
             }
+        }
+
+        /* A renderer control asked for the host file dialog. The renderer has
+           no window handle and must stay free of platform dialog calls, so the
+           request is serviced here. */
+        if (app.request_file_picker) {
+            app.request_file_picker = false;
+            trigger_file_picker(window, &app);
         }
 
         /* Monitor running game process */

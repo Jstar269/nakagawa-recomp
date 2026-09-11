@@ -79,6 +79,24 @@ static void test_hostile_library_json(const char *test_dir) {
     assert(strcmp(e->disc_version, "1.00") == 0);
     assert(strlen(e->title_name) < sizeof(e->title_name));
 
+    /* 4b. A malformed member must fail the WHOLE file, not just its entry.
+     *
+     * The parser used to scan to the entry's closing brace and carry on, so a
+     * library whose second game had a garbage boolean loaded as NK_OK with that
+     * game silently missing. nk_library_load therefore never reached its .bak
+     * recovery, and the next save wrote the truncated library back -- making a
+     * recoverable corruption permanent. */
+    printf("[HOSTILE_TEST] Subtest 4b: malformed entry fails the whole file\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cmalformed_entry.json", test_dir, nk_platform_path_separator());
+    const char json_bad_member[] =
+        "{\n  \"schema_version\": 1,\n  \"games\": [\n"
+        "    {\"disc_id\": \"TEST00001\", \"title_name\": \"first\"},\n"
+        "    {\"disc_id\": \"TEST00002\", \"is_prepared\": maybe}\n"
+        "  ]\n}";
+    write_test_file(fpath, json_bad_member, strlen(json_bad_member));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+    assert(nk_library_count(&lib) == 0);
+
     /* 5. Trailing corrupted garbage */
     printf("[HOSTILE_TEST] Subtest 5: trailing garbage\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%ctrailing_garbage.json", test_dir, nk_platform_path_separator());

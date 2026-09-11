@@ -40,58 +40,67 @@ class TitleCatalogTests(unittest.TestCase):
 
     def test_catalog_codegen_drift_detection(self) -> None:
         """Verify that any modification to manifests causes --verify to fail."""
-        # Copy assets/titles to temp dir
-        temp_titles = self.temp_dir / "titles"
-        shutil.copytree(ROOT / "assets" / "titles", temp_titles)
+        # This used to stage a copy of assets/titles/ in a temp directory and
+        # point --manifest-dir at it. The generator now refuses a manifest
+        # directory outside the repository, because publication policy is
+        # decided per tracked PATH and a copy in /tmp has no policy identity of
+        # its own to be judged by. So drift is exercised where it actually
+        # happens: against the tracked manifests, restored afterwards.
+        titles_dir = ROOT / "assets" / "titles"
         temp_gen = self.temp_dir / "generated"
 
-        # Generate fresh into temp_gen
-        res_gen = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "title_catalog_codegen.py"),
-                "--manifest-dir", str(temp_titles),
-                "--output-dir", str(temp_gen),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(res_gen.returncode, 0)
+        def run_codegen(*extra: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "title_catalog_codegen.py"),
+                    "--output-dir", str(temp_gen),
+                    *extra,
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(ROOT),
+            )
+
+        res_gen = run_codegen()
+        self.assertEqual(res_gen.returncode, 0, res_gen.stderr)
 
         # Verify passes initially
-        res_ver = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "title_catalog_codegen.py"),
-                "--manifest-dir", str(temp_titles),
-                "--output-dir", str(temp_gen),
-                "--verify",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(res_ver.returncode, 0)
+        res_ver = run_codegen("--verify")
+        self.assertEqual(res_ver.returncode, 0, res_ver.stderr)
 
-        # Mutate a manifest
-        manifest_to_modify = next(temp_titles.glob("*.json"))
-        data = json.loads(manifest_to_modify.read_text(encoding="utf-8"))
-        data["display_name"] = "Drifted Title Name"
-        manifest_to_modify.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Mutate a tracked manifest, then always put it back.
+        manifest_to_modify = sorted(titles_dir.glob("*.json"))[0]
+        original_bytes = manifest_to_modify.read_bytes()
+        try:
+            data = json.loads(original_bytes.decode("utf-8"))
+            data["display_name"] = "Drifted Title Name"
+            manifest_to_modify.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        # Verify must fail now
-        res_drift = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "title_catalog_codegen.py"),
-                "--manifest-dir", str(temp_titles),
-                "--output-dir", str(temp_gen),
-                "--verify",
-            ],
-            capture_output=True,
-            text=True,
-        )
+            res_drift = run_codegen("--verify")
+        finally:
+            manifest_to_modify.write_bytes(original_bytes)
+
         self.assertNotEqual(res_drift.returncode, 0)
         self.assertIn("Native public title catalog is out of date", res_drift.stderr)
+
+    def test_out_of_repository_manifest_dir_is_refused(self) -> None:
+        """--manifest-dir outside the repository must fail, not borrow policy by name."""
+        temp_titles = self.temp_dir / "titles"
+        shutil.copytree(ROOT / "assets" / "titles", temp_titles)
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "title_catalog_codegen.py"),
+                "--manifest-dir", str(temp_titles),
+                "--output-dir", str(self.temp_dir / "generated"),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("outside the repository root", res.stderr)
 
     def test_native_c_catalog_compilation_and_lookup(self) -> None:
         """Compile generated C catalog with gcc and test native lookups in a C harness."""
