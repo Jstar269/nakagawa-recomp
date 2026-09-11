@@ -31,6 +31,25 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
 
+### Validating a draft without marking it ready
+
+A draft pull request **cannot** show a green `CI required`. The substantive jobs
+are suppressed, and `tools/ci_required.py` reports that suppression as a failure
+("An applicable CI gate failed, was cancelled, was suppressed for a draft...").
+That is working as intended -- it stops a work-in-progress branch from burning
+the platform matrix -- but read cold it looks like a broken build, and marking a
+PR ready to discover whether it passes is the wrong way round.
+
+Use the manual dispatch instead, which forces the full matrix on any ref:
+
+```bash
+gh workflow run CI --ref <your-branch>
+```
+
+`tools/ci_paths.py` sets `allow_substantive` for a manual run, so the native,
+Python, Windows, dashboard and main-smoke jobs all execute against the branch.
+That gives a real verdict on the exact head while the PR stays a draft.
+
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is

@@ -3055,11 +3055,30 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             idx = pick_next();
         }
         if (idx < 0) {
-            /* Still nothing. Stop only when nothing is even waiting on a deadline. */
+            /* Still nothing. Stop only when nothing is even waiting on a deadline.
+             *
+             * A vblank wait is an OBJECT wait, so sched_block_on leaves its t->wake
+             * infinite and the per-thread scan below cannot see it. The display source
+             * will nevertheless wake it as soon as the next period is due, so counting
+             * only per-thread deadlines declares a guest whose sole outstanding wait is
+             * sceDisplayWaitVblankStart deadlocked whenever the next vblank is merely
+             * not due YET -- which is the steady state of any app that fills a
+             * framebuffer, flips it and waits, i.e. the ordinary PSP frame loop. The
+             * source's own deadline IS that thread's deadline; the loop then paces to it
+             * exactly as it does for a timed wait. Titles with timers or several threads
+             * hid this because some other thread almost always carried a finite
+             * deadline. */
             uint64_t soonest = (uint64_t)-1;
-            for (int i = 0; i < s_ntcb; i++)
-                if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-                    s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+            int vblank_waiter = 0;
+            for (int i = 0; i < s_ntcb; i++) {
+                if (s_tcb[i].state != TH_WAIT_DELAY && s_tcb[i].state != TH_WAIT_OBJ)
+                    continue;
+                if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+                if (s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
+                    vblank_waiter = 1;
+            }
+            if (vblank_waiter && s_vbl_next_us != (uint64_t)-1 && s_vbl_next_us < soonest)
+                soonest = s_vbl_next_us;
             if (soonest == (uint64_t)-1) {
                 fprintf(stderr, "SCHED: no runnable threads left (deadlock/infinite wait). Dumping thread states:\n");
                 sched_dump_threads();

@@ -3,6 +3,14 @@
 
 #if !defined(_WIN32) && !defined(_WIN64)
 
+/* realpath() is XSI rather than base POSIX: glibc guards its declaration on
+   __USE_MISC || __USE_XOPEN_EXTENDED, so _POSIX_C_SOURCE 200809L alone leaves it
+   undeclared and the call below compiles to an implicit int -- which -Werror
+   turns into a build failure on every POSIX host while the Win32 backend builds
+   clean. _XOPEN_SOURCE 700 is the portable spelling and implies POSIX.1-2008;
+   glibc's _DEFAULT_SOURCE would also expose it but does not carry to musl or
+   the BSDs. */
+#define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
@@ -20,6 +28,22 @@
 #include <unistd.h>
 
 extern char **environ;
+
+bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len) {
+    if (!path || !*path || !out_path || max_len == 0) return false;
+
+    char *resolved = realpath(path, NULL);
+    if (!resolved) return false;
+
+    size_t length = strlen(resolved);
+    if (length >= max_len) {
+        free(resolved);
+        return false;
+    }
+    memcpy(out_path, resolved, length + 1);
+    free(resolved);
+    return true;
+}
 
 int nk_fseek64(FILE *f, int64_t offset, int whence) {
     return fseeko(f, (off_t)offset, whence);

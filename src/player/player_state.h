@@ -96,6 +96,10 @@ typedef struct {
     /* Native core state */
     NkLibrary library;
     NkLaunchSession launch_session;
+    /* Optional repository/install root for runtime resolution. Empty means the
+       launcher's normal current-directory default. Keeping it on the app makes
+       demo and test launches use the same root as PLAY NOW. */
+    char runtime_root[MAX_PATH_LEN];
     bool is_game_running;
     uint64_t launch_time_ms;
 
@@ -128,6 +132,7 @@ void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
+void player_app_set_runtime_root(PlayerApp *app, const char *root);
 
 /* Index of the library entry carrying this disc ID, or -1 if there is none.
    nk_library_add_or_update updates an existing record IN PLACE, so the entry

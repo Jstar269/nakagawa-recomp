@@ -39,6 +39,17 @@ bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 /* Get canonical user data directory for Nakagawa (APPDATA on Win32, XDG on Linux, AppSupport on macOS) */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
 
+/* Resolve `path` to an absolute path in `out_path`.
+ *
+ * The runtime refuses a relative SR_DATAROOT ("configured but is not a valid
+ * absolute path") and then declines to build an index at all, so a launch
+ * assembled from a relative working directory silently lost its data root.
+ * Returns false and leaves `out_path` untouched when the path cannot be
+ * resolved. Win32 uses GetFullPathNameA (which does not require the path to
+ * exist); POSIX uses realpath (which does), so callers should resolve paths
+ * they have already confirmed. */
+bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len);
+
 /* Process handle abstraction */
 typedef struct {
     void *native_handle;
