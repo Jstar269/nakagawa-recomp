@@ -45,6 +45,6 @@ load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`. Keep PSP semanti
 
 ## Done means
 
-The gates proportional to the changed surface have actually run **on every host the change touches** — a Windows-green edit
-to a POSIX backend is not done — and you reported the exact commands and statuses, including what you did not run and why.
-Missing input or hardware is `BLOCKED`/`NOT_RUN`, never a silent pass; a local pass is never hosted-CI evidence.
+Close with one of **DONE, DONE_WITH_CONCERNS, BLOCKED, NEEDS_CONTEXT**. For DONE the gates proportional to the changed surface
+must have actually run **on every host the change touches** — a Windows-green edit to a POSIX backend is not DONE — with the
+exact commands and statuses, and what you did not run. Missing input or hardware is `BLOCKED`/`NOT_RUN`, never a silent pass.
