@@ -89,6 +89,7 @@ The verified native host contract is the Windows contract in
 > that never installed the documented dependency, and would break on a machine
 > with MSYS2 SDL3 but no Vulkan SDK. Do not treat a successful build as proof
 > that the documented toolchain contract was satisfied.
+
 - A current Vulkan SDK and Vulkan-capable GPU.
 
 The optional dashboard additionally requires Node.js 24.18.1 or newer and npm
