@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e3a8265b90f19a908c39c0194dc3f003d4d3907cb30bfe42e09fbc126864bd5"
+      "sha256": "947cd0b09f3a7f76c4d723fe9a33cb1c4f926edaf8f07129aa1f8b4992117140"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f612eaa7588ec41d9540133859037345946dfaf6dd7e6e74f4c42c82260f0b34"
+      "sha256": "be5cd1f9bc62e2b2e3788787e43a1439ba027da55031df7a5cadeddb0f36b81c"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
