@@ -448,11 +448,24 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
         if (p && *p == '}') p++;
     }
 
-    /* Verify proper closing of games array and root object */
+    /* Verify proper closing of games array and root object. Both delimiters
+       are REQUIRED, not merely consumed when present: a file truncated right
+       after a complete game object would otherwise reach the terminating NUL
+       and return NK_OK, silently loading a partial library instead of falling
+       through to the .bak recovery path. Truncation is exactly the case the
+       backup exists for. */
     p = skip_whitespace(p);
-    if (*p == ']') p++;
+    if (*p != ']') {
+        free(buf);
+        return NK_ERROR_GENERIC;
+    }
+    p++;
     p = skip_whitespace(p);
-    if (*p == '}') p++;
+    if (*p != '}') {
+        free(buf);
+        return NK_ERROR_GENERIC;
+    }
+    p++;
     p = skip_whitespace(p);
 
     if (p && *p != '\0') {

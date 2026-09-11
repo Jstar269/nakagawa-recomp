@@ -195,9 +195,25 @@ class PreparationEngine:
 
             # Stage 5: Atomic Promotion
             emit(PrepStage.READY, "Promoting staged game data", completed=5, total=5)
+            # Keep any previous preparation until the new one is in place.
+            # Deleting it first meant a failed or partial rename left the user
+            # with neither the working install nor the new one -- and the outer
+            # handler then removed the staging tree too. Moving it aside keeps
+            # a rollback available for the one operation that can still fail.
+            retired_dir = None
             if target_dir.exists():
-                shutil.rmtree(target_dir, ignore_errors=True)
-            staging_dir.rename(target_dir)
+                retired_dir = target_dir.with_name(target_dir.name + ".retired-" + str(int(time.time())))
+                target_dir.rename(retired_dir)
+            try:
+                staging_dir.rename(target_dir)
+            except OSError:
+                # Promotion failed: restore what the user already had rather
+                # than leaving the title with nothing.
+                if retired_dir is not None and not target_dir.exists():
+                    retired_dir.rename(target_dir)
+                raise
+            if retired_dir is not None:
+                shutil.rmtree(retired_dir, ignore_errors=True)
 
             final_manifest = target_dir / "manifest.json"
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
