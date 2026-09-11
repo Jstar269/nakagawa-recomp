@@ -104,6 +104,12 @@ typedef struct {
        so it raises this and the event loop in main.c consumes it. */
     bool request_file_picker;
 
+    /* Index of the leftmost visible card in the library strip. The strip
+       lays cards out horizontally and a 1280-wide window fits about four, so
+       without this every entry past the fourth was drawn outside the window
+       with no way to reach it. */
+    int library_scroll_index;
+
     /* Navigation & Focus */
     int focus_index; /* current focused UI element index for gamepad/keyboard */
     int active_tab;   /* for settings: 0=Display, 1=Audio, 2=Controller, 3=Logs */
@@ -128,6 +134,12 @@ void player_app_sync_library(PlayerApp *app);
    just written is not necessarily the last one; callers that need the record
    they have just added must look it up rather than assume it was appended. */
 int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
+
+/* Move the library selection by `delta` entries, clamped to the library. */
+void player_app_move_selection(PlayerApp *app, int delta);
+
+/* How many library cards fit in the current window, at least one. */
+int player_app_visible_library_cards(const PlayerApp *app);
 
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);

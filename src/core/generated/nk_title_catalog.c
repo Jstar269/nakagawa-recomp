@@ -10,6 +10,11 @@
 #define NK_CATALOG_MAX_OVERLAYS 8
 static const NkTitleEntry *s_private_overlay_entries[NK_CATALOG_MAX_OVERLAYS];
 static int s_private_overlay_count = 0;
+static NkOverlayStorageResetFn s_overlay_storage_reset = NULL;
+
+void nk_title_catalog_set_overlay_storage_reset(NkOverlayStorageResetFn reset_fn) {
+    s_overlay_storage_reset = reset_fn;
+}
 
 void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry) {
     if (!overlay_entry) return;
@@ -28,6 +33,10 @@ void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry) {
 
 void nk_title_catalog_clear_overlay(void) {
     s_private_overlay_count = 0;
+    /* Release the parser-owned storage the cleared pointers referred to. */
+    if (s_overlay_storage_reset) {
+        s_overlay_storage_reset();
+    }
 }
 
 const NkTitleEntry *nk_title_catalog_get_overlay(void) {

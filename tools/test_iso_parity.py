@@ -458,6 +458,63 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_identical.get("RESULT"), "OK")
         self.assertEqual(c_identical.get("DISC_ID"), "UCUS98701")
 
+    def test_identity_parameter_format_parity(self) -> None:
+        """An identity field in a non-string format is refused by both parsers.
+
+        The native reader used to ignore the parameter format at entry offset
+        +2 and decode the bytes as text regardless, while the Python inspector
+        yielded the decoded integer. A disc whose DISC_ID declared an integer
+        format could therefore be matched to a catalog title by one parser and
+        not the other -- the differential contract these two are meant to keep.
+        """
+        from nk_core.iso_inspect import IsoInspectionError
+
+        # DISC_ID declared as uint32 (0x0404) while carrying string bytes.
+        sfo_int_id = build_custom_param_sfo([
+            ("DISC_ID", 0x0404, b"UCUS98701\0"),
+            ("TITLE", 0x0204, b"Wrong Format\0"),
+        ])
+        iso_int_id = self.temp_dir / "int_disc_id.iso"
+        create_custom_sfo_iso(iso_int_id, sfo_int_id)
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_int_id)
+
+        c_int_id = self._run_native_inspect(iso_int_id)
+        self.assertTrue(c_int_id.get("RESULT", "").startswith("ERROR"))
+
+        # An unrecognised format is refused the same way, not silently ignored.
+        sfo_unknown = build_custom_param_sfo([
+            ("DISC_ID", 0x0101, b"UCUS98701\0"),
+            ("TITLE", 0x0204, b"Unknown Format\0"),
+        ])
+        iso_unknown = self.temp_dir / "unknown_fmt.iso"
+        create_custom_sfo_iso(iso_unknown, sfo_unknown)
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_unknown)
+
+        c_unknown = self._run_native_inspect(iso_unknown)
+        self.assertTrue(c_unknown.get("RESULT", "").startswith("ERROR"))
+
+        # A non-identity key in a non-string format is NOT a reason to reject:
+        # only identity decides whether a disc matches a catalog title.
+        sfo_other = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"UCUS98701\0"),
+            ("TITLE", 0x0204, b"Fine\0"),
+            ("PARENTAL_LEVEL", 0x0404, bytes([1, 0, 0, 0])),
+        ])
+        iso_other = self.temp_dir / "other_int_key.iso"
+        create_custom_sfo_iso(iso_other, sfo_other)
+
+        py_other = inspect_iso(iso_other)
+        self.assertEqual(py_other.disc_id, "UCUS98701")
+
+        c_other = self._run_native_inspect(iso_other)
+        self.assertEqual(c_other.get("RESULT"), "OK")
+        self.assertEqual(c_other.get("DISC_ID"), "UCUS98701")
+
+
 
 if __name__ == "__main__":
     unittest.main()

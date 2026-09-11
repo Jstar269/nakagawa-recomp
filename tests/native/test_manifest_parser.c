@@ -495,6 +495,66 @@ static void test_multi_overlay_storage(void) {
     printf("[MANIFEST_TEST] Simultaneous multi-overlay storage test PASSED!\n");
 }
 
+static void test_overlay_clear_releases_storage(void) {
+    printf("[MANIFEST_TEST] Testing that clearing the overlay releases parser storage...\n");
+    char err[512];
+    NkTitleEntry entry;
+
+    /* Two distinct overlay identities that claim the same disc. */
+    const char *overlay_a =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"id\": \"overlay-clear-a\",\n"
+        "  \"display_name\": \"Overlay Clear A\",\n"
+        "  \"kind\": \"retail\",\n"
+        "  \"disc\": {\"id\": \"UCUS99911\", \"region\": \"NA\", \"revision_policy\": \"exact-disc-id\"},\n"
+        "  \"executable\": {\"base\": \"0x08804000\", \"entry\": \"0x08808000\", \"bss_metadata_source\": \"elf\", \"extra_executable_spans\": []},\n"
+        "  \"modules\": [{\"name\": \"a.prx\", \"load_address\": \"0x08900000\", \"required\": true, \"role\": \"guest-prx\"}],\n"
+        "  \"filesystem\": {\"data_root\": \"data/a\", \"memory_stick_root\": \"ms/a\", \"device_prefixes\": [\"host0:\"]},\n"
+        "  \"hle_profile\": \"standard\",\n"
+        "  \"feature_requirements\": [\"allegrex\"],\n"
+        "  \"verification_profile\": \"smoke\"\n"
+        "}\n";
+
+    const char *overlay_b =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"id\": \"overlay-clear-b\",\n"
+        "  \"display_name\": \"Overlay Clear B\",\n"
+        "  \"kind\": \"retail\",\n"
+        "  \"disc\": {\"id\": \"UCUS99911\", \"region\": \"NA\", \"revision_policy\": \"exact-disc-id\"},\n"
+        "  \"executable\": {\"base\": \"0x08804000\", \"entry\": \"0x08808000\", \"bss_metadata_source\": \"elf\", \"extra_executable_spans\": []},\n"
+        "  \"modules\": [{\"name\": \"b.prx\", \"load_address\": \"0x08900000\", \"required\": true, \"role\": \"guest-prx\"}],\n"
+        "  \"filesystem\": {\"data_root\": \"data/b\", \"memory_stick_root\": \"ms/b\", \"device_prefixes\": [\"host0:\"]},\n"
+        "  \"hle_profile\": \"standard\",\n"
+        "  \"feature_requirements\": [\"allegrex\"],\n"
+        "  \"verification_profile\": \"smoke\"\n"
+        "}\n";
+
+    /* Start from a known-empty overlay state regardless of test order. */
+    nk_title_catalog_clear_overlay();
+
+    assert(nk_title_manifest_parse_buffer(overlay_a, strlen(overlay_a), false, &entry, err, sizeof(err)));
+    assert(strcmp(entry.id, "overlay-clear-a") == 0);
+
+    /* While A is loaded, B claims the same disc and must be refused. This is
+     * the check that was still firing after a clear. */
+    assert(!nk_title_manifest_parse_buffer(overlay_b, strlen(overlay_b), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "overlay-clear-a") != NULL);
+
+    /* Clearing the registry must release the parser's storage too. Before the
+     * fix it only reset the catalog's pointer array, so B stayed blocked by an
+     * overlay the caller had already cleared and the fixed slot capacity
+     * remained consumed. */
+    nk_title_catalog_clear_overlay();
+
+    assert(nk_title_manifest_parse_buffer(overlay_b, strlen(overlay_b), false, &entry, err, sizeof(err)));
+    assert(strcmp(entry.id, "overlay-clear-b") == 0);
+
+    nk_title_catalog_clear_overlay();
+    printf("[MANIFEST_TEST] Overlay clear/storage release test PASSED!\n");
+}
+
 static void test_overlay_collision_policy(void) {
     printf("[MANIFEST_TEST] Testing overlay collision policy across all identities...\n");
     char err[512];
@@ -577,6 +637,7 @@ int main(int argc, char *argv[]) {
     test_executable_entry_vs_fallback();
     test_multi_overlay_storage();
     test_overlay_collision_policy();
+    test_overlay_clear_releases_storage();
     printf("[MANIFEST_TEST] ALL NATIVE MANIFEST PARSER TESTS PASSED SUCCESSFULLY!\n");
     return 0;
 }

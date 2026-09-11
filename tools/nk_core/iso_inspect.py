@@ -24,6 +24,8 @@ class IsoInspectionError(ValueError):
     """Raised when an ISO image is unreadable or malformed."""
 
 
+_IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE_ID", "TITLE", "DISC_VERSION"})
+
 def parse_param_sfo(data: bytes) -> Dict[str, str]:
     """Parse Sony PSP PARAM.SFO key/value pairs safely."""
     if len(data) < 20 or data[0:8] != SFO_MAGIC:
@@ -59,6 +61,19 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
         if d_end > len(data):
             continue
         raw_val = data[d_start:d_end]
+
+        # Identity fields are decoded only from a UTF-8 string format. The
+        # native reader in src/core/nk_iso.c now refuses a DISC_ID, TITLE_ID,
+        # TITLE or DISC_VERSION that declares an integer or unrecognised
+        # format; yielding a decoded number or an empty string here instead
+        # would put the two parsers back out of step on exactly the field that
+        # decides whether a disc matches a catalog title.
+        if key_name in _IDENTITY_KEYS and param_fmt not in (0x0204, 0x0004):
+            raise IsoInspectionError(
+                f"SFO key '{key_name}' declares parameter format 0x{param_fmt:04x}, "
+                "which is not a UTF-8 string; identity is not decoded from a "
+                "non-string format"
+            )
 
         if param_fmt in (0x0204, 0x0004):  # UTF-8 string
             val_str = raw_val.rstrip(b"\0").decode("utf-8", errors="replace")

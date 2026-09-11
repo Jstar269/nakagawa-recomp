@@ -208,10 +208,32 @@ NkResult nk_launch_prepare_session(
         if (!last_sep) last_sep = strrchr(session->working_directory, '\\');
         if (last_sep) {
             *last_sep = '\0';
-            /* If parent is build/hst, move up to repo root so assets are found */
-            char *up = strstr(session->working_directory, "build");
-            if (up && (up == session->working_directory || up[-1] == '/' || up[-1] == '\\')) {
-                if (up > session->working_directory) up[-1] = '\0';
+            /* If the parent is build/<title>, move up to the repository root so
+               assets are found.
+               Only an EXACT "build" component counts. strstr matched any
+               component merely beginning with those five letters, so a directly
+               supplied executable under a path such as /opt/build-tools/runtime
+               truncated the working directory to /opt, and the runtime then
+               resolved its data root, fonts, VFPU tables and filesystem from the
+               wrong place. Scan for the last exact match so the deepest
+               build/<title> layout wins. */
+            char wd_sep = nk_platform_path_separator();
+            char *scan = session->working_directory;
+            char *build_at = NULL;
+            for (;;) {
+                char *hit = strstr(scan, "build");
+                if (!hit) break;
+                char after = hit[5];
+                bool starts_component = (hit == session->working_directory)
+                                     || hit[-1] == '/' || hit[-1] == wd_sep;
+                bool ends_component = (after == '\0') || after == '/' || after == wd_sep;
+                if (starts_component && ends_component) {
+                    build_at = hit;
+                }
+                scan = hit + 5;
+            }
+            if (build_at && build_at > session->working_directory) {
+                build_at[-1] = '\0';
             }
         }
     }
@@ -450,14 +472,40 @@ bool nk_launch_is_running(NkLaunchSession *session) {
     if (!session || !session->is_running) return false;
     bool running = nk_platform_is_process_running(&session->process);
     if (!running) {
+        /* The child is gone. Read its status HERE, while the answer still
+           exists: on POSIX this poll is what reaped it, so the backend holds
+           the status and a later waitpid would only see ECHILD; on Win32 the
+           handle is still open. Without this, both polling sequences in
+           src/player/main.c called nk_launch_wait on a session this function
+           had just marked stopped, which returned the default exit_code and
+           reported every runtime exit as 0. */
+        session->exit_code = nk_platform_wait_process(&session->process, 0);
         session->is_running = false;
     }
     return running;
 }
 
 int nk_launch_wait(NkLaunchSession *session, int timeout_ms) {
-    if (!session || !session->is_running) return session ? session->exit_code : -1;
+    if (!session) return -1;
+    if (!session->is_running) return session->exit_code;
+
     int code = nk_platform_wait_process(&session->process, timeout_ms);
+
+    if (timeout_ms >= 0 && code == -1) {
+        /* A finite wait that expires returns -1 with the child still alive and
+           the handle still valid on both backends. Recording that as the exit
+           code and marking the session stopped made a timeout unrecoverable:
+           the caller could not wait again, and nk_launch_stop then skipped
+           termination and discarded a still-live handle. */
+        if (nk_platform_is_process_running(&session->process)) {
+            return code;
+        }
+        /* It exited between the wait expiring and this check, so -1 was the
+           timeout rather than the child's status. Ask once more without
+           waiting, now that the backend has the answer. */
+        code = nk_platform_wait_process(&session->process, 0);
+    }
+
     session->exit_code = code;
     session->is_running = false;
     return code;

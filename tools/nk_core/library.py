@@ -113,7 +113,23 @@ class GameLibrary:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # Fail closed on a schema this loader does not understand, the way the
+        # native loader in src/core/nk_library.c already does. Interpreting the
+        # familiar-looking fields of a newer file and then rewriting it as
+        # schema 1 on the next save silently discards whatever the newer schema
+        # added -- a data-losing "success" rather than a refusal.
+        if not isinstance(data, dict):
+            raise ValueError(f"{path}: library root must be a JSON object")
+        schema = data.get("schema_version")
+        if schema != LIBRARY_SCHEMA_VERSION:
+            raise ValueError(
+                f"{path}: unsupported library schema_version {schema!r}; "
+                f"this build reads version {LIBRARY_SCHEMA_VERSION}"
+            )
+
         games_list = data.get("games", [])
+        if not isinstance(games_list, list):
+            raise ValueError(f"{path}: 'games' must be a list")
         for g_dict in games_list:
             rec = LibraryGameRecord.from_dict(g_dict)
             lib.add_or_update_game(rec)

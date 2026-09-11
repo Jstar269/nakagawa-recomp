@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import time
 from typing import Callable, Optional
 
@@ -126,11 +127,17 @@ class PreparationEngine:
 
             games_root = destination_root or (self.base_dir / "games")
             target_dir = games_root / disc_id
-            staging_dir = games_root / f".staging_{disc_id}_{int(time.time())}"
 
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir, ignore_errors=True)
-            staging_dir.mkdir(parents=True, exist_ok=True)
+            # A one-second timestamp is not a unique name. Two preparations of
+            # the same disc started within the same second computed the same
+            # staging path, and the second one deleted the first one's live
+            # staging tree before both interleaved writes into it. mkdtemp
+            # creates the directory atomically and fails rather than colliding,
+            # so concurrent preparations cannot share one.
+            games_root.mkdir(parents=True, exist_ok=True)
+            staging_dir = Path(
+                tempfile.mkdtemp(prefix=f".staging_{disc_id}_", dir=games_root)
+            )
 
             cancel_token.check()
 

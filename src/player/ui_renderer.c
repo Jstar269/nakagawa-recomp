@@ -303,12 +303,39 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         app->request_file_picker = true;
     }
 
-    /* Lower Library Strip */
+    /* Lower Library Strip.
+     *
+     * The strip is horizontal and a 1280-wide window fits about four cards.
+     * Every entry past that was previously drawn off the right edge of the
+     * window, and src/player has no wheel handling, paging, keyboard selection
+     * or horizontal offset, so those games could not be selected or launched
+     * at all even though the library holds up to NK_MAX_GAMES. The strip now
+     * shows a window of cards, always including the selected one, with paging
+     * controls and a position readout. */
     float strip_y = 460.0f;
     draw_text(ren, 32.0f, strip_y, "INSTALLED TITLES", 1.3f, COLOR_TEXT_WHITE);
 
-    for (int i = 0; i < app->game_count; i++) {
-        float card_x = 32.0f + i * 280.0f;
+    int visible = player_app_visible_library_cards(app);
+    int max_scroll = app->game_count - visible;
+    if (max_scroll < 0) max_scroll = 0;
+
+    /* Keep the selected card on screen before anything is drawn. */
+    if (app->selected_game_index >= 0) {
+        if (app->selected_game_index < app->library_scroll_index) {
+            app->library_scroll_index = app->selected_game_index;
+        } else if (app->selected_game_index >= app->library_scroll_index + visible) {
+            app->library_scroll_index = app->selected_game_index - visible + 1;
+        }
+    }
+    if (app->library_scroll_index > max_scroll) app->library_scroll_index = max_scroll;
+    if (app->library_scroll_index < 0) app->library_scroll_index = 0;
+
+    int first = app->library_scroll_index;
+    int last = first + visible;
+    if (last > app->game_count) last = app->game_count;
+
+    for (int i = first; i < last; i++) {
+        float card_x = 32.0f + (float)(i - first) * 280.0f;
         float card_y = strip_y + 32.0f;
         float cw = 260.0f;
         float ch = 140.0f;
@@ -329,6 +356,25 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (in && in->mouse_clicked && is_point_in_rect((float)in->mouse_x, (float)in->mouse_y, card_x, card_y, cw, ch)) {
             app->selected_game_index = i;
         }
+    }
+
+    /* Paging controls and a position readout, shown only when the library
+     * does not fit. Mouse-only users get buttons; the event loop also maps the
+     * arrow keys and the wheel onto the same selection. */
+    if (app->game_count > visible) {
+        float nav_y = strip_y + 180.0f;
+        if (draw_button(ren, 32.0f, nav_y, 60.0f, 34.0f, "<", false, in)) {
+            player_app_move_selection(app, -1);
+        }
+        if (draw_button(ren, 100.0f, nav_y, 60.0f, 34.0f, ">", false, in)) {
+            player_app_move_selection(app, 1);
+        }
+
+        char pos_line[64];
+        snprintf(pos_line, sizeof(pos_line), "%d of %d  (arrow keys or scroll wheel)",
+                 app->selected_game_index >= 0 ? app->selected_game_index + 1 : 0,
+                 app->game_count);
+        draw_text(ren, 176.0f, nav_y + 8.0f, pos_line, 1.0f, COLOR_TEXT_DIM);
     }
 }
 

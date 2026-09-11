@@ -307,10 +307,34 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
     }
 }
 
+/* How long a child gets to honour SIGTERM before it is killed, and how long
+   the kill itself is given to take effect. Both are short enough that the UI
+   thread calling Stop does not visibly hang. */
+#define NK_TERM_GRACE_MS 2000
+#define NK_KILL_GRACE_MS 1000
+
 void nk_platform_terminate_process(NkProcessHandle *process) {
     if (!process || !process->is_active) return;
     pid_t pid = (pid_t)(intptr_t)process->native_handle;
-    kill(pid, SIGTERM);
+
+    if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+        /* Not ours to signal; there is nothing useful left to do. */
+        process->is_active = false;
+        return;
+    }
+
+    /* SIGTERM is a request, not an outcome. Marking the child inactive right
+       here and then erasing the pid in close_process left a normally
+       terminating runtime as a zombie until the player itself exited, and left
+       a runtime that delays or ignores SIGTERM still running while the UI
+       reported it stopped. Reap it, and escalate if it will not go.
+       nk_platform_wait_process leaves is_active true on a timeout and clears
+       it once the child is reaped, which is what distinguishes the two. */
+    nk_platform_wait_process(process, NK_TERM_GRACE_MS);
+    if (process->is_active) {
+        kill(pid, SIGKILL);
+        nk_platform_wait_process(process, NK_KILL_GRACE_MS);
+    }
     process->is_active = false;
 }
 

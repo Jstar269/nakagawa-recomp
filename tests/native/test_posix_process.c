@@ -26,9 +26,11 @@ int main(void) {
    the feature-test macro, exactly as src/core/nk_platform_posix.c does. */
 #define _POSIX_C_SOURCE 200809L
 
+#include "nk_launch.h"
 #include "nk_platform.h"
 
 #include <assert.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -114,6 +116,61 @@ int main(void) {
     assert(observed_exit);
     assert(nk_platform_wait_process(&polled, 0) == 3);
     nk_platform_close_process(&polled);
+
+    /* 5. The nk_launch wrapper must keep a timed-out session usable.
+     *
+     * Both backends leave the handle valid when a finite wait expires, but the
+     * wrapper recorded -1 as the exit code and marked the session stopped. A
+     * caller that timed out could then neither wait again nor stop the child:
+     * nk_launch_stop skips termination when is_running is false, and went on to
+     * discard a still-live handle. The session is built directly here because
+     * nk_launch_start would insist on a prepared runtime; the wrapper under
+     * test does not care how the handle was filled in. */
+    printf("[POSIX_PROCESS_TEST] Subtest 5: a timed-out session stays usable\n");
+    fflush(stdout);
+
+    NkLaunchSession session;
+    memset(&session, 0, sizeof(session));
+    const char *session_argv[] = { "/bin/sleep", "30", NULL };
+    assert(nk_platform_spawn_process("/bin/sleep", session_argv, NULL, NULL, &session.process));
+    session.is_running = true;
+    pid_t session_pid = (pid_t)session.process.process_id;
+
+    assert(nk_launch_wait(&session, 200) == -1);
+    assert(session.is_running);                 /* still the caller's to stop */
+    assert(nk_launch_is_running(&session));
+
+    nk_launch_stop(&session);
+    assert(!session.is_running);
+    /* Stop must reap, not just signal: an unreaped child stays a zombie until
+     * the player exits, and kill(pid, 0) still succeeds for one. */
+    assert(kill(session_pid, 0) != 0);
+
+    /* 6. A session whose exit was observed by polling reports the real code.
+     *
+     * This is the sequence src/player/main.c uses -- is_running first, then
+     * wait -- and it reported 0 for every runtime exit on POSIX. */
+    printf("[POSIX_PROCESS_TEST] Subtest 6: a polled exit keeps its code\n");
+    fflush(stdout);
+
+    memset(&session, 0, sizeof(session));
+    const char *code_argv[] = { "/bin/sh", "-c", "exit 9", NULL };
+    assert(nk_platform_spawn_process("/bin/sh", code_argv, NULL, NULL, &session.process));
+    session.is_running = true;
+
+    bool session_exited = false;
+    for (int i = 0; i < 2000; i++) {
+        if (!nk_launch_is_running(&session)) {
+            session_exited = true;
+            break;
+        }
+        struct timespec poll_slice = { 0, 5L * 1000L * 1000L }; /* 5 ms */
+        nanosleep(&poll_slice, NULL);
+    }
+    assert(session_exited);
+    assert(nk_launch_wait(&session, 0) == 9);
+    assert(session.exit_code == 9);
+    nk_launch_stop(&session);
 
     printf("[POSIX_PROCESS_TEST] ALL POSIX PROCESS TESTS PASSED!\n");
     return 0;

@@ -216,18 +216,41 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     }
 #else
     if (nk_platform_file_exists(target)) {
-        FILE *src = fopen(target, "rb");
-        if (src) {
-            FILE *dst = fopen(bak_path, "wb");
-            if (dst) {
-                char copy_buf[4096];
-                size_t n;
-                while ((n = fread(copy_buf, 1, sizeof(copy_buf), src)) > 0) {
-                    fwrite(copy_buf, 1, n, dst);
+        /* Copy through a temporary file and promote only after a complete,
+           verified copy. Opening bak_path directly truncated the previous
+           backup before a single byte was written, and short writes, read
+           errors and the close result were all discarded -- so one I/O error
+           destroyed the last recovery image while this function still returned
+           NK_OK, and a later corruption of the primary had nothing to fall back
+           to. A failed copy now leaves the existing backup exactly as it was. */
+        char bak_tmp[NK_MAX_PATH + 16];
+        int bw = snprintf(bak_tmp, sizeof(bak_tmp), "%s.new", bak_path);
+        if (bw > 0 && (size_t)bw < sizeof(bak_tmp)) {
+            FILE *src = fopen(target, "rb");
+            if (src) {
+                FILE *dst = fopen(bak_tmp, "wb");
+                bool copied = false;
+                if (dst) {
+                    char copy_buf[4096];
+                    size_t n;
+                    copied = true;
+                    while ((n = fread(copy_buf, 1, sizeof(copy_buf), src)) > 0) {
+                        if (fwrite(copy_buf, 1, n, dst) != n) {
+                            copied = false;
+                            break;
+                        }
+                    }
+                    if (ferror(src)) copied = false;
+                    if (fclose(dst) != 0) copied = false;
                 }
-                fclose(dst);
+                if (ferror(src)) copied = false;
+                fclose(src);
+                if (copied && rename(bak_tmp, bak_path) == 0) {
+                    /* The new backup is in place. */
+                } else {
+                    remove(bak_tmp);
+                }
             }
-            fclose(src);
         }
     }
 

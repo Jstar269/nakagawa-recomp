@@ -111,6 +111,47 @@ int main(void) {
     snprintf(entry.title_name, sizeof(entry.title_name), "Nameless");
     assert(player_app_add_game(app, &entry) == false);
 
+    /* 6. Every library entry must be reachable.
+     *
+     * The strip draws cards left to right on a 280-pixel pitch, so a
+     * 1280-wide window shows about four. Everything past those was drawn
+     * outside the window, and src/player had no wheel, paging, keyboard or
+     * offset handling at all -- so with a full library most games could
+     * neither be selected nor launched. */
+    printf("[PLAYER_STATE_TEST] Subtest 6: every entry is reachable\n");
+    fflush(stdout);
+
+    app->window_width = 1280;
+    app->window_height = 720;
+    int visible = player_app_visible_library_cards(app);
+    assert(visible >= 1);
+    assert(visible < NK_MAX_GAMES);   /* otherwise this proves nothing */
+
+    /* The library is already full from subtest 4. */
+    assert(app->game_count == NK_MAX_GAMES);
+    app->selected_game_index = 0;
+    for (int i = 1; i < NK_MAX_GAMES; i++) {
+        player_app_move_selection(app, 1);
+        assert(app->selected_game_index == i);
+    }
+    /* Including the ones that never fit on screen at once. */
+    assert(app->selected_game_index == NK_MAX_GAMES - 1);
+    assert(app->selected_game_index >= visible);
+
+    /* Selection clamps rather than wrapping or running off either end. */
+    player_app_move_selection(app, 1);
+    assert(app->selected_game_index == NK_MAX_GAMES - 1);
+    player_app_move_selection(app, -NK_MAX_GAMES * 2);
+    assert(app->selected_game_index == 0);
+    player_app_move_selection(app, -1);
+    assert(app->selected_game_index == 0);
+
+    /* A window too narrow for even one card still offers one. */
+    app->window_width = 100;
+    assert(player_app_visible_library_cards(app) == 1);
+    app->window_width = 1920;
+    assert(player_app_visible_library_cards(app) > visible);
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     return 0;

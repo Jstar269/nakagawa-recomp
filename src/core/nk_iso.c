@@ -59,6 +59,19 @@ static FILE *nk_iso_fopen(const char *path, const char *mode) {
 #endif
 }
 
+/* SFO parameter formats. 0x0004 is UTF-8 that is not NUL-terminated and
+   0x0204 is NUL-terminated UTF-8; 0x0404 is a little-endian uint32. Only the
+   two string forms carry text. */
+#define SFO_FMT_UTF8_SPECIAL 0x0004u
+#define SFO_FMT_UTF8         0x0204u
+
+static bool sfo_key_is_identity(const char *key) {
+    return strcmp(key, "DISC_ID") == 0
+        || strcmp(key, "TITLE_ID") == 0
+        || strcmp(key, "TITLE") == 0
+        || strcmp(key, "DISC_VERSION") == 0;
+}
+
 /* Parse SFO buffer and extract DISC_ID, TITLE, DISC_VERSION with rigorous bounds checking */
 static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
     if (!sfo || sfo_size < 20 || !meta) return false;
@@ -87,6 +100,7 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         if (entry_off + 16 > key_table_off) break;
 
         uint16_t key_off = read_le16(sfo + entry_off);
+        uint16_t data_fmt = read_le16(sfo + entry_off + 2);
         uint32_t data_len = read_le32(sfo + entry_off + 4);
         uint32_t data_off = read_le32(sfo + entry_off + 12);
 
@@ -108,6 +122,24 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         size_t abs_data_off = (size_t)data_table_off + data_off;
         if (abs_data_off > sfo_size || (size_t)data_len > sfo_size - abs_data_off) {
             continue;
+        }
+
+        /* The parameter format field was ignored, so an entry declaring an
+           integer or any unrecognised format still had its bytes decoded as
+           text. tools/nk_core/iso_inspect.py does not do that -- it yields the
+           decoded integer or an empty string -- so a disc whose DISC_ID
+           declared a non-string format could be matched to a catalog title by
+           the native reader and not by the canonical one, which is exactly the
+           divergence the two parsers exist to prevent. Identity fields are
+           decoded only from a UTF-8 string format. */
+        if (sfo_key_is_identity(key)
+            && data_fmt != SFO_FMT_UTF8
+            && data_fmt != SFO_FMT_UTF8_SPECIAL) {
+            snprintf(meta->error_message, sizeof(meta->error_message),
+                "SFO key '%.32s' declares parameter format 0x%04x, which is not a UTF-8 "
+                "string; identity is not decoded from a non-string format",
+                key, (unsigned)data_fmt);
+            return false;
         }
 
         char val_buf[256];

@@ -71,6 +71,16 @@ typedef struct {
 static OverlayStorageSlot s_overlay_slots[NK_MANIFEST_MAX_OVERLAYS];
 static int s_overlay_slot_count = 0;
 
+/* Installed into the catalog the first time an overlay is stored, so that
+   nk_title_catalog_clear_overlay releases this storage as well as its own
+   pointer registry. Without it a manifest reusing a cleared overlay's disc ID
+   was still refused as colliding with an overlay the caller had cleared, and
+   the fixed slot capacity stayed consumed for the life of the process. */
+static void nk_manifest_reset_overlay_storage(void) {
+    memset(s_overlay_slots, 0, sizeof(s_overlay_slots));
+    s_overlay_slot_count = 0;
+}
+
 static FILE *manifest_fopen(const char *path) {
 #if defined(_WIN32) || defined(_WIN64)
     if (!path || !*path) return NULL;
@@ -1709,6 +1719,7 @@ bool nk_title_manifest_parse_buffer(
         }
     }
 
+    nk_title_catalog_set_overlay_storage_reset(nk_manifest_reset_overlay_storage);
     s_overlay_slots[target_slot] = temp;
     /* Re-anchor self pointers for the chosen slot */
     OverlayStorageSlot *dest = &s_overlay_slots[target_slot];

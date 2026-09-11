@@ -17,7 +17,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, preparation staging, settings, and structured recovery actions.
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
-   - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), gamepad input, drag-and-drop ISO support, and headless test driver.
+   - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
 3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
 5. **Continuous Working-State Preservation**: Existing playable HST route, test suites (`test_nk_core.py`, `test_build_truth.py`, and full tools test suite) remain 100% green.

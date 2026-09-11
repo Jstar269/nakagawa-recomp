@@ -297,10 +297,12 @@ static void test_hostile_iso_parser(const char *test_dir) {
     sfo[16] = 2; sfo[17] = 0; sfo[18] = 0; sfo[19] = 0;
 
     sfo[20] = 0; sfo[21] = 0;
+    sfo[22] = 0x04; sfo[23] = 0x02;  /* parameter format: NUL-terminated UTF-8 */
     sfo[24] = 10; sfo[25] = 0; sfo[26] = 0; sfo[27] = 0;
     sfo[32] = 0; sfo[33] = 0; sfo[34] = 0; sfo[35] = 0;
 
     sfo[36] = 8; sfo[37] = 0;
+    sfo[38] = 0x04; sfo[39] = 0x02;  /* parameter format: NUL-terminated UTF-8 */
     sfo[40] = 10; sfo[41] = 0; sfo[42] = 0; sfo[43] = 0;
     sfo[48] = 10; sfo[49] = 0; sfo[50] = 0; sfo[51] = 0;
 
@@ -434,6 +436,8 @@ static void test_hostile_iso_parser(const char *test_dir) {
     esfo[12] = 44;              /* data table offset  */
     esfo[16] = 1;               /* one entry          */
     esfo[20] = 0; esfo[21] = 0; /* key offset 0       */
+    esfo[22] = 0x04;            /* format 0x0204:     */
+    esfo[23] = 0x02;            /* NUL-terminated UTF-8 */
     esfo[24] = 10;              /* data length        */
     esfo[28] = 10;              /* data max length    */
     esfo[32] = 0;               /* data offset 0      */
@@ -448,6 +452,71 @@ static void test_hostile_iso_parser(const char *test_dir) {
     assert(meta.status != NK_STATUS_VERIFIED);
     assert(meta.matched_title == NULL);
 
+
+    /* 11. An identity field declaring a non-string parameter format.
+     *
+     * The parser ignored the format field at entry offset +2 and decoded the
+     * bytes as text whatever it said. tools/nk_core/iso_inspect.py does not:
+     * for an integer format it yields the decoded number, and for an
+     * unrecognised one an empty string. A disc whose DISC_ID declared a
+     * non-string format could therefore be matched to a catalog title by the
+     * native reader and not by the canonical one -- the exact divergence the
+     * two parsers exist to prevent. Identity is decoded only from UTF-8.
+     *
+     * The image is otherwise the directory-reachable, well-formed one used
+     * above, so nothing but the format field can explain a rejection. */
+    printf("[HOSTILE_TEST] Subtest 11: non-string SFO parameter format\n"); fflush(stdout);
+    char fpath_fmt[512];
+    snprintf(fpath_fmt, sizeof(fpath_fmt), "%s%csfo_int_discid.iso", test_dir, nk_platform_path_separator());
+
+    static uint8_t fmt_iso[20 * 2048];
+    memset(fmt_iso, 0, sizeof(fmt_iso));
+    uint8_t *fpvd = &fmt_iso[16 * 2048];
+    fpvd[0] = 0x01;
+    memcpy(&fpvd[1], "CD001", 5);
+    memcpy(&fpvd[40], "FMT_PROBE_VOL                   ", 32);
+    /* Root directory record at PVD byte 156: extent sector 17, one sector. */
+    fpvd[158] = 17; fpvd[165] = 17;
+    fpvd[167] = 0x08; fpvd[172] = 0x08;
+
+    /* Sector 17: a directory holding PARAM.SFO at sector 18. */
+    uint8_t *fdir = &fmt_iso[17 * 2048];
+    fdir[0] = 44;               /* record length        */
+    fdir[2] = 18;               /* extent LBA (LE)      */
+    fdir[9] = 18;               /* extent LBA (BE low)  */
+    fdir[10] = 0x00; fdir[11] = 0x08;   /* data length LE   */
+    fdir[17] = 0x08;            /* data length BE       */
+    fdir[32] = 11;              /* identifier length    */
+    memcpy(&fdir[33], "PARAM.SFO;1", 11);
+
+    uint8_t *fsfo = &fmt_iso[18 * 2048];
+    fsfo[1] = 'P'; fsfo[2] = 'S'; fsfo[3] = 'F';
+    fsfo[4] = 0x01; fsfo[5] = 0x01;
+    fsfo[8] = 36;               /* key table offset     */
+    fsfo[12] = 44;              /* data table offset    */
+    fsfo[16] = 1;               /* one entry            */
+    fsfo[20] = 0; fsfo[21] = 0; /* key offset 0         */
+    fsfo[22] = 0x04;            /* format 0x0404:       */
+    fsfo[23] = 0x04;            /* uint32, NOT a string */
+    fsfo[24] = 10;              /* data length          */
+    fsfo[28] = 10;              /* data max length      */
+    fsfo[32] = 0;               /* data offset 0        */
+    memcpy(&fsfo[36], "DISC_ID", 7);
+    memcpy(&fsfo[44], "TEST00001", 9);
+
+    write_test_file(fpath_fmt, fmt_iso, sizeof(fmt_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_fmt, &meta) == NK_ERROR_INVALID_ISO);
+    assert(meta.is_supported == false);
+    assert(meta.matched_title == NULL);
+
+    /* The same image with the string format parses and identifies. Without
+     * this the subtest above could pass for some unrelated reason. */
+    fsfo[22] = 0x04; fsfo[23] = 0x02;   /* format 0x0204 */
+    write_test_file(fpath_fmt, fmt_iso, sizeof(fmt_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath_fmt, &meta) == NK_OK);
+    assert(strcmp(meta.disc_id, "TEST00001") == 0);
 
     printf("[HOSTILE_TEST] ISO parser tests PASSED!\n");
 }

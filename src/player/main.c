@@ -82,7 +82,13 @@ int main(int argc, char *argv[]) {
     bool launch_now = false;
     int override_w = 1280;
     int override_h = 720;
-    bool populate_sample = true;
+    /* Demo fixtures are opt-in. Defaulting them on meant a normal first
+       launch with an empty library populated TEST00005 and, through
+       player_app_add_game, PERSISTED it: a new user's first sight of the
+       program was a game they do not have, written into their real library
+       file, instead of the documented empty-library prompt. */
+    bool populate_sample = false;
+    bool force_empty = false;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--screenshot=", 13) == 0) {
@@ -101,9 +107,20 @@ int main(int argc, char *argv[]) {
             override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
             override_h = atoi(argv[i] + 9);
+        } else if (strcmp(argv[i], "--demo") == 0) {
+            populate_sample = true;
         } else if (strcmp(argv[i], "--empty") == 0) {
-            populate_sample = false;
+            force_empty = true;
         }
+    }
+
+    /* A --view= run is an explicit test or capture invocation, so it gets the
+       fixture too. --empty wins regardless of argument order. */
+    if (test_view && strcmp(test_view, "empty") != 0) {
+        populate_sample = true;
+    }
+    if (force_empty) {
+        populate_sample = false;
     }
 
     /* Load external manifest overlay if requested */
@@ -212,7 +229,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (populate_sample && (!test_view || strcmp(test_view, "empty") != 0)) {
+    if (populate_sample) {
         player_app_populate_sample_games(&app);
     }
 
@@ -323,6 +340,15 @@ int main(int argc, char *argv[]) {
     }
 
     /* Interactive Event Loop */
+    /* SDL_INIT_GAMEPAD was requested and the UI has always had a controller
+       badge and a Controller settings tab, but nothing ever opened a pad or
+       set settings.controller_connected -- the badge could only ever say
+       KEYBOARD READY, and the "gamepad input" the progress document claimed
+       did not exist. Open the first pad that appears, report its real name,
+       and map the d-pad and shoulders onto the same library selection the
+       arrow keys drive. */
+    SDL_Gamepad *gamepad = NULL;
+
     bool running = true;
     while (running && !app.should_quit) {
         input.mouse_clicked = false;
@@ -361,6 +387,70 @@ int main(int argc, char *argv[]) {
                     } else if (event.key.key == SDLK_O) {
                         /* Trigger file picker */
                         trigger_file_picker(window, &app);
+                    } else if (app.active_view == VIEW_LIBRARY) {
+                        /* Keyboard selection across the whole library, not
+                           just the cards that happen to fit on screen. */
+                        if (event.key.key == SDLK_LEFT) {
+                            player_app_move_selection(&app, -1);
+                        } else if (event.key.key == SDLK_RIGHT) {
+                            player_app_move_selection(&app, 1);
+                        } else if (event.key.key == SDLK_HOME) {
+                            app.selected_game_index = app.game_count > 0 ? 0 : -1;
+                        } else if (event.key.key == SDLK_END) {
+                            app.selected_game_index = app.game_count - 1;
+                        } else if (event.key.key == SDLK_PAGEUP) {
+                            player_app_move_selection(&app, -player_app_visible_library_cards(&app));
+                        } else if (event.key.key == SDLK_PAGEDOWN) {
+                            player_app_move_selection(&app, player_app_visible_library_cards(&app));
+                        }
+                    }
+                    break;
+                case SDL_EVENT_MOUSE_WHEEL:
+                    if (app.active_view == VIEW_LIBRARY && event.wheel.y != 0.0f) {
+                        player_app_move_selection(&app, event.wheel.y > 0.0f ? -1 : 1);
+                    }
+                    break;
+                case SDL_EVENT_GAMEPAD_ADDED:
+                    if (!gamepad) {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad) {
+                            const char *pad_name = SDL_GetGamepadName(gamepad);
+                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                     "%s", pad_name ? pad_name : "Controller");
+                            app.settings.controller_connected = true;
+                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
+                        }
+                    }
+                    break;
+                case SDL_EVENT_GAMEPAD_REMOVED:
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = NULL;
+                        app.settings.controller_name[0] = '\0';
+                        app.settings.controller_connected = false;
+                        printf("[PLAYER] Gamepad disconnected\n");
+                    }
+                    break;
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                    if (app.active_view == VIEW_LIBRARY) {
+                        switch (event.gbutton.button) {
+                            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                                player_app_move_selection(&app, -1);
+                                break;
+                            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                                player_app_move_selection(&app, 1);
+                                break;
+                            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+                                player_app_move_selection(&app, -player_app_visible_library_cards(&app));
+                                break;
+                            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+                                player_app_move_selection(&app, player_app_visible_library_cards(&app));
+                                break;
+                            default:
+                                break;
+                        }
+                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
+                        player_app_set_view(&app, VIEW_LIBRARY);
                     }
                     break;
                 case SDL_EVENT_DROP_FILE:
@@ -423,6 +513,10 @@ int main(int argc, char *argv[]) {
         player_app_stop_game(&app);
     }
 
+    if (gamepad) {
+        SDL_CloseGamepad(gamepad);
+        gamepad = NULL;
+    }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

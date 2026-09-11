@@ -313,9 +313,11 @@ class NkCoreTests(unittest.TestCase):
         }
         manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
-        # Create mock executable
+        # Create mock executable and the image it is meaningless without
         mock_exe = self.temp_dir / "hst.exe"
         mock_exe.write_bytes(b"MZfake")
+        mock_image = self.temp_dir / "hst_image.bin"
+        mock_image.write_bytes(b"image")
 
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         cmd, env = launcher.build_launch_plan(
@@ -329,6 +331,71 @@ class NkCoreTests(unittest.TestCase):
         self.assertEqual(env["SR_FPS_CAP"], "60")
         self.assertEqual(env["SR_GPU_GE"], "1")
         self.assertEqual(env["SR_DEBUG"], "0x20")
+
+        # src/rt/driver.c takes image mode as
+        #   --image <image> <base-hex> <entry-hex> <ref-trace> <out-trace> [--sched]
+        # and exits through its argc < 4 usage path for anything shorter.
+        self.assertEqual(cmd[1], "--image")
+        self.assertEqual(cmd[2], str(mock_image))
+        self.assertGreaterEqual(len(cmd), 7)
+        self.assertTrue(cmd[3].startswith("0x"))
+        self.assertTrue(cmd[4].startswith("0x"))
+        self.assertIn(cmd[-1], ("--gui", "--sched"))
+
+        # The addresses are the catalog's, not invented here.
+        registry = TitleRegistry(include_defaults=True)
+        profile = registry.lookup_by_disc_id("TEST00001")
+        self.assertEqual(int(cmd[3], 16), profile.executable_base)
+        self.assertEqual(int(cmd[4], 16), profile.executable_entry)
+
+    def test_runtime_launcher_missing_image_fails_closed(self) -> None:
+        """No image means no runnable plan, and saying so beats a usage exit."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir(parents=True, exist_ok=True)
+        mock_iso = self.temp_dir / "test.iso"
+        mock_iso.write_bytes(b"mock_iso_content")
+
+        (game_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "title_id": "synthetic-v1",
+                    "disc_id": "TEST00001",
+                    "iso_path": str(mock_iso),
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.temp_dir / "hst.exe").write_bytes(b"MZfake")
+
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+        with self.assertRaises(RuntimeLaunchError) as cm:
+            launcher.build_launch_plan(game_dir)
+        self.assertIn("Runtime image not found", str(cm.exception))
+
+    def test_runtime_launcher_resolves_extensionless_binary(self) -> None:
+        """The runtime has no .exe suffix on Linux or macOS."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir(parents=True, exist_ok=True)
+        mock_iso = self.temp_dir / "test.iso"
+        mock_iso.write_bytes(b"mock_iso_content")
+
+        (game_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "title_id": "synthetic-v1",
+                    "disc_id": "TEST00001",
+                    "iso_path": str(mock_iso),
+                }
+            ),
+            encoding="utf-8",
+        )
+        posix_exe = self.temp_dir / "hst"
+        posix_exe.write_bytes(b"ELFfake")
+        (self.temp_dir / "hst_image.bin").write_bytes(b"image")
+
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+        cmd, _ = launcher.build_launch_plan(game_dir)
+        self.assertEqual(cmd[0], str(posix_exe))
 
     def test_runtime_launcher_missing_binary(self) -> None:
         game_dir = self.temp_dir / "TEST00001"
@@ -378,6 +445,7 @@ class NkCoreTests(unittest.TestCase):
 
         mock_exe = self.temp_dir / "hst.exe"
         mock_exe.write_bytes(b"MZfake")
+        (self.temp_dir / "hst_image.bin").write_bytes(b"image")
 
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         cmd, env = launcher.build_launch_plan(game_dir)
@@ -430,9 +498,13 @@ class NkCoreTests(unittest.TestCase):
         # Verify launch plan preserves spaces
         mock_exe = self.temp_dir / "hst.exe"
         mock_exe.write_bytes(b"MZfake")
+        (self.temp_dir / "hst_image.bin").write_bytes(b"image")
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         cmd, env = launcher.build_launch_plan(result.prepared_root)
         self.assertEqual(env["PSP_ISO"], str(spaced_iso))
+        # The plan is runnable rather than a bare executable that would reach
+        # the runtime's usage exit.
+        self.assertEqual(cmd[1], "--image")
 
     def test_game_library_persistence(self) -> None:
         lib_file = self.temp_dir / "library.json"

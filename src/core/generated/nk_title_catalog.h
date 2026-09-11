@@ -52,6 +52,16 @@ const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id);
 const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id);
 
 /* Runtime private overlay registration (for local private acceptance testing) */
+/* The registry holds POINTERS to overlay entries whose storage belongs
+ * to the manifest parser. Clearing the registry has to release that
+ * storage too, or a later manifest reusing a cleared overlay's disc ID
+ * is still refused as colliding with it and the fixed overlay-slot
+ * capacity stays consumed. This generated catalog is a standalone data
+ * table and must not depend on the parser, so the parser installs this
+ * hook when it first stores an overlay. */
+typedef void (*NkOverlayStorageResetFn)(void);
+void nk_title_catalog_set_overlay_storage_reset(NkOverlayStorageResetFn reset_fn);
+
 void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry);
 void nk_title_catalog_clear_overlay(void);
 const NkTitleEntry *nk_title_catalog_get_overlay(void);

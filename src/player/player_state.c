@@ -21,7 +21,8 @@ void player_app_init(PlayerApp *app) {
     app->settings.vsync = true;
     app->settings.fps_cap = 60;
     app->settings.master_volume = 80;
-    /* Controller state: no fabrication. Actual detection happens in the event loop. */
+    /* Controller state: no fabrication. The event loop in src/player/main.c
+       fills these in when SDL reports a gamepad, and clears them when it goes. */
     app->settings.controller_name[0] = '\0';
     app->settings.controller_connected = false;
     snprintf(app->settings.save_directory, sizeof(app->settings.save_directory), "savedata");
@@ -80,6 +81,28 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
     return -1;
 }
 
+int player_app_visible_library_cards(const PlayerApp *app) {
+    if (!app) return 1;
+    /* Cards are 260 wide on a 280 pitch, inset 32 from the left edge and given
+       the same margin on the right. */
+    int usable = app->window_width - 64;
+    int fit = usable / 280;
+    return fit < 1 ? 1 : fit;
+}
+
+void player_app_move_selection(PlayerApp *app, int delta) {
+    if (!app || app->game_count <= 0) return;
+    int index = app->selected_game_index;
+    if (index < 0) {
+        index = 0;
+    } else {
+        index += delta;
+    }
+    if (index < 0) index = 0;
+    if (index >= app->game_count) index = app->game_count - 1;
+    app->selected_game_index = index;
+}
+
 void player_app_set_view(PlayerApp *app, PlayerView view) {
     if (!app) return;
     app->active_view = view;
@@ -116,7 +139,13 @@ void player_app_populate_sample_games(PlayerApp *app) {
     p5.is_prepared = false;
     snprintf(p5.last_played, sizeof(p5.last_played), "Never");
 
-    player_app_add_game(app, &p5);
+    /* In memory only. This went through player_app_add_game, which saves, so a
+       demo or screenshot run wrote a fixture the user does not own into their
+       real library.json and left it there. A fixture is for looking at, not
+       for keeping. */
+    if (nk_library_add_or_update(&app->library, &p5) == NK_OK) {
+        player_app_sync_library(app);
+    }
 }
 
 bool player_app_launch_game(PlayerApp *app, int game_index) {

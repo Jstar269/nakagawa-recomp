@@ -55,6 +55,20 @@ add_executable(test_manifest_parser tests/native/test_manifest_parser.c)
 target_link_libraries(test_manifest_parser PRIVATE nakagawa_core)
 add_test(NAME manifest_parser_test COMMAND test_manifest_parser --check)
 
+add_executable(test_launch_resolution tests/native/test_launch_resolution.c)
+target_link_libraries(test_launch_resolution PRIVATE nakagawa_core)
+add_test(NAME launch_resolution_test COMMAND test_launch_resolution)
+
+# player_state.c is deliberately free of SDL, so the library-state regression
+# links here without pulling the player application into the test build.
+add_executable(test_player_state
+    tests/native/test_player_state.c
+    src/player/player_state.c
+)
+target_link_libraries(test_player_state PRIVATE nakagawa_core)
+target_include_directories(test_player_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/player)
+add_test(NAME player_state_test COMMAND test_player_state)
+
 if(WIN32)
     add_executable(argv_echo_helper tests/native/argv_echo_helper.c)
     target_link_libraries(argv_echo_helper PRIVATE shell32)
@@ -62,6 +76,14 @@ if(WIN32)
     add_executable(test_win32_process tests/native/test_win32_process.c)
     target_link_libraries(test_win32_process PRIVATE nakagawa_core)
     add_test(NAME win32_process_test COMMAND test_win32_process)
+else()
+    # The POSIX counterpart to test_win32_process. Registering only the Win32
+    # one let a CTest build on Linux or macOS report success without ever
+    # exercising the wait-timeout and exit-status behaviour of the backend it
+    # actually compiled.
+    add_executable(test_posix_process tests/native/test_posix_process.c)
+    target_link_libraries(test_posix_process PRIVATE nakagawa_core)
+    add_test(NAME posix_process_test COMMAND test_posix_process)
 endif()
 
 # -----------------------------------------------------------------------------

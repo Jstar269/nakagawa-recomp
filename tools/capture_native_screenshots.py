@@ -2,15 +2,29 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
+import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 from PIL import Image
 
-def capture_matrix():
+
+def default_player_path(repo_root: Path) -> Path:
+    """The player binary for THIS host.
+
+    The Makefile emits `build/nakagawa_player` with no extension on Linux and
+    macOS. Probing only the .exe name made this capture utility exit before
+    taking a single screenshot everywhere except Windows, which made the
+    screenshot matrix a Windows-only artifact of a cross-platform player.
+    """
+    suffix = ".exe" if os.name == "nt" else ""
+    return repo_root / "build" / f"nakagawa_player{suffix}"
+
+
+def capture_matrix(player_exe: Path | None = None):
     repo_root = Path(__file__).resolve().parent.parent
-    player_exe = repo_root / "build" / "nakagawa_player.exe"
+    player_exe = Path(player_exe) if player_exe else default_player_path(repo_root)
     out_dir = repo_root / "docs" / "ui-baseline"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,5 +90,17 @@ def capture_matrix():
     all_ok = all(r[1] for r in results)
     return 0 if all_ok else 1
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--player",
+        type=Path,
+        default=None,
+        help="path to the player binary (default: build/nakagawa_player[.exe] for this host)",
+    )
+    args = parser.parse_args()
+    return capture_matrix(args.player)
+
+
 if __name__ == "__main__":
-    sys.exit(capture_matrix())
+    sys.exit(main())
