@@ -7,10 +7,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export function Topbar() {
-  const { isoMeta, setSection, requestBuild } = useStudio();
+  // Shared gate from BuildPanel's Doctor preflight. Undefined until the build
+  // panel mounts and publishes its decision; a disabled control with an
+  // explanatory title teaches, a vanished one confuses, so the CTA always
+  // stays visible and routes to the Build section where preflight runs.
+  const { isoMeta, setSection, requestBuild, buildPrereqs, buildHint } = useStudio();
   const { theme, toggle: toggleTheme } = useTheme();
+  const preflightReady = buildPrereqs?.ready ?? false;
+  const gateTitle = preflightReady
+    ? "Start the full native build pipeline"
+    : (buildHint ?? "Waiting for Workspace Doctor preflight; Build unlocks after the preflight check completes.");
   const build = () => {
     setSection("build");
+    if (!preflightReady) return;
     requestBuild();
   };
   return (
@@ -34,7 +43,14 @@ export function Topbar() {
           <Button variant="ghost" size="sm" className="size-8 p-0" onClick={toggleTheme} aria-label="Toggle color theme">
             {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </Button>
-          <Button size="sm" className="h-8 gap-1.5" onClick={build}>
+          <Button
+            size="sm"
+            className="h-8 gap-1.5"
+            onClick={build}
+            disabled={!preflightReady}
+            title={gateTitle}
+            aria-disabled={!preflightReady}
+          >
             <Hammer className="size-3.5" /> BuildFull
           </Button>
         </div>

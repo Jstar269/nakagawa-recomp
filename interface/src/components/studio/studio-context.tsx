@@ -57,6 +57,15 @@ interface StudioState {
   profiles: ProfileSummary[];
   profilesOpen: boolean;
   buildRequestNonce: number;
+  /**
+   * Shared build gate decision derived from the Workspace Doctor preflight.
+   * Published by BuildPanel; other build entry points (the topbar CTA) must
+   * respect it instead of dispatching a build with no preflight evidence.
+   * Undefined until the build panel mounts and reports its gate state.
+   */
+  buildPrereqs?: { ready: boolean; missing: string[] };
+  /** First blocking reason for the shared gate, or null when clear. */
+  buildHint?: string | null;
   // undo/redo
   canUndo: boolean;
   canRedo: boolean;
@@ -119,6 +128,9 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [buildRequestNonce, setBuildRequestNonce] = useState(0);
+  // Shared build gate (published by BuildPanel from the Doctor preflight).
+  const [buildPrereqs, setBuildPrereqs] = useState<StudioState["buildPrereqs"]>(undefined);
+  const [buildHint, setBuildHint] = useState<StudioState["buildHint"]>(undefined);
 
   // --- Undo/redo history ---
   const undoStackRef = useRef<RecompilerConfig[]>([]);
@@ -480,6 +492,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const setBuild: StudioActions["setBuild"] = useCallback((b) => {
     if (b.buildStatus !== undefined) setBuildStatus(b.buildStatus);
+    if (b.buildPrereqs !== undefined) setBuildPrereqs(b.buildPrereqs);
+    if (b.buildHint !== undefined) setBuildHint(b.buildHint);
   }, []);
 
   const startCapture: StudioActions["startCapture"] = useCallback((pspAction, padIdx) => {
@@ -507,6 +521,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     profiles,
     profilesOpen,
     buildRequestNonce,
+    buildPrereqs,
+    buildHint,
     canUndo,
     canRedo,
     setSection,
