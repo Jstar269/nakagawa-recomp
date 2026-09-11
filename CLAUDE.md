@@ -29,6 +29,13 @@ mingw32-make selftest sched-selftest hle-thread-selftest public-safe-verify
 python -m unittest discover -s tools -p "test_*.py"   # ~2000 tests, slow
 ```
 
+That ladder is Windows-only, and hosted CI also compiles the POSIX host backend on Linux — so a
+change can pass every gate above and still fail there. **If you touch a `*_posix.c` / `*_win32.c`
+pair, or anything else behind a `!_WIN32` guard, run the Linux leg before you push.** WSL is
+installed on this host and reproduces it exactly; the command and the feature-test-macro trap that
+makes this fail silently on Windows are in
+[`docs/PLATFORM_PORTABILITY.md`](docs/PLATFORM_PORTABILITY.md).
+
 ## Maintained contracts — current facts live here, not in this file
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime, two-phase build, execution tiers.

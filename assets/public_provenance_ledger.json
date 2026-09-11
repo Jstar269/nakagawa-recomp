@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "58dd5b74aa7d38b45b17192327dee456b7f428a3407e0285fccdc199a6bc012d"
+      "sha256": "204fe97a05ffd20898dc16e26a285939a6221e13777b8e2da9b2f91158442c73"
     },
     {
       "path": "CMakeLists.txt",
@@ -864,7 +864,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9c25dbeea707ac99d38a8784d829d7996c3f3c366b3f88321544d4c773514030"
+      "sha256": "c2b658b437f23679cebcd466fb4770a9f3ebdb1a5f56f92d570e2be68002572a"
     },
     {
       "path": "docs/PORTING.md",
@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d36ff986bda88c4b87e68f53e6edd3db99405f4ee068e5d56e91f7bbc422e7cb"
+      "sha256": "f612eaa7588ec41d9540133859037345946dfaf6dd7e6e74f4c42c82260f0b34"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",

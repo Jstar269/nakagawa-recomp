@@ -9,15 +9,19 @@ source tree.
 
 ## Start here
 
-| Need | Read |
+Rows are what you are about to do, not topics. Read the row you are in, not the table.
+
+| When you are about to | Read |
 | --- | --- |
-| Project scope and setup | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
-| Architecture and build model | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| Current issue map | [`ISSUES.md`](../ISSUES.md) |
-| Public publication gates | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
-| Provenance and notices | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
-| HST/public-boundary census | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
-| Security and contribution policy | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
+| Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
+| **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
+| **Change a `*_posix.c` / `*_win32.c` pair, or code behind a `!_WIN32` guard** | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — hosted CI compiles the POSIX backend on Linux; a Windows-green change can still fail there |
+| Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
+| Touch provenance, notices, or attribution | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
+| Decide whether a surface is title-specific or generic | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
+| Contribute, sign off, or report a vulnerability | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
 
 ## Maintained engineering guides
 
