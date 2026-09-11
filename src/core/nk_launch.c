@@ -261,8 +261,19 @@ NkResult nk_launch_prepare_session(
     /* 3. Resolve title catalog entry & addresses */
     const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(session->disc_id);
     if (!entry) entry = nk_title_catalog_find_by_id(session->title_id);
-    session->base_address = entry ? entry->executable_base : 0;
-    session->entry_point = (entry && entry->executable_entry) ? entry->executable_entry : 0x0029a060;
+    /* No catalog entry means no known load address. The previous fallback started
+       the runtime at a hard-coded 0x0029a060 with a zero base -- an address that
+       belongs to no title in this tree, so the guest was loaded at 0 and executed
+       from a constant, which is a fabricated launch rather than a refusal. A title
+       the catalog does not describe is exactly the fail-closed case. */
+    if (!entry || !entry->executable_entry) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "No catalog entry describes this title (disc_id=%.16s title_id=%.32s)",
+                 session->disc_id, session->title_id);
+        return NK_ERROR_UNSUPPORTED_TITLE;
+    }
+    session->base_address = entry->executable_base;
+    session->entry_point = entry->executable_entry;
 
     /* 4. Resolve data root */
     char sep = nk_platform_path_separator();

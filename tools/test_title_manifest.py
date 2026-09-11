@@ -365,7 +365,8 @@ class NativeTitleIdentityTests(unittest.TestCase):
         self.titles.mkdir(parents=True)
         shutil.copyfile(ROOT / "assets/public_source_profile.json",
                         self.root / "assets/public_source_profile.json")
-        for name in ("synthetic.json", "synthetic-title2.json", "pspdev-phase5.json"):
+        for name in ("synthetic.json", "synthetic-title2.json", "pspdev-phase5.json",
+                     "display-smoke.json"):
             shutil.copyfile(ROOT / "assets/titles" / name, self.titles / name)
         self.fixture = title_manifest.load_manifest(self.titles / "synthetic.json")
 
@@ -425,7 +426,7 @@ fputs(title->display_name, stdout);
     def test_public_projection_compiles_and_has_no_inferred_disc_ids(self) -> None:
         header = title_manifest.public_native_title_catalog(self.root)
         self.compile_run(header, r'''
-assert(NK_TITLE_IDENTITY_COUNT == 3);
+assert(NK_TITLE_IDENTITY_COUNT == 4);
 assert(nk_title_identity_by_id("synthetic-allegrex-v1"));
 assert(nk_title_identity_by_id("synthetic-title2-v1"));
 assert(nk_title_identity_by_id("pspdev-phase5-v1"));

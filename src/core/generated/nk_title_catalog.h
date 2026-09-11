@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 #define NK_TITLE_CATALOG_SCHEMA_VERSION 1
-#define NK_TITLE_CATALOG_DIGEST "93b1bf5dd4a61eb2"
+#define NK_TITLE_CATALOG_DIGEST "a4b6019d10fd14ab"
 
 typedef enum {
     NK_TITLE_KIND_RETAIL = 0,

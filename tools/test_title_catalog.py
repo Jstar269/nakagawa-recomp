@@ -20,6 +20,45 @@ import title_catalog_codegen
 from nk_core.title_registry import TitleRegistry
 
 
+class SyntheticDiscIdMapTests(unittest.TestCase):
+    """The synthetic disc-id assignment exists in two modules.
+
+    tools/title_catalog_codegen.py emits it into the native catalog and
+    tools/nk_core/title_registry.py resolves it for the Python tooling. They had
+    already drifted once: a title present in one and absent from the other falls
+    back to the shared "TEST00000" sentinel, and because every unmapped
+    synthetic gets that SAME sentinel, the second one to appear collides with
+    the first and the overlay loader reports a conflict with the public catalog
+    that does not exist.
+    """
+
+    def test_maps_agree(self) -> None:
+        import title_catalog_codegen
+        from nk_core import title_registry
+
+        self.assertEqual(
+            title_catalog_codegen.SYNTHETIC_DISC_ID_MAP,
+            title_registry.SYNTHETIC_DISC_ID_MAP,
+            "the codegen and registry synthetic disc-id maps have drifted; an id "
+            "missing from either falls back to the shared TEST00000 sentinel",
+        )
+
+    def test_every_public_synthetic_manifest_is_mapped(self) -> None:
+        import json
+        import title_catalog_codegen
+
+        for manifest in sorted((ROOT / "assets" / "titles").glob("*.json")):
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            if data.get("kind") != "synthetic":
+                continue
+            self.assertIn(
+                data["id"],
+                title_catalog_codegen.SYNTHETIC_DISC_ID_MAP,
+                f"{manifest.name} is synthetic but has no explicit disc id, so it "
+                f"would share the TEST00000 sentinel with every other unmapped title",
+            )
+
+
 class TitleCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_catalog_test_"))
@@ -120,7 +159,7 @@ class TitleCatalogTests(unittest.TestCase):
 
 int main(void) {{
     printf("Catalog count: %d\\n", nk_title_catalog_count);
-    assert(nk_title_catalog_count == 3);
+    assert(nk_title_catalog_count == 4);
 
     /* Test synthetic title lookups in public catalog */
     const NkTitleEntry *t_synth = nk_title_catalog_find_by_disc_id("TEST00001");

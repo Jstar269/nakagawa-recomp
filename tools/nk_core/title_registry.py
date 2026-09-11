@@ -22,6 +22,7 @@ SYNTHETIC_DISC_ID_MAP = {
     "synthetic-allegrex-v1": "TEST00001",
     "synthetic-title2-v1": "TEST00002",
     "pspdev-phase5-v1": "TEST00005",
+    "display-smoke-v1": "TEST00006",
 }
 
 

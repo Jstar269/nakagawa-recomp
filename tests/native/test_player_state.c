@@ -152,6 +152,32 @@ int main(void) {
     app->window_width = 1920;
     assert(player_app_visible_library_cards(app) > visible);
 
+    /* 7. The demo fixture set must contain a title that can actually launch.
+     *
+     * A fixture library whose every entry resolves to no runtime made the launch
+     * path look implemented while it had never once been reached end to end.
+     * display-smoke-v1 is the public title whose build layout nk_launch.c can
+     * resolve, so it has to be in the set a fresh install shows. This also pins
+     * the memory-only contract: populate must leave a populated library alone. */
+    printf("[PLAYER_STATE_TEST] Subtest 7: demo fixtures include a launchable title\n");
+    fflush(stdout);
+    PlayerApp *fresh = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(fresh != NULL);
+    nk_library_init(&fresh->library);
+    player_app_sync_library(fresh);
+    assert(fresh->game_count == 0);
+
+    player_app_populate_sample_games(fresh);
+    assert(fresh->game_count > 0);
+    int disp = player_app_find_game_by_disc_id(fresh, "TEST00006");
+    assert(disp >= 0);
+    assert(strcmp(fresh->games[disp].title_id, "display-smoke-v1") == 0);
+
+    int before = fresh->game_count;
+    player_app_populate_sample_games(fresh);
+    assert(fresh->game_count == before);
+    free(fresh);
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     return 0;

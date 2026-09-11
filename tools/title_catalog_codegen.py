@@ -36,6 +36,7 @@ SYNTHETIC_DISC_ID_MAP = {
     "synthetic-allegrex-v1": "TEST00001",
     "synthetic-title2-v1": "TEST00002",
     "pspdev-phase5-v1": "TEST00005",
+    "display-smoke-v1": "TEST00006",
 }
 
 
@@ -465,8 +466,12 @@ def main() -> int:
         return 0
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    out_h.write_text(header_content, encoding="utf-8")
-    out_c.write_text(source_content, encoding="utf-8")
+    # newline="" keeps the emitted LF bytes exactly as generated. Without it a
+    # Windows regeneration writes CRLF, which the publication audit rejects as
+    # TEXT_LINE_ENDING_CRLF -- so the generated catalog could not be refreshed on
+    # a Windows host without hand-renormalising it afterwards.
+    out_h.write_text(header_content, encoding="utf-8", newline="")
+    out_c.write_text(source_content, encoding="utf-8", newline="")
     print(f"Generated {out_h} and {out_c} (digest {digest}, {len(titles)} public titles).")
     return 0
 

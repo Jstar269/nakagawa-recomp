@@ -71,7 +71,7 @@ The matrix distinguishes between architectural staging, implementation completen
 | 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
 | 4 | Asset Extraction | External PowerShell script | Staged pipeline prototype in `nk_core` | **PARTIAL** (VFS integration pending) |
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
-| 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **IN_PROGRESS** (Wiring real spawn) |
+| 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
 | 8 | Gamepad Calibration | Web Gamepad API | SDL3 Gamepad Subsystem (DualSense/XInput) | **PASS** (Direct SDL3 controller API) |
 | 9 | Preflight Checks | `hst_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
@@ -79,6 +79,40 @@ The matrix distinguishes between architectural staging, implementation completen
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
 | 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
+
+---
+
+## 3a. The launch path, and the one title that exercises it
+
+Until `display-smoke-v1` existed, no public title in this tree could be launched,
+and the reason was not the spawn code. `src/core/nk_launch.c` resolves a runtime
+by probing `build/<title_id>/<title_id>[.exe]` and its sibling
+`<...>_image.bin`, and takes the load addresses from the generated title catalog.
+Every fixture was built under a different directory and stem, so that probe never
+matched anything and the entire resolution path was unreachable. The spawn was
+unit-tested; the thing it was meant to spawn had no discoverable location.
+
+`fixtures/display_smoke/generate.py` emits a source-owned PSP guest that fills
+the framebuffer and flips it through `sceDisplaySetFrameBuf` once per frame, and
+`mingw32-make display-smoke` builds it **under its own title id** so the existing
+probe resolves it. `assets/titles/display-smoke.json` gives it a catalog entry
+with the real load addresses. That makes it the first public-scope artifact the
+player can resolve, start, and show.
+
+What this establishes, exactly:
+
+- the two-phase pipeline, the loader, the import/NID path, the scheduler's vblank
+  delivery, `sceDisplaySetFrameBuf`, the display latch and `gui_present` all work
+  together on a guest built from committed source, with no external toolchain,
+  no retail disc and no private input;
+- `display-smoke-run` asserts the guest-visible framebuffer word headlessly, so
+  the presentation path is gated in CI without a display.
+
+What it does not establish: any commercial-title compatibility, PSP timing or
+rendering correctness, GE/graphics-pipeline behaviour (this guest writes the
+framebuffer directly and submits no display list), audio, or that any other
+title in the catalog can be launched — none of them are built under the layout
+the launcher resolves.
 
 ---
 

@@ -146,6 +146,31 @@ void player_app_populate_sample_games(PlayerApp *app) {
     if (nk_library_add_or_update(&app->library, &p5) == NK_OK) {
         player_app_sync_library(app);
     }
+
+    /* The display fixture is the only public title whose runtime is BUILT under
+       the layout nk_launch.c resolves (build/<title_id>/<title_id>), so it is the
+       one demo entry whose PLAY NOW can actually start a runtime -- after
+       `mingw32-make display-smoke`. Without it the demo library shows only titles
+       that cannot launch, which is what made the launch path look implemented
+       when it had never once been reached. Marked prepared for the same reason
+       the launch is real: the build output either exists or the launch fails
+       closed and says so. */
+    GameRecord disp;
+    memset(&disp, 0, sizeof(disp));
+    snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
+    snprintf(disp.title_name, sizeof(disp.title_name), "Nakagawa Display Smoke Fixture");
+    snprintf(disp.disc_version, sizeof(disp.disc_version), "1.00");
+    snprintf(disp.iso_path, sizeof(disp.iso_path), "fixtures/display_smoke/generate.py");
+    snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
+    snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
+    disp.iso_size_bytes = 0ULL;
+    disp.status = NK_STATUS_IDENTIFIED;
+    disp.is_prepared = false;
+    snprintf(disp.last_played, sizeof(disp.last_played), "Never");
+
+    if (nk_library_add_or_update(&app->library, &disp) == NK_OK) {
+        player_app_sync_library(app);
+    }
 }
 
 bool player_app_launch_game(PlayerApp *app, int game_index) {

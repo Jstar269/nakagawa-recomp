@@ -54,9 +54,9 @@ The complete visual matrix was captured via `python tools/capture_native_screens
 | `native_01_empty_library.png` | `VIEW_LIBRARY` (empty) | 1280×720 | Clean landing card with "+ ADD PSP GAME ISO" CTA, disc support indicators |
 | `native_02_add_game.png` | `VIEW_LIBRARY` (empty) | 1280×720 | Add Game entrypoint |
 | `native_03_iso_inspecting.png` | `VIEW_INSPECTING` | 1280×720 | PVD & PARAM.SFO inspection progress card with cancel button |
-| `native_04_supported_game.png` | `VIEW_SUPPORTED_TITLE` | 1280×720 | Verified North American retail release recognized (`UCUS98701`), LLE font disclosure |
+| `native_04_supported_game.png` | `VIEW_SUPPORTED_TITLE` | 1280×720 | The synthetic fixture `TEST00001` that `--view=supported` populates, with the LLE font requirement note. No retail disc is involved: an earlier revision of this row named a retail release, which the capture has never shown |
 | `native_05_unsupported_game.png` | `VIEW_UNSUPPORTED_TITLE` | 1280×720 | Clear error indication for unregistered games with fail-closed return to library |
-| `native_06_preparing.png` | `VIEW_PREPARING` | 1280×720 | Real transactional extraction progress bar, item counts (18450 / 56672), staging path |
+| `native_06_preparing.png` | `VIEW_PREPARING` | 1280×720 | The preparation view with an indeterminate indicator. It reads "No preparation pipeline is connected in this build" and deliberately claims no item counts, percentage or staging path until a real pipeline supplies them; an earlier revision of this row quoted counts the view has never produced |
 | `native_07_ready_library.png` | `VIEW_LIBRARY` (ready) | 1280×720 | Hero game card with "PLAY NOW", specs rail (1080p Vulkan, DualSense, Memory Stick Slot 1), installed titles strip |
 | `native_08_settings.png` | `VIEW_SETTINGS` | 1280×720 | Responsive settings: resolution scales (1x, 2x, 4x, 8x), FPS cap, audio stream, gamepad, savedata path |
 | `native_09_missing_source_error.png` | `VIEW_ERROR` | 1280×720 | Missing ISO error dialog with structured recovery action |
