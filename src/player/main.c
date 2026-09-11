@@ -190,6 +190,12 @@ int main(int argc, char *argv[]) {
                     } else {
                         lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
                     }
+                    /* --launch-now stands in for pressing PLAY NOW, so it has to
+                       launch the way PLAY NOW does. nk_launch defaults gui_mode
+                       to false, which put --sched on the argv: the runtime ran to
+                       completion and exited 0 without ever opening a window, so
+                       the launch looked successful while showing nothing. */
+                    app.launch_session.config.gui_mode = true;
                     if (lres == NK_OK) {
                         printf("[PLAYER] Launch session prepared successfully!\n");
                         printf("[PLAYER] Executable: %s\n", app.launch_session.executable_path);

@@ -73,9 +73,9 @@ The matrix distinguishes between architectural staging, implementation completen
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
-| 8 | Gamepad Calibration | Web Gamepad API | SDL3 Gamepad Subsystem (DualSense/XInput) | **PASS** (Direct SDL3 controller API) |
+| 8 | Gamepad Calibration | Web Gamepad API | SDL3 gamepad detection and library navigation | **PARTIAL** — a pad is opened, named and drives d-pad/shoulder selection, and the badge reports the real state. There is no calibration, binding or deadzone UI; the web baseline's calibration screen has no native counterpart |
 | 9 | Preflight Checks | `hst_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
-| 10 | Progress Feedback | Server-Sent Events (SSE) | Frame-accurate progress bar with item counts | **PASS** (Immediate-mode rendering) |
+| 10 | Progress Feedback | Server-Sent Events (SSE) | Immediate-mode indeterminate progress indicator | **PARTIAL** — the renderer draws a frame-accurate bar, but no pipeline supplies it: the preparation view states "No preparation pipeline is connected in this build" and deliberately claims no item counts or percentage. Item counts are not implemented |
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
 | 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |

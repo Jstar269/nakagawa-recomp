@@ -21,6 +21,20 @@
 
 extern char **environ;
 
+bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len) {
+    if (!path || !*path || !out_path || max_len == 0) return false;
+    char *resolved = realpath(path, NULL);
+    if (!resolved) return false;
+    size_t length = strlen(resolved);
+    if (length >= max_len) {
+        free(resolved);
+        return false;
+    }
+    memcpy(out_path, resolved, length + 1);
+    free(resolved);
+    return true;
+}
+
 int nk_fseek64(FILE *f, int64_t offset, int whence) {
     return fseeko(f, (off_t)offset, whence);
 }

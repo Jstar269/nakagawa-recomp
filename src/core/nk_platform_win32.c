@@ -406,6 +406,16 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
     return -1;
 }
 
+bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len) {
+    if (!path || !*path || !out_path || max_len == 0) return false;
+    char buffer[MAX_PATH * 2];
+    DWORD written = GetFullPathNameA(path, (DWORD)sizeof(buffer), buffer, NULL);
+    if (written == 0 || written >= sizeof(buffer)) return false;
+    if (written >= max_len) return false;
+    memcpy(out_path, buffer, (size_t)written + 1);
+    return true;
+}
+
 void nk_platform_terminate_process(NkProcessHandle *process) {
     if (!process || !process->native_handle) return;
     TerminateProcess((HANDLE)process->native_handle, 1);

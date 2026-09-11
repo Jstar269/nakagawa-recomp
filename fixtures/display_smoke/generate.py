@@ -35,9 +35,13 @@ Guest program
         sceDisplayWaitVblankStart();
     } while (++frame < FRAMES);
 
-``colour(v)`` packs ``v`` into an ABGR8888 word so consecutive 16-pixel bands
-differ in all three channels and the whole pattern scrolls by one band per
-frame.
+``colour(v)`` packs ``v`` into an ABGR8888 word. The index is the LINEAR pixel
+number, so the bands are 16 pixels wide across a row and the value carries over
+between rows: at a 512-pixel stride each row advances the band index by 32 and
+the 8-bit wrap repeats every 8 rows. The result reads as horizontal striping,
+not as diagonal bands, and it shifts by one band per frame. What the gate proves
+is frame progression -- the framebuffer word at 0x04000000 is the one the final
+frame must have written -- not a particular spatial arrangement.
 """
 
 from __future__ import annotations

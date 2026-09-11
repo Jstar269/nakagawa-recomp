@@ -104,6 +104,11 @@ static bool find_candidate_executable(
     return false;
 }
 
+bool nk_launch_runtime_available(const char *root, const char *title_id) {
+    char resolved[NK_MAX_PATH];
+    return find_candidate_executable(root, title_id, resolved, sizeof(resolved));
+}
+
 static bool find_candidate_image(
     const char *working_dir,
     const char *executable_path,
@@ -281,7 +286,17 @@ NkResult nk_launch_prepare_session(
         char cand_data[NK_MAX_PATH * 2];
         int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", session->working_directory, sep, entry->data_root);
         if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
-            safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
+            /* The runtime refuses a relative SR_DATAROOT and then declines to build
+               an index at all, so a session prepared from a relative root (the
+               player passes ".") lost its data root with only a log line to say
+               so. Catalog data_root values are relative by design, so the
+               absolute form has to be produced here. */
+            char absolute[NK_MAX_PATH];
+            if (nk_platform_absolute_path(cand_data, absolute, sizeof(absolute))) {
+                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), absolute);
+            } else {
+                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
+            }
         }
     }
     if (session->dataroot_path[0] == '\0') {

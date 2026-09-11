@@ -178,6 +178,36 @@ int main(void) {
     assert(fresh->game_count == before);
     free(fresh);
 
+    /* 8. A launch started from the player asks for a window.
+     *
+     * nk_launch defaults config.gui_mode to false, which is right for a headless
+     * harness and wrong for every launch that comes from this UI: it puts
+     * --sched on the argv, so PLAY NOW spawned a runtime that ran to completion
+     * and exited 0 without ever opening a window. The launch looked successful
+     * and showed nothing.
+     *
+     * The title used here is deliberately one the catalog does not describe, so
+     * preparation fails closed before anything is spawned and the test asserts
+     * the flag without starting a process. gui_mode is set before that failure
+     * check precisely so it holds for the whole launch path. */
+    printf("[PLAYER_STATE_TEST] Subtest 8: a player launch requests a window\n");
+    fflush(stdout);
+    PlayerApp *launcher = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(launcher != NULL);
+    nk_library_init(&launcher->library);
+
+    NkGameEntry unknown;
+    seed_entry(&unknown, "ZZZZ99999", "Not In The Catalog");
+    snprintf(unknown.title_id, sizeof(unknown.title_id), "not-a-catalog-title");
+    assert(nk_library_add_or_update(&launcher->library, &unknown) == NK_OK);
+    player_app_sync_library(launcher);
+    assert(launcher->game_count == 1);
+
+    assert(player_app_launch_game(launcher, 0) == false);
+    assert(launcher->launch_session.config.gui_mode == true);
+    assert(launcher->is_game_running == false);
+    free(launcher);
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     return 0;

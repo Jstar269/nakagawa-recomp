@@ -56,6 +56,13 @@ typedef struct {
 /* Prepare a launch session for the given game entry.
  * Validates executable existence, ISO presence, and builds environment/argv.
  */
+/* True when a runtime binary for `title_id` can be resolved under `root`.
+ *
+ * The same candidate search nk_launch_prepare_session uses, exposed so a caller
+ * can ask whether a title is launchable without duplicating the probe order and
+ * then drifting from it. */
+bool nk_launch_runtime_available(const char *root, const char *title_id);
+
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
     const NkGameEntry *game,

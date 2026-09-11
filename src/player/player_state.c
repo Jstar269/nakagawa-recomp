@@ -152,9 +152,16 @@ void player_app_populate_sample_games(PlayerApp *app) {
        one demo entry whose PLAY NOW can actually start a runtime -- after
        `mingw32-make display-smoke`. Without it the demo library shows only titles
        that cannot launch, which is what made the launch path look implemented
-       when it had never once been reached. Marked prepared for the same reason
-       the launch is real: the build output either exists or the launch fails
-       closed and says so. */
+       when it had never once been reached.
+
+       is_prepared is PROBED rather than asserted. Claiming prepared when the
+       runtime has not been built would put PLAY NOW in front of a launch that
+       cannot work; claiming unprepared when it HAS been built sends the user to
+       the preparation view, which in this build only says no pipeline is
+       connected -- so a hardcoded value is wrong in one direction or the other
+       depending on whether the reader has run `mingw32-make display-smoke`. The
+       probe uses the launcher's own candidate search, so the card and the launch
+       cannot disagree. */
     GameRecord disp;
     memset(&disp, 0, sizeof(disp));
     snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
@@ -164,8 +171,8 @@ void player_app_populate_sample_games(PlayerApp *app) {
     snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
     snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
     disp.iso_size_bytes = 0ULL;
-    disp.status = NK_STATUS_IDENTIFIED;
-    disp.is_prepared = false;
+    disp.is_prepared = nk_launch_runtime_available(".", disp.title_id);
+    disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
     snprintf(disp.last_played, sizeof(disp.last_played), "Never");
 
     if (nk_library_add_or_update(&app->library, &disp) == NK_OK) {
@@ -180,6 +187,12 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
     NkResult res = nk_launch_prepare_session(&app->launch_session, game, ".");
+    /* nk_launch defaults gui_mode to false, which is right for a headless
+       harness and wrong for every launch that comes from this UI: it puts
+       --sched on the argv, so PLAY NOW spawned a runtime that ran to completion
+       without ever opening a window. A launch started from the player is a
+       launch the user is watching. */
+    app->launch_session.config.gui_mode = true;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
