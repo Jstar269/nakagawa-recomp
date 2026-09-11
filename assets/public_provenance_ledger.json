@@ -1377,7 +1377,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4ed49e7eeed415f238b22e414c78b9535d2a1703976c41aefb75f772a9fb9d71"
+      "sha256": "f90e0b8a60cf5ff9dc9e74de9a1c8cc2845d7d6892c5ef3e76fb4d7813080065"
     },
     {
       "path": "interface/src/app/api/recompiler/issues/route.ts",
@@ -1689,7 +1689,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e42e2921420a909324b2e0c995fca1932325d8535d98b7a4d1053dc2f041e111"
+      "sha256": "f14e41e61161f91d772afb94350680ca739c4534aa0ed71bfce30564be336cc2"
     },
     {
       "path": "interface/src/components/studio/config-diff.tsx",
@@ -1893,7 +1893,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "af67001435bf82cd09a7eec0a147261e8774f167cd7d1274eee3b14d93d845a5"
+      "sha256": "147dc30072185a659d9aa2f747ed25d794699daa341c44333cf2751ef3530a06"
     },
     {
       "path": "interface/src/components/studio/preset-bar.tsx",
@@ -1977,7 +1977,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4989924e1bfed3165cc1d48e237d2aadea67a7351430544e6a5b5eb072eaf632"
+      "sha256": "5b515d938ec42592ac6647092e99b4c17b238b2fbe9cbbedfb95a88511a61eb3"
     },
     {
       "path": "interface/src/components/studio/summary-rail.tsx",
@@ -1989,7 +1989,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a79658afed1347b78830b7e187c99b878b93d1212170719976d21f7a76e86226"
+      "sha256": "ebba6fa8f8d3b6c11504e473133f6ffa4732a4e47054ad9c87d8c86a685589e0"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -2013,7 +2013,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "072c3f0288a980ae34d2e7c975261dec2ca93f8c362a35af183f025916fd5cc0"
+      "sha256": "4d1ae60186e6153e0817067222c29578f812382794ffe2ccf972d7ae2c19cc2c"
     },
     {
       "path": "interface/src/components/studio/troubleshooting-panel.tsx",
@@ -2476,7 +2476,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a02b677897ac3c65696ed40f7aae58fc428d13b4023764f0b4228ad693591e3"
+      "sha256": "be366ea3e083ca50bb08d4cc527f730cf6529d264c8f358325afa9c4f4c5ea86"
     },
     {
       "path": "interface/src/lib/recompiler/doctor.ts",
@@ -2488,7 +2488,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe4c61543c630ced424d6a64900554ea8107515dcfbe509346e7e0982b57f40e"
+      "sha256": "8973bb378b98dad270ed447c3308dfb18b6f98c5401ff1b834cec3c0a4269312"
     },
     {
       "path": "interface/src/lib/recompiler/iso.ts",
@@ -7282,11 +7282,17 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "af8f863358018f339abe6f381a84ae278c27eb0b",
-    "candidate_tree": "2c7c9ca318656067d470f38ca6ffe82636abb1fb",
+    "trusted_tree": "95712275448bc34f1bf32684e14a4400487fafda",
+    "candidate_tree": "801f9952dd59937e4ed89f67de5046b3b3e4525d",
     "refreshed_paths": [
-      "docs/provenance/HST_PUBLIC_CENSUS.md",
-      "docs/provenance/INDEPENDENCE_MODEL.md"
+      "interface/src/app/api/recompiler/doctor/route.ts",
+      "interface/src/components/studio/build-panel.tsx",
+      "interface/src/components/studio/preflight-card.tsx",
+      "interface/src/components/studio/studio-context.tsx",
+      "interface/src/components/studio/summary-rail.tsx",
+      "interface/src/components/studio/topbar.tsx",
+      "interface/src/lib/recompiler/doctor.test.ts",
+      "interface/src/lib/recompiler/doctor.ts"
     ]
   }
 }
