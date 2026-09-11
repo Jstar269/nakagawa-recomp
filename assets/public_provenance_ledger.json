@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9b9ae60a6bcbbf13a48ff911e941046f3c327c6553be24f6e60d454f42f6bf87"
+      "sha256": "04bce7fead43c45c6083bb849e5208e7cba350760b662a0cea6bf4dc9df97798"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
