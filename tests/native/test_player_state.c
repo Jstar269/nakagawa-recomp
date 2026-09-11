@@ -1,0 +1,158 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+
+/* Player library state: entry lookup and honest add results.
+ *
+ * Two defects lived here:
+ *
+ *   - nk_library_add_or_update updates an existing record IN PLACE, so the
+ *     entry just written is not necessarily the last one. --launch-now took
+ *     app.game_count - 1 and could therefore prepare and launch a different
+ *     game while the console reported the requested ISO;
+ *   - player_app_add_game discarded both the insert and the save result and
+ *     returned true unconditionally, so a rejected insert or an unwritable
+ *     user-data directory still reported success and the entry vanished on
+ *     the next start.
+ *
+ * These link player_state.c directly. Nothing here touches SDL, and nothing
+ * here writes to the user's real library: the failure path returns before the
+ * save, which is the whole point of the assertion.
+ */
+
+#include "player_state.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
+    memset(entry, 0, sizeof(*entry));
+    snprintf(entry->disc_id, sizeof(entry->disc_id), "%s", disc_id);
+    snprintf(entry->title_name, sizeof(entry->title_name), "%s", name);
+    snprintf(entry->disc_version, sizeof(entry->disc_version), "1.00");
+    entry->status = NK_STATUS_IDENTIFIED;
+}
+
+int main(void) {
+    /* PlayerApp holds 64 game records twice over; keep it off the stack. */
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+
+    /* Build the library directly rather than through player_app_init, which
+       would read (and later write) the real user data directory. */
+    nk_library_init(&app->library);
+
+    NkGameEntry entry;
+    seed_entry(&entry, "TEST00001", "First");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    seed_entry(&entry, "TEST00002", "Second");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    seed_entry(&entry, "TEST00005", "Third");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    player_app_sync_library(app);
+    assert(app->game_count == 3);
+
+    /* 1. An entry that is NOT last is found at its real index.
+     *
+     * This is the case --launch-now got wrong: re-adding TEST00001 updates it
+     * in place at index 0, while game_count - 1 names TEST00005. */
+    printf("[PLAYER_STATE_TEST] Subtest 1: lookup by disc ID\n");
+    fflush(stdout);
+    assert(player_app_find_game_by_disc_id(app, "TEST00001") == 0);
+    assert(player_app_find_game_by_disc_id(app, "TEST00002") == 1);
+    assert(player_app_find_game_by_disc_id(app, "TEST00005") == 2);
+    assert(player_app_find_game_by_disc_id(app, "TEST00001") != app->game_count - 1);
+
+    /* 2. Updating an existing record keeps its index rather than appending. */
+    printf("[PLAYER_STATE_TEST] Subtest 2: update is in place\n");
+    fflush(stdout);
+    seed_entry(&entry, "TEST00001", "First, revisited");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    player_app_sync_library(app);
+    assert(app->game_count == 3);
+    assert(player_app_find_game_by_disc_id(app, "TEST00001") == 0);
+    assert(strcmp(app->games[0].title_name, "First, revisited") == 0);
+
+    /* 3. Unknown and malformed disc IDs report absence, not index 0. */
+    printf("[PLAYER_STATE_TEST] Subtest 3: absent disc IDs\n");
+    fflush(stdout);
+    assert(player_app_find_game_by_disc_id(app, "TEST09999") == -1);
+    assert(player_app_find_game_by_disc_id(app, "") == -1);
+    assert(player_app_find_game_by_disc_id(app, NULL) == -1);
+    assert(player_app_find_game_by_disc_id(NULL, "TEST00001") == -1);
+
+    /* 4. A rejected insert must be reported as a failure.
+     *
+     * Fill the library to its limit, then add one more. The insert fails, so
+     * player_app_add_game returns before ever reaching nk_library_save -- no
+     * file is touched by this test. */
+    printf("[PLAYER_STATE_TEST] Subtest 4: a rejected insert reports failure\n");
+    fflush(stdout);
+    nk_library_init(&app->library);
+    for (int i = 0; i < NK_MAX_GAMES; i++) {
+        char disc_id[NK_MAX_DISC_ID_LEN];
+        snprintf(disc_id, sizeof(disc_id), "FULL%05d", i);
+        seed_entry(&entry, disc_id, "Filler");
+        assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    }
+    player_app_sync_library(app);
+    assert(app->library.count == NK_MAX_GAMES);
+
+    seed_entry(&entry, "OVERFLOW1", "One too many");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_ERROR_OUT_OF_MEMORY);
+    assert(player_app_add_game(app, &entry) == false);
+    assert(player_app_find_game_by_disc_id(app, "OVERFLOW1") == -1);
+
+    /* 5. A record with no disc ID is refused outright. */
+    printf("[PLAYER_STATE_TEST] Subtest 5: a record with no disc ID is refused\n");
+    fflush(stdout);
+    memset(&entry, 0, sizeof(entry));
+    snprintf(entry.title_name, sizeof(entry.title_name), "Nameless");
+    assert(player_app_add_game(app, &entry) == false);
+
+    /* 6. Every library entry must be reachable.
+     *
+     * The strip draws cards left to right on a 280-pixel pitch, so a
+     * 1280-wide window shows about four. Everything past those was drawn
+     * outside the window, and src/player had no wheel, paging, keyboard or
+     * offset handling at all -- so with a full library most games could
+     * neither be selected nor launched. */
+    printf("[PLAYER_STATE_TEST] Subtest 6: every entry is reachable\n");
+    fflush(stdout);
+
+    app->window_width = 1280;
+    app->window_height = 720;
+    int visible = player_app_visible_library_cards(app);
+    assert(visible >= 1);
+    assert(visible < NK_MAX_GAMES);   /* otherwise this proves nothing */
+
+    /* The library is already full from subtest 4. */
+    assert(app->game_count == NK_MAX_GAMES);
+    app->selected_game_index = 0;
+    for (int i = 1; i < NK_MAX_GAMES; i++) {
+        player_app_move_selection(app, 1);
+        assert(app->selected_game_index == i);
+    }
+    /* Including the ones that never fit on screen at once. */
+    assert(app->selected_game_index == NK_MAX_GAMES - 1);
+    assert(app->selected_game_index >= visible);
+
+    /* Selection clamps rather than wrapping or running off either end. */
+    player_app_move_selection(app, 1);
+    assert(app->selected_game_index == NK_MAX_GAMES - 1);
+    player_app_move_selection(app, -NK_MAX_GAMES * 2);
+    assert(app->selected_game_index == 0);
+    player_app_move_selection(app, -1);
+    assert(app->selected_game_index == 0);
+
+    /* A window too narrow for even one card still offers one. */
+    app->window_width = 100;
+    assert(player_app_visible_library_cards(app) == 1);
+    app->window_width = 1920;
+    assert(player_app_visible_library_cards(app) > visible);
+
+    free(app);
+    printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
+    return 0;
+}

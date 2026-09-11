@@ -367,18 +367,34 @@ def find_xb_files(root):
 
 def extract_one(archive_path, out_dir, verbose=False):
     """Extract a single XB archive. Returns (archive_path, ok, error_msg)."""
-    # Add libxb to path inside child process
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "libxb", "src"))
+    tools_dir = os.path.join(ROOT, "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
 
+    # First attempt: use the repository's built-in clean-room XB reader
     try:
-        from libxb import XBArchive, XBOpenMode, XBEndian  # type: ignore
-        with XBArchive(archive_path, XBOpenMode.READ, XBEndian.LITTLE, verbose) as arc:
-            arc.extract_all(path=out_dir)
+        from xb_probe import XBArchiveReader
+        reader = XBArchiveReader(archive_path)
+        for entry in reader.entries:
+            target_path = os.path.join(out_dir, entry.path.replace("/", os.sep))
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            payload = reader.read_entry(entry)
+            with open(target_path, "wb") as f:
+                f.write(payload)
         process_extracted_directory(out_dir)
         return archive_path, True, None
-    except Exception as e:
-        return archive_path, False, str(e)
+    except Exception as probe_err:
+        # Fallback to optional third-party libxb if present
+        sys.path.insert(0, os.path.join(ROOT, "third_party", "libxb", "src"))
+        try:
+            from libxb import XBArchive, XBOpenMode, XBEndian  # type: ignore
+            with XBArchive(archive_path, XBOpenMode.READ, XBEndian.LITTLE, verbose) as arc:
+                arc.extract_all(path=out_dir)
+            process_extracted_directory(out_dir)
+            return archive_path, True, None
+        except Exception:
+            return archive_path, False, str(probe_err)
 
 
 def main():
