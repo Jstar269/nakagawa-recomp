@@ -856,7 +856,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "6affaa94fb2df500df315cb2292a921dbaf0343b54eef70a915d9cee1be7c2b3"
+      "sha256": "7222f7c58fb7cc256fe19cf5a3f7fcc96036454a4f073dd9647558c3f85ca341"
     },
     {
       "path": "docs/provenance/INDEPENDENCE_BACKLOG.md",
@@ -872,7 +872,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "397ac756ec2f6977f395f32dcc91a15be7766fce8c674259cd7bf60fc4c18d8f"
+      "sha256": "a8b1506d5ae9576136778b6de54ef68ad69bcbfc8e1af71fea724e4d7b0faf29"
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
@@ -7282,11 +7282,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2140355aeff23c41ca30a9674e4f87ec31a7af89",
-    "candidate_tree": "f78aaa4214a59c27d7a1155e97cadd7796bc70a4",
+    "trusted_tree": "af8f863358018f339abe6f381a84ae278c27eb0b",
+    "candidate_tree": "2c7c9ca318656067d470f38ca6ffe82636abb1fb",
     "refreshed_paths": [
-      "tools/provenance_ledger.py",
-      "tools/test_provenance_ledger.py"
+      "docs/provenance/HST_PUBLIC_CENSUS.md",
+      "docs/provenance/INDEPENDENCE_MODEL.md"
     ]
   }
 }
