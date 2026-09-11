@@ -3339,7 +3339,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "888b72990e1c32734de33473cde60d0217092aa1af54db9127f9e19c599f846e"
+      "sha256": "70fa006561fa44b2a7037c2adbfc2b4fbeece315c46ceade2146aed98f882999"
     },
     {
       "path": "src/core/nk_library.h",
@@ -6876,7 +6876,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d2c45f616afa96dbe3ef01f3935c307448d716f069a39237d2123ea2c94bd4c0"
+      "sha256": "fb34dc3a7d0c45b777b03fbf5c96f901737c88e22078ea243658dc5dbc182b48"
     },
     {
       "path": "tools/nk_core/title_registry.py",
