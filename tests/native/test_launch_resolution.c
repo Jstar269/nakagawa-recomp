@@ -152,14 +152,22 @@ int main(void) {
     write_file(exe_catalog, "binary");
     write_file(img_catalog, "image");
 
+    char data_dir[900];
+    char expected_data_dir[900];
+    snprintf(data_dir, sizeof(data_dir), "%s%cfixtures%cdisplay_smoke", base, sep, sep);
+    assert(nk_platform_mkdir_p(data_dir));
+    assert(nk_platform_absolute_path(data_dir, expected_data_dir, sizeof(expected_data_dir)));
+
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
     snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
     snprintf(game.title_name, sizeof(game.title_name), "Nakagawa Display Smoke Fixture");
 
     assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(nk_launch_runtime_available(base, "display-smoke-v1"));
     assert(ends_with(session.executable_path, "display-smoke-v1"));
     assert(ends_with(session.image_path, "display-smoke-v1_image.bin"));
+    assert(strcmp(session.dataroot_path, expected_data_dir) == 0);
     /* The addresses must come from the catalog, not from a constant. */
     assert(session.base_address == 0x08810000u);
     assert(session.entry_point == 0x08810000u);

@@ -410,8 +410,8 @@ bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len)
     if (!path || !*path || !out_path || max_len == 0) return false;
     char buffer[MAX_PATH * 2];
     DWORD written = GetFullPathNameA(path, (DWORD)sizeof(buffer), buffer, NULL);
-    if (written == 0 || written >= sizeof(buffer)) return false;
-    if (written >= max_len) return false;
+    if (written == 0 || written >= sizeof(buffer) || written >= max_len) return false;
+
     memcpy(out_path, buffer, (size_t)written + 1);
     return true;
 }

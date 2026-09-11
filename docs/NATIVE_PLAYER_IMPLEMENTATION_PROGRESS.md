@@ -15,7 +15,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
 2. **Clean-Room Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
-   - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, preparation staging, settings, and structured recovery actions.
+   - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, preparation-unavailable state, settings, and structured recovery actions.
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
 3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
@@ -46,9 +46,9 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Captured with no `--iso=`, so the inspector renders "No disc image selected" and a cancel action. With a disc it shows an indeterminate indicator: this build's inspector reports no percentage |
 | Recognized Title | `native_04_supported_game.png` | 1280×720 | The synthetic fixture `TEST00001`, which is what `--view=supported` populates — no retail disc is involved; honest LLE font requirement note |
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
-| Preparation | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" with an indeterminate indicator. The view deliberately claims no item counts or percentage until a real pipeline supplies them |
+| Preparation | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" with an indeterminate indicator. The view deliberately claims no item counts or percentage because this build has no preparation backend |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
-| Settings Dialog | `native_08_settings.png` | 1280×720 | Resolution presets (1x..8x), 60 FPS, Audio, DualSense |
+| Settings Dialog | `native_08_settings.png` | 1280×720 | Resolution presets (1x..8x), 60 FPS, savedata path, and truthful audio/controller state |
 | Missing Source Error | `native_09_missing_source_error.png` | 1280×720 | Structured error recovery for moved or missing ISOs |
 | 1080p Library | `native_10_library_1080p.png` | 1920×1080 | Verified responsive scaling on Full HD displays |
 | 1080p Settings | `native_11_settings_1080p.png` | 1920×1080 | Verified responsive settings modal on Full HD displays |
@@ -69,13 +69,13 @@ The matrix distinguishes between architectural staging, implementation completen
 | 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
 | 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Clean-room C PVD parser) |
 | 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
-| 4 | Asset Extraction | External PowerShell script | Staged pipeline prototype in `nk_core` | **PARTIAL** (VFS integration pending) |
+| 4 | Asset Extraction | External PowerShell script | Staged pipeline prototype in `nk_core` | **PARTIAL** (native player is not connected; VFS integration pending) |
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
 | 8 | Gamepad Calibration | Web Gamepad API | SDL3 gamepad detection and library navigation | **PARTIAL** — a pad is opened, named and drives d-pad/shoulder selection, and the badge reports the real state. There is no calibration, binding or deadzone UI; the web baseline's calibration screen has no native counterpart |
 | 9 | Preflight Checks | `hst_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
-| 10 | Progress Feedback | Server-Sent Events (SSE) | Immediate-mode indeterminate progress indicator | **PARTIAL** — the renderer draws a frame-accurate bar, but no pipeline supplies it: the preparation view states "No preparation pipeline is connected in this build" and deliberately claims no item counts or percentage. Item counts are not implemented |
+| 10 | Progress Feedback | Server-Sent Events (SSE) | Immediate-mode indeterminate preparation-unavailable state | **PARTIAL** — no native preparation pipeline supplies item counts or percentages in this build; the renderer reports that limitation instead of drawing a progress claim |
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
 | 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
@@ -107,6 +107,14 @@ What this establishes, exactly:
   no retail disc and no private input;
 - `display-smoke-run` asserts the guest-visible framebuffer word headlessly, so
   the presentation path is gated in CI without a display.
+
+The native-player path is exercised separately by
+`mingw32-make display-smoke-player`. It runs the player with
+`--demo --runtime-root=<repository> --launch-index=1`, so the entry must first
+be marked `Prepared` by the same resolver the launch uses; the driver then
+asserts the generated `--gui` argument and the child runtime's
+`window_ready`/`first_frame` boot events. This is a display-dependent developer
+gate, not a retail-title claim.
 
 What it does not establish: any commercial-title compatibility, PSP timing or
 rendering correctness, GE/graphics-pipeline behaviour (this guest writes the

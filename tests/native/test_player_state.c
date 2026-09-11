@@ -34,6 +34,13 @@ static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name
     entry->status = NK_STATUS_IDENTIFIED;
 }
 
+static void write_file(const char *path) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite("fixture", 1, 7, file) == 7);
+    assert(fclose(file) == 0);
+}
+
 int main(void) {
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -167,29 +174,45 @@ int main(void) {
     player_app_sync_library(fresh);
     assert(fresh->game_count == 0);
 
+    /* Point the same probe at a disposable fixture root. A real display-smoke
+       build is not a prerequisite of native-core-tests, but the entry must be
+       marked prepared when the launcher's candidate binary is actually there. */
+    char cache_dir[512];
+    char fixture_root[700];
+    char fixture_dir[800];
+    char fixture_exe[900];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+    snprintf(fixture_root, sizeof(fixture_root), "%s%cpr177_player_state_root",
+             cache_dir, nk_platform_path_separator());
+    snprintf(fixture_dir, sizeof(fixture_dir), "%s%cbuild%cdisplay-smoke-v1",
+             fixture_root, nk_platform_path_separator(), nk_platform_path_separator());
+    snprintf(fixture_exe, sizeof(fixture_exe), "%s%cdisplay-smoke-v1%s",
+             fixture_dir, nk_platform_path_separator(),
+#if defined(_WIN32) || defined(_WIN64)
+             ".exe"
+#else
+             ""
+#endif
+    );
+    assert(nk_platform_mkdir_p(fixture_dir));
+    write_file(fixture_exe);
+    player_app_set_runtime_root(fresh, fixture_root);
+
     player_app_populate_sample_games(fresh);
     assert(fresh->game_count > 0);
     int disp = player_app_find_game_by_disc_id(fresh, "TEST00006");
     assert(disp >= 0);
     assert(strcmp(fresh->games[disp].title_id, "display-smoke-v1") == 0);
+    assert(fresh->games[disp].is_prepared == true);
+    assert(fresh->games[disp].status == NK_STATUS_PREPARED);
 
     int before = fresh->game_count;
     player_app_populate_sample_games(fresh);
     assert(fresh->game_count == before);
+    assert(remove(fixture_exe) == 0);
     free(fresh);
 
-    /* 8. A launch started from the player asks for a window.
-     *
-     * nk_launch defaults config.gui_mode to false, which is right for a headless
-     * harness and wrong for every launch that comes from this UI: it puts
-     * --sched on the argv, so PLAY NOW spawned a runtime that ran to completion
-     * and exited 0 without ever opening a window. The launch looked successful
-     * and showed nothing.
-     *
-     * The title used here is deliberately one the catalog does not describe, so
-     * preparation fails closed before anything is spawned and the test asserts
-     * the flag without starting a process. gui_mode is set before that failure
-     * check precisely so it holds for the whole launch path. */
+    /* 8. A launch started from the player requests a window. */
     printf("[PLAYER_STATE_TEST] Subtest 8: a player launch requests a window\n");
     fflush(stdout);
     PlayerApp *launcher = (PlayerApp *)calloc(1, sizeof(PlayerApp));

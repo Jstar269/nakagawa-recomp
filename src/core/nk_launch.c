@@ -106,7 +106,8 @@ static bool find_candidate_executable(
 
 bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
-    return find_candidate_executable(root, title_id, resolved, sizeof(resolved));
+    const char *effective_root = (root && *root) ? root : ".";
+    return find_candidate_executable(effective_root, title_id, resolved, sizeof(resolved));
 }
 
 static bool find_candidate_image(
@@ -286,11 +287,9 @@ NkResult nk_launch_prepare_session(
         char cand_data[NK_MAX_PATH * 2];
         int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", session->working_directory, sep, entry->data_root);
         if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
-            /* The runtime refuses a relative SR_DATAROOT and then declines to build
-               an index at all, so a session prepared from a relative root (the
-               player passes ".") lost its data root with only a log line to say
-               so. Catalog data_root values are relative by design, so the
-               absolute form has to be produced here. */
+            /* Catalog data_root values are relative to the repository/install
+               root, but SR_DATAROOT is deliberately fail-closed when relative.
+               Resolve the path before handing it to the runtime. */
             char absolute[NK_MAX_PATH];
             if (nk_platform_absolute_path(cand_data, absolute, sizeof(absolute))) {
                 safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), absolute);
@@ -404,6 +403,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
     char env_tables[64];
+    char env_boot_event[NK_MAX_PATH + 32];
     char sep = nk_platform_path_separator();
 
     snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
@@ -415,7 +415,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=%s", session->memstick_root);
     snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
 
-    const char *envp[20];
+    const char *envp[24];
     int env_count = 0;
     envp[env_count++] = env_iso;
     envp[env_count++] = env_fps;
@@ -449,6 +449,17 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         snprintf(env_fatal, sizeof(env_fatal), "SR_DISPATCH_FATAL=1");
         envp[env_count++] = env_fatal;
     }
+    /* The player launch smoke uses this opt-in side channel because a spawned
+       runtime's stderr is not a stable API of either platform backend. Normal
+       launches do not set it and therefore incur no extra file I/O. */
+    const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
+    if (boot_event_path && *boot_event_path) {
+        int w = snprintf(env_boot_event, sizeof(env_boot_event),
+                         "SR_BOOT_EVENT_FILE=%s", boot_event_path);
+        if (w > 0 && (size_t)w < sizeof(env_boot_event)) {
+            envp[env_count++] = env_boot_event;
+        }
+    }
     envp[env_count] = NULL;
 
     /* Build command-line arguments */
@@ -460,6 +471,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     const char *argv[12];
     int argc = 0;
     argv[argc++] = session->executable_path;
+    session->argv_has_gui = false;
 
     if (session->image_path[0]) {
         argv[argc++] = "--image";
@@ -468,10 +480,16 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         argv[argc++] = entry_str;
         argv[argc++] = "none";
         argv[argc++] = "none";
-        argv[argc++] = session->config.gui_mode ? "--gui" : "--sched";
+        if (session->config.gui_mode) {
+            argv[argc++] = "--gui";
+            session->argv_has_gui = true;
+        } else {
+            argv[argc++] = "--sched";
+        }
     } else {
         if (session->config.gui_mode) {
             argv[argc++] = "--gui";
+            session->argv_has_gui = true;
         }
     }
     argv[argc] = NULL;

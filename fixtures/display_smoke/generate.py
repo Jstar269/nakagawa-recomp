@@ -35,13 +35,10 @@ Guest program
         sceDisplayWaitVblankStart();
     } while (++frame < FRAMES);
 
-``colour(v)`` packs ``v`` into an ABGR8888 word. The index is the LINEAR pixel
-number, so the bands are 16 pixels wide across a row and the value carries over
-between rows: at a 512-pixel stride each row advances the band index by 32 and
-the 8-bit wrap repeats every 8 rows. The result reads as horizontal striping,
-not as diagonal bands, and it shifts by one band per frame. What the gate proves
-is frame progression -- the framebuffer word at 0x04000000 is the one the final
-frame must have written -- not a particular spatial arrangement.
+``colour(v)`` packs ``v`` into an ABGR8888 word. The index is the linear pixel
+number, so the output is horizontal striping that shifts by one band per frame.
+The gate proves frame progression through the final framebuffer word; it does
+not claim a particular spatial arrangement.
 """
 
 from __future__ import annotations
@@ -54,6 +51,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -589,6 +587,84 @@ def run(build_dir: Path, gui: bool = False) -> int:
     return 0
 
 
+def run_player(build_dir: Path) -> int:
+    """Drive PLAY NOW through the native player without human input.
+
+    The player one-shot mode still populates the ordinary demo library, selects
+    its launchable display-smoke entry, and calls ``player_app_launch_game``.
+    ``SR_BOOT_EVENT_FILE`` is an opt-in child-runtime evidence channel: it lets
+    this test assert the real window and first-frame milestones even when the
+    platform process backend does not inherit the parent's stderr pipe.
+    """
+    suffix = ".exe" if os.name == "nt" else ""
+    player = ROOT / "build" / f"nakagawa_player{suffix}"
+    if not player.is_file():
+        raise RuntimeError(f"native player not found: {player}")
+
+    with tempfile.TemporaryDirectory(prefix="display-smoke-player-", dir=build_dir) as temp:
+        sandbox = Path(temp)
+        boot_log = sandbox / "boot-events.log"
+        env = os.environ.copy()
+        env["LOCALAPPDATA"] = str(sandbox / "localappdata")
+        env["SR_BOOT_EVENT_FILE"] = str(boot_log)
+        command = [
+            str(player),
+            "--demo",
+            f"--runtime-root={ROOT}",
+            "--launch-index=1",
+            f"--screenshot={sandbox / 'player.bmp'}",
+        ]
+        completed = subprocess.run(
+            command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120
+        )
+        combined = completed.stdout + completed.stderr
+        if completed.returncode != 0:
+            sys.stderr.write(combined)
+            raise RuntimeError(f"native player launch driver exited {completed.returncode}")
+
+        if not boot_log.is_file():
+            raise RuntimeError("native player launch produced no child boot evidence")
+        events = boot_log.read_text(encoding="utf-8", errors="replace")
+
+        required_parent = (
+            "[PLAYER] Launch index 1: PLAY NOW available",
+            "[PLAYER] Launch argv contains --gui: yes",
+        )
+        missing_parent = [marker for marker in required_parent if marker not in combined]
+        if missing_parent:
+            raise RuntimeError("player evidence omits: " + ", ".join(missing_parent))
+
+        required_events = (
+            "BOOT_EVENT phase=init public_safe=1",
+            "BOOT_EVENT phase=image_loaded",
+            "BOOT_EVENT phase=runtime_registered",
+            "BOOT_EVENT phase=index_prepare_end state=2",
+            "BOOT_EVENT phase=window_ready",
+            "BOOT_EVENT phase=first_frame",
+        )
+        missing_events = [marker for marker in required_events if marker not in events]
+        if missing_events:
+            raise RuntimeError("child boot evidence omits: " + ", ".join(missing_events))
+
+        forbidden = (
+            "SR_DATAROOT is configured but is not a valid absolute path",
+            "index initialization failed; refusing partial index",
+            "UNKNOWN NID",
+            "NONPLT_MISS",
+            "INTERP_REJECT",
+        )
+        present = [marker for marker in forbidden if marker in combined or marker in events]
+        if present:
+            raise RuntimeError("native player launch evidence contains: " + ", ".join(present))
+
+        write_if_changed(build_dir / "nakagawa_player.stdout.log", completed.stdout.encode("utf-8"))
+        write_if_changed(build_dir / "nakagawa_player.stderr.log", completed.stderr.encode("utf-8"))
+        write_if_changed(build_dir / "nakagawa_player.boot-events.log", events.encode("utf-8"))
+
+    print("DISPLAY_SMOKE_PLAYER status=PASS play_now=1 argv_gui=1 window_ready=1 first_frame=1")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -600,6 +676,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--build-dir", type=Path, required=True)
     run_parser.add_argument("--gui", action="store_true")
+    player_parser = subparsers.add_parser("run-player")
+    player_parser.add_argument("--build-dir", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -612,6 +690,8 @@ def main(argv: list[str] | None = None) -> int:
             return verify(args.build_dir)
         if args.command == "run":
             return run(args.build_dir, gui=args.gui)
+        if args.command == "run-player":
+            return run_player(args.build_dir)
         raise AssertionError(f"unhandled command {args.command}")
     except (OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
         sys.stderr.write(f"DISPLAY_SMOKE_{args.command.upper()} status=FAIL: {error}\n")

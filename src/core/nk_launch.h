@@ -50,18 +50,19 @@ typedef struct {
     NkProcessHandle process;
     bool is_running;
     int exit_code;
+    /* Exact launch-mode evidence recorded while nk_launch_start builds argv. */
+    bool argv_has_gui;
     char last_error[256];
 } NkLaunchSession;
+
+/* True when the launcher's executable search can resolve a runtime for `title_id`
+ * under `root`. This is the same probe used by nk_launch_prepare_session, so UI
+ * readiness cannot drift from the eventual launch path. */
+bool nk_launch_runtime_available(const char *root, const char *title_id);
 
 /* Prepare a launch session for the given game entry.
  * Validates executable existence, ISO presence, and builds environment/argv.
  */
-/* True when a runtime binary for `title_id` can be resolved under `root`.
- *
- * The same candidate search nk_launch_prepare_session uses, exposed so a caller
- * can ask whether a title is launchable without duplicating the probe order and
- * then drifting from it. */
-bool nk_launch_runtime_available(const char *root, const char *title_id);
 
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,

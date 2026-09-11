@@ -31,8 +31,10 @@ extern char **environ;
 
 bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len) {
     if (!path || !*path || !out_path || max_len == 0) return false;
+
     char *resolved = realpath(path, NULL);
     if (!resolved) return false;
+
     size_t length = strlen(resolved);
     if (length >= max_len) {
         free(resolved);

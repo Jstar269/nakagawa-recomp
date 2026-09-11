@@ -78,8 +78,10 @@ int main(int argc, char *argv[]) {
     const char *test_view = NULL;
     const char *manifest_overlay_path = NULL;
     const char *initial_iso_path = NULL;
-    const char *runtime_bin_path = NULL;
+    const char *runtime_root_path = NULL;
     bool launch_now = false;
+    bool launch_index_requested = false;
+    int launch_index = -1;
     int override_w = 1280;
     int override_h = 720;
     /* Demo fixtures are opt-in. Defaulting them on meant a normal first
@@ -99,10 +101,17 @@ int main(int argc, char *argv[]) {
             manifest_overlay_path = argv[i] + 19;
         } else if (strncmp(argv[i], "--iso=", 6) == 0) {
             initial_iso_path = argv[i] + 6;
+        } else if (strncmp(argv[i], "--runtime-root=", 15) == 0) {
+            runtime_root_path = argv[i] + 15;
         } else if (strncmp(argv[i], "--runtime-bin=", 14) == 0) {
-            runtime_bin_path = argv[i] + 14;
+            /* Keep the old spelling as a compatibility alias. The value is a
+               resolver root, not necessarily a binary path. */
+            runtime_root_path = argv[i] + 14;
         } else if (strcmp(argv[i], "--launch-now") == 0) {
             launch_now = true;
+        } else if (strncmp(argv[i], "--launch-index=", 15) == 0) {
+            launch_index_requested = true;
+            launch_index = atoi(argv[i] + 15);
         } else if (strncmp(argv[i], "--width=", 8) == 0) {
             override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
@@ -121,6 +130,15 @@ int main(int argc, char *argv[]) {
     }
     if (force_empty) {
         populate_sample = false;
+    }
+    if (launch_index_requested && !force_empty) {
+        /* The one-shot driver is a deliberate demo/test entry point. It still
+           uses the normal library loader first, so an existing user library is
+           never overwritten by the fixture population. */
+        populate_sample = true;
+    }
+    if (runtime_root_path) {
+        player_app_set_runtime_root(&app, runtime_root_path);
     }
 
     /* Load external manifest overlay if requested */
@@ -171,7 +189,7 @@ int main(int argc, char *argv[]) {
                 player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
                 if (launch_now) {
                     printf("[PLAYER] Launching supported title now...\n");
-                    const char *target_root = runtime_bin_path ? runtime_bin_path : ".";
+                    const char *target_root = app.runtime_root[0] ? app.runtime_root : NULL;
                     /* nk_library_add_or_update updates an existing record in
                        place rather than appending it, so in a library holding
                        several games the last entry is a DIFFERENT title
@@ -190,11 +208,9 @@ int main(int argc, char *argv[]) {
                     } else {
                         lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
                     }
-                    /* --launch-now stands in for pressing PLAY NOW, so it has to
-                       launch the way PLAY NOW does. nk_launch defaults gui_mode
-                       to false, which put --sched on the argv: the runtime ran to
-                       completion and exited 0 without ever opening a window, so
-                       the launch looked successful while showing nothing. */
+                    /* --launch-now stands in for pressing PLAY NOW. The
+                       launcher's default is headless for test harnesses, so
+                       this inline path must explicitly request the window too. */
                     app.launch_session.config.gui_mode = true;
                     if (lres == NK_OK) {
                         printf("[PLAYER] Launch session prepared successfully!\n");
@@ -278,6 +294,42 @@ int main(int argc, char *argv[]) {
 
     app.window_width = override_w;
     app.window_height = override_h;
+
+    /* Mechanical launch driver for the real player path. This deliberately
+       stops before SDL initialization: the child runtime owns the game window,
+       while the parent waits for its real exit status. A test can set
+       SR_BOOT_EVENT_FILE to receive the child's window/first-frame milestones. */
+    if (launch_index_requested) {
+        if (launch_index < 0 || launch_index >= app.game_count) {
+            fprintf(stderr, "[PLAYER] Invalid --launch-index=%d for library count %d.\n",
+                    launch_index, app.game_count);
+            return 2;
+        }
+        app.selected_game_index = launch_index;
+        if (!app.games[launch_index].is_prepared) {
+            fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
+                    launch_index);
+            return 3;
+        }
+        printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
+               launch_index, app.games[launch_index].disc_id,
+               app.games[launch_index].title_name);
+        if (!player_app_launch_game(&app, launch_index)) {
+            fprintf(stderr, "[PLAYER] --launch-index failed: %s\n",
+                    app.launch_session.last_error);
+            return 4;
+        }
+        printf("[PLAYER] Launch argv contains --gui: %s\n",
+               app.launch_session.argv_has_gui ? "yes" : "no");
+        if (!app.launch_session.argv_has_gui) {
+            player_app_stop_game(&app);
+            return 5;
+        }
+        int child_code = nk_launch_wait(&app.launch_session, -1);
+        app.is_game_running = false;
+        printf("[PLAYER] Launch-index child exited with code %d.\n", child_code);
+        return child_code < 0 ? 6 : child_code;
+    }
 
     /* Initialize SDL3 */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {

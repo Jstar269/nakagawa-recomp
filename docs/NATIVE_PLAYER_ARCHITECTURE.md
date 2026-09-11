@@ -1,5 +1,12 @@
 # Native Cross-Platform Player UI Architecture
 
+> **Current build boundary:** The native player does not connect an ISO
+> extraction, module-decryption, or preparation pipeline. The preparation and
+> progress stages shown below are the target architecture, not implemented
+> behavior. In this build an unprepared title gets an explicit
+> `PREPARATION UNAVAILABLE` state; only an already-built runtime such as the
+> source-owned display-smoke fixture can be launched.
+
 ## 1. Executive Vision: The Honest "Program + ISO" Contract
 
 The ultimate productization goal of Nakagawa Recomp is to deliver a seamless, modern, zero-terminal gaming experience without sacrificing low-level emulation (LLE) correctness or provenance integrity:
@@ -13,9 +20,9 @@ Select lawfully obtained PSP game ISO
    ↓
 Nakagawa identifies supported title from PARAM.SFO
    ↓
-Automated LLE preparation: local KIRK decryption & PRX validation
+Target-only preparation stage (not connected in this build)
    ↓
-Truthful progress reporting with stage names, item counts & times
+Target-only progress reporting (not emitted by this build)
    ↓
 Launch into genuine recompiled guest execution with Vulkan & SDL3
    ↓
@@ -81,10 +88,10 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 ┌───────────────▼─────────────────────────▼──────────────┐
 │                  PORTABLE CORE API                     │
 │ ┌────────────────┐ ┌────────────────┐ ┌──────────────┐ │
-│ │ Title Registry │ │  ISO Inspector │ │ Prep Engine  │ │
+│ │ Title Registry │ │  ISO Inspector │ │ Prep Contract│ │
 │ └───────┬────────┘ └────────┬───────┘ └───────┬──────┘ │
 │ ┌───────▼────────┐ ┌────────▼───────┐ ┌───────▼──────┐ │
-│ │ Progress Engine│ │  Task Cancel   │ │ Launch Plan  │ │
+│ │ Progress Contract│ │ Task Cancel   │ │ Launch Plan  │ │
 │ └────────────────┘ └────────────────┘ └──────────────┘ │
 └───────────────────────────────┬────────────────────────┘
                                 │ Filesystem / Process
@@ -94,7 +101,10 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 └────────────────────────────────────────────────────────┘
 ```
 
-The presentation layer contains **zero business logic**. All title identification, ISO inspection, archive extraction, checksum verification, and session manifest creation live inside the portable core (`nk_core`).
+The presentation layer contains **zero business logic**. Title identification and
+ISO inspection are wired in the native player; archive extraction, checksum
+verification, and session-manifest preparation remain in the developer-only
+portable-core prototype (`nk_core`) and are not called by this build.
 
 ---
 
@@ -104,7 +114,7 @@ The presentation layer contains **zero business logic**. All title identificatio
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
 3. **Native File Selection**: Clicking *"Add Game"* invokes the native platform file picker (`IFileDialog` on Windows, native portal/Zenity on Linux).
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
-5. **Transactional Preparation**:
+5. **Transactional Preparation (target; not connected in this build)**:
    - Staging directory created under `.staging_<disc_id>_<timestamp>/`.
    - Untouched `EBOOT.BIN` and PRX files decrypted locally via clean-room KIRK routines.
    - ELF envelopes and section headers validated.
@@ -118,16 +128,23 @@ The presentation layer contains **zero business logic**. All title identificatio
 
 ### Progress Contracts
 
-The core emits structured progress events at every milestone:
+The target preparation core would emit structured progress events at every
+milestone. The native player currently emits no preparation events because no
+preparation backend is connected:
 
 - **Stage**: `INSPECTING_ISO`, `EXTRACTING_CONTAINERS`, `DECRYPTING_MODULES`, `VALIDATING_ELFS`, `PREPARING_VFS`, `READY`.
 - **Metrics**: Completed count, total count, elapsed time in milliseconds, and current processing item.
-- **Truthfulness**: Progress never displays fabricated percentages; operations with indeterminate totals show smooth activity pulses.
+- **Truthfulness**: When a real backend is added, progress must never display
+  fabricated percentages; operations with indeterminate totals may show smooth
+  activity pulses.
 
 ### Transactional Integrity
 
-- All extraction and generation occur in temporary staging directories.
-- If the user clicks **Cancel** or the process is interrupted, the staging directory is cleaned up immediately. Previous working installations remain untouched.
+- The future extraction and generation path will use temporary staging
+  directories.
+- The future cancellation path will clean up staging immediately while leaving
+  previous working installations untouched. No such operation is active in this
+  build.
 
 ### User-Friendly Error Experience
 
