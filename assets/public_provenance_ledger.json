@@ -282,7 +282,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a24e343129eb74d393c91ebf1854598bc7adadd7e2c463c78850f854c5bde0c9"
+      "sha256": "5e2a0a415a4196c8a577bb411eec1c895b478274f0d1c6d13a83aa6ef6132bfd"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -390,7 +390,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "165f78c1e1d19e862060fa5580bb23f79b0597df0b38d46b88b96d6e5b89d68b"
+      "sha256": "21fd318d1ee5b8e7ae6c3db6060dfb2cfb793b8fe631ea0dbe8bf7937e254798"
     },
     {
       "path": "assets/release_manifest.json",
@@ -799,6 +799,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "ce81d493485789ddcff023d72cda4ec772f179c9171fa4a242e86f930380b1fb"
+    },
+    {
+      "path": "docs/PREVIEW_RELEASE.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "20d39c8360ab9c3616c2131157e9809efe4025cbded3e78c24fd16a6eb8c4f1b"
+    },
+    {
+      "path": "docs/PREVIEW_RELEASE_NOTES.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "8572f6d25be57983016c978c816c05bbd6cadd7e537c2a70a4a3b5b39195b9ed"
     },
     {
       "path": "docs/PROJECT_MODEL.md",

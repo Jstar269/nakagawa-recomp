@@ -203,6 +203,8 @@
     "docs/OSPS_BASELINE.md",
     "docs/PLATFORM_PORTABILITY.md",
     "docs/PORTING.md",
+    "docs/PREVIEW_RELEASE.md",
+    "docs/PREVIEW_RELEASE_NOTES.md",
     "docs/PROJECT_MODEL.md",
     "docs/PROVENANCE_MERGE_GATE.md",
     "docs/PSPDEV_LOCAL_VERIFICATION.md",
