@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1bd1590347eb22f27ef9540fcd1cb4e520a609695911440ae6528267dc59c605"
+      "sha256": "7d73db5d2c590d78e22cd4d04a421f3e4346f24edf711d29161bca07f254e20f"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",

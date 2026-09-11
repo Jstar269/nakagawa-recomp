@@ -42,11 +42,11 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | View State | Native Artifact | Resolution | Provenance & Validation |
 | :--- | :--- | :--- | :--- |
 | Empty Library | `native_01_empty_library.png` | 1280×720 | Clean CTA for ISO selection; title support disclosure |
-| Add Game | `native_02_add_game.png` | 1280×720 | Native file picker invocation state |
-| ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Sector reading progress bar with cancel action |
-| Recognized Title | `native_04_supported_game.png` | 1280×720 | `UCUS98701` verified; honest LLE font requirement note |
+| Add Game | `native_02_add_game.png` | 1280×720 | The empty-library CTA, captured with the same `--view=empty --empty` arguments as `native_01`. The host file dialog is opened by the button at runtime and is not part of this capture |
+| ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Captured with no `--iso=`, so the inspector renders "No disc image selected" and a cancel action. With a disc it shows an indeterminate indicator: this build's inspector reports no percentage |
+| Recognized Title | `native_04_supported_game.png` | 1280×720 | The synthetic fixture `TEST00001`, which is what `--view=supported` populates — no retail disc is involved; honest LLE font requirement note |
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
-| Preparation | `native_06_preparing.png` | 1280×720 | Transactional progress (18,450 / 56,672 items, 32.5%) |
+| Preparation | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" with an indeterminate indicator. The view deliberately claims no item counts or percentage until a real pipeline supplies them |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
 | Settings Dialog | `native_08_settings.png` | 1280×720 | Resolution presets (1x..8x), 60 FPS, Audio, DualSense |
 | Missing Source Error | `native_09_missing_source_error.png` | 1280×720 | Structured error recovery for moved or missing ISOs |
