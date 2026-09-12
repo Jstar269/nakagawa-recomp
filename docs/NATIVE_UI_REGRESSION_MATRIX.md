@@ -2,6 +2,11 @@
 
 This document establishes the authoritative functional regression checklist for Nakagawa Recomp across both the web transition phase and the native player implementation.
 
+The preparation engine referenced below is a standalone `nk_core` prototype; it
+is not connected to the native player in this build. The native
+`VIEW_PREPARING` state is therefore an explicit unavailable state and does not
+claim extraction, decryption, staging, item counts, or percentage progress.
+
 ## 1. Functional Status Matrix
 
 | Check ID | Functional Capability | Web Studio Baseline | Native Shell Target | Current Status | Verification Evidence |
@@ -10,9 +15,9 @@ This document establishes the authoritative functional regression checklist for 
 | `WEB_PLAYER_MODE_STARTS` | Top-level Player Mode hero screen loads with settings cards | **PASS** | N/A | **PASS** | Verified via `launcher-panel.tsx` rendering in browser |
 | `ISO_INSPECT_WORKS` | ISO9660 PVD and directory parsing from raw binary file | **PARTIAL** (Browser JS) | **YES** (`nk_core/iso_inspect.py` / native) | **PASS** | Verified in `tools/test_nk_core.py::test_iso_inspect` |
 | `TITLE_ID_DETECTION_WORKS` | Extracts Disc ID (`UCUS98701`, etc.) from `PARAM.SFO` | **PARTIAL** (In-memory) | **YES** (`nk_core/title_registry.py`) | **PASS** | Verified in `tools/test_nk_core.py::test_registry_disc_matching` |
-| `PREPARED_FOLDER_VALIDATION_WORKS` | Transactional staging & validation of game directory | **NO** (Manual external) | **YES** (`nk_core/prep_engine.py`) | **PASS** | Verified in `tools/test_nk_core.py::test_prep_engine_atomic_staging` |
+| `PREPARED_FOLDER_VALIDATION_WORKS` | Transactional staging & validation of game directory | **NO** (Manual external) | **PROTOTYPE ONLY** (`nk_core/prep_engine.py`, not native-player connected) | **PARTIAL** | The standalone Python prototype passes `tools/test_nk_core.py::test_prep_engine_atomic_staging`; native `VIEW_PREPARING` remains unavailable |
 | `PSP_ISO_ENV_HANDOFF_WORKS` | `PSP_ISO` environment variable correctly passed to runtime | **YES** (`manager-process.ts`) | **YES** (`nk_launch.c` / typed session) | **PASS** | Verified in `tools/test_nk_core.py::test_launcher_plan` |
-| `RUNTIME_PROCESS_STARTS` | Host launcher successfully spawns runtime binary | **YES** (PowerShell child) | Direct process spawn via platform API | **IN_PROGRESS** | `tools/nk_cli.py` verified; native C `nk_platform_spawn` wiring underway |
+| `RUNTIME_PROCESS_STARTS` | Host launcher successfully spawns runtime binary | **YES** (PowerShell child) | Direct process spawn via platform API | **PASS (synthetic fixture)** | `display-smoke-player` drives native `PLAY NOW`, records `--gui`, and observes child boot milestones |
 | `VULKAN_WINDOW_STARTS` | SDL3 creates native window and initializes Vulkan swapchain | **YES** (`hst.exe` runtime) | **YES** (Direct SDL3 window) | **PASS** | Verified in SDL3 compilation probe (`src/rt/gpu_sdl3vk/sdl3vk.c`) |
 | `CURRENT_HST_ROUTE_REACHES_KNOWN_POINT` | Prepared HST assets boot to title screen with Vulkan rendering | **PASS** (When private inputs present) | Preserved via launch planner | **PENDING_NATIVE_EXECUTION** | Launch arguments validated; native end-to-end child execution tested in this phase |
 | `SAVES_PATH_VALID` | Launch routes `SR_MEMSTICK` to a writable per-disc location: the title catalog's `memory_stick_root` when the install is writable, otherwise the platform save directory (`%LOCALAPPDATA%\Nakagawa\saves\<disc id>` on Windows, `$XDG_DATA_HOME/nakagawa-recomp/saves/<disc id>` on Linux) | **PASS** | **PASS** | **PASS** | Resolved in `nk_launch_prepare_session`; verified in `tests/native/test_launch_resolution.c` on Windows and Linux |
