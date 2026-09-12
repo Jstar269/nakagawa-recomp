@@ -128,6 +128,59 @@ int main(void) {
     assert(nk_launch_prepare_session(&session, &game, exe_nested) == NK_OK);
     assert(ends_with(session.image_path, "tool_image.bin"));
 
+    /* 5. The catalog build-layout convention.
+     *
+     * src/core/nk_launch.c resolves a runtime by probing
+     * build/<title_id>/<title_id>[.exe] and its sibling <...>_image.bin, and it
+     * takes the load addresses from the generated title catalog. Nothing in the
+     * tree used to be BUILT under that layout, so the whole path was unreachable:
+     * every fixture built as build/<other-name>/<other_stem>.exe and no launch
+     * could resolve. The display-smoke fixture is built as its own title id
+     * precisely so this path is exercised, and this subtest pins the convention
+     * on both hosts -- the extensionless spelling is used deliberately so the
+     * POSIX shape is covered on Windows too. */
+    printf("[LAUNCH_TEST] Subtest 5: catalog build-layout convention\n");
+    fflush(stdout);
+    char build_dir[800];
+    snprintf(build_dir, sizeof(build_dir), "%s%cbuild%cdisplay-smoke-v1", base, sep, sep);
+    assert(nk_platform_mkdir_p(build_dir));
+
+    char exe_catalog[900];
+    char img_catalog[1000];
+    snprintf(exe_catalog, sizeof(exe_catalog), "%s%cdisplay-smoke-v1", build_dir, sep);
+    snprintf(img_catalog, sizeof(img_catalog), "%s%cdisplay-smoke-v1_image.bin", build_dir, sep);
+    write_file(exe_catalog, "binary");
+    write_file(img_catalog, "image");
+
+    char data_dir[900];
+    char expected_data_dir[900];
+    snprintf(data_dir, sizeof(data_dir), "%s%cfixtures%cdisplay_smoke", base, sep, sep);
+    assert(nk_platform_mkdir_p(data_dir));
+    assert(nk_platform_absolute_path(data_dir, expected_data_dir, sizeof(expected_data_dir)));
+
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    snprintf(game.title_name, sizeof(game.title_name), "Nakagawa Display Smoke Fixture");
+
+    assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(nk_launch_runtime_available(base, "display-smoke-v1"));
+    assert(ends_with(session.executable_path, "display-smoke-v1"));
+    assert(ends_with(session.image_path, "display-smoke-v1_image.bin"));
+    assert(strcmp(session.dataroot_path, expected_data_dir) == 0);
+    /* The addresses must come from the catalog, not from a constant. */
+    assert(session.base_address == 0x08810000u);
+    assert(session.entry_point == 0x08810000u);
+
+    /* 6. A title the catalog does not describe is refused, not launched at a
+     * guessed address. */
+    printf("[LAUNCH_TEST] Subtest 6: unknown title fails closed\n");
+    fflush(stdout);
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "ZZZZ99999");
+    snprintf(game.title_id, sizeof(game.title_id), "not-a-catalog-title");
+    assert(nk_launch_prepare_session(&session, &game, base) != NK_OK);
+
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     return 0;
 }

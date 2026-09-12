@@ -365,7 +365,12 @@ class NativeTitleIdentityTests(unittest.TestCase):
         self.titles.mkdir(parents=True)
         shutil.copyfile(ROOT / "assets/public_source_profile.json",
                         self.root / "assets/public_source_profile.json")
-        for name in ("synthetic.json", "synthetic-title2.json", "pspdev-phase5.json"):
+        # Stage what the policy includes rather than a hardcoded subset: the
+        # policy copied just above names every public manifest.
+        self.public_manifests = sorted(
+            p.name for p in (ROOT / "assets" / "titles").glob("*.json")
+        )
+        for name in self.public_manifests:
             shutil.copyfile(ROOT / "assets/titles" / name, self.titles / name)
         self.fixture = title_manifest.load_manifest(self.titles / "synthetic.json")
 
@@ -424,8 +429,9 @@ fputs(title->display_name, stdout);
 
     def test_public_projection_compiles_and_has_no_inferred_disc_ids(self) -> None:
         header = title_manifest.public_native_title_catalog(self.root)
-        self.compile_run(header, r'''
-assert(NK_TITLE_IDENTITY_COUNT == 3);
+        # Derived, not a literal.
+        count_check = "assert(NK_TITLE_IDENTITY_COUNT == %d);" % len(self.public_manifests)
+        self.compile_run(header, count_check + r'''
 assert(nk_title_identity_by_id("synthetic-allegrex-v1"));
 assert(nk_title_identity_by_id("synthetic-title2-v1"));
 assert(nk_title_identity_by_id("pspdev-phase5-v1"));

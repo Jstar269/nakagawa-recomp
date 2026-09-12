@@ -44,6 +44,36 @@ static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, floa
     SDL_SetRenderScale(ren, 1.0f, 1.0f);
 }
 
+/* SDL_RenderDebugText has a fixed-width glyph estimate, so a library title
+ * longer than its card used to draw through the card border and into the next
+ * card. Keep the title on one line and make the truncation visible. */
+static void draw_text_ellipsized(SDL_Renderer *ren, float x, float y,
+                                 const char *str, float scale, float max_width,
+                                 SDL_Color c) {
+    if (!str || !*str || scale <= 0.0f || max_width <= 0.0f) return;
+
+    size_t max_chars = (size_t)(max_width / (8.0f * scale));
+    if (max_chars == 0) return;
+    if (max_chars >= NK_MAX_TITLE_LEN) max_chars = NK_MAX_TITLE_LEN - 1;
+
+    size_t length = strlen(str);
+    if (length <= max_chars) {
+        draw_text(ren, x, y, str, scale, c);
+        return;
+    }
+
+    char clipped[NK_MAX_TITLE_LEN];
+    if (max_chars <= 3) {
+        memcpy(clipped, str, max_chars);
+    } else {
+        size_t prefix = max_chars - 3;
+        memcpy(clipped, str, prefix);
+        memcpy(clipped + prefix, "...", 3);
+    }
+    clipped[max_chars] = '\0';
+    draw_text(ren, x, y, clipped, scale, c);
+}
+
 static bool is_point_in_rect(float px, float py, float rx, float ry, float rw, float rh) {
     return px >= rx && px <= (rx + rw) && py >= ry && py <= (ry + rh);
 }
@@ -243,7 +273,8 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     draw_badge(ren, hero_x + 350.0f, hero_y + 28.0f, fps_label(app->settings.fps_cap), COLOR_LIME);
 
     /* Game Title */
-    draw_text(ren, hero_x + 32.0f, hero_y + 72.0f, game->title_name, 2.5f, COLOR_TEXT_WHITE);
+    draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 72.0f, game->title_name,
+                         2.5f, hero_w - 64.0f, COLOR_TEXT_WHITE);
     draw_text(ren, hero_x + 32.0f, hero_y + 120.0f, "PlayStation Portable Classic · High-Definition Modern PC Recompilation", 1.2f, COLOR_TEXT_MUTED);
 
     /* Quick Specs Rail */
@@ -286,15 +317,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             player_app_launch_game(app, app->selected_game_index);
         }
     } else {
-        if (draw_button(ren, hero_x + 32.0f, hero_y + 248.0f, 220.0f, 54.0f, "PREPARE GAME", true, in)) {
-            /* Do not fabricate preparation progress: no preparation pipeline
-             * runs in this build, so the view renders an honest idle state. */
-            app->prep_state.stage = STAGE_IDLE;
-            app->prep_state.completed_items = 0;
-            app->prep_state.total_items = 0;
-            app->prep_state.percentage = 0.0f;
-            player_app_set_view(app, VIEW_PREPARING);
-        }
+        /* There is no preparation backend in this build. Draw a non-interactive
+         * status control so the card does not imply that one is connected. */
+        draw_button(ren, hero_x + 32.0f, hero_y + 248.0f, 220.0f, 54.0f,
+                    "PREPARATION UNAVAILABLE", false, NULL);
     }
 
     if (draw_button(ren, hero_x + 272.0f, hero_y + 248.0f, 220.0f, 54.0f, "ADD ANOTHER ISO", false, in)) {
@@ -348,7 +374,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_rect_outline(ren, card_x, card_y, cw, ch, border);
 
         draw_badge(ren, card_x + 12.0f, card_y + 12.0f, app->games[i].disc_id, active ? COLOR_EMERALD : COLOR_TEXT_DIM);
-        draw_text(ren, card_x + 12.0f, card_y + 48.0f, app->games[i].title_name, 1.1f, COLOR_TEXT_WHITE);
+        draw_text_ellipsized(ren, card_x + 12.0f, card_y + 48.0f,
+                             app->games[i].title_name, 1.1f, cw - 24.0f,
+                             COLOR_TEXT_WHITE);
         draw_text(ren, card_x + 12.0f, card_y + 104.0f,
                   app->games[i].is_prepared ? "Status: Prepared" : "Status: Not prepared",
                   0.9f, COLOR_TEXT_MUTED);
@@ -434,7 +462,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
 
     draw_text(ren, card_x + 32.0f, card_y + 72.0f, app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title", 2.2f, COLOR_TEXT_WHITE);
     draw_text(ren, card_x + 32.0f, card_y + 116.0f, "Disc identified as verified release in Nakagawa title catalog.", 1.2f, COLOR_TEXT_MUTED);
-    draw_text(ren, card_x + 32.0f, card_y + 144.0f, "Authentic preparation requires local module decryption & asset indexing.", 1.1f, COLOR_TEXT_MUTED);
+    draw_text(ren, card_x + 32.0f, card_y + 144.0f, "This build does not connect the module preparation pipeline.", 1.1f, COLOR_TEXT_MUTED);
 
     /* Honesty warning */
     draw_text(ren, card_x + 32.0f, card_y + 180.0f, "NOTE: Full LLE font fidelity requires jpn0.pgf in system font directory.", 1.0f, COLOR_AMBER);
@@ -496,28 +524,19 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
     draw_filled_rect(ren, card_x, card_y, card_w, card_h, COLOR_CARD_BG);
     draw_rect_outline(ren, card_x, card_y, card_w, card_h, COLOR_CARD_BORDER);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "TRANSACTIONAL PREPARATION", COLOR_EMERALD);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparing Game Runtime...", 2.2f, COLOR_TEXT_WHITE);
+    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "PREPARATION UNAVAILABLE", COLOR_AMBER);
+    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation Unavailable", 2.2f, COLOR_TEXT_WHITE);
+    /* This is intentionally an explanation screen, not a fake progress
+     * surface. No native preparation pipeline is connected in this build. */
+    draw_text(ren, card_x + 32.0f, card_y + 120.0f,
+              "No preparation pipeline is connected in this build.", 1.2f,
+              COLOR_TEXT_MUTED);
+    draw_indeterminate_bar(ren, card_x + 32.0f, card_y + 160.0f,
+                           card_w - 64.0f, 20.0f);
+    draw_text(ren, card_x + 32.0f, card_y + 196.0f,
+              "No preparation work is running.", 1.2f, COLOR_TEXT_WHITE);
 
-    if (app->prep_state.total_items > 0) {
-        /* Real progress indicators (populated by the preparation pipeline) */
-        draw_text(ren, card_x + 32.0f, card_y + 120.0f, "Indexing archive containers & validating ELF module headers...", 1.2f, COLOR_TEXT_MUTED);
-        draw_progress_bar(ren, card_x + 32.0f, card_y + 160.0f, card_w - 64.0f, 20.0f, app->prep_state.percentage);
-
-        char count_str[128];
-        snprintf(count_str, sizeof(count_str), "%d / %d items processed (%.1f%%)", app->prep_state.completed_items, app->prep_state.total_items, app->prep_state.percentage);
-        draw_text(ren, card_x + 32.0f, card_y + 196.0f, count_str, 1.2f, COLOR_TEXT_WHITE);
-
-        draw_text(ren, card_x + 32.0f, card_y + 228.0f, "Staging: .staging_temp/ (atomic rename on verify)", 1.0f, COLOR_TEXT_DIM);
-    } else {
-        /* No preparation pipeline is connected in this build: an
-         * indeterminate indicator that claims no item counts or percentage. */
-        draw_text(ren, card_x + 32.0f, card_y + 120.0f, "No preparation pipeline is connected in this build.", 1.2f, COLOR_TEXT_MUTED);
-        draw_indeterminate_bar(ren, card_x + 32.0f, card_y + 160.0f, card_w - 64.0f, 20.0f);
-        draw_text(ren, card_x + 32.0f, card_y + 196.0f, "No preparation work is running.", 1.2f, COLOR_TEXT_WHITE);
-    }
-
-    if (draw_button(ren, card_x + 32.0f, card_y + 270.0f, 160.0f, 46.0f, "CANCEL TASK", false, in)) {
+    if (draw_button(ren, card_x + 32.0f, card_y + 270.0f, 190.0f, 46.0f, "RETURN TO LIBRARY", false, in)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }

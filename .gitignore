@@ -166,4 +166,14 @@ keys/
 pgd_keys.txt
 /backups
 tmp_show.txt
+
+# tools/capture_native_screenshots.py writes its output into docs/ui-baseline/,
+# and those captures render whatever is in the RUNNING user's library -- on a
+# maintainer's machine that is their real titles. docs/ui-baseline/README.md
+# records that the captures are retained internally and are not published, so
+# they must never be stageable by an ordinary `git add -A`, which is a documented
+# step of the provenance refresh. The publication audit rejects them as
+# unclassified paths too; this keeps that from being the only thing standing in
+# the way.
+docs/ui-baseline/*.png
 /.freebuff
