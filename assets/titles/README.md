@@ -64,6 +64,17 @@ fixture reuses any address the runtime previously hardcoded.
   adding a title-specific conditional, inheriting HST constants, or reading
   private inputs. Publication-safe and deterministic.
 
+- `display-smoke.json` is a fourth source-owned fixture, and the only one whose
+  runtime is *built* under the layout `src/core/nk_launch.c` resolves
+  (`build/<title_id>/<title_id>`), which is what makes it the one public title
+  the native player can launch. Its guest is emitted by
+  `fixtures/display_smoke/generate.py` as hand-assembled MIPS -- no PSPDEV
+  toolchain -- and it fills the PSP framebuffer and flips it through
+  `sceDisplaySetFrameBuf` once per frame, so it is also the only public fixture
+  that exercises the display/vblank/present path at all. Its address family
+  (`0x0881xxxx`) is distinct from the other synthetics and from HST.
+  Publication-safe and deterministic.
+
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
 span is manifest data, and it reaches `analyze`/`codegen` only through an explicit

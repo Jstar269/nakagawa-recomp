@@ -32,6 +32,18 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   recorded in `assets/vfpu/PROVENANCE.json`; inclusion is a provenance decision,
   not a claim about PSP firmware ownership.
 
+### Dashboard dependency boundary
+
+The public preview carries the dashboard's source, `interface/package.json`, and
+the checked-in `interface/package-lock.json`; it does not carry `node_modules`,
+an npm package cache, or a standalone Next.js runtime. The lockfile is the exact
+inventory for the dashboard dependency graph: it records resolved versions,
+integrity values, and license metadata for all 709 locked package entries.
+The copied shadcn/ui primitives have the separate MIT text in
+`THIRD_PARTY_LICENSES/SHADCN_UI.txt`. A future package that bundles fetched npm
+code must ship the corresponding package notices rather than treating this
+source-only boundary as bundled-dependency attribution.
+
 ## Public-safe exclusions
 
 The public source profile excludes the PGF parser/font payloads and PGD/amctrl

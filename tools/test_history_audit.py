@@ -45,6 +45,57 @@ class TestHistoryAudit(unittest.TestCase):
         self.assertIn("large_blobs", report)
         self.assertIn("findings", report)
 
+    def _blob_findings(self, content: str) -> list:
+        """Commit ``content`` into a throwaway repository and scan it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for argv in (("init", "-q"), ("config", "user.email", "t@example.invalid"),
+                         ("config", "user.name", "test")):
+                subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
+            (root / "note.md").write_text(content, encoding="utf-8")
+            subprocess.run(["git", "add", "note.md"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
+            return history_audit.audit_history_blob_contents(root)
+
+    def test_quoted_armour_delimiter_without_a_body_is_not_a_secret(self):
+        """Prose naming the PEM format is not a key.
+
+        docs/PROVENANCE_MERGE_GATE.md told a maintainer which value to paste into
+        a CI secret store and quoted both delimiters on one line to identify the
+        format. That failed this gate as a DEFINITE_SECRET while containing no
+        key material at all, and a gate that is red over prose is a gate people
+        learn to skip past.
+        """
+        begin = "-----BE" + "GIN RSA PRIVATE KEY-----"
+        end = "-----E" + "ND RSA PRIVATE KEY-----"
+        prose = (
+            "* `PROVENANCE_APP_PRIVATE_KEY` -- the full PEM text "
+            "(`" + begin + "` ... `" + end + "`), newlines preserved.\n"
+        )
+        secrets = [f for f in self._blob_findings(prose) if f.category == "DEFINITE_SECRET"]
+        self.assertEqual(
+            secrets, [],
+            "an armour delimiter with no key body between it and the footer is "
+            "documentation, not a secret",
+        )
+
+    def test_armour_delimiter_with_a_body_is_still_a_secret(self):
+        """The narrowing must not cost a single real key."""
+        bodies = {
+            "RSA": "MIIEowIBAAKCAQEAx7Vq9kZ3mQ8Jf2pL0sYtWn4cB6dHgR1uEvXaTzKmNpQrSuVw",
+            "OPENSSH": "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn",
+            "ENCRYPTED": "MIIFDjBABgkqhkiG9w0BBQ0wMzAbBgkqhkiG9w0BBQwwDgQI5yNCu9T5SnsCAggA",
+        }
+        for label, body in bodies.items():
+            with self.subTest(key=label):
+                begin = "-----BE" + "GIN " + label + " PRIVATE KEY-----"
+                end = "-----E" + "ND " + label + " PRIVATE KEY-----"
+                pem = begin + "\n" + body + "\n" + end + "\n"
+                self.assertTrue(
+                    any(f.code == "HISTORICAL_BLOB_SECRET" for f in self._blob_findings(pem)),
+                    "a " + label + " key body must still be caught",
+                )
+
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

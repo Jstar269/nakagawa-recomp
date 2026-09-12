@@ -553,12 +553,28 @@ MISSING_RECORD_EVIDENCE = {
 }
 
 
-def _class_for(path: str, record: dict | None) -> tuple[str, dict]:
+def _record_independent_class(path: str) -> tuple[str, dict] | None:
+    """Return the class for a path decided *before* any record is consulted.
+
+    These paths are classified by the path itself, so a detailed record must
+    not change the evidence attached to them.  Both the full generator and the
+    refresh path consult this first, which is what keeps them agreeing: when
+    they disagreed, an otherwise-identical entry was reported by the verifier
+    as CLAIM_UNBACKED because one path emitted a record_id and the other did
+    not.
+    """
     if path == "font/README.md":
         return "reviewed_documentation", {
             "source": "public documentation review",
             "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded",
         }
+    return None
+
+
+def _class_for(path: str, record: dict | None) -> tuple[str, dict]:
+    fixed = _record_independent_class(path)
+    if fixed is not None:
+        return fixed
     if record:
         classification = record.get("classification")
         evidence = {
@@ -576,6 +592,15 @@ def _class_for(path: str, record: dict | None) -> tuple[str, dict]:
         if classification == "derived-data":
             return "generated_from_public_source", {**evidence, "generator": "documented public-source data path",
                                                        "source_family": record.get("upstream") or "public PSP data"}
+        # A project-owned generated artifact: emitted by a tracked generator
+        # from tracked public project inputs, so it is recomputable rather
+        # than hand-authored.  Without this branch the classification had no
+        # mapping at all and fell through to the fail-closed "unresolved",
+        # which stopped the generator from writing any ledger.
+        if classification == "generated-project-owned":
+            return "generated_from_public_source", {**evidence,
+                                                    "generator": "project-owned generator; recomputable from tracked public inputs",
+                                                    "source_family": "tracked public project inputs"}
         if classification == "unresolved":
             return "unresolved", {**evidence, "reason": "implementation ledger marks provenance unresolved"}
         if classification in ("behavior-informed", "project-authored-independent"):
@@ -960,6 +985,9 @@ def _detailed_records(document: dict) -> dict[str, dict]:
 
 
 def _refresh_class_for(path: str, record: dict | None) -> tuple[str, dict]:
+    fixed = _record_independent_class(path)
+    if fixed is not None:
+        return fixed
     classification, _ = _class_for(path, record)
     if not record:
         return classification, {"source": "trusted detailed implementation ledger"}

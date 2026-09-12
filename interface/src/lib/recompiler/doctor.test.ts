@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { NextRequest } from "next/server";
 import {
   DOCTOR_SCOPES,
+  classifyDoctorFailure,
   isDoctorReport,
   parseDoctorScope,
   runDoctor,
@@ -176,4 +177,77 @@ test("GET /api/recompiler/doctor route: rejects non-local host", async () => {
   });
   const res = await doctorGet(req);
   assert.equal(res.status, 403);
+});
+
+test("classifyDoctorFailure: maps known failure classes to plain-language remediation", () => {
+  const python = classifyDoctorFailure("Error: spawn python ENOENT");
+  assert.equal(python.reason, "python-missing");
+  assert.ok(python.title.length > 0);
+  assert.ok(python.nextAction.length > 0);
+
+  const root = classifyDoctorFailure(
+    "repo-root-not-found: hst_manager.ps1/AGENTS.md/Makefile are not on the path",
+  );
+  assert.equal(root.reason, "repo-root-missing");
+  assert.ok(root.nextAction.length > 0);
+
+  const script = classifyDoctorFailure("hst_doctor.py not found at C:/some/tools/hst_doctor.py");
+  assert.equal(script.reason, "doctor-script-missing");
+
+  const timeout = classifyDoctorFailure("command timed out after 20000 milliseconds");
+  assert.equal(timeout.reason, "timeout");
+
+  const unknown = classifyDoctorFailure("Something totally unexpected happened");
+  assert.equal(unknown.reason, "unknown");
+  assert.equal(unknown.diagnostic, "Something totally unexpected happened");
+});
+
+test("classifyDoctorFailure: never discards the raw diagnostic", () => {
+  for (const detail of [
+    "Error: spawn python ENOENT",
+    "repo-root-not-found: anchors missing",
+    "hst_doctor.py not found at X",
+    "command timed out after 20000 milliseconds",
+  ]) {
+    const classified = classifyDoctorFailure(detail);
+    assert.equal(classified.diagnostic, detail);
+    assert.ok(classified.title.length > 0);
+    assert.ok(classified.explanation.length > 0);
+    assert.ok(classified.nextAction.length > 0);
+  }
+
+  const empty = classifyDoctorFailure(null);
+  assert.equal(empty.reason, "unknown");
+  assert.equal(empty.diagnostic, null);
+});
+
+test("summary Doctor state: unavailable with a retained report stays a failure, not success", () => {
+  const retained = summarizeDoctorReport(syntheticZeroFailureReport, "unavailable");
+  assert.equal(retained.label, "UNAVAILABLE");
+  assert.match(retained.detail, /last good report retained/);
+});
+
+test("GET /api/recompiler/doctor route: 500 payload classifies failure with remediation and keeps raw detail", async () => {
+  const previousRoot = process.env.HST_DASHBOARD_REPO_ROOT;
+  process.env.HST_DASHBOARD_REPO_ROOT = "/nonexistent-nakagawa-path-for-test";
+  try {
+    const req = new NextRequest("http://127.0.0.1:3000/api/recompiler/doctor?scope=repo", {
+      headers: { host: "127.0.0.1:3000" },
+    });
+    const res = await doctorGet(req);
+    assert.equal(res.status, 500);
+    const data = (await res.json()) as Record<string, unknown>;
+    assert.equal(data.error, "doctor-failed");
+    assert.equal(typeof data.reason, "string");
+    assert.equal(typeof data.title, "string");
+    assert.equal(typeof data.explanation, "string");
+    assert.equal(typeof data.nextAction, "string");
+    assert.ok(typeof data.detail === "string" && data.detail.length > 0);
+  } finally {
+    if (previousRoot === undefined) {
+      delete process.env.HST_DASHBOARD_REPO_ROOT;
+    } else {
+      process.env.HST_DASHBOARD_REPO_ROOT = previousRoot;
+    }
+  }
 });

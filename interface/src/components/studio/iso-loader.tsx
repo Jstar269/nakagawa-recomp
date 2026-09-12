@@ -38,6 +38,7 @@ export function IsoLoader() {
   const [loading, setLoading] = useState(false);
 
   async function handleFile(file: File) {
+    if (loading) return;
     setLoading(true);
     try {
       const read: SectorReader = async (lba, count) => {
@@ -59,7 +60,7 @@ export function IsoLoader() {
     } catch (e) {
       toast({
         title: "Inspection failed",
-        description: String(e),
+        description: e instanceof Error ? e.message : "Unexpected ISO inspection error",
         variant: "destructive",
       });
     } finally {
@@ -71,7 +72,20 @@ export function IsoLoader() {
     e.preventDefault();
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
-    if (f) handleFile(f);
+    if (f) void handleFile(f);
+  }
+
+  function openPicker() {
+    if (loading || !inputRef.current) return;
+    // Reset before opening so selecting the same ISO again still re-runs inspection.
+    inputRef.current.value = "";
+    inputRef.current.click();
+  }
+
+  function onFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) void handleFile(f);
   }
 
   const hasIso = !!isoMeta.fileName;
@@ -98,6 +112,27 @@ export function IsoLoader() {
           </p>
         </div>
       </div>
+
+      <ol aria-label="Native recompilation workflow" className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <WorkflowStep
+          number="1"
+          title={hasIso ? (matched ? "ISO recognized" : "ISO inspected") : "Inspect your ISO"}
+          detail={hasIso ? (matched ? "DISC_ID matches the supported title" : "DISC_ID needs review") : "Browser-local header and tree read"}
+          state={hasIso ? (matched ? "done" : "current") : "current"}
+        />
+        <WorkflowStep
+          number="2"
+          title="Run host preflight"
+          detail={matched ? "Validate tools and explicit game inputs" : "Available after a matched title"}
+          state={matched ? "current" : "blocked"}
+        />
+        <WorkflowStep
+          number="3"
+          title="Build and run"
+          detail={matched ? "Native manager controls, logs, and outputs" : "Requires a valid title and passing preflight"}
+          state="blocked"
+        />
+      </ol>
 
       {!hasIso ? (
         <>
@@ -136,8 +171,19 @@ export function IsoLoader() {
               }}
               onDragLeave={() => setDragOver(false)}
               onDrop={onDrop}
-              onClick={() => inputRef.current?.click()}
-              className={`relative cursor-pointer rounded-xl border-2 border-dashed transition-colors court-grid p-8 text-center ${
+              onClick={openPicker}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && !loading) {
+                  e.preventDefault();
+                  openPicker();
+                }
+              }}
+              role="button"
+              tabIndex={loading ? -1 : 0}
+              aria-busy={loading}
+              aria-describedby="iso-drop-help"
+              aria-label="Choose an ISO for browser-local inspection"
+              className={`relative cursor-pointer rounded-xl border-2 border-dashed transition-colors court-grid p-8 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 dragOver
                   ? "border-primary bg-primary/10"
                   : "border-border/70 hover:border-primary/50 hover:bg-accent/20"
@@ -148,10 +194,8 @@ export function IsoLoader() {
                 type="file"
                 accept=".iso,application/octet-stream"
                 className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleFile(f);
-                }}
+                aria-label="ISO file"
+                onChange={onFileInputChange}
               />
               <div className="mx-auto size-12 rounded-xl bg-primary/15 border border-primary/30 grid place-items-center mb-3">
                 {loading ? (
@@ -163,7 +207,7 @@ export function IsoLoader() {
               <p className="text-sm font-medium">
                 {loading ? "Inspecting ISO header sectors…" : "Drop your .iso here or click to browse"}
               </p>
-              <p className="text-[11px] text-muted-foreground mt-1">
+              <p id="iso-drop-help" className="text-[11px] text-muted-foreground mt-1">
                 Supports standard ISO9660 PSP images. Parsing occurs strictly within this browser tab memory.
               </p>
             </div>
@@ -179,7 +223,8 @@ export function IsoLoader() {
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs"
-                onClick={() => inputRef.current?.click()}
+                onClick={openPicker}
+                disabled={loading}
               >
                 <Upload className="size-3.5 mr-1" /> Replace ISO
               </Button>
@@ -190,10 +235,8 @@ export function IsoLoader() {
               type="file"
               accept=".iso,application/octet-stream"
               className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
-              }}
+              aria-label="ISO file"
+              onChange={onFileInputChange}
             />
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
               <StatPill label="File" value={isoMeta.fileName.slice(0, 18)} />
@@ -234,6 +277,9 @@ export function IsoLoader() {
                     Recognized Disc ID
                   </Badge>
                 </div>
+                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
+                  Browser inspection complete. Native host preflight is still required; this selection does not approve or copy game inputs.
+                </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <InfoItem label="Developer" value={GAME_PROFILE.developer} />
                   <InfoItem label="Publisher" value={GAME_PROFILE.publisher} />
@@ -256,7 +302,7 @@ export function IsoLoader() {
 
                 <div className="flex flex-col sm:flex-row gap-2 pt-1">
                   <Button className="flex-1 gap-1.5" onClick={() => setSection("build")}>
-                    <Hammer className="size-4" /> Open Recompile & Preflight →
+                    <Hammer className="size-4" /> Open Build & Run →
                   </Button>
                   <Button variant="outline" className="flex-1" onClick={() => setSection("graphics")}>
                     Inspect Config Settings →
@@ -294,7 +340,7 @@ export function IsoLoader() {
                   </span>
                 </div>
                 <Button variant="outline" className="w-full gap-1.5" onClick={() => setSection("build")}>
-                  <Hammer className="size-4" /> Open Recompile & Preflight →
+                  <Hammer className="size-4" /> Open Build & Run →
                 </Button>
               </div>
             )}
@@ -331,5 +377,42 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] text-muted-foreground uppercase tracking-wide">{label}</div>
       <div className="text-[11px] font-mono mt-0.5">{value}</div>
     </div>
+  );
+}
+
+function WorkflowStep({
+  number,
+  title,
+  detail,
+  state,
+}: {
+  number: string;
+  title: string;
+  detail: string;
+  state: "current" | "done" | "blocked";
+}) {
+  const stateStyles = {
+    current: "border-primary/40 bg-primary/10",
+    done: "border-emerald-500/30 bg-emerald-500/10",
+    blocked: "border-border/50 bg-background/30",
+  } as const;
+  const numberStyles = {
+    current: "bg-primary/20 text-primary border-primary/30",
+    done: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    blocked: "bg-muted/60 text-muted-foreground border-border/60",
+  } as const;
+
+  return (
+    <li className={`rounded-lg border p-2.5 ${stateStyles[state]}`}>
+      <div className="flex items-start gap-2">
+        <span className={`grid size-5 shrink-0 place-items-center rounded-full border text-[10px] font-mono font-bold ${numberStyles[state]}`}>
+          {state === "done" ? <CircleCheck className="size-3" /> : number}
+        </span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold">{title}</div>
+          <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{detail}</div>
+        </div>
+      </div>
+    </li>
   );
 }

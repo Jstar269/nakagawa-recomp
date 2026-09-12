@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X, ChevronRight, ChevronLeft, Sparkles } from "lucide-react";
 import { useStudio, type SectionId } from "./studio-context";
@@ -64,11 +64,13 @@ export function OnboardingTour() {
   const { setSection, section } = useStudio();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   // Show on first visit (no localStorage flag).
   useEffect(() => {
     try {
-      if (!localStorage.getItem(TOUR_KEY)) {
+      const hasDeepLink = new URL(window.location.href).searchParams.has("section");
+      if (!localStorage.getItem(TOUR_KEY) && !hasDeepLink) {
         const t = setTimeout(() => setOpen(true), 800);
         return () => clearTimeout(t);
       }
@@ -95,6 +97,19 @@ export function OnboardingTour() {
       /* ignore */
     }
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") close();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, close]);
 
   const next = useCallback(() => {
     if (step >= STEPS.length - 1) {
@@ -140,6 +155,12 @@ export function OnboardingTour() {
             transition={{ type: "spring", stiffness: 300, damping: 28 }}
             className="relative w-full max-w-md rounded-xl border border-border/60 bg-card glass shadow-2xl overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            ref={dialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hst-tour-title"
+            aria-describedby="hst-tour-body"
           >
             {/* Header with gradient */}
             <div className="relative px-5 pt-4 pb-3 bg-gradient-to-br from-primary/15 via-card to-card border-b border-border/40">
@@ -152,13 +173,15 @@ export function OnboardingTour() {
                   <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                     Nakagawa Recomp · Tour
                   </div>
-                  <h3 className="text-sm font-semibold leading-tight">{current.title}</h3>
+                  <h3 id="hst-tour-title" className="text-sm font-semibold leading-tight">{current.title}</h3>
                 </div>
                 <Button
+                  type="button"
                   variant="ghost"
                   size="sm"
                   className="size-7 p-0 shrink-0"
                   onClick={close}
+                  aria-label="Close orientation tour"
                 >
                   <X className="size-3.5" />
                 </Button>
@@ -167,13 +190,14 @@ export function OnboardingTour() {
 
             {/* Body */}
             <div className="px-5 py-4">
-              <p className="text-xs text-muted-foreground leading-relaxed">{current.body}</p>
+              <p id="hst-tour-body" className="text-xs text-muted-foreground leading-relaxed">{current.body}</p>
 
               {/* Progress dots */}
               <div className="flex items-center gap-1.5 mt-4">
                 {STEPS.map((s, i) => (
                   <button
                     key={i}
+                    type="button"
                     onClick={() => {
                       setStep(i);
                       setSection(STEPS[i].section);
@@ -198,6 +222,7 @@ export function OnboardingTour() {
               </span>
               <div className="flex items-center gap-1.5">
                 <Button
+                  type="button"
                   variant="ghost"
                   size="sm"
                   className="h-7 gap-1 text-xs"
@@ -206,7 +231,7 @@ export function OnboardingTour() {
                 >
                   <ChevronLeft className="size-3.5" /> Back
                 </Button>
-                <Button size="sm" className="h-7 gap-1 text-xs" onClick={next}>
+                <Button type="button" size="sm" className="h-7 gap-1 text-xs" onClick={next}>
                   {isLast ? "Finish" : "Next"}
                   {!isLast ? <ChevronRight className="size-3.5" /> : null}
                 </Button>

@@ -62,7 +62,6 @@ else ifeq ($(origin TITLE_EXTRA_SPANS),default)
 TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
 endif
 endif
-
 # GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
 # authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
 # the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
@@ -243,6 +242,29 @@ PRODUCTION_SMOKE_GENERATOR := fixtures/production_smoke/generate.py
 PRODUCTION_SMOKE_PRX       := $(PRODUCTION_SMOKE_FIXTURE)/guest.prx
 PRODUCTION_SMOKE_PSP       := $(PRODUCTION_SMOKE_FIXTURE)/guest.psp
 PRODUCTION_SMOKE_MAP       := $(PRODUCTION_SMOKE_DIR)/production_smoke.map
+
+# Public, source-owned display/presentation smoke. Same two-phase `all` path as
+# the production smoke, but the guest fills the framebuffer and flips it once a
+# frame, so the gate covers sceDisplaySetFrameBuf -> vblank -> present rather
+# than a compute sentinel. This is the only public-scope title the native player
+# can launch, which is why it also carries a manifest under assets/titles.
+# The build directory and artifact stem are deliberately the TITLE ID, not a
+# prettier name: src/core/nk_launch.c resolves a launch by probing
+# build/<title_id>/<title_id>.exe and build/<title_id>/<title_id>_image.bin.
+# Naming the build anything else is why no other fixture in this tree can be
+# launched from the native player. Keep these three strings equal to the "id"
+# field of assets/titles/display-smoke.json.
+DISPLAY_SMOKE_NAME      := display-smoke-v1
+DISPLAY_SMOKE_DIR       := build/$(DISPLAY_SMOKE_NAME)
+DISPLAY_SMOKE_FIXTURE   := $(DISPLAY_SMOKE_DIR)/fixture
+DISPLAY_SMOKE_GENERATOR := fixtures/display_smoke/generate.py
+DISPLAY_SMOKE_PRX       := $(DISPLAY_SMOKE_FIXTURE)/guest.prx
+DISPLAY_SMOKE_PSP       := $(DISPLAY_SMOKE_FIXTURE)/guest.psp
+DISPLAY_SMOKE_BASE      := 0x08810000
+# The gate runs a short pattern; the launchable/demo build runs long enough to
+# watch. Both are the same guest recipe with a different frame count.
+DISPLAY_SMOKE_FRAMES      := 60
+DISPLAY_SMOKE_DEMO_FRAMES := 1800
 
 # The AOT-gap mode of the same fixture: identical guest addresses, but the
 # helper is omitted from native emission (--omit-aot) so region A reaches it
@@ -513,7 +535,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: readiness FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -528,6 +550,51 @@ compiler-info:
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
+
+# One command for the whole pre-pull-request checklist in docs/CI.md.
+#
+# The checklist has been correct and documented for a while and is still
+# routinely half-run: the usual outcome is that publish_audit is run, reported
+# as "gates green", and provenance_attest_verify -- the gate that actually
+# blocks the merge -- is never run at all. They answer different questions.
+# publish_audit compares the candidate against its own checked-in ledger, so the
+# candidate supplies both sides and an unapproved blob cannot be detected.
+# provenance_attest_verify compares it against the external private authority,
+# which is the only thing that emits BLOB_UNAPPROVED. A tree can be
+# "publication audit: OK" and "verdict: FAIL" at the same commit.
+#
+# Ordered cheapest-first so a policy or ledger mistake surfaces in seconds
+# rather than after the suite. Every step is fatal; make stops at the first one.
+#
+#   NK_TRUSTED_LEDGER=/path/to/IMPLEMENTATION_PROVENANCE.json make readiness
+#
+# NK_TRUSTED_LEDGER is the detailed development ledger from the private history
+# repository. It is deliberately required rather than defaulted: skipping the
+# attestation step when the path is absent is exactly the silent pass this
+# target exists to prevent, so an unset value is BLOCKED, not "not applicable".
+READINESS_BASE ?= $(shell git merge-base origin/main HEAD)
+READINESS_WORKDIR ?= $(CURDIR)/../.nk-readiness-verify
+
+readiness:
+ifndef NK_TRUSTED_LEDGER
+	@echo "readiness: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "  It must name the detailed development ledger"
+	@echo "  (docs/provenance/IMPLEMENTATION_PROVENANCE.json in the private"
+	@echo "  history repository). Without it the attestation gate cannot run,"
+	@echo "  and an unrun gate is BLOCKED evidence, never a pass."
+	@exit 1
+endif
+	@echo "== readiness: base $(READINESS_BASE)"
+	$(PYTHON) tools/policy_sync.py
+	$(PYTHON) tools/lint_docs.py
+	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate $(shell git rev-parse HEAD) --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	git diff --check $(READINESS_BASE)..HEAD
+	@echo "== readiness: control-file completeness"
+	$(PYTHON) tools/policy_sync.py --regen-export
+	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
+	@echo "== readiness: OK (the suite is separate and still yours to run)"
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
@@ -558,6 +625,41 @@ production-smoke:
 
 production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
+
+# display-smoke builds the guest and asserts the presented framebuffer word
+# headlessly. display-smoke-gui is the same image in the SDL3/Vulkan window and
+# is deliberately NOT part of any aggregate gate: it needs a display.
+display-smoke: DISPLAY_SMOKE_BUILD_FRAMES ?= $(DISPLAY_SMOKE_FRAMES)
+display-smoke:
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) generate --out-dir $(DISPLAY_SMOKE_FIXTURE) \
+		--frames $(DISPLAY_SMOKE_BUILD_FRAMES)
+	$(MAKE) all \
+		GAME_NAME=$(DISPLAY_SMOKE_NAME) \
+		GAME_ELF=$(DISPLAY_SMOKE_PRX) \
+		GAME_BASE=$(DISPLAY_SMOKE_BASE) \
+		GAME_ENTRY=$(DISPLAY_SMOKE_BASE) \
+		GAME_PSP_HEADER=$(DISPLAY_SMOKE_PSP) \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(DISPLAY_SMOKE_DIR) \
+		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-run: display-smoke
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-gui:
+	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
+
+# Drive the actual native-player PLAY NOW path against the launchable fixture.
+# The child opens a real window, so this is a developer/display gate rather than
+# part of the headless CI aggregate. The fixture generator records the child's
+# machine-readable window/first-frame evidence.
+display-smoke-player: player display-smoke-run
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run-player --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-clean:
+	$(MAKE) BUILD_DIR=$(DISPLAY_SMOKE_DIR) clean
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production
@@ -841,6 +943,34 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
+
+ifeq ($(OS),Windows_NT)
+PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
+PLAYER_VULKAN_LIB   := -LC:/VulkanSDK/1.4.357.0/Lib -LC:/VulkanSDK/1.4.357.0/lib
+EXE_EXT             := .exe
+else
+PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_EXTRA_LIBS   :=
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
+endif
+
+PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/generated/nk_title_catalog.h
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+
+player: $(PLAYER_EXE)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
@@ -1441,3 +1571,40 @@ shader-verify:
 
 shader-repro-verify:
 	$(PYTHON) tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
+
+# -----------------------------------------------------------------------------
+# Native Product Core Tests
+# -----------------------------------------------------------------------------
+native-core-tests:
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)
+	./build/test_core_catalog$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
+	./build/test_parsers_hostile$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_manifest_parser.c -o build/test_manifest_parser$(EXE_EXT)
+	./build/test_manifest_parser$(EXE_EXT) --check
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_launch_resolution.c -o build/test_launch_resolution$(EXE_EXT)
+	./build/test_launch_resolution$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/player_state.c \
+		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
+	./build/test_player_state$(EXE_EXT)
+ifeq ($(OS),Windows_NT)
+	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
+	./build/test_win32_process$(EXE_EXT)
+else
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
+	./build/test_posix_process$(EXE_EXT)
+endif

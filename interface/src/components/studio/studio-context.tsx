@@ -6,23 +6,36 @@ import { defaultConfig, nativeConfig } from "@/lib/recompiler/defaults";
 import type { IsoMeta, RecompilerConfig } from "@/lib/recompiler/types";
 import { emptyIsoMeta } from "@/lib/recompiler/profiles";
 
-export type SectionId =
-  | "iso"
-  | "graphics"
-  | "performance"
-  | "limitations"
-  | "controllers"
-  | "patches"
-  | "build"
-  | "internals"
-  | "progress"
-  | "porting"
-  | "troubleshooting"
-  | "assets"
-  | "visual-regression"
-  | "test-lab"
-  | "build-health"
-  | "profiler";
+export const SECTION_IDS = [
+  "iso",
+  "graphics",
+  "performance",
+  "limitations",
+  "controllers",
+  "patches",
+  "build",
+  "internals",
+  "progress",
+  "porting",
+  "troubleshooting",
+  "assets",
+  "visual-regression",
+  "test-lab",
+  "build-health",
+  "profiler",
+] as const;
+
+export type SectionId = (typeof SECTION_IDS)[number];
+
+function isSectionId(value: string | null): value is SectionId {
+  return value !== null && SECTION_IDS.includes(value as SectionId);
+}
+
+function sectionFromLocation(): SectionId | null {
+  if (typeof window === "undefined") return null;
+  const value = new URL(window.location.href).searchParams.get("section");
+  return isSectionId(value) ? value : null;
+}
 
 export interface ProfileSummary {
   id: string;
@@ -57,6 +70,15 @@ interface StudioState {
   profiles: ProfileSummary[];
   profilesOpen: boolean;
   buildRequestNonce: number;
+  /**
+   * Shared build gate decision derived from the Workspace Doctor preflight.
+   * Published by BuildPanel; other build entry points (the topbar CTA) must
+   * respect it instead of dispatching a build with no preflight evidence.
+   * Undefined until the build panel mounts and reports its gate state.
+   */
+  buildPrereqs?: { ready: boolean; missing: string[] };
+  /** First blocking reason for the shared gate, or null when clear. */
+  buildHint?: string | null;
   // undo/redo
   canUndo: boolean;
   canRedo: boolean;
@@ -107,7 +129,21 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const native = useMemo(() => nativeConfig(), []);
   const [config, setConfig] = useState<RecompilerConfig>(() => defaultConfig("minimal"));
   const [isoMeta, setIsoMeta] = useState<IsoMeta>(() => emptyIsoMeta());
-  const [section, setSection] = useState<SectionId>("iso");
+  // Keep the first render stable for SSR, then restore the selected panel from
+  // the URL so a diagnostic view can be bookmarked or shared.
+  const [section, setCurrentSection] = useState<SectionId>("iso");
+  const setSection = useCallback((next: SectionId) => {
+    setCurrentSection(next);
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    if (next === "iso") {
+      url.searchParams.delete("section");
+    } else {
+      url.searchParams.set("section", next);
+    }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -119,6 +155,9 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [buildRequestNonce, setBuildRequestNonce] = useState(0);
+  // Shared build gate (published by BuildPanel from the Doctor preflight).
+  const [buildPrereqs, setBuildPrereqs] = useState<StudioState["buildPrereqs"]>(undefined);
+  const [buildHint, setBuildHint] = useState<StudioState["buildHint"]>(undefined);
 
   // --- Undo/redo history ---
   const undoStackRef = useRef<RecompilerConfig[]>([]);
@@ -126,6 +165,17 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const lastSnapshotRef = useRef<number>(0);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+
+  useEffect(() => {
+    const initialSection = sectionFromLocation();
+    if (initialSection) setCurrentSection(initialSection);
+
+    const onPopState = () => {
+      setCurrentSection(sectionFromLocation() ?? "iso");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const syncUndoFlags = useCallback(() => {
     setCanUndo(undoStackRef.current.length > 0);
@@ -480,6 +530,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const setBuild: StudioActions["setBuild"] = useCallback((b) => {
     if (b.buildStatus !== undefined) setBuildStatus(b.buildStatus);
+    if (b.buildPrereqs !== undefined) setBuildPrereqs(b.buildPrereqs);
+    if (b.buildHint !== undefined) setBuildHint(b.buildHint);
   }, []);
 
   const startCapture: StudioActions["startCapture"] = useCallback((pspAction, padIdx) => {
@@ -507,6 +559,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     profiles,
     profilesOpen,
     buildRequestNonce,
+    buildPrereqs,
+    buildHint,
     canUndo,
     canRedo,
     setSection,

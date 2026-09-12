@@ -567,6 +567,22 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
+      # Presentation path on a source-owned guest: fill the PSP framebuffer, hand
+      # it to sceDisplaySetFrameBuf and wait for vblank, once per frame. The other
+      # smokes prove compute and the dispatch seam but never reach the display
+      # source, so a scheduler change that stops delivering vblanks to a guest
+      # whose only wait is a vblank wait was invisible to every hosted gate. Runs
+      # headless (--sched): the assertion is the guest-visible framebuffer word,
+      # so no display is required on the runner.
+      - name: Build and run display presentation smoke
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 display-smoke-run
+
       # AOT <-> interpreter differential over the same source-owned guest bytes.
       # One pipeline run produces both execution lanes; the comparator diffs the
       # canonical instruction trace, the ordered guest writes, the memory window

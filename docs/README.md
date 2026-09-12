@@ -90,7 +90,6 @@ in this slice; classification comes first, directory moves separately.
 | `PSPDEV_LOCAL_VERIFICATION.md` | CURRENT | PSPDEV local-verification boundary |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
-| `provenance/INDEPENDENCE_BACKLOG.md` | CURRENT | Independence backlog |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/GENERICITY_CENSUS_20260826.md` | REFERENCE | Dated evidence; live source authoritative |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |

@@ -20,6 +20,7 @@
 #include "title_config.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,29 @@
 #endif
 
 void sr_register_all(void);
+
+/* An opt-in file side channel for a parent launcher that cannot reliably own a
+ * spawned child's stderr on every host backend. The normal runtime only writes
+ * stderr; SR_BOOT_EVENT_FILE is used by the native-player launch smoke. */
+static void sr_driver_boot_event(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+    fflush(stderr);
+
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !*path) return;
+
+    FILE *file = fopen(path, "ab");
+    if (!file) return;
+    va_start(args, format);
+    vfprintf(file, format, args);
+    va_end(args);
+    fputc('\n', file);
+    fclose(file);
+}
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32
@@ -377,9 +401,9 @@ int main(int argc, char **argv) {
     }
 
 #ifdef SR_PUBLIC_SAFE
-    fprintf(stderr, "BOOT_EVENT phase=init public_safe=1\n");
+    sr_driver_boot_event("BOOT_EVENT phase=init public_safe=1");
 #else
-    fprintf(stderr, "BOOT_EVENT phase=init public_safe=0\n");
+    sr_driver_boot_event("BOOT_EVENT phase=init public_safe=0");
 #endif
 
     /* Image mode: a pre-relocated flat image (e.g. a rebased PRX from tools/prxload.py) is
@@ -419,7 +443,7 @@ int main(int argc, char **argv) {
     ref_trace = argv[2];
     out = argv[3];
 have_image:;
-    fprintf(stderr, "BOOT_EVENT phase=image_loaded entry=0x%08x\n", entry);
+    sr_driver_boot_event("BOOT_EVENT phase=image_loaded entry=0x%08x", entry);
     if (!validate_expectations(expectations, DRIVER_MAX_EXPECT_U32)) {
         return 2;
     }
@@ -436,7 +460,7 @@ have_image:;
     fprintf(stderr, "Calling sr_register_all()...\n");
     sr_register_all();
     fprintf(stderr, "sr_register_all() returned\n");
-    fprintf(stderr, "BOOT_EVENT phase=runtime_registered entry=0x%08x\n", entry);
+    sr_driver_boot_event("BOOT_EVENT phase=runtime_registered entry=0x%08x", entry);
     /* "none" as the out path disables tracing -- much faster for HLE bring-up, where the goal
      * is to reach the next unimplemented import rather than diff a trace. */
     if (strcmp(out, "none") != 0 && sr_trace_open(out, "cgtest", entry) != 0) {
@@ -469,9 +493,9 @@ have_image:;
      * starve on host filesystem contention. The historical lazy data_init()
      * inside h_IoOpen ran this whole census from the first guest sceIoOpen on
      * the scheduler thread. */
-    fprintf(stderr, "BOOT_EVENT phase=index_prepare_begin\n");
+    sr_driver_boot_event("BOOT_EVENT phase=index_prepare_begin");
     int data_state = sr_host_data_prepare();
-    fprintf(stderr, "BOOT_EVENT phase=index_prepare_end state=%d ready=%zu\n",
+    sr_driver_boot_event("BOOT_EVENT phase=index_prepare_end state=%d ready=%zu",
             data_state, sr_host_data_entry_count());
 
     int use_sched = 0;
@@ -483,7 +507,7 @@ have_image:;
          * waits on a sibling). sched_run uses s as the live register file for whichever thread
          * runs; it returns when no thread is runnable, or the process exits at an unimplemented
          * import inside a thread fiber. */
-        fprintf(stderr, "BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x\n", entry);
+        sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
         sched_init(&s);
         sched_run(entry, s.r[4], s.r[5]);
     } else {

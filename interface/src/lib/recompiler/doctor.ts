@@ -91,6 +91,93 @@ export function isDoctorReport(value: unknown): value is DoctorReport {
   return value.exit_code === expectedExitCode;
 }
 
+/**
+ * Reason a Doctor run could not produce a report at all. These are route-level
+ * failures (the diagnostic subprocess never ran or never reported), distinct
+ * from a report whose checks contain FAIL results.
+ */
+export type DoctorFailureReason =
+  | "python-missing"
+  | "repo-root-missing"
+  | "doctor-script-missing"
+  | "timeout"
+  | "unknown";
+
+export interface ClassifiedDoctorFailure {
+  reason: DoctorFailureReason;
+  /** One-line, plain-language statement of what went wrong. */
+  title: string;
+  /** Why this happens, in terms a non-expert can act on. */
+  explanation: string;
+  /** The concrete next action that resolves the failure. */
+  nextAction: string;
+  /** Raw diagnostic text, preserved for a developer-facing detail toggle. */
+  diagnostic: string | null;
+}
+
+/**
+ * Map a raw failure string from runDoctor (or a transport error) to a known
+ * failure class with plain-language remediation. The raw string is always
+ * preserved in `diagnostic` so no information is discarded for developers.
+ */
+export function classifyDoctorFailure(rawDetail: string | null | undefined): ClassifiedDoctorFailure {
+  const detail = typeof rawDetail === "string" ? rawDetail : "";
+  const lower = detail.toLowerCase();
+
+  if (lower.includes("enoent") && lower.includes("python")) {
+    return {
+      reason: "python-missing",
+      title: "Python is not installed or not on PATH",
+      explanation:
+        "The workspace preflight runs the project's diagnostic script, which needs Python. Windows could not start a python process.",
+      nextAction:
+        "Install Python 3 from python.org (or run 'winget install Python.Python.3.12') and choose 'Add python.exe to PATH' during setup, then reload this dashboard.",
+      diagnostic: detail || null,
+    };
+  }
+  if (lower.includes("repo-root-not-found")) {
+    return {
+      reason: "repo-root-missing",
+      title: "The Nakagawa Recomp project folder was not found",
+      explanation:
+        "The dashboard locates the project by finding hst_manager.ps1, AGENTS.md and Makefile together. The folder it started in does not contain them.",
+      nextAction:
+        "Start the dashboard from the Nakagawa Recomp checkout (run 'npm run dev' inside its interface folder), or set HST_DASHBOARD_REPO_ROOT to the project folder and reload.",
+      diagnostic: detail || null,
+    };
+  }
+  if (lower.includes("hst_doctor.py not found")) {
+    return {
+      reason: "doctor-script-missing",
+      title: "The preflight diagnostic script is missing",
+      explanation:
+        "The dashboard could not find the project's diagnostic script (tools/hst_doctor.py) inside the Nakagawa Recomp project.",
+      nextAction:
+        "Verify this is a complete Nakagawa Recomp checkout; tools/hst_doctor.py must exist in the project folder.",
+      diagnostic: detail || null,
+    };
+  }
+  if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
+    return {
+      reason: "timeout",
+      title: "The preflight check took too long",
+      explanation:
+        "The diagnostic script did not finish within its time limit. A first run can be slow while every tool is probed.",
+      nextAction:
+        "Use Refresh to try again. If it keeps timing out, run 'python tools/hst_doctor.py --json --scope all' in a terminal to see where it stalls.",
+      diagnostic: detail || null,
+    };
+  }
+  return {
+    reason: "unknown",
+    title: "The preflight check could not run",
+    explanation: "The diagnostic script failed before it could produce a report.",
+    nextAction:
+      "Expand the technical detail below. If it names a missing tool, install that tool and refresh.",
+    diagnostic: detail || null,
+  };
+}
+
 export function parseDoctorScope(value: unknown): DoctorScope {
   if (value === undefined || value === null || value === "") {
     return "all";
