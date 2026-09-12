@@ -88,6 +88,18 @@ _HEAVY_FIRST = [
 ]
 
 
+# Modules that deliberately mutate tracked repository state, which every other
+# module may be reading at the same time.  Rewriting such a test to work on a
+# temp-directory copy is the right answer when its claim is about a *mechanism*
+# and the wrong answer when its claim is about the *tracked tree itself*: a copy
+# outside the repository carries no publication-policy identity, so the
+# rewritten assertion quietly tests a weaker property than the original.  These
+# run in their own sequential lane once the pool has drained.
+_SERIAL_ONLY = frozenset({
+    "test_title_catalog",
+})
+
+
 def _init_worker(root_str: str, tools_str: str) -> None:
     import os
     import sys
@@ -226,9 +238,15 @@ def _contract_report(*, execute: bool, jobs: int = 1, verbose: bool = False) -> 
         ]
         priority_map = {name: idx for idx, name in enumerate(_HEAVY_FIRST)}
         modules.sort(key=lambda m: (priority_map.get(m, 9999), m))
+        parallel_modules = [m for m in modules if m not in _SERIAL_ONLY]
+        serial_modules = [m for m in modules if m in _SERIAL_ONLY]
 
         if verbose:
-            print(f"Running {len(modules)} test modules across {jobs} workers...", file=sys.stderr)
+            print(
+                f"Running {len(parallel_modules)} test modules across {jobs} workers, "
+                f"then {len(serial_modules)} serial-only module(s)...",
+                file=sys.stderr,
+            )
 
         inventory_b = []
         skip_records = []
@@ -237,27 +255,42 @@ def _contract_report(*, execute: bool, jobs: int = 1, verbose: bool = False) -> 
         skipped = 0
         successful = True
 
+        def _absorb(mod_name: str, mod_result: dict[str, object]) -> None:
+            nonlocal failures, errors, skipped, successful
+            inventory_b.extend(mod_result["started_ids"])
+            skip_records.extend(mod_result["skip_records"])
+            failures += len(mod_result["failures"])
+            errors += len(mod_result["errors"])
+            skipped += mod_result["skipped"]
+            if not mod_result["successful"]:
+                successful = False
+            if not mod_result["successful"] or mod_result["failures"] or mod_result["errors"]:
+                print(f"FAILED: {mod_name}: failures={mod_result['failures']}, errors={mod_result['errors']}", file=sys.stderr)
+            if verbose:
+                status = "OK" if mod_result["successful"] else "FAIL"
+                print(f"  [{status}] {mod_name} ({len(mod_result['started_ids'])} tests)", file=sys.stderr)
+
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=jobs,
             initializer=_init_worker,
             initargs=(str(root), str(tools_dir)),
         ) as executor:
-            futures = {executor.submit(_run_module_worker, m): m for m in modules}
+            futures = {executor.submit(_run_module_worker, m): m for m in parallel_modules}
             for future in concurrent.futures.as_completed(futures):
-                mod_name = futures[future]
-                mod_result = future.result()
-                inventory_b.extend(mod_result["started_ids"])
-                skip_records.extend(mod_result["skip_records"])
-                failures += len(mod_result["failures"])
-                errors += len(mod_result["errors"])
-                skipped += mod_result["skipped"]
-                if not mod_result["successful"]:
-                    successful = False
-                if not mod_result["successful"] or mod_result["failures"] or mod_result["errors"]:
-                    print(f"FAILED: {mod_name}: failures={mod_result['failures']}, errors={mod_result['errors']}", file=sys.stderr)
-                if verbose:
-                    status = "OK" if mod_result["successful"] else "FAIL"
-                    print(f"  [{status}] {mod_name} ({len(mod_result['started_ids'])} tests)", file=sys.stderr)
+                _absorb(futures[future], future.result())
+
+        # Sequential lane.  Nothing from the pool is still in flight here, so a
+        # module in this list may mutate the tracked tree as long as it restores
+        # it.  Kept in a worker process rather than inlined so that both lanes
+        # collect results through exactly the same code path.
+        if serial_modules:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_init_worker,
+                initargs=(str(root), str(tools_dir)),
+            ) as executor:
+                for mod_name in serial_modules:
+                    _absorb(mod_name, executor.submit(_run_module_worker, mod_name).result())
 
     elapsed = time.perf_counter() - t0
     a_set = set(inventory_a)
@@ -376,4 +409,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -69,11 +69,24 @@ class TitleCatalogTests(unittest.TestCase):
         res_ver = run_codegen("--verify")
         self.assertEqual(res_ver.returncode, 0, res_ver.stderr)
 
-        # Induce drift cleanly by corrupting the generated output instead of the repo manifest
-        drift_file = temp_gen / "nk_title_catalog.c"
-        drift_file.write_text("/* drifted content */\n", encoding="utf-8")
+        # Mutate a tracked manifest, then always put it back.  Corrupting
+        # the generated output instead would be trivially parallel-safe and
+        # would test a weaker claim: that --verify notices a clobbered output
+        # file, not that it notices a manifest whose generated output is now
+        # stale.  The second is the regression this test exists for, so the
+        # mutation stays and the module is listed in
+        # discovery_contract._SERIAL_ONLY.
+        manifest_to_modify = sorted(titles_dir.glob("*.json"))[0]
+        original_bytes = manifest_to_modify.read_bytes()
+        try:
+            data = json.loads(original_bytes.decode("utf-8"))
+            data["display_name"] = "Drifted Title Name"
+            manifest_to_modify.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        res_drift = run_codegen("--verify")
+            res_drift = run_codegen("--verify")
+        finally:
+            manifest_to_modify.write_bytes(original_bytes)
+
         self.assertNotEqual(res_drift.returncode, 0)
         self.assertIn("Native public title catalog is out of date", res_drift.stderr)
 
