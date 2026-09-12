@@ -47,7 +47,7 @@ TRUSTED_WORKFLOW = verifier.TRUSTED_WORKFLOW
 #: deliberately mirrors the real ledger's ``tools/*`` catch-all so the tests can
 #: prove a blanket record is inert for classification while still being a valid
 #: anchor for a path it already covers.
-TRUSTED_RECORDS = {
+AUTHORITY_RECORDS = {
     "schema_version": 1,
     "records": [
         {
@@ -202,7 +202,7 @@ class GateCase(unittest.TestCase):
         self.outside.mkdir()
         self.trusted_ledger = self.outside / "IMPLEMENTATION_PROVENANCE.json"
         self.repo.before_commit = self.regenerate_export
-        self.write_trusted(TRUSTED_RECORDS)
+        self.write_trusted(AUTHORITY_RECORDS)
 
         entries = []
         for path, raw in self.FILES.items():
@@ -235,7 +235,7 @@ class GateCase(unittest.TestCase):
     def approve_blob(self, path: str, raw: bytes, *, record_id: str, classification: str,
                      document: dict | None = None) -> dict:
         """Add a trusted reviewed-blob approval for exactly these bytes."""
-        document = json.loads(json.dumps(document or TRUSTED_RECORDS))
+        document = json.loads(json.dumps(document or AUTHORITY_RECORDS))
         document.setdefault("reviewed_blobs", []).append({
             "path": path, "sha256": _sha(raw),
             "classification": classification, "record_id": record_id,
@@ -525,7 +525,7 @@ class UnbackedAttestationTests(GateCase):
         and an approval naming the exact bytes.
         """
         raw = b"int recorded(void) { return 6; }\n"
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "recorded-path", "paths": ["src/rt/recorded.c"],
             "classification": "project-authored-independent", "upstream": None,
@@ -693,7 +693,7 @@ class AttestationInheritanceTests(GateCase):
         self.repo.branch("attack", self.base)
         raw = b"print('replaced, with my own authority')\n"
         self.repo.write(self.LEGACY, raw)
-        forged = json.loads(json.dumps(TRUSTED_RECORDS))
+        forged = json.loads(json.dumps(AUTHORITY_RECORDS))
         forged["records"].append({
             "id": "legacy-blessed", "paths": [self.LEGACY],
             "classification": "project-authored-independent", "upstream": None,
@@ -806,7 +806,7 @@ class AttestationInheritanceTests(GateCase):
         approval naming the exact new bytes.
         """
         replacement = b"print('replaced, and now attested')\n"
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "legacy-attested", "paths": [self.LEGACY],
             "classification": "project-authored-independent", "upstream": None,
@@ -882,7 +882,7 @@ class AttestationInheritanceTests(GateCase):
 
     def test_correcting_a_grandfathered_claim_to_authority_is_allowed(self) -> None:
         """Debt is paid by agreeing with authority, and that must not be refused."""
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "legacy-attested", "paths": [self.LEGACY],
             "classification": "derived-translated", "upstream": "upstream-project",
@@ -925,7 +925,7 @@ class ExactBlobAuthorizationTests(GateCase):
                 classification: str | None = None, sha256: str | None = None,
                 document: dict | None = None) -> dict:
         """Add a reviewed-blob approval to the trusted authority."""
-        document = json.loads(json.dumps(document or TRUSTED_RECORDS))
+        document = json.loads(json.dumps(document or AUTHORITY_RECORDS))
         document.setdefault("reviewed_blobs", []).append({
             "path": path,
             "sha256": sha256 or _sha(raw),
@@ -1226,7 +1226,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.assertTrue(verifier._record_covers("a.c", "real", exact, patterns))
 
     def test_a_wildcard_approval_path_is_refused(self) -> None:
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["reviewed_blobs"] = [{
             "path": "src/rt/*", "sha256": "0" * 64,
             "classification": self.PRIVATE_CLASS, "record_id": self.RECORD,
@@ -1810,7 +1810,7 @@ class TrustBoundaryTests(GateCase):
         self.repo.branch("attack", self.base)
         raw = b"int forged(void) { return 8; }\n"
         self.repo.write("src/rt/forged.c", raw)
-        forged_authority = json.loads(json.dumps(TRUSTED_RECORDS))
+        forged_authority = json.loads(json.dumps(AUTHORITY_RECORDS))
         forged_authority["records"].append({
             "id": "forged-authority", "paths": ["src/rt/forged.c"],
             "classification": "project-authored-independent", "upstream": None,
@@ -1864,7 +1864,7 @@ class TrustBoundaryTests(GateCase):
 
     def test_trusted_ledger_inside_the_repository_is_refused(self) -> None:
         inside = self.repo.root / "trusted.json"
-        inside.write_text(json.dumps(TRUSTED_RECORDS), encoding="utf-8", newline="\n")
+        inside.write_text(json.dumps(AUTHORITY_RECORDS), encoding="utf-8", newline="\n")
         with self.assertRaises(verifier.VerifyError) as caught:
             self.run_verify(self.base, trusted_ledger=inside)
         self.assertEqual(caught.exception.code, "TRUSTED_INPUT_CANDIDATE_CONTROLLED")
@@ -2104,7 +2104,7 @@ class EphemeralGenerationTests(unittest.TestCase):
         self.outside.mkdir()
         self.trusted_ledger = self.outside / "IMPLEMENTATION_PROVENANCE.json"
         self.repo.before_commit = self.regenerate_export
-        self.write_trusted(TRUSTED_RECORDS)
+        self.write_trusted(AUTHORITY_RECORDS)
 
         entries = []
         for path, raw in GateCase.FILES.items():
