@@ -67,6 +67,43 @@ material in this repository.
    - Validated on Windows 11 with MinGW GCC 16.1.0 (`-Wall -Wextra -Werror` zero warnings).
    - Validated on Ubuntu 24.04 via WSL (`gcc 13.3.0`, CTest 100% pass).
 
+## Verifying the POSIX backend before CI does
+
+The local inner loop on the Windows development host is mingw32 only, but hosted CI compiles
+`src/core/nk_platform_posix.c` on the Linux runner. A change to a platform-backend pair can
+therefore pass every local gate and still fail hosted CI, and the failure arrives as a *compile*
+error inside unrelated-looking Python suites rather than as a portability complaint.
+
+Three modules compile the POSIX backend. They are the ones to run:
+
+```bash
+cd tools && python3 -m unittest test_native_host_backends test_iso_parity test_second_title_ingest
+```
+
+On this host WSL reproduces the runner closely (Ubuntu 24.04, gcc 13.3.0):
+
+```bash
+wsl.exe -e bash -lc 'cd "$(wslpath "C:/nk/worktrees/<worktree>")/tools" && python3 -m unittest test_native_host_backends test_iso_parity test_second_title_ingest'
+```
+
+The harness compiles with `gcc -std=c99 -Wall -Wextra -Werror`, so a missing declaration is a
+build failure rather than a warning.
+
+### Feature-test macros are the trap
+
+`-std=c99` selects strict ISO C, so POSIX and XSI declarations appear only when the translation
+unit asks for them. Getting this wrong is invisible on Windows, because the Win32 backend never
+compiles the guarded code at all.
+
+`realpath()` is the worked example: it is XSI rather than base POSIX, and glibc guards its
+declaration on `__USE_MISC || __USE_XOPEN_EXTENDED`. `_POSIX_C_SOURCE 200809L` sets neither — it
+sets `__USE_XOPEN2K8`, which that guard does not test. The declaration stays hidden, the call
+compiles to an implicit `int`, and `-Werror` rejects every suite that builds the backend.
+
+Prefer `_XOPEN_SOURCE 700`, which is the portable spelling and implies POSIX.1-2008. glibc's
+`_DEFAULT_SOURCE` exposes the same declarations but does not carry to musl or the BSDs, and this
+file is the POSIX backend for every non-Windows target.
+
 ## Definition of support
 
 A platform is not supported until a clean build, synthetic tests, bounded runtime smoke test,
