@@ -1408,9 +1408,13 @@ static void test_audio_regular_contract_safety(void) {
            "whole-span rejection occurs before any host queue query or wait");
 
     /* Drain path. The blocking output re-reads the host queue while the backend
-     * still holds more than one channel period, then returns. Wait duration is
-     * deliberately not asserted here: sched_delay_current() is inert without a
-     * current scheduler thread, so this fixture can only witness loop shape. */
+     * still holds more than TWO channel periods, then returns (#67: releasing at
+     * one period let scheduler-boundary wake latency drain the host ring). The
+     * sequence 192/160/128/64 separates the two contracts: a two-period release
+     * stops at 128 after three reads; the old one-period release waits on to 64
+     * and reads four times. Wait duration is deliberately not asserted here:
+     * sched_delay_current() is inert without a current scheduler thread, so this
+     * fixture can only witness loop shape. */
     sr_hle_test_audio_reset();
     audio_fixture_reset();
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
@@ -1418,16 +1422,17 @@ static void test_audio_regular_contract_safety(void) {
     for (uint32_t i = 0; i < 64u * 2u; i++)
         MEM_W16(STEREO_BUF + i * 2u, (uint16_t)(i + 1u));
     s_audio_queue_seq[0] = 192;
-    s_audio_queue_seq[1] = 128;
-    s_audio_queue_seq[2] = 64;
-    s_audio_queue_seq_len = 3;
+    s_audio_queue_seq[1] = 160;
+    s_audio_queue_seq[2] = 128;
+    s_audio_queue_seq[3] = 64;
+    s_audio_queue_seq_len = 4;
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING,
                           0u, 0x8000u, STEREO_BUF) == 64u,
            "AudioOutputBlocking returns the channel frame count after draining");
     expect(s_audio_push_calls == 1u && s_audio_push_frames == 64,
            "the drain path submits the buffer once before waiting");
     expect(s_audio_queue_calls == 3u,
-           "the drain loop re-reads the host queue until the lead is one period");
+           "the drain loop re-reads the host queue until the lead is two periods");
 
 
     /* The backend reports -1 when it has no queue. That sentinel must end the

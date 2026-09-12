@@ -6295,9 +6295,18 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * never narrow the guest-derived frame count into the signed queue domain.
      * This form is defense in depth, not a repaired defect: with the reserve and
      * SetChannelDataLen size contracts above, n can no longer exceed INT_MAX, so
-     * no production dispatch distinguishes it and it has no failing-before. */
-    while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > n)
-        sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - n));
+     * no production dispatch distinguishes it and it has no failing-before.
+     *
+     * Release at a two-period lead, not one (#67). A delayed thread is only woken
+     * at a scheduler boundary, and a busy lower-priority runner can hold the CPU
+     * until the next one -- as much as a VBLANK period. Released with only one
+     * period queued, any wake that late drains the host ring before the next
+     * push, and the write cursor snaps past lost audio. Two periods give that
+     * boundary latency a whole period of headroom while still pacing against the
+     * device's real drain; n is bounded by the reserve/SetChannelDataLen
+     * contracts (<= 65536 frames), so 2u * n cannot wrap. */
+    while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
+        sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {
