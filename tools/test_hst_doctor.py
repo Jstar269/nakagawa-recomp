@@ -291,8 +291,13 @@ class EnvironmentContractTests(unittest.TestCase):
                 hst_doctor_checks.sys,
                 "getwindowsversion",
                 return_value=type(
-                    "WindowsVersion", (), {"build": build, "product_type": product_type}
-                )(),
+                    "WindowsVersion", (tuple,), {
+                        "build": build,
+                        "product_type": product_type,
+                        "platform_version": (10, 0, build),
+                        "service_pack_major": 0,
+                    }
+                )((10, 0, build, 2, "")),
                 create=True,
             ), mock.patch.object(
                 hst_doctor_checks,
