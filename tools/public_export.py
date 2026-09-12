@@ -19,6 +19,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPORT_PATH = "PUBLIC_EXPORT.json"
+PROVENANCE_LEDGER_PATH = "assets/public_provenance_ledger.json"
 EXPORT_SCHEMA_VERSION = "2.0.0"
 
 
@@ -41,9 +42,14 @@ def build_document(
     manifest: bytes | None = None,
     sbom_hashes: dict[str, str] | None = None,
     excluded_file_count: int | None = None,
+    exclude_generated_controls: bool = False,
 ) -> dict:
-    included = [path for path, _ in files if policy.resolve(path).disposition == "included"]
-    excluded_present = [path for path, _ in files if policy.resolve(path).disposition == "excluded"]
+    source_files = [
+        (path, raw) for path, raw in files
+        if not (exclude_generated_controls and path in {EXPORT_PATH, PROVENANCE_LEDGER_PATH})
+    ]
+    included = [path for path, _ in source_files if policy.resolve(path).disposition == "included"]
+    excluded_present = [path for path, _ in source_files if policy.resolve(path).disposition == "excluded"]
     document = {
         "export_schema_version": EXPORT_SCHEMA_VERSION,
         "tool": "tools/public_export.py",
@@ -56,14 +62,18 @@ def build_document(
         "policy_version": policy.profile_version,
         "policy_sha256": policy.digest,
         "audit_tool_version": "0.4.0",
-        "tracked_file_count": len(files),
+        "tracked_file_count": len(source_files),
         "included_file_count": len(included),
         "exported_file_count": len(included),
         "excluded_file_count": len(excluded_present) if excluded_file_count is None else excluded_file_count,
         "included_content_sha256": content_digest([
-            (path, raw) for path, raw in files if policy.resolve(path).disposition == "included"
+            (path, raw) for path, raw in source_files if policy.resolve(path).disposition == "included"
         ]),
-        "digest_excludes": [EXPORT_PATH],
+        "digest_excludes": sorted(
+            {EXPORT_PATH, PROVENANCE_LEDGER_PATH}
+            if exclude_generated_controls
+            else {EXPORT_PATH}
+        ),
         "excluded_paths": sorted(policy.exclude_paths),
         "excluded_globs": sorted(policy.exclude_globs),
         "excluded_present_paths": sorted(excluded_present),
