@@ -7308,7 +7308,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ce62eb74c5f3fe5a7547c3ccaad3e6d365e18c3b118b0c86835424ef0c99c27"
+      "sha256": "aa1e9ea4c7f7d04922cdcabef3914b70f1c8c9e61a880ae297b874acea025f7f"
     },
     {
       "path": "tools/public_export.py",
@@ -7344,7 +7344,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72136478f586986a93511503cd154ba93994cf9081afb516debfa6a72b4c1a6a"
+      "sha256": "4bd44f72c7bdd1635bf34e6b757cd4a50d36768827f5366381157ef1ef7a4652"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -8331,7 +8331,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "fcd1793ca4b4cdc0af6a14cd7ccbab6ccafeb870d823f23926dfb6d9c8b13974"
+      "sha256": "4d8c8818cef0eccb38e39e4b769bc5a8ab2107c803ef8667b979a6a4bf0fcb04"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
