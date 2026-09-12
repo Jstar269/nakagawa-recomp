@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Verify a candidate tree's public provenance ledger against external authority.
+"""Verify a candidate tree's public provenance against external authority.
 
 ``provenance_ledger.py --check`` validates the checked-in public ledger
 *structurally* and says so explicitly: it "cannot authenticate attestation
@@ -12,9 +12,11 @@ tree the release process already blessed.  Neither one can run in ordinary pull
 request CI, so until this tool existed the merge path verified only that the
 candidate agreed with itself.
 
-This tool closes that gap.  It is the *verifier*, never a generator: it writes
-no repository artifact and it treats every byte of the candidate tree as
-untrusted input.
+This tool closes that gap.  It is the *verifier*, never a candidate-controlled
+generator: its normal mode verifies a committed ledger, while ``--ephemeral``
+generates fresh ledger/export bytes only in a caller-supplied temporary
+directory.  It writes no repository artifact and treats every byte of the
+candidate tree as untrusted input.
 
 Trust boundary
 --------------
@@ -24,13 +26,15 @@ Trusted (never candidate-controlled):
 * this file, executed from the base/trusted ref, not from the candidate;
 * the detailed implementation ledger, supplied as an external file that must
   live outside the candidate repository;
-* the publication policy and the previous public ledger, read from the trusted
-  base commit through Git rather than from the candidate's working tree.
+* the publication policy and previous public baseline, read from the trusted
+  base commit or an externally bound snapshot rather than from the candidate's
+  working tree;
+* the canonical generator imported from this trusted checkout.
 
 Untrusted (data only, never executed, never a trust anchor):
 
 * every blob in the candidate tree, including its ``.github/`` workflows, its
-  copy of this file, its policy, and its public ledger.
+  copy of this file, its policy, and any legacy public ledger/export.
 
 The candidate tree is read through ``git cat-file`` and is never checked out,
 so no candidate hook, build file, or module can run in the verifier's process.
@@ -143,6 +147,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 import unicodedata
 from fnmatch import fnmatchcase
@@ -150,13 +155,15 @@ from pathlib import Path, PurePosixPath
 
 try:
     from .provenance_ledger import (
-        ALLOWED_CLASSES, _class_for, is_implementation_path, validate_ledger,
+        ALLOWED_CLASSES, _admission_requires_implementation, _class_for,
+        is_implementation_path, validate_ledger,
     )
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
     from provenance_ledger import (
-        ALLOWED_CLASSES, _class_for, is_implementation_path, validate_ledger,
+        ALLOWED_CLASSES, _admission_requires_implementation, _class_for,
+        is_implementation_path, validate_ledger,
     )
     from public_export import build_document as _build_export_document
     from publication_policy import PolicyError, load_policy
@@ -169,6 +176,14 @@ LEDGER_PATH = "assets/public_provenance_ledger.json"
 POLICY_PATH = "assets/public_source_profile.json"
 EXPORT_PATH = "PUBLIC_EXPORT.json"
 MANIFEST_PATH = "assets/release_manifest.json"
+CONTROL_PATHS = frozenset({LEDGER_PATH, EXPORT_PATH})
+
+# A baseline supplied in the integration-time workflow is either the exact
+# legacy ledger blob from the trusted base (compatibility window), or this
+# explicit envelope.  The envelope is what lets the external baseline survive
+# after the legacy path is removed from the repository.
+BASELINE_KIND = "public-provenance-baseline"
+BASELINE_SCHEMA_VERSION = 1
 
 #: The workflow that runs this verifier, and the required status check it
 #: reports under.  Both are matched literally against candidate bytes.
@@ -687,7 +702,7 @@ def _entry_map(document: object, *, code: str, label: str) -> dict[str, dict]:
     for entry in document["entries"]:
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"]:
             raise VerifyError(code, f"{label} contains a malformed entry")
-        path = entry["path"]
+        path = canonical_path(entry["path"], code=code, label=f"{label} entry")
         if path in result:
             raise VerifyError(code, f"{label} contains duplicate path {path}")
         result[path] = entry
@@ -713,6 +728,641 @@ def _load_policy_bytes(raw: bytes, workdir: Path, name: str, *, code: str):
         return load_policy(target)
     except PolicyError as error:
         raise VerifyError(code, str(error)) from error
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Return whether a path is inside ``root`` after resolving aliases."""
+
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _external_input(path: Path, *, repo: Path, label: str) -> Path:
+    """Require an authority/baseline input to live outside the candidate repo."""
+
+    resolved = path.resolve()
+    if _path_is_within(resolved, repo):
+        raise VerifyError(
+            "TRUSTED_INPUT_CANDIDATE_CONTROLLED",
+            f"{label} must live outside the repository under verification",
+        )
+    if not resolved.is_file():
+        raise VerifyError("TRUSTED_INPUT_MISSING", f"{label} is unavailable")
+    return resolved
+
+
+def _canonical_json_bytes(document: dict) -> bytes:
+    """Encode generated control JSON with the repository's canonical bytes."""
+
+    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _validate_trusted_baseline(
+    raw: bytes,
+    *,
+    base_commit: str,
+    base_tree: str,
+    base_blobs: dict[str, bytes],
+    trusted_policy,
+) -> tuple[dict, dict[str, dict]]:
+    """Load a public baseline and bind it to the exact trusted base.
+
+    During the compatibility window a plain baseline is accepted only when it
+    is byte-identical to the ledger blob in the trusted base tree.  An external
+    release snapshot can instead use the explicit envelope below::
+
+        {
+          "kind": "public-provenance-baseline",
+          "schema_version": 1,
+          "binding": {"base_commit": ..., "base_tree": ...,
+                      "policy_sha256": ..., "ledger_sha256": ...},
+          "ledger": { ... public ledger document ... }
+        }
+
+    The detailed authority is intentionally not part of this document.  The
+    baseline preserves historical public claims; path and blob authority still
+    comes from the separately supplied trusted detailed ledger.
+    """
+
+    document = strict_json(raw, code="TRUSTED_BASELINE_INVALID", label="trusted public baseline")
+    if "ledger" in document or "binding" in document or "kind" in document:
+        if document.get("kind") != BASELINE_KIND or document.get("schema_version") != BASELINE_SCHEMA_VERSION:
+            raise VerifyError(
+                "TRUSTED_BASELINE_INVALID",
+                "trusted public baseline envelope has an unsupported kind or schema",
+            )
+        binding = document.get("binding")
+        ledger = document.get("ledger")
+        if not isinstance(binding, dict) or not isinstance(ledger, dict):
+            raise VerifyError("TRUSTED_BASELINE_INVALID", "trusted public baseline envelope is incomplete")
+        expected = {
+            "base_commit": base_commit,
+            "base_tree": base_tree,
+            "policy_sha256": trusted_policy.digest,
+            "ledger_sha256": hashlib.sha256(_canonical_json_bytes(ledger)).hexdigest(),
+        }
+        for key, value in expected.items():
+            if binding.get(key) != value:
+                raise VerifyError(
+                    "TRUSTED_BASELINE_BINDING",
+                    f"trusted public baseline binding does not match the exact trusted {key}",
+                )
+        document = ledger
+    else:
+        expected_raw = base_blobs.get(LEDGER_PATH)
+        if expected_raw is None or raw != expected_raw:
+            raise VerifyError(
+                "TRUSTED_BASELINE_BINDING",
+                "plain trusted public baseline is not the exact ledger blob from the trusted base tree",
+            )
+
+    errors = validate_ledger(document, require_hashes=True, require_resolved=True)
+    if errors:
+        raise VerifyError("TRUSTED_BASELINE_INVALID", errors[0])
+    if document.get("policy_profile") not in (None, trusted_policy.name):
+        raise VerifyError("TRUSTED_BASELINE_POLICY_MISMATCH", "trusted public baseline names a different policy")
+
+    entries = _entry_map(document, code="TRUSTED_BASELINE_INVALID", label="trusted public baseline")
+    expected_scope = {
+        path for path in base_blobs
+        if trusted_policy.resolve(path).disposition == "included"
+    }
+    if set(entries) != expected_scope:
+        missing = sorted(expected_scope - set(entries))
+        extra = sorted(set(entries) - expected_scope)
+        detail = f"missing {missing[0]}" if missing else f"unexpected {extra[0]}"
+        raise VerifyError(
+            "TRUSTED_BASELINE_COVERAGE",
+            f"trusted public baseline does not exactly cover the trusted public tree ({detail})",
+        )
+    for path, entry in entries.items():
+        if path in CONTROL_PATHS:
+            continue
+        expected_hash = hashlib.sha256(base_blobs[path]).hexdigest()
+        if entry.get("sha256") != expected_hash:
+            raise VerifyError(
+                "TRUSTED_BASELINE_CONTENT_MISMATCH",
+                f"trusted public baseline hash does not match the trusted base bytes for {path}",
+            )
+    return document, entries
+
+
+def _safe_public_claim(path: str, record: dict | None) -> tuple[str, dict]:
+    """Derive a public claim without copying private record descriptions."""
+
+    classification, evidence = _class_for(path, record)
+    if record is None or classification not in IMPLEMENTATION_CLASSES:
+        return classification, dict(evidence)
+
+    safe = {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": record.get("id"),
+        "evidence_tier": record.get("evidence_tier"),
+    }
+    if classification == "project_authored_attested":
+        safe.update({
+            "authorship": "independent implementation record",
+            "upstream_attribution": None,
+        })
+    elif classification == "upstream_derived":
+        safe.update({
+            "upstream": "documented upstream family",
+            "license": "see NOTICE.md",
+            "modification_status": "modified_or_translated; see trusted record",
+        })
+    elif classification == "generated_from_public_source":
+        safe.update({
+            "generator": "documented public-source data path",
+            "source_family": "public source data",
+        })
+    return classification, safe
+
+
+def _generate_ephemeral_ledger(
+    *,
+    baseline: dict,
+    baseline_entries: dict[str, dict],
+    base_blobs: dict[str, bytes],
+    candidate_blobs: dict[str, bytes],
+    trusted_policy,
+    candidate_policy,
+    exact_records: dict[str, dict],
+) -> tuple[dict, set[str], set[str]]:
+    """Generate the candidate ledger in memory from trusted inputs only."""
+
+    trusted_scope = {
+        path for path in base_blobs
+        if trusted_policy.resolve(path).disposition == "included"
+    }
+    candidate_included = {
+        path for path in candidate_blobs
+        if candidate_policy.resolve(path).disposition == "included"
+    }
+    inherited = trusted_scope & set(candidate_blobs)
+    protected = (inherited | candidate_included) & set(candidate_blobs)
+
+    output = json.loads(json.dumps(baseline, ensure_ascii=False))
+    output_entries: list[dict] = []
+    for path in sorted(protected):
+        if path in baseline_entries:
+            entry = json.loads(json.dumps(baseline_entries[path], ensure_ascii=False))
+        else:
+            classification, evidence = _safe_public_claim(path, exact_records.get(path))
+            entry = {"path": path, "classification": classification, "evidence": evidence}
+        if path not in CONTROL_PATHS:
+            entry["sha256"] = hashlib.sha256(candidate_blobs[path]).hexdigest()
+        else:
+            entry.pop("sha256", None)
+        output_entries.append(entry)
+    output["entries"] = output_entries
+
+    # An unresolved generated claim remains visible in the temporary evidence
+    # so the verdict can report the exact missing/unqualified authority.  It is
+    # never treated as release evidence or allowed to produce PASS.
+    errors = validate_ledger(output, require_hashes=True, require_resolved=False)
+    if errors:
+        raise VerifyError("GENERATED_LEDGER_INVALID", errors[0])
+    if {entry["path"] for entry in output_entries} != protected:
+        raise VerifyError("GENERATED_LEDGER_INVALID", "generated ledger coverage is not exact")
+    return output, protected, trusted_scope
+
+
+def _generate_ephemeral_export(
+    *,
+    candidate_blobs: dict[str, bytes],
+    candidate_tree: str,
+    candidate_policy,
+    ledger_bytes: bytes,
+) -> dict:
+    """Build export evidence while excluding both generated control names."""
+
+    files = [
+        (path, raw) for path, raw in sorted(candidate_blobs.items())
+        if path not in CONTROL_PATHS
+    ]
+    return _build_export_document(
+        candidate_policy,
+        files,
+        candidate_tree=candidate_tree,
+        provenance_ledger=ledger_bytes,
+        manifest=candidate_blobs.get(MANIFEST_PATH),
+        exclude_generated_controls=True,
+    )
+
+
+def _legacy_export_findings(
+    candidate_blobs: dict[str, bytes],
+    generated_export: dict,
+) -> list[Finding]:
+    """Compare a legacy candidate export without using it as an input."""
+
+    raw = candidate_blobs.get(EXPORT_PATH)
+    if raw is None:
+        return []
+    try:
+        declared = strict_json(raw, code="EXPORT_UNREADABLE", label="legacy public export")
+    except VerifyError as error:
+        return [Finding(error.code, EXPORT_PATH, str(error))]
+    findings: list[Finding] = []
+    for field in sorted(set(generated_export) | set(declared)):
+        if field in EXPORT_ADVISORY_FIELDS:
+            continue
+        if field not in declared:
+            findings.append(Finding(
+                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
+                f"legacy export omits the generated field {field!r}",
+            ))
+        elif field not in generated_export:
+            findings.append(Finding(
+                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
+                f"legacy export declares {field!r}, which the generated export does not produce",
+            ))
+        elif declared[field] != generated_export[field]:
+            findings.append(Finding(
+                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
+                f"legacy export field {field!r} does not match the trusted integration-time generation",
+            ))
+    return findings
+
+
+def _ephemeral_verdict_findings(
+    *,
+    candidate_commit: str,
+    base_commit: str,
+    candidate_blobs: dict[str, bytes],
+    base_blobs: dict[str, bytes],
+    candidate_policy,
+    trusted_policy,
+    candidate_policy_matches_trusted: bool,
+    trusted_scope: set[str],
+    protected: set[str],
+    baseline_entries: dict[str, dict],
+    exact_records: dict[str, dict],
+    record_patterns: dict[str, list[str]],
+    approvals: dict[tuple[str, str], dict],
+    generated_ledger_bytes: bytes,
+    generated_export: dict,
+) -> tuple[list[Finding], list[dict], list[dict], list[dict]]:
+    """Apply the old finding vocabulary to the new trusted generated state."""
+
+    findings: list[Finding] = []
+    debt: list[dict] = []
+    blob_approved: list[dict] = []
+    blob_unapproved: list[dict] = []
+
+    if not candidate_policy_matches_trusted:
+        findings.append(Finding(
+            "POLICY_SUBSTITUTION", POLICY_PATH,
+            "candidate publication policy differs from the trusted base; an external blessed policy "
+            "and policy-delta authority are required for an intentional change",
+        ))
+    findings.extend(_policy_findings(candidate_policy, trusted_policy))
+    findings.extend(_ci_findings(candidate_blobs, base_blobs))
+
+    candidate_included = {
+        path for path in candidate_blobs
+        if candidate_policy.resolve(path).disposition == "included"
+    }
+    inherited = trusted_scope & set(candidate_blobs)
+    for path in sorted(inherited - candidate_included):
+        findings.append(Finding(
+            "TRUSTED_SCOPE_VIOLATION", path,
+            "the path is protected in the trusted base universe and still exists in the candidate tree, "
+            "but the candidate policy no longer includes it; publication scope may widen, never narrow",
+        ))
+    for path in sorted(set(candidate_blobs) - set(base_blobs) - candidate_included):
+        if not _admission_requires_implementation(path):
+            continue
+        if trusted_policy.resolve(path).disposition == "excluded":
+            continue
+        findings.append(Finding(
+            "TRUSTED_SCOPE_VIOLATION", path,
+            "new implementation-bearing path is neither included by the candidate policy nor excluded "
+            "by the trusted policy, so it would enter the tree unverified",
+        ))
+
+    legacy_entries: dict[str, dict] | None = None
+    legacy_raw = candidate_blobs.get(LEDGER_PATH)
+    if legacy_raw is not None:
+        try:
+            legacy_document = strict_json(legacy_raw, code="CANDIDATE_LEDGER_INVALID", label="legacy candidate ledger")
+            legacy_entries = _entry_map(
+                legacy_document, code="CANDIDATE_LEDGER_INVALID", label="legacy candidate ledger"
+            )
+            for error in validate_ledger(legacy_document, require_hashes=True, require_resolved=True):
+                findings.append(Finding("LEDGER_SCHEMA", LEDGER_PATH, error))
+        except VerifyError as error:
+            findings.append(Finding(error.code, LEDGER_PATH, str(error)))
+        if legacy_raw != generated_ledger_bytes:
+            findings.append(Finding(
+                "LEGACY_CONTROL_MISMATCH", LEDGER_PATH,
+                "candidate carries legacy ledger bytes different from the trusted integration-time output; "
+                "the legacy file is compatibility data only",
+            ))
+
+    findings.extend(_legacy_export_findings(candidate_blobs, generated_export))
+
+    if legacy_entries is not None:
+        for path in sorted(protected - set(legacy_entries)):
+            findings.append(Finding("LEDGER_COVERAGE", path, "protected path has no legacy ledger entry"))
+        for path in sorted(set(legacy_entries) - protected):
+            findings.append(Finding(
+                "LEDGER_COVERAGE", path,
+                "legacy ledger entry does not correspond to a protected candidate path",
+            ))
+
+    for path in sorted(protected):
+        expected_class, expected_evidence = _class_for(path, exact_records.get(path))
+        expected_record = expected_evidence.get("record_id")
+        base_entry = baseline_entries.get(path)
+        base_claim = _claim(base_entry) if base_entry is not None else None
+        content_frozen = path in base_blobs and base_blobs[path] == candidate_blobs[path]
+        is_new = path not in base_blobs
+
+        # A newly admitted executable/source/build path cannot use a
+        # deterministic filename class as an escape hatch.  Existing
+        # Makefile/configuration edits retain their deterministic treatment;
+        # the hardened predicate is an admission rule for genuinely new paths.
+        requires_path_authority = (
+            is_new and _admission_requires_implementation(path)
+        ) or (
+            not is_new and is_implementation_path(path) and not content_frozen
+        )
+        if requires_path_authority:
+            if expected_class == "unresolved" and path not in exact_records:
+                findings.append(Finding(
+                    "TRUSTED_PATH_MISSING", path,
+                    "trusted detailed authority has no exact path-specific record for this implementation path",
+                ))
+            elif expected_class == "unresolved":
+                findings.append(Finding(
+                    "TRUSTED_PATH_UNQUALIFIED", path,
+                    "trusted detailed authority names this path but does not derive a qualifying public class",
+                ))
+            elif expected_class not in IMPLEMENTATION_CLASSES:
+                findings.append(Finding(
+                    "TRUSTED_PATH_UNQUALIFIED", path,
+                    "trusted detailed authority does not classify this implementation path as implementation-grade",
+                ))
+
+        # Exact-blob authorization is independent of the candidate ledger.  A
+        # missing legacy entry must not suppress it: otherwise a contributor
+        # could delete the old entry while changing an implementation blob.
+        blob_gate = (
+            not content_frozen
+            and (
+                expected_class in IMPLEMENTATION_CLASSES
+                or (is_new and _admission_requires_implementation(path))
+            )
+        )
+        if blob_gate:
+            digest = hashlib.sha256(candidate_blobs[path]).hexdigest()
+            approval = approvals.get((path, digest))
+            reason = "new implementation path" if is_new else "implementation bytes changed"
+            if approval is None:
+                findings.append(Finding(
+                    "BLOB_UNAPPROVED", path,
+                    f"{reason}: the trusted authority has no reviewed-blob approval for this exact content "
+                    f"(sha256 {digest}); path coverage is not content approval",
+                ))
+                blob_unapproved.append({"path": path, "sha256": digest, "reason": reason})
+            else:
+                approved_class = public_class_for(path, approval["classification"])
+                if approval["record_id"] != expected_record:
+                    findings.append(Finding(
+                        "BLOB_APPROVAL_RECORD_MISMATCH", path,
+                        "the blob approval cites a record that is not the exact record covering this path",
+                    ))
+                elif approved_class != expected_class:
+                    findings.append(Finding(
+                        "BLOB_APPROVAL_CLASS_MISMATCH", path,
+                        f"the blob approval authorizes classification {approved_class!r}, but trusted "
+                        f"derivation is {expected_class!r}",
+                    ))
+                else:
+                    blob_approved.append({"path": path, "sha256": digest})
+
+        if legacy_entries is None or path not in legacy_entries:
+            continue
+        entry = legacy_entries[path]
+        classification, record_id = _claim(entry)
+        if path not in CONTROL_PATHS:
+            actual = hashlib.sha256(candidate_blobs[path]).hexdigest()
+            if entry.get("sha256") != actual:
+                findings.append(Finding(
+                    "CONTENT_MISMATCH", path,
+                    "ledger hash does not match the candidate bytes under review",
+                ))
+
+        if record_id is not None and not _record_covers(path, record_id, exact_records, record_patterns):
+            findings.append(Finding(
+                "TRUSTED_RECORD_UNRESOLVED", path,
+                "the record id this entry names is not resolvable to trusted authority covering this path; "
+                "the attestation is unbacked",
+            ))
+
+        if (
+            base_entry is not None
+            and base_entry.get("classification") in IMPLEMENTATION_CLASSES
+            and classification not in IMPLEMENTATION_CLASSES
+            and expected_class in IMPLEMENTATION_CLASSES
+        ):
+            findings.append(Finding(
+                "CLASSIFICATION_DOWNGRADE", path,
+                f"the trusted base ledger classifies this path {base_entry['classification']!r}, which is "
+                f"content-gated; the candidate reclassifies it {classification!r}, which is not",
+            ))
+
+        claim = (classification, record_id)
+        agrees = claim == (expected_class, expected_record) and expected_class != "unresolved"
+        claim_frozen = base_claim == claim
+        if agrees:
+            continue
+        if not claim_frozen:
+            findings.append(Finding(
+                "CLAIM_UNBACKED", path,
+                "restated or new legacy provenance claim does not match trusted derivation",
+            ))
+        elif not content_frozen:
+            findings.append(Finding(
+                "CONTENT_UNATTESTED", path,
+                "content changed under an inherited provenance claim that trusted authority does not support",
+            ))
+        else:
+            debt.append({
+                "path": path,
+                "claimed": classification,
+                "claimed_record_id": record_id,
+                "trusted": expected_class,
+                "trusted_record_id": expected_record,
+            })
+    return findings, debt, blob_approved, blob_unapproved
+
+
+def verify_ephemeral(
+    *,
+    repo: Path,
+    candidate_rev: str,
+    base_rev: str,
+    trusted_ledger: Path,
+    trusted_baseline: Path,
+    output_dir: Path,
+    require_immutable_revisions: bool = False,
+    authority_revision: str | None = None,
+) -> dict:
+    """Verify a candidate while materializing provenance controls outside Git.
+
+    The candidate tree is read only through Git objects.  Its legacy ledger and
+    export, when present, are compared as untrusted compatibility data; the
+    temporary outputs used for the verdict are generated from the trusted base
+    baseline, candidate blobs, trusted policy, and external detailed authority.
+    """
+
+    repo = repo.resolve()
+    trusted_ledger = _external_input(trusted_ledger, repo=repo, label="trusted detailed ledger")
+    trusted_baseline = _external_input(trusted_baseline, repo=repo, label="trusted public baseline")
+    output_dir = output_dir.resolve()
+    if _path_is_within(output_dir, repo):
+        raise VerifyError(
+            "OUTPUT_CANDIDATE_CONTROLLED",
+            "ephemeral provenance outputs must live outside the repository under verification",
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if require_immutable_revisions:
+        for role, selector in (("candidate", candidate_rev), ("base", base_rev)):
+            if len(selector) != 40 or any(c not in "0123456789abcdef" for c in selector):
+                raise VerifyError(
+                    "MUTABLE_REVISION_REFUSED",
+                    f"{role} revision {selector!r} is not a full 40-hex commit SHA",
+                )
+
+    candidate_commit = _rev_commit(repo, candidate_rev)
+    base_commit = _rev_commit(repo, base_rev)
+    candidate_tree = _rev_tree(repo, candidate_commit)
+    base_tree = _rev_tree(repo, base_commit)
+    candidate_blobs = read_tree(repo, candidate_tree)
+    base_blobs = read_tree(repo, base_tree)
+
+    trusted_raw = trusted_ledger.read_bytes()
+    exact_records, record_patterns, record_ids = load_trusted_records(trusted_raw)
+    approvals = load_trusted_approvals(trusted_raw)
+    for (approved_path, _digest), approval in approvals.items():
+        if approval["record_id"] not in record_ids:
+            raise VerifyError(
+                "TRUSTED_LEDGER_INVALID",
+                f"a blob approval for {approved_path} cites a record that does not exist",
+            )
+
+    trusted_policy = _load_policy_bytes(
+        base_blobs.get(POLICY_PATH) or b"",
+        output_dir / "inputs",
+        "trusted_policy.json",
+        code="TRUSTED_POLICY_INVALID",
+    )
+    candidate_policy_raw = candidate_blobs.get(POLICY_PATH)
+    if candidate_policy_raw is None:
+        raise VerifyError("CANDIDATE_POLICY_MISSING", f"candidate tree has no {POLICY_PATH}")
+    candidate_policy = _load_policy_bytes(
+        candidate_policy_raw,
+        output_dir / "inputs",
+        "candidate_policy.json",
+        code="CANDIDATE_POLICY_INVALID",
+    )
+    trusted_baseline_raw = trusted_baseline.read_bytes()
+    baseline, baseline_entries = _validate_trusted_baseline(
+        trusted_baseline_raw,
+        base_commit=base_commit,
+        base_tree=base_tree,
+        base_blobs=base_blobs,
+        trusted_policy=trusted_policy,
+    )
+    generated_ledger, protected, trusted_scope = _generate_ephemeral_ledger(
+        baseline=baseline,
+        baseline_entries=baseline_entries,
+        base_blobs=base_blobs,
+        candidate_blobs=candidate_blobs,
+        trusted_policy=trusted_policy,
+        candidate_policy=candidate_policy,
+        exact_records=exact_records,
+    )
+    generated_ledger_bytes = _canonical_json_bytes(generated_ledger)
+    generated_export = _generate_ephemeral_export(
+        candidate_blobs=candidate_blobs,
+        candidate_tree=candidate_tree,
+        candidate_policy=candidate_policy,
+        ledger_bytes=generated_ledger_bytes,
+    )
+    generated_export_bytes = _canonical_json_bytes(generated_export)
+
+    findings, debt, blob_approved, blob_unapproved = _ephemeral_verdict_findings(
+        candidate_commit=candidate_commit,
+        base_commit=base_commit,
+        candidate_blobs=candidate_blobs,
+        base_blobs=base_blobs,
+        candidate_policy=candidate_policy,
+        trusted_policy=trusted_policy,
+        candidate_policy_matches_trusted=(candidate_policy_raw == base_blobs.get(POLICY_PATH)),
+        trusted_scope=trusted_scope,
+        protected=protected,
+        baseline_entries=baseline_entries,
+        exact_records=exact_records,
+        record_patterns=record_patterns,
+        approvals=approvals,
+        generated_ledger_bytes=generated_ledger_bytes,
+        generated_export=generated_export,
+    )
+    if not _is_ancestor(repo, base_commit, candidate_commit):
+        findings.insert(0, Finding(
+            "MERGE_BASE_STALE", "",
+            f"base {base_commit} is not an ancestor of candidate {candidate_commit}; the tree that would "
+            "result from merging is not the tree this run attested",
+        ))
+
+    ledger_output = output_dir / "public_provenance_ledger.json"
+    export_output = output_dir / "PUBLIC_EXPORT.json"
+    if ledger_output.resolve() in {trusted_ledger, trusted_baseline} or export_output.resolve() in {trusted_ledger, trusted_baseline}:
+        raise VerifyError("OUTPUT_TRUSTED_INPUT_COLLISION", "ephemeral output would overwrite trusted input")
+    ledger_output.write_bytes(generated_ledger_bytes)
+    export_output.write_bytes(generated_export_bytes)
+
+    fatal = [finding for finding in findings if finding.fatal]
+    return {
+        "tool": "tools/provenance_attest_verify.py",
+        "mode": "ephemeral",
+        "verdict": "fail" if fatal else "pass",
+        "repository_scope": {
+            "candidate_commit": candidate_commit,
+            "candidate_tree": candidate_tree,
+            "base_commit": base_commit,
+            "base_tree": base_tree,
+        },
+        "trusted_ledger_sha256": hashlib.sha256(trusted_raw).hexdigest(),
+        "trusted_baseline_sha256": hashlib.sha256(trusted_baseline_raw).hexdigest(),
+        "authority_revision": authority_revision,
+        "trusted_record_count": len(record_ids),
+        "public_path_count": len(protected),
+        "generated_outputs": {
+            "ledger_sha256": hashlib.sha256(generated_ledger_bytes).hexdigest(),
+            "export_sha256": hashlib.sha256(generated_export_bytes).hexdigest(),
+            "ledger_path": str(ledger_output),
+            "export_path": str(export_output),
+        },
+        "legacy_controls_present": {
+            "ledger": LEDGER_PATH in candidate_blobs,
+            "export": EXPORT_PATH in candidate_blobs,
+        },
+        "findings": [finding.as_dict() for finding in findings],
+        "fatal_count": len(fatal),
+        "blob_approvals_available": len(approvals),
+        "blobs_approved_this_candidate": sorted(blob_approved, key=lambda item: item["path"]),
+        "blobs_unapproved": sorted(blob_unapproved, key=lambda item: item["path"]),
+        "grandfathered_debt_count": len(debt),
+        "grandfathered_debt": debt,
+    }
 
 
 def _policy_findings(candidate_policy, trusted_policy) -> list[Finding]:
@@ -1179,7 +1829,7 @@ def verify(
 
 def _print_report(verdict: dict, *, show_debt: bool) -> None:
     scope = verdict["repository_scope"]
-    print("trusted provenance attestation")
+    print("trusted provenance attestation" + (" (ephemeral controls)" if verdict.get("mode") == "ephemeral" else ""))
     print(f"  candidate commit : {scope['candidate_commit']}")
     print(f"  candidate tree   : {scope['candidate_tree']}")
     print(f"  base commit      : {scope['base_commit']}")
@@ -1187,6 +1837,17 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
     # verdict still carries the digest for local binding, but a CI summary must
     # not publish even a derived value from the private authority.
     print("  trusted ledger   : external authority (details withheld)")
+    if verdict.get("mode") == "ephemeral":
+        print(f"  trusted baseline : {verdict['trusted_baseline_sha256']}")
+        generated = verdict.get("generated_outputs", {})
+        print(f"  generated ledger : {generated.get('ledger_sha256', 'unavailable')}")
+        print(f"  generated export : {generated.get('export_sha256', 'unavailable')}")
+        legacy = verdict.get("legacy_controls_present", {})
+        print(
+            "  legacy controls  : "
+            f"ledger={'present' if legacy.get('ledger') else 'absent'}, "
+            f"export={'present' if legacy.get('export') else 'absent'} (untrusted compatibility data)"
+        )
     if verdict.get("authority_revision"):
         print(f"  authority rev    : {verdict['authority_revision']}")
     print(f"  public paths     : {verdict['public_path_count']}")
@@ -1196,7 +1857,7 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
         print(f"  NOTE  {item['code']}: {item['path']}: {item['detail']}")
     for item in fatal:
         print(f"  FAIL  {item['code']}: {item['path']}: {item['detail']}")
-    approved = verdict["blobs_approved_this_candidate"]
+    approved = verdict.get("blobs_approved_this_candidate", [])
     if approved:
         print(f"  exact-blob approvals matched: {len(approved)}")
         for item in approved:
@@ -1225,8 +1886,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", required=True, help="trusted base commit-ish supplying policy and prior ledger")
     parser.add_argument("--trusted-ledger", type=Path, required=True,
                         help="external detailed implementation ledger; must be outside --repo")
+    parser.add_argument(
+        "--ephemeral", action="store_true",
+        help=(
+            "generate the candidate ledger and PUBLIC_EXPORT.json outside the repository from the trusted "
+            "base baseline; any legacy candidate controls are comparison-only"
+        ),
+    )
+    parser.add_argument(
+        "--trusted-baseline", type=Path, default=None,
+        help=(
+            "ephemeral mode: external public ledger baseline bound to --base and its policy; during the "
+            "compatibility window this is an exact copy of the trusted base ledger"
+        ),
+    )
     parser.add_argument("--workdir", type=Path, default=None,
                         help="scratch directory for trusted inputs; must be outside --repo")
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="ephemeral mode: directory outside --repo for generated ledger/export and input scratch",
+    )
     parser.add_argument("--json", type=Path, default=None, help="write the machine-readable verdict here")
     parser.add_argument("--show-debt", action="store_true", help="list every grandfathered ledger disagreement")
     parser.add_argument(
@@ -1239,18 +1918,52 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    workdir = args.workdir or args.trusted_ledger.resolve().parent
     try:
-        workdir.mkdir(parents=True, exist_ok=True)
-        verdict = verify(
-            repo=args.repo,
-            candidate_rev=args.candidate,
-            base_rev=args.base,
-            trusted_ledger=args.trusted_ledger,
-            workdir=workdir,
-            require_immutable_revisions=args.require_immutable_revisions,
-            authority_revision=args.authority_revision,
-        )
+        if args.ephemeral:
+            if args.trusted_baseline is None:
+                raise VerifyError("TRUSTED_BASELINE_REQUIRED", "--ephemeral requires --trusted-baseline")
+            if args.workdir is not None and args.output_dir is not None:
+                raise VerifyError("OUTPUT_ARGUMENT_CONFLICT", "--workdir and --output-dir cannot be combined in ephemeral mode")
+            output_dir = args.output_dir or args.workdir
+            if output_dir is None:
+                with tempfile.TemporaryDirectory(prefix="nakagawa-provenance-") as temporary:
+                    verdict = verify_ephemeral(
+                        repo=args.repo,
+                        candidate_rev=args.candidate,
+                        base_rev=args.base,
+                        trusted_ledger=args.trusted_ledger,
+                        trusted_baseline=args.trusted_baseline,
+                        output_dir=Path(temporary),
+                        require_immutable_revisions=args.require_immutable_revisions,
+                        authority_revision=args.authority_revision,
+                    )
+                    if args.json is not None:
+                        args.json.parent.mkdir(parents=True, exist_ok=True)
+                        args.json.write_text(json.dumps(verdict, indent=2) + "\n", encoding="utf-8", newline="\n")
+                    _print_report(verdict, show_debt=args.show_debt)
+                    return 0 if verdict["verdict"] == "pass" else 1
+            verdict = verify_ephemeral(
+                repo=args.repo,
+                candidate_rev=args.candidate,
+                base_rev=args.base,
+                trusted_ledger=args.trusted_ledger,
+                trusted_baseline=args.trusted_baseline,
+                output_dir=output_dir,
+                require_immutable_revisions=args.require_immutable_revisions,
+                authority_revision=args.authority_revision,
+            )
+        else:
+            workdir = args.workdir or args.trusted_ledger.resolve().parent
+            workdir.mkdir(parents=True, exist_ok=True)
+            verdict = verify(
+                repo=args.repo,
+                candidate_rev=args.candidate,
+                base_rev=args.base,
+                trusted_ledger=args.trusted_ledger,
+                workdir=workdir,
+                require_immutable_revisions=args.require_immutable_revisions,
+                authority_revision=args.authority_revision,
+            )
     except VerifyError as error:
         print(f"trusted provenance attestation: {error.code}: {error}", file=sys.stderr)
         return 2
