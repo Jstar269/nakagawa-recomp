@@ -86,14 +86,21 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
         with tempfile.TemporaryDirectory(prefix="nakagawa_hle_") as tmp:
-            manifest = Path(tmp) / "synthetic-positive.json"
+            tmp_path = Path(tmp)
+            manifest = tmp_path / "synthetic-positive.json"
             manifest.write_text(json.dumps(synthetic_manifest()), encoding="utf-8")
+            header = tmp_path / "sr_title_config.h"
+            exe = tmp_path / "hle_title_production_selftest_synthetic-positive.exe"
             command = [
                 make,
                 "--no-print-directory",
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=synthetic-positive",
                 f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
+                f"HLE_TITLE_SELFTEST_EXE={exe.as_posix()}",
             ]
             result = subprocess.run(
                 command,

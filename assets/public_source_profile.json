@@ -741,6 +741,7 @@
     "tools/test_debug.py",
     "tools/test_decompme_export.py",
     "tools/test_direct_j_omission_mutation.py",
+    "tools/test_discovery_contract.py",
     "tools/test_dispatch_c.py",
     "tools/test_dispatch_call_boundary.py",
     "tools/test_dispatch_fatal_policy.py",

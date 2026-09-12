@@ -127,7 +127,13 @@ class TitleCatalogTests(unittest.TestCase):
         res_ver = run_codegen("--verify")
         self.assertEqual(res_ver.returncode, 0, res_ver.stderr)
 
-        # Mutate a tracked manifest, then always put it back.
+        # Mutate a tracked manifest, then always put it back.  Corrupting
+        # the generated output instead would be trivially parallel-safe and
+        # would test a weaker claim: that --verify notices a clobbered output
+        # file, not that it notices a manifest whose generated output is now
+        # stale.  The second is the regression this test exists for, so the
+        # mutation stays and the module is listed in
+        # discovery_contract._SERIAL_ONLY.
         manifest_to_modify = sorted(titles_dir.glob("*.json"))[0]
         original_bytes = manifest_to_modify.read_bytes()
         try:
