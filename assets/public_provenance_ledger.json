@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9b9ae60a6bcbbf13a48ff911e941046f3c327c6553be24f6e60d454f42f6bf87"
+      "sha256": "04bce7fead43c45c6083bb849e5208e7cba350760b662a0cea6bf4dc9df97798"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "58dd5b74aa7d38b45b17192327dee456b7f428a3407e0285fccdc199a6bc012d"
+      "sha256": "96929cdda244e50a3b5396735be05b827d49820c9373e4f47c7ed4b6dd15e772"
     },
     {
       "path": "CMakeLists.txt",
@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e3a8265b90f19a908c39c0194dc3f003d4d3907cb30bfe42e09fbc126864bd5"
+      "sha256": "947cd0b09f3a7f76c4d723fe9a33cb1c4f926edaf8f07129aa1f8b4992117140"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -864,7 +864,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9c25dbeea707ac99d38a8784d829d7996c3f3c366b3f88321544d4c773514030"
+      "sha256": "c2b658b437f23679cebcd466fb4770a9f3ebdb1a5f56f92d570e2be68002572a"
     },
     {
       "path": "docs/PORTING.md",
@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d36ff986bda88c4b87e68f53e6edd3db99405f4ee068e5d56e91f7bbc422e7cb"
+      "sha256": "be5cd1f9bc62e2b2e3788787e43a1439ba027da55031df7a5cadeddb0f36b81c"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",

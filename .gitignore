@@ -74,6 +74,15 @@ tex_*.pgm
 # syscall sequence for a retail title, so it is a runtime capture like the rest
 # of this section -- never commit it.
 nidseq_mine.txt
+# tools/capture_native_screenshots.py defaults to writing into docs/ui-baseline,
+# a TRACKED documentation directory, and it photographs whatever library the
+# developer actually has. On a maintainer's machine that is the real library, so
+# the captures show retail disc ids and title names. They are runtime captures of
+# private input, not documentation assets. publish_audit does reject them as
+# POLICY_UNCLASSIFIED if they are ever staged, but that is the last line of
+# defence, not the first.
+/docs/ui-baseline/*.png
+/docs/ui-baseline/*.bmp
 *.bin
 *.psess
 *.ngef

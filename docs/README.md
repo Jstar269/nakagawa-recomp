@@ -9,15 +9,19 @@ source tree.
 
 ## Start here
 
-| Need | Read |
+Rows are what you are about to do, not topics. Read the row you are in, not the table.
+
+| When you are about to | Read |
 | --- | --- |
-| Project scope and setup | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
-| Architecture and build model | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| Current issue map | [`ISSUES.md`](../ISSUES.md) |
-| Public publication gates | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
-| Provenance and notices | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
-| HST/public-boundary census | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
-| Security and contribution policy | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
+| Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
+| **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
+| **Change a `*_posix.c` / `*_win32.c` pair, or code behind a `!_WIN32` guard** | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — hosted CI compiles the POSIX backend on Linux; a Windows-green change can still fail there |
+| Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
+| Touch provenance, notices, or attribution | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
+| Decide whether a surface is title-specific or generic | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
+| Contribute, sign off, or report a vulnerability | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
 
 ## Maintained engineering guides
 
@@ -43,6 +47,36 @@ source tree.
   action register derived from it. Both cite files in *other* repositories; treat
   them as a snapshot of that comparison, not as this project's status.
 - [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
+
+## Doctrine, player, and productization
+
+These were reachable only by knowing their filenames until now. Doctrine binds
+current work; the productization documents are design, not built state.
+
+- [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) — the
+  fidelity-over-convenience doctrine and why original guest execution outranks
+  host reimplementation. Read before proposing any HLE shortcut.
+- [`HLE_AND_WORKAROUND_INVENTORY.md`](HLE_AND_WORKAROUND_INVENTORY.md) — the
+  five-tier HLE budget, including `TITLE_SPECIFIC_HLE` driven toward zero.
+- [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
+  title id, address, or disc id may be hardcoded into generic code. The rule is
+  machine-enforced by `tools/test_generic_title_planning_proof.py`.
+- [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
+  functional checklist a native player slice is measured against.
+- [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
+  — per-capability web-to-native parity, with the gaps named.
+- [`NATIVE_PLAYER_ARCHITECTURE.md`](NATIVE_PLAYER_ARCHITECTURE.md),
+  [`AOT_PRODUCTIZATION_ARCHITECTURE.md`](AOT_PRODUCTIZATION_ARCHITECTURE.md),
+  [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md),
+  [`ISO_ONLY_GAP_ANALYSIS.md`](ISO_ONLY_GAP_ANALYSIS.md) — the "program + ISO"
+  productization target and the routes evaluated for it. All four are DRAFT:
+  they describe work that is not built, so do not cite them as capability.
+- [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — dated inventory of the
+  `interface/` prototype and the native migration plan derived from it.
+- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
+  [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
+  copy for an early preview. Both are proposals: creating a tag or release is a
+  maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 
 ## Provenance and publication
 
@@ -88,6 +122,18 @@ in this slice; classification comes first, directory moves separately.
 | `DECOMPME_INTEGRATION.md` | CURRENT | Forward-looking integration plan (not built work) |
 | `AI_USAGE.md` | CURRENT | AI-assistance and review boundaries |
 | `PSPDEV_LOCAL_VERIFICATION.md` | CURRENT | PSPDEV local-verification boundary |
+| `LLE_FIDELITY_ARCHITECTURE.md` | CURRENT | Fidelity doctrine; ranks correctness above convenience |
+| `HLE_AND_WORKAROUND_INVENTORY.md` | CURRENT | The tier doctrine and HLE budget. The per-item inventory inside it is capture-time; live counts come from `tools/test_compat_manifest.py` |
+| `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
+| `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
+| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
+| `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
+| `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
+| `NATIVE_PLAYER_ARCHITECTURE.md` | DRAFT | Productization vision; the preparation pipeline it assumes is not connected in this build |
+| `AOT_PRODUCTIZATION_ARCHITECTURE.md` | DRAFT | Evaluation of end-user recompilation routes A-G; none is implemented |
+| `RUNTIME_PACKAGING_ARCHITECTURE.md` | DRAFT | Packaging target for an end-user build that does not exist yet |
+| `ISO_ONLY_GAP_ANALYSIS.md` | DRAFT | LLE gap analysis and proposed resolution path; carries its own inline SUPERSEDED note for the HLE-bridge recommendations it withdrew |
+| `WEB_UI_MIGRATION.md` | REFERENCE | Dated `interface/` prototype inventory and migration plan; the native player has since landed |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
@@ -107,8 +153,8 @@ Meanings: CURRENT is maintained contract — update it with the change.
 REFERENCE is dated evidence — read it, do not restate it as current.
 HISTORICAL is pre-republication evidence — preserve, do not cite as status.
 SUPERSEDED applies to rows/sections inside a file (marked inline with a
-pointer), never to a deleted file. DRAFT marks explicitly unfinished design;
-no current file carries it.
+pointer), never to a deleted file. DRAFT marks explicitly unfinished design —
+read it for intent, never cite it as capability or as built state.
 
 ## Mutable facts policy
 
