@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9106f0cc4e640184893fc04a91b16c79fc35739febd1b12a00314effc1cc404d"
+      "sha256": "697cddd33f591a1cc7911d9b124779d54960dc822ce5732cade7815d3f9f4337"
     },
     {
       "path": "NOTICE.md",
@@ -747,7 +747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fef2e87847c0a328a7805352a5247eb8eafe85f2e8499ce244ea8596420973bc"
+      "sha256": "cadb774b2805cff0dedc27ffceac9db882b3f9e0210d1645b17ee2d5439abfb8"
     },
     {
       "path": "docs/DCO_POLICY.md",

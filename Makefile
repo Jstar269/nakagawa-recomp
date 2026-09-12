@@ -535,7 +535,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: readiness FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -550,6 +550,51 @@ compiler-info:
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
+
+# One command for the whole pre-pull-request checklist in docs/CI.md.
+#
+# The checklist has been correct and documented for a while and is still
+# routinely half-run: the usual outcome is that publish_audit is run, reported
+# as "gates green", and provenance_attest_verify -- the gate that actually
+# blocks the merge -- is never run at all. They answer different questions.
+# publish_audit compares the candidate against its own checked-in ledger, so the
+# candidate supplies both sides and an unapproved blob cannot be detected.
+# provenance_attest_verify compares it against the external private authority,
+# which is the only thing that emits BLOB_UNAPPROVED. A tree can be
+# "publication audit: OK" and "verdict: FAIL" at the same commit.
+#
+# Ordered cheapest-first so a policy or ledger mistake surfaces in seconds
+# rather than after the suite. Every step is fatal; make stops at the first one.
+#
+#   NK_TRUSTED_LEDGER=/path/to/IMPLEMENTATION_PROVENANCE.json make readiness
+#
+# NK_TRUSTED_LEDGER is the detailed development ledger from the private history
+# repository. It is deliberately required rather than defaulted: skipping the
+# attestation step when the path is absent is exactly the silent pass this
+# target exists to prevent, so an unset value is BLOCKED, not "not applicable".
+READINESS_BASE ?= $(shell git merge-base origin/main HEAD)
+READINESS_WORKDIR ?= $(CURDIR)/../.nk-readiness-verify
+
+readiness:
+ifndef NK_TRUSTED_LEDGER
+	@echo "readiness: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "  It must name the detailed development ledger"
+	@echo "  (docs/provenance/IMPLEMENTATION_PROVENANCE.json in the private"
+	@echo "  history repository). Without it the attestation gate cannot run,"
+	@echo "  and an unrun gate is BLOCKED evidence, never a pass."
+	@exit 1
+endif
+	@echo "== readiness: base $(READINESS_BASE)"
+	$(PYTHON) tools/policy_sync.py
+	$(PYTHON) tools/lint_docs.py
+	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate $(shell git rev-parse HEAD) --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	git diff --check $(READINESS_BASE)..HEAD
+	@echo "== readiness: control-file completeness"
+	$(PYTHON) tools/policy_sync.py --regen-export
+	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
+	@echo "== readiness: OK (the suite is separate and still yours to run)"
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects

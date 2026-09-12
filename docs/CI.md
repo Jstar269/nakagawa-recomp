@@ -100,20 +100,61 @@ whole time and simply never run. Run all of these, in this order, and treat any
 failure as blocking:
 
 ```bash
-python tools/policy_sync.py
-python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
-python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-python tools/provenance_attest_verify.py --repo . --candidate HEAD --base origin/main     --trusted-ledger <external detailed ledger> --workdir <scratch outside the repo>
-python tools/lint_docs.py
+NK_TRUSTED_LEDGER=<external detailed ledger> make readiness
 python -m unittest discover -s tools -p "test_*.py"
-git diff --check origin/main...HEAD
 ```
 
-The attestation verifier is the one most easily forgotten and the one that most
-often blocks a merge, because changed implementation bytes need an exact
-reviewed-blob approval that no automated step can grant. See
-[`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for the two authority
-tiers and what each class needs.
+`make readiness` runs the whole list in cheapest-first order and stops at the
+first failure. Prefer it over running the steps by hand: the checklist below was
+already documented and correct, and was still routinely half-run.
+
+### What `readiness` runs, if you need a step alone
+
+```bash
+python tools/policy_sync.py
+python tools/lint_docs.py
+python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha>     --require-immutable-revisions --trusted-ledger <external detailed ledger>     --workdir <scratch outside the repo>
+git diff --check <exact BASE sha>..HEAD
+```
+
+Pass **exact commit SHAs**, not `origin/main`. A moving ref stops naming the
+branch point as soon as it advances, and the hosted job passes the immutable
+SHAs from the pull-request event for exactly that reason.
+
+### publish_audit passing is not the attestation gate passing
+
+These two are routinely confused, and the confusion is the single most common
+reason a branch looks finished and is not:
+
+| Gate | Compares against | Can detect an unapproved blob |
+| --- | --- | --- |
+| `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
+| `provenance_attest_verify` | the **external private authority** | yes; this is what emits `BLOB_UNAPPROVED` |
+
+A tree can report `publication audit: OK (738 tracked files)` and
+`verdict: FAIL (5 fatal findings)` at the same commit. "Gates green" that means
+only the first is not evidence that the branch can merge.
+
+The attestation verifier is also the one most easily forgotten, because changed
+implementation bytes need an exact reviewed-blob approval that no automated step
+can grant. See [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for
+the two authority tiers and what each class needs.
+
+### The generated control files must be in the commit
+
+Adding a tracked file, or changing one, makes three generated files stale:
+`assets/public_source_profile.json` (classification),
+`assets/public_provenance_ledger.json` (content hashes) and `PUBLIC_EXPORT.json`
+(policy digest and included-content digest). Regenerating them in the working
+tree is not enough — they have to be **staged and committed**, or the commit
+ships a source change without the evidence for its own contents and fails with
+`POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
+`PROVENANCE_CONTENT_MISMATCH` together.
+
+`make readiness` re-runs the export generator at the end and fails if that
+changes anything, which catches precisely this.
 
 These checks have no local equivalent and are never implied by a local pass:
 CodeQL, `dependency-review`, the Betterleaks history scan, the Windows runtime
