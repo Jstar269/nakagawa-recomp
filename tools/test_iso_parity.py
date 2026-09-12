@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -417,7 +418,14 @@ int main(int argc, char **argv) {{
         create_test_iso(mock_iso)
 
         cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso)]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        env = {
+            **os.environ,
+            "LOCALAPPDATA": str(self.temp_dir),
+            "APPDATA": str(self.temp_dir),
+            "USERPROFILE": str(self.temp_dir),
+            "HOME": str(self.temp_dir),
+        }
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)
         self.assertIn(str(mock_exe), res.stdout)

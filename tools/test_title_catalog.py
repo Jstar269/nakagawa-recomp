@@ -69,18 +69,11 @@ class TitleCatalogTests(unittest.TestCase):
         res_ver = run_codegen("--verify")
         self.assertEqual(res_ver.returncode, 0, res_ver.stderr)
 
-        # Mutate a tracked manifest, then always put it back.
-        manifest_to_modify = sorted(titles_dir.glob("*.json"))[0]
-        original_bytes = manifest_to_modify.read_bytes()
-        try:
-            data = json.loads(original_bytes.decode("utf-8"))
-            data["display_name"] = "Drifted Title Name"
-            manifest_to_modify.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Induce drift cleanly by corrupting the generated output instead of the repo manifest
+        drift_file = temp_gen / "nk_title_catalog.c"
+        drift_file.write_text("/* drifted content */\n", encoding="utf-8")
 
-            res_drift = run_codegen("--verify")
-        finally:
-            manifest_to_modify.write_bytes(original_bytes)
-
+        res_drift = run_codegen("--verify")
         self.assertNotEqual(res_drift.returncode, 0)
         self.assertIn("Native public title catalog is out of date", res_drift.stderr)
 

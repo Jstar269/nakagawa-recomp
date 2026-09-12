@@ -26,19 +26,116 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import concurrent.futures
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import importlib
+import time
 import unittest
 
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(ROOT / "tools") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tools"))
 
 DISCOVERY_START = "tools"
 DISCOVERY_PATTERN = "test_*.py"
 CANONICAL_COMMAND = "python -m unittest discover -s tools -p 'test_*.py'"
 _CLASS_SKIP_RE = re.compile(r"^setUpClass \(([^)]+)\)$")
 _MODULE_SKIP_RE = re.compile(r"^setUpModule \(([^)]+)\)$")
+
+# Prioritize long-running and compiler/subprocess-heavy modules first
+# so they don't bottleneck the end of the parallel run.
+_HEAVY_FIRST = [
+    "test_build_truth",
+    "test_provenance_ledger",
+    "test_parse_fuzz",
+    "test_provenance_attest_verify",
+    "test_public_export",
+    "test_generic_title_planning_proof",
+    "test_publish_audit",
+    "test_title_runtime_config",
+    "test_codegen_profile_isolation",
+    "test_history_audit",
+    "test_iso_parity",
+    "test_provenance_attestation_gate",
+    "test_title_manager_adapter",
+    "test_publication_policy_gate",
+    "test_savedata_spans",
+    "test_hst_doctor_hardening",
+    "test_vfs_contained",
+    "test_visual_oracle",
+    "test_hst_manager_manifest",
+    "test_fp_scalar_mutations",
+    "test_dispatch_call_boundary",
+    "test_native_host_backends",
+    "test_manager_safety",
+    "test_title_manifest_parity",
+    "test_progress_tracker",
+    "test_native_gate_stub_link",
+    "test_codegen_fp_convert",
+    "test_elf_bounds",
+    "test_codegen_madd_msub",
+    "test_codegen_gate_b_encoding",
+    "test_codegen_entry_semantics",
+    "test_analyzer_span_scope",
+]
+
+
+def _init_worker(root_str: str, tools_str: str) -> None:
+    import os
+    import sys
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+    if tools_str not in sys.path:
+        sys.path.insert(0, tools_str)
+    os.chdir(root_str)
+
+
+def _run_module_worker(module_name: str) -> dict[str, object]:
+    root = Path(__file__).resolve().parent.parent
+    tools_dir = root / "tools"
+    for p in (str(root), str(tools_dir)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    os.chdir(root)
+    try:
+        mod = importlib.import_module(module_name)
+        suite = unittest.defaultTestLoader.loadTestsFromModule(mod)
+        stream = io.StringIO()
+        runner = unittest.TextTestRunner(
+            stream=stream,
+            verbosity=0,
+            resultclass=_RecordingResult,
+        )
+        result = runner.run(suite)
+        return {
+            "module": module_name,
+            "started_ids": result.started_ids,
+            "skip_records": result.skip_records,
+            "failures": [(t.id() if hasattr(t, "id") else str(t), err) for t, err in result.failures],
+            "errors": [(t.id() if hasattr(t, "id") else str(t), err) for t, err in result.errors],
+            "skipped": len(result.skipped),
+            "successful": result.wasSuccessful(),
+        }
+    except Exception as exc:
+        return {
+            "module": module_name,
+            "started_ids": [],
+            "skip_records": [],
+            "failures": [],
+            "errors": [(module_name, str(exc))],
+            "skipped": 0,
+            "successful": False,
+        }
+
+
 
 
 def _flatten(suite: unittest.TestSuite):
@@ -91,7 +188,7 @@ def _module(test_id: str) -> str:
     return test_id.split(".", 1)[0]
 
 
-def _contract_report(*, execute: bool) -> dict[str, object]:
+def _contract_report(*, execute: bool, jobs: int = 1, verbose: bool = False) -> dict[str, object]:
     loader = unittest.TestLoader()
     suite = loader.discover(DISCOVERY_START, pattern=DISCOVERY_PATTERN)
     inventory_a = _ids(_flatten(suite))
@@ -105,19 +202,69 @@ def _contract_report(*, execute: bool) -> dict[str, object]:
     if not execute:
         return report
 
-    stream = io.StringIO()
-    runner = unittest.TextTestRunner(
-        stream=stream,
-        verbosity=0,
-        resultclass=_RecordingResult,
-    )
-    result = runner.run(suite)
-    inventory_b = result.started_ids
+    t0 = time.perf_counter()
+    if jobs <= 1:
+        stream = io.StringIO()
+        runner = unittest.TextTestRunner(
+            stream=stream,
+            verbosity=0,
+            resultclass=_RecordingResult,
+        )
+        result = runner.run(suite)
+        inventory_b = result.started_ids
+        skip_records = result.skip_records
+        failures = len(result.failures)
+        errors = len(result.errors)
+        skipped = len(result.skipped)
+        successful = result.wasSuccessful()
+    else:
+        root = Path(__file__).resolve().parent.parent
+        tools_dir = root / "tools"
+        modules = [
+            f.stem for f in tools_dir.glob(DISCOVERY_PATTERN)
+            if f.is_file() and not f.name.startswith((".", "_"))
+        ]
+        priority_map = {name: idx for idx, name in enumerate(_HEAVY_FIRST)}
+        modules.sort(key=lambda m: (priority_map.get(m, 9999), m))
+
+        if verbose:
+            print(f"Running {len(modules)} test modules across {jobs} workers...", file=sys.stderr)
+
+        inventory_b = []
+        skip_records = []
+        failures = 0
+        errors = 0
+        skipped = 0
+        successful = True
+
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs,
+            initializer=_init_worker,
+            initargs=(str(root), str(tools_dir)),
+        ) as executor:
+            futures = {executor.submit(_run_module_worker, m): m for m in modules}
+            for future in concurrent.futures.as_completed(futures):
+                mod_name = futures[future]
+                mod_result = future.result()
+                inventory_b.extend(mod_result["started_ids"])
+                skip_records.extend(mod_result["skip_records"])
+                failures += len(mod_result["failures"])
+                errors += len(mod_result["errors"])
+                skipped += mod_result["skipped"]
+                if not mod_result["successful"]:
+                    successful = False
+                if not mod_result["successful"] or mod_result["failures"] or mod_result["errors"]:
+                    print(f"FAILED: {mod_name}: failures={mod_result['failures']}, errors={mod_result['errors']}", file=sys.stderr)
+                if verbose:
+                    status = "OK" if mod_result["successful"] else "FAIL"
+                    print(f"  [{status}] {mod_name} ({len(mod_result['started_ids'])} tests)", file=sys.stderr)
+
+    elapsed = time.perf_counter() - t0
     a_set = set(inventory_a)
     b_set = set(inventory_b)
     class_skips = []
     module_skips = []
-    for record in result.skip_records:
+    for record in skip_records:
         if _CLASS_SKIP_RE.match(record["id"]):
             class_skips.append(record)
         elif _MODULE_SKIP_RE.match(record["id"]):
@@ -145,10 +292,12 @@ def _contract_report(*, execute: bool) -> dict[str, object]:
             ),
             "class_level_skips": class_skips,
             "module_level_skips": module_skips,
-            "failures": len(result.failures),
-            "errors": len(result.errors),
-            "skipped": len(result.skipped),
-            "successful": result.wasSuccessful(),
+            "failures": failures,
+            "errors": errors,
+            "skipped": skipped,
+            "successful": successful,
+            "wall_clock_seconds": round(elapsed, 2),
+            "workers": jobs,
         }
     )
     return report
@@ -181,26 +330,50 @@ def _assert_contract(report: dict[str, object]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute the suite and record startTest IDs")
+    parser.add_argument("-j", "--jobs", type=int, default=1, help="number of parallel workers (0 for all CPU cores)")
+    parser.add_argument("--parallel", action="store_true", help="run tests in parallel using all available CPU cores")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display progress information")
     parser.add_argument("--assert-contract", action="store_true", help="fail if the observed difference is not class-skip-only")
     parser.add_argument("--output", type=Path, help="write deterministic JSON to this path")
     args = parser.parse_args(argv)
 
+    jobs = args.jobs
+    if args.parallel or jobs <= 0:
+        jobs = os.cpu_count() or 1
+    execute = args.run or args.parallel or (args.jobs > 1)
+
     try:
-        report = _contract_report(execute=args.run)
-        if args.assert_contract:
-            _assert_contract(report)
+        report = _contract_report(execute=execute, jobs=jobs, verbose=args.verbose)
     except (OSError, ValueError, unittest.case.SkipTest) as exc:
         print(f"discovery contract: {exc}", file=sys.stderr)
         return 2
+
+    if execute and not args.output:
+        status_str = "OK" if report["successful"] else "FAILED"
+        print(
+            f"Ran {report['inventory_b']['count']} tests in {report.get('wall_clock_seconds', 0.0):.2f}s "
+            f"(workers={jobs}): {status_str} (skipped={report['skipped']}, failures={report['failures']}, errors={report['errors']})",
+            file=sys.stderr,
+        )
+
+    if args.assert_contract:
+        try:
+            _assert_contract(report)
+        except ValueError as exc:
+            print(f"discovery contract: {exc}", file=sys.stderr)
+            if not report.get("successful"):
+                print(f"Failures: {report.get('failures')}, Errors: {report.get('errors')}", file=sys.stderr)
+            return 2
 
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(encoded, encoding="utf-8", newline="\n")
-    else:
+    elif not execute:
         print(encoded, end="")
-    return 0
+    return 0 if report.get("successful", True) else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -36,7 +36,8 @@ EXE_EXT = ".exe" if _WINDOWS else ""
 
 
 class TitleManifestParityTests(unittest.TestCase):
-    native_exe = ROOT / "build" / f"test_manifest_parser{EXE_EXT}"
+    _temp_dir: tempfile.TemporaryDirectory | None = None
+    native_exe: Path
 
     @classmethod
     def setUpClass(cls):
@@ -55,18 +56,23 @@ class TitleManifestParityTests(unittest.TestCase):
                 "gcc is unavailable, so the native parser cannot be built; "
                 "reporting SKIP rather than passing without the differential half"
             )
-        recompile = (not cls.native_exe.is_file()) or any(s.stat().st_mtime > cls.native_exe.stat().st_mtime for s in srcs if s.exists())
-        if recompile:
-            cmd = [
-                "gcc", "-std=c99", "-Wall", "-Wextra",
-                "-Isrc/core", "-Isrc/core/generated",
-                "src/core/nk_iso.c", "src/core/nk_library.c", "src/core/nk_launch.c",
-                "src/core/nk_title_manifest.c", "src/core/generated/nk_title_catalog.c",
-                PLATFORM_SRC,
-                "tests/native/test_manifest_parser.c",
-                "-o", str(cls.native_exe)
-            ]
-            subprocess.check_call(cmd, cwd=ROOT)
+        cls._temp_dir = tempfile.TemporaryDirectory(prefix="nk_manifest_parser_")
+        cls.native_exe = Path(cls._temp_dir.name) / f"test_manifest_parser{EXE_EXT}"
+        cmd = [
+            "gcc", "-std=c99", "-Wall", "-Wextra",
+            "-Isrc/core", "-Isrc/core/generated",
+            "src/core/nk_iso.c", "src/core/nk_library.c", "src/core/nk_launch.c",
+            "src/core/nk_title_manifest.c", "src/core/generated/nk_title_catalog.c",
+            PLATFORM_SRC,
+            "tests/native/test_manifest_parser.c",
+            "-o", str(cls.native_exe)
+        ]
+        subprocess.check_call(cmd, cwd=ROOT)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._temp_dir is not None:
+            cls._temp_dir.cleanup()
 
     def _run_native(self, manifest_path: Path, allow_override: bool = False) -> tuple[bool, str]:
         cmd = [str(self.native_exe), "--check", str(manifest_path)]

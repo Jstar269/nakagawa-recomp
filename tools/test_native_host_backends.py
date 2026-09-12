@@ -25,6 +25,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,8 +57,8 @@ def _build_and_run(
             "reporting SKIP rather than passing without having run it"
         )
 
-    out = ROOT / "build" / f"{exe_stem}{EXE_EXT}"
-    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = test_case.enterContext(tempfile.TemporaryDirectory(prefix=f"nk_backend_{exe_stem}_"))
+    out = Path(tmp) / f"{exe_stem}{EXE_EXT}"
 
     compile_cmd = [
         "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",

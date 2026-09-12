@@ -20,9 +20,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import codegen
-
 REPO = Path(__file__).resolve().parent.parent
+if str(REPO / "tools") not in sys.path:
+    sys.path.insert(0, str(REPO / "tools"))
+
+import codegen
 GCC = shutil.which("gcc") or shutil.which("cc")
 
 
@@ -154,15 +156,15 @@ class TestGateBSourceUsesRawWords(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = REPO / "build" / "microtest_b_isa_check.c"
-        cls.src.parent.mkdir(parents=True, exist_ok=True)
+        cls._tmp = tempfile.TemporaryDirectory(prefix="nk_gate_b_src_")
+        cls.src = Path(cls._tmp.name) / "microtest_b_isa_check.c"
         gen_microtest(cls.src, 2, "allegrex")
         cls.text = cls.src.read_text(encoding="ascii")
 
     @classmethod
     def tearDownClass(cls):
-        if cls.src.exists():
-            cls.src.unlink()
+        if hasattr(cls, "_tmp") and cls._tmp is not None:
+            cls._tmp.cleanup()
 
     def _assert_no_assembler_mnemonics(self, mnemonics):
         for m in mnemonics:
@@ -206,18 +208,17 @@ class TestGateBElfEncodingAudit(unittest.TestCase):
     def setUpClass(cls):
         if not _HAS_MIPS_GCC:
             raise unittest.SkipTest("mipsel-linux-gnu-gcc not available")
-        cls.src = REPO / "build" / "microtest_b_audit.c"
-        cls.elf = REPO / "build" / "microtest_b_audit.elf"
+        cls._tmp = tempfile.TemporaryDirectory(prefix="nk_gate_b_elf_")
+        cls.src = Path(cls._tmp.name) / "microtest_b_audit.c"
+        cls.elf = Path(cls._tmp.name) / "microtest_b_audit.elf"
         gen_microtest(cls.src, 2, "allegrex")
         compile_elf(cls.src, cls.elf, march="r4000")
         cls.text_data = read_text_section(cls.elf)
 
     @classmethod
     def tearDownClass(cls):
-        if cls.src.exists():
-            cls.src.unlink()
-        if cls.elf.exists():
-            cls.elf.unlink()
+        if hasattr(cls, "_tmp") and cls._tmp is not None:
+            cls._tmp.cleanup()
 
     def _collect_words(self):
         words = []

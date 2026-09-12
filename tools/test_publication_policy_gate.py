@@ -120,7 +120,7 @@ def run_audit(candidate: Path, *extra: str, policy: Path | None = None) -> subpr
     ledger = candidate / "assets" / "public_provenance_ledger.json"
     if ledger.is_file() and "--provenance-ledger" not in extra:
         argv += ["--provenance-ledger", str(ledger)]
-    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    return subprocess.run(argv, cwd=candidate, capture_output=True, text=True)
 
 
 def run_audit_no_anchor(candidate: Path, *extra: str, policy: Path | None = None) -> subprocess.CompletedProcess:
@@ -133,7 +133,7 @@ def run_audit_no_anchor(candidate: Path, *extra: str, policy: Path | None = None
     argv = [sys.executable, str(AUDIT), "--candidate-root", str(candidate), *extra]
     if policy is not None:
         argv += ["--policy", str(policy)]
-    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    return subprocess.run(argv, cwd=candidate, capture_output=True, text=True)
 
 
 def findings_of(result: subprocess.CompletedProcess) -> list[tuple[str, str]]:
@@ -615,20 +615,15 @@ class TestTreeBinding(unittest.TestCase):
     """An audit of one tree must not be presentable as clearance for another."""
 
     def test_mismatched_expected_tree_fails(self):
-        result = subprocess.run(
-            [sys.executable, str(AUDIT), "--tracked-only", "--expect-tree", "0" * 40],
-            cwd=ROOT, capture_output=True, text=True,
-        )
+        root = self._scratch_repo()
+        result = self._bind(root, "0" * 40)
         self.assertEqual(result.returncode, 1)
         self.assertIn("POLICY_TREE_MISMATCH", {c for c, _ in findings_of(result)})
 
     def test_matching_expected_tree_passes(self):
-        tree = subprocess.run(["git", "write-tree"], cwd=ROOT,
-                              capture_output=True, text=True, check=True).stdout.strip()
-        result = subprocess.run(
-            [sys.executable, str(AUDIT), "--tracked-only", "--expect-tree", tree],
-            cwd=ROOT, capture_output=True, text=True,
-        )
+        root = self._scratch_repo()
+        tree = self._git(root, "write-tree")
+        result = self._bind(root, tree)
         self.assertNotIn("POLICY_TREE_MISMATCH", {c for c, _ in findings_of(result)})
 
     def _scratch_repo(self) -> Path:

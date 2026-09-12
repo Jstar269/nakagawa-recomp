@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,17 +202,16 @@ class ProtectedDigestOwnershipTests(unittest.TestCase):
         self.assertIn("--game-name", proc.stderr)
 
     def test_cli_rejects_an_invalid_manifest_before_printing_anything(self) -> None:
-        broken = ROOT / "build" / "test_protected_digest_invalid.json"
-        broken.parent.mkdir(parents=True, exist_ok=True)
-        broken.write_text('{"schema_version": 2}', encoding="utf-8")
-        self.addCleanup(broken.unlink, True)
-        proc = subprocess.run(
-            [sys.executable, str(PLANNER), str(broken), "--print-protected-digest"],
-            cwd=ROOT, capture_output=True, text=True, check=False,
-        )
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertEqual(proc.stdout.strip(), "")
-        self.assertIn("ERROR:", proc.stderr)
+        with tempfile.TemporaryDirectory(prefix="nk_digest_test_") as tmpdir:
+            broken = Path(tmpdir) / "test_protected_digest_invalid.json"
+            broken.write_text('{"schema_version": 2}', encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(PLANNER), str(broken), "--print-protected-digest"],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+            self.assertIn("ERROR:", proc.stderr)
 
 
 if __name__ == "__main__":

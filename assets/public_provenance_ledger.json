@@ -6338,7 +6338,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2792242af0f65ad81648c14b80f514a81fae63485f01a1e77caa5a0eb6ac0400"
+      "sha256": "83ed3d7d82535efb2fbf3b8638f3e04ee8cce4e4d090bc58e79e7d535f45153b"
     },
     {
       "path": "tools/elf_bounds.py",
@@ -7470,7 +7470,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a32090446f0045466ea31d0863fb66d128d4deed75d105b1b149901c4c596d75"
+      "sha256": "fa307f337c9ffba0305d2437143f7f9234e106a2de38937a26056dedbbdb18b2"
     },
     {
       "path": "tools/test_codegen_madd_msub.py",
@@ -7794,7 +7794,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1172b46729c567cb0d958fa8bec9fccc5fccde4793a7cc0102533e676b3aa41f"
+      "sha256": "d027c9a584bd114ccd2a276be775ca75868d602f47bdf4e03090f6a246954090"
     },
     {
       "path": "tools/test_hle_title_isolation.py",
@@ -7821,7 +7821,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1021e868c36b2573b52c869ffcab214b7caa15f2ed06af36a9bc0e8bb51c43d6"
+      "sha256": "b8390a0c9469215da030547ab652139022042ac0839b4c43b973a2df75efc490"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -7905,7 +7905,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "33200beb95f1086b95fd3f01fab77739bcf5367748540dcd5f788d4a9c8181b2"
+      "sha256": "a2e63b5b0659b09632e33fd888f1337a645e9ddd1a942fc4d8ab176c24dfcbbe"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8028,7 +8028,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6645b5e5d5d83541ca8dffa1cc299e210ad1ec54c2308e0fc0c7c3ed91063137"
+      "sha256": "41b69607218a69701a0f3e569fed1e86a519683829e4f38c246d596b5a959aa8"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -8091,7 +8091,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e801dfb3a2bcaa8f44ccf5c0ca70fbec02f1c4ef1ee55cae2d7a8c9003e7cd07"
+      "sha256": "53e2f9dd1a8b36e3c028ba13bc551f9c66166350819f2e0c96fbbc5a41cd1e92"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -8268,7 +8268,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "79dafd0bbe1936eb5a58821b00b84441a795409b999a59fb8fdbbfc25257cab5"
+      "sha256": "125a23f588c9258a4c9e5f7cdc9a45a651c24ae2508becb746d5dc8dc1bf7ce3"
     },
     {
       "path": "tools/test_publish_audit.py",
@@ -8391,7 +8391,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f7648920456f39d9ea722df5d86faf10fa9abd6b991e6cb264d5383ca1eea63d"
+      "sha256": "7771db540d965ea982378aaf0ee1c52822994dbce145998af83f2ca2fe23ca34"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -8448,7 +8448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7576da9ce0224d086d4541392eaab7552b180c8b516ee1cc3ba5767deea412f3"
+      "sha256": "25a114a7cc40157121ee93f16de0f8f13d23915c15c3eeddfa4f33d86fb5d1bc"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -8457,7 +8457,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9892dc9b7b41b9dbd2922be785392b9eabdc55bf9c4f889931d9d2e076d3acf3"
+      "sha256": "26684eda051eaecfae4e203b0d387fdf2a89af4553524f5855576434e32ec729"
     },
     {
       "path": "tools/test_title_pspdev_phase5.py",
