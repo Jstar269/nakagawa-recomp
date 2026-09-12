@@ -237,7 +237,8 @@ class FailureTests(unittest.TestCase):
             )
 
             report = discovery_contract._contract_report(
-                execute=True, jobs=2, start_dir=tmp_path, serial_only=frozenset()
+                execute=True, jobs=2, start_dir=tmp_path, serial_only=frozenset(),
+                quiet=True,
             )
 
             self.assertFalse(report["successful"])
@@ -264,7 +265,8 @@ raise ImportError("simulated module import failure")
             )
 
             report = discovery_contract._contract_report(
-                execute=True, jobs=2, start_dir=tmp_path, serial_only=frozenset()
+                execute=True, jobs=2, start_dir=tmp_path, serial_only=frozenset(),
+                quiet=True,
             )
 
             self.assertFalse(report["successful"])

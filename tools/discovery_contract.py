@@ -210,6 +210,7 @@ def _contract_report(
     start_dir: str | Path | None = None,
     pattern: str | None = None,
     serial_only: frozenset[str] | None = None,
+    quiet: bool = False,
 ) -> dict[str, object]:
     root = Path(__file__).resolve().parent.parent
     tools_dir = root / "tools"
@@ -294,7 +295,12 @@ def _contract_report(
             skipped += mod_result["skipped"]
             if not mod_result["successful"]:
                 successful = False
-            if not mod_result["successful"] or mod_result["failures"] or mod_result["errors"]:
+            # quiet is for callers that are deliberately running a failing
+            # module to prove this aggregator notices. Without it a green suite
+            # prints FAILED lines from test_discovery_contract's own fixtures.
+            if not quiet and (
+                not mod_result["successful"] or mod_result["failures"] or mod_result["errors"]
+            ):
                 print(f"FAILED: {mod_name}: failures={mod_result['failures']}, errors={mod_result['errors']}", file=sys.stderr)
             if verbose:
                 status = "OK" if mod_result["successful"] else "FAIL"

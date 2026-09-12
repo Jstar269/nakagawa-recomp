@@ -6338,7 +6338,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48900b3fb9b9e7e478f37f62cc2cc1393563241811204111f5740320c0ead5e6"
+      "sha256": "9dadd7be144c57d9e3536eb3e5732f0a032f4c8cfa381efcfb90e8831d86172a"
     },
     {
       "path": "tools/elf_bounds.py",
@@ -7596,7 +7596,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0cfd00f8a86c1e288ff4077ac77ee1851ac62e1f1b299b2ef566382a6c044c4d"
+      "sha256": "e2e1cb66bfc3ba4c6437ec756303aa1444cfe052fbb0e4a4daad441d944f3c85"
     },
     {
       "path": "tools/test_dispatch_c.py",
