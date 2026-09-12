@@ -15,8 +15,24 @@
 #endif
 
 int main(void) {
-    printf("[NATIVE_TEST] Verifying public title catalog count...\n");
-    assert(nk_title_catalog_count == 3);
+    /* Catalog SIZE is deliberately not asserted here. It is a literal that every
+       new public title has to come back and edit, and it never caught anything:
+       tools/title_catalog_codegen.py --verify and the codegen drift test already
+       prove the catalog matches assets/titles/ exactly. What the native side can
+       usefully check is that the table it compiled is internally coherent. */
+    printf("[NATIVE_TEST] Verifying public title catalog integrity...\n");
+    assert(nk_title_catalog_count > 0);
+    for (int i = 0; i < nk_title_catalog_count; i++) {
+        const NkTitleEntry *e = &nk_title_catalog_entries[i];
+        assert(e->id != NULL && e->id[0] != '\0');
+        assert(e->display_name != NULL && e->display_name[0] != '\0');
+        assert(e->primary_disc_id != NULL && e->primary_disc_id[0] != '\0');
+        /* Every disc id resolves, and resolves to THIS entry. Two entries sharing
+           a disc id used to be reachable: unassigned synthetic titles all shared a
+           "TEST00000" sentinel, so lookup silently returned whichever came first. */
+        assert(nk_title_catalog_find_by_disc_id(e->primary_disc_id) == e);
+        assert(nk_title_catalog_find_by_id(e->id) == e);
+    }
 
     printf("[NATIVE_TEST] Verifying public source-owned title lookups...\n");
     const NkTitleEntry *t_synth1 = nk_title_catalog_find_by_disc_id("TEST00001");
@@ -32,6 +48,16 @@ int main(void) {
     const NkTitleEntry *t_synth2 = nk_title_catalog_find_by_disc_id("TEST00002");
     assert(t_synth2 != NULL);
     assert(strcmp(t_synth2->id, "synthetic-title2-v1") == 0);
+
+    /* The display fixture is the one public title built under the layout
+       src/core/nk_launch.c can actually resolve, so its addresses are load
+       bearing for the launch path, not just for the catalog. */
+    const NkTitleEntry *t_disp = nk_title_catalog_find_by_disc_id("TEST00006");
+    assert(t_disp != NULL);
+    assert(strcmp(t_disp->id, "display-smoke-v1") == 0);
+    assert(t_disp->kind == NK_TITLE_KIND_SYNTHETIC);
+    assert(t_disp->executable_base == 0x08810000u);
+    assert(t_disp->executable_entry == 0x08810000u);
 
     /* Verify normalization (hyphens/spaces) */
     assert(nk_title_catalog_find_by_disc_id("test-00001") == t_synth1);
