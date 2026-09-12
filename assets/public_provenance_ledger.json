@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "4fa2972d971ead6edf53df0aeb2a216423f73f23b8d030c3a1fddf45bc433bd2"
+      "sha256": "232378905132d8f1b20a44968f32f8aec5f934fd6fd982baa2d230073ec13044"
     },
     {
       "path": ".gitignore",
@@ -7063,7 +7063,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5ea09b7f9a492516f12fbbb4c403bf8c9977230b45311a922e3291089cb087f"
+      "sha256": "fcac9a4a5144db20c94f8108036591e4f9a4b154588266ddd7ac8d281b9d1acc"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -7320,7 +7320,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30c0533015ac9ad2d86e3d2d3d650bff17fd519e1e30eb247c7ff17c00c94364"
+      "sha256": "0f489dec86c22853de8c4f14b55b1534f1e9298750fbec555b191b90e8d84626"
     },
     {
       "path": "tools/publication_policy.py",
@@ -8172,7 +8172,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a8cd4cb367302d46ceac9dd6ae8289c577366eac23f8a2babeaf923db0a55750"
+      "sha256": "7ec32529cd262ba917788be4158586aa8d91174a32ab75b7d1487e00076a0e59"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
