@@ -12,6 +12,7 @@ Covers:
    and non-zero exit codes.
 6. Worker import errors: syntax/import errors in worker processes are captured.
 7. Serial lane isolation: _SERIAL_ONLY modules run sequentially after the parallel pool drains.
+8. Worker-count resolution: an explicit -j is never overridden by --parallel.
 """
 
 from __future__ import annotations
@@ -417,6 +418,50 @@ class SerTests2(unittest.TestCase):
             )
             self.assertNotEqual(res_fail.returncode, 0)
             self.assertIn("FAILED", res_fail.stderr)
+
+    def test_explicit_jobs_is_not_overridden_by_parallel(self):
+        """-j N caps the pool even with --parallel; only its absence or -j 0 means every core."""
+        cores = discovery_contract.os.cpu_count() or 1
+        cases = [
+            ((None, False), 1),
+            ((None, True), cores),
+            ((0, False), cores),
+            ((0, True), cores),
+            ((-1, False), cores),
+            ((1, True), 1),
+            ((3, True), 3),
+            ((3, False), 3),
+        ]
+        for (requested, parallel), expected in cases:
+            with self.subTest(requested=requested, parallel=parallel):
+                self.assertEqual(
+                    discovery_contract.resolve_jobs(requested, parallel=parallel), expected
+                )
+
+        # End to end through argument parsing: the reported worker count is the
+        # capped one, not os.cpu_count().
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "test_synth_cap.py").write_text(
+                "import unittest\nclass C(unittest.TestCase):\n def test_ok(self): pass\n",
+                encoding="utf-8",
+            )
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "discovery_contract.py"),
+                    "--parallel",
+                    "-j",
+                    "2",
+                    "--start-dir",
+                    str(tmp_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("(workers=2)", res.stderr)
 
 
 if __name__ == "__main__":
