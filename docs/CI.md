@@ -89,7 +89,7 @@ python -m unittest discover -s tools -p "test_*.py"
 first failure. Prefer it over running the steps by hand: the checklist below was
 already documented and correct, and was still routinely half-run.
 
-<details><summary>What <code>readiness</code> runs, if you need a step alone</summary>
+### What `readiness` runs, if you need a step alone
 
 ```bash
 python tools/policy_sync.py
@@ -104,15 +104,13 @@ Pass **exact commit SHAs**, not `origin/main`. A moving ref stops naming the
 branch point as soon as it advances, and the hosted job passes the immutable
 SHAs from the pull-request event for exactly that reason.
 
-</details>
-
 ### publish_audit passing is not the attestation gate passing
 
 These two are routinely confused, and the confusion is the single most common
 reason a branch looks finished and is not:
 
-| | compares against | can detect an unapproved blob |
-|---|---|---|
+| Gate | Compares against | Can detect an unapproved blob |
+| --- | --- | --- |
 | `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
 | `provenance_attest_verify` | the **external private authority** | yes; this is what emits `BLOB_UNAPPROVED` |
 
