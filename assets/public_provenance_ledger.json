@@ -738,7 +738,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18a4765ef71f43c4618476fadd55076c1c3dd48459b943b929968951df486b9f"
+      "sha256": "01c5c19a326b8745f9108f7cb8641ebb887feafccc211e527fc9f9966211c34b"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -6564,7 +6564,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c9afb9c185cd22c0bd0e1cbbb28825ce7727923309e574fdfb22d4255668d08"
+      "sha256": "b18cadce52c8028ddc3ddb54b6418e6192580986c2a1a73aa7eb664c5e472079"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -7776,7 +7776,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9079a1232777f244cbce8436efe017e27d6db42785ea46156c7cf72f5d3edf4a"
+      "sha256": "cda81f7dc00861d3a1b6ec097bee4219740bf883b0a26d61cda1277c48d8f3f2"
     },
     {
       "path": "tools/test_hle_manifest.py",
