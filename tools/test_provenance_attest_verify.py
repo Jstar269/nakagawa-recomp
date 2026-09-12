@@ -2349,5 +2349,126 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         )
 
 
+class RealHistoryParityTests(unittest.TestCase):
+    """Ephemeral mode must preserve the committed verifier's PR verdict."""
+
+    BASE = "24e25d9e761a700a97e21a090ac7bb19ac82bdda"
+    CANDIDATE = "70a4aec365bd5ffceda504c7c003e4b38db432c2"
+    PRIVATE_CLASS = {
+        "project_authored_attested": "project-authored-independent",
+        "upstream_derived": "derived-translated",
+        "generated_from_public_source": "derived-data",
+    }
+
+    @staticmethod
+    def _git_blob(revision: str, path: str) -> bytes:
+        return subprocess.run(
+            ["git", "show", f"{revision}:{path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    def _require_history(self) -> None:
+        for revision in (self.BASE, self.CANDIDATE):
+            present = subprocess.run(
+                ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+                cwd=ROOT,
+                capture_output=True,
+            )
+            if present.returncode != 0:
+                self.skipTest(f"real-history commit unavailable in this checkout: {revision}")
+
+    def _test_authority(self, candidate_ledger: dict, base_ledger: dict) -> dict:
+        """Build a disclosure-safe test authority for already-public claims."""
+
+        records: dict[str, dict] = {}
+        for entry in candidate_ledger["entries"]:
+            classification = entry.get("classification")
+            private_class = self.PRIVATE_CLASS.get(classification)
+            record_id = entry.get("evidence", {}).get("record_id")
+            if private_class is None or not record_id:
+                continue
+            record = records.setdefault(record_id, {
+                "id": record_id,
+                "paths": [],
+                "classification": private_class,
+                "evidence_tier": entry.get("evidence", {}).get("evidence_tier") or "S",
+                "upstream": "documented public source" if private_class != "project-authored-independent" else None,
+                "upstream_paths": [],
+                "upstream_revision": None,
+                "upstream_license": "see NOTICE.md",
+            })
+            self.assertEqual(record["classification"], private_class)
+            record["paths"].append(entry["path"])
+
+        base_entries = {entry["path"]: entry for entry in base_ledger["entries"]}
+        approvals = []
+        for entry in candidate_ledger["entries"]:
+            private_class = self.PRIVATE_CLASS.get(entry.get("classification"))
+            record_id = entry.get("evidence", {}).get("record_id")
+            digest = entry.get("sha256")
+            if private_class is None or not record_id or not digest:
+                continue
+            if base_entries.get(entry["path"], {}).get("sha256") == digest:
+                continue
+            approvals.append({
+                "path": entry["path"],
+                "sha256": digest,
+                "classification": private_class,
+                "record_id": record_id,
+            })
+
+        for record in records.values():
+            record["paths"].sort()
+        return {
+            "schema_version": 1,
+            "records": sorted(records.values(), key=lambda record: record["id"]),
+            "reviewed_blobs": sorted(approvals, key=lambda approval: approval["path"]),
+        }
+
+    def test_real_history_ordinary_pr_matches_committed_verifier_fatal_set(self) -> None:
+        self._require_history()
+        base_ledger_raw = self._git_blob(self.BASE, verifier.LEDGER_PATH)
+        candidate_ledger = json.loads(
+            self._git_blob(self.CANDIDATE, verifier.LEDGER_PATH).decode("utf-8")
+        )
+        base_ledger = json.loads(base_ledger_raw.decode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            outside = Path(temporary)
+            authority = outside / "test-authority.json"
+            baseline = outside / "trusted-baseline.json"
+            authority.write_bytes(_canonical(self._test_authority(candidate_ledger, base_ledger)))
+            baseline.write_bytes(base_ledger_raw)
+
+            committed = verifier.verify(
+                repo=ROOT,
+                candidate_rev=self.CANDIDATE,
+                base_rev=self.BASE,
+                trusted_ledger=authority,
+                workdir=outside / "committed",
+            )
+            ephemeral = verifier.verify_ephemeral(
+                repo=ROOT,
+                candidate_rev=self.CANDIDATE,
+                base_rev=self.BASE,
+                trusted_ledger=authority,
+                trusted_baseline=baseline,
+                output_dir=outside / "ephemeral",
+            )
+
+        committed_fatal = {
+            (finding["code"], finding["path"])
+            for finding in committed["findings"] if finding["fatal"]
+        }
+        ephemeral_fatal = {
+            (finding["code"], finding["path"])
+            for finding in ephemeral["findings"] if finding["fatal"]
+        }
+        self.assertEqual(committed_fatal, set(), committed["findings"])
+        self.assertEqual(ephemeral_fatal, committed_fatal, ephemeral["findings"])
+
+
 if __name__ == "__main__":
     unittest.main()

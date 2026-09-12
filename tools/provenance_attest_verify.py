@@ -937,19 +937,23 @@ def _generate_ephemeral_export(
     candidate_policy,
     ledger_bytes: bytes,
 ) -> dict:
-    """Build export evidence while excluding both generated control names."""
+    """Build export evidence with the committed producer's transition rules.
 
-    files = [
-        (path, raw) for path, raw in sorted(candidate_blobs.items())
-        if path not in CONTROL_PATHS
-    ]
+    While candidates still commit the legacy ledger, ``policy_sync.py`` counts
+    that file and excludes only the self-referential export.  Once the ledger
+    is retired, both generated control names are absent from the source set and
+    are declared excluded by the post-transition representation.
+    """
+
+    files = sorted(candidate_blobs.items())
+    legacy_ledger_present = LEDGER_PATH in candidate_blobs
     return _build_export_document(
         candidate_policy,
         files,
         candidate_tree=candidate_tree,
         provenance_ledger=ledger_bytes,
         manifest=candidate_blobs.get(MANIFEST_PATH),
-        exclude_generated_controls=True,
+        exclude_generated_controls=not legacy_ledger_present,
     )
 
 
@@ -1089,7 +1093,7 @@ def _ephemeral_verdict_findings(
         requires_path_authority = (
             is_new and _admission_requires_implementation(path)
         ) or (
-            not is_new and is_implementation_path(path) and not content_frozen
+            not is_new and expected_class in IMPLEMENTATION_CLASSES and not content_frozen
         )
         if requires_path_authority:
             if expected_class == "unresolved" and path not in exact_records:
