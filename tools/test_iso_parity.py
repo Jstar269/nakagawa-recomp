@@ -281,10 +281,13 @@ int main(int argc, char **argv) {{
         const char *repo_root = argv[2];
         const char *iso_path = argv[3];
 
+        const char *want_disc = argc > 4 ? argv[4] : "UCUS98701";
+        const char *want_title = argc > 5 ? argv[5] : "hst-ucus98701-v1";
+
         NkGameEntry g;
         memset(&g, 0, sizeof(g));
-        snprintf(g.disc_id, sizeof(g.disc_id), "UCUS98701");
-        snprintf(g.title_id, sizeof(g.title_id), "hst-ucus98701-v1");
+        snprintf(g.disc_id, sizeof(g.disc_id), "%s", want_disc);
+        snprintf(g.title_id, sizeof(g.title_id), "%s", want_title);
         snprintf(g.iso_path, sizeof(g.iso_path), "%s", iso_path);
 
         NkLaunchSession session;
@@ -296,6 +299,8 @@ int main(int argc, char **argv) {{
         printf("LAUNCH_PREPARE_OK\\n");
         printf("EXE:%s\\n", session.executable_path);
         printf("ISO:%s\\n", session.iso_path);
+        printf("BASE:0x%08x\\n", session.base_address);
+        printf("ENTRY:0x%08x\\n", session.entry_point);
         return 0;
     }}
 #endif
@@ -416,12 +421,30 @@ int main(int argc, char **argv) {{
         mock_iso = self.temp_dir / "game.iso"
         create_test_iso(mock_iso)
 
-        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso)]
+        # A title the public catalog DOES describe resolves, and takes its load
+        # addresses from the catalog rather than from a constant.
+        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
+               "TEST00006", "display-smoke-v1"]
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)
         self.assertIn(str(mock_exe), res.stdout)
         self.assertIn(str(mock_iso), res.stdout)
+        self.assertIn("BASE:0x08810000", res.stdout)
+        self.assertIn("ENTRY:0x08810000", res.stdout)
+
+        # A title it does not describe is refused. This used to "succeed" by
+        # launching the guest at a hard-coded 0x0029a060 with a zero base: an
+        # address belonging to no public title, so the runtime was started at a
+        # constant rather than at anything the catalog knew. A public-safe tree
+        # has no addresses for a retail identity and must say so.
+        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
+               "UCUS98701", "hst-ucus98701-v1"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
+        self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
+        self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
+        self.assertIn("No catalog entry", res.stdout)
 
     def test_duplicate_sfo_keys_parity(self) -> None:
         """Verify identical duplicate SFO keys accepted and conflicting rejected by both Python and C."""

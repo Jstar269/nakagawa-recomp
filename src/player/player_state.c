@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
+static const char *player_runtime_root(const PlayerApp *app) {
+    return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
+}
+
 void player_app_init(PlayerApp *app) {
     if (!app) return;
     memset(app, 0, sizeof(*app));
@@ -38,6 +42,15 @@ void player_app_init(PlayerApp *app) {
     if (lib_res == NK_OK && app->library.count > 0) {
         player_app_sync_library(app);
     }
+}
+
+void player_app_set_runtime_root(PlayerApp *app, const char *root) {
+    if (!app) return;
+    if (!root) {
+        app->runtime_root[0] = '\0';
+        return;
+    }
+    snprintf(app->runtime_root, sizeof(app->runtime_root), "%s", root);
 }
 
 void player_app_sync_library(PlayerApp *app) {
@@ -146,6 +159,36 @@ void player_app_populate_sample_games(PlayerApp *app) {
     if (nk_library_add_or_update(&app->library, &p5) == NK_OK) {
         player_app_sync_library(app);
     }
+
+    /* The display fixture is the only public title whose runtime is BUILT under
+       the layout nk_launch.c resolves (build/<title_id>/<title_id>), so it is the
+       one demo entry whose PLAY NOW can actually start a runtime -- after
+       `mingw32-make display-smoke`. Without it the demo library shows only titles
+       that cannot launch, which is what made the launch path look implemented
+       when it had never once been reached.
+
+       is_prepared is PROBED rather than asserted. Claiming prepared when the
+       runtime has not been built would put PLAY NOW in front of a launch that
+       cannot work; claiming unprepared when it HAS been built sends the user to
+       the preparation view, which in this build only says no pipeline is
+       connected. The probe uses the launcher's own candidate search, so the card
+       and the launch cannot disagree. */
+    GameRecord disp;
+    memset(&disp, 0, sizeof(disp));
+    snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
+    snprintf(disp.title_name, sizeof(disp.title_name), "Nakagawa Display Smoke Fixture");
+    snprintf(disp.disc_version, sizeof(disp.disc_version), "1.00");
+    snprintf(disp.iso_path, sizeof(disp.iso_path), "fixtures/display_smoke/generate.py");
+    snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
+    snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
+    disp.iso_size_bytes = 0ULL;
+    disp.is_prepared = nk_launch_runtime_available(player_runtime_root(app), disp.title_id);
+    disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
+    snprintf(disp.last_played, sizeof(disp.last_played), "Never");
+
+    if (nk_library_add_or_update(&app->library, &disp) == NK_OK) {
+        player_app_sync_library(app);
+    }
 }
 
 bool player_app_launch_game(PlayerApp *app, int game_index) {
@@ -154,7 +197,12 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
-    NkResult res = nk_launch_prepare_session(&app->launch_session, game, ".");
+    NkResult res = nk_launch_prepare_session(&app->launch_session, game, player_runtime_root(app));
+    /* nk_launch defaults gui_mode to false for headless harnesses. A launch
+       initiated by the player is the interactive path, so PLAY NOW must put
+       --gui on the child argv. Set it even on a failed prepare so diagnostics
+       and tests describe the intended path consistently. */
+    app->launch_session.config.gui_mode = true;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";

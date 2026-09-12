@@ -21,6 +21,21 @@ HEX_16_BYTES = re.compile(r"\b[0-9a-fA-F]{32}\b")
 PRIVATE_KEY_HEADER = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
 API_TOKEN_PATTERN = re.compile(r"\b(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{80}|sk_live_[a-zA-Z0-9]{24}|AKIA[0-9A-Z]{16})\b")
 
+# PRIVATE_KEY_HEADER above stays as it is because redaction wants the bare
+# delimiter: if one ever reaches a finding's detail string it must be masked.
+# Detection is a different question. An armour delimiter with no key body is not
+# a secret, and documentation that tells a maintainer which value to paste into a
+# CI secret store quotes those delimiters by design -- docs/PROVENANCE_MERGE_GATE.md
+# did exactly that and failed this gate for it, with BEGIN and END on one prose
+# line and no bytes between them. Requiring a real base64 body after the header
+# keeps actual keys caught, since PEM, OpenSSH and encrypted forms all carry one.
+PEM_KEY_MATERIAL = re.compile(
+    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"
+    r"(?:[^\S\n]*\n)+"          # end of the header line, then any blank lines
+    r"(?:[A-Za-z0-9+/=\s]*?)"   # optional PEM headers (Proc-Type, DEK-Info, ...)
+    r"[A-Za-z0-9+/]{40,}",      # at least one full-width base64 body line
+)
+
 # Sensitive local path patterns (fragmented to prevent self-match)
 WINDOWS_USER_PATH = re.compile(r"[a-zA-Z]:\\(?:" + r"Us" + r"ers|Documents and Settings)\\[^\s\\/]+", re.IGNORECASE)
 POSIX_USER_PATH = re.compile(r"/(?:" + r"ho" + r"me|Us" + r"ers)/[^\s/]+")
@@ -250,7 +265,7 @@ def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
         ):
             text = None
 
-        if text is not None and (PRIVATE_KEY_HEADER.search(text) or API_TOKEN_PATTERN.search(text)):
+        if text is not None and (PEM_KEY_MATERIAL.search(text) or API_TOKEN_PATTERN.search(text)):
             findings.append(HistoryFinding("DEFINITE_SECRET", "HISTORICAL_BLOB_SECRET", commit, path,
                                            "reachable blob contains a private-key or API-token signature [REDACTED]"))
         if text is not None and (WINDOWS_USER_PATH.search(text) or POSIX_USER_PATH.search(text) or MAC_USER_PATH.search(text) or WSL_USER_PATH.search(text) or UNC_PATH.search(text) or ONEDRIVE_PATH.search(text) or TEMP_PATH.search(text)):
@@ -296,7 +311,7 @@ def audit_history_commit_metadata(repo_root: Path = ROOT) -> list[HistoryFinding
             ))
 
         # Check for direct key or secret patterns in commit message
-        if PRIVATE_KEY_HEADER.search(subject) or API_TOKEN_PATTERN.search(subject):
+        if PEM_KEY_MATERIAL.search(subject) or API_TOKEN_PATTERN.search(subject):
             findings.append(HistoryFinding(
                 category="DEFINITE_SECRET",
                 code="COMMIT_LOG_SECRET",

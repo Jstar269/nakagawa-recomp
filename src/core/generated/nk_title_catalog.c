@@ -43,16 +43,34 @@ const NkTitleEntry *nk_title_catalog_get_overlay(void) {
     return s_private_overlay_count > 0 ? s_private_overlay_entries[s_private_overlay_count - 1] : NULL;
 }
 
-static const NkModuleDefinition s_modules_title_1[] = {
+static const NkModuleDefinition s_modules_title_2[] = {
     { "synthetic.prx", 0x08c00000U, false },
 };
 
-static const NkModuleDefinition s_modules_title_2[] = {
+static const NkModuleDefinition s_modules_title_3[] = {
     { "synthetic2.prx", 0x0a800000U, false },
 };
 
-const int nk_title_catalog_count = 3;
+const int nk_title_catalog_count = 4;
 const NkTitleEntry nk_title_catalog_entries[] = {
+    {
+        "display-smoke-v1",
+        "Nakagawa Display Smoke Fixture",
+        NK_TITLE_KIND_SYNTHETIC,
+        "TEST00006",
+        NULL,
+        0x08810000U,
+        0x08810000U,
+        "fixtures/display_smoke",
+        "build/display-smoke-v1/memstick",
+        "synthetic-minimal",
+        "none",
+        0U,
+        false,
+        false,
+        NULL,
+        0
+    },
     {
         "pspdev-phase5-v1",
         "PSPDEV Phase 5 Source-Owned Fixture",
@@ -86,7 +104,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_1,
+        s_modules_title_2,
         1
     },
     {
@@ -104,7 +122,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_2,
+        s_modules_title_3,
         1
     },
 };
