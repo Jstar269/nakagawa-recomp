@@ -27,6 +27,24 @@ sys.path.insert(0, str(ROOT / "tools"))
 import build_profile
 
 
+_MTIME_MARGIN_NS = 2_000_000_000
+
+
+def _set_mtime_after(path: Path, *references: Path) -> None:
+    """Set ``path`` newer than the references without waiting for the clock."""
+    latest = path.stat().st_mtime_ns
+    if references:
+        latest = max(latest, *(reference.stat().st_mtime_ns for reference in references))
+    target = max(latest, time.time_ns()) + _MTIME_MARGIN_NS
+    os.utime(path, ns=(target, target))
+
+
+def _set_mtime_before(path: Path) -> None:
+    """Move a fixture output into the past without waiting for the clock."""
+    target = min(path.stat().st_mtime_ns, time.time_ns()) - _MTIME_MARGIN_NS
+    os.utime(path, ns=(target, target))
+
+
 class BuildTruthTests(unittest.TestCase):
     def setUp(self) -> None:
         self.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -105,18 +123,24 @@ class BuildTruthTests(unittest.TestCase):
         self.assert_compiled(self.run_make("-O0"), "dependent.c", "unrelated.c")
         self.assert_compiled(self.run_make("-O0"))
 
-        time.sleep(1.1)  # GNU Make on Windows may compare timestamps at one-second resolution.
         (self.root / "inner.h").write_text("#define INNER_TOKEN 2\n", encoding="ascii")
+        _set_mtime_after(self.root / "inner.h", self.root / "build" / "dependent.o")
         self.assert_compiled(self.run_make("-O0"), "dependent.c")
+        # The forced future timestamp proves the dependency edge.  Normalize
+        # the fixture to the newly produced object before the unchanged-build
+        # assertion; otherwise Make would quite correctly see the synthetic
+        # future timestamp again on the next invocation.
+        dependent_obj = self.root / "build" / "dependent.o"
+        os.utime(self.root / "inner.h", ns=(dependent_obj.stat().st_mtime_ns,) * 2)
         self.assert_compiled(self.run_make("-O0"))
 
         self.assert_compiled(self.run_make("-O2"), "dependent.c", "unrelated.c")
         self.assert_compiled(self.run_make("-O2"))
         self.assert_compiled(self.run_make("-O0"), "dependent.c", "unrelated.c")
 
-        time.sleep(1.1)
         (self.root / "inner.h").rename(self.root / "renamed.h")
         (self.root / "outer.h").write_text('#include "renamed.h"\n', encoding="ascii")
+        _set_mtime_after(self.root / "outer.h", self.root / "build" / "dependent.o")
         self.assert_compiled(self.run_make("-O0"), "dependent.c")
 
         manifest = json.loads((self.root / "build" / "profile.json").read_text())
@@ -850,8 +874,12 @@ class GuestInputTransportTests(unittest.TestCase):
                 self.assertTrue(image.is_file())
 
                 before = image.stat().st_mtime_ns
-                time.sleep(1.1)
-                os.utime(elf, None)
+                # The input stamp is rewritten by Make, so also make the
+                # existing output unambiguously old.  This avoids relying on
+                # Windows' one-second timestamp resolution for the stamp and
+                # keeps the assertion about the dependency edge deterministic.
+                _set_mtime_before(image)
+                _set_mtime_after(elf, image)
                 proc = self._make(game, elf_rel)
                 self.assertEqual(proc.returncode, 0, self._blob(proc))
                 self.assertGreater(
@@ -876,8 +904,7 @@ class GuestInputTransportTests(unittest.TestCase):
         image = build / f"{game}_image.bin"
         before = image.stat().st_mtime_ns
 
-        time.sleep(1.1)
-        os.utime(elf, None)
+        _set_mtime_after(elf, image)
         self._make(game, elf_rel, makefile=mutant)
         self.assertEqual(
             image.stat().st_mtime_ns, before,
@@ -955,10 +982,12 @@ class GuestInputTransportTests(unittest.TestCase):
         # that would mask what this test is actually pinning.
         subprocess.run(base + ["compiler-info"], cwd=ROOT, capture_output=True,
                        text=True, check=False)
-        time.sleep(1.1)
         (build / f"{game}_recomp.c").write_text("void f_00304290(void *s) { (void)s; }\n",
                                                 encoding="ascii")
         (build / f"{game}_recomp_funcs.h").write_text("", encoding="ascii")
+        generated_inputs = tuple(p for p in build.iterdir() if p.is_file())
+        _set_mtime_after(build / f"{game}_recomp.c", *generated_inputs)
+        _set_mtime_after(build / f"{game}_recomp_funcs.h", build / f"{game}_recomp.c")
 
         proc = subprocess.run(base + [f"build/{game}/{game}_recomp.c"], cwd=ROOT,
                               capture_output=True, text=True,

@@ -179,15 +179,19 @@ def create_custom_sfo_iso(path: Path, sfo_bytes: bytes, volume_id: str = "CUSTOM
 
 
 class IsoParityTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_parity_test_"))
-        self.gcc = shutil.which("gcc")
-        if not self.gcc:
-            self.skipTest("gcc not available")
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.gcc = shutil.which("gcc")
+        if not cls.gcc:
+            raise unittest.SkipTest("gcc not available")
 
-        # Compile native test runner
-        self.harness_c = self.temp_dir / "parity_harness.c"
-        self.exe_path = self.temp_dir / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
+        # Compile the native test runner once.  The tests assert parser and
+        # launch behaviour, not compiler freshness; each test still receives
+        # its own input/output directory below.
+        cls._build_dir = Path(tempfile.mkdtemp(prefix="nk_parity_build_"))
+        cls.harness_c = cls._build_dir / "parity_harness.c"
+        cls.exe_path = cls._build_dir / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
 
         has_launch = (ROOT / "src" / "core" / "nk_launch.c").is_file()
         core_srcs = [
@@ -304,22 +308,36 @@ int main(int argc, char **argv) {{
     return 2;
 }}
 """
-        self.harness_c.write_text(harness_code, encoding="utf-8")
+        cls.harness_c.write_text(harness_code, encoding="utf-8")
 
         cmd = [
-            self.gcc,
+            cls.gcc,
             "-Wall", "-Wextra", "-Werror", "-std=c99",
             "-I", str(ROOT / "src" / "core"),
             "-I", str(ROOT / "src" / "core" / "generated"),
-            str(self.harness_c),
+            str(cls.harness_c),
         ] + [str(s) for s in core_srcs] + [
-            "-o", str(self.exe_path),
+            "-o", str(cls.exe_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"Compilation of parity harness failed: {res.stderr}")
+        if res.returncode:
+            raise AssertionError(f"Compilation of parity harness failed: {res.stderr}")
+
+    def setUp(self) -> None:
+        # Inputs and any application data remain isolated per test even though
+        # the immutable native runner is shared by the class.
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_parity_test_"))
+        self.exe_path = type(self).exe_path
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        build_dir = getattr(cls, "_build_dir", None)
+        if build_dir is not None:
+            shutil.rmtree(build_dir, ignore_errors=True)
+        super().tearDownClass()
 
     def _run_native_inspect(self, iso_path: Path) -> dict[str, str]:
         cmd = [str(self.exe_path), "inspect", str(iso_path)]

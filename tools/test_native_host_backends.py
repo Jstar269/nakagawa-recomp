@@ -44,13 +44,33 @@ CORE_SOURCES = [
 ]
 
 
+def _compile_object(
+    owner: type[unittest.TestCase],
+    source: str,
+    object_name: str,
+    extra_includes: tuple[str, ...] = (),
+) -> Path:
+    out = owner._object_dir / object_name
+    compile_cmd = [
+        "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+        "-Isrc/core", "-Isrc/core/generated", *extra_includes,
+        "-c", source, "-o", str(out),
+    ]
+    build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
+    if build.returncode:
+        raise AssertionError(
+            f"compiling {source} failed:\n{build.stdout}\n{build.stderr}"
+        )
+    return out
+
+
 def _build_and_run(
     test_case: unittest.TestCase,
     test_source: str,
     exe_stem: str,
     extra_sources: tuple[str, ...] = (),
-    extra_includes: tuple[str, ...] = (),
 ) -> str:
+    owner = type(test_case)
     if shutil.which("gcc") is None:
         raise unittest.SkipTest(
             "gcc is unavailable, so the native host-backend test cannot be built; "
@@ -59,23 +79,18 @@ def _build_and_run(
 
     tmp = test_case.enterContext(tempfile.TemporaryDirectory(prefix=f"nk_backend_{exe_stem}_"))
     out = Path(tmp) / f"{exe_stem}{EXE_EXT}"
-
-    compile_cmd = [
-        "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-        "-Isrc/core", "-Isrc/core/generated", *extra_includes,
-        *CORE_SOURCES,
-        PLATFORM_SRC,
-        *extra_sources,
-        test_source,
-        "-o", str(out),
-    ]
+    link_cmd = ["gcc", "-o", str(out)]
+    link_cmd.extend(str(owner._objects[source]) for source in CORE_SOURCES)
+    link_cmd.append(str(owner._objects[PLATFORM_SRC]))
+    link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
+    link_cmd.append(str(owner._objects[test_source]))
     if _WINDOWS:
-        compile_cmd.append("-lshell32")
+        link_cmd.append("-lshell32")
 
-    build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
+    build = subprocess.run(link_cmd, cwd=ROOT, capture_output=True, text=True)
     test_case.assertEqual(
         build.returncode, 0,
-        f"compiling {test_source} failed:\n{build.stdout}\n{build.stderr}",
+        f"linking {test_source} failed:\n{build.stdout}\n{build.stderr}",
     )
 
     run = subprocess.run([str(out)], cwd=ROOT, capture_output=True, text=True, timeout=300)
@@ -87,6 +102,44 @@ def _build_and_run(
 
 
 class NativeHostBackendTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        if shutil.which("gcc") is None:
+            raise unittest.SkipTest(
+                "gcc is unavailable, so the native host-backend test cannot be built; "
+                "reporting SKIP rather than passing without having run it"
+            )
+
+        cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
+        cls._objects: dict[str, Path] = {}
+        common_sources = [*CORE_SOURCES, PLATFORM_SRC]
+        for source in common_sources:
+            cls._objects[source] = _compile_object(
+                cls, source, f"{Path(source).stem}.o"
+            )
+
+        cls._objects["src/player/player_state.c"] = _compile_object(
+            cls, "src/player/player_state.c", "player_state.o", ("-Isrc/player",)
+        )
+        harnesses = {
+            "tests/native/test_launch_resolution.c": (),
+            "tests/native/test_player_state.c": ("-Isrc/player",),
+        }
+        if not _WINDOWS:
+            harnesses["tests/native/test_posix_process.c"] = ()
+        for source, includes in harnesses.items():
+            cls._objects[source] = _compile_object(
+                cls, source, f"{Path(source).stem}.o", includes
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        object_dir = getattr(cls, "_object_dir", None)
+        if object_dir is not None:
+            shutil.rmtree(object_dir, ignore_errors=True)
+        super().tearDownClass()
+
     def test_launch_resolution(self) -> None:
         """Sibling image discovery and writable save routing, on this host."""
         stdout = _build_and_run(
@@ -99,7 +152,6 @@ class NativeHostBackendTests(unittest.TestCase):
         stdout = _build_and_run(
             self, "tests/native/test_player_state.c", "test_player_state",
             extra_sources=("src/player/player_state.c",),
-            extra_includes=("-Isrc/player",),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
 
