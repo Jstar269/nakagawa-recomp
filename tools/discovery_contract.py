@@ -440,11 +440,31 @@ def assert_parity(report1: dict[str, object], report2: dict[str, object]) -> Non
             raise AssertionError(f"Outcome parity mismatch on '{metric}': {val1} != {val2}")
 
 
+def resolve_jobs(requested: int | None, *, parallel: bool) -> int:
+    """Return the worker count for the command line.
+
+    An explicit ``-j N`` always wins, including alongside ``--parallel``: a
+    caller who caps the pool (to keep a machine responsive, or to bound power
+    draw) must not be silently overridden with every core. ``--parallel`` alone,
+    or ``-j 0``, means all CPU cores; neither means a single serial worker.
+    """
+    cores = os.cpu_count() or 1
+    if requested is None:
+        return cores if parallel else 1
+    if requested <= 0:
+        return cores
+    return requested
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute the suite and record startTest IDs")
-    parser.add_argument("-j", "--jobs", type=int, default=1, help="number of parallel workers (0 for all CPU cores)")
-    parser.add_argument("--parallel", action="store_true", help="run tests in parallel using all available CPU cores")
+    parser.add_argument("-j", "--jobs", type=int, default=None, help="number of parallel workers (0 for all CPU cores)")
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="run tests in parallel; uses all CPU cores unless -j/--jobs sets the worker count",
+    )
     parser.add_argument("--start-dir", default=DISCOVERY_START, help="directory to discover tests in")
     parser.add_argument("-p", "--pattern", default=DISCOVERY_PATTERN, help="pattern to match test files")
     parser.add_argument("--seed", type=int, default=None, help="random seed to shuffle module execution order")
@@ -453,10 +473,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, help="write deterministic JSON to this path")
     args = parser.parse_args(argv)
 
-    jobs = args.jobs
-    if args.parallel or jobs <= 0:
-        jobs = os.cpu_count() or 1
-    execute = args.run or args.parallel or (args.jobs > 1)
+    jobs = resolve_jobs(args.jobs, parallel=args.parallel)
+    execute = args.run or args.parallel or jobs > 1
 
     try:
         report = _contract_report(
