@@ -33,4 +33,3 @@ export async function GET(req: NextRequest) {
     return routeError("log-read-failed", e, 500);
   }
 }
-

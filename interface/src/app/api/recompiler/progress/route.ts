@@ -44,4 +44,3 @@ export async function POST(req: NextRequest) {
     return routeError("progress-action-failed", e, 500);
   }
 }
-
