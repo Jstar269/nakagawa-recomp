@@ -12,8 +12,6 @@ import shutil
 import struct
 import subprocess
 from typing import Iterable, Sequence
-
-EXPECTED_DISC_ID = "UCUS98701"
 EXPECTED_ELF_MACHINE = 8  # EM_MIPS
 PT_LOAD = 1
 EXPECTED_VFPU_FILES = {

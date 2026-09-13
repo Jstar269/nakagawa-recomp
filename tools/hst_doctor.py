@@ -101,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="explicit Vulkan SDK directory (otherwise use VULKAN_SDK, then the newest valid C:\\VulkanSDK installation)",
     )
+    parser.add_argument(
+        "--title-manifest",
+        type=Path,
+        default=None,
+        help="optional title manifest path (validates title identity against manifest.disc.id)",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="make warnings produce exit status 2")
     return parser
@@ -121,6 +127,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.root.resolve()
     report = Report(root, args.scope)
 
+    manifest_arg = args.title_manifest
+    if manifest_arg is not None:
+        manifest_path = manifest_arg if manifest_arg.is_absolute() else (root / manifest_arg)
+        if not manifest_path.is_file():
+            report.fail(
+                "INPUT_TITLE_MANIFEST",
+                f"Configured title manifest was not found: {manifest_arg}",
+                path=manifest_path,
+                remediation="Provide a path to an existing title manifest.",
+            )
+            manifest_arg = None
+        else:
+            try:
+                import title_manifest
+                title_manifest.load_manifest(manifest_path)
+            except Exception as exc:
+                report.fail(
+                    "INPUT_TITLE_MANIFEST",
+                    f"Invalid title manifest: {exc}",
+                    path=manifest_path,
+                    remediation="Fix the title manifest syntax or schema.",
+                )
+
     if args.scope in {"repo", "all"}:
         check_repository_contract(report)
         check_agent_identity(report)
@@ -133,11 +162,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             report,
             need_iso=args.scope in {"inputs", "all"},
             need_assets=args.scope in {"inputs", "all"},
+            title_manifest=manifest_arg,
         )
     if args.scope in {"inputs", "run", "all"}:
         check_save_root(report, root)
     if args.scope == "run":
-        check_private_inputs(report, need_iso=True, need_assets=True)
+        check_private_inputs(
+            report,
+            need_iso=True,
+            need_assets=True,
+            title_manifest=manifest_arg,
+        )
     if args.scope in {"products", "run", "all"}:
         check_build_products(report)
         check_build_profile(report, root)

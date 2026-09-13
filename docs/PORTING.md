@@ -279,7 +279,7 @@ By bucket (live `hle.c` only):
   `0x041fffff`) is inventoried like any other absolute guest address.
 - `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (16 title-configured
   addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
-  build/profile couplings below (C-2, C-3) are this bucket.
+  build/profile couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
 - `DIAGNOSTIC_ONLY`: 30 addresses / 36 sites (read-only, env-gated).
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
@@ -307,7 +307,7 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. `disc.id` duplication (C-3) and the remaining diagnostic-only groups above.
+1. Diagnostic-only groups in `src/rt/hle.c` (C-1) and the VBLANK interrupt stack boundary (C-6).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.
@@ -334,11 +334,15 @@ build asserts the expected 56,672-file census through the manifest.
 title configuration; see `tools/test_hle_title_isolation.py` and
 `tools/test_title_runtime_config.py`).
 
-### C-3 — Disc ID duplicated outside the manifest
+### C-3 — Disc ID duplicated outside the manifest — RETIRED
 
-`tools/hst_doctor_core.py` defines `EXPECTED_DISC_ID = "UCUS98701"` while the title
-manifest independently validates `disc.id`. Two sources of truth for the same fact.
-`PROFILE_OWNED_CONFIGURATION` — deferred (doctor must keep working with no manifest).
+`tools/hst_doctor_core.py` previously defined `EXPECTED_DISC_ID = "UCUS98701"` independently
+of `manifest.disc.id`. The second source of truth has been retired: `tools/hst_doctor.py`
+and `tools/hst_doctor_checks.py` now take disc identity from validated title configuration
+(`--title-manifest`, `TITLE_MANIFEST`, or local `assets/titles/hst-ucus98701.json`).
+When no manifest is supplied, the doctor operates in generic mode, performing ISO9660
+format validation without title-specific disc ID confirmation.
+`PROFILE_OWNED_CONFIGURATION` — retired for this surface.
 
 ### C-4 — One shared scratch stack for every nested guest call — RETIRED
 

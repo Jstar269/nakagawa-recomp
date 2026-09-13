@@ -16,7 +16,6 @@ import sys
 import uuid
 
 from hst_doctor_core import (
-    EXPECTED_DISC_ID,
     EXPECTED_VFPU_FILES,
     PRIVATE_EXTENSIONS,
     PRIVATE_PREFIXES,
@@ -365,8 +364,48 @@ def discover_iso(root: Path) -> tuple[Path | None, list[Path]]:
     return None, unique
 
 
-def check_private_inputs(report: Report, *, need_iso: bool, need_assets: bool) -> None:
+def _resolve_disc_id(manifest: Path | str | dict[str, object] | None) -> str | None:
+    if manifest is None:
+        return None
+    if isinstance(manifest, dict):
+        disc = manifest.get("disc")
+        if isinstance(disc, dict) and "id" in disc:
+            return str(disc["id"])
+        return None
+    path = Path(manifest)
+    if not path.is_file():
+        return None
+    try:
+        import title_manifest
+        data = title_manifest.load_manifest(path)
+        disc = data.get("disc")
+        if isinstance(disc, dict) and "id" in disc:
+            return str(disc["id"])
+    except Exception:
+        pass
+    return None
+
+
+def check_private_inputs(
+    report: Report,
+    *,
+    need_iso: bool,
+    need_assets: bool,
+    title_manifest: Path | str | dict[str, object] | None = None,
+    expected_disc_id: str | None = None,
+) -> None:
     root = report.root
+    if expected_disc_id is None and title_manifest is not None:
+        expected_disc_id = _resolve_disc_id(title_manifest)
+    if expected_disc_id is None and os.environ.get("TITLE_MANIFEST"):
+        env_manifest = Path(os.environ["TITLE_MANIFEST"])
+        if env_manifest.is_file():
+            expected_disc_id = _resolve_disc_id(env_manifest)
+    if expected_disc_id is None:
+        local_hst = root / "assets" / "titles" / "hst-ucus98701.json"
+        if local_hst.is_file():
+            expected_disc_id = _resolve_disc_id(local_hst)
+
     elf_path = root / "place_game_here" / "EBOOT.elf"
     if not elf_path.is_file() and (root / "eboot.elf").is_file():
         elf_path = root / "eboot.elf"
@@ -413,11 +452,16 @@ def check_private_inputs(report: Report, *, need_iso: bool, need_assets: bool) -
     if need_iso:
         selected, candidates = discover_iso(root)
         if not candidates:
+            remediation = (
+                f"Place exactly one lawfully obtained {expected_disc_id} ISO in place_game_here/ISO/."
+                if expected_disc_id
+                else "Place exactly one lawfully obtained game ISO in place_game_here/ISO/."
+            )
             report.fail(
                 "INPUT_ISO",
                 "No game ISO was found",
                 path=root / "place_game_here" / "ISO",
-                remediation="Place exactly one lawfully obtained UCUS98701 ISO in place_game_here/ISO/.",
+                remediation=remediation,
             )
         elif selected is None:
             report.fail(
@@ -432,14 +476,21 @@ def check_private_inputs(report: Report, *, need_iso: bool, need_assets: bool) -
                 report.fail("INPUT_ISO", "Invalid ISO9660 game image", path=selected, detail=error)
             else:
                 report.pass_("INPUT_ISO", "Validated ISO9660 game image", path=selected, metadata=metadata or {})
-                if _scan_disc_id(selected, EXPECTED_DISC_ID):
-                    report.pass_("INPUT_DISC_ID", f"Found expected disc ID {EXPECTED_DISC_ID} in the ISO", path=selected)
+                if expected_disc_id is not None:
+                    if _scan_disc_id(selected, expected_disc_id):
+                        report.pass_("INPUT_DISC_ID", f"Found expected disc ID {expected_disc_id} in the ISO", path=selected)
+                    else:
+                        report.warn(
+                            "INPUT_DISC_ID",
+                            f"Could not confirm expected disc ID {expected_disc_id} in the first 128 MiB",
+                            path=selected,
+                            remediation=f"Confirm that this is the supported {expected_disc_id} release before relying on the build.",
+                        )
                 else:
-                    report.warn(
+                    report.info(
                         "INPUT_DISC_ID",
-                        f"Could not confirm expected disc ID {EXPECTED_DISC_ID} in the first 128 MiB",
+                        "No title manifest with disc ID supplied; skipping disc ID confirmation",
                         path=selected,
-                        remediation="Confirm that this is the supported US UCUS98701 release before relying on the build.",
                     )
 
     if need_assets:
