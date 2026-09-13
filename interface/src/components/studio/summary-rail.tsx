@@ -160,8 +160,23 @@ export function SummaryRail() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 4000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        void refresh();
+      }
+    }, 4000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [refresh]);
 
   const milestones = ["image_loaded", "runtime_registered", "window_ready", "guest_start", "display_flip"];

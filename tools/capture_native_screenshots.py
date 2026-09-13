@@ -6,6 +6,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from PIL import Image
 
@@ -52,43 +53,56 @@ def capture_matrix(player_exe: Path | None = None):
     print("CAPTURING NATIVE PLAYER SCREENSHOT MATRIX")
     print("============================================================")
 
-    results = []
-    for filename, args in views:
-        if temp_bmp.exists():
-            temp_bmp.unlink()
+    # Isolate environment so captures do not inspect or mutate the host's real library (O-03)
+    with tempfile.TemporaryDirectory(prefix="nk_capture_") as temp_env_dir:
+        temp_env_path = Path(temp_env_dir).resolve()
+        isolated_env = os.environ.copy()
+        isolated_env["LOCALAPPDATA"] = str(temp_env_path)
+        isolated_env["APPDATA"] = str(temp_env_path)
+        isolated_env["USERPROFILE"] = str(temp_env_path)
+        isolated_env["HOME"] = str(temp_env_path)
+        isolated_env["XDG_CONFIG_HOME"] = str(temp_env_path / "config")
+        isolated_env["XDG_DATA_HOME"] = str(temp_env_path / "data")
+        isolated_env["XDG_CACHE_HOME"] = str(temp_env_path / "cache")
+        isolated_env["XDG_STATE_HOME"] = str(temp_env_path / "state")
 
-        cmd = [str(player_exe), f"--screenshot={temp_bmp}"] + args
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            print(f"FAILED: {' '.join(cmd)}")
-            print("STDERR:", proc.stderr)
-            results.append((filename, False, "process returned error"))
-            continue
+        results = []
+        for filename, args in views:
+            if temp_bmp.exists():
+                temp_bmp.unlink()
 
-        if not temp_bmp.exists():
-            print(f"FAILED: {temp_bmp} was not generated.")
-            results.append((filename, False, "no bmp generated"))
-            continue
+            cmd = [str(player_exe), f"--screenshot={temp_bmp}"] + args
+            proc = subprocess.run(cmd, env=isolated_env, capture_output=True, text=True)
+            if proc.returncode != 0:
+                print(f"FAILED: {' '.join(cmd)}")
+                print("STDERR:", proc.stderr)
+                results.append((filename, False, "process returned error"))
+                continue
 
-        out_png = out_dir / filename
-        with Image.open(temp_bmp) as im:
-            im.save(out_png, "PNG")
-            w, h = im.size
+            if not temp_bmp.exists():
+                print(f"FAILED: {temp_bmp} was not generated.")
+                results.append((filename, False, "no bmp generated"))
+                continue
 
-        if temp_bmp.exists():
-            temp_bmp.unlink()
+            out_png = out_dir / filename
+            with Image.open(temp_bmp) as im:
+                im.save(out_png, "PNG")
+                w, h = im.size
 
-        size_kb = out_png.stat().st_size / 1024.0
-        print(f"CAPTURED: {filename} ({w}x{h}, {size_kb:.1f} KB)")
-        results.append((filename, True, f"{w}x{h} ({size_kb:.1f} KB)"))
+            if temp_bmp.exists():
+                temp_bmp.unlink()
 
-    print("\nSummary:")
-    for name, ok, detail in results:
-        status = "OK" if ok else "FAIL"
-        print(f"  [{status}] {name:35s} -> {detail}")
+            size_kb = out_png.stat().st_size / 1024.0
+            print(f"CAPTURED: {filename} ({w}x{h}, {size_kb:.1f} KB)")
+            results.append((filename, True, f"{w}x{h} ({size_kb:.1f} KB)"))
 
-    all_ok = all(r[1] for r in results)
-    return 0 if all_ok else 1
+        print("\nSummary:")
+        for name, ok, detail in results:
+            status = "OK" if ok else "FAIL"
+            print(f"  [{status}] {name:35s} -> {detail}")
+
+        all_ok = all(r[1] for r in results)
+        return 0 if all_ok else 1
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

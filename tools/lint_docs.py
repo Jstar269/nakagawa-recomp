@@ -73,14 +73,12 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # the moment the next object is opened, and the dangerous direction is a frontier that is
 # too LOW, because that is what lets a soon-to-be-live number sit in the denylist unnoticed.
 # Raise it whenever this file is touched during a sweep. The public sequence had allocated
-# at least through 133 as of 2026-08-27 -- the pull request carrying this change is 133 --
-# so 98-133 are live public objects, which is why the 98-105 entries this comment used to
-# argue about are gone.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 133
+# at least through 191 as of 2026-09-13 (including PR #191, #190, #189, and issues #187, #188),
+# so 98-191 are live public objects.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 191
 
 RETIRED_PRIVATE_ISSUE_NUMBERS = (
-    139, 142, 143, 145, 146, 147, 149, 150, 151, 152,
-    154, 179, 187, 188, 196, 197, 234, 247, 248, 249,
+    196, 197, 234, 247, 248, 249,
     253, 286, 293, 294, 296, 298, 299, 300, 301, 303,
     304, 339, 346,
 )
@@ -143,6 +141,8 @@ TOOLCHAIN_BASELINE_DOC = "docs/TOOLCHAIN_BASELINE_2026-08.md"
 TOOLCHAIN_BASELINE_STATUS_PAT = re.compile(
     r"^STATUS\s*=\s*(HISTORICAL|REFERENCE)\b", re.MULTILINE
 )
+
+DOCS_README = "docs/README.md"
 
 TITLES_DIR = "assets/titles"
 TITLES_README = "assets/titles/README.md"
@@ -391,6 +391,52 @@ def lint_toolchain_baseline_marker(repo_root: pathlib.Path = ROOT) -> list[str]:
     return errors
 
 
+def lint_docs_index_completeness(repo_root: pathlib.Path = ROOT) -> list[str]:
+    """Every tracked markdown document under docs/ must be indexed in docs/README.md."""
+    errors: list[str] = []
+    readme = repo_root / DOCS_README
+    if not readme.is_file():
+        return errors
+
+    try:
+        res = subprocess.run(
+            ["git", "ls-files", "docs/*.md", "docs/**/*.md"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        tracked_docs = [
+            line.strip().replace("\\", "/")
+            for line in res.stdout.splitlines()
+            if line.strip()
+        ]
+    except (OSError, subprocess.SubprocessError):
+        tracked_docs = [
+            p.relative_to(repo_root).as_posix()
+            for p in (repo_root / "docs").rglob("*.md")
+        ]
+
+    target_docs = {
+        p[len("docs/"):] for p in tracked_docs
+        if p != DOCS_README and not p.startswith("docs/ui-baseline/")
+    }
+
+    text = readme.read_text(encoding="utf-8")
+    table_entries = set()
+    for line in text.splitlines():
+        if line.startswith("| `"):
+            entry = line.split("|")[1].strip().strip("`")
+            table_entries.add(entry)
+
+    missing = sorted(target_docs - table_entries)
+    for doc in missing:
+        errors.append(
+            f"{DOCS_README}: tracked document docs/{doc} is not indexed in the document status taxonomy table"
+        )
+    return errors
+
+
 def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
     errors = lint_readme(repo_root / "README.md")
     md_files = get_tracked_markdown_files(repo_root)
@@ -400,6 +446,7 @@ def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
         errors.extend(lint_doc_truth(md_file, repo_root, hst_tracked))
     errors.extend(lint_titles_readme(repo_root))
     errors.extend(lint_toolchain_baseline_marker(repo_root))
+    errors.extend(lint_docs_index_completeness(repo_root))
     return errors
 
 

@@ -15,6 +15,7 @@ from tools.lint_docs import (
     get_tracked_markdown_files,
     lint_doc_links_and_topology,
     lint_doc_truth,
+    lint_docs_index_completeness,
     lint_readme,
     lint_titles_readme,
     lint_toolchain_baseline_marker,
@@ -91,6 +92,24 @@ class TestDocFreshnessLinter(unittest.TestCase):
             with patch("tools.lint_docs.subprocess.run", side_effect=OSError("git missing")):
                 files = get_tracked_markdown_files(root)
         self.assertIn(nested, files)
+
+    def test_docs_index_completeness_passes_on_repo(self) -> None:
+        errors = lint_docs_index_completeness(ROOT)
+        self.assertEqual(errors, [])
+
+    def test_docs_index_completeness_fails_when_entry_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "README.md").write_text(
+                "# Documentation\n\n| Path | Status |\n| --- | --- |\n| `ALPHA.md` | CURRENT |\n",
+                encoding="utf-8",
+            )
+            (docs_dir / "ALPHA.md").write_text("# Alpha\n", encoding="utf-8")
+            (docs_dir / "BETA.md").write_text("# Beta\n", encoding="utf-8")
+            errors = lint_docs_index_completeness(root)
+            self.assertTrue(any("docs/BETA.md is not indexed" in e for e in errors))
 
 
 class TestDocTruthInvariants(unittest.TestCase):
@@ -239,10 +258,11 @@ class RetiredIssueDenylistExpiry(unittest.TestCase):
         """MUTATION: reintroduce a reallocated number and the module must refuse to
         load, rather than silently flagging a live public issue."""
         source = (ROOT / "tools" / "lint_docs.py").read_text(encoding="utf-8")
+        first = lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS[0]
         mutated = source.replace(
-            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    139,",
+            f"RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    {first},",
             "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n"
-            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, 139,",
+            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, {first},",
             1,
         )
         self.assertNotEqual(mutated, source, "mutation anchor not found")

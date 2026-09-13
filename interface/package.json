@@ -4,7 +4,7 @@
   "license": "GPL-3.0-or-later",
   "private": true,
   "engines": {
-    "node": ">=24.18.1",
+    "node": ">=24.18.1 <25",
     "npm": ">=11.17.0"
   },
   "scripts": {
@@ -17,9 +17,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:generate": "prisma generate"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",
