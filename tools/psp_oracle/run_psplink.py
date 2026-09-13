@@ -22,9 +22,9 @@ import sys
 import time
 
 try:
-    from .protocol import compare_texts, dump_json
+    from .protocol import compare_texts, decode_psp_model_code, dump_json
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from protocol import compare_texts, dump_json
+    from protocol import compare_texts, decode_psp_model_code, dump_json
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +49,8 @@ def _plan(args: argparse.Namespace) -> dict[str, object]:
         "usbhostfs_pc": _tool("usbhostfs_pc"),
         "prx": prx.name if prx else None,
         "remote_command": args.remote_command,
+        "model": args.model,
+        "model_code": args.model_code,
         "results_directory": str(DEFAULT_RESULTS.relative_to(ROOT)).replace("\\", "/"),
         "provenance_supplied": all(getattr(args, flag) for flag in PROVENANCE_FLAGS),
         "manual_steps_remaining": [
@@ -160,9 +162,13 @@ def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
     with args.binary.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    model_fields = f"model={args.model}"
+    if args.model_code is not None:
+        generation, _retail = decode_psp_model_code(args.model_code)
+        model_fields += f" model_code=0x{args.model_code:02x} model_generation={generation}"
     metadata = (
         "NAKAGAWA_PSP_META schema=1 source=psp "
-        f"model={args.model} firmware={args.firmware} "
+        f"{model_fields} firmware={args.firmware} "
         f"binary_sha256={digest.hexdigest()} source_commit={args.source_commit}"
     )
     records = [line for line in text.splitlines() if not line.startswith("NAKAGAWA_PSP_META ")]
@@ -181,6 +187,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--binary", type=Path, help="source-owned PRX used to replace fixture metadata")
     parser.add_argument("--source-commit", help="exact source commit recorded in the result metadata")
     parser.add_argument("--model", help="human-recorded PSP model identifier")
+    parser.add_argument(
+        "--model-code",
+        type=lambda value: int(value, 0),
+        help=(
+            "PSPSDK/kubridge PspModel ordinal; derives the generation and retail family "
+            "(do not use for sceKernelGetModel's original/slim return)"
+        ),
+    )
     parser.add_argument("--firmware", help="human-recorded PSP firmware identifier")
     parser.add_argument("--out", type=Path)
     parser.add_argument(
@@ -196,9 +210,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    supplied = [flag for flag in PROVENANCE_FLAGS if getattr(args, flag)]
-    if supplied and len(supplied) != len(PROVENANCE_FLAGS):
-        missing = ", ".join("--" + flag.replace("_", "-") for flag in PROVENANCE_FLAGS if flag not in supplied)
+    model_was_derived = args.model_code is not None
+    if model_was_derived:
+        if args.model:
+            parser.error("--model and --model-code are mutually exclusive")
+        try:
+            generation, retail = decode_psp_model_code(args.model_code)
+        except ValueError as exc:
+            parser.error(str(exc))
+        args.model = f"{retail}-{generation}"
+
+    supplied = [
+        flag
+        for flag in PROVENANCE_FLAGS
+        if getattr(args, flag) and not (flag == "model" and model_was_derived)
+    ]
+    required_provenance_count = len(PROVENANCE_FLAGS) - (1 if model_was_derived else 0)
+    if supplied and len(supplied) != required_provenance_count:
+        missing_flags = [
+            flag for flag in PROVENANCE_FLAGS
+            if flag not in supplied and not (flag == "model" and model_was_derived)
+        ]
+        missing = ", ".join("--" + flag.replace("_", "-") for flag in missing_flags)
         parser.error(f"provenance metadata is all-or-nothing; missing {missing}")
 
     if bool(args.annotate_report) != bool(args.observed_terminal_outcome):

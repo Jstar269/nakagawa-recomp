@@ -6635,10 +6635,10 @@ static void test_bulk_guest_span_atomicity(void) {
     expect(MEM_R8(0x0bfffff0u) == 0x3cu && MEM_R8(0x0bfffff0u + 15u) == 0x3cu,
            "rejected memset performs no partial guest mutation");
     for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x2au);
-    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "production DMA reports its PSP return value for a rejected span");
-    expect(MEM_R8(0x0bfffff0u) == 0x2au && MEM_R8(0x0bfffff0u + 15u) == 0x2au,
-           "rejected DMA performs no partial guest mutation");
+    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0u,
+           "production DMA reports success for a measured one-byte tail");
+    expect(MEM_R8(0x0bfffff0u) == 0x30u && MEM_R8(0x0bfffff0u + 15u) == 0x3fu,
+           "measured one-byte DMA tail copies the valid prefix");
 }
 
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions ------------------
@@ -6647,13 +6647,11 @@ static void test_bulk_guest_span_atomicity(void) {
  * registered NID, so these assert the PSP-visible return value and the
  * PSP-visible memory state of the shipped handlers.
  *
- * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
- * private capture details are intentionally not part of this public-safe tree.
- * The measured large-transfer ceiling is asserted as a prefix copy with an
- * untouched tail. The invalid-truncated-tail case is deliberately labelled as
- * a conservative runtime policy: hardware has not yet established whether the
- * tail is validated before the effective transfer length is applied. */
-extern uint32_t sr_hle_test_dmac_effective_max(void);
+ * The expected values come from the source-owned PSP-3000 / 6.61-ARK
+ * measurements; private capture details are intentionally not part of this
+ * public-safe tree. Fully valid spans are complete copies through 1 MiB. A
+ * one-byte tail past a proven prefix is copied through that prefix; larger
+ * or wrapped overruns remain fail-closed until separately measured. */
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -6712,24 +6710,46 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_is(dst, 256u, 0xa5u),
            "PSP: a NULL-pointer request modifies no destination byte");
 
-    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000, so
-     * these requests end exactly one byte past it or wrap uint32_t outright.
-     * A base-address-only check or an `addr + size` comparison would accept
-     * them; both must be rejected before any byte moves. */
+    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000.
+     * The one-byte boundary shape is the newly measured partial-tail control;
+     * the complete prefix is copied and the byte past it is untouched. */
+    dmac_fill(src, 17u);
     dmac_clear(0x0bfffff0u, 16u, 0x3bu);
-    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "PSP class: a destination span ending past the arena is rejected");
-    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "PSP class: a source span ending past the arena is rejected");
+    gpu_dirty_reset();
+    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == 0u,
+           "PSP: a one-byte invalid destination tail returns success");
+    expect(dmac_span_matches(0x0bfffff0u, 16u, 0u),
+           "PSP: a one-byte invalid destination tail copies only the prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x0bfffff0u &&
+               s_gpu_dirty_bytes == 16u,
+           "PSP: a partial destination tail dirties only the valid prefix");
+
+    dmac_fill(0x0bfffff0u, 16u);
+    dmac_clear(dst, 17u, 0x4bu);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == 0u,
+           "PSP: a one-byte invalid source tail returns success");
+    expect(dmac_span_matches(dst, 16u, 0u),
+           "PSP: a one-byte invalid source tail copies only the prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
+               s_gpu_dirty_bytes == 16u,
+           "PSP: a partial source tail dirties only the valid prefix");
+
+    /* Larger tails and uint32 wrap are still deliberately conservative: no
+     * partial host pointer is formed for an unmeasured shape. */
+    dmac_clear(0x0bff1000u, 0xc000u, 0x3bu);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, 0x0bff1000u, src, 0x10000u) == SCE_DMAC_ILLEGAL_ADDR,
+           "unmeasured multi-byte invalid tail remains fail-closed");
     expect(bulk_call(nid, 0x0bffff00u, src, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a destination span that wraps uint32_t is rejected");
     expect(bulk_call(nid, dst, 0x0bffff00u, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a source span that wraps uint32_t is rejected");
-    expect(dmac_span_is(0x0bfffff0u, 16u, 0x3bu) && dmac_span_is(dst, 256u, 0xa5u),
-           "PSP: a rejected span leaves both buffers byte-for-byte unchanged");
-    /* Every rejection above ran with the counter still at zero. A GPU dirty
-     * notification for a transfer that never happened would invalidate a live
-     * texture or framebuffer cache entry for no reason. */
+    expect(dmac_span_is(0x0bff1000u, 0xc000u, 0x3bu) &&
+               dmac_span_is(dst + 16u, 1u, 0x4bu),
+           "PSP: unmeasured invalid tails leave their destinations unchanged");
+    /* A rejection must not issue a GPU dirty notification for a transfer that
+     * never happened. */
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
 
@@ -6747,9 +6767,12 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
 
     /* --- proven: sizes that hardware measured as complete copies ------------ */
 
-    /* 16385 and 32769 are the sizes that ruled out a 16 KiB / 32 KiB ceiling on
-     * hardware; every byte is checked here, not just the sampled endpoints. */
-    static const uint32_t full_sizes[] = { 1u, 1024u, 4096u, 16384u, 16385u, 32768u, 32769u };
+    /* The sequential size matrix ruled out an API-wide 0xC000 ceiling:
+     * every byte is checked through a 1 MiB request for both registered NIDs. */
+    static const uint32_t full_sizes[] = {
+        1u, 1024u, 4096u, 16384u, 16385u, 32768u, 32769u,
+        0xC000u, 0xC001u, 0x10000u, 0x20000u, 0x100000u
+    };
     for (unsigned i = 0; i < sizeof(full_sizes) / sizeof(full_sizes[0]); i++) {
         const uint32_t n = full_sizes[i];
         dmac_fill(src, n);
@@ -6827,62 +6850,13 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_matches(src, 16384u, 16u),
            "PSP: a backward-overlapping copy is memmove-correct across the span");
 
-    /* --- measured: the 0xC000 effective ceiling ----------------------------- */
-
-    /* Independent PSP-3001 / 6.61-ARK runs bracketed the boundary at 0xC000:
-     * 0xBFFF and 0xC000 are complete, while larger requests return success,
-     * copy the contiguous prefix, and leave the remainder untouched. Assert
-     * every byte for both registered NIDs, including the dirty range reported
-     * to the renderer. */
-    const uint32_t ceiling = sr_hle_test_dmac_effective_max();
-    expect(ceiling == 0xC000u, "the measured DMA effective ceiling is 0xC000");
-    static const uint32_t ceiling_sizes[] = {
-        0xBFFFu, 0xC000u, 0xC001u, 0xD000u, 0xF000u, 0xFFFFu, 0x10000u
-    };
-    for (unsigned i = 0; i < sizeof(ceiling_sizes) / sizeof(ceiling_sizes[0]); i++) {
-        const uint32_t requested = ceiling_sizes[i];
-        const uint32_t effective = requested > ceiling ? ceiling : requested;
-        dmac_fill(src, requested);
-        dmac_clear(dst, requested + 1u, 0xa7u);
-        gpu_dirty_reset();
-        expect(bulk_call(nid, dst, src, requested) == 0u,
-               "a measured-ceiling request returns success");
-        expect(dmac_span_matches(dst, effective, 0u),
-               "a measured-ceiling request copies the complete effective prefix");
-        expect(dmac_span_is(dst + effective, requested - effective, 0xa7u),
-               "a measured-ceiling request leaves the truncated tail untouched");
-        expect(MEM_R8(dst + requested) == 0xa7u,
-               "a measured-ceiling request writes nothing past its request");
-        expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
-                   s_gpu_dirty_bytes == effective,
-               "a measured-ceiling request dirties only the effective destination prefix");
-    }
-
-    /* Conservative memory-safety policy (not a hardware claim): a request
-     * whose effective prefix is in range but whose requested tail crosses the
-     * modeled arena is rejected atomically until hardware settles precedence.
-     * This prevents a partially validated bulk access from reaching SR_HOST. */
-    const uint32_t invalid_tail_dst = 0x0bff1000u;
-    const uint32_t invalid_tail_src = 0x08210000u;
-    const uint32_t invalid_tail_size = 0x10000u;
-    dmac_fill(invalid_tail_src, invalid_tail_size);
-    dmac_clear(invalid_tail_dst, ceiling, 0x6du);
-    gpu_dirty_reset();
-    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
-               SCE_DMAC_ILLEGAL_ADDR,
-           "the conservative policy rejects an invalid requested tail");
-    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
-           "an invalid requested tail causes no prefix mutation");
-    expect(s_gpu_dirty_calls == 0u,
-           "an invalid requested tail causes no GPU dirty notification");
-
     (void)who;
 }
 
-/* Hardware measured sceDmacTryMemcpy blocking for the full transfer and
- * producing the same content as the blocking form at every size it tried, so
- * the whole contract above is asserted against both NIDs. No BUSY result was
- * ever observed in any session, so none is asserted or fabricated. */
+/* Hardware measured sceDmacTryMemcpy matching the blocking form for every
+ * single-caller size tested, while the multi-threaded campaign observed BUSY
+ * during active DMA. The production runtime still has no active-transfer
+ * state, so no BUSY result is fabricated here. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");

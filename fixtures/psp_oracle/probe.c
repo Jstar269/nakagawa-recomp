@@ -51,6 +51,12 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_IO_MATRIX 22
 #define PSP_ORACLE_CASE_AUDIO_QUERY 23
 #define PSP_ORACLE_CASE_CACHE_ALIAS 24
+#define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 25
+#define PSP_ORACLE_CASE_MODEL_PROFILE 26
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+#include <kubridge.h>
+#endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
@@ -687,8 +693,9 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 }
 #endif
 
-#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
-    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+#if (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
+     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 #define DMAC_API_MEMCPY 0u
 #define DMAC_API_TRY_MEMCPY 1u
 #define DMAC_MEASURED_PREFIX 0x0000c000u
@@ -707,6 +714,86 @@ static uint8_t dmac_pattern(uint32_t offset) {
 static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+/* Sequential, thread-free size controls.  The invalid-tail family measures a
+   block boundary; this matrix keeps both spans fully inside VRAM so a result
+   above 0xC000 cannot be mistaken for boundary truncation. */
+#define DMAC_SIZE_BYTES 0x00100000u
+#define DMAC_SIZE_SENTINEL 0xa5u
+#define DMAC_SIZE_DST ((uint8_t *)0x04000000u)
+#define DMAC_SIZE_SRC ((uint8_t *)0x04100000u)
+static const uint32_t dmac_size_requests[] = {
+    0x0000c000u, 0x0000c001u, 0x00010000u, 0x00020000u, 0x00100000u,
+};
+
+static uint32_t dmac_size_prefix(uint32_t requested) {
+    uint32_t offset = 0;
+    while (offset < requested && DMAC_SIZE_DST[offset] == dmac_pattern(offset)) {
+        ++offset;
+    }
+    return offset;
+}
+
+static uint32_t dmac_size_non_sentinel(uint32_t offset, uint32_t requested) {
+    uint32_t count = 0;
+    while (offset < requested) {
+        if (DMAC_SIZE_DST[offset] != DMAC_SIZE_SENTINEL) ++count;
+        ++offset;
+    }
+    return count;
+}
+
+static void run_dmac_size_matrix(int emulated) {
+    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
+        DMAC_SIZE_SRC[offset] = dmac_pattern(offset);
+    }
+    sceKernelDcacheWritebackInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
+
+    const uint32_t api_count = 2u;
+    const uint32_t request_count =
+        (uint32_t)(sizeof(dmac_size_requests) / sizeof(dmac_size_requests[0]));
+    for (uint32_t api = 0; api < api_count; ++api) {
+        for (uint32_t i = 0; i < request_count; ++i) {
+            const uint32_t requested = dmac_size_requests[i];
+            memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, requested);
+            sceKernelDcacheWritebackInvalidateRange(DMAC_SIZE_DST, requested);
+            const uint64_t start_us = sceKernelGetSystemTimeWide();
+            const uint32_t result = (uint32_t)dmac_call(
+                api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
+            const uint64_t end_us = sceKernelGetSystemTimeWide();
+            sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, requested);
+
+            const uint32_t prefix = dmac_size_prefix(requested);
+            const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
+            uint32_t source_match = 1u;
+            for (uint32_t offset = 0; offset < requested; ++offset) {
+                if (DMAC_SIZE_SRC[offset] != dmac_pattern(offset)) {
+                    source_match = 0u;
+                    break;
+                }
+            }
+            char case_id[64];
+            snprintf(case_id, sizeof(case_id), "size-matrix-%s-0x%08x",
+                     api == DMAC_API_TRY_MEMCPY ? "try" : "memcpy",
+                     (unsigned int)requested);
+            const uint32_t out[] = {
+                requested,
+                prefix,
+                stray,
+                source_match,
+                dmac_elapsed_us(start_us, end_us),
+                api,
+            };
+            const int pass = result == 0u && prefix == requested &&
+                             stray == 0u && source_match != 0u;
+            emit_record_extended(emulated, "PSP-DMAC-001", case_id,
+                                 pass ? "PASS" : "FAIL", result,
+                                 out, sizeof(out) / sizeof(out[0]));
+        }
+    }
 }
 #endif
 
@@ -929,25 +1016,15 @@ static void run_dmac_concurrency(int emulated) {
 
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
-/* With PSP_LARGE_MEMORY=0, the pinned PSPSDK build contract requests the
-   24 MiB baseline user partition.  uOFW's public memory map places that
-   partition at 0x08800000 with size 0x01800000, ending at 0x0A000000.
-   The probe does not touch that boundary until the allocator has reserved the
-   entire valid prefix and independently rejected a block beginning at the
-   next address. */
-/* Allocator-observed top (PSP-3000/6.61-ARK-5.1.0, 512 KiB bounded heap):
-   grants through 0x0B700000; failures at 0x0B73F000/0x0B740000/0x0B7FF000/
-   0x0B800000 (surveyor + premise runs, same heap geometry). Candidate end
-   with sanity 64 KiB below in granted territory. The v3 premise gate
-   re-verifies at runtime; if the boundary moved, the SKIP records it. */
-#define DMAC_BASELINE_USER_END 0x0b720000u
-/* Proven-grantable sanity address for the premise gate (granted in prior
-   surveyor runs under the same heap geometry). */
-#define DMAC_SANITY_ADDR 0x0b700000u
-#define DMAC_BOUNDARY_LEAD 0x00000100u
-#define DMAC_BOUNDARY_BLOCK_BASE \
-    (DMAC_BASELINE_USER_END - DMAC_MEASURED_PREFIX - DMAC_BOUNDARY_LEAD)
-#define DMAC_BOUNDARY_BLOCK_BYTES (DMAC_MEASURED_PREFIX + DMAC_BOUNDARY_LEAD)
+/* The old probe baked in a 32 MiB partition end.  That premise was false on
+   some PSP-3000/ARK configurations and made every tail result vacuous.  The
+   replacement discovers a boundary in the current allocator state: a
+   page-aligned high block is held, and the next address is probed while that
+   block is still live.  A successful adjacent allocation (or any allocator
+   ambiguity) is a strict SKIP, so the invalid-tail syscall is issued only
+   after the allocator itself rejects the candidate. */
+#define DMAC_BOUNDARY_LEAD 0x00004000u
+#define DMAC_BOUNDARY_BLOCK_BYTES 0x00010000u
 #define DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)
 #define DMAC_BOUNDARY_SENTINEL 0xa5u
 #define DMAC_BOUNDARY_GUARD 0x6du
@@ -1002,6 +1079,7 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
         DMAC_INVALID_DIRECTION,
         DMAC_INVALID_API,
         tail_allocation_result,
+        DMAC_BOUNDARY_BLOCK_BYTES,
     };
     emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
                          status, result, out, sizeof(out) / sizeof(out[0]));
@@ -1009,50 +1087,12 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
 
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
-    /* Phase A: clean-premise check with NO blocks held. The candidate end
-       must FAIL a fixed-address alloc (it is the allegedly invalid byte),
-       while the sanity address (proven grantable) must SUCCEED (the
-       fixed-addr mechanism works at all). A grant AT the end means the
-       premise is false (SKIP). A held-block-adjacent check is deliberately
-       NOT used here: measured 4/4, the allocator grants the exact end of a
-       held block while granting nothing there clean (adjacency artifact). */
-    const uint32_t free_before = (uint32_t)sceKernelMaxFreeMemSize();
-    const SceUID probe_end = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-endprobe", PSP_SMEM_Addr, 0x100,
-        (void *)DMAC_BASELINE_USER_END);
-    const uint32_t free_after = (uint32_t)sceKernelMaxFreeMemSize();
-    if (probe_end >= 0) {
-        /* Granted somewhere: only a grant AT the end falsifies the premise.
-           An elsewhere-grant means the end itself is not free (proceed).
-           The free-pool delta arbitrates heap-squat vs genuinely-free: a
-           real grant consumes 0x100 from the pool. */
-        uint8_t *const end_head =
-            (uint8_t *)sceKernelGetBlockHeadAddr(probe_end);
-        const uint32_t granted_at_end =
-            (uint32_t)((uintptr_t)end_head == (uintptr_t)DMAC_BASELINE_USER_END);
-        sceKernelFreePartitionMemory(probe_end);
-        if (granted_at_end) {
-            const uint32_t out[] = {0, DMAC_BASELINE_USER_END, free_before,
-                                    free_after};
-            emit_record_extended(emulated, "PSP-DMAC-001",
-                                 DMAC_INVALID_CASE_ID, "SKIP", 1u, out, 4);
-            return;
-        }
-    }
-    const uint32_t end_err = (uint32_t)probe_end;
-    const SceUID probe_sane = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-sanity", PSP_SMEM_Addr, 0x100,
-        (void *)DMAC_SANITY_ADDR);
-    if (probe_sane < 0) {
-        emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)probe_sane,
-                                setup_mask, 0);
-        return;
-    }
-    sceKernelFreePartitionMemory(probe_sane);
-    setup_mask |= 4u;
+    /* Allocate from the high end so the candidate immediately after the
+       page-aligned block has no unobserved space above it.  The allocation is
+       kept live throughout the tail call. */
     const SceUID block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-boundary", PSP_SMEM_Addr,
-        DMAC_BOUNDARY_BLOCK_BYTES, (void *)DMAC_BOUNDARY_BLOCK_BASE);
+        2, "oracle-dmac-boundary", PSP_SMEM_High,
+        DMAC_BOUNDARY_BLOCK_BYTES, NULL);
     if (block < 0) {
         emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)block,
                                 setup_mask, 0);
@@ -1060,12 +1100,29 @@ static void run_dmac_invalid_tail(int emulated) {
     }
     setup_mask |= 1u;
     uint8_t *const block_head = (uint8_t *)sceKernelGetBlockHeadAddr(block);
-    if ((uintptr_t)block_head != (uintptr_t)DMAC_BOUNDARY_BLOCK_BASE) {
+    if (!block_head || ((uintptr_t)block_head & 0xfffu) != 0u ||
+        (uintptr_t)block_head > UINTPTR_MAX - DMAC_BOUNDARY_BLOCK_BYTES) {
         sceKernelFreePartitionMemory(block);
         emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
         return;
     }
     setup_mask |= 2u;
+
+    uint8_t *const candidate_tail = block_head + DMAC_BOUNDARY_BLOCK_BYTES;
+    const SceUID tail_probe = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-tail-probe", PSP_SMEM_Addr, 0x100, candidate_tail);
+    const uint32_t tail_error = tail_probe < 0
+        ? (uint32_t)tail_probe : UINT32_MAX;
+    if (tail_probe >= 0) {
+        /* A successful or ambiguous allocation means the candidate is not a
+           proven invalid byte.  Never issue the DMAC request in that case. */
+        sceKernelFreePartitionMemory(tail_probe);
+        sceKernelFreePartitionMemory(block);
+        emit_dmac_invalid_setup(emulated, "SKIP", 1u, setup_mask,
+                                tail_error);
+        return;
+    }
+    setup_mask |= 4u;
 
     uint8_t *const boundary_prefix = block_head + DMAC_BOUNDARY_LEAD;
     memset(block_head, DMAC_BOUNDARY_GUARD, DMAC_BOUNDARY_LEAD);
@@ -1138,7 +1195,8 @@ static void run_dmac_invalid_tail(int emulated) {
         post_request_changed,
         source_prefix_matches,
         dmac_elapsed_us(start_us, end_us),
-        end_err,
+        tail_error,
+        DMAC_BOUNDARY_BLOCK_BYTES,
     };
     sceKernelFreePartitionMemory(block);
     emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
@@ -2475,6 +2533,26 @@ static void run_cache_alias(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+/* The PSPSDK/kubridge user bridge exposes the PspModel ordinal.  It is kept
+   as a scalar record beside the firmware word; the host decoder owns the
+   generation-to-retail-family presentation and rejects unknown ordinals. */
+static void run_model_profile(int emulated) {
+    const int model_code = kuKernelGetModel();
+    const uint32_t firmware = (uint32_t)sceKernelDevkitVersion();
+    const uint32_t cpu_mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    const uint32_t out[] = {
+        (uint32_t)model_code,
+        firmware,
+        cpu_mhz,
+    };
+    emit_record_extended(emulated, "PSP-SYSTEM-001", "model-profile",
+                         model_code < 0 ? "ERROR" : "PASS",
+                         (uint32_t)model_code, out,
+                         sizeof(out) / sizeof(out[0]));
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -2587,6 +2665,8 @@ int main(int argc, char *argv[]) {
     run_thread_exit_delete(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
     run_dmac_survey(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+    run_dmac_size_matrix(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
     run_ctrl_clock(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
@@ -2599,6 +2679,8 @@ int main(int argc, char *argv[]) {
     run_audio_query(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
     run_cache_alias(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+    run_model_profile(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

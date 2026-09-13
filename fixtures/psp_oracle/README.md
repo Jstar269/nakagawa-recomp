@@ -17,7 +17,15 @@ sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
 `CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
 emits `PSP-TRANSPORT-001`/`host0-write-readback`. Lifecycle sessions use
 `CASE=thread-exit-delete` (`PSP-THREAD-EXIT-001`, 12 cells). Allocator
-sessions use `CASE=dmac-survey` (`PSP-DMAC-001`/`allocator-survey`).
+sessions use `CASE=dmac-survey` (`PSP-DMAC-001`/`allocator-survey`). The
+thread-free `CASE=dma-size-matrix` control keeps both spans inside VRAM and
+measures full copies at sizes around `0xC000` through 1 MiB, separating a true
+API-wide size limit from invalid-tail boundary behavior. The thread-free
+`CASE=model-profile` control records the raw `kuKernelGetModel()` PSPSDK/
+kubridge ordinal, `sceKernelDevkitVersion()` word, and CPU clock. A host-side
+decoder maps the ordinal to a generation and retail family; it never applies
+the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
+convention.
 
 ## Transport write-readback (`CASE=transport-write`)
 
@@ -117,6 +125,14 @@ setup error) and these scalar outputs:
 | `out22` | First-caller thread priority |
 | `out23` | Last first-caller return |
 
+The sequential `dma-size-matrix` records use `result` for the DMAC return and
+these outputs: `out0` requested bytes, `out1` contiguous copied prefix,
+`out2` non-sentinel bytes after that prefix, `out3` source-integrity flag,
+`out4` elapsed microseconds, and `out5` API (`0` blocking, `1` try). A PASS
+record requires the complete requested prefix, unchanged source, and zero
+post-prefix mutation. Its fully in-VRAM spans are the control for separating
+transfer size from allocator-boundary truncation.
+
 The invalid-tail cases isolate one API and invalid endpoint per launch:
 
 - `dma-invalid-tail-memcpy-dst`;
@@ -124,17 +140,14 @@ The invalid-tail cases isolate one API and invalid endpoint per launch:
 - `dma-invalid-tail-try-dst`;
 - `dma-invalid-tail-try-src`.
 
-The Makefile explicitly opts out of expanded memory. At the pinned PSPSDK
-revision this requests the 24 MiB user partition described by the public uOFW
-memory map. Before calling DMAC, the probe FIRST proves the candidate end
-with no blocks held (a fixed-address alloc there must fail, while a sanity
-alloc 4 KiB below must succeed — a held-block-adjacent check is not used
-because the allocator was measured granting the exact end of a held block
-while granting nothing there clean), THEN reserves the entire final valid
-`0xC000`-byte prefix through `sceKernelAllocPartitionMemory` and checks that
-the returned block begins at the requested address. If any safety check
-fails, it emits `SKIP` and never issues the invalid-tail call. The requested
-size is `0xC001`, so exactly one requested byte lies beyond the
+The Makefile keeps the invalid-tail variants on the bounded public memory
+baseline, but the probe no longer assumes a fixed partition end. Before
+calling DMAC it allocates a page-aligned `0x10000`-byte block from the current
+high end of partition 2, uses its final `0xC000` bytes as the valid prefix, and
+probes an allocation beginning at the next address while the block is held.
+Only a strict allocator rejection passes the safety gate; a successful or
+ambiguous adjacent allocation emits `SKIP` and no invalid-tail call is issued.
+The requested size is `0xC001`, so exactly one requested byte lies beyond the
 allocator-proven boundary. No byte outside an owned block is read by the probe
 itself.
 
@@ -145,8 +158,9 @@ and measured-prefix sizes; `out3` is the invalid endpoint (`0` destination,
 prefix pattern-match and non-sentinel mutation counts; `out7` is lead-guard
 mutation; `out8`/`out9` report the valid destination tail and post-request
 guard where observable (`0xFFFFFFFF` otherwise); `out10` verifies the source
-prefix; `out11` is wall time; and `out12` is the rejected boundary-allocation
-error. `status=PASS` means that the call returned and the scalar measurement
+prefix; `out11` is wall time; `out12` is the rejected boundary-allocation
+error; and `out13` is the runtime-discovered boundary block size.
+`status=PASS` means that the call returned and the scalar measurement
 completed; it does not mean that the observed DMA semantics match Nakagawa or
 close issue #23.
 

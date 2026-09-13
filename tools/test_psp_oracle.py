@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from psp_oracle.protocol import ProtocolError, compare_texts, parse_output, provenance_issues
+from psp_oracle.protocol import (
+    ProtocolError,
+    compare_texts,
+    decode_psp_model_code,
+    parse_output,
+    provenance_issues,
+)
 from psp_oracle.run_psplink import (
     _record_summary,
     _split_command,
@@ -46,6 +53,15 @@ def measured_stream(source: str, result: str = "0x1") -> str:
 
 
 class PspOracleProtocolTests(unittest.TestCase):
+    def test_pspsdk_model_ordinal_three_is_psp3000_generation_04g(self) -> None:
+        self.assertEqual(decode_psp_model_code(3), ("04g", "PSP-3000"))
+        self.assertEqual(decode_psp_model_code(4), ("05g", "PSP-N1000"))
+
+    def test_pspsdk_model_decoder_rejects_unknown_or_non_integer_values(self) -> None:
+        for value in (-1, 8, True, "3"):
+            with self.assertRaises(ValueError):
+                decode_psp_model_code(value)  # type: ignore[arg-type]
+
     def test_parser_requires_metadata_and_orders_records(self) -> None:
         parsed = parse_output(stream("psp"))
         self.assertEqual(parsed.metadata_dict()["source"], "psp")
@@ -192,6 +208,23 @@ class PspOracleRunnerTests(unittest.TestCase):
             ],
         )
 
+    def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "psp_oracle" / "run_psplink.py"),
+            "--dry-run",
+            "--model-code",
+            "3",
+        ]
+        # Dry-run still validates/derives the model before reporting the plan.
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=True
+        )
+        plan = json.loads(completed.stdout)
+        self.assertFalse(plan["provenance_supplied"])
+        self.assertEqual(plan["model"], "PSP-3000-04g")
+        self.assertEqual(plan["model_code"], 3)
+
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
@@ -247,6 +280,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "dma-invalid-tail-memcpy-src",
             "dma-invalid-tail-try-dst",
             "dma-invalid-tail-try-src",
+            "dma-size-matrix",
         ):
             self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
         self.assertIn("LIBS = -lpspdmac", self.makefile)
@@ -267,11 +301,36 @@ class PspDmacProbeTests(unittest.TestCase):
     def test_invalid_tail_probe_fails_closed_before_the_call(self) -> None:
         self.assertIn("PSP_LARGE_MEMORY = 0", self.makefile)
         self.assertIn("sceKernelAllocPartitionMemory", self.probe)
-        self.assertIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
-        self.assertIn("DMAC_BASELINE_USER_END", self.probe)
+        self.assertIn("PSP_SMEM_High", self.probe)
+        self.assertIn("DMAC_BOUNDARY_BLOCK_BYTES", self.probe)
+        self.assertIn("candidate_tail", self.probe)
+        self.assertNotIn("DMAC_BASELINE_USER_END", self.probe)
+        self.assertNotIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
         self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', self.probe)
         self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
         self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
+
+    def test_size_matrix_keeps_spans_inside_vram(self) -> None:
+        self.assertIn("DMAC_SIZE_BYTES 0x00100000u", self.probe)
+        self.assertIn("dmac_size_requests", self.probe)
+        self.assertIn('"size-matrix-%s-0x%08x"', self.probe)
+        self.assertIn("prefix == requested", self.probe)
+
+    def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
+        self.assertIn("PSP_ORACLE_CASE_MODEL_PROFILE", self.probe)
+        self.assertIn("kuKernelGetModel()", self.probe)
+        self.assertIn("sceKernelDevkitVersion()", self.probe)
+        self.assertIn("-lpspkubridge", self.makefile)
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+        self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["case_ids"], ["model-profile"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -281,7 +340,8 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
-        self.assertEqual(len(dmac["case_ids"]), 7)
+        self.assertEqual(len(dmac["case_ids"]), 17)
+        self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
         self.assertIn("missing record is never PASS", dmac["reset"])
         self.assertEqual(
             set(dmac["outcome_contract"]),

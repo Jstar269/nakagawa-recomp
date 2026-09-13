@@ -393,6 +393,13 @@ At a PSP import/HLE boundary:
 Do not infer PSP correctness merely because a handler returns zero or because a route advances.
 Behavioral side effects, waits, wakeups, callbacks, outputs, and error values are part of the ABI.
 
+The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
+requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
+allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
+one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. Cross-thread
+DMAC BUSY/blocking state remains outside the synchronous HLE helper until the scheduler owns an
+active-transfer operation.
+
 ### Scheduler / coroutines
 
 `sched.c` models PSP threads cooperatively. Host execution context is provided by `sr_coro` rather

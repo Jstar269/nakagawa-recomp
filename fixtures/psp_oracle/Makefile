@@ -66,6 +66,10 @@ else ifeq ($(CASE),audio-query)
 CASE_ID = 23
 else ifeq ($(CASE),cache-alias)
 CASE_ID = 24
+else ifeq ($(CASE),dma-size-matrix)
+CASE_ID = 25
+else ifeq ($(CASE),model-profile)
+CASE_ID = 26
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -75,8 +79,8 @@ CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
 BUILD_PRX = 1
 PSP_FW_VERSION = 500
-# Keep only the invalid-tail variants at the public 24 MiB baseline. They
-# reserve the final valid prefix with the system-memory allocator and prove
+# Keep only the invalid-tail variants at the bounded public memory baseline.
+# They discover and reserve a page-aligned high block at runtime, then prove
 # that an allocation beginning at the next address is rejected before issuing
 # the syscall. Existing probes and the concurrency case retain their prior
 # memory request.
@@ -86,6 +90,9 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
+ifeq ($(CASE),model-profile)
+LIBS += -lpspkubridge
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)

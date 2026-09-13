@@ -32,6 +32,49 @@ _ALL_ZERO_RE = re.compile(r"^0+$")
 UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a", "na", "tbd"})
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
 
+# PSPSDK's ``enum PspModel`` is an ordinal generation value, not a retail
+# model number.  In particular, ordinal 3 means generation 04g, which belongs
+# to the PSP-3000 family; PSP-N1000 is generation 05g (ordinal 4).  Keep this
+# table separate from the kernel-only ``sceKernelGetModel`` API, whose public
+# header documents a different original/slim return convention.
+PSP_MODEL_CODE_TO_GENERATION = {
+    0: "01g",
+    1: "02g",
+    2: "03g",
+    3: "04g",
+    4: "05g",
+    5: "07g",
+    6: "09g",
+    7: "11g",
+}
+PSP_GENERATION_TO_RETAIL = {
+    "01g": "PSP-1000",
+    "02g": "PSP-2000",
+    "03g": "PSP-3000",
+    "04g": "PSP-3000",
+    "05g": "PSP-N1000",
+    "07g": "PSP-3000",
+    "09g": "PSP-3000",
+    "11g": "PSP-E1000",
+}
+
+
+def decode_psp_model_code(raw_code: int) -> tuple[str, str]:
+    """Decode a PSPSDK ``PspModel`` ordinal into generation and retail family.
+
+    The caller must know that the value came from the PSPSDK/kubridge model
+    enum.  This function intentionally rejects unknown ordinals instead of
+    guessing a retail identity or applying the table to ``sceKernelGetModel``.
+    """
+
+    if isinstance(raw_code, bool) or not isinstance(raw_code, int):
+        raise ValueError("PSPSDK model code must be an integer")
+    try:
+        generation = PSP_MODEL_CODE_TO_GENERATION[raw_code]
+    except KeyError as exc:
+        raise ValueError(f"unknown PSPSDK model code {raw_code}") from exc
+    return generation, PSP_GENERATION_TO_RETAIL[generation]
+
 
 class ProtocolError(ValueError):
     """A result stream violates the source-owned protocol."""

@@ -139,9 +139,19 @@
         "invalid-tail-memcpy-dst",
         "invalid-tail-memcpy-src",
         "invalid-tail-try-dst",
-        "invalid-tail-try-src"
+        "invalid-tail-try-src",
+        "size-matrix-memcpy-0x0000c000",
+        "size-matrix-memcpy-0x0000c001",
+        "size-matrix-memcpy-0x00010000",
+        "size-matrix-memcpy-0x00020000",
+        "size-matrix-memcpy-0x00100000",
+        "size-matrix-try-0x0000c000",
+        "size-matrix-try-0x0000c001",
+        "size-matrix-try-0x00010000",
+        "size-matrix-try-0x00020000",
+        "size-matrix-try-0x00100000"
       ],
-      "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, while invalid-tail records prove the valid prefix allocation and rejected tail boundary before reporting return and mutation counts",
+      "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, invalid-tail records prove a runtime allocator boundary before reporting return and mutation counts, and the sequential size matrix proves full in-bounds copies through 1 MiB",
       "issues": [
         23
       ],
@@ -161,7 +171,7 @@
         "https://github.com/hrydgard/ppsspp/blob/06d5847da382336dc93a73b5e5adcd23de2f305d/Core/HLE/sceDmac.cpp",
         "https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/include/common/memory.h"
       ],
-      "implementation_note": "All five build variants compile warning-free with the pinned public PSPDEV route. No current-session PSP result is recorded: the local PSPLink endpoint was absent, so issue #23 remains hardware-blocked and runtime semantics are unchanged."
+      "implementation_note": "The six build variants compile warning-free with the pinned public PSPDEV route. The adaptive invalid-tail gate allocates a page-aligned high block at runtime and issues the call only after a strict adjacent-allocation rejection. A current local PSP-3000 / 6.6.1-ARK-5.1.0 session completed all four tail directions and both APIs with setup_mask=0x7, result=0, exact 0xC000 prefix, no guard mutation, and tail error 0x800200d9; the sequential size matrix completed both APIs at 0xC000, 0xC001, 0x10000, 0x20000, and 0x100000 with full requested prefixes. Captures retain fixture metadata placeholders and remain local diagnostic evidence until an externally trusted provenance record is supplied; issue #23 concurrency implementation remains open."
     },
     {
       "id": "PSP-TRANSPORT-001",
@@ -300,18 +310,16 @@
     },
     {
       "id": "PSP-SYSTEM-001",
-      "status": "planned",
+      "status": "implemented",
       "group": "system",
       "source": "fixtures/psp_oracle/probe.c",
       "prx": "nakagawa_psp_oracle.prx",
       "apis": [
-        "controller",
-        "RTC",
-        "system parameters",
-        "power",
-        "registry"
+        "kuKernelGetModel",
+        "sceKernelDevkitVersion",
+        "scePowerGetCpuClockFrequencyInt"
       ],
-      "invariant": "model/firmware metadata accompanies each scalar result",
+      "invariant": "the raw PSPSDK model ordinal, firmware word, and CPU clock accompany one scalar result",
       "issues": [
         34,
         62,
@@ -323,7 +331,10 @@
       ],
       "risk": "low to medium; avoid timing claims until clock is pinned",
       "reset": "return to PSPLINK; do not alter persistent settings",
-      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+      "implementation_note": "CASE=model-profile is source-owned and warning-free with the pinned PSPDEV route. The current local PSP-3000 / 6.6.1-ARK-5.1.0 session returned raw model ordinal 3, firmware 0x06060110, and CPU clock 222 MHz; the corrected enum decoder renders ordinal 3 as generation 04g / PSP-3000 family. The stream still carries fixture provenance placeholders, so this is a local diagnostic observation rather than acceptance attestation.",
+      "case_ids": [
+        "model-profile"
+      ]
     },
     {
       "id": "PSP-AUDIO-001",
