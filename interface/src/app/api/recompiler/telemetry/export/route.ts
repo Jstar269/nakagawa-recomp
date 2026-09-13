@@ -13,6 +13,7 @@ const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_INVENTORY_FILES = 5000;
 const MAX_PER_FILE_BYTES = 16 * 1024 * 1024; // 16 MB per auxiliary report/inventory file
 const MAX_TELEMETRY_HISTORY_BYTES = 16 * 1024 * 1024; // 16 MB serialized telemetry history
+// Symlink realpath containment check (realpathSync) is enforced by safeWalkDirectory.
 
 /** Read a file only when it fits the byte budget; null otherwise (#189). */
 function readBoundedFile(pathName: string, maxBytes: number): Uint8Array | null {
