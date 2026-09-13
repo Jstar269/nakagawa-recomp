@@ -882,7 +882,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ce81d493485789ddcff023d72cda4ec772f179c9171fa4a242e86f930380b1fb"
+      "sha256": "a9a02c45cab47c9deb5206c99512051cd6e8206ad5d4cb9e89b6395f16d2065d"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1407,7 +1407,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c4496d320b374ea5ed1a8e62abfed7d417471e7c9dc2cac3999251128814264"
+      "sha256": "1633e87577d862d2bf50f5f3742184e8c805515616c52b5d2ed961c0a08c5079"
     },
     {
       "path": "hst_manager.ps1",
@@ -6633,7 +6633,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13fd28a01aa08dfcfcd8f5c16cd240cb6a3ba023cad2fccdce2f3a34982fd939"
+      "sha256": "baabe445231084d0c1a01e98ed81dece134f6aa73f40c78e8e0b3215cb7d6cee"
     },
     {
       "path": "tools/hst_doctor_checks.py",
@@ -6645,7 +6645,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94eeb9ea17f90d500aa250355cd201bf0139808a922353f285bf4e19da2125f1"
+      "sha256": "8e4c477d5bcd53eac341c262e8baa2bacc5ced4c7263c15faff144dc35090618"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -6657,7 +6657,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "edb6219762bd07f5e2697b7f3f332dc3817e7a235a5944b7c042d686fcb38979"
+      "sha256": "ce8ddaf8e0d7129734c02a475eb565287499f14d4f5ca4c70adc038c30a29c99"
     },
     {
       "path": "tools/hst_run_support.ps1",
@@ -7875,7 +7875,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b8390a0c9469215da030547ab652139022042ac0839b4c43b973a2df75efc490"
+      "sha256": "ec31907ef2226528bd9ba68dd3420bcb3d4adf4b2337b389e2b2c3e70dde564f"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",

@@ -23,7 +23,8 @@ param(
     [switch]$Strict,
 
     [string]$MsysPath = "C:\msys64\ucrt64\bin",
-    [string]$VulkanSdk = ""
+    [string]$VulkanSdk = "",
+    [string]$TitleManifest = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +52,7 @@ function Invoke-WorkspaceDoctor {
         "--msys-path", $MsysPath
     )
     if ($VulkanSdk) { $arguments += @("--vulkan-sdk", $VulkanSdk) }
+    if ($TitleManifest) { $arguments += @("--title-manifest", $TitleManifest) }
     if ($AsJson) { $arguments += "--json" }
     if ($WarningsFail) { $arguments += "--strict" }
 
@@ -66,6 +68,7 @@ function Invoke-ManagerAction {
     }
     $arguments = @("-Action", $ManagerAction, "-MsysPath", $MsysPath)
     if ($VulkanSdk) { $arguments += @("-VulkanSdk", $VulkanSdk) }
+    if ($TitleManifest) { $arguments += @("-TitleManifest", $TitleManifest) }
     $LASTEXITCODE = 0
     & $Manager @arguments | Out-Host
     $exitCode = [int]$LASTEXITCODE
@@ -112,6 +115,7 @@ try {
             }
             $arguments = @("-MsysPath", $MsysPath)
             if ($VulkanSdk) { $arguments += @("-VulkanSdk", $VulkanSdk) }
+            if ($TitleManifest) { $arguments += @("-TitleManifest", $TitleManifest) }
             & $Manager @arguments
         }
     }

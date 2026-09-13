@@ -101,6 +101,105 @@ class PrivateInputTests(unittest.TestCase):
             asset = [result for result in report.results if result.code == "INPUT_XB_DATA"][-1]
             self.assertEqual(asset.status, "FAIL")
 
+    def test_expected_disc_id_is_retired_from_doctor_core(self) -> None:
+        self.assertFalse(
+            hasattr(hst_doctor_core, "EXPECTED_DISC_ID"),
+            "EXPECTED_DISC_ID must be retired from hst_doctor_core; disc identity is manifest-owned",
+        )
+
+    def test_check_private_inputs_without_manifest_skips_disc_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "INFO")
+            self.assertIn("No title manifest with disc ID supplied", disc_results[0].summary)
+
+    def test_check_private_inputs_with_explicit_disc_id_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, expected_disc_id="UCUS98701")
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+            self.assertIn("UCUS98701", disc_results[0].summary)
+
+    def test_check_private_inputs_with_explicit_disc_id_mismatch_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, expected_disc_id="OTHER9999")
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "WARN")
+            self.assertIn("OTHER9999", disc_results[0].summary)
+
+    def test_check_private_inputs_with_title_manifest_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_file = root / "title.json"
+            manifest_file.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "id": "mygame-v1",
+                    "kind": "retail",
+                    "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"},
+                }),
+                encoding="utf-8",
+            )
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, title_manifest=manifest_file)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+
+    def test_check_private_inputs_with_title_manifest_dict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_dict = {
+                "schema_version": 1,
+                "id": "custom-v1",
+                "kind": "retail",
+                "disc": {"id": "UCUS98701"},
+            }
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, title_manifest=manifest_dict)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+
+    def test_doctor_cli_title_manifest_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_file = root / "title.json"
+            manifest_file.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "id": "mygame-v1",
+                    "kind": "retail",
+                    "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"},
+                }),
+                encoding="utf-8",
+            )
+            code = hst_doctor.main(["--root", str(root), "--scope", "inputs", "--title-manifest", str(manifest_file)])
+            self.assertEqual(code, 0)
+
+    def test_doctor_cli_missing_title_manifest_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "does_not_exist.json"
+            code = hst_doctor.main(["--root", str(root), "--scope", "inputs", "--title-manifest", str(missing)])
+            self.assertEqual(code, 1)
+
 
 class RepositoryContractTests(unittest.TestCase):
     def make_docs(self, root: Path, *, package_license: str = "GPL-3.0-or-later") -> None:
@@ -377,6 +476,7 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertNotIn("powershell -NoProfile", self.makefile)
         for action in ("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager"):
             self.assertIn(f'"{action}"', self.frontend)
+        self.assertIn('$TitleManifest', self.frontend)
         self.assertNotIn('VisualOracle', self.frontend)
         self.assertNotIn('DiffFunc', self.frontend)
 
