@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot, inspectHst } from "@/lib/recompiler/runner";
+import { findRepoRoot, inspectHst, routeError } from "@/lib/recompiler/runner";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

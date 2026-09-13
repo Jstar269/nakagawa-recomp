@@ -1,7 +1,7 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { startFuzzManagerProcess, managerProcess } from "@/lib/recompiler/manager-process";
 import { rejectNonLocalControlRequest, rejectUnsupportedProcessHost } from "@/lib/recompiler/local-request";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

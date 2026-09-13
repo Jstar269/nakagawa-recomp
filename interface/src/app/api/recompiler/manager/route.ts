@@ -1,8 +1,8 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { startManagerProcess, stopActiveManagerProcess, managerProcess } from "@/lib/recompiler/manager-process";
 import { parseManagerLaunchRequest, DASHBOARD_MANAGER_ACTIONS } from "@/lib/recompiler/manager-contract";
 import { rejectNonLocalControlRequest, rejectUnsupportedProcessHost } from "@/lib/recompiler/local-request";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, safeWalkDirectory } from "@/lib/recompiler/runner";
 import { buildZip, ZipEntry } from "@/lib/recompiler/zip";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { safeWalkDirectory } from "@/lib/recompiler/fs-walker";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

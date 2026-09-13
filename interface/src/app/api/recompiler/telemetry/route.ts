@@ -1,8 +1,8 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { logTelemetry } from "@/lib/recompiler/telemetry";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

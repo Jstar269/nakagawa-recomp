@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync, existsSync } from "node:fs";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError } from "@/lib/recompiler/runner";
 import { parseP6Ppm, PpmFormatError } from "@/lib/recompiler/ppm.mjs";
 import path from "node:path";
 import sharp from "sharp";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

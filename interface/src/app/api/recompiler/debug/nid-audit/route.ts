@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
-import { runSubprocess } from "@/lib/recompiler/child-process";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

@@ -1,7 +1,7 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { defaultConfig } from "@/lib/recompiler/defaults";
 import { getActiveProfile, upsertActiveProfile, ProfileStoreError } from "@/lib/recompiler/profile-store";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

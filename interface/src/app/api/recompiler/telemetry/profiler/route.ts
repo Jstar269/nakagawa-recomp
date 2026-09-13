@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError } from "@/lib/recompiler/runner";
 import { parsePerfProfiler } from "@/lib/recompiler/telemetry";
 import { db } from "@/lib/db";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

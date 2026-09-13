@@ -1,3 +1,4 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import {
   listDebugProfiles,
@@ -6,7 +7,6 @@ import {
   deleteDebugProfile,
   WatchpointStoreError,
 } from "@/lib/recompiler/watchpoint-store";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 

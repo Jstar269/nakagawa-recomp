@@ -1,3 +1,4 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import {
   getWatchpoints,
@@ -5,7 +6,6 @@ import {
   WatchpointStoreError,
 } from "@/lib/recompiler/watchpoint-store";
 import { normalizeWatchpoint, parseWatchAddress } from "@/lib/recompiler/watchpoint-schema.mjs";
-import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
