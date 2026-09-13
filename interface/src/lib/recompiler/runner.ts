@@ -5,8 +5,9 @@
  * error otherwise. PowerShell is required for hst_manager.ps1. There is no
  * simulated build or runtime fallback. */
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { NextResponse } from "next/server";
 import { buildPowerShellArgs } from "./powershell-args.mjs";
 
 // ---- Repo layout discovery ----------------------------------------------
@@ -314,6 +315,41 @@ export function readLogTailContent(pathName: string, maxBytes = MAX_LOG_TAIL_BYT
   }
 }
 
+/**
+ * Incrementally read new lines appended to a log file since a given byte offset.
+ * Bounded to maxBytes (default MAX_LOG_TAIL_BYTES = 256KB) so a large/corrupt log
+ * is never loaded whole into memory (Issue #187 Finding 3).
+ * Returns the parsed lines and the updated byte offset cursor.
+ */
+export function readLogSince(
+  pathName: string,
+  sinceByte: number,
+  maxBytes = MAX_LOG_TAIL_BYTES,
+): { lines: string[]; cursor: number } {
+  const size = statSync(/* turbopackIgnore: true */ pathName).size;
+  if (!Number.isFinite(sinceByte) || sinceByte < 0) {
+    sinceByte = 0;
+  }
+  if (sinceByte >= size) {
+    return { lines: [], cursor: size };
+  }
+
+  const bytesToRead = Math.min(size - sinceByte, maxBytes);
+  const fd = openSync(/* turbopackIgnore: true */ pathName, "r");
+  try {
+    const buf = Buffer.alloc(bytesToRead);
+    readSync(fd, buf, 0, bytesToRead, sinceByte);
+    const content = buf.toString("utf8");
+    const lines = content.split(/\r?\n/).filter((line) => line.length > 0);
+    return {
+      lines,
+      cursor: sinceByte + bytesToRead,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function findLatestRunLog(repoRoot: string): LogTail {
   const dir = path.join(/* turbopackIgnore: true */ repoRoot, "logs");
   if (!existsSync(dir)) return { found: false, path: null, sizeBytes: 0, lastLines: [], allLogs: [] };
@@ -365,4 +401,340 @@ export function spawnPowerShell(
     cwd: opts.cwd ?? process.cwd(),
     env: opts.env ?? process.env,
   });
+}
+
+// ---- Subprocess execution hygiene (#188 Finding 6) -------------------------
+
+export interface SubprocessOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  maxBuffer?: number;
+  signal?: AbortSignal;
+  windowsHide?: boolean;
+  allowNonZeroExit?: boolean;
+}
+
+export interface SubprocessResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export class SubprocessError extends Error {
+  readonly code: string;
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+  readonly aborted: boolean;
+
+  constructor(message: string, details: {
+    code: string;
+    exitCode?: number | null;
+    stdout?: string;
+    stderr?: string;
+    timedOut?: boolean;
+    aborted?: boolean;
+  }) {
+    super(message);
+    this.name = "SubprocessError";
+    this.code = details.code;
+    this.exitCode = details.exitCode ?? null;
+    this.stdout = details.stdout ?? "";
+    this.stderr = details.stderr ?? "";
+    this.timedOut = !!details.timedOut;
+    this.aborted = !!details.aborted;
+  }
+}
+
+/**
+ * Execute a child process with fail-closed safety guarantees:
+ * - Hard timeout with child.kill() to prevent hung/stalled processes.
+ * - Both stdout and stderr pipes are actively drained with listeners to prevent pipe-buffer deadlocks.
+ * - Bounded buffer limits (maxBuffer) to prevent out-of-memory crashes.
+ * - AbortSignal listener to terminate processes on client disconnection.
+ */
+export function runSubprocess(
+  command: string,
+  args: string[] = [],
+  options: SubprocessOptions = {},
+): Promise<SubprocessResult> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const maxBuffer = options.maxBuffer ?? 8 * 1024 * 1024;
+  const windowsHide = options.windowsHide ?? true;
+  const allowNonZeroExit = options.allowNonZeroExit ?? false;
+
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        windowsHide,
+      });
+    } catch (err) {
+      return reject(new SubprocessError(`Failed to spawn ${command}`, {
+        code: "spawn-failed",
+        stderr: err instanceof Error ? err.message : String(err),
+      }));
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let aborted = false;
+
+    const killProcess = () => {
+      try {
+        child.kill();
+      } catch {
+        // ignore kill failure
+      }
+    };
+
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    let abortHandler: (() => void) | null = null;
+
+    const cleanup = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (options.signal && abortHandler) {
+        options.signal.removeEventListener("abort", abortHandler);
+        abortHandler = null;
+      }
+    };
+
+    if (timeoutMs > 0 && timeoutMs !== Infinity) {
+      timeoutTimer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          timedOut = true;
+          cleanup();
+          killProcess();
+          reject(new SubprocessError(`${command} timed out after ${timeoutMs}ms`, {
+            code: "timeout",
+            stdout,
+            stderr,
+            timedOut: true,
+          }));
+        }
+      }, timeoutMs);
+    }
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        settled = true;
+        aborted = true;
+        cleanup();
+        killProcess();
+        return reject(new SubprocessError(`${command} aborted before start`, {
+          code: "aborted",
+          aborted: true,
+        }));
+      }
+      abortHandler = () => {
+        if (!settled) {
+          settled = true;
+          aborted = true;
+          cleanup();
+          killProcess();
+          reject(new SubprocessError(`${command} request aborted`, {
+            code: "aborted",
+            stdout,
+            stderr,
+            aborted: true,
+          }));
+        }
+      };
+      options.signal.addEventListener("abort", abortHandler, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      const str = chunk.toString("utf8");
+      if (stdout.length + str.length > maxBuffer) {
+        settled = true;
+        cleanup();
+        killProcess();
+        reject(new SubprocessError(`${command} stdout exceeded buffer limit of ${maxBuffer} bytes`, {
+          code: "buffer-overflow",
+          stdout: stdout.slice(0, maxBuffer),
+          stderr,
+        }));
+        return;
+      }
+      stdout += str;
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      const str = chunk.toString("utf8");
+      if (stderr.length + str.length > maxBuffer) {
+        settled = true;
+        cleanup();
+        killProcess();
+        reject(new SubprocessError(`${command} stderr exceeded buffer limit of ${maxBuffer} bytes`, {
+          code: "buffer-overflow",
+          stdout,
+          stderr: stderr.slice(0, maxBuffer),
+        }));
+        return;
+      }
+      stderr += str;
+    });
+
+    child.on("error", (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new SubprocessError(`${command} error: ${err.message}`, {
+        code: "process-error",
+        stdout,
+        stderr,
+      }));
+    });
+
+    child.on("close", (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const exitCode = code ?? 0;
+      if (exitCode !== 0 && !allowNonZeroExit) {
+        reject(new SubprocessError(`${command} exited with code ${exitCode}`, {
+          code: "nonzero-exit",
+          exitCode,
+          stdout,
+          stderr,
+        }));
+      } else {
+        resolve({
+          stdout,
+          stderr,
+          exitCode,
+        });
+      }
+    });
+  });
+}
+
+// ---- Safe API error responses (#188 Finding 6) -----------------------------
+
+/**
+ * Standardized error responder for dashboard API routes:
+ * - Logs the full error to the server console (console.error) for diagnosis.
+ * - Returns a fixed coded JSON error response to the client with appropriate HTTP status.
+ * - Guarantees that internal exception strings, stack traces, and local host paths are not leaked to API clients.
+ */
+export function routeError(
+  code: string,
+  err: unknown,
+  status: number = 500,
+  extra?: Record<string, unknown>,
+): NextResponse {
+  if (err !== undefined) {
+    console.error(`[API Error: ${code}]`, err);
+  }
+  return NextResponse.json(
+    {
+      error: code,
+      ...extra,
+    },
+    { status },
+  );
+}
+
+// ---- Path-traversal resistant shared directory walker (#187 Finding 4) -----
+
+export interface SafeWalkOptions {
+  maxDepth?: number;
+  maxFiles?: number;
+  targetFileName?: string;
+}
+
+/**
+ * Traverses a directory tree fail-closed with path-traversal resistance:
+ * - Uses path.relative containment check (both lexical and realpath) rather than string prefix.
+ * - Tracks visited real directory paths to prevent recursion loops from junctions or symlinks.
+ * - Enforces hard depth and total file count caps.
+ */
+export function safeWalkDirectory(
+  rootDir: string,
+  options: SafeWalkOptions = {},
+): string[] {
+  const maxDepth = options.maxDepth ?? 16;
+  const maxFiles = options.maxFiles ?? 5000;
+  const targetFileName = options.targetFileName;
+
+  if (!existsSync(rootDir)) return [];
+
+  const normalizedRoot = path.resolve(rootDir);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync.native(normalizedRoot);
+  } catch {
+    return [];
+  }
+
+  const results: string[] = [];
+  const visitedDirs = new Set<string>();
+
+  function walk(currentDir: string, currentDepth: number): void {
+    if (currentDepth > maxDepth || results.length >= maxFiles) return;
+
+    let realCurrent: string;
+    try {
+      realCurrent = realpathSync.native(currentDir);
+    } catch {
+      return;
+    }
+
+    // Check directory containment relative to realRoot
+    const rel = path.relative(realRoot, realCurrent);
+    if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) {
+      return;
+    }
+
+    // Loop detection via canonical realpath
+    if (visitedDirs.has(realCurrent)) return;
+    visitedDirs.add(realCurrent);
+
+    let entries: string[];
+    try {
+      entries = readdirSync(currentDir);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+
+      const entryPath = path.join(currentDir, entry);
+      try {
+        const lst = lstatSync(entryPath);
+        if (lst.isSymbolicLink()) continue;
+
+        const realEntry = realpathSync.native(entryPath);
+        const relEntry = path.relative(realRoot, realEntry);
+        if (relEntry.startsWith("..") || path.isAbsolute(relEntry)) {
+          continue;
+        }
+
+        const st = statSync(entryPath);
+        if (st.isDirectory()) {
+          walk(entryPath, currentDepth + 1);
+        } else if (!targetFileName || entry === targetFileName) {
+          results.push(entryPath);
+        }
+      } catch {
+        // Skip inaccessible entries
+      }
+    }
+  }
+
+  walk(rootDir, 0);
+  return results;
 }

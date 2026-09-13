@@ -1,3 +1,4 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import {
   getWatchpoints,
@@ -12,7 +13,7 @@ function errorResponse(e: unknown) {
   if (e instanceof WatchpointStoreError) {
     return NextResponse.json({ error: e.code, message: e.message }, { status: e.status });
   }
-  return NextResponse.json({ error: "failed-to-load", message: String(e) }, { status: 500 });
+  return routeError("failed-to-load", e, 500);
 }
 
 function watchpointsPayload(result: { watchpoints: unknown[]; source: string; fileState: unknown; added?: unknown }) {

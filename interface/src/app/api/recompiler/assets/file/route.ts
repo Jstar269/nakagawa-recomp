@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    return new Response(`Error reading asset file: ${err}`, { status: 500 });
+    console.error("[API Error: asset-file-read-failed]", err);
+    return new Response("Error reading asset file", { status: 500 });
   }
 }

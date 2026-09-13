@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 import {
@@ -11,7 +9,6 @@ import {
 
 export const runtime = "nodejs";
 
-const execFileAsync = promisify(execFile);
 const LIVE_CONTROL_ENABLED = process.env.HST_DASHBOARD_LIVE_CONTROL === "1";
 
 export async function POST(req: NextRequest) {
@@ -26,7 +23,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: "invalid-debug-console-request",
-        detail: String(error),
+        detail: error instanceof Error ? error.message : "Invalid debug console request",
         supported: DEBUG_CONSOLE_ACTIONS,
       },
       { status: 400 },
@@ -53,12 +50,11 @@ export async function POST(req: NextRequest) {
     const toolArgs = command.mutating && LIVE_CONTROL_ENABLED ? ["--mutate"] : [];
     const childArgs = [scriptPath, ...toolArgs, command.action, ...command.args];
 
-    const { stdout } = await execFileAsync(pythonCmd, childArgs, {
+    const { stdout } = await runSubprocess(pythonCmd, childArgs, {
       cwd: repoRoot,
-      encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
-      timeout: 10_000,
-      windowsHide: true,
+      timeoutMs: 10_000,
+      signal: req.signal,
     });
 
     const parsed: unknown = JSON.parse(stdout);
@@ -70,6 +66,6 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(parsed);
   } catch (e) {
-    return NextResponse.json({ error: "command-execution-failed", detail: String(e) }, { status: 500 });
+    return routeError("command-execution-failed", e, 500);
   }
 }

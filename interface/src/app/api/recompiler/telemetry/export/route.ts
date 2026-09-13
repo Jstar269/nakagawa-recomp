@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, safeWalkDirectory } from "@/lib/recompiler/runner";
 import { buildZip, ZipEntry } from "@/lib/recompiler/zip";
-import { existsSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 export const runtime = "nodejs";
@@ -13,6 +13,7 @@ const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_INVENTORY_FILES = 5000;
 const MAX_PER_FILE_BYTES = 16 * 1024 * 1024; // 16 MB per auxiliary report/inventory file
 const MAX_TELEMETRY_HISTORY_BYTES = 16 * 1024 * 1024; // 16 MB serialized telemetry history
+// Symlink realpath containment check (realpathSync) is enforced by safeWalkDirectory.
 
 /** Read a file only when it fits the byte budget; null otherwise (#189). */
 function readBoundedFile(pathName: string, maxBytes: number): Uint8Array | null {
@@ -38,36 +39,6 @@ interface InventoryMap {
   sounds: AssetFile[];
   scene_graphs: AssetFile[];
   other: AssetFile[];
-}
-
-function walkDir(dir: string, baseRoot: string, fileList: string[] = []): string[] {
-  if (!existsSync(dir)) return fileList;
-  if (fileList.length >= MAX_INVENTORY_FILES) return fileList;
-
-  const realBase = realpathSync(baseRoot);
-  const files = readdirSync(dir);
-
-  for (const file of files) {
-    const filePath = path.join(dir, file);
-    try {
-      // Symlink escape containment check
-      const lstat = lstatSync(filePath);
-      if (lstat.isSymbolicLink()) continue;
-
-      const realTarget = realpathSync(filePath);
-      if (!realTarget.startsWith(realBase)) continue;
-
-      const stat = statSync(filePath);
-      if (stat.isDirectory()) {
-        walkDir(filePath, baseRoot, fileList);
-      } else if (file === "inventory_map.json") {
-        fileList.push(filePath);
-      }
-    } catch {
-      // Skip inaccessible or broken entries
-    }
-  }
-  return fileList;
 }
 
 const WARNING_MANIFEST = `========================================================================
@@ -141,7 +112,10 @@ export async function GET() {
     const extractedDir = path.join(repoRoot, "place_game_here", "EXTRACTED", "PSP_GAME", "USRDIR", "xbdata_extracted");
     const combinedInventory: any[] = [];
     if (existsSync(extractedDir)) {
-      const inventoryFiles = walkDir(extractedDir, extractedDir);
+      const inventoryFiles = safeWalkDirectory(extractedDir, {
+        maxFiles: MAX_INVENTORY_FILES,
+        targetFileName: "inventory_map.json",
+      });
       for (const invPath of inventoryFiles) {
         const invDir = path.dirname(invPath);
         const relDir = path.relative(extractedDir, invDir).replace(/\\/g, "/");
@@ -198,6 +172,6 @@ export async function GET() {
     });
 
   } catch (e) {
-    return NextResponse.json({ error: "export-failed", detail: String(e) }, { status: 500 });
+    return routeError("export-failed", e, 500);
   }
 }

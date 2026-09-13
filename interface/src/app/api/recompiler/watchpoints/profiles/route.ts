@@ -1,3 +1,4 @@
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import {
   listDebugProfiles,
@@ -13,7 +14,7 @@ function errorResponse(e: unknown) {
   if (e instanceof WatchpointStoreError) {
     return NextResponse.json({ error: e.code, message: e.message }, { status: e.status });
   }
-  return NextResponse.json({ error: "failed", message: String(e) }, { status: 500 });
+  return routeError("failed", e, 500);
 }
 
 // GET /api/recompiler/watchpoints/profiles

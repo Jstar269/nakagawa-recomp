@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 
-const execFileAsync = promisify(execFile);
 const allowedGroups = new Set(["integer", "fpu", "vfpu"]);
 export const runtime = "nodejs";
 
@@ -46,10 +43,11 @@ export async function POST(req: NextRequest) {
       childArgs.push("--groups", groups.join(","));
     }
 
-    const { stdout, stderr } = await execFileAsync(pythonCmd, childArgs, {
+    const { stdout, stderr } = await runSubprocess(pythonCmd, childArgs, {
       cwd: repoRoot,
+      timeoutMs: 30_000,
       maxBuffer: 8 * 1024 * 1024,
-      windowsHide: true,
+      signal: req.signal,
     });
 
     if (existsSync(destFile)) {
@@ -65,10 +63,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: false,
         error: "generation-failed",
-        detail: stderr || stdout || "Output file was not created",
+        detail: "Output file was not created",
       }, { status: 500 });
     }
   } catch (e) {
-    return NextResponse.json({ error: "microtest-gen-failed", detail: String(e) }, { status: 500 });
+    return routeError("microtest-gen-failed", e, 500);
   }
 }

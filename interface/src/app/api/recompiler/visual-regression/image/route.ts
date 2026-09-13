@@ -135,7 +135,8 @@ export async function GET(req: NextRequest) {
       if (e instanceof PpmFormatError) {
         return new Response(`Malformed PPM: ${e.message}`, { status: 400 });
       }
-      return new Response(`Failed to generate difference mask: ${String(e)}`, { status: 500 });
+      console.error("[API Error: diff-mask-failed]", e);
+      return new Response("Failed to generate difference mask", { status: 500 });
     }
   }
 
@@ -201,6 +202,7 @@ export async function GET(req: NextRequest) {
     if (e instanceof PpmFormatError) {
       return new Response(`Malformed PPM: ${e.message}`, { status: 400 });
     }
-    return new Response(`Failed to convert image: ${String(e)}`, { status: 500 });
+    console.error("[API Error: image-convert-failed]", e);
+    return new Response("Failed to convert image", { status: 500 });
   }
 }

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "node:child_process";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
@@ -44,13 +43,11 @@ export async function GET(req: NextRequest) {
     const importsPath = path.join(repoRoot, "build", "hst", "hst_imports.toml");
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(pythonCmd, [manifestScript, "--out", manifestPath], { cwd: repoRoot });
-      child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`hle_manifest exited with code ${code}`));
-      });
-      child.on("error", (err) => reject(err));
+    await runSubprocess(pythonCmd, [manifestScript, "--out", manifestPath], {
+      cwd: repoRoot,
+      timeoutMs: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+      signal: req.signal,
     });
 
     if (!existsSync(manifestPath) || !existsSync(importsPath)) {
@@ -152,6 +149,6 @@ export async function GET(req: NextRequest) {
       nids,
     });
   } catch (e) {
-    return NextResponse.json({ error: "audit-failed", detail: String(e) }, { status: 500 });
+    return routeError("audit-failed", e, 500);
   }
 }

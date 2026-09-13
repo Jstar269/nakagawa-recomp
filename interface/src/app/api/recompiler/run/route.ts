@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot, inspectHst } from "@/lib/recompiler/runner";
+import { findRepoRoot, inspectHst, routeError } from "@/lib/recompiler/runner";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 
 export const runtime = "nodejs";
@@ -13,6 +13,6 @@ export async function GET(req: NextRequest) {
     const insp = inspectHst(repoRoot);
     return NextResponse.json({ repoRoot, ...insp });
   } catch (e) {
-    return NextResponse.json({ error: "studio-not-anchored", detail: String(e) }, { status: 503 });
+    return routeError("studio-not-anchored", e, 503);
   }
 }

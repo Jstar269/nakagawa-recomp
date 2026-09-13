@@ -8,9 +8,11 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { NextRequest } from "next/server";
+import { runSubprocess, SubprocessError, safeWalkDirectory, readLogSince } from "./runner";
 
 const DB_NAME = `test-route-${randomUUID()}.db`;
 process.env.DATABASE_URL = `file:./prisma/.test/${DB_NAME}`;
@@ -182,4 +184,155 @@ test("no-op PATCH on a corrupt profile still returns metadata", async () => {
   const getBody = await bodyOf(get);
   assert.equal(get.status, 500);
   assert.equal(getBody.error, "corrupt");
+});
+
+// ---- Child-process execution hygiene tests (#188 Finding 6) ----------------
+
+test("runSubprocess: executes command and captures stdout/stderr", async () => {
+  const res = await runSubprocess(process.execPath, ["-e", "console.log('hello-world')"]);
+  assert.equal(res.exitCode, 0);
+  assert.ok(res.stdout.includes("hello-world"));
+});
+
+test("runSubprocess: kills child on timeoutMs expiry", async () => {
+  await assert.rejects(
+    async () => {
+      await runSubprocess(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { timeoutMs: 300 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof SubprocessError);
+      assert.equal(err.code, "timeout");
+      assert.equal(err.timedOut, true);
+      assert.match(err.message, /timed out after 300ms/i);
+      return true;
+    }
+  );
+});
+
+test("runSubprocess: throws when maxBuffer is exceeded", async () => {
+  await assert.rejects(
+    async () => {
+      await runSubprocess(process.execPath, ["-e", "process.stdout.write('A'.repeat(200))"], { maxBuffer: 50 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof SubprocessError);
+      assert.equal(err.code, "buffer-overflow");
+      assert.match(err.message, /exceeded buffer limit of 50 bytes/i);
+      return true;
+    }
+  );
+});
+
+test("runSubprocess: aborts child immediately on AbortSignal", async () => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+
+  await assert.rejects(
+    async () => {
+      await runSubprocess(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { signal: controller.signal });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof SubprocessError);
+      assert.equal(err.code, "aborted");
+      assert.equal(err.aborted, true);
+      return true;
+    }
+  );
+});
+
+test("runSubprocess: allowNonZeroExit returns exit code instead of throwing", async () => {
+  const res = await runSubprocess(process.execPath, ["-e", "process.exit(42)"], { allowNonZeroExit: true });
+  assert.equal(res.exitCode, 42);
+});
+
+test("runSubprocess: drains large stdio without deadlock", async () => {
+  const res = await runSubprocess(
+    process.execPath,
+    ["-e", "for (let i = 1; i <= 2000; i++) console.log('chunk-' + i)"],
+    { maxBuffer: 1024 * 1024 }
+  );
+  assert.equal(res.exitCode, 0);
+  assert.ok(res.stdout.includes("chunk-2000"));
+});
+
+// ---- Path-traversal resistant shared directory walker tests (#187 Finding 4)
+
+test("safeWalkDirectory: traverses and enforces depth / file budgets", () => {
+  const walkDir = path.join(process.cwd(), "prisma", ".test", `fs-walk-${randomUUID()}`);
+  mkdirSync(path.join(walkDir, "a", "b", "c"), { recursive: true });
+  mkdirSync(path.join(walkDir, "x"), { recursive: true });
+
+  writeFileSync(path.join(walkDir, "root.txt"), "root");
+  writeFileSync(path.join(walkDir, "target.json"), "target-1");
+  writeFileSync(path.join(walkDir, "a", "file_a.txt"), "a");
+  writeFileSync(path.join(walkDir, "a", "target.json"), "target-2");
+  writeFileSync(path.join(walkDir, "a", "b", "file_b.txt"), "b");
+  writeFileSync(path.join(walkDir, "a", "b", "c", "file_c.txt"), "c");
+
+  try {
+    const files = safeWalkDirectory(walkDir);
+    assert.equal(files.length, 6);
+    assert.ok(files.some((f) => f.endsWith("root.txt")));
+    assert.ok(files.some((f) => f.endsWith("file_c.txt")));
+
+    const filtered = safeWalkDirectory(walkDir, { targetFileName: "target.json" });
+    assert.equal(filtered.length, 2);
+    for (const f of filtered) {
+      assert.ok(f.endsWith("target.json"));
+    }
+
+    const capped = safeWalkDirectory(walkDir, { maxFiles: 3 });
+    assert.equal(capped.length, 3);
+
+    const depth0 = safeWalkDirectory(walkDir, { maxDepth: 0 });
+    assert.equal(depth0.length, 2);
+
+    const depth1 = safeWalkDirectory(walkDir, { maxDepth: 1 });
+    assert.equal(depth1.length, 4);
+
+    const nonExistent = safeWalkDirectory(path.join(walkDir, "does-not-exist"));
+    assert.deepEqual(nonExistent, []);
+  } finally {
+    rmSync(walkDir, { recursive: true, force: true });
+  }
+});
+
+// ---- Incremental log streaming tests (#187 Finding 3) -----------------------
+
+test("readLogSince: streaming reads with byte offsets and bounded memory", () => {
+  const testDir = path.join(process.cwd(), "prisma", ".test");
+  mkdirSync(testDir, { recursive: true });
+  const logFile = path.join(testDir, `stream-log-${randomUUID()}.log`);
+  writeFileSync(logFile, "line 1\nline 2\nline 3\n", "utf8");
+
+  try {
+    const first = readLogSince(logFile, 0);
+    assert.equal(first.lines.length, 3);
+    assert.equal(first.lines[0], "line 1");
+    assert.equal(first.lines[1], "line 2");
+    assert.equal(first.lines[2], "line 3");
+    assert.ok(first.cursor > 0);
+
+    appendFileSync(logFile, "line 4\nline 5\n", "utf8");
+
+    const second = readLogSince(logFile, first.cursor);
+    assert.equal(second.lines.length, 2);
+    assert.equal(second.lines[0], "line 4");
+    assert.equal(second.lines[1], "line 5");
+    assert.ok(second.cursor > first.cursor);
+
+    const third = readLogSince(logFile, second.cursor);
+    assert.deepEqual(third.lines, []);
+    assert.equal(third.cursor, second.cursor);
+
+    const bounded = readLogSince(logFile, 0, 10);
+    assert.equal(bounded.cursor, 10);
+    assert.ok(bounded.lines.length >= 1);
+
+    const normalized = readLogSince(logFile, -100);
+    assert.ok(normalized.lines.length > 0);
+    assert.ok(normalized.cursor > 0);
+  } finally {
+    if (existsSync(logFile)) rmSync(logFile, { force: true });
+  }
 });
