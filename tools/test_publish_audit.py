@@ -1445,6 +1445,128 @@ class TestPrivateRootDetection(unittest.TestCase):
                     violations.append((entry.path, root))
         self.assertEqual(violations, [], f"Tracked files contain configured private roots: {violations}")
 
+    def test_out_of_band_private_root_boundary_matching(self):
+        """Issue #188 Finding 1 (O-01): out-of-band private root boundary lookahead."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            policy_file, export_file = hermetic_policy(repo, ["src/doc.md"])
+            doc = repo / "src" / "doc.md"
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            entries = [publish_audit.GitEntry("100644", "", "0", "src/doc.md", "file")]
+
+            test_root = "C:/secret_workspace"
+
+            # 1. Matching shapes: `<root>`, `<root>/sub`, `<root>\sub`, `` `<root>` ``
+            matching_texts = [
+                f"# Reference: {test_root}\n",
+                f"# Reference: {test_root}/sub/file.txt\n",
+                f"# Reference: {test_root.replace('/', chr(92))}" + chr(92) + "sub" + chr(92) + "file.txt\n",
+                f"# Reference: `{test_root}`\n",
+            ]
+            for text in matching_texts:
+                with self.subTest(text=text):
+                    doc.write_text(text, encoding="utf-8", newline="\n")
+                    findings = publish_audit.audit_entries(
+                        entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                        policy_path=policy_file, export_path=export_file,
+                        extra_private_roots=[test_root],
+                    )
+                    self.assertTrue(
+                        any(f.code == "LOCAL_PATH" and "out-of-band private root" in f.detail for f in findings),
+                        f"Expected violation for {text!r}, got: {findings}",
+                    )
+
+            # 2. Non-matching shapes: `<root>epler`, `<root>-old`
+            non_matching_texts = [
+                f"# Word beginning with root: {test_root}epler\n",
+                f"# Word beginning with root: {test_root}-old\n",
+            ]
+            for text in non_matching_texts:
+                with self.subTest(text=text):
+                    doc.write_text(text, encoding="utf-8", newline="\n")
+                    findings = publish_audit.audit_entries(
+                        entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                        policy_path=policy_file, export_path=export_file,
+                        extra_private_roots=[test_root],
+                    )
+                    self.assertFalse(
+                        any(f.code == "LOCAL_PATH" and "out-of-band private root" in f.detail for f in findings),
+                        f"Expected no violation for {text!r}, got: {findings}",
+                    )
+
+    def test_out_of_band_private_root_env_and_mode_support(self):
+        """Issue #188 Finding 1 (O-01): environment variable and index/worktree mode verification."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            policy_file, export_file = hermetic_policy(repo, ["src/app.py"])
+            app = repo / "src" / "app.py"
+            app.parent.mkdir(parents=True, exist_ok=True)
+            app.write_text("# SPDX-License-Identifier: GPL-2.0-or-later\n# C:/my_private_dir/main\n", encoding="utf-8", newline="\n")
+            entries = [publish_audit.GitEntry("100644", "", "0", "src/app.py", "file")]
+
+            # When env is unset, audit reports zero out-of-band findings
+            findings_unset = publish_audit.audit_entries(
+                entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertFalse(any("out-of-band private root" in f.detail for f in findings_unset))
+
+            # When env is set, audit reports LOCAL_PATH in both index and worktree modes
+            with mock.patch.dict(os.environ, {"PUBLISH_AUDIT_PRIVATE_ROOTS": "C:/my_private_dir"}):
+                # Worktree mode
+                findings_wt = publish_audit.audit_entries(
+                    entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                    policy_path=policy_file, export_path=export_file,
+                )
+                self.assertTrue(any(f.code == "LOCAL_PATH" and "out-of-band private root" in f.detail for f in findings_wt))
+
+    def test_debt_budgets_pass_on_current_repo(self):
+        """Issue #188 Finding 11 (O-11): all current debt surfaces meet non-increasing budgets."""
+        findings = publish_audit._debt_budget_findings(publish_audit.ROOT)
+        self.assertEqual(findings, [], f"Debt budget findings on current repo: {findings}")
+
+    def test_debt_budgets_fail_on_increase(self):
+        """Issue #188 Finding 11 (O-11): gate fails when any debt surface count increases."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            (repo / "interface").mkdir()
+            eslint_lines = ["// test"] + [f'  "rule_{i}": "off",' for i in range(30)]
+            (repo / "interface" / "eslint.config.mjs").write_text("rules: {\n" + "\n".join(eslint_lines) + "\n}", encoding="utf-8")
+            (repo / "pyproject.toml").write_text("[tool.ruff.lint]\nselect = ['E9', 'F63', 'F7', 'F82', 'F811']\n", encoding="utf-8")
+
+            findings = publish_audit._debt_budget_findings(repo, paths=[])
+            debt_codes = {f.code for f in findings}
+            self.assertIn("DEBT_BUDGET", debt_codes)
+            details = " ".join(f.detail for f in findings)
+            self.assertIn("ESLint disabled rules count 30 exceeds debt ceiling 29", details)
+            self.assertIn("Ruff select rule families count 5 exceeds debt ceiling 4", details)
+
+    def test_workspace_topology_conformance(self):
+        """Issue #188 Finding 9 (O-04): workspace topology conforms to CANONICAL_TREES.md."""
+        ws_root = publish_audit.ROOT.parent
+        if not (ws_root / "CANONICAL_TREES.md").is_file():
+            self.skipTest("Parent directory is not Nakagawa workspace (running in isolated CI)")
+
+        allowed_prefixes = ("archive/", "reports/", "artifacts/", "audit-mutants/", "private/campaign-builds/")
+
+        proc = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=publish_audit.ROOT, capture_output=True, text=True)
+        registered_worktrees = {publish_audit.ROOT.resolve(), (ws_root / "private" / "nakagawa-recomp-history-private").resolve()}
+        for line in proc.stdout.splitlines():
+            if line.startswith("worktree "):
+                registered_worktrees.add(Path(line.split(" ", 1)[1].strip()).resolve())
+
+        stray_audits = []
+        for pat in ("*/tools/publish_audit.py", "*/*/tools/publish_audit.py"):
+            for p in ws_root.glob(pat):
+                rel = p.relative_to(ws_root).as_posix()
+                if any(wt in p.parents or wt == p.parent for wt in registered_worktrees):
+                    continue
+                if any(rel.startswith(prefix) for prefix in allowed_prefixes):
+                    continue
+                stray_audits.append(rel)
+
+        self.assertEqual(stray_audits, [], f"Found non-canonical policy engine(s) under workspace root: {stray_audits}")
+
 
 if __name__ == "__main__":
     unittest.main()

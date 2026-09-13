@@ -945,7 +945,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a3eeae3f5a69231e816caf57918aa30b41704c62f15b71dad98c92df3f3f49a0"
+      "sha256": "444bbcad808addb47317530d9920514044f602fd42717921d4f0906cc44517d8"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -6277,7 +6277,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20dfc189fb855743328e3c98aaff37d25a81d1836a8a03ba0496d16065f1ced9"
+      "sha256": "2f56bbbdc714b3c4538e2d5dc72dd6adf538c10e2838aee26e3f5ce16931d73e"
     },
     {
       "path": "tools/ci_required.py",
@@ -7344,7 +7344,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8480833437c8e19e22dcaed3fecbc078f1f1544199310345819751ef4a7adfd7"
+      "sha256": "7d34fa993422230d5e684467655cada28c83df10fb12813dfbcaab3e729b9b13"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -7470,7 +7470,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b7fa38a27f49820589a4571f5769b7f029fbdab918b957cccf462145bb28445f"
+      "sha256": "995aff64ae36c1e7de947b6084d59cb732341d403811a037b6ab3f5151c9cda4"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8331,7 +8331,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bdb050a71374b2db9cbacbc2eccac538491be4d022bab34c42110c3cdd5b59bb"
+      "sha256": "bc6c39529547d348e302df5972362963b846f3313a7a514a2ca9a3f888e2696e"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",

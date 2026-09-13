@@ -55,6 +55,22 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(result["run_dashboard"], "false")
         self.assertEqual(result["run_windows"], "false")
 
+    def test_generated_public_metadata_is_recognised_and_preserves_docs_only(self) -> None:
+        """Issue #188 Finding 13 (O-13): generated public metadata must not trigger force_full."""
+        result = classify([
+            "docs/CI.md",
+            "PUBLIC_EXPORT.json",
+            "assets/public_provenance_ledger.json",
+            "assets/public_source_profile.json",
+        ])
+        self.assertEqual(result["docs_only"], "true")
+        self.assertEqual(result["run_markdown"], "true")
+        self.assertEqual(result["run_native"], "false")
+        self.assertEqual(result["run_windows"], "false")
+        self.assertEqual(result["run_dashboard"], "false")
+        self.assertEqual(result["security_publication"], "true")
+        self.assertEqual(result["run_python"], "true")
+
     def test_dashboard_changes_only_run_dashboard(self) -> None:
         result = classify(["interface/src/app/page.tsx"])
         self.assertEqual(result["run_dashboard"], "true")
