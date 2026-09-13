@@ -1446,7 +1446,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c3dc54c22f2566ab284adc9927ffd97b3c8291dfa272c948f1455d6b629db722"
+      "sha256": "062665dc04069418b3c5036558b68f8f22397818b6eee7a4de55ba985adbb965"
     },
     {
       "path": "interface/components.json",
@@ -1491,7 +1491,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e0a074940c366c28064ecf6ac2d7bd4ba6266ac39aa5150a91f642d7d93b93ca"
+      "sha256": "c0614181424a2a94af49278eb235813f6f0abd9f5b5f8f78269a5888d8166890"
     },
     {
       "path": "interface/postcss.config.mjs",
@@ -2259,7 +2259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ebba6fa8f8d3b6c11504e473133f6ffa4732a4e47054ad9c87d8c86a685589e0"
+      "sha256": "d4da96ec4651e9fc2ffd9c095c2d13c739e16b9ef98a33811adbd142ce65d7e4"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -6265,7 +6265,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c3aa122144ddee5d7c30ae17cc8c4a704662200281c6d88582d362eb4f0160b"
+      "sha256": "a339fd367af96a541c51f5e8aad1c2a3171faef3af7019554dca74fc06f3a47a"
     },
     {
       "path": "tools/ci_paths.py",
@@ -6767,7 +6767,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "600694ec52663624cc5fb5e27297ad16d98a00bece1e7374ce210ac2592c940e"
+      "sha256": "179a714ac2453c4b4d55437f1448123ad6491132514208aa7e42330486b265bb"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7977,7 +7977,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "220c2d7808bd44665575fd89858d718739d75e97f542721dbb817760392330f3"
+      "sha256": "3d5e706d23c1d4c37e90dfcea09cd35b03590187f909799d80708f034dde550a"
     },
     {
       "path": "tools/test_manager_safety.ps1",
