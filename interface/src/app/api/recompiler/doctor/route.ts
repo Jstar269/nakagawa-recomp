@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { findRepoRoot } from "@/lib/recompiler/runner";
 import { classifyDoctorFailure, parseDoctorScope, runDoctor } from "@/lib/recompiler/doctor";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest) {
   try {
     scope = parseDoctorScope(rawScope ?? undefined);
   } catch (error) {
-    return NextResponse.json({ error: "invalid-doctor-scope", detail: String(error) }, { status: 400 });
+    return routeError("invalid-doctor-scope", error, 400, { detail: "Invalid doctor scope" });
   }
 
   const strict = rawStrict === "true" || rawStrict === "1";

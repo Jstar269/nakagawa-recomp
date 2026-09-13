@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { findRepoRoot } from "@/lib/recompiler/runner";
 import { parsePerfProfiler } from "@/lib/recompiler/telemetry";
 import { db } from "@/lib/db";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,6 @@ export async function GET(req: NextRequest) {
       trend,
     });
   } catch (e) {
-    return NextResponse.json({ error: "Failed to load performance telemetry", detail: String(e) }, { status: 500 });
+    return routeError("Failed to load performance telemetry", e, 500);
   }
 }

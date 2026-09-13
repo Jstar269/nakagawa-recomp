@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { startManagerProcess, stopActiveManagerProcess, managerProcess } from "@/lib/recompiler/manager-process";
 import { parseManagerLaunchRequest, DASHBOARD_MANAGER_ACTIONS } from "@/lib/recompiler/manager-contract";
 import { rejectNonLocalControlRequest, rejectUnsupportedProcessHost } from "@/lib/recompiler/local-request";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -84,10 +85,10 @@ export async function POST(req: NextRequest) {
   try {
     launch = parseManagerLaunchRequest(body);
   } catch (error) {
-    return NextResponse.json(
-      { error: "invalid-manager-request", detail: String(error), supported: DASHBOARD_MANAGER_ACTIONS },
-      { status: 400 },
-    );
+    return routeError("invalid-manager-request", error, 400, {
+      detail: error instanceof Error ? error.message : "Invalid manager request",
+      supported: DASHBOARD_MANAGER_ACTIONS,
+    });
   }
 
   // Prevent multiple overlapping tasks
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
       action: launch.action,
     });
   } catch (e) {
-    return NextResponse.json({ error: "manager-failed", detail: String(e) }, { status: 500 });
+    return routeError("manager-failed", e, 500);
   }
 }
 

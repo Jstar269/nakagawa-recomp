@@ -7,6 +7,7 @@ import {
   deleteProfile,
   ProfileStoreError,
 } from "@/lib/recompiler/profile-store";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -18,7 +19,7 @@ function errorResponse(e: unknown) {
   if (e instanceof ProfileStoreError) {
     return NextResponse.json({ error: e.code, message: e.message, fields: e.fields }, { status: e.status });
   }
-  return NextResponse.json({ error: "db-error", message: String(e) }, { status: 500 });
+  return routeError("db-error", e, 500);
 }
 
 // GET /api/recompiler/profiles/[id] -> load a specific profile's full config.

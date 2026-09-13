@@ -314,6 +314,41 @@ export function readLogTailContent(pathName: string, maxBytes = MAX_LOG_TAIL_BYT
   }
 }
 
+/**
+ * Incrementally read new lines appended to a log file since a given byte offset.
+ * Bounded to maxBytes (default MAX_LOG_TAIL_BYTES = 256KB) so a large/corrupt log
+ * is never loaded whole into memory (Issue #187 Finding 3).
+ * Returns the parsed lines and the updated byte offset cursor.
+ */
+export function readLogSince(
+  pathName: string,
+  sinceByte: number,
+  maxBytes = MAX_LOG_TAIL_BYTES,
+): { lines: string[]; cursor: number } {
+  const size = statSync(/* turbopackIgnore: true */ pathName).size;
+  if (!Number.isFinite(sinceByte) || sinceByte < 0) {
+    sinceByte = 0;
+  }
+  if (sinceByte >= size) {
+    return { lines: [], cursor: size };
+  }
+
+  const bytesToRead = Math.min(size - sinceByte, maxBytes);
+  const fd = openSync(/* turbopackIgnore: true */ pathName, "r");
+  try {
+    const buf = Buffer.alloc(bytesToRead);
+    readSync(fd, buf, 0, bytesToRead, sinceByte);
+    const content = buf.toString("utf8");
+    const lines = content.split(/\r?\n/).filter((line) => line.length > 0);
+    return {
+      lines,
+      cursor: sinceByte + bytesToRead,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function findLatestRunLog(repoRoot: string): LogTail {
   const dir = path.join(/* turbopackIgnore: true */ repoRoot, "logs");
   if (!existsSync(dir)) return { found: false, path: null, sizeBytes: 0, lastLines: [], allLogs: [] };

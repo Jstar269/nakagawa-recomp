@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { findRepoRoot } from "@/lib/recompiler/runner";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,6 @@ export async function GET(request: NextRequest) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    return NextResponse.json({ error: "issues-read-failed", detail: String(error) }, { status: 500 });
+    return routeError("issues-read-failed", error, 500);
   }
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { findLatestRunLog, findRepoRoot, readLogPrefix } from "@/lib/recompiler/runner";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,6 @@ export async function GET() {
       scanTruncated: truncated,
     });
   } catch (error) {
-    return NextResponse.json({ error: "boot-status-failed", detail: String(error) }, { status: 500 });
+    return routeError("boot-status-failed", error, 500);
   }
 }

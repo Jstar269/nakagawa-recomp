@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { logTelemetry } from "@/lib/recompiler/telemetry";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -44,7 +45,7 @@ export async function GET() {
     const chronological = [...runs].reverse();
     return NextResponse.json({ telemetry: chronological });
   } catch (e) {
-    return NextResponse.json({ error: "db-error", detail: String(e) }, { status: 500 });
+    return routeError("db-error", e, 500);
   }
 }
 
@@ -64,6 +65,6 @@ export async function POST(req: NextRequest) {
       currentRun,
     });
   } catch (e) {
-    return NextResponse.json({ error: "telemetry-log-failed", detail: String(e) }, { status: 500 });
+    return routeError("telemetry-log-failed", e, 500);
   }
 }

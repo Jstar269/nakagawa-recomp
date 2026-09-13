@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { findRepoRoot } from "@/lib/recompiler/runner";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { safeWalkDirectory } from "@/lib/recompiler/fs-walker";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -25,19 +27,6 @@ let cachedTree: unknown[] | null = null;
 let cachedAt = 0;
 const CACHE_MS = 5 * 60 * 1000;
 
-function walkDir(dir: string, fileList: string[] = []): string[] {
-  const files = readdirSync(dir);
-  for (const file of files) {
-    const filePath = path.join(dir, file);
-    if (statSync(filePath).isDirectory()) {
-      walkDir(filePath, fileList);
-    } else if (file === "inventory_map.json") {
-      fileList.push(filePath);
-    }
-  }
-  return fileList;
-}
-
 export async function GET() {
   try {
     const repoRoot = findRepoRoot();
@@ -54,7 +43,7 @@ export async function GET() {
       return cachedResponse;
     }
 
-    const inventoryFiles = walkDir(extractedDir);
+    const inventoryFiles = safeWalkDirectory(extractedDir, { targetFileName: "inventory_map.json" });
     const treeData: any[] = [];
 
     for (const invPath of inventoryFiles) {
@@ -93,6 +82,6 @@ export async function GET() {
     response.headers.set("X-Content-Type-Options", "nosniff");
     return response;
   } catch (e) {
-    return NextResponse.json({ error: "assets-fetch-failed", detail: String(e) }, { status: 500 });
+    return routeError("assets-fetch-failed", e, 500);
   }
 }

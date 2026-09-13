@@ -6,6 +6,7 @@ import {
   deleteDebugProfile,
   WatchpointStoreError,
 } from "@/lib/recompiler/watchpoint-store";
+import { routeError } from "@/lib/recompiler/error-response";
 
 export const runtime = "nodejs";
 
@@ -13,7 +14,7 @@ function errorResponse(e: unknown) {
   if (e instanceof WatchpointStoreError) {
     return NextResponse.json({ error: e.code, message: e.message }, { status: e.status });
   }
-  return NextResponse.json({ error: "failed", message: String(e) }, { status: 500 });
+  return routeError("failed", e, 500);
 }
 
 // GET /api/recompiler/watchpoints/profiles
