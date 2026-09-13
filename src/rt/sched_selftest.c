@@ -166,7 +166,7 @@ static void reset_sched(void) {
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
     g_master_reent = 0x002cf338u;
-    s_stack_top = 0x09f00000u;
+    s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
     s_tick = 0;
@@ -1588,7 +1588,7 @@ static void test_interrupt_frame_is_restored(void) {
            "eligible VBLANK invokes the registered handler once");
     expect(g_test_handler_seen.pc == g_test_vblank_handler &&
            g_test_handler_seen.r[16] == interrupted.r[16] &&
-           g_test_handler_seen.r[29] == 0x09df0000u &&
+           g_test_handler_seen.r[29] == SR_VBLANK_STACK_TOP &&
            g_test_handler_seen.r[31] == 0u,
            "handler sees the preserved interrupted frame plus kernel entry state");
     expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,

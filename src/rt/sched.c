@@ -57,19 +57,24 @@ static int sched_status_is_negative(int32_t status) {
 }
 
 #define SR_STACK_ARENA_FLOOR 0x05000000u
-/* The ceiling is DERIVED from the reserved nested-call frame region rather than
- * written as its own literal: the region must be excluded from thread-stack
- * allocation, and two literals that happen to agree today are exactly how that
- * exclusion would silently stop holding.  This is not a move -- the reserved
- * region starts at the address this ceiling already had, so every thread stack
- * keeps the address it had before.  Proven by
- * test_nested_frame_region_is_reserved_from_thread_stacks(), which runs the
- * allocator instead of re-deriving its arithmetic. */
-#define SR_STACK_ARENA_CEIL  SR_NESTED_FRAME_BASE
-_Static_assert(SR_STACK_ARENA_CEIL == 0x09f00000u,
-               "deriving the ceiling from the reserved region must not move any thread stack");
+/* Dedicated VBLANK interrupt stack reservation (Issue #98 / PORTING.md Section C-6).
+ * 64 KiB region [0x09ef0000, 0x09f00000) structurally reserved between the
+ * thread-stack arena ceiling and the nested host->guest frame region.
+ * The thread-stack arena ceiling is derived from this base, ensuring that
+ * thread stack allocation can never hand out or collide with the VBLANK interrupt stack. */
+#define SR_VBLANK_STACK_SIZE 0x00010000u
+#define SR_VBLANK_STACK_TOP  SR_NESTED_FRAME_BASE
+#define SR_VBLANK_STACK_BASE (SR_VBLANK_STACK_TOP - SR_VBLANK_STACK_SIZE)
+
+#define SR_STACK_ARENA_CEIL  SR_VBLANK_STACK_BASE
+_Static_assert(SR_STACK_ARENA_CEIL == 0x09ef0000u,
+               "deriving the ceiling from the VBLANK reservation must set expected floor");
 _Static_assert(SR_STACK_ARENA_FLOOR < SR_STACK_ARENA_CEIL,
-               "the thread-stack arena must be non-empty and below the reserved region");
+               "the thread-stack arena must be non-empty and below the VBLANK reservation");
+_Static_assert(SR_STACK_ARENA_CEIL == SR_VBLANK_STACK_BASE,
+               "the thread-stack arena must end exactly at the VBLANK reservation base");
+_Static_assert(SR_VBLANK_STACK_TOP == SR_NESTED_FRAME_BASE,
+               "the VBLANK reservation must end exactly at the nested-frame region base");
 #define SR_STACK_RANGE_MAX   (MAXTHREADS + 1)
 
 typedef struct {
@@ -141,7 +146,7 @@ static SrCoro  *s_sched_coro = NULL;
 CpuState *s_cpu = NULL;
 static uint64_t s_tick = 0;
 static uint32_t s_gp = 0x002d0000;        /* module global pointer, inherited by created threads */
-static uint32_t s_stack_top = 0x09f00000;  /* sibling thread stacks grow down from here */
+static uint32_t s_stack_top = SR_STACK_ARENA_CEIL;  /* sibling thread stacks grow down from here */
 static StackRange s_stack_free[SR_STACK_RANGE_MAX];
 static int s_stack_free_count;
 static int s_stack_allocator_ready;
@@ -984,7 +989,7 @@ static void deliver_vblank(void) {
      * not a zeroed synthetic process. Set only the ABI fields owned by the
      * handler and restore the complete frame after it returns. */
     memcpy(s_cpu, &save, sizeof(CpuState));
-    s_cpu->r[29] = 0x09df0000;          /* dedicated interrupt stack (below thread stacks) */
+    s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
     s_cpu->r[28] = s_gp;
     s_cpu->r[4] = sr_vblank_arg();       /* a0 = registered arg */
     s_cpu->r[31] = 0;

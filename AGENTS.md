@@ -95,6 +95,11 @@ blocked PR. Normal code, documentation, and configuration integration remains su
   syscall proof; software/Vulkan agreement is not a PSP hardware oracle.
 - Mutations count as behavioral evidence only when they generate, compile, execute, and fail for the
   intended semantic reason. Build-only or in-place tracked-file mutations are invalid kills.
+- **UI decisions and typography selection**: Selecting open-source fonts for nakagawa-recomp depends on the surface:
+  - *In-Game UI & Arcade HUD (Clap Hanz / Sports Aesthetic)*: [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL, closest match to Hot Shots Tennis, rounded terminals, full JP/Latin), [Rubik](https://fonts.google.com/specimen/Rubik) (match results, power gauges), [Nunito](https://fonts.google.com/specimen/Nunito) (handheld/low-res legibility), [Teko](https://fonts.google.com/specimen/Teko) / [Bebas Neue](https://fonts.google.com/specimen/Bebas+Neue) (scoreboards, serve speed).
+  - *Launcher & Settings UI (Dear ImGui / SDL3 Dialogs)*: [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL, screen-optimized, sharp at 10px–14px), [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (variable weight/width/optical size).
+  - *Debug Overlays & Telemetry (FPS, Frame Times, Memory Viewers)*: [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) (tall x-height, rapid telemetry), [Intel One Mono](https://github.com/intel/intel-one-mono) (high glyph distinction: 0/O, 1/l/I, address viewers).
+  - *Japanese CJK Support*: [Kosugi Maru](https://fonts.google.com/specimen/Kosugi+Maru) (Apache 2.0, rounded Japanese gothic matching original PSP system fonts), [Zen Maru Gothic](https://fonts.google.com/specimen/Zen+Maru+Gothic) (dialogue boxes, audio/text toggles).
 
 ## 7. Current execution contract
 

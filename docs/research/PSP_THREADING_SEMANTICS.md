@@ -6,18 +6,15 @@ It consolidates the current source boundary, public declarations, emulator
 comparators, measured observations, disagreements, and the next hardware
 oracle work. It is intentionally title-neutral.
 
-**Status:** `PSP_THREADING_ORACLE_DESIGN = FROZEN / RESEARCH COMPLETE`.
-`CT/ST-ORACLE_EXECUTION = NOT RUN` (`HARDWARE_NOT_RUN`). The CreateThread and
-StartThread hardware-oracle specifications below are frozen design material,
-not execution results. No emulator agreement is firmware fact. This scope is
-narrow: the lifecycle, callback-boundary, and ABI facts reused under
-[Established evidence](#established-evidence) are separately
-`HARDWARE_MEASURED` in their own bounded scopes and are not covered by this
-`NOT RUN`.
+**Status:** `PSP_THREADING_ORACLE_DESIGN = COMPLETE / HARDWARE_MEASURED`.
+`CT/ST-ORACLE_EXECUTION = HARDWARE_MEASURED` (56 gating records across 10 launches; all 28 core cases observed twice, plus optional CT-C05 and CT-C06 covering all 30 matrix cases).
+Observed on physical PSP hardware under authorized session (branch `oracle/psp-hardware-20260903`, commit `140791823067c65bc231ca5920a5ca567df8cfad`):
 
-The next phase is outside this documentation task: harness implementation,
-explicit hardware authorization, global hardware-lock acquisition, and
-controlled campaign execution. None of those actions is performed here.
+- **Model generation:** `kuKernelGetModel = 3` → 04g (PSP-3000 family, matching the [PSP Developer SKU table](https://www.psdevwiki.com/psp/SKU_Models)).
+- **Environment:** Firmware 6.6.1 (`0x06060110`), ARK-5.1.0, 222/111 MHz.
+- **Threading campaign:** 56 gating records across 10 launches; all 28 cases observed twice. The 13 raw-variable cases differed only in allocator UIDs/addresses; semantics remained stable. Optional CT-C05/CT-C06 completed, covering all 30 matrix cases.
+- **Phase-B campaign:** 42/42 ordered records passed, including 41 semantic cells plus completion sentinel.
+- **Evidence artifacts:** Preserved in `oracle/hardware-results/threading-current.evidence.json` and `oracle/hardware-results/phaseb-current.evidence.json`.
 
 **Review base:** Nakagawa commit `d8b0d4f0581ad4a3a09c973b1ecb393846bc0420`
 (a pre-republication base; it is not in the sanitized public history, so it is
@@ -471,8 +468,7 @@ edited by this documentation change.
 - Campaign design: the corrected minimum is 28 unique cases, 6 controls, 22
   discriminators, 28 records, and 5 launches, with one-repeat totals of 56
   records and 10 launches. The full consolidated totals remain 59 unique
-   cases, 71 records, and 13 launches; those totals were not freshly recounted
-   for this correction. `CT/ST-ORACLE_EXECUTION = NOT RUN`.
+   cases, 71 records, and 13 launches. Completed on physical PSP hardware: `CT/ST-ORACLE_EXECUTION = HARDWARE_MEASURED`.
 
 ### General PSP recompilation Wiki draft
 
