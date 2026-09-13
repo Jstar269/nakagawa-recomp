@@ -83,7 +83,7 @@ cd tools && python3 -m unittest test_native_host_backends test_iso_parity test_s
 On this host WSL reproduces the runner closely (Ubuntu 24.04, gcc 13.3.0):
 
 ```bash
-wsl.exe -e bash -lc 'cd "$(wslpath "C:/nk/worktrees/<worktree>")/tools" && python3 -m unittest test_native_host_backends test_iso_parity test_second_title_ingest'
+wsl.exe -e bash -lc 'cd "$(wslpath "<workspace-root>/worktrees/<worktree>")/tools" && python3 -m unittest test_native_host_backends test_iso_parity test_second_title_ingest'
 ```
 
 The harness compiles with `gcc -std=c99 -Wall -Wextra -Werror`, so a missing declaration is a

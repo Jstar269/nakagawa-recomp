@@ -23,7 +23,7 @@ claim extraction, decryption, staging, item counts, or percentage progress.
 | `SAVES_PATH_VALID` | Launch routes `SR_MEMSTICK` to a writable per-disc location: the title catalog's `memory_stick_root` when the install is writable, otherwise the platform save directory (`%LOCALAPPDATA%\Nakagawa\saves\<disc id>` on Windows, `$XDG_DATA_HOME/nakagawa-recomp/saves/<disc id>` on Linux) | **PASS** | **PASS** | **PASS** | Resolved in `nk_launch_prepare_session`; verified in `tests/native/test_launch_resolution.c` on Windows and Linux |
 | `CONFIG_PERSISTENCE_VALID` | Settings serialize and deserialize without schema degradation | **PASS** (92 unit tests) | **PASS** (Native C JSON persistence) | **PASS** | Verified in `interface` unit tests and `nk_library` tests |
 | `LOGS_WRITTEN` | Logs cleanly piped to `logs/` directory without polluting UI | **PASS** (Log ring buffer) | **PASS** (`logs/native_player.log`) | **PASS** | Verified in process managers |
-| `NO_C_NK_RUNTIME_DEPENDENCY_IN_PLAYER_PACKAGE` | Native player runs without assuming hardcoded `C:\nk` paths | **FAIL** (Legacy scripts had `C:\nk` assumptions) | **PASS** (Uses relative & platform paths) | **PASS** | Verified in path normalization tests |
+| `NO_C_NK_RUNTIME_DEPENDENCY_IN_PLAYER_PACKAGE` | Native player runs without assuming hardcoded workspace paths | **FAIL** (Legacy scripts had hardcoded workspace assumptions) | **PASS** (Uses relative & platform paths) | **PASS** | Verified in path normalization tests |
 
 ---
 

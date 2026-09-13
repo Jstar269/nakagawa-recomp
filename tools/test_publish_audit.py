@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import publication_policy
 import publish_audit
 
 LF = bytes([10])
@@ -1341,6 +1342,108 @@ class CanonicalWriterTests(unittest.TestCase):
                               "expected host newline translation to be observable here")
             else:
                 self.assertEqual(produced, b"a" + LF)
+
+
+class TestPrivateRootDetection(unittest.TestCase):
+    def test_configured_private_root_triggers_local_path(self):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            target = _make_publication_fixture_repo(repo)
+
+            # Update fixture policy to declare private_roots
+            policy_file = repo / "assets" / "public_source_profile.json"
+            policy_doc = json.loads(policy_file.read_text(encoding="utf-8"))
+            policy_doc["private_roots"] = ["C:" + "/nk", "C:" + "\\nk"]
+            policy_file.write_text(json.dumps(policy_doc) + "\n", encoding="utf-8", newline="\n")
+
+            export_file = repo / "PUBLIC_EXPORT.json"
+            export_file.write_text(
+                json.dumps({
+                    "profile": policy_doc["name"],
+                    "policy_sha256": publication_policy.canonical_digest(policy_doc),
+                }) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+
+            # 1. Clean file: passes
+            entries = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            findings = publish_audit.audit_entries(
+                entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertFalse(any(f.code == "LOCAL_PATH" for f in findings))
+
+            # 2. Add private root to target in worktree
+            target.write_text(
+                "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+                "# path: " + "C:" + "/nk/main/tools\n",
+                encoding="utf-8", newline="\n",
+            )
+            findings_worktree = publish_audit.audit_entries(
+                entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_worktree))
+            self.assertTrue(any(("contains configured private root '" + "C:" + "/nk'") in f.detail for f in findings_worktree))
+
+            # 3. Add to index (staged)
+            subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
+            index_entries = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            findings_index = publish_audit.audit_entries(
+                index_entries, repo_root=repo, content_source=publish_audit.CONTENT_INDEX,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_index))
+
+            # 4. Candidate root mode
+            candidate_entries = publish_audit._get_filesystem_entries(repo)
+            findings_candidate = publish_audit.audit_entries(
+                candidate_entries, repo_root=repo, is_candidate_root=True,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_candidate))
+
+            # 5. Backslash form
+            target.write_text(
+                "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+                "# path: " + "C:" + "\\" + "nk\\" + "worktrees\n",
+                encoding="utf-8", newline="\n",
+            )
+            findings_bs = publish_audit.audit_entries(
+                entries, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE,
+                policy_path=policy_file, export_path=export_file,
+            )
+            self.assertTrue(any(f.code == "LOCAL_PATH" for f in findings_bs))
+            self.assertTrue(any(("contains configured private root '" + "C:" + "\\" + "\\nk'") in f.detail for f in findings_bs))
+
+    def test_clean_repo_contains_no_configured_private_roots(self):
+        policy = publication_policy.load_policy(publish_audit.ROOT / "assets" / "public_source_profile.json")
+        self.assertTrue(len(policy.private_roots) > 0)
+        entries = publish_audit._get_git_entries(
+            tracked_only=True, repo_root=publish_audit.ROOT, content_source=publish_audit.CONTENT_WORKTREE
+        )
+        content_map = publish_audit.read_worktree_blobs(entries, publish_audit.ROOT)
+        violations = []
+        for entry in entries:
+            if entry.path == "assets/public_source_profile.json":
+                continue
+            raw_bytes, _ = content_map.get(entry.path, (None, None))
+            if not raw_bytes:
+                continue
+            text = publish_audit._decode_text_safe(raw_bytes)
+            if not text:
+                continue
+            text_lower = text.lower()
+            for root in policy.private_roots:
+                if root.lower() in text_lower:
+                    violations.append((entry.path, root))
+        self.assertEqual(violations, [], f"Tracked files contain configured private roots: {violations}")
 
 
 if __name__ == "__main__":

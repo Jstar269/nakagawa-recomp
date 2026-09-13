@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f54ff3151f3621656d8ebd87ecd971dd0146353ebe551c3a944b5e46e28e12c1"
+      "sha256": "6efcff5eadbdad600b64f293d38d0997c26b2bb9ee7cedd337143dc7645a58a6"
     },
     {
       "path": "assets/release_manifest.json",
@@ -855,7 +855,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b8b6ec6481c687e67e3dc58b0dfed45c49d241e52913573f78bd03d51deffd55"
+      "sha256": "e38edde7ceebf6e8b6a406bbd9701e1f86c603aab6538265a0406738bdd497fb"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -873,7 +873,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c2b658b437f23679cebcd466fb4770a9f3ebdb1a5f56f92d570e2be68002572a"
+      "sha256": "29e4ac1cd28808401cf64f42133347172c3c8cd90c9a45c0f6700ecf37166cb8"
     },
     {
       "path": "docs/PORTING.md",
@@ -7332,7 +7332,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79613e5f9e3e5e06b6e7562ee53922661b6fe2878d456e84e30d387bcb7fea27"
+      "sha256": "eded7e7bb5dd9cc994121083ff8edcb5192ad9dac1b55a21a612d84f92cdcc2f"
     },
     {
       "path": "tools/publish_audit.py",
@@ -7344,7 +7344,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "684518f48290251e13bade530a51692b4364b5686a548a40a8ba0b414e38b8e0"
+      "sha256": "8480833437c8e19e22dcaed3fecbc078f1f1544199310345819751ef4a7adfd7"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -8322,7 +8322,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "79dafd0bbe1936eb5a58821b00b84441a795409b999a59fb8fdbbfc25257cab5"
+      "sha256": "02fed5311848b7550b549e8529c242b099b695b275a81c0bf59d6cfbe19b5787"
     },
     {
       "path": "tools/test_publish_audit.py",
@@ -8331,7 +8331,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4fd4f6ea9f29466d8ba709ad2f17db92cc22411fdf95c18447e5cb7c61517c0d"
+      "sha256": "bdb050a71374b2db9cbacbc2eccac538491be4d022bab34c42110c3cdd5b59bb"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",

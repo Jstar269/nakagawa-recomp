@@ -2038,6 +2038,14 @@ def audit_entries_with_semantics(
                 or TEMP_PATH.search(text_str)
             ):
                 entry_findings.append(Finding("LOCAL_PATH", rel, "contains an absolute user-profile or local path"))
+            elif policy and policy.private_roots and rel != "assets/public_source_profile.json":
+                text_lower = text_str.lower()
+                for root_str in policy.private_roots:
+                    if root_str.lower() in text_lower:
+                        entry_findings.append(
+                            Finding("LOCAL_PATH", rel, f"contains configured private root {root_str!r}")
+                        )
+                        break
 
         findings.extend(entry_findings)
         for f in entry_findings:

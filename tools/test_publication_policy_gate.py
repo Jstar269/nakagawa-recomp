@@ -389,6 +389,25 @@ class TestPolicyIntegrity(FixtureMixin, unittest.TestCase):
         with self.assertRaises(PolicyError):
             load_policy(policy)
 
+    def test_invalid_private_roots_is_refused(self):
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        document = json.loads(policy.read_text(encoding="utf-8"))
+        document["private_roots"] = "not-a-list"
+        policy.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(PolicyError):
+            load_policy(policy)
+
+        document["private_roots"] = [123]
+        policy.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(PolicyError):
+            load_policy(policy)
+
+    def test_canonical_policy_declares_private_roots(self):
+        policy = load_policy(CANONICAL_POLICY)
+        self.assertIn("C:" + "/nk", policy.private_roots)
+        self.assertIn("C:" + "\\nk", policy.private_roots)
+
     def test_missing_policy_file_fails_closed(self):
         candidate = self.build_candidate()
         result = run_audit(candidate, policy=candidate.parent / "does_not_exist.json")
