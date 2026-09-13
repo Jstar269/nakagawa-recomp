@@ -7,6 +7,10 @@
   "review_gate": "qualified review required",
   "build_mode": "PUBLIC_SAFE=1",
   "default_disposition": "REJECT",
+  "private_roots": [
+    "C:/nk",
+    "C:\\nk"
+  ],
   "exclude_prefixes": [],
   "exclude_globs": [
     "font/*.pgf"
