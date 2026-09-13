@@ -348,6 +348,12 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
+    /* Launcher stays usable when thrown any resize: refuse tiny windows
+     * that would collapse every card below its minimum. */
+    SDL_SetWindowMinimumSize(window, 640, 560);
+    /* Record real pixel density for crisp type; 1.0 on standard displays. */
+    app.dpi_scale = SDL_GetWindowPixelDensity(window);
+    if (app.dpi_scale < 1.0f) app.dpi_scale = 1.0f;
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, NULL);
     if (!renderer) {
@@ -393,6 +399,7 @@ int main(int argc, char *argv[]) {
 
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
+        ui_font_shutdown();
         SDL_Quit();
         return 0;
     }
@@ -410,6 +417,7 @@ int main(int argc, char *argv[]) {
     bool running = true;
     while (running && !app.should_quit) {
         input.mouse_clicked = false;
+        input.activate_pressed = false;
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -445,6 +453,28 @@ int main(int argc, char *argv[]) {
                     } else if (event.key.key == SDLK_O) {
                         /* Trigger file picker */
                         trigger_file_picker(window, &app);
+                    } else if (event.key.key == SDLK_S && app.active_view != VIEW_INSPECTING) {
+                        /* Settings shortcut (topbar button is mouse-only). */
+                        if (app.active_view == VIEW_SETTINGS) {
+                            player_app_set_view(&app, VIEW_LIBRARY);
+                        } else {
+                            player_app_set_view(&app, VIEW_SETTINGS);
+                        }
+                    } else if (event.key.key == SDLK_TAB) {
+                        int count = ui_focus_count(&app);
+                        if (event.key.mod & SDL_KMOD_SHIFT) {
+                            player_app_move_focus(&app, -1, count);
+                        } else {
+                            player_app_move_focus(&app, 1, count);
+                        }
+                    } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER ||
+                               event.key.key == SDLK_SPACE) {
+                        /* Held-key auto-repeat must not re-fire actions: the
+                         * first PLAY press swaps the button to STOP, so a
+                         * repeat would instantly stop the just-started game. */
+                        if (!event.key.repeat) {
+                            input.activate_pressed = true;
+                        }
                     } else if (app.active_view == VIEW_LIBRARY) {
                         /* Keyboard selection across the whole library, not
                            just the cards that happen to fit on screen. */
@@ -452,6 +482,10 @@ int main(int argc, char *argv[]) {
                             player_app_move_selection(&app, -1);
                         } else if (event.key.key == SDLK_RIGHT) {
                             player_app_move_selection(&app, 1);
+                        } else if (event.key.key == SDLK_UP) {
+                            player_app_move_focus(&app, -1, ui_focus_count(&app));
+                        } else if (event.key.key == SDLK_DOWN) {
+                            player_app_move_focus(&app, 1, ui_focus_count(&app));
                         } else if (event.key.key == SDLK_HOME) {
                             app.selected_game_index = app.game_count > 0 ? 0 : -1;
                         } else if (event.key.key == SDLK_END) {
@@ -460,6 +494,14 @@ int main(int argc, char *argv[]) {
                             player_app_move_selection(&app, -player_app_visible_library_cards(&app));
                         } else if (event.key.key == SDLK_PAGEDOWN) {
                             player_app_move_selection(&app, player_app_visible_library_cards(&app));
+                        }
+                    } else {
+                        /* Dialog views: arrows move focus so every button is
+                         * reachable without a mouse. */
+                        if (event.key.key == SDLK_LEFT || event.key.key == SDLK_UP) {
+                            player_app_move_focus(&app, -1, ui_focus_count(&app));
+                        } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_DOWN) {
+                            player_app_move_focus(&app, 1, ui_focus_count(&app));
                         }
                     }
                     break;
@@ -498,17 +540,43 @@ int main(int argc, char *argv[]) {
                             case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
                                 player_app_move_selection(&app, 1);
                                 break;
+                            case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                                player_app_move_focus(&app, -1, ui_focus_count(&app));
+                                break;
+                            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                                player_app_move_focus(&app, 1, ui_focus_count(&app));
+                                break;
                             case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
                                 player_app_move_selection(&app, -player_app_visible_library_cards(&app));
                                 break;
                             case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
                                 player_app_move_selection(&app, player_app_visible_library_cards(&app));
                                 break;
+                            case SDL_GAMEPAD_BUTTON_SOUTH:
+                                input.activate_pressed = true;
+                                break;
+                            case SDL_GAMEPAD_BUTTON_START:
+                                player_app_set_view(&app, VIEW_SETTINGS);
+                                break;
                             default:
                                 break;
                         }
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
                         player_app_set_view(&app, VIEW_LIBRARY);
+                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {
+                        input.activate_pressed = true;
+                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ||
+                               event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                        player_app_move_focus(&app, -1, ui_focus_count(&app));
+                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ||
+                               event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                        player_app_move_focus(&app, 1, ui_focus_count(&app));
+                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+                        if (app.active_view == VIEW_SETTINGS) {
+                            player_app_set_view(&app, VIEW_LIBRARY);
+                        } else {
+                            player_app_set_view(&app, VIEW_SETTINGS);
+                        }
                     }
                     break;
                 case SDL_EVENT_DROP_FILE:
@@ -530,6 +598,10 @@ int main(int argc, char *argv[]) {
             app.request_file_picker = false;
             trigger_file_picker(window, &app);
         }
+
+        /* Clamp keyboard/gamepad focus before rendering so activation can
+         * never target a control the current view no longer draws. */
+        player_app_move_focus(&app, 0, ui_focus_count(&app));
 
         /* Monitor running game process */
         if (app.is_game_running) {
@@ -577,6 +649,7 @@ int main(int argc, char *argv[]) {
     }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    ui_font_shutdown();
     SDL_Quit();
     return 0;
 }

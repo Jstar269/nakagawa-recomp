@@ -25,6 +25,7 @@ void player_app_init(PlayerApp *app) {
     app->settings.vsync = true;
     app->settings.fps_cap = 60;
     app->settings.master_volume = 80;
+    app->settings.reduce_motion = false;
     /* Controller state: no fabrication. The event loop in src/player/main.c
        fills these in when SDL reports a gamepad, and clears them when it goes. */
     app->settings.controller_name[0] = '\0';
@@ -103,6 +104,46 @@ int player_app_visible_library_cards(const PlayerApp *app) {
     return fit < 1 ? 1 : fit;
 }
 
+int player_app_focus_count(const PlayerApp *app) {
+    if (!app) return 1;
+    switch (app->active_view) {
+        case VIEW_LIBRARY:
+            if (app->game_count <= 0) return 1;
+            {
+                /* Order matches render_loaded_library: primary action
+                 * (PLAY/STOP only when actionable), add, remove, then the
+                 * paging stops when the library overflows. The unavailable
+                 * pill is never a stop. */
+                int count = 0;
+                const GameRecord *game = (app->selected_game_index >= 0 &&
+                                          app->selected_game_index < app->game_count)
+                    ? &app->games[app->selected_game_index]
+                    : NULL;
+                if (game && (game->is_prepared || app->is_game_running)) count++;
+                count += 2; /* add + remove */
+                if (app->game_count > player_app_visible_library_cards(app)) count += 2;
+                return count < 1 ? 1 : count;
+            }
+        case VIEW_INSPECTING:
+            return 1;
+        case VIEW_SUPPORTED_TITLE:
+            return 2;
+        case VIEW_UNSUPPORTED_TITLE:
+            return 1;
+        case VIEW_PREPARING:
+            return 1;
+        case VIEW_SETTINGS:
+            /* Resolution (4) + frame cap (3) + display toggles (3: vsync,
+             * fullscreen, reduce-motion) + volume stepper (2) + close (1),
+             * in draw order. */
+            return 13;
+        case VIEW_ERROR:
+            return 1;
+        default:
+            return 1;
+    }
+}
+
 void player_app_move_selection(PlayerApp *app, int delta) {
     if (!app || app->game_count <= 0) return;
     int index = app->selected_game_index;
@@ -114,6 +155,121 @@ void player_app_move_selection(PlayerApp *app, int delta) {
     if (index < 0) index = 0;
     if (index >= app->game_count) index = app->game_count - 1;
     app->selected_game_index = index;
+}
+
+void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
+    if (!app || focus_count <= 0) return;
+    int focus = app->focus_index + delta;
+    if (focus < 0) focus = 0;
+    if (focus >= focus_count) focus = focus_count - 1;
+    app->focus_index = focus;
+}
+
+static bool resolution_scale_valid(int scale) {
+    return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 8;
+}
+
+void player_app_set_resolution_scale(PlayerApp *app, int scale) {
+    if (!app || !resolution_scale_valid(scale)) return;
+    app->settings.resolution_scale = scale;
+}
+
+void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
+    if (!app) return;
+    /* UI offers 1/2/4/8. Scale 3 stays accepted for forward compatibility
+     * (resolution_label knows it) but is skipped by the stepper. */
+    static const int kOrder[] = { 1, 2, 4, 8 };
+    int current = app->settings.resolution_scale;
+    int at = 0;
+    for (int i = 0; i < 4; i++) {
+        if (kOrder[i] == current) {
+            at = i;
+            break;
+        }
+        if (kOrder[i] < current) at = i;
+    }
+    if (direction < 0) {
+        at = (at + 3) % 4;
+    } else {
+        at = (at + 1) % 4;
+    }
+    app->settings.resolution_scale = kOrder[at];
+}
+
+static bool fps_cap_valid(int cap) {
+    return cap == 30 || cap == 60 || cap == 0;
+}
+
+void player_app_set_fps_cap(PlayerApp *app, int cap) {
+    if (!app || !fps_cap_valid(cap)) return;
+    app->settings.fps_cap = cap;
+}
+
+void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
+    if (!app) return;
+    static const int kOrder[] = { 30, 60, 0 };
+    int current = app->settings.fps_cap;
+    int at = 1;
+    for (int i = 0; i < 3; i++) {
+        if (kOrder[i] == current) {
+            at = i;
+            break;
+        }
+    }
+    if (direction < 0) {
+        at = (at + 2) % 3;
+    } else {
+        at = (at + 1) % 3;
+    }
+    app->settings.fps_cap = kOrder[at];
+}
+
+void player_app_toggle_fullscreen(PlayerApp *app) {
+    if (!app) return;
+    app->settings.fullscreen = !app->settings.fullscreen;
+}
+
+void player_app_toggle_vsync(PlayerApp *app) {
+    if (!app) return;
+    app->settings.vsync = !app->settings.vsync;
+}
+
+void player_app_toggle_reduce_motion(PlayerApp *app) {
+    if (!app) return;
+    app->settings.reduce_motion = !app->settings.reduce_motion;
+}
+
+void player_app_adjust_volume(PlayerApp *app, int delta) {
+    if (!app) return;
+    int volume = app->settings.master_volume + delta;
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    app->settings.master_volume = volume;
+}
+
+bool player_app_remove_game(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const char *disc_id = app->games[game_index].disc_id;
+    if (!disc_id || disc_id[0] == '\0') return false;
+    /* Only the library entry is removed. The user's ISO file on disk is
+     * never touched. */
+    if (nk_library_remove(&app->library, disc_id) != NK_OK) return false;
+    if (nk_library_save(&app->library, NULL) != NK_OK) {
+        player_app_sync_library(app);
+        return false;
+    }
+    player_app_sync_library(app);
+    if (app->game_count <= 0) {
+        app->selected_game_index = -1;
+        app->library_scroll_index = 0;
+    } else {
+        if (app->selected_game_index >= app->game_count) {
+            app->selected_game_index = app->game_count - 1;
+        }
+        if (app->library_scroll_index < 0) app->library_scroll_index = 0;
+    }
+    app->focus_index = 0;
+    return true;
 }
 
 void player_app_set_view(PlayerApp *app, PlayerView view) {
