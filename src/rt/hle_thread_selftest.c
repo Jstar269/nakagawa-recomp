@@ -1238,7 +1238,7 @@ static void reset_fixture(void) {
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
     g_master_reent = 0x002cf338u;
-    s_stack_top = 0x09f00000u;
+    s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
     s_tick = 0;
@@ -5736,14 +5736,11 @@ static void test_nested_frame_region_is_reserved_from_thread_stacks(void) {
         expect(colliding_uid == 0u, msg);
     }
 
-    /* SEPARATE, UNFIXED BOUNDARY, measured here so it stays visible: the VBLANK
-     * interrupt stack is inside the thread-stack arena, exactly as the nested
-     * frames used to be.  This assertion records the present state deliberately
-     * -- if the interrupt stack is ever moved out, this fails and must be
-     * updated rather than silently drifting. */
-    expect(0x09df0000u >= SR_STACK_ARENA_FLOOR && 0x09df0000u < SR_STACK_ARENA_CEIL,
-           "MEASURED, NOT FIXED: the VBLANK interrupt stack 0x09df0000 is still inside "
-           "the thread-stack arena (separate boundary)");
+    /* C-6: the VBLANK interrupt stack is structurally reserved outside the
+     * thread-stack arena and does not collide with any created thread stack. */
+    expect(SR_VBLANK_STACK_TOP > SR_STACK_ARENA_CEIL &&
+           SR_VBLANK_STACK_BASE >= SR_STACK_ARENA_CEIL,
+           "C-6: the VBLANK interrupt stack is reserved outside the thread-stack arena");
 }
 
 static void test_nested_frame_depth_is_bounded_and_fails_closed(void) {

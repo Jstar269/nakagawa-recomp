@@ -201,7 +201,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2f2ef853b63551711d3da4aff06f1d1c0c6ec14812d117e12bec651a5e6bcc9"
+      "sha256": "e6adeef3f8d44ce23f848681565366f2c0fe20c970352cecb5841a9e1c0d9466"
     },
     {
       "path": "CLAUDE.md",
@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e63474df4c21daebf84cb342a8307bd730a558753ffa4068f33bd862a168bcc1"
+      "sha256": "a5c1d8d36c536540adb7fa11357807b42161f3f083d5445fec77c186b5ec33d0"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -855,7 +855,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e38edde7ceebf6e8b6a406bbd9701e1f86c603aab6538265a0406738bdd497fb"
+      "sha256": "691839214daa2a25e7acbf3851032dcfe718ab1c25d2cca1736f81cfa2904a32"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -882,7 +882,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a9a02c45cab47c9deb5206c99512051cd6e8206ad5d4cb9e89b6395f16d2065d"
+      "sha256": "d437b931df4355d54155368a341bfaffd96f2cb1f120f307378c84100fd3a4fa"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe6a3a42c70a4bac31f538dcafaf54c79636cf02af5d058e1f3ddc7495ce40b1"
+      "sha256": "cf68b4b52cb098c1473a53f247f762c23d825abee2322b3934b048787ae669ae"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1107,7 +1107,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "48299cc1e20ce3e495418738d9eca1e06421abde8279f79ffbcd6099b56ee1fc"
+      "sha256": "3e8f8ffaf6e464bfd656597280b5f375fcc92e18d26bffce832a2c627badee9c"
     },
     {
       "path": "docs/research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md",
@@ -1134,7 +1134,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4d9bc43d338c0027803621a45cd52c20a4a1c1bc57982e7bcd4e64a89ff92e1d"
+      "sha256": "c7c3dd30b77776057799407ef7524fc7d3dacd74d89be5323df3ec7417cf30b4"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -5465,7 +5465,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4b35fd421fd8a756948de1c4f5b1dd516154341a7eb59e3f3536a47cb7f8253"
+      "sha256": "a9da8a0e84686db1ace752c4f0d0e316fbc63081d591dabadd3656ee307970d6"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5729,7 +5729,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "ad45136c13128fe3482fed17873338ba77409f5ff10e77a3a3c87615be680c27"
+      "sha256": "10d66f05bfa74b69044af17428d74c9eff7a847f203f7f0bd4bd163c41c1b5d8"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -5741,7 +5741,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cfb791e486f08e95afd4c10e41ab81e201bfea4989d0d467858830492f702f2"
+      "sha256": "1123e2bf80422233a97f1d540545c9c5fea6fa9b085cd1182c928ac42cfdfb8e"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -7785,7 +7785,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "90e8c84cfb708428b69d15d7559d9119536a15a75eaeeacaddcd516bd1bf1ff1"
+      "sha256": "7ae908a514e65ad4dae0f77986a974f8fc62e39b8621b963b65d18198829f2b8"
     },
     {
       "path": "tools/test_generic_title_planning_proof.py",

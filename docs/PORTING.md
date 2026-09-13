@@ -307,7 +307,7 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. Diagnostic-only groups in `src/rt/hle.c` (C-1) and the VBLANK interrupt stack boundary (C-6).
+1. Diagnostic-only groups in `src/rt/hle.c` (C-1). (The VBLANK interrupt stack boundary C-6 is retired).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.
@@ -375,17 +375,17 @@ model coherent and non-destructive; it does not claim the model is the console's
 `GENERIC_PSP_SEMANTIC` (open question on the hardware contract; the runtime-internal
 collision is fixed).
 
-### C-6 — The VBLANK interrupt stack is inside the thread-stack arena
+### C-6 — The VBLANK interrupt stack is inside the thread-stack arena — RETIRED
 
-`src/rt/sched.c`'s `deliver_vblank()` seeds `$sp = 0x09df0000` for the interrupt
-frame. That address is inside `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`, so the
-thread-stack allocator can and does hand it out — the same defect class C-4 just
-retired, on a different address. It is recorded as a separate boundary and left
-unchanged here on purpose: the interrupt frame is a nested call on the *interrupted*
-register file with different semantics from the GE/MPEG marshalling, and unifying the
-two would redefine behaviour this change deliberately preserves.
-`test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the present state
-so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — open.
+`src/rt/sched.c`'s `deliver_vblank()` previously seeded `$sp = 0x09df0000` for the interrupt
+frame, which fell inside the active thread-stack allocator range `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`.
+This has been retired: a dedicated 64 KiB region `[0x09ef0000, 0x09f00000)` (`SR_VBLANK_STACK_BASE` to
+`SR_VBLANK_STACK_TOP`) is now structurally reserved between the thread-stack arena ceiling and the
+nested host->guest frame region (`SR_NESTED_FRAME_BASE`). `SR_STACK_ARENA_CEIL` is derived from
+`SR_VBLANK_STACK_BASE`, ensuring that thread stacks allocated downwards cannot hand out, overlap, or
+collide with the VBLANK interrupt stack.
+`test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the structural and empirical
+disjointness so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — retired for this surface.
 
 ### C-5 — `f_00046d14` game-loop entry stub — retired 2026-08-29
 
