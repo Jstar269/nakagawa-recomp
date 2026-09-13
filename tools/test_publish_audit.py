@@ -73,13 +73,92 @@ class TestPublishAudit(unittest.TestCase):
 
     def test_direct_private_key_assignment_is_detected_without_storing_the_value(self):
         source = "VKEY = bytes.fromhex('0123456789abcdef' * 2)\n"
-        self.assertEqual(publish_audit.private_key_assignment_lines(source), [])
+        self.assertEqual(publish_audit.private_key_assignment_lines(source, "test.py"), [])
         literal = "VKEY = bytes.fromhex('" + ("01" * 16) + "')\n"
-        self.assertEqual(publish_audit.private_key_assignment_lines(literal), [1])
+        self.assertEqual(publish_audit.private_key_assignment_lines(literal, "test.py"), [1])
 
-    def test_unrelated_fips_key_literal_is_allowed(self):
-        source = "key = bytes.fromhex('" + ("01" * 16) + "')\n"
-        self.assertEqual(publish_audit.private_key_assignment_lines(source), [])
+    def test_unrelated_literal_is_allowed_while_key_named_is_detected(self):
+        # Non-key variable name with 16-byte value must NOT trigger
+        non_key = "lut_row = bytes.fromhex('" + ("01" * 16) + "')\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(non_key, "test.py"), [])
+
+        # Key vocabulary names must trigger
+        for name in ("key", "kirk_key_1", "amctrl_key", "pgd_key", "decrypt_key", "KIRK_IV", "vkey", "seed", "secret", "token"):
+            source = f"{name} = bytes.fromhex('" + ("01" * 16) + "')\n"
+            self.assertEqual(publish_audit.private_key_assignment_lines(source, "test.py"), [1], f"Failed to match {name}")
+
+    def test_c_key_material_byte_array_and_hex_detection(self):
+        # Positive C byte array fixture under kirk-named variable
+        c_kirk = (
+            "static const uint8_t kirk_key[16] = {\n"
+            "    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,\n"
+            "    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10\n"
+            "};\n"
+        )
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_kirk, "src/kirk.c"), [1])
+
+        # Acceptance test: identical byte array under unrelated variable name must NOT fail
+        c_lut = (
+            "static const uint8_t lut_row[16] = {\n"
+            "    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,\n"
+            "    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10\n"
+            "};\n"
+        )
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_lut, "src/lut.c"), [])
+
+        # Non-16-length array under kirk name must NOT trigger
+        c_kirk_table = "static const uint8_t kirk_table[4] = { 0x01, 0x02, 0x03, 0x04 };\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_kirk_table, "src/kirk.c"), [])
+
+        # Positive C contiguous hex fixture
+        c_hex_pos = 'const char *amctrl_key = "0123456789abcdef0123456789abcdef";\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_hex_pos, "src/amctrl.h"), [1])
+
+        # Negative C contiguous hex fixture
+        c_hex_neg = 'const char *checksum = "0123456789abcdef0123456789abcdef";\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_hex_neg, "src/amctrl.h"), [])
+
+        # Positive C macro #define fixture
+        c_macro_pos = '#define PGD_KEY "0123456789abcdef0123456789abcdef"\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_macro_pos, "src/pgd.h"), [1])
+
+        # Negative C macro #define fixture
+        c_macro_neg = '#define TABLE_DIGEST "0123456789abcdef0123456789abcdef"\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(c_macro_neg, "src/pgd.h"), [])
+
+    def test_json_key_material_detection(self):
+        # Positive JSON 32-hex string
+        json_pos_hex = '{\n  "kirk_key": "0123456789abcdef0123456789abcdef"\n}\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(json_pos_hex, "keys.json"), [2])
+
+        # Negative JSON 32-hex string
+        json_neg_hex = '{\n  "checksum": "0123456789abcdef0123456789abcdef"\n}\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(json_neg_hex, "data.json"), [])
+
+        # Positive JSON byte array
+        json_pos_arr = '{\n  "amctrl_seed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]\n}\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(json_pos_arr, "keys.json"), [2])
+
+        # Negative JSON byte array
+        json_neg_arr = '{\n  "lut_array": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]\n}\n'
+        self.assertEqual(publish_audit.private_key_assignment_lines(json_neg_arr, "data.json"), [])
+
+    def test_py_key_material_byte_array_detection(self):
+        # Positive Python list of 16 ints
+        py_list_pos = "kirk_seed = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10]\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(py_list_pos, "test.py"), [1])
+
+        # Negative Python list of 16 ints
+        py_list_neg = "lut_row = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10]\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(py_list_neg, "test.py"), [])
+
+        # Positive Python bytes([16 ints])
+        py_bytes_pos = "token_bytes = bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(py_bytes_pos, "test.py"), [1])
+
+        # Negative Python bytes([16 ints])
+        py_bytes_neg = "normal_bytes = bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])\n"
+        self.assertEqual(publish_audit.private_key_assignment_lines(py_bytes_neg, "test.py"), [])
 
     def test_action_pin_rule(self):
         self.assertIsNotNone(

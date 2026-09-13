@@ -7344,7 +7344,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4bd44f72c7bdd1635bf34e6b757cd4a50d36768827f5366381157ef1ef7a4652"
+      "sha256": "684518f48290251e13bade530a51692b4364b5686a548a40a8ba0b414e38b8e0"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -8331,7 +8331,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4d8c8818cef0eccb38e39e4b769bc5a8ab2107c803ef8667b979a6a4bf0fcb04"
+      "sha256": "4fd4f6ea9f29466d8ba709ad2f17db92cc22411fdf95c18447e5cb7c61517c0d"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
