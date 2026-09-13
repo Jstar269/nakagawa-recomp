@@ -92,6 +92,27 @@ def _is_dependency_metadata(path: str) -> bool:
     } or path.startswith("requirements/")
 
 
+GENERATED_PUBLIC_METADATA = frozenset(
+    {
+        "PUBLIC_EXPORT.json",
+        "assets/public_provenance_ledger.json",
+        "assets/public_source_profile.json",
+    }
+)
+
+
+def _is_generated_public_metadata(path: str) -> bool:
+    """True for the derived public metadata the publication gate exists to protect.
+
+    These files are regenerated from the tracked tree by nearly every publish, so
+    treating them as unknown paths made ``force_full`` fire on 106 of 111 commits and
+    saturated the routing the classifier computes.  They are publication artifacts,
+    not an unrecognised file class: recognising them routes the publication gate while
+    leaving the fail-closed rule intact for genuinely unknown paths.
+    """
+    return path in GENERATED_PUBLIC_METADATA
+
+
 def _is_security_publication(path: str) -> bool:
     name = PurePosixPath(path).name
     return (
@@ -100,6 +121,7 @@ def _is_security_publication(path: str) -> bool:
         or path.startswith("docs/PUBLICATION")
         or path.startswith("docs/LEGAL")
         or path == "docs/provenance/MODIFIED_FILE_NOTICES.json"
+        or _is_generated_public_metadata(path)
         or path in {
             "tools/publish_audit.py",
             "tools/generate_sbom.py",
@@ -141,6 +163,22 @@ def _is_public_surface(path: str) -> bool:
         return policy.resolve(path).disposition == "included"
     except Exception:
         return True
+
+
+def _is_policy_included(path: str) -> bool:
+    """True when the publication policy explicitly includes this path.
+
+    Fails closed (returns False) when the policy is unreadable or raises an error,
+    so an unreadable policy forces full validation via unknown paths rather than
+    silently classifying everything as recognized.
+    """
+    policy = _public_policy()
+    if policy is None:
+        return False
+    try:
+        return policy.resolve(path).disposition == "included"
+    except Exception:
+        return False
 
 
 def _is_manager(path: str) -> bool:
@@ -344,7 +382,9 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
     files = sorted({_normalise(path) for path in paths if path.strip()})
     unknown_paths = any(not _is_recognised(path) for path in files)
     force_full = event_name == "workflow_dispatch" or not files or "<history-unavailable>" in files or unknown_paths
-    docs_only = bool(files) and all(_is_docs(path) for path in files)
+    docs_only = bool(files) and all(
+        _is_docs(path) or _is_generated_public_metadata(path) for path in files
+    )
     workflow_ci = force_full or any(_is_workflow_ci(path) for path in files)
     dashboard = force_full or any(_is_dashboard(path) for path in files)
     dependency_metadata = force_full or any(_is_dependency_metadata(path) for path in files)

@@ -148,6 +148,26 @@ TEMP_PATH = re.compile(
     re.IGNORECASE,
 )
 
+#: Technical debt management ceilings (Issue #188 Finding 11 O-11).
+#: Ceilings are non-increasing: counts must not rise without explicit budget edit and rationale.
+DEBT_BUDGETS: dict[str, int] = {
+    "eslint_off_rules": 29,
+    "ruff_select_rule_families": 4,
+    "first_party_todos": 7,
+    "powershell_silently_continue": 53,
+}
+
+POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
+    "copy_build_assets.ps1": 1,
+    "hst_manager.ps1": 25,
+    "tools/hst_run_support.ps1": 4,
+    "tools/hst_safety.ps1": 7,
+    "tools/test_manager_safety.ps1": 3,
+    "tools/test_visual_oracle.ps1": 3,
+    "tools/title_manager_plan.ps1": 9,
+    "tools/vulkan_sdk.ps1": 1,
+}
+
 ACTION_USE = re.compile(r"uses:\s*([^\s#]+)")
 FULL_SHA_ACTION = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*@[0-9a-fA-F]{40}$")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -1080,6 +1100,103 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
     return findings
 
 
+def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None) -> list[Finding]:
+    """Audit unmanaged debt surfaces against non-increasing budgets (Issue #188 Finding 11 O-11).
+
+    Fails when any of the four measured surfaces (ESLint disabled rules, ruff select families,
+    first-party debt markers, or PowerShell SilentlyContinue) exceeds its configured ceiling.
+    """
+    findings: list[Finding] = []
+
+    # 1. ESLint disabled rules (interface/eslint.config.mjs)
+    eslint_cfg = repo_root / "interface" / "eslint.config.mjs"
+    if eslint_cfg.is_file():
+        text = _text(eslint_cfg) or ""
+        matches = re.findall(r'["\']([^"\']+)["\']\s*:\s*["\'](off|warn)["\']', text)
+        obs = len(matches)
+        ceiling = DEBT_BUDGETS["eslint_off_rules"]
+        if obs > ceiling:
+            findings.append(
+                Finding("DEBT_BUDGET", "interface/eslint.config.mjs",
+                        f"ESLint disabled rules count {obs} exceeds debt ceiling {ceiling}")
+            )
+
+    # 2. Ruff select rule families (pyproject.toml)
+    pyproject = repo_root / "pyproject.toml"
+    if pyproject.is_file():
+        text = _text(pyproject) or ""
+        m = re.search(r"select\s*=\s*\[(.*?)\]", text, re.DOTALL)
+        if m:
+            items = re.findall(r'["\']([a-zA-Z0-9_-]+)["\']', m.group(1))
+            obs = len(items)
+            ceiling = DEBT_BUDGETS["ruff_select_rule_families"]
+            if obs > ceiling:
+                findings.append(
+                    Finding("DEBT_BUDGET", "pyproject.toml",
+                            f"Ruff select rule families count {obs} exceeds debt ceiling {ceiling}")
+                )
+
+    # 3. First-party debt markers
+    marker_pat = re.compile(r"\b(?:" + r"TO" + r"DO|FIX" + r"ME|HA" + r"CK)\b")
+    excluded_prefixes = (
+        "third_party/",
+        "src/rt/atrac3p/libavcodec/",
+        "interface/node_modules/",
+        "interface/.next/",
+        "build/",
+        "fs/",
+    )
+    all_paths = paths
+    if all_paths is None:
+        try:
+            res = subprocess.run(["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True)
+            all_paths = [f.strip().replace("\\", "/") for f in res.stdout.splitlines() if f.strip()]
+        except Exception:
+            all_paths = []
+    todo_count = 0
+    for rel in all_paths:
+        if any(rel.startswith(p) for p in excluded_prefixes):
+            continue
+        full_path = repo_root / rel
+        if not full_path.is_file():
+            continue
+        text = _text(full_path)
+        if text is None:
+            continue
+        for line in text.splitlines():
+            if marker_pat.search(line):
+                todo_count += 1
+    ceiling = DEBT_BUDGETS["first_party_todos"]
+    if todo_count > ceiling:
+        findings.append(
+            Finding("DEBT_BUDGET", "tools/publish_audit.py",
+                    f"First-party debt marker count {todo_count} exceeds debt ceiling {ceiling}")
+        )
+
+    # 4. PowerShell SilentlyContinue
+    ps_pat = re.compile(r"SilentlyContinue", re.IGNORECASE)
+    ps_count = 0
+    for rel in all_paths:
+        if not rel.endswith(".ps1"):
+            continue
+        full_path = repo_root / rel
+        if not full_path.is_file():
+            continue
+        text = _text(full_path)
+        if text is None:
+            continue
+        m = ps_pat.findall(text)
+        ps_count += len(m)
+    ceiling = DEBT_BUDGETS["powershell_silently_continue"]
+    if ps_count > ceiling:
+        findings.append(
+            Finding("DEBT_BUDGET", "hst_manager.ps1",
+                    f"PowerShell SilentlyContinue count {ps_count} exceeds debt ceiling {ceiling}")
+        )
+
+    return findings
+
+
 #: Text bytes the repository governs as UTF-8 without BOM, LF, final newline.
 #: `.gitattributes` normalises on commit, so the index is clean by construction
 #: and these findings fire almost entirely in worktree audits -- which is the
@@ -1727,12 +1844,33 @@ def audit_entries_with_semantics(
     committed_tree_ref: str | None = None,
     tree_repo_root: Path | None = None,
     provenance_self_consistency: bool = False,
+    extra_private_roots: list[str] | None = None,
 ) -> tuple[list[Finding], list[FileSemantics]]:
 
     content_source = _resolve_content_source(content_source, is_candidate_root)
     findings: list[Finding] = []
     semantics_list: list[FileSemantics] = []
     paths = [e.path for e in entries]
+
+    all_private_root_patterns: list[re.Pattern[str]] = []
+    raw_roots: list[str] = []
+    raw_env = os.environ.get("PUBLISH_AUDIT_PRIVATE_ROOTS", "").strip()
+    if raw_env:
+        for part in re.split(r"[;\n,]+", raw_env):
+            root = part.strip()
+            if root:
+                raw_roots.append(root)
+    if extra_private_roots:
+        for root in extra_private_roots:
+            root = root.strip()
+            if root:
+                raw_roots.append(root)
+
+    for r in raw_roots:
+        for variant in {r, r.replace("\\", "/"), r.replace("/", "\\")}:
+            all_private_root_patterns.append(
+                re.compile(re.escape(variant) + r"(?![A-Za-z0-9_.\-])", re.IGNORECASE)
+            )
 
     # ---- canonical publication policy -------------------------------------
     # The policy is loaded first and its failures are unconditional. An auditor
@@ -2047,6 +2185,14 @@ def audit_entries_with_semantics(
                         )
                         break
 
+            if rel != "assets/public_source_profile.json" and all_private_root_patterns:
+                for pat in all_private_root_patterns:
+                    if pat.search(text_str):
+                        entry_findings.append(
+                            Finding("LOCAL_PATH", rel, "contains configured out-of-band private root")
+                        )
+                        break
+
         findings.extend(entry_findings)
         for f in entry_findings:
             finding_map.setdefault(rel, []).append(f)
@@ -2079,6 +2225,8 @@ def audit_entries_with_semantics(
     audited_paths = {e.path for e in entries}
     findings.extend(_notice_link_findings(repo_root))
     findings.extend(_action_pin_findings(repo_root, audited_paths))
+    if public_scope or exhaustive:
+        findings.extend(_debt_budget_findings(repo_root, paths))
 
     sorted_findings = sorted(findings, key=lambda item: (item.path.lower(), item.code, item.detail))
     sorted_semantics = sorted(semantics_list, key=lambda s: s.path.lower())
@@ -2102,6 +2250,7 @@ def audit_entries(
     trusted_manifest_path: Path | None = None,
     committed_tree_ref: str | None = None,
     tree_repo_root: Path | None = None,
+    extra_private_roots: list[str] | None = None,
 ) -> list[Finding]:
     findings, _ = audit_entries_with_semantics(
         entries=entries,
@@ -2119,6 +2268,7 @@ def audit_entries(
         trusted_manifest_path=trusted_manifest_path,
         committed_tree_ref=committed_tree_ref,
         tree_repo_root=tree_repo_root,
+        extra_private_roots=extra_private_roots,
     )
     return findings
 
@@ -2338,6 +2488,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Externally trusted release manifest used to prevent candidate control substitution",
     )
     parser.add_argument(
+        "--private-root",
+        action="append",
+        default=[],
+        help=(
+            "Out-of-band private root path to forbid across tracked files (O-01). "
+            "May also be specified via PUBLISH_AUDIT_PRIVATE_ROOTS."
+        ),
+    )
+    parser.add_argument(
         "--provenance-ledger",
         type=Path,
         default=None,
@@ -2476,6 +2635,7 @@ def main(argv: list[str] | None = None) -> int:
         trusted_manifest_path=args.trusted_manifest,
         committed_tree_ref=args.committed_tree,
         tree_repo_root=audit_repo_root,
+        extra_private_roots=args.private_root,
     )
     report = generate_manifest_report(
         entries,

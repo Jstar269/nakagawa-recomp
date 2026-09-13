@@ -118,6 +118,16 @@ tripwire scope (pre-commit and `hst_manager.ps1 -Action Verify`): coverage,
 resolution, and content hashes are enforced against the audited ledger itself,
 but no attestation claim is made or cleared.
 
+### Out-of-band private root detection
+
+The publication audit checks for local user-profile and absolute paths (`LOCAL_PATH`).
+To prevent leaking developer workspace roots without publishing the sensitive path
+in tracked code, private roots are supplied out of band via `--private-root <path>`
+or the `PUBLISH_AUDIT_PRIVATE_ROOTS` environment variable (semicolon, comma, or newline
+separated). When no out-of-band root is configured, this specific rule remains inert;
+hosted CI gates only enforce out-of-band roots if the corresponding secret or environment
+variable is supplied to the runner.
+
 The release flow above regenerates the ledger from the detailed development
 ledger and then attests the export against that regenerated copy. Candidate
 hashes prove bytes, not authorization; only a record in the trusted detailed
