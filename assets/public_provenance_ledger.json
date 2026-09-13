@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "60badeae8e23bf14ebc244791b5d8ce111bb171acdd2fd67848e56992ead85cc"
+      "sha256": "2bda7899e2293f22667fe0151adead7838744e843f0f3cd5a68b6d655b4741fe"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "697cddd33f591a1cc7911d9b124779d54960dc822ce5732cade7815d3f9f4337"
+      "sha256": "a3c227401b62e2ab28a2bcc5dddddde027aef8863d3b06cea548896b783ef21e"
     },
     {
       "path": "NOTICE.md",
@@ -7443,7 +7443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8d8fa758b6835dc299912409298051b7d5bfcc3a371647008dd6512fc204324"
+      "sha256": "47aa08ed812aa3eb721ef7800b95ee01f3f78018142091e752991dd8de97290b"
     },
     {
       "path": "tools/test_build_truth.py",
