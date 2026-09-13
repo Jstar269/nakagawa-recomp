@@ -535,7 +535,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: readiness FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+.PHONY: check test native-core-tests readiness FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
 .SECONDARY:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
@@ -598,6 +598,32 @@ endif
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
+
+# -----------------------------------------------------------------------------
+# Public Verification Entry Points (Issue #188 Finding 3 O-05)
+# -----------------------------------------------------------------------------
+test:
+	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
+
+check:
+	@echo "== [1/5] Documentation freshness lint =="
+	$(PYTHON) tools/lint_docs.py
+	@echo "== [2/5] Canonical publication policy coverage =="
+	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
+	@echo "== [3/5] Publication safety audits (index & worktree) =="
+	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	@echo "== [4/5] Native host core tests =="
+	$(MAKE) native-core-tests
+	@echo "== [5/5] Fast critical test subset =="
+	$(PYTHON) -m unittest \
+		tools/test_title_manifest.py \
+		tools/test_title_catalog.py \
+		tools/test_build_system_parity.py \
+		tools/test_sync_drift_check.py \
+		tools/test_ci_paths.py \
+		tools/test_ci_required.py
+	@echo "== All public verification checks PASSED =="
 
 # Two-phase build: `pipeline` (codegen) must finish and write the chunk .c files
 # BEFORE `compile` is parsed, because CHUNK_OBJS is derived via $(wildcard) and is

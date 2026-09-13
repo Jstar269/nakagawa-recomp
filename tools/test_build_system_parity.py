@@ -103,6 +103,17 @@ class BuildSystemParityTests(unittest.TestCase):
         self.assertFalse(classification["is_portable_architecture"])
         self.assertEqual(classification["target_compiler"], "MSVC")
 
+    def test_verification_targets_present(self) -> None:
+        """Verify make test and make check exist in Makefile (Issue #188 O-05)."""
+        self.assertTrue(
+            bool(re.search(r"^test:", self.makefile_text, re.MULTILINE)),
+            "Missing test target in Makefile",
+        )
+        self.assertTrue(
+            bool(re.search(r"^check:", self.makefile_text, re.MULTILINE)),
+            "Missing check target in Makefile",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -220,6 +220,9 @@ jobs:
       - name: Create build directory
         run: mkdir -p build
 
+      - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
+        run: make CC=gcc native-core-tests
+
       - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
@@ -566,6 +569,21 @@ jobs:
           set -euo pipefail
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
+
+      - name: Run native core test suite on Windows
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc native-core-tests
+
+      - name: Build and run platform-ladder filesystem workload
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder-fs
 
       # Presentation path on a source-owned guest: fill the PSP framebuffer, hand
       # it to sceDisplaySetFrameBuf and wait for vblank, once per frame. The other
