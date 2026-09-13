@@ -160,6 +160,9 @@ mutation; `out8`/`out9` report the valid destination tail and post-request
 guard where observable (`0xFFFFFFFF` otherwise); `out10` verifies the source
 prefix; `out11` is wall time; `out12` is the rejected boundary-allocation
 error; and `out13` is the runtime-discovered boundary block size.
+For an explicit `SKIP` setup record, `out5` carries the tail-probe result and
+`out6` carries the discovered block size instead of the post-call mutation
+fields.
 `status=PASS` means that the call returned and the scalar measurement
 completed; it does not mean that the observed DMA semantics match Nakagawa or
 close issue #23.
