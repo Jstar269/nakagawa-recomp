@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a5c1d8d36c536540adb7fa11357807b42161f3f083d5445fec77c186b5ec33d0"
+      "sha256": "fa741adeab5d9184ea8983e12e3110ae9b0c09f81e054ee35b1b1ff103904c9c"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -855,7 +855,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "691839214daa2a25e7acbf3851032dcfe718ab1c25d2cca1736f81cfa2904a32"
+      "sha256": "c4c300ab11b53858efed67d35a581eda54ee054987cd17a77530faf28cd16b71"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cf68b4b52cb098c1473a53f247f762c23d825abee2322b3934b048787ae669ae"
+      "sha256": "df7b80de41cc2b9ac9101456fd1de79f30d0a39646cf155636c7328896c33f08"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1107,7 +1107,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3e8f8ffaf6e464bfd656597280b5f375fcc92e18d26bffce832a2c627badee9c"
+      "sha256": "871609cb56bedbdddacb8ca4735e30c892053973756e6a41769e0f17b7c45e28"
     },
     {
       "path": "docs/research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md",
@@ -1134,7 +1134,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c7c3dd30b77776057799407ef7524fc7d3dacd74d89be5323df3ec7417cf30b4"
+      "sha256": "d08fc7cee9955769bf5cfa9c6c9c2578adbfa1ee8e2e6d59753f817814646c09"
     },
     {
       "path": "fixtures/cosim/README.md",

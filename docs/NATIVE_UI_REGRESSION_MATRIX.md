@@ -39,4 +39,3 @@ Before declaring any native player slice complete, verify:
 6. [ ] **Error Handling**: Missing or corrupt ISOs produce human-actionable error cards with stable error codes.
 7. [ ] **Automated Test Parity**: All unit tests in `tools/test_nk_core.py` and `interface` continue to pass.
 8. [ ] **Typography & Font Strategy**: Open-source UI fonts strictly follow the target usage profile (M PLUS Rounded 1c / Rubik / Nunito / Teko / Bebas Neue for arcade HUD; Inter / Roboto Flex for launcher & settings dialogs; JetBrains Mono / Intel One Mono for debug overlays & telemetry; Kosugi Maru / Zen Maru Gothic for Japanese CJK).
-
