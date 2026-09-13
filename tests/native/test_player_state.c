@@ -231,6 +231,173 @@ int main(void) {
     assert(launcher->is_game_running == false);
     free(launcher);
 
+    /* 9. Settings mutations validate and clamp: previously the settings
+     * screen drew preset buttons whose clicks were discarded, so this is
+     * the failing-before contract for the rehaul. */
+    printf("[PLAYER_STATE_TEST] Subtest 9: settings mutations validate\n");
+    fflush(stdout);
+    PlayerApp *settings = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(settings != NULL);
+    nk_library_init(&settings->library);
+    settings->settings.resolution_scale = 4;
+    settings->settings.fps_cap = 60;
+    settings->settings.master_volume = 80;
+    settings->settings.vsync = true;
+    settings->settings.fullscreen = false;
+
+    player_app_set_resolution_scale(settings, 2);
+    assert(settings->settings.resolution_scale == 2);
+    player_app_set_resolution_scale(settings, 7);
+    assert(settings->settings.resolution_scale == 2);
+    player_app_set_resolution_scale(settings, 0);
+    assert(settings->settings.resolution_scale == 2);
+    player_app_cycle_resolution_scale(settings, 1);
+    assert(settings->settings.resolution_scale == 4);
+    player_app_cycle_resolution_scale(settings, -1);
+    assert(settings->settings.resolution_scale == 2);
+
+    player_app_set_fps_cap(settings, 30);
+    assert(settings->settings.fps_cap == 30);
+    player_app_set_fps_cap(settings, 999);
+    assert(settings->settings.fps_cap == 30);
+    player_app_cycle_fps_cap(settings, 1);
+    assert(settings->settings.fps_cap == 60);
+    player_app_cycle_fps_cap(settings, 1);
+    assert(settings->settings.fps_cap == 0);
+    player_app_cycle_fps_cap(settings, 1);
+    assert(settings->settings.fps_cap == 30);
+
+    player_app_toggle_vsync(settings);
+    assert(settings->settings.vsync == false);
+    player_app_toggle_vsync(settings);
+    assert(settings->settings.vsync == true);
+    player_app_toggle_fullscreen(settings);
+    assert(settings->settings.fullscreen == true);
+    player_app_toggle_fullscreen(settings);
+    assert(settings->settings.fullscreen == false);
+    assert(settings->settings.reduce_motion == false);
+    player_app_toggle_reduce_motion(settings);
+    assert(settings->settings.reduce_motion == true);
+    player_app_toggle_reduce_motion(settings);
+    assert(settings->settings.reduce_motion == false);
+
+    player_app_adjust_volume(settings, 5);
+    assert(settings->settings.master_volume == 85);
+    player_app_adjust_volume(settings, 1000);
+    assert(settings->settings.master_volume == 100);
+    player_app_adjust_volume(settings, -2000);
+    assert(settings->settings.master_volume == 0);
+    free(settings);
+
+    /* 10. Focus clamps into range so keyboard/gamepad activation can never
+     * target a control the view no longer draws. */
+    printf("[PLAYER_STATE_TEST] Subtest 10: focus clamps\n");
+    fflush(stdout);
+    PlayerApp *focus = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(focus != NULL);
+    focus->focus_index = 0;
+    player_app_move_focus(focus, 5, 3);
+    assert(focus->focus_index == 2);
+    player_app_move_focus(focus, -10, 3);
+    assert(focus->focus_index == 0);
+    player_app_move_focus(focus, 1, 0);
+    assert(focus->focus_index == 0);
+    player_app_move_focus(NULL, 1, 3);
+    free(focus);
+
+    /* 11. Library removal touches only the entry, never the ISO file, and
+     * invalid indices are refused before any save. */
+    printf("[PLAYER_STATE_TEST] Subtest 11: library removal is entry-only\n");
+    fflush(stdout);
+    assert(player_app_remove_game(NULL, 0) == false);
+    assert(player_app_remove_game(app, -1) == false);
+    assert(player_app_remove_game(app, NK_MAX_GAMES + 100) == false);
+    {
+        PlayerApp *removal = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(removal != NULL);
+        nk_library_init(&removal->library);
+        /* Redirect persistence at a disposable file: remove saves, and the
+         * test must never write the user's real library. */
+        char rcache[512];
+        assert(nk_platform_get_path(NK_PATH_CACHE, rcache, sizeof(rcache)));
+        char rpath_tmp[1024];
+        snprintf(rpath_tmp, sizeof(rpath_tmp),
+                 "%s%cpr177_rm.json", rcache, nk_platform_path_separator());
+        assert(strlen(rpath_tmp) < sizeof(removal->library.library_path));
+        strcpy(removal->library.library_path, rpath_tmp);
+        remove(removal->library.library_path);
+        seed_entry(&entry, "RMV00001", "First");
+        assert(nk_library_add_or_update(&removal->library, &entry) == NK_OK);
+        seed_entry(&entry, "RMV00002", "Second");
+        assert(nk_library_add_or_update(&removal->library, &entry) == NK_OK);
+        player_app_sync_library(removal);
+        assert(removal->game_count == 2);
+        removal->selected_game_index = 1;
+        assert(player_app_remove_game(removal, 0) == true);
+        assert(removal->game_count == 1);
+        assert(strcmp(removal->games[0].disc_id, "RMV00002") == 0);
+        assert(player_app_find_game_by_disc_id(removal, "RMV00001") == -1);
+        assert(player_app_remove_game(removal, 5) == false);
+        remove(removal->library.library_path);
+        free(removal);
+    }
+
+    /* 12. Focus-stop counts match the buttons each view draws, so the
+     * event loop can never park focus on a control that does not exist. */
+    printf("[PLAYER_STATE_TEST] Subtest 12: focus stops match drawn buttons\n");
+    fflush(stdout);
+    {
+        PlayerApp *stops = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(stops != NULL);
+        nk_library_init(&stops->library);
+        stops->window_width = 1280;
+        stops->window_height = 720;
+        assert(player_app_focus_count(NULL) == 1);
+
+        stops->active_view = VIEW_LIBRARY;
+        stops->game_count = 0;
+        assert(player_app_focus_count(stops) == 1); /* empty: add only */
+
+        seed_entry(&entry, "FCS00001", "Unprepared");
+        entry.is_prepared = false;
+        stops->games[0] = entry;
+        stops->game_count = 1;
+        stops->selected_game_index = 0;
+        assert(player_app_focus_count(stops) == 2); /* add + remove */
+
+        stops->games[0].is_prepared = true;
+        assert(player_app_focus_count(stops) == 3); /* play + add + remove */
+
+        stops->is_game_running = true;
+        assert(player_app_focus_count(stops) == 3); /* stop + add + remove */
+
+        /* Overflow adds the two paging stops. */
+        stops->window_width = 640;
+        assert(player_app_visible_library_cards(stops) == 2);
+        stops->game_count = 1;
+        assert(player_app_focus_count(stops) == 3);
+        seed_entry(&entry, "FCS00002", "Second");
+        stops->games[1] = entry;
+        seed_entry(&entry, "FCS00003", "Third");
+        stops->games[2] = entry;
+        stops->game_count = 3;
+        assert(player_app_focus_count(stops) == 5);
+
+        stops->active_view = VIEW_INSPECTING;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_SUPPORTED_TITLE;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_UNSUPPORTED_TITLE;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_PREPARING;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_SETTINGS;
+        assert(player_app_focus_count(stops) == 13);
+        stops->active_view = VIEW_ERROR;
+        assert(player_app_focus_count(stops) == 1);
+        free(stops);
+    }
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     return 0;

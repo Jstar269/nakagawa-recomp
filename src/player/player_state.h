@@ -70,6 +70,7 @@ typedef struct {
     bool vsync;
     int fps_cap;          /* 30, 60, 0 = uncapped */
     int master_volume;    /* 0..100 */
+    bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     char controller_name[64];
     bool controller_connected;
     char save_directory[MAX_PATH_LEN];
@@ -128,11 +129,27 @@ typedef struct {
 /* State management API */
 void player_app_init(PlayerApp *app);
 bool player_app_add_game(PlayerApp *app, const GameRecord *game);
+bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
+
+/* Settings mutations. All values are validated and clamped; invalid inputs
+ * are ignored so a stray click or keypress can never corrupt launch config.
+ * Settings are in-memory launch preferences in this build (applied to the
+ * child runtime via nk_launch_prepare_session); they are not yet persisted
+ * to disk. */
+void player_app_set_resolution_scale(PlayerApp *app, int scale);
+void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
+void player_app_set_fps_cap(PlayerApp *app, int cap);
+void player_app_cycle_fps_cap(PlayerApp *app, int direction);
+void player_app_toggle_fullscreen(PlayerApp *app);
+void player_app_toggle_vsync(PlayerApp *app);
+void player_app_toggle_reduce_motion(PlayerApp *app);
+void player_app_adjust_volume(PlayerApp *app, int delta);
+void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
 /* Index of the library entry carrying this disc ID, or -1 if there is none.
    nk_library_add_or_update updates an existing record IN PLACE, so the entry
@@ -145,6 +162,12 @@ void player_app_move_selection(PlayerApp *app, int delta);
 
 /* How many library cards fit in the current window, at least one. */
 int player_app_visible_library_cards(const PlayerApp *app);
+
+/* How many keyboard/gamepad focus stops the current view offers, at least
+ * one. Pure state logic (no SDL): the renderer draws its buttons in this
+ * exact order, so the event loop can clamp focus_index and tests can pin
+ * the contract without opening a window. */
+int player_app_focus_count(const PlayerApp *app);
 
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
