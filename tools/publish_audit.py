@@ -128,7 +128,7 @@ REQUIRED_PATHS = (
     "AGENTS.md",
 )
 SOURCE_EXTENSIONS = {".c", ".h", ".py", ".sh"}
-KEY_NAME = re.compile(r"(?:vkey|seed|iv|secret|token)", re.IGNORECASE)
+KEY_NAME = re.compile(r"(?:kirk|amctrl|pgd|key|vkey|seed|iv|secret|token)", re.IGNORECASE)
 HEX_16_BYTES = re.compile(r"^[0-9a-fA-F]{32}$")
 
 WINDOWS_USER_PATH = re.compile(
@@ -850,27 +850,170 @@ def _assigned_literal(node: ast.AST | None) -> str | None:
     return None
 
 
-def private_key_assignment_lines(text: str) -> list[int]:
+def _is_16_byte_array_text(body: str) -> bool:
+    tokens = [t.strip() for t in body.split(",") if t.strip()]
+    if len(tokens) != 16:
+        return False
+    for t in tokens:
+        if t.startswith(("0x", "0X")):
+            try:
+                val = int(t, 16)
+                if not (0 <= val <= 255):
+                    return False
+            except ValueError:
+                return False
+        elif t.isdigit():
+            try:
+                val = int(t, 10)
+                if not (0 <= val <= 255):
+                    return False
+            except ValueError:
+                return False
+        else:
+            return False
+    return True
+
+
+def _strip_c_comments(code: str) -> str:
+    def replacer(match: re.Match[str]) -> str:
+        s = match.group(0)
+        if s.startswith("/"):
+            return "".join("\n" if c == "\n" else " " for c in s)
+        return s
+
+    pattern = re.compile(
+        r"//.*?$|/\*.*?\*/|'(?:\\.|[^\\'])*'|\"(?:\\.|[^\\\"])*\"",
+        re.DOTALL | re.MULTILINE,
+    )
+    return re.sub(pattern, replacer, code)
+
+
+def _c_key_assignment_lines(code: str) -> list[int]:
+    clean = _strip_c_comments(code)
+    lines: list[int] = []
+
+    # 1. Macro definitions: #define NAME "32hex" or #define NAME { 16 bytes }
+    define_pat = re.compile(
+        r"^[ \t]*#[ \t]*define[ \t]+([a-zA-Z0-9_]+)[ \t]+(?:(?:"
+        r'"([0-9a-fA-F]{32})"'
+        r")|\{([^}]+)\})",
+        re.MULTILINE,
+    )
+    for m in define_pat.finditer(clean):
+        name = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(name):
+            if hex_val:
+                lines.append(clean[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(clean[: m.start()].count("\n") + 1)
+
+    # 2. Variable declarations/assignments:
+    var_pat = re.compile(
+        r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*(?:(?:"
+        r'"([0-9a-fA-F]{32})"'
+        r")|\{([^}]+)\})",
+        re.MULTILINE,
+    )
+    for m in var_pat.finditer(clean):
+        name = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(name):
+            if hex_val:
+                lines.append(clean[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(clean[: m.start()].count("\n") + 1)
+
+    return sorted(set(lines))
+
+
+def _json_key_assignment_lines(text: str) -> list[int]:
+    lines: list[int] = []
+    json_pat = re.compile(
+        r'"([a-zA-Z0-9_]+)"\s*:\s*(?:(?:"([0-9a-fA-F]{32})")|\[([^\]]+)\])',
+        re.MULTILINE,
+    )
+    for m in json_pat.finditer(text):
+        key = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(key):
+            if hex_val:
+                lines.append(text[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(text[: m.start()].count("\n") + 1)
+    return sorted(set(lines))
+
+
+def _py_key_assignment_lines(text: str) -> list[int]:
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return []
-    lines = []
+    lines: list[int] = []
     for node in ast.walk(tree):
         targets: list[ast.expr] = []
         value: ast.AST | None = None
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
             value = node.value
+
+        is_key_value = False
         literal = _assigned_literal(value)
-        if literal is None or HEX_16_BYTES.fullmatch(literal) is None:
+        if literal is not None and HEX_16_BYTES.fullmatch(literal) is not None:
+            is_key_value = True
+        elif isinstance(value, ast.Constant) and isinstance(value.value, bytes) and len(value.value) == 16:
+            is_key_value = True
+        elif isinstance(value, (ast.List, ast.Tuple)) and len(value.elts) == 16:
+            if all(
+                isinstance(e, ast.Constant) and isinstance(e.value, int) and 0 <= e.value <= 255
+                for e in value.elts
+            ):
+                is_key_value = True
+        elif (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in ("bytes", "bytearray")
+        ):
+            if value.args and isinstance(value.args[0], (ast.List, ast.Tuple)) and len(value.args[0].elts) == 16:
+                if all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, int) and 0 <= e.value <= 255
+                    for e in value.args[0].elts
+                ):
+                    is_key_value = True
+
+        if not is_key_value:
             continue
+
         for target in targets:
             if isinstance(target, ast.Name) and KEY_NAME.search(target.id):
                 assert isinstance(node, (ast.Assign, ast.AnnAssign))
                 lines.append(node.lineno)
                 break
     return sorted(set(lines))
+
+
+def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
+    ext = ""
+    if filename:
+        ext = PurePosixPath(filename).suffix.lower()
+    if ext in {".c", ".h"}:
+        return _c_key_assignment_lines(text)
+    if ext == ".json":
+        return _json_key_assignment_lines(text)
+    if ext == ".py":
+        return _py_key_assignment_lines(text)
+
+    # Fallback when filename is omitted: try Python parser, then C, then JSON
+    py_lines = _py_key_assignment_lines(text)
+    if py_lines:
+        return py_lines
+    c_lines = _c_key_assignment_lines(text)
+    if c_lines:
+        return c_lines
+    return _json_key_assignment_lines(text)
 
 
 # Byte-exact third-party import trees under src/. Their files are copied
@@ -1881,8 +2024,8 @@ def audit_entries_with_semantics(
             if _spdx_required(rel) and "SPDX-License-Identifier:" not in "\n".join(text_str.splitlines()[:8]):
                 entry_findings.append(Finding("SPDX", rel, "missing SPDX identifier in first eight lines"))
 
-            if PurePosixPath(rel).suffix.lower() == ".py":
-                for line in private_key_assignment_lines(text_str):
+            if PurePosixPath(rel).suffix.lower() in {".c", ".h", ".py", ".json"}:
+                for line in private_key_assignment_lines(text_str, filename=rel):
                     entry_findings.append(Finding("PRIVATE_KEY", rel, f"direct 16-byte key literal at line {line}"))
 
             if (
