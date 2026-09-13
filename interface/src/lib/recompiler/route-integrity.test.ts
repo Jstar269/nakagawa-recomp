@@ -189,23 +189,15 @@ test("no-op PATCH on a corrupt profile still returns metadata", async () => {
 // ---- Child-process execution hygiene tests (#188 Finding 6) ----------------
 
 test("runSubprocess: executes command and captures stdout/stderr", async () => {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "cmd.exe" : "sh";
-  const args = isWin ? ["/c", "echo hello-world"] : ["-c", "echo hello-world"];
-
-  const res = await runSubprocess(cmd, args);
+  const res = await runSubprocess(process.execPath, ["-e", "console.log('hello-world')"]);
   assert.equal(res.exitCode, 0);
   assert.ok(res.stdout.includes("hello-world"));
 });
 
 test("runSubprocess: kills child on timeoutMs expiry", async () => {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "powershell.exe" : "sleep";
-  const args = isWin ? ["-NoProfile", "-Command", "Start-Sleep -Seconds 5"] : ["5"];
-
   await assert.rejects(
     async () => {
-      await runSubprocess(cmd, args, { timeoutMs: 300 });
+      await runSubprocess(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { timeoutMs: 300 });
     },
     (err: unknown) => {
       assert.ok(err instanceof SubprocessError);
@@ -218,15 +210,9 @@ test("runSubprocess: kills child on timeoutMs expiry", async () => {
 });
 
 test("runSubprocess: throws when maxBuffer is exceeded", async () => {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "cmd.exe" : "sh";
-  const args = isWin
-    ? ["/c", "echo " + "A".repeat(200)]
-    : ["-c", "printf '%0.sA' {1..200}"];
-
   await assert.rejects(
     async () => {
-      await runSubprocess(cmd, args, { maxBuffer: 50 });
+      await runSubprocess(process.execPath, ["-e", "process.stdout.write('A'.repeat(200))"], { maxBuffer: 50 });
     },
     (err: unknown) => {
       assert.ok(err instanceof SubprocessError);
@@ -239,15 +225,11 @@ test("runSubprocess: throws when maxBuffer is exceeded", async () => {
 
 test("runSubprocess: aborts child immediately on AbortSignal", async () => {
   const controller = new AbortController();
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "powershell.exe" : "sleep";
-  const args = isWin ? ["-NoProfile", "-Command", "Start-Sleep -Seconds 5"] : ["5"];
-
   setTimeout(() => controller.abort(), 100);
 
   await assert.rejects(
     async () => {
-      await runSubprocess(cmd, args, { signal: controller.signal });
+      await runSubprocess(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { signal: controller.signal });
     },
     (err: unknown) => {
       assert.ok(err instanceof SubprocessError);
@@ -259,22 +241,16 @@ test("runSubprocess: aborts child immediately on AbortSignal", async () => {
 });
 
 test("runSubprocess: allowNonZeroExit returns exit code instead of throwing", async () => {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "cmd.exe" : "sh";
-  const args = isWin ? ["/c", "exit 42"] : ["-c", "exit 42"];
-
-  const res = await runSubprocess(cmd, args, { allowNonZeroExit: true });
+  const res = await runSubprocess(process.execPath, ["-e", "process.exit(42)"], { allowNonZeroExit: true });
   assert.equal(res.exitCode, 42);
 });
 
 test("runSubprocess: drains large stdio without deadlock", async () => {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "powershell.exe" : "sh";
-  const args = isWin
-    ? ["-NoProfile", "-Command", "1..2000 | ForEach-Object { 'chunk-' + $_ }"]
-    : ["-c", "for i in $(seq 1 2000); do echo chunk-$i; done"];
-
-  const res = await runSubprocess(cmd, args, { maxBuffer: 1024 * 1024 });
+  const res = await runSubprocess(
+    process.execPath,
+    ["-e", "for (let i = 1; i <= 2000; i++) console.log('chunk-' + i)"],
+    { maxBuffer: 1024 * 1024 }
+  );
   assert.equal(res.exitCode, 0);
   assert.ok(res.stdout.includes("chunk-2000"));
 });
@@ -324,7 +300,9 @@ test("safeWalkDirectory: traverses and enforces depth / file budgets", () => {
 // ---- Incremental log streaming tests (#187 Finding 3) -----------------------
 
 test("readLogSince: streaming reads with byte offsets and bounded memory", () => {
-  const logFile = path.join(process.cwd(), "prisma", ".test", `stream-log-${randomUUID()}.log`);
+  const testDir = path.join(process.cwd(), "prisma", ".test");
+  mkdirSync(testDir, { recursive: true });
+  const logFile = path.join(testDir, `stream-log-${randomUUID()}.log`);
   writeFileSync(logFile, "line 1\nline 2\nline 3\n", "utf8");
 
   try {
