@@ -222,7 +222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "450b0e5b2efb02f0c0b8aaab5acdc72b7ff6bb39ddd39e6bdbfb1750c5d11654"
+      "sha256": "8e90e659f55c809e579ea3e1991c89ccc6bc3202f8332add8d014072ee2ce700"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a3c227401b62e2ab28a2bcc5dddddde027aef8863d3b06cea548896b783ef21e"
+      "sha256": "401b56b177b806e3993b5e32ba59a9e96515ea8bf21a179f35414eaf42e551cd"
     },
     {
       "path": "NOTICE.md",
@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fa741adeab5d9184ea8983e12e3110ae9b0c09f81e054ee35b1b1ff103904c9c"
+      "sha256": "73aa63a8da4eb9df2e04645869e93dbfced9a487699d42ac773cb04105850271"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cdab1b81a36346bafb59e301df224d6a6439e6c8ca229b97027a705a260d5c3e"
+      "sha256": "f7df09425e86cff2f9e0f367337f769c34a857fb41b0886cb8dec7669097dfab"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -855,7 +855,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c4c300ab11b53858efed67d35a581eda54ee054987cd17a77530faf28cd16b71"
+      "sha256": "501d1c57c9404addedab27c1f8107f25bcb4242bf84feaba0fa9b555abb6bd8b"
     },
     {
       "path": "docs/OSPS_BASELINE.md",
@@ -3351,10 +3351,10 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-000",
         "evidence_tier": "S",
-        "generator": "project-owned generator; recomputable from tracked public inputs",
-        "source_family": "tracked public project inputs"
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
       },
-      "sha256": "52acfa0ebc3b184079f965c390f3a1d4c26f0278046018567ba748fa2148a02b"
+      "sha256": "adb94f9e6a6ef28d370f8602dc332ecf593907ac9cf5211c6ddcb17f7623028d"
     },
     {
       "path": "src/core/generated/nk_title_catalog.h",
@@ -3363,10 +3363,10 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-001",
         "evidence_tier": "S",
-        "generator": "project-owned generator; recomputable from tracked public inputs",
-        "source_family": "tracked public project inputs"
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
       },
-      "sha256": "2cc127680e06389c50abe76c754e7b2babf9ae3565380cb43b415b2213bd72d2"
+      "sha256": "28d6e6cef6f631c09ca577560a30fe1db20cb617c232f31479010464d68c66ca"
     },
     {
       "path": "src/core/nk_iso.c",
@@ -3378,7 +3378,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec0f8fbbb68b759a87f0fb36e67d3342e4ebb1a184d1c4e6e8b6686fcc9e24fb"
+      "sha256": "6bf5cdae590f238c71bfb5b18b70b8138f2d91ee3af6198e473d8252fdc16f7d"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -3390,7 +3390,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31ca43f84343cf7deaa1ea16531fe23f6172b3aeb375a0cac7955d7d94d5326b"
+      "sha256": "a876ea5ad51f31b527aff662c8464d25cd7a8edd03d1e31de02f5c2f329b24c9"
     },
     {
       "path": "src/core/nk_launch.c",
@@ -3402,7 +3402,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "11642e9763e7b28ee3bba3d6b218baf47d4252ae288515268f4f72beee5a30c1"
+      "sha256": "181ede79eda3e0089bbf09b54bf9aaeb2eba16f0b35ff94525e883acb65df2b0"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3414,7 +3414,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "810196289fe252dc6794908409f585009d020b721a28797e6575d87d5d22ebb4"
+      "sha256": "1c0884d6880e6d2f41c7e4105635fed1c9b4371df7b5da76cc3b41f4dec7ec36"
     },
     {
       "path": "src/core/nk_library.c",
@@ -3426,7 +3426,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "28d0cc60a975944762a3ee9757820290e0f0d8d11630b41ba1f52f1cc65ab97d"
+      "sha256": "b9bb0d6eef672fb67658253cfe53c1fa183a074a9ee45661385326fdcb3de2fc"
     },
     {
       "path": "src/core/nk_library.h",
@@ -3486,7 +3486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd9af12ad844c230e3a4c178ba69ef41c09806a1a399247b68cdf6741841aacb"
+      "sha256": "a352f908df38a2a87fb65fb3e9853436d7771c33ebb7e25b42321f743ce49221"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -3510,7 +3510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0ca051bc852663b401f4f307ea35f7e168bdb8ff585d45ad3fe0949722ac551d"
+      "sha256": "d3b9e86ebe1ccd0e84110c7a61a41f2291345004a993d3cb0d8616f8e75ca853"
     },
     {
       "path": "src/core/nk_xb.c",
@@ -3570,7 +3570,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7706b0bbae944121434b831278df3e7ad5eaa93ea5971027cebfdcd98f18d773"
+      "sha256": "740b86c609039dff2cfa9e08401d0ab77cdbf37f6b31ecf1c76a2f29b7d1d43f"
     },
     {
       "path": "src/player/player_state.c",
@@ -3582,7 +3582,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b879f4846c45e726393d4845dda18d53925e870302c7c2544a31d72ec894f4ee"
+      "sha256": "57d97d98b841dbce02d11f12a6fa1b9c212acd9fc041b2ebd3d3e92ebd6d787f"
     },
     {
       "path": "src/player/player_state.h",
@@ -3594,7 +3594,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cef499c63381dae6247b20641fe4cb10ecf70113da2664ec2efa642b5bdf4cdd"
+      "sha256": "e241343b27074e6e4f04bf1ec6819d12a2b5ea0ff49ff9ee88162c57dd1da8e9"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -3630,7 +3630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a66db7c6a23a1f40a7c4bc4147daf4274b41cd5afdb702b71185c3fa0c0bb96"
+      "sha256": "fbdf1c5042c4ecfc0f34ce9da3e8116598b45498b81b95216fd88d4451d2b5e0"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -6200,7 +6200,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4582f48113436cdd1e3ff3d8a3c502b8860c0abd8cc199afcb349066ff691b2d"
+      "sha256": "b02ba562b23a3c7ca93f214373a31af6e60e318290039fe1a0dce9e2d39dbae5"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -6236,7 +6236,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7747c11784e992d5b6b3e9caf273973ac2f7017634ace07af41112260890567"
+      "sha256": "e2ab7f71d45f7a5c2b620c2e853fabba5ed699932254074736d8fb91701ca512"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -7047,7 +7047,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2cb47d07c399a99c6bc2a6d37c99e4e7f803d8df11dae01546073969aa0a165d"
+      "sha256": "227adda63819240cfc7ab2479fb52892c7a70e7c923684d0384c2bef9d43faf0"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -8805,7 +8805,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae597006b7631c789e7712151b45ac78cab7bb77db426a6427eb3372479da417"
+      "sha256": "dba47563bec4fe0c160d0a53c5376cf7a07fd842ddad123f91b0b0b96dc733aa"
     },
     {
       "path": "tools/title_codegen_plan.py",
@@ -9019,20 +9019,37 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd590244a17bb7be41661c8392d5d4e557deb2193351d2e744750b0e3fe228fa"
+      "sha256": "5ebecfddd9ec6401d53ddabee4fa5954b3596e577bdce7f390372fbaa12a6acf"
     }
   ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "dbcc2611c98b3b47d98559da7800b3ef004fa652",
-    "candidate_tree": "8c80251cc630a47bbabbc1c8a9ce4eee49e98af8",
-    "admitted_paths": [
-      "src/core/nk_xb.c",
-      "src/core/nk_xb.h",
-      "src/player/setup_staging.c",
-      "src/player/setup_staging.h",
-      "tests/native/test_xb_parser.c"
-    ],
-    "authority_sha256": "b51edaa6db654bf583ecc29ee4d8a663a669f1d9059f733b48bfe63b57e83d6c"
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "95c459df23f3a3c6155d1275dc5238924996ac9d",
+    "candidate_tree": "2dbf5e47a51c238bcedaee19322280a6bd1afaed",
+    "refreshed_paths": [
+      "CMakeLists.txt",
+      "Makefile",
+      "docs/NATIVE_PLAYER_ARCHITECTURE.md",
+      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
+      "docs/NATIVE_UI_REGRESSION_MATRIX.md",
+      "src/core/generated/nk_title_catalog.c",
+      "src/core/generated/nk_title_catalog.h",
+      "src/core/nk_iso.c",
+      "src/core/nk_iso.h",
+      "src/core/nk_launch.c",
+      "src/core/nk_launch.h",
+      "src/core/nk_library.c",
+      "src/core/nk_title_manifest.c",
+      "src/core/nk_types.h",
+      "src/player/main.c",
+      "src/player/player_state.c",
+      "src/player/player_state.h",
+      "src/player/ui_renderer.c",
+      "tests/native/test_launch_resolution.c",
+      "tests/native/test_player_state.c",
+      "tools/nk_core/library.py",
+      "tools/title_catalog_codegen.py",
+      "tools/xb_probe.py"
+    ]
   }
 }
