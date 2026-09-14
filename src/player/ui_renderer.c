@@ -120,6 +120,28 @@ static bool ui_font_file_exists(const char *path) {
  * guest semantics). First existing file wins. */
 static bool ui_font_find_system_font(char *out_path, size_t out_len) {
 #if defined(_WIN32) || defined(_WIN64)
+    /* Check user-provided open-source fonts first (%LOCALAPPDATA%\nakagawa\fonts\),
+     * followed by Windows system fonts (%WINDIR%\Fonts\).
+     * Open-source font guidelines:
+     * - Native UI & Setup Wizard: Inter, Roboto Flex, Rubik (SIL OFL)
+     * - In-Game HUD: M PLUS Rounded 1c, Rubik, Nunito (SIL OFL)
+     * - Japanese Text: Kosugi Maru, Zen Maru Gothic (SIL OFL) */
+    static const char *kOpenSourceFiles[] = {
+        "Inter-Regular.ttf", "Inter.ttf",
+        "RobotoFlex-Regular.ttf", "Roboto-Regular.ttf",
+        "Rubik-Regular.ttf", "Rubik.ttf",
+        "MPLUSRounded1c-Regular.ttf", "Nunito-Regular.ttf",
+        "KosugiMaru-Regular.ttf",
+        NULL
+    };
+    const char *appdata = getenv("LOCALAPPDATA");
+    if (appdata && *appdata) {
+        for (int i = 0; kOpenSourceFiles[i]; i++) {
+            snprintf(out_path, out_len, "%s\\nakagawa\\fonts\\%s", appdata, kOpenSourceFiles[i]);
+            if (ui_font_file_exists(out_path)) return true;
+        }
+    }
+
     const char *windir = getenv("WINDIR");
     char base[MAX_PATH_LEN];
     if (windir && *windir) {
@@ -127,6 +149,11 @@ static bool ui_font_find_system_font(char *out_path, size_t out_len) {
     } else {
         snprintf(base, sizeof(base), "C:\\Windows");
     }
+    for (int i = 0; kOpenSourceFiles[i]; i++) {
+        snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kOpenSourceFiles[i]);
+        if (ui_font_file_exists(out_path)) return true;
+    }
+
     static const char *kFiles[] = { "segoeui.ttf", "tahoma.ttf", "arial.ttf", NULL };
     for (int i = 0; kFiles[i]; i++) {
         snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kFiles[i]);
@@ -1007,19 +1034,15 @@ static void render_empty_library(SDL_Renderer *ren, PlayerApp *app, const UiInpu
     draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "PSP GAME LIBRARY", COLOR_BLUE);
     draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Your Games, Recompiled for PC", 2.2f, COLOR_TEXT_WHITE);
     float body_y = draw_text_wrapped(ren, card_x + 32.0f, card_y + 124.0f, card_w - 64.0f,
-                                     "No games currently loaded in library.\nSelect your lawfully obtained PSP game ISO to begin.",
+                                     "No games currently loaded in library.\nLaunch the First-Time Setup Wizard to configure and import your PSP game.",
                                      1.2f, COLOR_TEXT_MUTED, 4);
     draw_text(ren, card_x + 32.0f, body_y + 4.0f, "Supports registered PSP titles and synthetic test fixtures.", 1.0f, COLOR_TEXT_DIM);
 
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 240.0f, 260.0f, 48.0f, "+ ADD PSP GAME ISO", true, in, focused)) {
-        /* Ask for the host file dialog. Switching straight to VIEW_INSPECTING
-           left mouse-only users on a screen with no way to choose a file and
-           no visible hint that the undocumented O shortcut exists. The view
-           change now happens in the dialog callback, once a file is chosen. */
-        app->request_file_picker = true;
+    if (draw_button_focused(ren, card_x + 32.0f, card_y + 240.0f, 260.0f, 48.0f, "START SETUP WIZARD", true, in, focused)) {
+        player_app_start_setup_wizard(app);
     }
-    draw_text(ren, card_x + 32.0f, card_y + 300.0f, "Shortcut: O  ·  or press Enter", 1.0f, COLOR_TEXT_DIM);
+    draw_text(ren, card_x + 32.0f, card_y + 300.0f, "Enter: Start Wizard  ·  Shortcut: O (Add ISO directly)", 1.0f, COLOR_TEXT_DIM);
 }
 
 /* --- View: Loaded Game Library --- */
@@ -1055,8 +1078,12 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     draw_rounded_fill(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
-    /* Status Pills: disc ID second pill is elided on narrow cards. */
-    draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, status_label(game->status), COLOR_EMERALD);
+    /* Status Pills: a successful staging transaction is distinct from runtime
+     * preparation. The card must expose that useful intermediate state without
+     * claiming that a recompiled child is already available. */
+    const char *card_status = (game->assets_staged && !game->is_prepared)
+        ? "ASSETS STAGED" : status_label(game->status);
+    draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status, COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1107,11 +1134,24 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                 : "Keyboard Ready";
             draw_text_ellipsized(ren, hero_x + 48.0f + col_w, rail_y + 32.0f, ctrl_line, 1.0f, col_w - 16.0f, COLOR_TEXT_WHITE);
         }
-        draw_text(ren, hero_x + 48.0f + col_w * 2.0f, rail_y + 12.0f, "SAVE DATA", 0.9f, COLOR_TEXT_DIM);
+        draw_text(ren, hero_x + 48.0f + col_w * 2.0f,
+                  rail_y + 12.0f, game->assets_staged ? "STAGED ASSETS" : "SAVE DATA",
+                  0.9f, COLOR_TEXT_DIM);
         {
-            char save_line[64];
-            snprintf(save_line, sizeof(save_line), "Last played: %s", game->last_played[0] ? game->last_played : "Never");
-            draw_text_ellipsized(ren, hero_x + 48.0f + col_w * 2.0f, rail_y + 32.0f, save_line, 1.0f, col_w - 16.0f, COLOR_TEXT_WHITE);
+            char save_line[128];
+            if (game->assets_staged) {
+                snprintf(save_line, sizeof(save_line),
+                         "Assets: %u · Audio: %u · Visual: %u",
+                         (unsigned)game->extracted_asset_count,
+                         (unsigned)game->extracted_audio_count,
+                         (unsigned)game->extracted_visual_count);
+            } else {
+                snprintf(save_line, sizeof(save_line), "Last played: %s",
+                         game->last_played[0] ? game->last_played : "Never");
+            }
+            draw_text_ellipsized(ren, hero_x + 48.0f + col_w * 2.0f,
+                                 rail_y + 32.0f, save_line, 1.0f,
+                                 col_w - 16.0f, COLOR_TEXT_WHITE);
         }
     } else {
         char spec_line[128];
@@ -1119,9 +1159,20 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                  app->settings.controller_connected ? "Gamepad" : "Keyboard");
         draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 12.0f, spec_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_WHITE);
         {
-            char save_line[64];
-            snprintf(save_line, sizeof(save_line), "Last played: %s", game->last_played[0] ? game->last_played : "Never");
-            draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 34.0f, save_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_MUTED);
+            char save_line[128];
+            if (game->assets_staged) {
+                snprintf(save_line, sizeof(save_line),
+                         "Assets: %u · Audio: %u · Visual: %u · Layout: %u",
+                         (unsigned)game->extracted_asset_count,
+                         (unsigned)game->extracted_audio_count,
+                         (unsigned)game->extracted_visual_count,
+                         (unsigned)game->extracted_layout_count);
+            } else {
+                snprintf(save_line, sizeof(save_line), "Last played: %s",
+                         game->last_played[0] ? game->last_played : "Never");
+            }
+            draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 34.0f,
+                                 save_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_MUTED);
         }
         draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 56.0f, game->iso_path[0] ? game->iso_path : "No source path recorded",
                              0.9f, hero_w - 96.0f, COLOR_TEXT_DIM);
@@ -1142,6 +1193,12 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         focus++;
     } else if (game->is_prepared) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, "PLAY NOW", true, in, primary_focused)) {
+            player_app_launch_game(app, app->selected_game_index);
+        }
+        focus++;
+    } else if (game->assets_staged) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "LAUNCH PREPARED", true, in, primary_focused)) {
             player_app_launch_game(app, app->selected_game_index);
         }
         focus++;
@@ -1241,9 +1298,17 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                              app->games[i].title_name, 1.1f, title_avail,
                              COLOR_TEXT_WHITE);
         if (ch >= 110.0f) {
+            char status_line[96];
+            if (app->games[i].is_prepared) {
+                snprintf(status_line, sizeof(status_line), "Status: Prepared");
+            } else if (app->games[i].assets_staged) {
+                snprintf(status_line, sizeof(status_line), "Assets staged: %u",
+                         (unsigned)app->games[i].extracted_asset_count);
+            } else {
+                snprintf(status_line, sizeof(status_line), "Status: Not prepared");
+            }
             draw_text(ren, card_x + 12.0f, card_y + 104.0f,
-                      app->games[i].is_prepared ? "Status: Prepared" : "Status: Not prepared",
-                      0.9f, COLOR_TEXT_MUTED);
+                      status_line, 0.9f, COLOR_TEXT_MUTED);
         }
 
         if (in && in->mouse_clicked && is_point_in_rect((float)in->mouse_x, (float)in->mouse_y, card_x, card_y, cw, ch)) {
@@ -1798,6 +1863,358 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     }
 }
 
+/* --- View: Setup Wizard --- */
+static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+
+    float card_w = dialog_card_w(w, 800.0f);
+    float card_h = 480.0f;
+    if (card_h > h - 60.0f && h > 480.0f) card_h = h - 60.0f;
+    float card_x = centered_card_x(w, card_w);
+    if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
+    float card_y = cy - card_h * 0.5f;
+    if (card_y < 70.0f) card_y = 70.0f;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 12.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+
+    /* Wizard Step Breadcrumbs */
+    static const char *kSteps[] = { "1. Welcome", "2. Select Game", "3. Verify", "4. Fonts & System", "5. Ready" };
+    float bc_x = card_x + 32.0f;
+    float bc_y = card_y + 24.0f;
+    float bc_step_w = (card_w - 64.0f) / 5.0f;
+    for (int i = 0; i < 5; i++) {
+        bool current = (i == (int)app->wizard.step);
+        bool past = (i < (int)app->wizard.step);
+        SDL_Color pill_color = current ? COLOR_EMERALD : (past ? COLOR_BLUE : COLOR_TEXT_DIM);
+        if (card_w >= 660.0f) {
+            draw_badge(ren, bc_x + (float)i * bc_step_w, bc_y, kSteps[i], pill_color);
+        } else {
+            char step_num[16];
+            snprintf(step_num, sizeof(step_num), "STEP %d", i + 1);
+            draw_badge(ren, bc_x + (float)i * bc_step_w, bc_y, step_num, pill_color);
+        }
+    }
+
+    float content_y = card_y + 68.0f;
+    float btn_y = card_y + card_h - 60.0f;
+    int focus = 0;
+
+    switch (app->wizard.step) {
+        case WIZARD_STEP_WELCOME: {
+            draw_text(ren, card_x + 32.0f, content_y, "First-Time User Setup Wizard", 2.0f, COLOR_TEXT_WHITE);
+            draw_text_wrapped(ren, card_x + 32.0f, content_y + 40.0f, card_w - 64.0f,
+                              "Welcome to Nakagawa Recomp!\n\n"
+                              "This wizard configures your installation, verifies your game disc image, "
+                              "and tunes display and audio for native PC execution.\n\n"
+                              "What you will need:\n"
+                              " • Lawfully obtained PlayStation Portable game ISO (e.g. Hot Shots Tennis: Get a Grip)\n"
+                              " • Gamepad (Xbox, PlayStation DualSense, Switch Pro) or keyboard controls\n"
+                              " • Modern GPU supporting Vulkan / Direct3D 12",
+                              1.1f, COLOR_TEXT_MUTED, 8);
+
+            bool get_started_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "GET STARTED", true, in, get_started_foc)) {
+                player_app_wizard_next(app);
+            }
+            bool skip_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 248.0f, btn_y, 160.0f, 44.0f, "SKIP TO LIBRARY", false, in, skip_foc)) {
+                player_app_wizard_cancel(app);
+            }
+            break;
+        }
+
+        case WIZARD_STEP_SELECT_GAME: {
+            draw_text(ren, card_x + 32.0f, content_y, "Select Game Disc Image", 2.0f, COLOR_TEXT_WHITE);
+            draw_text_wrapped(ren, card_x + 32.0f, content_y + 36.0f, card_w - 64.0f,
+                              "Select your lawfully obtained PSP game disc image (*.iso).\n"
+                              "Nakagawa Recomp will inspect the ISO filesystem, volume descriptors, and PARAM.SFO.",
+                              1.1f, COLOR_TEXT_MUTED, 3);
+
+            float box_y = content_y + 90.0f;
+            float box_h = 96.0f;
+            draw_rounded_fill(ren, card_x + 32.0f, box_y, card_w - 64.0f, box_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
+            draw_rounded_outline(ren, card_x + 32.0f, box_y, card_w - 64.0f, box_h, 8.0f, COLOR_CARD_BORDER);
+
+            if (app->inspecting_game.iso_path[0] != '\0') {
+                draw_badge(ren, card_x + 48.0f, box_y + 12.0f, "SELECTED ISO", COLOR_EMERALD);
+                char sz_str[48];
+                format_size(sz_str, sizeof(sz_str), app->inspecting_game.iso_size_bytes);
+                char detail_str[128];
+                snprintf(detail_str, sizeof(detail_str), "Size: %s · Disc ID: %s", sz_str,
+                         app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "Inspected");
+                draw_text(ren, card_x + 180.0f, box_y + 14.0f, detail_str, 1.0f, COLOR_TEXT_DIM);
+                draw_text_ellipsized(ren, card_x + 48.0f, box_y + 44.0f, app->inspecting_game.iso_path, 1.1f, card_w - 96.0f, COLOR_TEXT_WHITE);
+                draw_text(ren, card_x + 48.0f, box_y + 70.0f, app->wizard.status_message[0] ? app->wizard.status_message : "Ready to verify title.", 1.0f, COLOR_EMERALD);
+            } else {
+                draw_badge(ren, card_x + 48.0f, box_y + 16.0f, "NO FILE CHOSEN", COLOR_AMBER);
+                draw_text(ren, card_x + 48.0f, box_y + 50.0f, "Click 'Choose PSP Game ISO' or drag & drop an ISO file onto this window.", 1.1f, COLOR_TEXT_MUTED);
+            }
+
+            if (!app->wizard.iso_selected) {
+                bool browse_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 220.0f, 44.0f, "CHOOSE PSP GAME ISO", true, in, browse_foc)) {
+                    app->request_file_picker = true;
+                }
+                bool back_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 268.0f, btn_y, 100.0f, 44.0f, "BACK", false, in, back_foc)) {
+                    player_app_wizard_back(app);
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 384.0f, btn_y, 100.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            } else {
+                bool proceed_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 190.0f, 44.0f, "PROCEED TO VERIFY", true, in, proceed_foc)) {
+                    player_app_wizard_next(app);
+                }
+                bool diff_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 238.0f, btn_y, 200.0f, 44.0f, "CHOOSE DIFFERENT ISO", false, in, diff_foc)) {
+                    app->request_file_picker = true;
+                }
+                bool back_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 454.0f, btn_y, 90.0f, 44.0f, "BACK", false, in, back_foc)) {
+                    player_app_wizard_back(app);
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 560.0f, btn_y, 90.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            }
+            break;
+        }
+
+        case WIZARD_STEP_INSPECT_VERIFY: {
+            bool supported = app->wizard.extraction_complete ||
+                             app->inspecting_game.status == NK_STATUS_VERIFIED;
+            draw_text(ren, card_x + 32.0f, content_y,
+                      app->wizard.is_extracting ? "Extracting Game Assets" : "Title Verification & Asset Staging",
+                      2.0f, COLOR_TEXT_WHITE);
+
+            float panel_y = content_y + 40.0f;
+            float panel_h = app->wizard.is_extracting ? 190.0f : 160.0f;
+            draw_rounded_fill(ren, card_x + 32.0f, panel_y, card_w - 64.0f, panel_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
+            draw_rounded_outline(ren, card_x + 32.0f, panel_y, card_w - 64.0f, panel_h, 8.0f,
+                                 app->wizard.is_extracting ? COLOR_AMBER : (supported ? COLOR_EMERALD : COLOR_RED));
+
+            const char *verification_badge = supported ? "VERIFIED RELEASE" : "UNSUPPORTED TITLE";
+            SDL_Color verification_color = supported ? COLOR_EMERALD : COLOR_RED;
+            if (app->wizard.is_extracting) {
+                verification_badge = "EXTRACTING ASSETS";
+                verification_color = COLOR_AMBER;
+            } else if (app->wizard.extraction_complete) {
+                verification_badge = "ASSETS STAGED";
+            } else if (app->wizard.extraction_failed) {
+                verification_badge = "STAGING FAILED";
+                verification_color = COLOR_RED;
+            }
+            draw_badge(ren, card_x + 48.0f, panel_y + 16.0f, verification_badge, verification_color);
+            draw_badge(ren, card_x + 230.0f, panel_y + 16.0f, app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "UNKNOWN", COLOR_BLUE);
+
+            draw_text_ellipsized(ren, card_x + 48.0f, panel_y + 52.0f,
+                                 app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title",
+                                 2.0f, card_w - 96.0f, COLOR_TEXT_WHITE);
+
+            if (app->wizard.is_extracting) {
+                draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
+                          "The ISO is being copied into an isolated local staging tree.",
+                          1.0f, COLOR_TEXT_MUTED);
+            } else if (supported) {
+                draw_text_wrapped(ren, card_x + 48.0f, panel_y + 92.0f, card_w - 96.0f,
+                                  "Qualified in Nakagawa Title Catalog (Hot Shots Tennis / Minna no Tennis series).\n"
+                                  "Recompilation metadata, geometry mappings, and audio tables match this disc.",
+                                  1.0f, COLOR_TEXT_MUTED, 3);
+            } else {
+                draw_text_wrapped(ren, card_x + 48.0f, panel_y + 92.0f, card_w - 96.0f,
+                                  "This title is not registered in the native recompilation catalog.\n"
+                                  "Supported games include Hot Shots Tennis: Get a Grip (UCUS98701 / UCJS10103).",
+                                  1.0f, COLOR_AMBER, 3);
+            }
+
+            if (app->wizard.is_extracting) {
+                char progress_text[96];
+                snprintf(progress_text, sizeof(progress_text), "Extracted %d of %d files · %d%%",
+                         app->wizard.files_extracted, app->wizard.total_files,
+                         app->wizard.extraction_percent);
+                draw_text(ren, card_x + 48.0f, panel_y + 100.0f, progress_text,
+                          1.0f, COLOR_TEXT_WHITE);
+                draw_progress_bar(ren, card_x + 48.0f, panel_y + 124.0f,
+                                  card_w - 96.0f, 18.0f,
+                                  (float)app->wizard.extraction_percent);
+                draw_text_ellipsized(ren, card_x + 48.0f, panel_y + 154.0f,
+                                     app->wizard.extraction_current_file[0]
+                                         ? app->wizard.extraction_current_file
+                                         : "Preparing ISO payload...",
+                                     1.0f, card_w - 96.0f, COLOR_TEXT_DIM);
+
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 140.0f, 44.0f,
+                                        "CANCEL EXTRACTION", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            } else if (supported) {
+                const char *continue_label = app->wizard.extraction_complete
+                    ? "CONTINUE TO SETTINGS"
+                    : (app->wizard.extraction_failed ? "RETRY EXTRACTION" : "EXTRACT & CONTINUE");
+                bool cont_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 220.0f, 44.0f, continue_label, true, in, cont_foc)) {
+                    player_app_wizard_next(app);
+                }
+                bool back_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 268.0f, btn_y, 100.0f, 44.0f, "BACK", false, in, back_foc)) {
+                    player_app_wizard_back(app);
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 384.0f, btn_y, 100.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            } else {
+                bool diff_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 220.0f, 44.0f, "CHOOSE DIFFERENT ISO", true, in, diff_foc)) {
+                    app->wizard.step = WIZARD_STEP_SELECT_GAME;
+                    app->request_file_picker = true;
+                }
+                bool back_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 268.0f, btn_y, 100.0f, 44.0f, "BACK", false, in, back_foc)) {
+                    player_app_wizard_back(app);
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 384.0f, btn_y, 100.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            }
+            break;
+        }
+
+        case WIZARD_STEP_SYSTEM_FONTS: {
+            draw_text(ren, card_x + 32.0f, content_y, "System & Open-Source Typography", 2.0f, COLOR_TEXT_WHITE);
+
+            float spec_y = content_y + 36.0f;
+            float spec_h = 170.0f;
+            draw_rounded_fill(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
+            draw_rounded_outline(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, COLOR_CARD_BORDER);
+
+            char res_txt[64];
+            snprintf(res_txt, sizeof(res_txt), "Internal Resolution: %s (%dx Native)",
+                     resolution_label(app->settings.resolution_scale), app->settings.resolution_scale);
+            draw_text(ren, card_x + 48.0f, spec_y + 14.0f, res_txt, 1.1f, COLOR_TEXT_WHITE);
+
+            char ctrl_txt[96];
+            snprintf(ctrl_txt, sizeof(ctrl_txt), "Controller: %s (%s)",
+                     app->settings.controller_connected ? app->settings.controller_name : "Keyboard / Mouse",
+                     app->settings.controller_connected ? "Connected" : "Ready");
+            draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
+
+            draw_text(ren, card_x + 48.0f, spec_y + 66.0f, "Open-Source Typography Defaults (SIL Open Font License):", 1.0f, COLOR_TEXT_DIM);
+            draw_text(ren, card_x + 48.0f, spec_y + 88.0f,
+                      " • In-Game UI: M PLUS Rounded 1c / Rubik (Hot Shots Tennis aesthetic)", 1.0f, COLOR_TEXT_MUTED);
+            draw_text(ren, card_x + 48.0f, spec_y + 108.0f,
+                      " • Native Menus & Setup: Inter / Roboto Flex / Rubik", 1.0f, COLOR_TEXT_MUTED);
+            draw_text(ren, card_x + 48.0f, spec_y + 128.0f,
+                      " • Japanese Kana/Kanji: Kosugi Maru / Zen Maru Gothic", 1.0f, COLOR_TEXT_MUTED);
+            draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
+                      " • Optional Sony PSP font (jpn0.pgf): Loaded from system/font/ if installed", 0.9f, COLOR_AMBER);
+
+            bool accept_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {
+                app->wizard.font_confirmed = true;
+                player_app_wizard_next(app);
+            }
+            bool cycle_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 248.0f, btn_y, 190.0f, 44.0f, "CYCLE RESOLUTION", false, in, cycle_foc)) {
+                player_app_cycle_resolution_scale(app, 1);
+            }
+            bool back_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 454.0f, btn_y, 90.0f, 44.0f, "BACK", false, in, back_foc)) {
+                player_app_wizard_back(app);
+            }
+            bool cancel_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 560.0f, btn_y, 90.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
+                player_app_wizard_cancel(app);
+            }
+            break;
+        }
+
+        case WIZARD_STEP_READY_LAUNCH: {
+            bool runtime_ready = app->inspecting_game.is_prepared;
+            draw_text(ren, card_x + 32.0f, content_y,
+                      runtime_ready ? "Setup Complete - Ready to Play!"
+                                    : "Assets Staged - Runtime Preparation Required",
+                      2.0f, COLOR_TEXT_WHITE);
+
+            float rdy_y = content_y + 40.0f;
+            float rdy_h = 160.0f;
+            draw_rounded_fill(ren, card_x + 32.0f, rdy_y, card_w - 64.0f, rdy_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
+            draw_rounded_outline(ren, card_x + 32.0f, rdy_y, card_w - 64.0f, rdy_h, 8.0f,
+                                 runtime_ready ? COLOR_EMERALD : COLOR_AMBER);
+
+            draw_badge(ren, card_x + 48.0f, rdy_y + 16.0f,
+                       runtime_ready ? "READY TO PLAY" : "ASSETS STAGED",
+                       runtime_ready ? COLOR_EMERALD : COLOR_AMBER);
+            if (app->inspecting_game.disc_id[0]) {
+                draw_badge(ren, card_x + 200.0f, rdy_y + 16.0f, app->inspecting_game.disc_id, COLOR_BLUE);
+            }
+            draw_text_ellipsized(ren, card_x + 48.0f, rdy_y + 54.0f,
+                                 app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "Hot Shots Tennis: Get a Grip",
+                                 2.2f, card_w - 96.0f, COLOR_TEXT_WHITE);
+
+            char sum_line[192];
+            snprintf(sum_line, sizeof(sum_line), "Resolution: %s · Display: %s · Sound: %d%% · Runtime: %s",
+                     resolution_label(app->settings.resolution_scale),
+                     app->settings.fullscreen ? "Fullscreen" : "Windowed",
+                     app->settings.master_volume,
+                     runtime_ready ? "Ready" : "Pending");
+            draw_text_ellipsized(ren, card_x + 48.0f, rdy_y + 96.0f, sum_line,
+                                 1.0f, card_w - 96.0f, COLOR_TEXT_MUTED);
+            draw_text_wrapped(ren, card_x + 48.0f, rdy_y + 124.0f,
+                              card_w - 96.0f,
+                              runtime_ready
+                                  ? "Click 'Launch Game Now' to start immediately, or 'Go to Library' to view your game cards."
+                                  : "The disc assets are saved locally. Complete runtime preparation before launching the game.",
+                              1.0f, COLOR_TEXT_DIM, 2);
+
+            bool launch_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f,
+                                    runtime_ready ? "LAUNCH GAME NOW" : "SAVE TO LIBRARY",
+                                    true, in, launch_foc)) {
+                if (app->inspecting_game.disc_id[0] != '\0') {
+                    player_app_add_game(app, &app->inspecting_game);
+                    int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+                    if (idx >= 0) {
+                        app->selected_game_index = idx;
+                        if (runtime_ready) player_app_launch_game(app, idx);
+                    }
+                }
+                player_app_set_view(app, VIEW_LIBRARY);
+            }
+            bool lib_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 248.0f, btn_y, 170.0f, 44.0f, "GO TO LIBRARY", false, in, lib_foc)) {
+                if (app->inspecting_game.disc_id[0] != '\0') {
+                    player_app_add_game(app, &app->inspecting_game);
+                    int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+                    if (idx >= 0) {
+                        app->selected_game_index = idx;
+                    }
+                }
+                player_app_wizard_cancel(app);
+            }
+            bool back_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 434.0f, btn_y, 100.0f, 44.0f, "BACK", false, in, back_foc)) {
+                player_app_wizard_back(app);
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 /* Focus-stop counts. The order lives in player_app_focus_count (pure state,
  * unit-tested); this stays a thin wrapper so render order and focus order
  * cannot drift apart unnoticed. */
@@ -1829,6 +2246,7 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
     /* View Routing */
     switch (app->active_view) {
         case VIEW_LIBRARY:
+        case PLAYER_VIEW_READY_LIBRARY:
             if (app->game_count == 0) {
                 render_empty_library(renderer, app, input);
             } else {
@@ -1852,6 +2270,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_ERROR:
             render_error(renderer, app, input);
+            break;
+        case VIEW_SETUP_WIZARD:
+            render_setup_wizard(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);

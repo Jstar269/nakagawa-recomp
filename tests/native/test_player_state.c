@@ -358,6 +358,10 @@ int main(void) {
         stops->game_count = 0;
         assert(player_app_focus_count(stops) == 1); /* empty: add only */
 
+        stops->active_view = PLAYER_VIEW_READY_LIBRARY;
+        assert(player_app_focus_count(stops) == 1); /* empty ready library */
+        stops->active_view = VIEW_LIBRARY;
+
         seed_entry(&entry, "FCS00001", "Unprepared");
         entry.is_prepared = false;
         stops->games[0] = entry;
@@ -395,7 +399,129 @@ int main(void) {
         assert(player_app_focus_count(stops) == 13);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
+
+        stops->active_view = VIEW_SETUP_WIZARD;
+        stops->wizard.step = WIZARD_STEP_WELCOME;
+        assert(player_app_focus_count(stops) == 2);
+        stops->wizard.step = WIZARD_STEP_SELECT_GAME;
+        stops->wizard.iso_selected = false;
+        assert(player_app_focus_count(stops) == 3);
+        stops->wizard.iso_selected = true;
+        assert(player_app_focus_count(stops) == 4);
+        stops->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+        assert(player_app_focus_count(stops) == 3);
+        stops->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        assert(player_app_focus_count(stops) == 4);
+        stops->wizard.step = WIZARD_STEP_READY_LAUNCH;
+        assert(player_app_focus_count(stops) == 3);
         free(stops);
+    }
+
+    /* 13. Setup Wizard state machine: start, step navigation, and cancellation. */
+    printf("[PLAYER_STATE_TEST] Subtest 13: setup wizard transitions\n");
+    fflush(stdout);
+    {
+        PlayerApp *wiz = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(wiz != NULL);
+        nk_library_init(&wiz->library);
+
+        player_app_start_setup_wizard(wiz);
+        assert(wiz->active_view == VIEW_SETUP_WIZARD);
+        assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
+        assert(wiz->focus_index == 0);
+
+        player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+
+        /* Moving next without selected ISO requests file picker */
+        wiz->request_file_picker = false;
+        player_app_wizard_next(wiz);
+        assert(wiz->request_file_picker == true);
+        assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+
+        /* Simulating ISO inspection */
+        snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path), "test.iso");
+        snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id), "UCUS98701");
+        wiz->inspecting_game.status = NK_STATUS_VERIFIED;
+        player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+
+        /* Step 3 starts an asynchronous extraction request and remains
+           visible until the reactive worker completion is delivered. */
+        player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+        assert(wiz->wizard.is_extracting == true);
+        assert(player_app_wizard_take_extraction_request(wiz) == true);
+        assert(player_app_wizard_take_extraction_request(wiz) == false);
+        assert(player_app_focus_count(wiz) == 1);
+        player_app_wizard_set_extraction_progress(wiz, 42, 2, 5, "xbdata/menu.xb");
+        assert(wiz->wizard.extraction_percent == 42);
+        assert(wiz->wizard.files_extracted == 2);
+        snprintf(wiz->inspecting_game.prepared_root,
+                 sizeof(wiz->inspecting_game.prepared_root), "stage/TEST00001");
+        wiz->inspecting_game.assets_staged = true;
+        wiz->inspecting_game.extracted_asset_count = 4;
+        wiz->inspecting_game.extracted_audio_count = 1;
+        wiz->inspecting_game.extracted_visual_count = 1;
+        wiz->inspecting_game.extracted_layout_count = 2;
+        char cache_dir[512];
+        char staged_library_path[700];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(staged_library_path, sizeof(staged_library_path),
+                 "%s%cplayer_state_staged_library.json", cache_dir,
+                 nk_platform_path_separator());
+        remove(staged_library_path);
+        {
+            char staged_library_bak[720];
+            snprintf(staged_library_bak, sizeof(staged_library_bak), "%s.bak",
+                     staged_library_path);
+            remove(staged_library_bak);
+        }
+        assert(strlen(staged_library_path) < sizeof(wiz->library.library_path));
+        memcpy(wiz->library.library_path, staged_library_path,
+               strlen(staged_library_path) + 1);
+        assert(player_app_register_staged_game(wiz) == true);
+        assert(wiz->game_count == 1);
+        assert(player_app_find_game_by_disc_id(wiz, "UCUS98701") == 0);
+        assert(wiz->games[0].extracted_asset_count == 4);
+        assert(wiz->active_view == PLAYER_VIEW_READY_LIBRARY);
+        NkLibrary persisted;
+        assert(nk_library_load(&persisted, staged_library_path) == NK_OK);
+        const NkGameEntry *persisted_game = nk_library_find_by_disc_id(&persisted, "UCUS98701");
+        assert(persisted_game != NULL);
+        assert(persisted_game->assets_staged == true);
+        assert(persisted_game->extracted_audio_count == 1);
+        player_app_wizard_finish_extraction(wiz, NK_OK, NULL);
+        assert(wiz->wizard.step == WIZARD_STEP_READY_LAUNCH);
+        assert(wiz->wizard.extraction_complete == true);
+        assert(wiz->active_view == PLAYER_VIEW_READY_LIBRARY);
+
+        /* Back navigation */
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_SYSTEM_FONTS);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
+        player_app_wizard_back(wiz);
+        assert(wiz->active_view == VIEW_LIBRARY);
+        remove(staged_library_path);
+        {
+            char staged_library_bak[720];
+            snprintf(staged_library_bak, sizeof(staged_library_bak), "%s.bak",
+                     staged_library_path);
+            remove(staged_library_bak);
+        }
+
+        /* Cancel directly */
+        player_app_start_setup_wizard(wiz);
+        assert(wiz->active_view == VIEW_SETUP_WIZARD);
+        player_app_wizard_cancel(wiz);
+        assert(wiz->active_view == VIEW_LIBRARY);
+
+        free(wiz);
     }
 
     free(app);

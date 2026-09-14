@@ -23,6 +23,11 @@ class LibraryGameRecord:
     iso_path: str
     prepared_root: str = ""
     is_prepared: bool = False
+    assets_staged: bool = False
+    extracted_asset_count: int = 0
+    extracted_audio_count: int = 0
+    extracted_visual_count: int = 0
+    extracted_layout_count: int = 0
     disc_version: str = "1.00"
     last_played: Optional[float] = None
     play_count: int = 0
@@ -39,6 +44,11 @@ class LibraryGameRecord:
             iso_path=str(data.get("iso_path", "")),
             prepared_root=str(data.get("prepared_root", "")),
             is_prepared=bool(data.get("is_prepared", False)),
+            assets_staged=bool(data.get("assets_staged", False)),
+            extracted_asset_count=int(data.get("extracted_asset_count", 0)),
+            extracted_audio_count=int(data.get("extracted_audio_count", 0)),
+            extracted_visual_count=int(data.get("extracted_visual_count", 0)),
+            extracted_layout_count=int(data.get("extracted_layout_count", 0)),
             disc_version=str(data.get("disc_version", "1.00")),
             last_played=data.get("last_played"),
             play_count=int(data.get("play_count", 0)),

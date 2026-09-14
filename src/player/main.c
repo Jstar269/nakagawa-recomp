@@ -8,19 +8,32 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "setup_staging.h"
+#include "nk_platform.h"
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <shellapi.h>
 #endif
 
+static bool player_view_is_library(PlayerView view) {
+    return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY;
+}
+
 static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
     (void)filter;
     PlayerApp *app = (PlayerApp *)userdata;
     if (!app || !filelist || !filelist[0]) {
+        return;
+    }
+    if (app->wizard.is_extracting) {
+        /* A second ISO cannot replace the source while the worker owns the
+           current staging transaction. */
         return;
     }
     const char *selected_path = filelist[0];
@@ -32,19 +45,38 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
         snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "%s", res.title_name);
         snprintf(app->inspecting_game.disc_version, sizeof(app->inspecting_game.disc_version), "%s", res.disc_version);
         snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s", selected_path);
+        if (res.matched_title_id[0]) {
+            snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id), "%s", res.matched_title_id);
+        }
         app->inspecting_game.iso_size_bytes = res.file_size;
         app->inspecting_game.status = (NkGameSupportStatus)res.status;
         app->inspecting_game.is_prepared = false;
+        app->inspecting_game.prepared_root[0] = '\0';
 
-        if (res.is_supported) {
+        if (app->active_view == VIEW_SETUP_WIZARD) {
+            player_app_wizard_reset_extraction(app);
+            app->wizard.iso_selected = true;
+            app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                     "%s (%s) verified successfully.", res.title_name, res.disc_id);
+            app->focus_index = 0;
+        } else if (res.is_supported) {
             player_app_set_view(app, VIEW_SUPPORTED_TITLE);
         } else {
             player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
         }
     } else {
-        player_app_set_error(app, "ISO_CORRUPT", "Unreadable PSP Disc Image",
-                             res.error_message[0] ? res.error_message : "The selected file is not a valid ISO9660 disc image.",
-                             "Try Another File", VIEW_LIBRARY);
+        if (app->active_view == VIEW_SETUP_WIZARD) {
+            player_app_wizard_reset_extraction(app);
+            app->wizard.iso_selected = false;
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                     "Selected file is not a valid PSP disc image: %.190s",
+                     res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+        } else {
+            player_app_set_error(app, "ISO_CORRUPT", "Unreadable PSP Disc Image",
+                                 res.error_message[0] ? res.error_message : "The selected file is not a valid ISO9660 disc image.",
+                                 "Try Another File", VIEW_LIBRARY);
+        }
     }
 }
 
@@ -54,6 +86,366 @@ static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
         { "All Files (*.*)", "*" }
     };
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
+}
+
+enum {
+    PLAYER_STAGING_EVENT_PROGRESS = 1,
+    PLAYER_STAGING_EVENT_COMPLETE = 2
+};
+
+typedef struct {
+    SDL_Thread *thread;
+    SDL_Mutex *mutex;
+    char iso_path[NK_MAX_PATH];
+    char staging_root[4096];
+    char final_root[4096];
+    bool cancel_requested;
+    bool finished;
+    bool completion_handled;
+    NkResult result;
+    int percent;
+    size_t files_extracted;
+    size_t total_files;
+    char current_file[4096];
+    char error_message[256];
+    PlayerStageSummary summary;
+} PlayerStagingJob;
+
+static void staging_push_event(PlayerStagingJob *job, int code) {
+    if (!job) return;
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = job;
+    SDL_PushEvent(&event);
+}
+
+static bool staging_cancelled(void *userdata) {
+    PlayerStagingJob *job = (PlayerStagingJob *)userdata;
+    if (!job || !job->mutex) return true;
+    SDL_LockMutex(job->mutex);
+    bool cancelled = job->cancel_requested;
+    SDL_UnlockMutex(job->mutex);
+    return cancelled;
+}
+
+static void staging_progress(const char *current_path, int percent,
+                             size_t files_extracted, size_t total_files,
+                             void *userdata) {
+    PlayerStagingJob *job = (PlayerStagingJob *)userdata;
+    if (!job || !job->mutex) return;
+    bool changed;
+    SDL_LockMutex(job->mutex);
+    changed = job->percent != percent || job->files_extracted != files_extracted ||
+              job->total_files != total_files ||
+              strcmp(job->current_file, current_path ? current_path : "") != 0;
+    job->percent = percent;
+    job->files_extracted = files_extracted;
+    job->total_files = total_files;
+    snprintf(job->current_file, sizeof(job->current_file), "%s",
+             current_path ? current_path : "");
+    SDL_UnlockMutex(job->mutex);
+    if (changed) staging_push_event(job, PLAYER_STAGING_EVENT_PROGRESS);
+}
+
+static int SDLCALL staging_thread_main(void *userdata) {
+    PlayerStagingJob *job = (PlayerStagingJob *)userdata;
+    if (!job) return -1;
+    PlayerStageCallbacks callbacks;
+    callbacks.is_cancelled = staging_cancelled;
+    callbacks.on_progress = staging_progress;
+    callbacks.userdata = job;
+
+    char error_message[256];
+    NkResult result = player_stage_game_with_summary(job->iso_path,
+                                                     job->staging_root,
+                                                     &callbacks, &job->summary,
+                                                     error_message,
+                                                     sizeof(error_message));
+    SDL_LockMutex(job->mutex);
+    job->result = result;
+    snprintf(job->error_message, sizeof(job->error_message), "%s",
+             error_message[0] ? error_message : "");
+    job->finished = true;
+    SDL_UnlockMutex(job->mutex);
+    staging_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
+    return result == NK_OK ? 0 : 1;
+}
+
+static bool valid_disc_id_for_staging(const char *disc_id) {
+    if (!disc_id || !disc_id[0]) return false;
+    for (const unsigned char *p = (const unsigned char *)disc_id; *p; p++) {
+        if (!(isalnum(*p) || *p == '_' || *p == '-')) return false;
+    }
+    return true;
+}
+
+static bool staging_paths_for_disc(const char *disc_id, char *staging_root,
+                                   size_t staging_size, char *final_root,
+                                   size_t final_size) {
+    if (!valid_disc_id_for_staging(disc_id) || !staging_root || !final_root ||
+        staging_size == 0 || final_size == 0) return false;
+    char games_root[4096];
+    int games_written;
+#if defined(_WIN32) || defined(_WIN64)
+    const char *base = getenv("LOCALAPPDATA");
+    if (!base || !base[0]) base = getenv("APPDATA");
+    if (!base || !base[0]) base = getenv("USERPROFILE");
+    if (!base || !base[0]) return false;
+    games_written = snprintf(games_root, sizeof(games_root), "%s%cNakagawa%cgames",
+                             base, nk_platform_path_separator(), nk_platform_path_separator());
+#else
+    char app_data[NK_MAX_PATH];
+    if (!nk_platform_get_app_data_dir(app_data, sizeof(app_data))) return false;
+    games_written = snprintf(games_root, sizeof(games_root), "%s%cgames",
+                                 app_data, nk_platform_path_separator());
+#endif
+    if (games_written < 0 || (size_t)games_written >= sizeof(games_root)) return false;
+    int staging_written = snprintf(staging_root, staging_size, "%s%c.staging_%s",
+                                   games_root, nk_platform_path_separator(), disc_id);
+    int final_written = snprintf(final_root, final_size, "%s%c%s", games_root,
+                                 nk_platform_path_separator(), disc_id);
+    return staging_written >= 0 && final_written >= 0 &&
+           (size_t)staging_written < staging_size && (size_t)final_written < final_size;
+}
+
+static bool copy_bounded_text(char *destination, size_t destination_size,
+                              const char *source) {
+    if (!destination || destination_size == 0 || !source) return false;
+    size_t length = strlen(source);
+    if (length >= destination_size) return false;
+    memcpy(destination, source, length + 1);
+    return true;
+}
+
+static bool promote_staging_root(const char *staging_root, const char *final_root) {
+    if (!staging_root || !final_root || nk_platform_dir_exists(final_root)) return false;
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR w_staging[32768];
+    WCHAR w_final[32768];
+    if (MultiByteToWideChar(CP_UTF8, 0, staging_root, -1, w_staging,
+                            (int)(sizeof(w_staging) / sizeof(w_staging[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, 0, final_root, -1, w_final,
+                            (int)(sizeof(w_final) / sizeof(w_final[0]))) <= 0) return false;
+    return MoveFileExW(w_staging, w_final, MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(staging_root, final_root) == 0;
+#endif
+}
+
+static void request_staging_cancel(PlayerStagingJob *job) {
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    job->cancel_requested = true;
+    SDL_UnlockMutex(job->mutex);
+}
+
+static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
+    if (!app || !job_slot || !app->inspecting_game.iso_path[0]) return false;
+    if (*job_slot) {
+        if (!(*job_slot)->completion_handled) return false;
+        SDL_DestroyMutex((*job_slot)->mutex);
+        free(*job_slot);
+        *job_slot = NULL;
+    }
+    PlayerStagingJob *job = (PlayerStagingJob *)calloc(1, sizeof(*job));
+    if (!job) {
+        player_app_wizard_finish_extraction(app, NK_ERROR_OUT_OF_MEMORY,
+                                            "Could not allocate the staging worker.");
+        return false;
+    }
+    if (!staging_paths_for_disc(app->inspecting_game.disc_id, job->staging_root,
+                                sizeof(job->staging_root), job->final_root,
+                                sizeof(job->final_root))) {
+        free(job);
+        player_app_wizard_finish_extraction(app, NK_ERROR_INVALID_XB,
+                                            "The inspected disc ID cannot be used for a safe staging directory.");
+        return false;
+    }
+    if (!copy_bounded_text(job->iso_path, sizeof(job->iso_path), app->inspecting_game.iso_path) ||
+        !copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
+                           job->staging_root) ||
+        strlen(job->final_root) >= sizeof(app->inspecting_game.prepared_root)) {
+        free(job);
+        player_app_wizard_finish_extraction(app, NK_ERROR_IO,
+                                            "The local application data path is too long for the player record.");
+        return false;
+    }
+    job->mutex = SDL_CreateMutex();
+    if (!job->mutex) {
+        free(job);
+        player_app_wizard_finish_extraction(app, NK_ERROR_OUT_OF_MEMORY,
+                                            "Could not create the staging worker lock.");
+        return false;
+    }
+    job->thread = SDL_CreateThread(staging_thread_main, "nakagawa-staging", job);
+    if (!job->thread) {
+        SDL_DestroyMutex(job->mutex);
+        free(job);
+        player_app_wizard_finish_extraction(app, NK_ERROR_OUT_OF_MEMORY,
+                                            "Could not start the staging worker.");
+        return false;
+    }
+    *job_slot = job;
+    return true;
+}
+
+static void sync_staging_progress(PlayerApp *app, PlayerStagingJob *job) {
+    if (!app || !job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    int percent = job->percent;
+    size_t files = job->files_extracted;
+    size_t total = job->total_files;
+    char current[4096];
+    snprintf(current, sizeof(current), "%s", job->current_file);
+    SDL_UnlockMutex(job->mutex);
+    player_app_wizard_set_extraction_progress(app, percent, (int)files,
+                                              (int)total, current);
+}
+
+static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
+    if (!app || !job || !job->mutex || job->completion_handled) return;
+    SDL_LockMutex(job->mutex);
+    NkResult result = job->result;
+    char error_message[256];
+    snprintf(error_message, sizeof(error_message), "%s", job->error_message);
+    bool finished = job->finished;
+    SDL_UnlockMutex(job->mutex);
+    if (!finished) return;
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (result == NK_OK && !promote_staging_root(job->staging_root, job->final_root)) {
+        result = NK_ERROR_IO;
+        snprintf(error_message, sizeof(error_message),
+                 "Asset staging completed, but atomic promotion to the game directory failed.");
+        player_stage_discard(job->staging_root);
+    }
+    if (result == NK_OK) {
+        if (!copy_bounded_text(app->inspecting_game.prepared_root,
+                               sizeof(app->inspecting_game.prepared_root),
+                               job->final_root)) {
+            result = NK_ERROR_IO;
+            snprintf(error_message, sizeof(error_message),
+                     "The promoted game path is too long for the player record.");
+        }
+    }
+    if (result == NK_OK) {
+        app->inspecting_game.assets_staged = true;
+        app->inspecting_game.extracted_asset_count = job->summary.extracted_asset_count;
+        app->inspecting_game.extracted_audio_count = job->summary.extracted_audio_count;
+        app->inspecting_game.extracted_visual_count = job->summary.extracted_visual_count;
+        app->inspecting_game.extracted_layout_count = job->summary.extracted_layout_count;
+        /* Disc staging and runtime preparation are separate claims. A locally
+           available recompiled runtime may make this entry launch-ready; a
+           staged retail source without that runtime remains actionable but
+           fail-closed when PLAY/LAUNCH PREPARED is activated. */
+        app->inspecting_game.is_prepared = nk_launch_runtime_available(
+            app->runtime_root[0] ? app->runtime_root : NULL,
+            app->inspecting_game.title_id);
+        app->inspecting_game.status = app->inspecting_game.is_prepared
+            ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
+        copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
+                          job->final_root);
+        if (!player_app_register_staged_game(app)) {
+            result = NK_ERROR_IO;
+            snprintf(error_message, sizeof(error_message),
+                     "Assets were staged, but the title could not be saved to the library.");
+        }
+    }
+    player_app_wizard_finish_extraction(app, result,
+                                        error_message[0] ? error_message : NULL);
+    job->completion_handled = true;
+}
+
+static void destroy_staging_job(PlayerStagingJob **job_slot) {
+    if (!job_slot || !*job_slot) return;
+    PlayerStagingJob *job = *job_slot;
+    request_staging_cancel(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (job->mutex) SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+}
+
+/* Headless verification path for `--iso=<path> --stage-only`. It uses the
+ * same native staging and promotion functions as the SDL worker, then the
+ * same PlayerApp registration path. No window or timer is needed for this
+ * deterministic CLI contract. */
+static int stage_iso_synchronously(PlayerApp *app) {
+    if (!app || !app->inspecting_game.iso_path[0] ||
+        !app->inspecting_game.disc_id[0]) {
+        fprintf(stderr, "[PLAYER] --stage-only requires a supported --iso=<path>.\n");
+        return 2;
+    }
+
+    char staging_root[4096];
+    char final_root[4096];
+    if (!staging_paths_for_disc(app->inspecting_game.disc_id,
+                                staging_root, sizeof(staging_root),
+                                final_root, sizeof(final_root))) {
+        fprintf(stderr, "[PLAYER] Could not derive a safe staging path for %s.\n",
+                app->inspecting_game.disc_id);
+        return 3;
+    }
+
+    PlayerStageSummary summary;
+    char error_message[256];
+    NkResult result = player_stage_game_with_summary(
+        app->inspecting_game.iso_path, staging_root, NULL, &summary,
+        error_message, sizeof(error_message));
+    if (result != NK_OK) {
+        fprintf(stderr, "[PLAYER] --stage-only failed (%d): %s\n", (int)result,
+                error_message[0] ? error_message : "native staging failed");
+        return 4;
+    }
+    if (!promote_staging_root(staging_root, final_root)) {
+        player_stage_discard(staging_root);
+        fprintf(stderr, "[PLAYER] --stage-only could not promote the staging tree.\n");
+        return 5;
+    }
+    if (!copy_bounded_text(app->inspecting_game.prepared_root,
+                           sizeof(app->inspecting_game.prepared_root),
+                           final_root)) {
+        fprintf(stderr, "[PLAYER] --stage-only promoted a path too long for the library record.\n");
+        return 6;
+    }
+
+    app->inspecting_game.assets_staged = true;
+    app->inspecting_game.extracted_asset_count = summary.extracted_asset_count;
+    app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
+    app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
+    app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
+    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+        app->runtime_root[0] ? app->runtime_root : NULL,
+        app->inspecting_game.title_id);
+    app->inspecting_game.status = app->inspecting_game.is_prepared
+        ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
+    copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
+                      final_root);
+
+    if (!player_app_register_staged_game(app)) {
+        player_app_wizard_finish_extraction(
+            app, NK_ERROR_IO,
+            "Assets were staged, but the title could not be saved to the library.");
+        fprintf(stderr, "[PLAYER] --stage-only could not save the staged title.\n");
+        return 7;
+    }
+    player_app_wizard_finish_extraction(app, NK_OK, NULL);
+    printf("[PLAYER] STAGING_RESULT status=PASS view=PLAYER_VIEW_READY_LIBRARY "
+           "disc_id=%s assets=%u audio=%u visual=%u layout=%u runtime=%s\n",
+           app->inspecting_game.disc_id,
+           (unsigned)summary.extracted_asset_count,
+           (unsigned)summary.extracted_audio_count,
+           (unsigned)summary.extracted_visual_count,
+           (unsigned)summary.extracted_layout_count,
+           app->inspecting_game.is_prepared ? "ready" : "not-ready");
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -80,6 +472,8 @@ int main(int argc, char *argv[]) {
     const char *initial_iso_path = NULL;
     const char *runtime_root_path = NULL;
     bool launch_now = false;
+    bool stage_initial_iso = false;
+    bool stage_only = false;
     bool launch_index_requested = false;
     int launch_index = -1;
     int override_w = 1280;
@@ -93,7 +487,11 @@ int main(int argc, char *argv[]) {
     bool force_empty = false;
 
     for (int i = 1; i < argc; i++) {
-        if (strncmp(argv[i], "--screenshot=", 13) == 0) {
+        if (strcmp(argv[i], "--help") == 0) {
+            printf("Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] "
+                   "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>]\n");
+            return 0;
+        } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
         } else if (strncmp(argv[i], "--view=", 7) == 0) {
             test_view = argv[i] + 7;
@@ -109,6 +507,11 @@ int main(int argc, char *argv[]) {
             runtime_root_path = argv[i] + 14;
         } else if (strcmp(argv[i], "--launch-now") == 0) {
             launch_now = true;
+        } else if (strcmp(argv[i], "--stage") == 0) {
+            stage_initial_iso = true;
+        } else if (strcmp(argv[i], "--stage-only") == 0) {
+            stage_initial_iso = true;
+            stage_only = true;
         } else if (strncmp(argv[i], "--launch-index=", 15) == 0) {
             launch_index_requested = true;
             launch_index = atoi(argv[i] + 15);
@@ -120,6 +523,9 @@ int main(int argc, char *argv[]) {
             populate_sample = true;
         } else if (strcmp(argv[i], "--empty") == 0) {
             force_empty = true;
+        } else if (strcmp(argv[i], "--wizard") == 0) {
+            force_empty = true;
+            test_view = "wizard";
         }
     }
 
@@ -139,6 +545,10 @@ int main(int argc, char *argv[]) {
     }
     if (runtime_root_path) {
         player_app_set_runtime_root(&app, runtime_root_path);
+    }
+    if (stage_only && !initial_iso_path) {
+        fprintf(stderr, "[PLAYER] --stage-only requires --iso=<path>.\n");
+        return 2;
     }
 
     /* Load external manifest overlay if requested */
@@ -171,6 +581,27 @@ int main(int argc, char *argv[]) {
             /* is_prepared intentionally NOT set: no preparation has run in this
              * build; the entry keeps the inspection-reported status. */
 
+            if (stage_only && !res.is_supported) {
+                fprintf(stderr, "[PLAYER] --stage-only refuses unsupported disc ID %s.\n",
+                        app.inspecting_game.disc_id);
+                return 3;
+            }
+
+            if (res.is_supported && stage_initial_iso) {
+                /* --stage enters the same wizard state used by the file picker,
+                   while --stage-only drives the same native worker synchronously
+                   for CI/headless verification. */
+                player_app_start_setup_wizard(&app);
+                app.wizard.iso_selected = true;
+                app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+                if (stage_only) {
+                    return stage_iso_synchronously(&app);
+                }
+                app.wizard.is_extracting = true;
+                app.wizard.extraction_requested = true;
+                snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
+                         "Extracting game assets into local application data...");
+            } else {
             /* Persist only a qualified title. The interactive flow offers ADD
                TO LIBRARY solely on the supported-title screen, so opening an
                unsupported image through --iso or a file association used to
@@ -231,7 +662,10 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "[PLAYER] Failed to prepare launch session: %s\n", app.launch_session.last_error);
                         const char *err_code = "RUNTIME_NOT_FOUND";
                         const char *err_title = "Recompiled Binary Not Available";
-                        if (strstr(app.launch_session.last_error, "manifest") != NULL ||
+                        if (lres == NK_ERROR_INVALID_EXECUTABLE) {
+                            err_code = "STAGED_EXECUTABLE_INVALID";
+                            err_title = "Staged Executable Is Invalid";
+                        } else if (strstr(app.launch_session.last_error, "manifest") != NULL ||
                             strstr(app.launch_session.last_error, "profile") != NULL ||
                             strstr(app.launch_session.last_error, "catalog") != NULL) {
                             err_code = "MANIFEST_MISMATCH";
@@ -244,6 +678,7 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 player_app_set_view(&app, VIEW_UNSUPPORTED_TITLE);
+            }
             }
         } else {
             fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", initial_iso_path);
@@ -263,6 +698,37 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "library") == 0) {
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "ready-library") == 0 ||
+                   strcmp(test_view, "ready") == 0) {
+            /* Synthetic capture fixture for the post-staging card. It is kept
+               in memory only so the screenshot path never writes a fabricated
+               title into the user's library. */
+            app.game_count = 0;
+            app.selected_game_index = -1;
+            {
+                GameRecord staged;
+                memset(&staged, 0, sizeof(staged));
+                snprintf(staged.disc_id, sizeof(staged.disc_id), "TEST00006");
+                snprintf(staged.title_name, sizeof(staged.title_name),
+                         "Nakagawa Display Smoke Fixture");
+                snprintf(staged.disc_version, sizeof(staged.disc_version), "1.00");
+                snprintf(staged.title_id, sizeof(staged.title_id), "display-smoke-v1");
+                snprintf(staged.iso_path, sizeof(staged.iso_path),
+                         "fixtures/display_smoke/generate.py");
+                snprintf(staged.prepared_root, sizeof(staged.prepared_root),
+                         "build/display-smoke-v1/staged");
+                staged.status = NK_STATUS_SUPPORTED_PREPARATION;
+                staged.assets_staged = true;
+                staged.extracted_asset_count = 2361;
+                staged.extracted_audio_count = 184;
+                staged.extracted_visual_count = 642;
+                staged.extracted_layout_count = 97;
+                snprintf(staged.last_played, sizeof(staged.last_played), "Never");
+                app.games[0] = staged;
+                app.game_count = 1;
+                app.selected_game_index = 0;
+            }
+            player_app_set_view(&app, PLAYER_VIEW_READY_LIBRARY);
         } else if (strcmp(test_view, "inspecting") == 0) {
             player_app_set_view(&app, VIEW_INSPECTING);
         } else if (strcmp(test_view, "supported") == 0) {
@@ -289,6 +755,45 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "focus") == 0) {
             app.focus_index = 1;
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "wizard") == 0 || strcmp(test_view, "wizard1") == 0) {
+            player_app_start_setup_wizard(&app);
+        } else if (strcmp(test_view, "wizard2") == 0) {
+            player_app_start_setup_wizard(&app);
+            app.wizard.step = WIZARD_STEP_SELECT_GAME;
+        } else if (strcmp(test_view, "wizard3") == 0) {
+            player_app_start_setup_wizard(&app);
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
+            snprintf(app.inspecting_game.disc_version, sizeof(app.inspecting_game.disc_version), "1.00");
+            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "games/tennis.iso");
+            app.inspecting_game.status = NK_STATUS_VERIFIED;
+            app.wizard.iso_selected = true;
+            app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+        } else if (strcmp(test_view, "wizard-staging") == 0) {
+            player_app_start_setup_wizard(&app);
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
+            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "selected/Hot Shots Tennis.iso");
+            app.inspecting_game.status = NK_STATUS_VERIFIED;
+            app.wizard.iso_selected = true;
+            app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            app.wizard.is_extracting = true;
+            app.wizard.extraction_percent = 67;
+            app.wizard.files_extracted = 7;
+            app.wizard.total_files = 12;
+            snprintf(app.wizard.extraction_current_file,
+                     sizeof(app.wizard.extraction_current_file),
+                     "xbdata/ui/menus/title_menu.xb");
+            snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
+                     "Unpacking clean-room XB assets...");
+        } else if (strcmp(test_view, "wizard4") == 0) {
+            player_app_start_setup_wizard(&app);
+            app.wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        } else if (strcmp(test_view, "wizard5") == 0) {
+            player_app_start_setup_wizard(&app);
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
+            app.wizard.step = WIZARD_STEP_READY_LAUNCH;
         }
     }
 
@@ -384,12 +889,11 @@ int main(int argc, char *argv[]) {
         }
 
         if (app.is_game_running) {
-            printf("[PLAYER] Verifying child process runtime health...\n");
-            SDL_Delay(1000);
+            printf("[PLAYER] Checking child process runtime health reactively...\n");
             if (nk_launch_is_running(&app.launch_session)) {
-                printf("[PLAYER] Child process running verified! PID: %d\n", app.launch_session.process.process_id);
+                printf("[PLAYER] Child process is running. PID: %d\n", app.launch_session.process.process_id);
                 nk_launch_stop(&app.launch_session);
-                printf("[PLAYER] Child process stopped cleanly after verification.\n");
+                printf("[PLAYER] Child process stopped cleanly after the screenshot.\n");
             } else {
                 int code = nk_launch_wait(&app.launch_session, 0);
                 printf("[PLAYER] Child process exited with code %d\n", code);
@@ -413,13 +917,19 @@ int main(int argc, char *argv[]) {
        and map the d-pad and shoulders onto the same library selection the
        arrow keys drive. */
     SDL_Gamepad *gamepad = NULL;
+    PlayerStagingJob *staging_job = NULL;
 
     bool running = true;
+    /* The first frame is rendered before the event wait. Subsequent frames are
+       driven by SDL input/window events and by the staging worker's user
+       events; there is no timer or progress poller in the UI loop. */
+    ui_render_frame(renderer, &app, &input);
     while (running && !app.should_quit) {
         input.mouse_clicked = false;
         input.activate_pressed = false;
         SDL_Event event;
-        while (SDL_PollEvent(&event)) {
+        if (!SDL_WaitEvent(&event)) break;
+        do {
             switch (event.type) {
                 case SDL_EVENT_QUIT:
                     running = false;
@@ -445,12 +955,14 @@ int main(int argc, char *argv[]) {
                     break;
                 case SDL_EVENT_KEY_DOWN:
                     if (event.key.key == SDLK_ESCAPE) {
-                        if (app.active_view != VIEW_LIBRARY) {
+                        if (app.active_view == VIEW_SETUP_WIZARD) {
+                            player_app_wizard_back(&app);
+                        } else if (!player_view_is_library(app.active_view)) {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             running = false;
                         }
-                    } else if (event.key.key == SDLK_O) {
+                    } else if (event.key.key == SDLK_O && !app.wizard.is_extracting) {
                         /* Trigger file picker */
                         trigger_file_picker(window, &app);
                     } else if (event.key.key == SDLK_S && app.active_view != VIEW_INSPECTING) {
@@ -475,7 +987,7 @@ int main(int argc, char *argv[]) {
                         if (!event.key.repeat) {
                             input.activate_pressed = true;
                         }
-                    } else if (app.active_view == VIEW_LIBRARY) {
+                    } else if (player_view_is_library(app.active_view)) {
                         /* Keyboard selection across the whole library, not
                            just the cards that happen to fit on screen. */
                         if (event.key.key == SDLK_LEFT) {
@@ -506,7 +1018,7 @@ int main(int argc, char *argv[]) {
                     }
                     break;
                 case SDL_EVENT_MOUSE_WHEEL:
-                    if (app.active_view == VIEW_LIBRARY && event.wheel.y != 0.0f) {
+                    if (player_view_is_library(app.active_view) && event.wheel.y != 0.0f) {
                         player_app_move_selection(&app, event.wheel.y > 0.0f ? -1 : 1);
                     }
                     break;
@@ -531,8 +1043,18 @@ int main(int argc, char *argv[]) {
                         printf("[PLAYER] Gamepad disconnected\n");
                     }
                     break;
+                case SDL_EVENT_USER:
+                    if (event.user.data1 == staging_job) {
+                        if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                            sync_staging_progress(&app, staging_job);
+                        } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                            sync_staging_progress(&app, staging_job);
+                            finish_staging_job(&app, staging_job);
+                        }
+                    }
+                    break;
                 case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-                    if (app.active_view == VIEW_LIBRARY) {
+                    if (player_view_is_library(app.active_view)) {
                         switch (event.gbutton.button) {
                             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
                                 player_app_move_selection(&app, -1);
@@ -562,7 +1084,11 @@ int main(int argc, char *argv[]) {
                                 break;
                         }
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
-                        player_app_set_view(&app, VIEW_LIBRARY);
+                        if (app.active_view == VIEW_SETUP_WIZARD) {
+                            player_app_wizard_back(&app);
+                        } else {
+                            player_app_set_view(&app, VIEW_LIBRARY);
+                        }
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {
                         input.activate_pressed = true;
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ||
@@ -589,7 +1115,7 @@ int main(int argc, char *argv[]) {
                 default:
                     break;
             }
-        }
+        } while (SDL_PollEvent(&event));
 
         /* A renderer control asked for the host file dialog. The renderer has
            no window handle and must stay free of platform dialog calls, so the
@@ -597,6 +1123,17 @@ int main(int argc, char *argv[]) {
         if (app.request_file_picker) {
             app.request_file_picker = false;
             trigger_file_picker(window, &app);
+        }
+
+        /* Step 3 requests one worker; progress and completion return through
+           SDL user events, so the UI thread never polls a job or performs ISO
+           I/O. */
+        if (player_app_wizard_take_extraction_request(&app)) {
+            start_staging_job(&app, &staging_job);
+        }
+        if (staging_job && app.wizard.is_extracting &&
+            player_app_wizard_cancel_requested(&app)) {
+            request_staging_cancel(staging_job);
         }
 
         /* Clamp keyboard/gamepad focus before rendering so activation can
@@ -636,12 +1173,13 @@ int main(int argc, char *argv[]) {
         }
 
         ui_render_frame(renderer, &app, &input);
-        SDL_Delay(16); /* ~60 FPS loop */
     }
 
     if (app.is_game_running) {
         player_app_stop_game(&app);
     }
+
+    destroy_staging_job(&staging_job);
 
     if (gamepad) {
         SDL_CloseGamepad(gamepad);

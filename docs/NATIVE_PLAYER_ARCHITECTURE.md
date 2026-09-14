@@ -1,11 +1,14 @@
 # Native Cross-Platform Player UI Architecture
 
-> **Current build boundary:** The native player does not connect an ISO
-> extraction, module-decryption, or preparation pipeline. The preparation and
-> progress stages shown below are the target architecture, not implemented
-> behavior. In this build an unprepared title gets an explicit
-> `PREPARATION UNAVAILABLE` state; only an already-built runtime such as the
-> source-owned display-smoke fixture can be launched.
+> **Current build boundary:** The native player connects a bounded ISO/XB
+> staging pipeline for the first-time setup wizard. It records the extracted
+> asset/audio/visual/layout counts, promotes the transaction, registers the
+> title in the library, and resolves the promoted `EBOOT.BIN`, `xbdata`, and
+> per-title Memory Stick root for launch preparation. Plain staged ELF32/MIPS
+> images receive program-header, entry, load-range, and BSS geometry checks;
+> retail `~PSP` containers are recognized but their encrypted inner ELF remains
+> a separate decryption capability. The native `VIEW_PREPARING` screen is still
+> an honest unavailable state for legacy/library preparation requests.
 
 ## 1. Executive Vision: The Honest "Program + ISO" Contract
 
@@ -20,9 +23,9 @@ Select lawfully obtained PSP game ISO
    ↓
 Nakagawa identifies supported title from PARAM.SFO
    ↓
-Target-only preparation stage (not connected in this build)
+Native ISO/XB staging stage (connected in the setup wizard)
    ↓
-Target-only progress reporting (not emitted by this build)
+Reactive bounded progress reporting (wizard Step 3)
    ↓
 Launch into genuine recompiled guest execution with Vulkan & SDL3
    ↓
@@ -101,10 +104,12 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 └────────────────────────────────────────────────────────┘
 ```
 
-The presentation layer contains **zero business logic**. Title identification and
-ISO inspection are wired in the native player; archive extraction, checksum
-verification, and session-manifest preparation remain in the developer-only
-portable-core prototype (`nk_core`) and are not called by this build.
+The presentation layer contains **zero business logic**. Title identification,
+ISO inspection, and the bounded setup transaction are wired through the native
+player/core boundary; the renderer only presents the resulting state. The
+runtime consumes the promoted `xbdata` tree through its existing `SR_DATAROOT`
+asset index, while proprietary audio/GIM decoding remains in the runtime/tool
+capability layers rather than being reimplemented in the launcher.
 
 ---
 
@@ -114,13 +119,19 @@ portable-core prototype (`nk_core`) and are not called by this build.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
 3. **Native File Selection**: Clicking *"Add Game"* invokes the native platform file picker (`IFileDialog` on Windows, native portal/Zenity on Linux).
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
-5. **Transactional Preparation (target; not connected in this build)**:
-   - Staging directory created under `.staging_<disc_id>_<timestamp>/`.
-   - Untouched `EBOOT.BIN` and PRX files decrypted locally via clean-room KIRK routines.
-   - ELF envelopes and section headers validated.
-   - Checksums and manifests validated.
-   - Atomic directory promotion to permanent game path.
-6. **One-Click Play**: The hero button changes to glowing emerald *"PLAY GAME"*.
+5. **Transactional Preparation**:
+   - Staging directory created under `.staging_<disc_id>/` in local application data.
+   - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
+   - Native clean-room XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
+   - If present, named already-decrypted support PRXs are copied from standard PPSSPP dump locations into `EXTRACTED/decrypted/`.
+   - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
+   - The promoted root is registered with a persistent asset census and becomes
+     the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
+   - KIRK decryption and validation of an encrypted `~PSP` inner ELF remain later
+     capabilities; a missing recompiled child is reported instead of fabricated.
+6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a runtime is
+   available and *"LAUNCH PREPARED"* when assets are staged but runtime
+   preparation is still pending.
 
 ---
 
@@ -128,23 +139,21 @@ portable-core prototype (`nk_core`) and are not called by this build.
 
 ### Progress Contracts
 
-The target preparation core would emit structured progress events at every
-milestone. The native player currently emits no preparation events because no
-preparation backend is connected:
+The native staging worker emits structured progress events through SDL user
+events; it does not use a timer or poll the worker:
 
 - **Stage**: `INSPECTING_ISO`, `EXTRACTING_CONTAINERS`, `DECRYPTING_MODULES`, `VALIDATING_ELFS`, `PREPARING_VFS`, `READY`.
-- **Metrics**: Completed count, total count, elapsed time in milliseconds, and current processing item.
-- **Truthfulness**: When a real backend is added, progress must never display
-  fabricated percentages; operations with indeterminate totals may show smooth
-  activity pulses.
+- **Metrics**: Completed count, total count, elapsed time in milliseconds, current processing item, and the final asset/audio/visual/layout census.
+- **Truthfulness**: Percentages are derived from the bounded ISO byte/file
+  walk and XB entry completion. Decryption and other unimplemented phases do
+  not fabricate readiness.
 
 ### Transactional Integrity
 
-- The future extraction and generation path will use temporary staging
-  directories.
-- The future cancellation path will clean up staging immediately while leaving
-  previous working installations untouched. No such operation is active in this
-  build.
+- The extraction path uses temporary staging directories and promotes only on
+  complete success.
+- Cancellation and decode failure remove the newly created staging tree while
+  leaving previous installations untouched.
 
 ### User-Friendly Error Experience
 
@@ -152,6 +161,8 @@ Instead of exposing raw exception stack traces or compiler lines, errors provide
 
 - `ISO_UNSUPPORTED_TITLE`: *"This PSP title (DISC_ID) is not currently supported by Nakagawa."*
 - `ISO_UNREADABLE`: *"The selected file could not be read. Ensure the image is a valid ISO9660 disc."*
+- `STAGED_EXECUTABLE_INVALID`: *"The staged executable does not match the selected title's ELF/load contract."*
+- `LIBRARY_WRITE_FAILED`: *"The game was staged, but the library record could not be saved."*
 - `MISSING_FIRMWARE_FONT`: *"Authentic typography requires jpn0.pgf in %LOCALAPPDATA%/nakagawa/system/font/."*
 
 ---

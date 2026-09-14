@@ -32,6 +32,7 @@ typedef struct {
     const char * const *compatible_disc_ids; /* NULL-terminated array of alias disc IDs */
     uint32_t executable_base;
     uint32_t executable_entry;
+    const char *bss_metadata_source;
     const char *data_root;
     const char *memory_stick_root;
     const char *hle_profile;

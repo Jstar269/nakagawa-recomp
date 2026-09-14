@@ -24,6 +24,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
+#define test_rmdir _rmdir
+#else
+#include <unistd.h>
+#define test_rmdir rmdir
+#endif
+
 static void write_file(const char *path, const char *data) {
     FILE *f = fopen(path, "wb");
     assert(f != NULL);
@@ -31,6 +39,61 @@ static void write_file(const char *path, const char *data) {
         assert(fwrite(data, 1, strlen(data), f) == strlen(data));
     }
     fclose(f);
+}
+
+static void write_le16(uint8_t *p, uint16_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+}
+
+static void write_le32(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+    p[2] = (uint8_t)(value >> 16);
+    p[3] = (uint8_t)(value >> 24);
+}
+
+static void write_bytes(const char *path, const void *data, size_t size) {
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite(data, 1, size, f) == size);
+    assert(fclose(f) == 0);
+}
+
+static void write_valid_elf(const char *path, uint32_t base, uint32_t entry) {
+    uint8_t image[0x100] = { 0 };
+    memcpy(image, "\x7f" "ELF", 4);
+    image[4] = 1; /* ELFCLASS32 */
+    image[5] = 1; /* little endian */
+    image[6] = 1; /* ELF version */
+    write_le16(image + 16, 2); /* ET_EXEC */
+    write_le16(image + 18, 8); /* EM_MIPS */
+    write_le32(image + 20, 1);
+    write_le32(image + 24, entry);
+    write_le32(image + 28, 52);
+    write_le32(image + 32, 0);
+    write_le32(image + 36, 0);
+    write_le16(image + 40, 52);
+    write_le16(image + 42, 32);
+    write_le16(image + 44, 1);
+    uint8_t *ph = image + 52;
+    write_le32(ph + 0, 1);       /* PT_LOAD */
+    write_le32(ph + 4, 0x80);    /* source offset */
+    write_le32(ph + 8, base);
+    write_le32(ph + 12, base);
+    write_le32(ph + 16, 16);     /* file-backed bytes */
+    write_le32(ph + 20, 32);     /* 16 bytes of BSS */
+    write_le32(ph + 24, 5);      /* R-X */
+    write_le32(ph + 28, 4);
+    for (size_t i = 0; i < 16; i++) image[0x80 + i] = (uint8_t)(0x80 + i);
+    write_bytes(path, image, sizeof(image));
+}
+
+static void write_psp_container(const char *path) {
+    uint8_t image[0x150] = { 0 };
+    memcpy(image, "~PSP", 4);
+    write_le32(image + 4, 0x150);
+    write_bytes(path, image, sizeof(image));
 }
 
 static bool ends_with(const char *s, const char *suffix) {
@@ -172,9 +235,80 @@ int main(void) {
     assert(session.base_address == 0x08810000u);
     assert(session.entry_point == 0x08810000u);
 
-    /* 6. A title the catalog does not describe is refused, not launched at a
+    /* 6. A promoted staging root is the source-side launch contract: the
+     * staged EBOOT is checked, decoded XB data is preferred over the catalog's
+     * repository-relative data root, and saves are scoped below the game. */
+    printf("[LAUNCH_TEST] Subtest 6: staged EBOOT and VFS roots\n");
+    fflush(stdout);
+    char staged_root[800];
+    char staged_eboot[900];
+    char staged_xbdata[900];
+    snprintf(staged_root, sizeof(staged_root), "%s%cstaged-game", base, sep);
+    snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", staged_root, sep);
+    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata", staged_root, sep);
+    assert(nk_platform_mkdir_p(staged_xbdata));
+    write_valid_elf(staged_eboot, 0x08810000u, 0x08810000u);
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    assert(strlen(staged_root) < sizeof(game.prepared_root));
+    memcpy(game.prepared_root, staged_root, strlen(staged_root) + 1);
+    game.assets_staged = true;
+    NkLaunchExecutableInfo staged_info;
+    char staged_error[256];
+    assert(nk_launch_validate_staged_executable(&game,
+                                                nk_title_catalog_find_by_id(game.title_id),
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) == NK_OK);
+    assert(staged_info.is_elf == true);
+    assert(staged_info.has_bss == true);
+    assert(staged_info.load_base == 0x08810000u);
+    assert(staged_info.entry_in_executable_segment == true);
+    assert(staged_info.bss_start == 0x08810010u);
+    assert(staged_info.bss_end == 0x08810020u);
+    assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(session.staged_executable_checked == true);
+    assert(session.staged_executable_info.is_elf == true);
+    assert(ends_with(session.staged_executable_path, "EBOOT.BIN"));
+    printf("[LAUNCH_TEST] staged data_root=%s memstick=%s\n",
+           session.dataroot_path, session.memstick_root);
+    assert(strstr(session.dataroot_path, "staged-game") != NULL);
+    assert(strstr(session.dataroot_path, "xbdata") != NULL);
+    assert(strstr(session.memstick_root, "staged-game") != NULL);
+    assert(strstr(session.memstick_root, "memstick") != NULL);
+
+    write_valid_elf(staged_eboot, 0x08811000u, 0x08811000u);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                nk_title_catalog_find_by_id(game.title_id),
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) != NK_OK);
+    write_file(staged_eboot, "not-an-executable");
+    assert(nk_launch_validate_staged_executable(&game,
+                                                nk_title_catalog_find_by_id(game.title_id),
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) != NK_OK);
+
+    /* A retail-shaped ~PSP container is a recognized source boundary, but it
+     * is not reported as an ELF validation result. */
+    write_psp_container(staged_eboot);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                nk_title_catalog_find_by_id(game.title_id),
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) == NK_OK);
+    assert(staged_info.is_psp_container == true);
+    assert(staged_info.is_elf == false);
+    remove(staged_eboot);
+    /* `memstick` may have been created by preparation. */
+    {
+        char memstick[900];
+        snprintf(memstick, sizeof(memstick), "%s%cmemstick", staged_root, sep);
+        test_rmdir(memstick);
+    }
+    test_rmdir(staged_root);
+
+    /* 7. A title the catalog does not describe is refused, not launched at a
      * guessed address. */
-    printf("[LAUNCH_TEST] Subtest 6: unknown title fails closed\n");
+    printf("[LAUNCH_TEST] Subtest 7: unknown title fails closed\n");
     fflush(stdout);
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "ZZZZ99999");

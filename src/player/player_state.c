@@ -61,8 +61,14 @@ void player_app_sync_library(PlayerApp *app) {
         app->games[i] = app->library.entries[i];
         app->game_count++;
     }
-    if (app->game_count > 0 && app->selected_game_index < 0) {
-        app->selected_game_index = 0;
+    if (app->game_count <= 0) {
+        app->selected_game_index = -1;
+        app->library_scroll_index = 0;
+    } else {
+        if (app->selected_game_index < 0) app->selected_game_index = 0;
+        if (app->selected_game_index >= app->game_count) {
+            app->selected_game_index = app->game_count - 1;
+        }
     }
 }
 
@@ -108,6 +114,7 @@ int player_app_focus_count(const PlayerApp *app) {
     if (!app) return 1;
     switch (app->active_view) {
         case VIEW_LIBRARY:
+        case PLAYER_VIEW_READY_LIBRARY:
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
@@ -119,7 +126,7 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                if (game && (game->is_prepared || app->is_game_running)) count++;
+                if (game && (game->is_prepared || game->assets_staged || app->is_game_running)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
@@ -139,6 +146,22 @@ int player_app_focus_count(const PlayerApp *app) {
             return 13;
         case VIEW_ERROR:
             return 1;
+        case VIEW_SETUP_WIZARD:
+            switch (app->wizard.step) {
+                case WIZARD_STEP_WELCOME:
+                    return 2;
+                case WIZARD_STEP_SELECT_GAME:
+                    return app->wizard.iso_selected ? 4 : 3;
+                case WIZARD_STEP_INSPECT_VERIFY:
+                    if (app->wizard.is_extracting) return 1;
+                    return 3;
+                case WIZARD_STEP_SYSTEM_FONTS:
+                    return 4;
+                case WIZARD_STEP_READY_LAUNCH:
+                    return 3;
+                default:
+                    return 1;
+            }
         default:
             return 1;
     }
@@ -363,7 +386,10 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
         const char *err_title = "Recompiled Binary Not Available";
-        if (strstr(app->launch_session.last_error, "manifest") != NULL ||
+        if (res == NK_ERROR_INVALID_EXECUTABLE) {
+            err_code = "STAGED_EXECUTABLE_INVALID";
+            err_title = "Staged Executable Is Invalid";
+        } else if (strstr(app->launch_session.last_error, "manifest") != NULL ||
             strstr(app->launch_session.last_error, "profile") != NULL ||
             strstr(app->launch_session.last_error, "catalogue") != NULL ||
             strstr(app->launch_session.last_error, "catalog") != NULL) {
@@ -409,9 +435,236 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     return true;
 }
 
+bool player_app_register_staged_game(PlayerApp *app) {
+    if (!app || !app->inspecting_game.disc_id[0] ||
+        !app->inspecting_game.assets_staged ||
+        !app->inspecting_game.prepared_root[0]) return false;
+
+    if (!player_app_add_game(app, &app->inspecting_game)) return false;
+    int index = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    if (index < 0) return false;
+    app->selected_game_index = index;
+    app->wizard.step = WIZARD_STEP_READY_LAUNCH;
+    app->active_view = PLAYER_VIEW_READY_LIBRARY;
+    app->focus_index = 0;
+    return true;
+}
+
 void player_app_stop_game(PlayerApp *app) {
     if (!app || !app->is_game_running) return;
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+void player_app_start_setup_wizard(PlayerApp *app) {
+    if (!app) return;
+    memset(&app->wizard, 0, sizeof(app->wizard));
+    app->wizard.step = WIZARD_STEP_WELCOME;
+    app->wizard.extraction_result = NK_OK;
+    app->wizard.iso_selected = (app->inspecting_game.iso_path[0] != '\0');
+    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+             "Welcome to the Nakagawa Recomp First-Time Setup Wizard.");
+    app->active_view = VIEW_SETUP_WIZARD;
+    app->focus_index = 0;
+}
+
+void player_app_wizard_next(PlayerApp *app) {
+    if (!app) return;
+    switch (app->wizard.step) {
+        case WIZARD_STEP_WELCOME:
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_SELECT_GAME:
+            if (app->inspecting_game.iso_path[0] != '\0') {
+                app->wizard.iso_selected = true;
+                app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            } else {
+                app->request_file_picker = true;
+            }
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_INSPECT_VERIFY:
+            if (app->wizard.extraction_complete) {
+                app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+            } else if (app->inspecting_game.status == NK_STATUS_VERIFIED &&
+                       !app->wizard.is_extracting) {
+                app->wizard.is_extracting = true;
+                app->wizard.extraction_requested = true;
+                app->wizard.extraction_cancel_requested = false;
+                app->wizard.extraction_failed = false;
+                app->wizard.extraction_result = NK_OK;
+                app->wizard.extraction_percent = 0;
+                app->wizard.files_extracted = 0;
+                app->wizard.total_files = 0;
+                app->wizard.extraction_current_file[0] = '\0';
+                app->wizard.extraction_error[0] = '\0';
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Extracting game assets into local application data...");
+            } else if (app->wizard.is_extracting) {
+                /* The only action exposed while the worker is active is
+                   cancellation; ignore an accidental second activation. */
+                break;
+            } else {
+                app->wizard.step = WIZARD_STEP_SELECT_GAME;
+                app->request_file_picker = true;
+            }
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_SYSTEM_FONTS:
+            app->wizard.font_confirmed = true;
+            app->wizard.step = WIZARD_STEP_READY_LAUNCH;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_READY_LAUNCH:
+            if (app->inspecting_game.disc_id[0] != '\0') {
+                player_app_add_game(app, &app->inspecting_game);
+                int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+                if (idx >= 0) {
+                    app->selected_game_index = idx;
+                }
+            }
+            app->active_view = VIEW_LIBRARY;
+            app->focus_index = 0;
+            break;
+        default:
+            break;
+    }
+}
+
+void player_app_wizard_back(PlayerApp *app) {
+    if (!app) return;
+    switch (app->wizard.step) {
+        case WIZARD_STEP_WELCOME:
+            player_app_wizard_cancel(app);
+            break;
+        case WIZARD_STEP_SELECT_GAME:
+            app->wizard.step = WIZARD_STEP_WELCOME;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_INSPECT_VERIFY:
+            if (app->wizard.is_extracting) {
+                app->wizard.extraction_cancel_requested = true;
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Cancelling asset extraction...");
+                break;
+            }
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_SYSTEM_FONTS:
+            app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_READY_LAUNCH:
+            app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+            app->active_view = VIEW_SETUP_WIZARD;
+            app->focus_index = 0;
+            break;
+        default:
+            break;
+    }
+}
+
+void player_app_wizard_cancel(PlayerApp *app) {
+    if (!app) return;
+    if (app->wizard.is_extracting) {
+        app->wizard.extraction_cancel_requested = true;
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "Cancelling asset extraction...");
+        return;
+    }
+    app->active_view = VIEW_LIBRARY;
+    app->focus_index = 0;
+}
+
+void player_app_wizard_reset_extraction(PlayerApp *app) {
+    if (!app) return;
+    app->inspecting_game.assets_staged = false;
+    app->inspecting_game.extracted_asset_count = 0;
+    app->inspecting_game.extracted_audio_count = 0;
+    app->inspecting_game.extracted_visual_count = 0;
+    app->inspecting_game.extracted_layout_count = 0;
+    app->wizard.extraction_percent = 0;
+    app->wizard.files_extracted = 0;
+    app->wizard.total_files = 0;
+    app->wizard.is_extracting = false;
+    app->wizard.extraction_complete = false;
+    app->wizard.extraction_failed = false;
+    app->wizard.extraction_requested = false;
+    app->wizard.extraction_cancel_requested = false;
+    app->wizard.extraction_result = NK_OK;
+    app->wizard.extraction_current_file[0] = '\0';
+    app->wizard.extraction_error[0] = '\0';
+    app->wizard.staging_root[0] = '\0';
+}
+
+bool player_app_wizard_take_extraction_request(PlayerApp *app) {
+    if (!app || !app->wizard.extraction_requested) return false;
+    app->wizard.extraction_requested = false;
+    return true;
+}
+
+void player_app_wizard_request_cancel(PlayerApp *app) {
+    if (!app) return;
+    app->wizard.extraction_cancel_requested = true;
+}
+
+bool player_app_wizard_cancel_requested(const PlayerApp *app) {
+    return app && app->wizard.extraction_cancel_requested;
+}
+
+void player_app_wizard_set_extraction_progress(PlayerApp *app, int percent,
+                                               int files_extracted, int total_files,
+                                               const char *current_file) {
+    if (!app) return;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    if (files_extracted < 0) files_extracted = 0;
+    if (total_files < 0) total_files = 0;
+    app->wizard.extraction_percent = percent;
+    app->wizard.files_extracted = files_extracted;
+    app->wizard.total_files = total_files;
+    if (current_file) {
+        snprintf(app->wizard.extraction_current_file,
+                 sizeof(app->wizard.extraction_current_file), "%s", current_file);
+    }
+}
+
+void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
+                                         const char *error_message) {
+    if (!app) return;
+    app->wizard.is_extracting = false;
+    app->wizard.extraction_result = result;
+    app->wizard.extraction_requested = false;
+    app->wizard.extraction_cancel_requested = false;
+    if (result == NK_OK) {
+        app->wizard.extraction_complete = true;
+        app->wizard.extraction_failed = false;
+        app->wizard.extraction_percent = 100;
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "Game assets extracted and staged successfully.");
+        /* A worker completion that already carries a promoted staging root is
+         * the end of the first-run transaction. The caller registers the
+         * record before reaching here, so the next rendered frame is the
+         * actionable library card rather than a wizard step that forgets the
+         * newly installed title. Keep the old Fonts step for state-only
+         * callers that have not supplied a staged root. */
+        if (app->inspecting_game.assets_staged &&
+            app->inspecting_game.prepared_root[0]) {
+            app->wizard.step = WIZARD_STEP_READY_LAUNCH;
+            app->active_view = PLAYER_VIEW_READY_LIBRARY;
+        } else {
+            app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        }
+        app->focus_index = 0;
+    } else {
+        app->wizard.extraction_complete = false;
+        app->wizard.extraction_failed = true;
+        snprintf(app->wizard.extraction_error, sizeof(app->wizard.extraction_error),
+                 "%s", error_message && error_message[0] ? error_message : "Asset extraction failed.");
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "%s", app->wizard.extraction_error);
+    }
 }

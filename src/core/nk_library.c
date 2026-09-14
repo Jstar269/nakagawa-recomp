@@ -155,6 +155,11 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
         fprintf(f, "      \"status\": %d,\n", (int)g->status);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
+        fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
+        fprintf(f, "      \"extracted_asset_count\": %u,\n", (unsigned)g->extracted_asset_count);
+        fprintf(f, "      \"extracted_audio_count\": %u,\n", (unsigned)g->extracted_audio_count);
+        fprintf(f, "      \"extracted_visual_count\": %u,\n", (unsigned)g->extracted_visual_count);
+        fprintf(f, "      \"extracted_layout_count\": %u,\n", (unsigned)g->extracted_layout_count);
         fprintf(f, "      \"last_played\": \"%s\"\n", g->last_played);
         fprintf(f, "    }%s\n", (i < lib->count - 1) ? "," : "");
     }
@@ -444,6 +449,37 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                         entry_failed = true;
                         break;
                     }
+                } else if (strcmp(key, "assets_staged") == 0) {
+                    if (strncmp(p, "true", 4) == 0) {
+                        entry.assets_staged = true;
+                        p += 4;
+                    } else if (strncmp(p, "false", 5) == 0) {
+                        entry.assets_staged = false;
+                        p += 5;
+                    } else {
+                        entry_failed = true;
+                        break;
+                    }
+                } else if (strcmp(key, "extracted_asset_count") == 0 ||
+                           strcmp(key, "extracted_audio_count") == 0 ||
+                           strcmp(key, "extracted_visual_count") == 0 ||
+                           strcmp(key, "extracted_layout_count") == 0) {
+                    char *endptr = NULL;
+                    unsigned long value = strtoul(p, &endptr, 10);
+                    if (endptr == p || value > UINT32_MAX) {
+                        entry_failed = true;
+                        break;
+                    }
+                    if (strcmp(key, "extracted_asset_count") == 0) {
+                        entry.extracted_asset_count = (uint32_t)value;
+                    } else if (strcmp(key, "extracted_audio_count") == 0) {
+                        entry.extracted_audio_count = (uint32_t)value;
+                    } else if (strcmp(key, "extracted_visual_count") == 0) {
+                        entry.extracted_visual_count = (uint32_t)value;
+                    } else {
+                        entry.extracted_layout_count = (uint32_t)value;
+                    }
+                    p = endptr;
                 } else {
                     /* Skip unknown value safely */
                     if (*p == '\"') {

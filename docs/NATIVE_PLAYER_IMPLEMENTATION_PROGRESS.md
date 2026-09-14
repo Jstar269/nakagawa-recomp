@@ -15,12 +15,35 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
 2. **Clean-Room Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
-   - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, preparation-unavailable state, settings, and structured recovery actions.
+   - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
+   - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
+   - The optional local bridge discovers named already-decrypted support PRXs in the standard PPSSPP dump locations and stages them under `EXTRACTED/decrypted/`; it never performs decryption.
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
-   - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
+   - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
+   - `nk_xb.c` / `nk_xb.h`: Clean-room bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
+   - `nk_iso_extract_game`: ISO directory-record walk that stages `EBOOT.BIN` and `USRDIR/xbdata` without shelling out or requiring Python.
 3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
 5. **Continuous Working-State Preservation**: Existing playable HST route, test suites (`test_nk_core.py`, `test_build_truth.py`, and full tools test suite) remain 100% green.
+
+### Runtime/setup progression (2026-09-13)
+
+- Staging now returns a bounded census of XB members plus `.sgd`/`.sgh`/`.sgb`
+  audio, `.gim` visual, and `data/menu/` layout members. The counts are kept
+  with the library entry as staging facts.
+- A completed worker promotion registers the inspected title in `app.games` and
+  enters `PLAYER_VIEW_READY_LIBRARY`. The card shows the disc ID and staged
+  asset census, with `PLAY NOW` only for a resolved runtime and
+  `LAUNCH PREPARED` for staged-but-not-yet-runtime-ready entries.
+- `--iso=<path> --stage-only` is a headless path through the same native staging,
+  atomic promotion, registration, and state transition. `--stage` starts the
+  same transaction from the interactive wizard.
+- `nk_launch.c` resolves staged `EBOOT.BIN`, prefers the promoted `xbdata`
+  root (whose archives unpack as `<archive>.xb.d/` for the runtime asset index),
+  creates a per-title `memstick` root, and validates
+  plain ELF32/MIPS program headers against catalog base/entry metadata. A
+  `~PSP` file is recognized as an encrypted source container only; no inner ELF
+  or private retail acceptance is claimed.
 
 ---
 
@@ -46,7 +69,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Captured with no `--iso=`, so the inspector renders "No disc image selected" and a cancel action. With a disc it shows an indeterminate indicator: this build's inspector reports no percentage |
 | Recognized Title | `native_04_supported_game.png` | 1280×720 | The synthetic fixture `TEST00001`, which is what `--view=supported` populates — no retail disc is involved; honest LLE font requirement note |
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
-| Preparation | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" with an indeterminate indicator. The view deliberately claims no item counts or percentage because this build has no preparation backend |
+| Legacy Preparation View | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" remains an honest fallback for non-wizard preparation requests; wizard Step 3 now has a separate bounded staging progress view |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
 | Settings Dialog | `native_08_settings.png` | 1280×720 | Live resolution/FPS presets, display toggles, reduce-motion switch and volume stepper (in-memory launch preferences); keyboard/gamepad focus on every control; single-column flow on narrow windows |
 | Visual Craft | n/a | all | Runtime system-font typography (SDL3_ttf dlopen, zero bundled fonts, DebugText fallback), rounded cards/buttons/pills with shadows, generated disc-ID monograms, density-aware raster |
@@ -70,13 +93,13 @@ The matrix distinguishes between architectural staging, implementation completen
 | 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
 | 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Clean-room C PVD parser) |
 | 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
-| 4 | Asset Extraction | External PowerShell script | Staged pipeline prototype in `nk_core` | **PARTIAL** (native player is not connected; VFS integration pending) |
+| 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; decryption/VFS integration pending) |
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
 | 8 | Gamepad Calibration | Web Gamepad API | SDL3 gamepad detection, library selection and full focus navigation | **PARTIAL** — a pad is opened, named and drives d-pad/shoulder selection plus focus moves, SOUTH activates, EAST goes back and START toggles settings; the badge reports the real state. There is no calibration, binding or deadzone UI; the web baseline's calibration screen has no native counterpart |
 | 9 | Preflight Checks | `hst_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
-| 10 | Progress Feedback | Server-Sent Events (SSE) | Immediate-mode indeterminate preparation-unavailable state | **PARTIAL** — no native preparation pipeline supplies item counts or percentages in this build; the renderer reports that limitation instead of drawing a progress claim |
+| 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
 | 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
@@ -147,6 +170,10 @@ the launcher resolves.
 
 ```powershell
 mingw32-make player
+
+mingw32-make native-core-tests
+
+build/nakagawa_player.exe --view=wizard-staging --screenshot=build/wizard_staging.bmp
 ```
 
 ### Visual Verification

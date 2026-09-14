@@ -25,7 +25,12 @@ typedef enum {
     VIEW_UNSUPPORTED_TITLE,
     VIEW_PREPARING,
     VIEW_SETTINGS,
-    VIEW_ERROR
+    VIEW_ERROR,
+    VIEW_SETUP_WIZARD,
+    /* Dedicated post-staging library state. It renders the normal library
+       card, but lets tests and the event loop distinguish a newly completed
+       setup transaction from an ordinary library visit. */
+    PLAYER_VIEW_READY_LIBRARY
 } PlayerView;
 
 typedef enum {
@@ -84,6 +89,33 @@ typedef struct {
     PlayerView return_view;
 } ErrorState;
 
+typedef enum {
+    WIZARD_STEP_WELCOME = 0,
+    WIZARD_STEP_SELECT_GAME,
+    WIZARD_STEP_INSPECT_VERIFY,
+    WIZARD_STEP_SYSTEM_FONTS,
+    WIZARD_STEP_READY_LAUNCH
+} WizardStep;
+
+typedef struct {
+    WizardStep step;
+    bool iso_selected;
+    bool font_confirmed;
+    char status_message[256];
+    int extraction_percent;
+    int files_extracted;
+    int total_files;
+    bool is_extracting;
+    bool extraction_complete;
+    bool extraction_failed;
+    bool extraction_requested;
+    bool extraction_cancel_requested;
+    NkResult extraction_result;
+    char extraction_current_file[MAX_PATH_LEN];
+    char extraction_error[256];
+    char staging_root[MAX_PATH_LEN];
+} SetupWizardState;
+
 typedef struct {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
@@ -93,6 +125,7 @@ typedef struct {
     PreparationState prep_state;
     PlayerSettings settings;
     ErrorState last_error;
+    SetupWizardState wizard;
 
     /* Native core state */
     NkLibrary library;
@@ -172,5 +205,25 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+
+/* Commit the inspected, successfully staged title to the persistent library
+ * and enter PLAYER_VIEW_READY_LIBRARY. Runtime readiness remains separate:
+ * assets_staged may be true while is_prepared is false. */
+bool player_app_register_staged_game(PlayerApp *app);
+
+/* Setup Wizard API */
+void player_app_start_setup_wizard(PlayerApp *app);
+void player_app_wizard_next(PlayerApp *app);
+void player_app_wizard_back(PlayerApp *app);
+void player_app_wizard_cancel(PlayerApp *app);
+void player_app_wizard_reset_extraction(PlayerApp *app);
+bool player_app_wizard_take_extraction_request(PlayerApp *app);
+void player_app_wizard_request_cancel(PlayerApp *app);
+bool player_app_wizard_cancel_requested(const PlayerApp *app);
+void player_app_wizard_set_extraction_progress(PlayerApp *app, int percent,
+                                               int files_extracted, int total_files,
+                                               const char *current_file);
+void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
+                                         const char *error_message);
 
 #endif /* NAKAGAWA_PLAYER_STATE_H */

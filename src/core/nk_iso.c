@@ -10,12 +10,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_MSC_VER)
+#include <strings.h>
+#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
 
 #if defined(_MSC_VER)
+#define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 #define strtok_r strtok_s
 #endif
@@ -710,4 +714,438 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
     int close_failed = (fclose(f_out) != 0);
     fclose(f_iso);
     return (remaining == 0 && !close_failed) ? NK_OK : NK_ERROR_IO;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Native first-time setup payload walk                                      */
+
+#define NK_ISO_STAGE_MAX_VISITED_DIRS 1024u
+#define NK_ISO_STAGE_MAX_PATH 4096u
+#define NK_ISO_STAGE_MAX_FILES 100000u
+
+typedef struct {
+    uint32_t lba;
+    uint32_t size;
+    bool is_directory;
+    char name[256];
+} NkIsoDirectoryEntry;
+
+typedef bool (*NkIsoDirectoryEntryCallback)(const NkIsoDirectoryEntry *entry,
+                                             void *userdata);
+
+typedef struct {
+    FILE *iso;
+    uint64_t file_size;
+    const char *host_root;
+    NkIsoProgressCallback progress;
+    void *progress_userdata;
+    uint64_t bytes_complete;
+    uint64_t bytes_total;
+    size_t files_complete;
+    size_t total_files;
+    uint32_t visited_lbas[NK_ISO_STAGE_MAX_VISITED_DIRS];
+    size_t visited_count;
+} NkIsoStageContext;
+
+typedef struct {
+    const char *wanted_name;
+    NkIsoDirectoryEntry found;
+    bool found_any;
+    bool conflict;
+} NkIsoFindContext;
+
+static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
+                                      uint32_t size) {
+    uint64_t offset = (uint64_t)lba * SECTOR_SIZE;
+    return offset <= file_size && (uint64_t)size <= file_size - offset;
+}
+
+static bool nk_iso_stage_component_valid(const char *name) {
+    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return false;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p < 0x20u || *p == 0x7fu || *p == '/' || *p == '\\' ||
+            *p == '<' || *p == '>' || *p == ':' || *p == '"' ||
+            *p == '|' || *p == '?' || *p == '*') return false;
+    }
+    return true;
+}
+
+static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
+                                           uint32_t lba, uint32_t size,
+                                           NkIsoDirectoryEntryCallback callback,
+                                           void *userdata) {
+    if (!iso || !callback || size == 0 || size > NK_ISO_MAX_DIR_BYTES ||
+        !nk_iso_stage_extent_valid(file_size, lba, size)) return false;
+    uint8_t *buffer = (uint8_t *)malloc(size);
+    if (!buffer) return false;
+    uint64_t offset = (uint64_t)lba * SECTOR_SIZE;
+    bool okay = nk_fseek64(iso, (int64_t)offset, SEEK_SET) == 0 &&
+                fread(buffer, 1, size, iso) == size;
+    size_t pos = 0;
+    while (okay && pos < size) {
+        uint8_t record_length = buffer[pos];
+        if (record_length == 0) {
+            size_t next_sector = ((pos / SECTOR_SIZE) + 1u) * SECTOR_SIZE;
+            if (next_sector <= pos) {
+                okay = false;
+                break;
+            }
+            pos = next_sector;
+            continue;
+        }
+        if (record_length < 34u || record_length > size - pos ||
+            (pos % SECTOR_SIZE) + record_length > SECTOR_SIZE) {
+            okay = false;
+            break;
+        }
+        uint8_t name_length = buffer[pos + 32];
+        if (name_length == 0 || 33u + name_length > record_length) {
+            okay = false;
+            break;
+        }
+        uint32_t extent_lba_le = read_le32(&buffer[pos + 2]);
+        uint32_t extent_lba_be = read_be32(&buffer[pos + 6]);
+        uint32_t extent_size_le = read_le32(&buffer[pos + 10]);
+        uint32_t extent_size_be = read_be32(&buffer[pos + 14]);
+        if (extent_lba_le != extent_lba_be || extent_size_le != extent_size_be ||
+            !nk_iso_stage_extent_valid(file_size, extent_lba_le, extent_size_le)) {
+            okay = false;
+            break;
+        }
+
+        /* ISO9660 identifiers 0 and 1 are the directory's `.` and `..`
+         * records. They are structural links, never payload components. */
+        const uint8_t *name_bytes = &buffer[pos + 33];
+        if (name_length != 1 || (name_bytes[0] != 0 && name_bytes[0] != 1)) {
+            size_t component_length = name_length;
+            for (size_t i = 0; i < component_length; i++) {
+                if (name_bytes[i] == ';') {
+                    component_length = i;
+                    break;
+                }
+            }
+            if (component_length == 0 || component_length >= 256) {
+                okay = false;
+                break;
+            }
+            NkIsoDirectoryEntry entry;
+            memset(&entry, 0, sizeof(entry));
+            memcpy(entry.name, name_bytes, component_length);
+            entry.name[component_length] = '\0';
+            if (!nk_iso_stage_component_valid(entry.name)) {
+                okay = false;
+                break;
+            }
+            entry.lba = extent_lba_le;
+            entry.size = extent_size_le;
+            entry.is_directory = (buffer[pos + 25] & 0x02u) != 0;
+            if (!callback(&entry, userdata)) {
+                okay = false;
+                break;
+            }
+        }
+        pos += record_length;
+    }
+    free(buffer);
+    return okay;
+}
+
+static bool nk_iso_stage_find_callback(const NkIsoDirectoryEntry *entry,
+                                       void *userdata) {
+    NkIsoFindContext *find = (NkIsoFindContext *)userdata;
+    if (!find || !entry || strcasecmp(entry->name, find->wanted_name) != 0) return true;
+    if (!find->found_any) {
+        find->found = *entry;
+        find->found_any = true;
+    } else if (find->found.lba != entry->lba || find->found.size != entry->size ||
+               find->found.is_directory != entry->is_directory) {
+        find->conflict = true;
+        return false;
+    }
+    return true;
+}
+
+static NkResult nk_iso_stage_find_child(FILE *iso, uint64_t file_size,
+                                        uint32_t directory_lba,
+                                        uint32_t directory_size,
+                                        const char *name,
+                                        NkIsoDirectoryEntry *out_entry) {
+    if (!name || !out_entry) return NK_ERROR_GENERIC;
+    NkIsoFindContext find;
+    memset(&find, 0, sizeof(find));
+    find.wanted_name = name;
+    if (!nk_iso_stage_directory_records(iso, file_size, directory_lba,
+                                        directory_size, nk_iso_stage_find_callback,
+                                        &find)) {
+        return find.conflict ? NK_ERROR_INVALID_ISO : NK_ERROR_INVALID_ISO;
+    }
+    if (!find.found_any) return NK_ERROR_FILE_NOT_FOUND;
+    *out_entry = find.found;
+    return NK_OK;
+}
+
+typedef struct {
+    NkIsoStageContext *stage;
+    bool count_only;
+    unsigned depth;
+    char relative_prefix[NK_ISO_STAGE_MAX_PATH];
+} NkIsoWalkContext;
+
+static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
+                                            uint32_t directory_lba,
+                                            uint32_t directory_size,
+                                            unsigned depth);
+
+static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
+                                       void *userdata) {
+    NkIsoWalkContext *walk = (NkIsoWalkContext *)userdata;
+    if (!walk || !walk->stage || !entry) return false;
+    char child_path[NK_ISO_STAGE_MAX_PATH];
+    int written = snprintf(child_path, sizeof(child_path), "%s/%s",
+                           walk->relative_prefix, entry->name);
+    if (written < 0 || (size_t)written >= sizeof(child_path)) return false;
+
+    if (entry->is_directory) {
+        NkIsoWalkContext child = *walk;
+        snprintf(child.relative_prefix, sizeof(child.relative_prefix), "%s", child_path);
+        child.depth = walk->depth + 1u;
+        return nk_iso_stage_walk_directory(&child, entry->lba, entry->size,
+                                            child.depth) == NK_OK;
+    }
+
+    NkIsoStageContext *stage = walk->stage;
+    if (walk->count_only) {
+        if (stage->total_files >= NK_ISO_STAGE_MAX_FILES ||
+            stage->total_files == SIZE_MAX ||
+            UINT64_MAX - stage->bytes_total < entry->size) return false;
+        stage->total_files++;
+        stage->bytes_total += entry->size;
+        return true;
+    }
+
+    char host_path[NK_ISO_STAGE_MAX_PATH];
+    int host_written = snprintf(host_path, sizeof(host_path), "%s%c%s",
+                                stage->host_root, nk_platform_path_separator(),
+                                child_path);
+    if (host_written < 0 || (size_t)host_written >= sizeof(host_path)) return false;
+    char parent[NK_ISO_STAGE_MAX_PATH];
+    snprintf(parent, sizeof(parent), "%s", host_path);
+    char *last_slash = strrchr(parent, '/');
+    char *last_backslash = strrchr(parent, '\\');
+    if (last_backslash && (!last_slash || last_backslash > last_slash)) last_slash = last_backslash;
+    if (!last_slash) return false;
+    *last_slash = '\0';
+    if (!nk_platform_mkdir_p(parent)) return false;
+
+    FILE *out = nk_iso_fopen(host_path, "wb");
+    if (!out) return false;
+    uint64_t source_offset = (uint64_t)entry->lba * SECTOR_SIZE;
+    if (nk_fseek64(stage->iso, (int64_t)source_offset, SEEK_SET) != 0) {
+        fclose(out);
+        remove(host_path);
+        return false;
+    }
+    uint8_t buffer[64 * 1024];
+    uint32_t remaining = entry->size;
+    bool okay = true;
+    while (remaining > 0) {
+        size_t requested = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
+        size_t read_count = fread(buffer, 1, requested, stage->iso);
+        if (read_count == 0) {
+            okay = false;
+            break;
+        }
+        size_t write_count = fwrite(buffer, 1, read_count, out);
+        if (write_count != read_count) {
+            okay = false;
+            break;
+        }
+        remaining -= (uint32_t)read_count;
+        stage->bytes_complete += read_count;
+        if (stage->progress &&
+            !stage->progress(child_path, stage->bytes_complete, stage->bytes_total,
+                             stage->files_complete, stage->total_files,
+                             stage->progress_userdata)) {
+            okay = false;
+            break;
+        }
+    }
+    int close_failed = fclose(out) != 0;
+    if (!okay || remaining != 0 || close_failed) {
+        remove(host_path);
+        return false;
+    }
+    stage->files_complete++;
+    if (stage->progress &&
+        !stage->progress(child_path, stage->bytes_complete, stage->bytes_total,
+                         stage->files_complete, stage->total_files,
+                         stage->progress_userdata)) return false;
+    return true;
+}
+
+static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
+                                            uint32_t directory_lba,
+                                            uint32_t directory_size,
+                                            unsigned depth) {
+    if (!walk || !walk->stage || depth > NK_ISO_MAX_DEPTH || directory_size == 0) {
+        return NK_ERROR_INVALID_ISO;
+    }
+    NkIsoStageContext *stage = walk->stage;
+    for (size_t i = 0; i < stage->visited_count; i++) {
+        if (stage->visited_lbas[i] == directory_lba) return NK_ERROR_INVALID_ISO;
+    }
+    if (stage->visited_count >= NK_ISO_STAGE_MAX_VISITED_DIRS) return NK_ERROR_INVALID_ISO;
+    stage->visited_lbas[stage->visited_count++] = directory_lba;
+    return nk_iso_stage_directory_records(stage->iso, stage->file_size,
+                                          directory_lba, directory_size,
+                                          nk_iso_stage_walk_callback, walk)
+        ? NK_OK : NK_ERROR_INVALID_ISO;
+}
+
+NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
+                             NkIsoProgressCallback progress, void *userdata) {
+    if (!iso_path || !host_root || !host_root[0]) return NK_ERROR_GENERIC;
+    FILE *iso = nk_iso_fopen(iso_path, "rb");
+    if (!iso) return NK_ERROR_FILE_NOT_FOUND;
+    if (nk_fseek64(iso, 0, SEEK_END) != 0) {
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    int64_t raw_size = nk_ftell64(iso);
+    if (raw_size <= 0 || nk_fseek64(iso, 0, SEEK_SET) != 0) {
+        fclose(iso);
+        return NK_ERROR_INVALID_ISO;
+    }
+    uint64_t file_size = (uint64_t)raw_size;
+    uint8_t pvd[SECTOR_SIZE];
+    if (file_size < (uint64_t)(PVD_SECTOR + 1) * SECTOR_SIZE ||
+        nk_fseek64(iso, (int64_t)PVD_SECTOR * SECTOR_SIZE, SEEK_SET) != 0 ||
+        fread(pvd, 1, sizeof(pvd), iso) != sizeof(pvd) ||
+        pvd[0] != 0x01 || memcmp(&pvd[1], "CD001", 5) != 0) {
+        fclose(iso);
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint32_t root_lba = read_le32(&pvd[158]);
+    uint32_t root_size = read_le32(&pvd[166]);
+    uint32_t root_lba_be = read_be32(&pvd[162]);
+    uint32_t root_size_be = read_be32(&pvd[170]);
+    if (root_lba != root_lba_be || root_size != root_size_be ||
+        !nk_iso_stage_extent_valid(file_size, root_lba, root_size) ||
+        root_size == 0 || root_size > NK_ISO_MAX_DIR_BYTES) {
+        fclose(iso);
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    NkIsoDirectoryEntry psp_game = { 0 };
+    NkIsoDirectoryEntry sysdir = { 0 };
+    NkIsoDirectoryEntry usrdir = { 0 };
+    NkIsoDirectoryEntry xbdata = { 0 };
+    NkIsoDirectoryEntry eboot = { 0 };
+    NkResult result = nk_iso_stage_find_child(iso, file_size, root_lba,
+                                              root_size, "PSP_GAME", &psp_game);
+    if (result == NK_OK && (!psp_game.is_directory || psp_game.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, psp_game.lba,
+                                                           psp_game.size, "SYSDIR", &sysdir);
+    if (result == NK_OK && (!sysdir.is_directory || sysdir.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, sysdir.lba,
+                                                           sysdir.size, "EBOOT.BIN", &eboot);
+    if (result == NK_OK && (eboot.is_directory || eboot.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, psp_game.lba,
+                                                           psp_game.size, "USRDIR", &usrdir);
+    if (result == NK_OK && (!usrdir.is_directory || usrdir.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, usrdir.lba,
+                                                           usrdir.size, "xbdata", &xbdata);
+    if (result == NK_OK && (!xbdata.is_directory || xbdata.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result != NK_OK) {
+        fclose(iso);
+        return result;
+    }
+
+    NkIsoStageContext stage;
+    memset(&stage, 0, sizeof(stage));
+    stage.iso = iso;
+    stage.file_size = file_size;
+    stage.host_root = host_root;
+    stage.progress = progress;
+    stage.progress_userdata = userdata;
+    stage.total_files = 1;
+    stage.bytes_total = eboot.size;
+
+    NkIsoWalkContext count_walk;
+    memset(&count_walk, 0, sizeof(count_walk));
+    count_walk.stage = &stage;
+    count_walk.count_only = true;
+    count_walk.depth = 1;
+    snprintf(count_walk.relative_prefix, sizeof(count_walk.relative_prefix), "xbdata");
+    result = nk_iso_stage_walk_directory(&count_walk, xbdata.lba, xbdata.size, 1);
+    if (result != NK_OK || stage.total_files == 1) {
+        fclose(iso);
+        return result == NK_OK ? NK_ERROR_FILE_NOT_FOUND : result;
+    }
+
+    if (!nk_platform_mkdir_p(host_root)) {
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    char eboot_path[NK_ISO_STAGE_MAX_PATH];
+    int eboot_written = snprintf(eboot_path, sizeof(eboot_path), "%s%cEBOOT.BIN",
+                                 host_root, nk_platform_path_separator());
+    if (eboot_written < 0 || (size_t)eboot_written >= sizeof(eboot_path)) {
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    FILE *eboot_out = nk_iso_fopen(eboot_path, "wb");
+    if (!eboot_out || nk_fseek64(iso, (int64_t)eboot.lba * SECTOR_SIZE, SEEK_SET) != 0) {
+        if (eboot_out) fclose(eboot_out);
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    uint8_t eboot_buffer[64 * 1024];
+    uint32_t eboot_remaining = eboot.size;
+    while (eboot_remaining > 0) {
+        size_t requested = eboot_remaining < sizeof(eboot_buffer)
+            ? (size_t)eboot_remaining : sizeof(eboot_buffer);
+        size_t read_count = fread(eboot_buffer, 1, requested, iso);
+        if (read_count == 0 || fwrite(eboot_buffer, 1, read_count, eboot_out) != read_count) {
+            fclose(eboot_out);
+            remove(eboot_path);
+            fclose(iso);
+            return NK_ERROR_IO;
+        }
+        eboot_remaining -= (uint32_t)read_count;
+        stage.bytes_complete += read_count;
+        if (stage.progress && !stage.progress("EBOOT.BIN", stage.bytes_complete,
+                                               stage.bytes_total, 0, stage.total_files,
+                                               stage.progress_userdata)) {
+            fclose(eboot_out);
+            remove(eboot_path);
+            fclose(iso);
+            return NK_ERROR_CANCELLED;
+        }
+    }
+    int eboot_close_failed = fclose(eboot_out) != 0;
+    if (eboot_close_failed) {
+        remove(eboot_path);
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    stage.files_complete = 1;
+    if (stage.progress && !stage.progress("EBOOT.BIN", stage.bytes_complete,
+                                           stage.bytes_total, stage.files_complete,
+                                           stage.total_files, stage.progress_userdata)) {
+        fclose(iso);
+        return NK_ERROR_CANCELLED;
+    }
+
+    stage.visited_count = 0;
+    NkIsoWalkContext extract_walk;
+    memset(&extract_walk, 0, sizeof(extract_walk));
+    extract_walk.stage = &stage;
+    extract_walk.count_only = false;
+    extract_walk.depth = 1;
+    snprintf(extract_walk.relative_prefix, sizeof(extract_walk.relative_prefix), "xbdata");
+    result = nk_iso_stage_walk_directory(&extract_walk, xbdata.lba, xbdata.size, 1);
+    fclose(iso);
+    return result;
 }
