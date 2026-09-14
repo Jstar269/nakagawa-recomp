@@ -77,7 +77,8 @@ class HstTitleManifestTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_HST_EXTRA_SPANS", analyzer)
 
     def test_zero_base_and_entry_match_manager_contract(self) -> None:
-        manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
+        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+        manager = mgr_path.read_text(encoding="utf-8")
         self.assertIn('"GAME_BASE=0"', manager)
         self.assertIn('"GAME_ENTRY=0"', manager)
 

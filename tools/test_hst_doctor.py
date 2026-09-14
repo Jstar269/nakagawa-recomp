@@ -465,6 +465,7 @@ class SimpleFrontEndTests(unittest.TestCase):
         for script in (
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
+            ROOT / "nk_manager.ps1",
             ROOT / "copy_build_assets.ps1",
             ROOT / "tools" / "hst_run_support.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",

@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "031f0057dbbe8ec94cbdfec2a78c596dd67bf199bc2c4e06bf2716b1bc73d033"
+      "sha256": "9142708b773b1043bf10eb241b24103beca67e86cd669a11606a51388f2b416c"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1428,7 +1428,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83a7ae4f1af3b5ee34dc6e4182cf353acb866586f32a920f766714c8b2609067"
+      "sha256": "4f858d600b0d4afda27837d615e90e68a561e83d01b2f7eb96fdf9c1d43b26d9"
     },
     {
       "path": "interface/.env.example",
@@ -3277,6 +3277,18 @@
         "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "cffdaa909f8783b1d79f955a6faf67327171e468a0eab452e28aba88a6000ec6"
+    },
+    {
+      "path": "nk_manager.ps1",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "doctor-and-host-preflight-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "17868c59e18a0e463f277e2ae36c095545bc9224bd1b0612da2b64c3bd681bf1"
     },
     {
       "path": "pyproject.toml",
@@ -7479,7 +7491,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "995aff64ae36c1e7de947b6084d59cb732341d403811a037b6ab3f5151c9cda4"
+      "sha256": "788dc596bb61c0a4b8540d76a512e61cfd57f8f89a1c5f76b386506fb54ffab9"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7680,7 +7692,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "165e7da8080c80dd7d7bb8a7305c6ca9fe0397b6822535fe8fbf81d14605b4e1"
+      "sha256": "04d834e1bead9a5841cf9b59f059dd4376f44328535fb33d7067d12c58883120"
     },
     {
       "path": "tools/test_dmac_semantics.py",
@@ -7884,7 +7896,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ec31907ef2226528bd9ba68dd3420bcb3d4adf4b2337b389e2b2c3e70dde564f"
+      "sha256": "429e8facfc11caaccd2401bffcf5bdf1b0fa09e4773711ec284aa98a9b639d03"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -7893,7 +7905,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "00bd1bb929ff8ad2c98fa37a848a37202e44378cce3e474693b0831f7fbce5a5"
+      "sha256": "7c73cc785aed9f0d0ad41469cd48c31e9b84b2417fd42eebcc9f8370f429fcf4"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7902,7 +7914,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e68dadbba18070cf348981f73f380ed32404bf75d59b826ee361f13cd583316e"
+      "sha256": "e57416c0c69e572a1a3110500f023b3225bfcd718756feb1e9f6bfa89159356b"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -7911,7 +7923,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8b82f03b1ae0a57c9fd790721597bf527549f370e44bec8cd40af31111aeda90"
+      "sha256": "f0f92c5642b31f8b5b0ad4f563e7170975967760945dfea6deee4336d68c956b"
     },
     {
       "path": "tools/test_import_audit.py",
@@ -7995,7 +8007,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e7905c44c44187dd849c80892deacbf14bb2a7041927c7bbf851f6d514277962"
+      "sha256": "9e82130534ddf6d73dfb98563ba2169a7369972b17cf0ea68689cf2bd89a7e23"
     },
     {
       "path": "tools/test_manager_safety.py",
@@ -8004,7 +8016,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "fc7782dee74e8ea9a4419741194d831ec38d08a9608895fb18e343657c6dbbe6"
+      "sha256": "c03441e58aeabdd288be5717f5d813e8c34ae71c50483e2a96efbf22d7d5549f"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -8013,7 +8025,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "409f6dc2f9ca48bcbd3dd268084d1bf7086481b450e8347cc26fb0cb6b0a1222"
+      "sha256": "e36d929343c3855932ae8374c62f0e59696c964382c95cbb17edf96b3d94dd15"
     },
     {
       "path": "tools/test_matrix_disposition.py",
@@ -8340,7 +8352,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bc6c39529547d348e302df5972362963b846f3313a7a514a2ca9a3f888e2696e"
+      "sha256": "7bc747aa60549696bd983346e49a14896568c290ac44d421bfa4584b5c6e7d59"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -8490,7 +8502,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bbc7c0f93ca1b119a41dd3e51a210ff5e8ffa6fbb992fa223472cdecfa98d28a"
+      "sha256": "edcd4bb9b0a69dd6b917e3b269cef851139674c265100a499015f1a5b518eeda"
     },
     {
       "path": "tools/test_title_manager_plan.py",
@@ -8613,7 +8625,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ef4986702d6ee02f03c39ee94a82980af0f13a90ff1287b52322aeca4543383a"
+      "sha256": "6b4de4e7ce90f4bf89200e9ac4c6fbc46719eb90bf2465ded1836d3bf806295c"
     },
     {
       "path": "tools/test_vfpu_trace_bits.py",
@@ -8658,7 +8670,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bb3baf7ee1bc3f1862723779d5d0586c47ff0e61c33ae2a3226623e1424852d0"
+      "sha256": "0408450365ef2a6bf60011e6453758db665508d7a313b786aa0644fb8e30f397"
     },
     {
       "path": "tools/test_vulkan_sdk.py",

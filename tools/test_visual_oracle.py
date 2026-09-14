@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 SUPPORT = ROOT / "tools" / "hst_run_support.ps1"
 PS_TESTS = ROOT / "tools" / "test_visual_oracle.ps1"
 HLE = ROOT / "src" / "rt" / "hle.c"
@@ -102,11 +102,14 @@ class VisualOracleContractTests(unittest.TestCase):
         self.assertIn("-RunProfile", self.manager)
         oracle = self.manager[self.manager.index("function Invoke-VisualOracle") :]
         oracle = oracle[: oracle.index("function Invoke-DiffFunc")]
-        self.assertIn("Run-HstEngine -Profile $RunProfile", oracle)
+        self.assertTrue(
+            "Run-NkEngine -Profile $RunProfile" in oracle or "Run-HstEngine -Profile $RunProfile" in oracle,
+            "oracle must invoke engine runner with profile",
+        )
         self.assertNotIn(
             "Start-Process",
             oracle,
-            "the oracle must go through Run-HstEngine, not launch its own runner",
+            "the oracle must go through the engine runner, not launch its own runner",
         )
 
     def test_save_state_can_be_held_still_across_runs(self) -> None:

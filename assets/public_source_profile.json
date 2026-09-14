@@ -428,6 +428,7 @@
     "interface/tailwind.config.ts",
     "interface/tsconfig.json",
     "mk/build_common.mk",
+    "nk_manager.ps1",
     "pyproject.toml",
     "src/core/generated/nk_title_catalog.c",
     "src/core/generated/nk_title_catalog.h",

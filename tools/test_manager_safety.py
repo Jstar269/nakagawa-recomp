@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 SUPPORT = ROOT / "tools" / "hst_run_support.ps1"
 SAFETY = ROOT / "tools" / "hst_safety.ps1"
 PS_TESTS = ROOT / "tools" / "test_manager_safety.ps1"
