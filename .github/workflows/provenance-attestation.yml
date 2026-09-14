@@ -178,6 +178,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/verify"
+          # Existing exact path authority is sufficient for normal progress.
+          # The legacy per-revision reviewed_blobs policy remains an explicit
+          # opt-in via --require-reviewed-blobs for higher-assurance runs.
           # Exact immutable SHAs from the event, never branch names: resolving
           # a branch twice can name two different trees.
           python tools/provenance_attest_verify.py \

@@ -19,7 +19,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request | classification, hygiene/security, Markdown when Markdown changed, `CI required` | Python/native, Windows, dashboard, and other substantive jobs |
+| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and `CI required` | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, `CI required` | Python/native, Windows, dashboard |
 | Ready pull request, `interface/**` | classification, hygiene/security, dashboard, `CI required` | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, `CI required` | dashboard |
@@ -31,24 +31,14 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
 
-### Validating a draft without marking it ready
+### Draft pull requests
 
-A draft pull request **cannot** show a green `CI required`. The substantive jobs
-are suppressed, and `tools/ci_required.py` reports that suppression as a failure
-("An applicable CI gate failed, was cancelled, was suppressed for a draft...").
-That is working as intended -- it stops a work-in-progress branch from burning
-the platform matrix -- but read cold it looks like a broken build, and marking a
-PR ready to discover whether it passes is the wrong way round.
-
-Use the manual dispatch instead, which forces the full matrix on any ref:
-
-```bash
-gh workflow run CI --ref <your-branch>
-```
-
-`tools/ci_paths.py` sets `allow_substantive` for a manual run, so the native,
-Python, Windows, dashboard and main-smoke jobs all execute against the branch.
-That gives a real verdict on the exact head while the PR stays a draft.
+A draft pull request now receives the same path-applicable substantive gates as
+a ready pull request. No `Ready for review` transition or manual
+`workflow_dispatch` is needed to discover whether the exact head passes. The
+workflow still cancels superseded runs, and docs-only or other irrelevant jobs
+remain skipped by the classifier. `workflow_dispatch` remains available when a
+maintainer deliberately wants the complete matrix regardless of changed paths.
 
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
@@ -128,19 +118,22 @@ SHAs from the pull-request event for exactly that reason.
 These two are routinely confused, and the confusion is the single most common
 reason a branch looks finished and is not:
 
-| Gate | Compares against | Can detect an unapproved blob |
+| Gate | Compares against | Can detect an unapproved path or content change |
 | --- | --- | --- |
 | `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
-| `provenance_attest_verify` | the **external private authority** | yes; this is what emits `BLOB_UNAPPROVED` |
+| `provenance_attest_verify` | the **external private authority** | yes; normal mode checks path authority and content binding; strict mode also checks legacy blob approvals |
 
 A tree can report `publication audit: OK (738 tracked files)` and
 `verdict: FAIL (5 fatal findings)` at the same commit. "Gates green" that means
 only the first is not evidence that the branch can merge.
 
-The attestation verifier is also the one most easily forgotten, because changed
-implementation bytes need an exact reviewed-blob approval that no automated step
-can grant. See [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for
-the two authority tiers and what each class needs.
+The attestation verifier is also the one most easily forgotten. Existing
+implementation paths remain authorized across ordinary revisions; automated
+content binding and CI validate each new commit without a second private blob
+approval. A genuinely new implementation path still needs exact external path
+authority, and `--require-reviewed-blobs` remains available for high-assurance
+legacy runs. See [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for
+the authority boundaries and what each class needs.
 
 ### The generated control files must be in the commit
 
@@ -234,9 +227,11 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   the native and Windows compile gates.
 - **An empty or unobtainable file list forces the full matrix**, so a shallow
   clone or an unusual event payload cannot quietly narrow the run.
-- **Draft suppression never rewrites classification.** Only `allow_substantive`
-  goes false, including when an unknown path forces full applicability; the path
-  facts stay true, so the ready-for-review transition needs no reclassification.
+- **Draft status does not suppress substantive validation.** A draft and a ready
+  pull request receive the same path classification and applicable gates, so
+  progress does not depend on a status transition or manual dispatch. The
+  classifier still exports `draft` for diagnostics and keeps the main-push
+  suppression policy separate.
 - **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
   run — which includes `publish_audit --provenance-self-consistency`,
   `policy_sync`, and the Betterleaks scan — executes on every event, so the

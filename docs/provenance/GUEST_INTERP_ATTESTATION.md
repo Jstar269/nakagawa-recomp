@@ -75,26 +75,25 @@ and by `publish_audit`, and no deterministic class fits an implementation file.
 Either the authority holds a record for these paths, or the paths are not
 publishable.
 
-## The record alone is no longer sufficient
+## The record establishes path authority
 
-Since exact-blob authorization landed (see
-[`docs/PROVENANCE_MERGE_GATE.md`](../PROVENANCE_MERGE_GATE.md)), a record
-authorizes a path and a `reviewed_blobs` approval authorizes the bytes. The
-record's arrival will therefore clear `RECORD_ABSENT` and nothing more: these
-two files keep their current authorization only while their bytes are
-unchanged, and **the first change to either one will require the maintainer to
-approve that exact digest**.
+The trusted record authorizes these implementation paths across ordinary
+revisions. The verifier still binds every candidate to the trusted record,
+checks the candidate content and export, and fails closed when path authority
+is absent or unqualified. A routine byte change therefore does not require a
+second private `reviewed_blobs` approval. That legacy exact-digest check remains
+available only through `--require-reviewed-blobs` for high-assurance runs.
 
-The maintainer's eventual approval should bind the exact blobs currently in the
-public tree, whose digests the public ledger already carries:
+The public ledger carries the current content digests for reference:
 
 ```text
 src/rt/guest_interp.c  1e40b7627b60e435e5fec8fc12200d5fe4c010ecad702c0095743db1dcd99019
 src/rt/guest_interp.h  9ae21d305f8ad7e741843da58a476af41fd6270989f0832d5117b1b24596de2d
 ```
 
-Approving those digests is a separate, deliberate human act from writing the
-record. Neither has been performed by tooling or by an agent.
+The one-time admission of a new implementation path still requires external
+authority to bind the exact path and source lineage. Neither private authority
+nor legal, title, or hardware acceptance can be inferred from automated tests.
 
 ## Why this is not "documentation drift"
 

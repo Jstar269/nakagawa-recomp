@@ -660,9 +660,8 @@ class _RefreshFixture:
         public snapshot alone cannot show that its implementation entries are
         still backed by exact records.  ``wildcard_only`` models the historical
         public tree, where ``tools/helper.py`` was covered only by the inert
-        ``tools/*`` pattern.  ``approvals`` adds ``reviewed_blobs`` exact-bytes
-        approvals, which a genuinely new implementation path needs before it
-        can be admitted.
+        ``tools/*`` pattern.  ``approvals`` adds optional legacy
+        ``reviewed_blobs`` exact-bytes approvals for strict-mode coverage.
         """
         helper = (
             {"id": "tooling-general", "classification": "project-authored-independent",
@@ -930,6 +929,7 @@ class _RefreshFixture:
         trusted_tree: str | None = None,
         trusted_manifest: Path | None = None,
         trusted_policy: Path | None = None,
+        require_reviewed_blobs: bool = False,
     ) -> subprocess.CompletedProcess:
         argv = [
             sys.executable, str(REFRESH_TOOL), "admit-new-reviewed",
@@ -943,6 +943,8 @@ class _RefreshFixture:
             argv[argv.index("--paths"):argv.index("--paths")] = [
                 "--trusted-baseline-ledger", str(trusted_baseline_ledger),
             ]
+        if require_reviewed_blobs:
+            argv.insert(argv.index("--paths"), "--require-reviewed-blobs")
         return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
 
     def audit(self, *extra: str) -> subprocess.CompletedProcess:
@@ -1400,7 +1402,7 @@ class TrustedAdmissionTests(unittest.TestCase):
                 self.assertIn("ADMISSION_CLASS_ESCAPE", result.stderr)
 
     # -- positive: implementation with stronger external evidence -----------
-    def test_new_implementation_path_requires_record_and_blob_approval(self) -> None:
+    def test_new_implementation_path_requires_an_exact_record(self) -> None:
         fixture = _RefreshFixture(self)
         new_src = "src/rt/new_module.c"
         content = (
@@ -1584,6 +1586,7 @@ class TrustedAdmissionTests(unittest.TestCase):
                 result = fixture.admit(
                     new_src, authority=authority, trusted_ledger=detailed,
                     trusted_baseline_ledger=fixture.trusted_ledger,
+                    require_reviewed_blobs=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(expected, result.stderr)
@@ -1596,7 +1599,7 @@ class TrustedAdmissionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ADMISSION_AUTHORITY_RECORD_UNBOUND", result.stderr)
 
-    def test_implementation_without_blob_approval_is_refused(self) -> None:
+    def test_implementation_admission_needs_no_duplicate_blob_approval(self) -> None:
         fixture = _RefreshFixture(self)
         new_src = "src/rt/new_widget.c"
         digest = fixture.add_new_path(new_src, fixture.source)
@@ -1614,8 +1617,28 @@ class TrustedAdmissionTests(unittest.TestCase):
             new_src, authority=authority, trusted_ledger=detailed,
             trusted_baseline_ledger=fixture.trusted_ledger,
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("BLOB_UNAPPROVED", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._entry(fixture, new_src)["sha256"], digest)
+
+        strict_fixture = _RefreshFixture(self)
+        strict_digest = strict_fixture.add_new_path(new_src, strict_fixture.source)
+        strict_record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                         "evidence_tier": "H", "paths": [new_src]}
+        strict_detailed = strict_fixture.detailed_ledger(extra_records=[strict_record])
+        strict_authority = strict_fixture.admission_authority({
+            "path": new_src, "sha256": strict_digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation",
+            "record_id": "PROV-NEWWIDGET",
+        })
+        strict_result = strict_fixture.admit(
+            new_src, authority=strict_authority, trusted_ledger=strict_detailed,
+            trusted_baseline_ledger=strict_fixture.trusted_ledger,
+            require_reviewed_blobs=True,
+        )
+        self.assertNotEqual(strict_result.returncode, 0)
+        self.assertIn("BLOB_UNAPPROVED", strict_result.stderr)
 
     def test_implementation_without_exact_record_is_refused(self) -> None:
         fixture = _RefreshFixture(self)
@@ -1700,6 +1723,7 @@ class TrustedAdmissionTests(unittest.TestCase):
                 result = fixture.admit(
                     new_src, authority=authority, trusted_ledger=detailed,
                     trusted_baseline_ledger=fixture.trusted_ledger,
+                    require_reviewed_blobs=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(code, result.stderr)
@@ -1838,8 +1862,8 @@ class TrustedAdmissionTests(unittest.TestCase):
         )
         self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
-    def test_blob_approval_guard_is_load_bearing_mutation(self) -> None:
-        """A mutant that drops the reviewed-blob requirement must be killed."""
+    def test_blob_approval_guard_remains_available_as_strict_opt_in(self) -> None:
+        """The duplicate blob gate is optional, but strict mode stays tested."""
         fixture = _RefreshFixture(self)
         new_src = "src/rt/new_widget.c"
         digest = fixture.add_new_path(new_src, fixture.source)
@@ -1857,8 +1881,26 @@ class TrustedAdmissionTests(unittest.TestCase):
             new_src, authority=authority, trusted_ledger=detailed,
             trusted_baseline_ledger=fixture.trusted_ledger,
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("BLOB_UNAPPROVED", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        strict_fixture = _RefreshFixture(self)
+        strict_digest = strict_fixture.add_new_path(new_src, strict_fixture.source)
+        strict_record = {"id": "PROV-NEWWIDGET", "classification": "project-authored-independent",
+                         "evidence_tier": "H", "paths": [new_src]}
+        strict_detailed = strict_fixture.detailed_ledger(extra_records=[strict_record])
+        strict_authority = strict_fixture.admission_authority({
+            "path": new_src, "sha256": strict_digest,
+            "classification": "project_authored_attested",
+            "origin_kind": "authored_from_scratch", "license": "GPL-2.0-or-later",
+            "origin": "synthetic fixture implementation", "record_id": "PROV-NEWWIDGET",
+        })
+        strict_result = strict_fixture.admit(
+            new_src, authority=strict_authority, trusted_ledger=strict_detailed,
+            trusted_baseline_ledger=strict_fixture.trusted_ledger,
+            require_reviewed_blobs=True,
+        )
+        self.assertNotEqual(strict_result.returncode, 0)
+        self.assertIn("BLOB_UNAPPROVED", strict_result.stderr)
 
         mutant_root = fixture.tmp / "mutant-approval"
         (mutant_root / "tools").mkdir(parents=True)
@@ -1877,12 +1919,13 @@ class TrustedAdmissionTests(unittest.TestCase):
             [
                 sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"),
                 "admit-new-reviewed",
-                "--trusted-ledger", str(detailed),
-                "--admission-authority", str(authority),
-                "--candidate-tree", str(fixture.repo), "--trusted-tree", fixture.baseline,
-                "--trusted-policy", str(fixture.trusted_policy),
-                "--trusted-manifest", str(fixture.trusted_manifest),
-                "--trusted-baseline-ledger", str(fixture.trusted_ledger),
+                "--trusted-ledger", str(strict_detailed),
+                "--admission-authority", str(strict_authority),
+                "--candidate-tree", str(strict_fixture.repo), "--trusted-tree", strict_fixture.baseline,
+                "--trusted-policy", str(strict_fixture.trusted_policy),
+                "--trusted-manifest", str(strict_fixture.trusted_manifest),
+                "--trusted-baseline-ledger", str(strict_fixture.trusted_ledger),
+                "--require-reviewed-blobs",
                 "--paths", new_src,
             ], cwd=ROOT, capture_output=True, text=True,
         )

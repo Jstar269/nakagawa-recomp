@@ -30,7 +30,7 @@ _SRC_TOKEN = re.compile(r"\bsrc/[\w./-]+\.(?:c|cpp)\b")
 # Hosted-CI inline builds whose source lists duplicate a canonical Makefile
 # target recipe. PR #118 shipped a runtime dependency (guest_interp.c) that the
 # Makefile target picked up but the inline CI recipe silently omitted, failing
-# hosted link gates only after Draft suppression lifted. Each mapping below is
+# hosted link gates when draft suppression was in place. Each mapping below is
 # asserted source-list-equal so a new runtime dependency cannot be added to one
 # surface and forgotten in the other.
 _CI_BUILD_TO_MAKE_TARGET = {
@@ -250,7 +250,7 @@ class TestInlineCiSelftestLinkSync(unittest.TestCase):
     These pairs duplicate the same link contract in two places. When they drift,
     the Makefile target keeps passing locally while the hosted substantive gate
     fails (or vice versa), which is exactly how PR #118 hid a missing
-    guest_interp.c behind Draft-skipped jobs.
+    guest_interp.c behind the earlier draft-suppressed jobs.
     """
 
     def test_inline_ci_selftest_source_lists_match_makefile_targets(self) -> None:

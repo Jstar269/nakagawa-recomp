@@ -416,8 +416,11 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
     run_dashboard = dashboard or workflow_ci
     # A normal main push is already covered by its PR. Workflow changes are
     # exceptional: validate the new workflow itself on the default branch too.
+    # Draft pull requests are not a separate validation mode: they get the
+    # same path-applicable gates as ready pull requests, so progress does not
+    # require a manual ready-for-review transition or workflow dispatch.
     is_main_push = event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
-    allow_substantive = event_name == "workflow_dispatch" or (not draft and (not is_main_push or workflow_ci))
+    allow_substantive = event_name == "workflow_dispatch" or (not is_main_push or workflow_ci)
     run_main_smoke = is_main_push or event_name == "workflow_dispatch"
 
     return {

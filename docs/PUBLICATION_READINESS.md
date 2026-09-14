@@ -72,15 +72,18 @@ sequence; `--export-output` in particular is **silently ignored** in full-build
 mode, because it belongs to the `refresh-reviewed` / `admit-new-reviewed`
 subcommands.
 
-The helper deliberately does not create records or approve blobs -- admission is
-not a hash refresh, an approval keys on `(path, exact sha256)`, and both live in
-the maintainer-controlled authority. It also refuses to widen `include_paths`
-without `--apply-policy`, because putting a file on the public surface is a
-publication decision rather than a build step.
+The helper deliberately does not create provenance records or attest new paths:
+admission is not a hash refresh, and path authority lives in the
+maintainer-controlled external ledger. Ordinary edits to an already-authorized
+implementation path need only the regenerated public hash/export and automated
+checks. It also refuses to widen `include_paths` without `--apply-policy`,
+because putting a file on the public surface is a publication decision rather
+than a build step.
 
-Push the private authority **before** pushing the branch: the hosted attestation
-fetches the authority from its GitHub repository at run time, so a branch pushed
-first reports every changed blob as unapproved.
+Push any required new-path authority **before** pushing the branch: the hosted
+attestation fetches the authority from its GitHub repository at run time. The
+legacy per-revision blob review is not part of the normal workflow and is only
+checked when `--require-reviewed-blobs` is explicitly requested.
 
 ## Reproducible local sequence
 
@@ -133,32 +136,37 @@ ledger and then attests the export against that regenerated copy. Candidate
 hashes prove bytes, not authorization; only a record in the trusted detailed
 ledger attests a path.
 
-## Two authority tiers
+## Path authority and mechanical content binding
 
-Provenance is not one check. It is two, answering different questions, and a
-change can satisfy one while failing the other.
+Provenance has one human authority decision and several automated integrity
+checks. The trusted detailed ledger answers whether an implementation path may
+be published and which public class it carries. The candidate ledger, Git blob
+hashes, export recomputation, policy floor, scope floor, and CI then check that
+the submitted tree is internally coherent and remains within that authority.
 
-| Tier | Question | Where it lives | Failure code |
+| Control | Question | Where it lives | Failure code |
 | --- | --- | --- | --- |
 | Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
-| Blob authority | were these exact bytes at this exact path reviewed? | `reviewed_blobs` in the trusted detailed ledger | `BLOB_UNAPPROVED` |
+| Content binding | does the public ledger describe the actual candidate bytes? | candidate Git objects and regenerated ledger/export | `CONTENT_MISMATCH`, `EXPORT_FIELD_MISMATCH` |
+| Scope and policy | did the candidate hide or newly expose protected content? | trusted base policy/tree and the trusted verifier | `TRUSTED_SCOPE_VIOLATION`, `POLICY_SUBSTITUTION` |
 
-The distinction is load-bearing. A record authorizes a *path*; it does not
-authorize arbitrary new bytes placed at that path. Without the blob tier an
-author could replace every byte of an authority-backed file and inherit its
-attestation. Path coverage is not content approval.
+An exact implementation record authorizes a path across ordinary revisions. A
+routine edit therefore needs no second private approval: it updates the public
+hash/export and goes through the automated checks above. A genuinely new
+implementation path still needs an exact external path record, and
+`admit-new-reviewed` still requires an external admission statement binding the
+exact candidate path and SHA-256 on its first entry. Wildcard records remain
+inert for new-path classification.
 
-So changing an implementation-bearing published file needs **both** an exact
-record and a new `reviewed_blobs` entry naming its SHA-256. The record is usually
-already present; the blob approval is a fresh human decision every time the bytes
-change. `tools/provenance_attest_verify.py` enforces the blob tier and is
-runnable locally — run it before claiming a candidate is ready.
+The legacy `reviewed_blobs` array is retained as optional audit history. The
+normal verifier and admission command ignore it; callers that deliberately need
+the former per-revision policy can opt into `--require-reviewed-blobs`. This
+keeps a high-assurance escape hatch without making routine progress wait on a
+new human approval for every implementation edit.
 
-An unchanged file needs no approval, so most changes touch this tier not at all.
-
-| Class | Exact record? | Blob approval when bytes change? |
+| Class | Exact record? | Fresh human approval when bytes change? |
 | --- | --- | --- |
-| `project_authored_attested`, `upstream_derived`, `generated_from_public_source` | yes | **yes** |
+| `project_authored_attested`, `upstream_derived`, `generated_from_public_source` | yes | no; automated content binding and CI apply |
 | `reviewed_documentation`, `reviewed_configuration`, `public_factual_metadata`, `reviewed_other` | no, deterministic | no |
 | `synthetic_fixture` (non-executable data under `fixtures/`, synthetic tests that are pure data) | no, deterministic | no |
 | `unresolved` | cannot be published | — |
@@ -170,10 +178,10 @@ sits. Executable tests/tools and source/script files (`*.py`, `*.ps1`, `*.sh`,
 `tools/`), CI workflows and actions (`.github/workflows/*`,
 `.github/actions/*`), build and packaging fragments (Makefile, CMake,
 `meson.build`, `*.mk`), and pre-commit hook/config surfaces are admitted or
-refreshed only on implementation-grade authority with an exact record and blob
-approval -- a filename such as `tools/test_*.py` can no more certify an
-executable test as synthetic data than a `docs/` prefix can certify a script as
-documentation (`ADMISSION_CLASS_ESCAPE`).
+refreshed only on implementation-grade authority with an exact record; a
+strict caller may also require a legacy blob approval -- a filename such as
+`tools/test_*.py` can no more certify an executable test as synthetic data than
+a `docs/` prefix can certify a script as documentation (`ADMISSION_CLASS_ESCAPE`).
 
 An approval must cite the exact record already covering that path and a
 classification agreeing with what authority derives; a mismatch is refused rather
@@ -479,19 +487,17 @@ the class; the entry carries no record id. Executable tests/tools, source and
 script files, CI workflows/actions, build/packaging fragments, and pre-commit
 hook/config surfaces can never use a deterministic class even when their path
 resembles one (`ADMISSION_CLASS_ESCAPE`). An implementation/source path
-additionally requires an exact `records` entry and an exact `reviewed_blobs`
-approval naming that path and that digest in the external trusted detailed
+additionally requires an exact `records` entry in the external trusted detailed
 ledger, plus an authority statement declaring `origin_kind`
 (`authored_from_scratch`, `derived_adapted`, or `third_party`), an origin
 statement, and a license basis. The statement's `record_id` must equal the
-exact covering detailed record's id *and* the blob approval's record id, so the
-admission text cannot drift from the trust anchor it claims to cite. Its
+exact covering detailed record's id, so the admission text cannot drift from
+the trust anchor it claims to cite. Its
 `origin`/`license` fields are descriptive reviewer metadata: they prove the
 reviewer considered origin and license, but they never authorize anything --
 the public entry's class, origin, and license claims derive from the trusted
-detailed record alone. Without the private-ledger record and blob approval the
-command refuses (`BLOB_UNAPPROVED`, `TRUSTED_PATH_MISSING`, or
-`TRUSTED_RECORD_REQUIRED`); a documentation-class authority can never admit
+detailed record alone. Without the private-ledger record the command refuses
+(`TRUSTED_PATH_MISSING` or `TRUSTED_RECORD_REQUIRED`); a documentation-class authority can never admit
 implementation, and anything the trusted policy excludes is unadmittable
 through this route (`ADMISSION_PATH_EXCLUDED`).
 Wildcards, directories, prefix/extension authority, duplicate paths,
@@ -500,9 +506,12 @@ bytes than the candidate carries, candidate-controlled trusted inputs, and
 unrequested candidate mutations all fail closed.
 
 Because this command creates the *initial* entry, the independent reviewer
-must have reviewed the exact bytes before producing the authority document.
-The implementer who authored the candidate does not create the authority;
-separation of duties is a process rule enforced by the machine checks above.
+must have reviewed the exact bytes before producing the admission authority
+document. The implementer who authored the candidate does not create the
+authority; separation of duties is a process rule enforced by the machine
+checks above. The exact path/hash admission statement is the one initial
+content decision; a duplicate `reviewed_blobs` entry is not required unless
+`--require-reviewed-blobs` is explicitly supplied.
 After admission, commit the regenerated policy/ledger/export, then the release
 process must still copy the resulting ledger to its trusted location, run
 `publish_audit.py` against that external copy and the trusted manifest, and

@@ -53,18 +53,18 @@ it agree with every other artifact.
 | T15 | Merge on a stale base | the ruleset's `strict_required_status_checks_policy` requires the head to be up to date, and the ratchet is evaluated against the base branch tip |
 | T16 | Add a symlink whose "content" is a path string | `TREE_INVALID` — provenance is only defined over regular file content |
 | T17 | Replace an existing file's implementation bytes, update the public hash coherently, and inherit the claim already recorded for that path | `CONTENT_UNATTESTED` — grandfathering requires the bytes to be frozen too |
-| T18 | Rename or copy an attested file so the new path inherits the old path's record | `TRUSTED_RECORD_UNRESOLVED` + `CLAIM_UNBACKED` + `BLOB_UNAPPROVED` — records name paths, and a new path is new |
+| T18 | Rename or copy an attested file so the new path inherits the old path's record | `TRUSTED_RECORD_UNRESOLVED` + `CLAIM_UNBACKED` — records name paths, and a new path is new |
 | T19 | Open a pull request whose **base** is an attacker-controlled branch, so the "trusted" checkout is the attacker's tree and the job runs their verifier with the authority token | the workflow checks out `github.event.repository.default_branch`, never `base.ref`, and declines to run on any other base |
 | T20 | Put shell metacharacters or newlines in a path, branch name, PR title or body to break out of the trusted job's scripts | no PR title/body/branch name is referenced at all; the two event values used are validated as numeric / 40-hex and passed through `env:`, never interpolated into a script body |
 | T21 | Add `.gitattributes` filters, submodules or gitlinks so a checkout executes something | the candidate is never checked out; `git cat-file` returns raw object bytes, non-blob entries are refused, and the fetch is `--no-recurse-submodules` |
 | T22 | Commit enough content to exhaust the runner | `TREE_TOO_LARGE` — explicit path-count and byte ceilings |
 | T23 | Ship a candidate action definition under `.github/actions/` for the trusted job to run | the trusted workflow references only SHA-pinned `actions/*`; nothing resolves from the candidate tree |
-| T24 | Replace every byte of an **authority-backed** file, keeping its record and classification, and update the public hash coherently | `BLOB_UNAPPROVED` — the authority must name the exact new digest |
-| T25 | Write an "approved" digest into the candidate's own public ledger evidence | `BLOB_UNAPPROVED` — approvals are read only from the private authority; the gate hashes the Git object itself |
-| T26 | Reuse an approval issued for a different path, or for an earlier revision of the same path | `BLOB_UNAPPROVED` — approvals key on (path, digest) |
-| T27 | Cite a blanket record in a blob approval to authorize replacement content | `BLOB_APPROVAL_RECORD_MISMATCH` — the approval must cite the exact record `_class_for` derives, and wildcards never produce one |
-| T27b | Repeat one `(path, digest)` approval in the authority so two readings disagree | refused as ambiguous authority; several *different* digests for one path stay legitimate, and only the exact candidate digest matches |
-| T28 | Approve a blob under one classification while the ledger claims another | `BLOB_APPROVAL_CLASS_MISMATCH` |
+| T24 | Replace every byte of an **authority-backed** file, keeping its record and classification, and update the public hash/export coherently | allowed by the normal path-authorized policy; automated content binding, export recomputation, CI, and ordinary security gates still apply |
+| T25 | Write an "approved" digest into the candidate's own public ledger evidence | `CONTENT_MISMATCH` if it does not match the Git object; a candidate digest is never authority, and no `reviewed_blobs` field is consulted in normal mode |
+| T26 | Add a new implementation path without an exact trusted record | `TRUSTED_PATH_MISSING` / `CLAIM_UNBACKED` — the one-time path decision remains external |
+| T27 | Use a wildcard record to authorize a new implementation path | `CLAIM_UNBACKED` — wildcard records remain inert for classification |
+| T27b | Supply malformed or ambiguous legacy `reviewed_blobs` metadata | ignored by normal mode; `--require-reviewed-blobs` remains available when strict legacy validation is deliberately requested |
+| T28 | Claim a different classification from the trusted path authority | `CLAIM_UNBACKED` or `CLASSIFICATION_DOWNGRADE` |
 | T29 | Have the gate judge a mutable branch name so two resolutions name different trees | `MUTABLE_REVISION_REFUSED` — CI passes the event's exact 40-hex head and base SHAs, and the base must be an ancestor of the default branch |
 | T30 | Swap the authority between "what revision is main" and "read main" | the workflow resolves the authority commit once and reads the ledger **at that SHA**; the revision and the ledger's own SHA-256 are both reported |
 | T31 | Change an implementation file, drop it from `include_paths`, delete its ledger entry and regenerate the export, so the gate stops seeing the path | `TRUSTED_SCOPE_VIOLATION` — scope is anchored to the trusted base policy over the trusted base tree and may only widen |
@@ -111,7 +111,7 @@ The boundary is enforced structurally, not by convention:
 
 **Tier B — the grandfathering predicate.** The trusted authority derives
 exactly one claim for a path. A candidate claim that disagrees with it survives
-**only while both halves of the reviewed state are frozen**:
+**only while both halves of the inherited state are frozen**:
 
 > A path's attestation claim may deviate from trusted authority **only if** the
 > claim is byte-for-byte what the trusted **base ledger** recorded **and** the
@@ -128,69 +128,27 @@ classification and record id untouched, and inherit an attestation that was
 never made about those bytes. Content identity is part of the tuple, not a
 side note.
 
-A path whose claim **agrees** with authority is unconstrained — its content may
-change freely. That is the project's provenance model: records carry `paths`,
-not digests, so an attested path is attested, not frozen. It also means the
-only way to unfreeze a path in debt is to pay the debt, never to except it.
+An implementation path whose claim **agrees** with authority may change freely
+under the normal policy. Records deliberately carry paths, not a revision
+history of digests. The candidate must still update the public hash/export and
+must pass the trusted scope, policy, export, CI, dependency, and security
+checks. A path that is in grandfathered debt remains frozen until its claim is
+corrected or an exact trusted record is added.
 
-**Tier B2 — exact-blob authorization.** Tier B still allowed one thing it
-should not: a path whose claim *agrees* with authority could have its content
-replaced wholesale, because records carry `paths`, not digests. Path coverage
-is not content approval.
+### Optional strict legacy mode
 
-> For every implementation-class path, if the candidate blob is **new or
-> differs from the trusted base blob**, the trusted authority must contain a
-> `reviewed_blobs` approval naming **exactly this path and exactly this
-> SHA-256**, citing the exact record that covers the path and the same
-> classification. The gate hashes the candidate blob itself, from the Git
-> object — never from any digest the candidate wrote.
+The former `reviewed_blobs` array is retained as optional, private audit
+history. Normal merge/readiness verification does not require or consult those
+entries, so a routine edit does not wait for a second human approval after the
+path authority already exists. A higher-assurance caller may pass
+`--require-reviewed-blobs` to `tools/provenance_attest_verify.py`; that opt-in
+restores exact path/digest/classification validation and the legacy
+`BLOB_*` findings for the run. The default workflow does not pass that flag.
 
-* `BLOB_UNAPPROVED` — no approval for these exact bytes at this exact path.
-* `BLOB_APPROVAL_RECORD_MISMATCH` — the approval cites a record that is not the
-  exact record covering the path. A wildcard record can never satisfy this,
-  because `_class_for` derives `record_id` only from exact records.
-* `BLOB_APPROVAL_CLASS_MISMATCH` — the approval authorizes a different
-  classification than the ledger claims or authority derives.
-
-Only **implementation classes** are content-gated — 289 of the 658 public
-paths. Documentation, configuration, fixtures and public metadata are
-classified by what a file *is*, re-derived every run, and need no per-revision
-approval. **Unchanged blobs keep whatever authorization they already had**, so
-adopting the rule does not require approving the existing tree in one go.
-
-### Authority schema addition
-
-A top-level `reviewed_blobs` array in the private detailed ledger, sibling to
-`records`. It is a separate document on purpose: records are low-churn prose
-attestations, approvals are high-churn digests, and folding digests into
-records would make every content review rewrite a provenance statement.
-
-```json
-{
-  "reviewed_blobs": [
-    {
-      "path": "src/rt/guest_interp.c",
-      "sha256": "<64 lowercase hex of the exact reviewed blob>",
-      "classification": "behavior-informed",
-      "record_id": "daybreak4-guest-interpreter"
-    }
-  ]
-}
-```
-
-The gate validates each approval: exact normalized POSIX path (wildcards
-refused), lowercase 64-hex digest, a `record_id` that exists in `records`, and
-a classification that maps — through `provenance_ledger._class_for`, so there
-is one mapping and it cannot drift — to the claimed public class. Any further
-keys (reviewer, date, notes) are **ignored and never printed**.
-
-### Operational consequence
-
-This converts the gate from pure verification into **explicit per-revision
-approval for implementation content**. Every pull request that changes one of
-the 289 content-gated paths needs a matching approval in the private authority
-before it can go green. That is the security property that was asked for, and
-it is a real workflow cost: authority first, then the pull request.
+The one-time admission command still binds a genuinely new path to an exact
+candidate SHA-256 in an external admission-authority document. That is the
+initial content decision; duplicating it in `reviewed_blobs` would add a second
+manual record without changing the path decision.
 
 ### The trusted protected universe
 
@@ -310,12 +268,10 @@ predate the current classification rules.
 
 **The 113 `deterministic` entries are paid down in their own commit**, kept
 separate from the security mechanism so the trust boundary is reviewable
-without a large metadata diff on top of it. It is not merely cosmetic: under
-exact-blob authorization an implementation-class claim makes a path
-content-gated, so leaving 101 `tools/test_*.py` files claiming
-`project_authored_attested` would demand a maintainer blob approval for every
-test edit. Correcting them to the class the generator itself derives is what
-keeps the mechanism usable.
+without a large metadata diff on top of it. It remains useful hygiene: these
+entries otherwise carry claims that disagree with the generator's own class
+derivation and can become frozen debt when edited. The normal path-authorized
+policy does not demand a separate blob approval for every test edit.
 
 Each is rewritten to exactly the classification and evidence
 `provenance_ledger.py` derives for it — 101 test files to `synthetic_fixture`,
@@ -386,10 +342,10 @@ authority was read at. A branch name is a moving target; resolving one twice
 can name two different trees, so strict mode refuses anything but a 40-hex
 commit SHA.
 
-To approve a blob, add one entry to `reviewed_blobs` in the private authority.
-The digest is the plain SHA-256 of the file's bytes — the same value the public
-ledger already carries for that path, and the same one the gate computes from
-the Git object:
+For a deliberately higher-assurance run, pass `--require-reviewed-blobs` and
+add an entry to `reviewed_blobs` in the private authority. The digest is the
+plain SHA-256 of the file's bytes — the same value the public ledger already
+carries for that path, and the same one the gate computes from the Git object:
 
 ```bash
 sha256sum src/rt/example.c
@@ -532,17 +488,18 @@ does not attack the check itself, and that is all.
 ## Other residual risk
 
 **The authority is only as good as its contents.** This gate verifies that a
-claim is backed by `private/main` and that the exact bytes were approved there;
-it does not and cannot verify that the record or the approval is *true*. Both
-remain human attestations.
+claim is backed by `private/main`; it does not and cannot verify that the path
+record is *true*. That remains a human attestation. The default policy
+intentionally treats that path decision as sufficient for future revisions.
 
-**Approval is per-blob, not per-review-depth.** A `reviewed_blobs` entry says
-the maintainer approved that digest. It cannot express how carefully. Approving
-a large diff is one line of JSON, so the discipline of actually reading the diff
-stays a human responsibility.
+**Exact-digest review is optional.** A `reviewed_blobs` entry can still record
+that a maintainer inspected one digest, and `--require-reviewed-blobs` can
+enforce those entries for a deliberately high-assurance run. It is not a
+normal merge prerequisite, so ordinary edits do not accumulate a second manual
+approval queue.
 
-**Existing blobs are grandfathered by non-change.** Adopting the rule did not
-require approving the 289 content-gated paths already on `main`; they keep
-their path-level authorization until their bytes change. That is deliberate —
-the alternative was an unusable day-one gate — but it means the current tree's
-content has not been digest-approved, only its future changes will be.
+**Automated checks are not legal or hardware clearance.** Path-authorized
+content still passes the public ledger/export, policy/scope, CI, dependency,
+and security gates, but this change does not turn those checks into a claim
+that private inputs, third-party rights, title acceptance, or PSP hardware
+have been reviewed.

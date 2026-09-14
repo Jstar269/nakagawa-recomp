@@ -62,7 +62,10 @@ Two mutually exclusive workflows mutate this evidence:
   independent reviewer approved.  Candidate bytes therefore can never create
   their own authority: policy include, ledger entry, and export are all
   mechanical outputs derived from the external trusted policy, the external
-  admission authority, and the external trusted ledger.
+  admission authority, and the external trusted ledger.  A duplicate
+  ``reviewed_blobs`` approval is optional; ``--require-reviewed-blobs`` keeps
+  the former higher-assurance admission policy available when explicitly
+  requested.
 
 All mutations write their generated control files (publication policy where
 applicable, provenance ledger, export) through one transactional helper: every
@@ -147,8 +150,8 @@ POLICY_DELTA_SCHEMA_VERSION = 1
 #: test, build, or security-sensitive tooling even when a filename/directory
 #: heuristic would label them configuration, fixtures, or documentation; a
 #: genuinely new path on one of these surfaces requires implementation-grade
-#: authority (an exact trusted detailed record plus a reviewed-blob approval),
-#: never a deterministic class.  ``is_implementation_path`` already covers
+#: authority (an exact trusted detailed record), never a deterministic class.
+#: ``is_implementation_path`` already covers
 #: ``src/``/``tools/`` and source/script suffixes; these rules close the
 #: remaining classifier escapes (executable scripts under ``docs/`` or
 #: ``fixtures/``, CI workflow/action YAML, Make/CMake/build fragments,
@@ -1577,11 +1580,12 @@ def refresh_reviewed(
 #   deterministic class: those require implementation-grade authority
 #   regardless of where they sit;
 # * implementation/source paths require, in addition, an exact record in the
-#   external trusted detailed ledger and a ``reviewed_blobs`` approval naming
-#   this exact path and this exact digest, so the private authority -- not
-#   the admission document and not the candidate -- supplies path and blob
-#   authority.  The admission statement's ``record_id`` must equal the exact
-#   covering record's id and the blob approval's record id; its
+#   external trusted detailed ledger.  The admission document independently
+#   binds the exact candidate digest, so a second ``reviewed_blobs`` approval
+#   would duplicate the same per-admission decision and is optional.  The
+#   private authority -- not the candidate -- still supplies path authority.
+#   The admission statement's ``record_id`` must equal the exact covering
+#   record's id; its
 #   ``origin_kind``/``origin``/``license`` fields are *descriptive reviewer
 #   metadata* -- the reviewer must have considered them, but they never
 #   authorize anything: the public entry's class, origin, and license claims
@@ -1682,12 +1686,11 @@ def _read_admission_authority(
 
 
 def _blob_approval_map(document: dict) -> dict[tuple[str, str], dict]:
-    """Map ``(path, sha256)`` to a trusted detailed-ledger blob approval.
+    """Map ``(path, sha256)`` to a legacy strict-mode blob approval.
 
-    A detailed record authorizes a *path*; a blob approval authorizes these
-    exact bytes at that path.  ``admit-new-reviewed`` needs the latter for
-    implementation-class admission because the bytes being admitted are new
-    and have never been approved under any earlier public snapshot.
+    Normal admission uses the external admission authority's exact path/hash
+    statement and does not need this duplicate metadata.  The map remains for
+    ``--require-reviewed-blobs`` compatibility.
     """
     approvals: dict[tuple[str, str], dict] = {}
     entries = document.get("reviewed_blobs")
@@ -1735,6 +1738,7 @@ def admit_new_reviewed(
     trusted_policy: Path,
     trusted_manifest: Path | None = None,
     trusted_baseline_ledger: Path | None = None,
+    require_exact_blob_approvals: bool = False,
 ) -> dict:
     """Admit genuinely new exact public paths from external trusted inputs only.
 
@@ -1886,9 +1890,9 @@ def admit_new_reviewed(
             raise RefreshError("TRUSTED_MANIFEST_MISMATCH", "candidate manifest differs from trusted manifest")
 
     # -- trusted ledger: public snapshot and/or detailed development ledger ---
-    # The detailed ledger carries ``records`` (path authority) and
-    # ``reviewed_blobs`` (exact-bytes approval); both must be read from the
-    # same external document before it is swapped for a baseline snapshot.
+    # The detailed ledger carries ``records`` (path authority).  Its optional
+    # ``reviewed_blobs`` history is only consulted when the caller explicitly
+    # requests the former duplicate exact-digest gate.
     trusted_document = _read_json_file(trusted_ledger_path, code="TRUSTED_LEDGER_INVALID")
     detailed_records: dict[str, dict] | None = None
     approvals: dict[tuple[str, str], dict] = {}
@@ -1900,7 +1904,8 @@ def admit_new_reviewed(
         _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted ledger")
     elif has_records:
         detailed_records = _detailed_records(trusted_document)
-        approvals = _blob_approval_map(trusted_document)
+        if require_exact_blob_approvals:
+            approvals = _blob_approval_map(trusted_document)
         if trusted_baseline_path is not None:
             trusted_document = _read_json_file(trusted_baseline_path, code="TRUSTED_LEDGER_INVALID")
             _validate_public_snapshot(trusted_document, tree=trusted, policy=extended_policy, label="trusted baseline ledger")
@@ -1923,13 +1928,13 @@ def admit_new_reviewed(
             # or directory can no more make an executable test "synthetic data"
             # than it can relabel an implementation file as documentation.  The
             # reviewer must instead supply implementation-grade authority (an
-            # exact detailed record plus a reviewed-blob approval).
+            # exact detailed record).
             if _admission_requires_implementation(path):
                 raise RefreshError(
                     "ADMISSION_CLASS_ESCAPE",
                     f"{path} is executable/security-sensitive tooling and cannot be admitted on a "
                     f"deterministic {classification!r} class; implementation-class admission requires "
-                    "an exact trusted record and a reviewed-blob approval",
+                    "an exact trusted record",
                 )
             if statement.get("record_id") is not None:
                 raise RefreshError(
@@ -1983,32 +1988,32 @@ def admit_new_reviewed(
                     f"trusted detailed record class {public_class!r} disagrees with admitted {classification!r} for {path}",
                 )
             expected_record = record["id"]
-            # The admission authority's record_id, the covering detailed
-            # record, and the reviewed-blob approval must all name the same
-            # exact record; one unbound id lets an authority text drift from
+            # The admission authority's record_id must name the exact covering
+            # detailed record; one unbound id lets authority text drift from
             # the trust anchor it claims to cite.
             if statement.get("record_id") != expected_record:
                 raise RefreshError(
                     "ADMISSION_AUTHORITY_RECORD_UNBOUND",
                     f"admission authority for {path} must cite the exact covering record {expected_record!r}",
                 )
-            approval = approvals.get((path, candidate_hash))
-            if approval is None:
-                raise RefreshError(
-                    "BLOB_UNAPPROVED",
-                    f"implementation-class admission requires an exact reviewed-blob approval for {path} at sha256 {candidate_hash}",
-                )
-            if approval.get("record_id") != expected_record:
-                raise RefreshError(
-                    "BLOB_APPROVAL_RECORD_MISMATCH",
-                    f"blob approval for {path} cites a record that is not the exact covering record",
-                )
-            approved_class, _ = _class_for(path, {"classification": approval.get("classification"), "id": None})
-            if approved_class != classification:
-                raise RefreshError(
-                    "BLOB_APPROVAL_CLASS_MISMATCH",
-                    f"blob approval for {path} authorizes class {approved_class!r}, not {classification!r}",
-                )
+            if require_exact_blob_approvals:
+                approval = approvals.get((path, candidate_hash))
+                if approval is None:
+                    raise RefreshError(
+                        "BLOB_UNAPPROVED",
+                        f"implementation-class admission requires an exact reviewed-blob approval for {path} at sha256 {candidate_hash}",
+                    )
+                if approval.get("record_id") != expected_record:
+                    raise RefreshError(
+                        "BLOB_APPROVAL_RECORD_MISMATCH",
+                        f"blob approval for {path} cites a record that is not the exact covering record",
+                    )
+                approved_class, _ = _class_for(path, {"classification": approval.get("classification"), "id": None})
+                if approved_class != classification:
+                    raise RefreshError(
+                        "BLOB_APPROVAL_CLASS_MISMATCH",
+                        f"blob approval for {path} authorizes class {approved_class!r}, not {classification!r}",
+                    )
         entry = {"path": path, "classification": classification, "evidence": evidence,
                  "sha256": candidate_hash}
         new_entries.append(entry)
@@ -2153,6 +2158,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--require-reviewed-blobs", action="store_true",
+        help=(
+            "admit implementation paths only when the legacy trusted reviewed_blobs "
+            "entry also matches; the external admission-authority path and hash are "
+            "normally sufficient"
+        ),
+    )
+    parser.add_argument(
         "--trusted-candidate-policy",
         type=Path,
         help=(
@@ -2217,6 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
                 trusted_policy=args.trusted_policy,
                 trusted_manifest=args.trusted_manifest,
                 trusted_baseline_ledger=args.trusted_baseline_ledger,
+                require_exact_blob_approvals=args.require_reviewed_blobs,
             )
         except RefreshError as error:
             print(f"provenance ledger admission: {error.code}: {error}", file=sys.stderr)
