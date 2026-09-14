@@ -25,6 +25,12 @@ linked live issue, and read counts from the generator cited beside each area.
   `tools/test_compat_manifest.py`; the readiness record is
   [`docs/PORTING.md`](docs/PORTING.md). Run the gate for current counts —
   this file does not restate them.
+- Build orchestrator decoupling: [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196).
+  De-coupling generic build, execution, and verification orchestration from
+  legacy HST defaults (`hst_manager.ps1` -> `nk_manager.ps1`, retiring hardcoded
+  `build/hst`, `0x0029a060`, and `place_game_here` layout assumptions in favor of
+  validated title manifests). Architectural roadmap is documented in
+  [`docs/TITLE_MANAGER_DECOUPLING.md`](docs/TITLE_MANAGER_DECOUPLING.md).
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in

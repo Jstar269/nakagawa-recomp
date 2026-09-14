@@ -230,6 +230,7 @@
     "docs/STATIC_VERIFY.md",
     "docs/SYMBOL_REFERENCE.md",
     "docs/TITLE_CODEGEN_PLAN.md",
+    "docs/TITLE_MANAGER_DECOUPLING.md",
     "docs/TITLE_PROFILE_ARCHITECTURE.md",
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
     "docs/WEB_UI_MIGRATION.md",
