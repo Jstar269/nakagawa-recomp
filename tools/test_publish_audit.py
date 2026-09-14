@@ -1273,6 +1273,119 @@ class TextHygieneTests(unittest.TestCase):
     def test_empty_file_is_silent(self):
         self.assertEqual(self._codes(b""), [])
 
+    def test_utf16_candidate_fails_with_and_without_exhaustive_candidate_tree(self):
+        """Candidate text hygiene must run whether the manifest gate is requested or not."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            target = _make_publication_fixture_repo(repo)
+            user_path = "C:" + chr(92) + "Users" + chr(92) + "alice" + chr(92) + "candidate" + chr(92) + "secret.txt"
+            target.write_bytes(("# UTF-16 candidate path\\npath = " + user_path + "\\n").encode("utf-16-le"))
+            target.write_bytes(UTF16LE + target.read_bytes())
+
+            with mock.patch.object(publish_audit, "ROOT", repo):
+                normal_result = publish_audit.main(["--candidate-root", str(repo)])
+                exhaustive_result = publish_audit.main(["--candidate-root", str(repo), "--candidate-tree"])
+
+            self.assertEqual(normal_result, 1, "candidate mode must inspect text hygiene without --candidate-tree")
+            self.assertEqual(exhaustive_result, 1, "candidate mode must inspect text hygiene with --candidate-tree")
+
+    def test_crlf_is_reported_in_index_worktree_candidate_and_committed_modes(self):
+        """The same CRLF fixture must fail every content-source route."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            target = _make_publication_fixture_repo(repo)
+            user_path = "C:" + chr(92) + "Users" + chr(92) + "alice" + chr(92) + "candidate" + chr(92) + "secret.txt"
+            crlf_source = (
+                "# SPDX-License-Identifier: GPL-2.0-or-later\r\n"
+                "path = '" + user_path + "'\r\n"
+            ).encode("utf-8")
+            target.write_bytes(crlf_source)
+            subprocess.run(
+                ["git", "-c", "core.autocrlf=false", "add", "src/core.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            policy_path = repo / "assets" / "public_source_profile.json"
+            export_path = repo / "PUBLIC_EXPORT.json"
+
+            index_entries = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            index_findings = publish_audit.audit_entries(
+                index_entries,
+                repo_root=repo,
+                content_source=publish_audit.CONTENT_INDEX,
+                policy_path=policy_path,
+                export_path=export_path,
+            )
+            self.assertTrue(any(
+                f.code == "TEXT_LINE_ENDING_CRLF" and f.path == "src/core.py"
+                for f in index_findings
+            ))
+
+            worktree_entries = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            worktree_findings = publish_audit.audit_entries(
+                worktree_entries,
+                repo_root=repo,
+                content_source=publish_audit.CONTENT_WORKTREE,
+                policy_path=policy_path,
+                export_path=export_path,
+            )
+            self.assertTrue(any(
+                f.code == "TEXT_LINE_ENDING_CRLF" and f.path == "src/core.py"
+                for f in worktree_findings
+            ))
+
+            candidate_entries = publish_audit._get_filesystem_entries(repo)
+            candidate_findings = publish_audit.audit_entries(
+                candidate_entries,
+                repo_root=repo,
+                is_candidate_root=True,
+                policy_path=policy_path,
+                export_path=export_path,
+            )
+            self.assertTrue(any(
+                f.code == "TEXT_LINE_ENDING_CRLF" and f.path == "src/core.py"
+                for f in candidate_findings
+            ))
+
+            subprocess.run(
+                ["git", "-c", "core.autocrlf=false", "commit", "-qm", "crlf fixture"],
+                cwd=repo,
+                check=True,
+            )
+            materialized, tree = publish_audit._materialize_committed_tree("HEAD", repo)
+            try:
+                committed_entries = publish_audit._get_filesystem_entries(materialized)
+                committed_findings = publish_audit.audit_entries(
+                    committed_entries,
+                    manifest_path=materialized / "assets" / "release_manifest.json",
+                    repo_root=materialized,
+                    content_source=publish_audit.CONTENT_COMMITTED,
+                    policy_path=policy_path,
+                    export_path=materialized / "PUBLIC_EXPORT.json",
+                    expected_tree_sha=tree,
+                    committed_tree_ref="HEAD",
+                    tree_repo_root=repo,
+                )
+                self.assertTrue(any(
+                    f.code == "TEXT_LINE_ENDING_CRLF" and f.path == "src/core.py"
+                    for f in committed_findings
+                ))
+            finally:
+                import shutil
+                shutil.rmtree(materialized, ignore_errors=True)
+
+    def test_undecodable_text_suffix_is_a_finding(self):
+        """Invalid UTF-8 in a text-suffixed path must not fall through as binary."""
+        self.assertEqual(
+            self._codes(b"valid prefix" + bytes([0xFF]) + b"\\n", path="src/invalid.txt"),
+            ["TEXT_ENCODING_UNDECODABLE"],
+        )
+
     def test_real_tracked_binary_asset_is_not_flagged(self):
         raw = subprocess.run(
             ["git", "show", ":assets/vfpu/vfpu_log2_lut.dat"],

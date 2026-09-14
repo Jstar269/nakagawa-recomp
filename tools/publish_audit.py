@@ -1209,19 +1209,27 @@ TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg
                                           ".otf", ".woff", ".woff2", ".spv", ".wav"})
 
 
+def _text_hygiene_is_text_suffix(path: str) -> bool:
+    """Return whether a path is governed text rather than an explicitly binary suffix."""
+    return PurePosixPath(path).suffix.lower() not in TEXT_HYGIENE_EXEMPT_SUFFIXES
+
+
 def check_text_hygiene(content_map: dict[str, tuple[bytes | None, str | None]]) -> list[Finding]:
     """Flag encoding and line-ending drift in LF-governed tracked text.
 
-    Deliberately conservative: anything that looks binary, or carries an
-    exempt suffix, is skipped entirely rather than risk a false positive that
-    would train readers to ignore this check.
+    Encoding is checked before the binary heuristic. UTF-16 text commonly contains
+    NUL bytes, so looking for binary content first would silently skip it. A
+    text-suffixed path whose bytes are not decodable as UTF-8 is also a finding:
+    otherwise a candidate can hide a private path (or any other invalid text) in
+    an undecodable blob while the text block treats it as binary and moves on.
+    Explicitly binary suffixes remain exempt.
     """
     findings: list[Finding] = []
     for path in sorted(content_map):
-        data, _ = content_map[path]
-        if not data:
+        data, read_error = content_map[path]
+        if read_error:
             continue
-        if PurePosixPath(path).suffix.lower() in TEXT_HYGIENE_EXEMPT_SUFFIXES:
+        if not data or not _text_hygiene_is_text_suffix(path):
             continue
         if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
             findings.append(Finding(
@@ -1232,6 +1240,13 @@ def check_text_hygiene(content_map: dict[str, tuple[bytes | None, str | None]]) 
             findings.append(Finding(
                 "TEXT_ENCODING_BOM", path,
                 "file begins with a UTF-8 BOM; repository text is UTF-8 without BOM"))
+            continue
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            findings.append(Finding(
+                "TEXT_ENCODING_UNDECODABLE", path,
+                f"text-suffixed file is not valid UTF-8: {error}"))
             continue
         if _is_binary_bytes(data):
             continue
@@ -1924,6 +1939,12 @@ def audit_entries_with_semantics(
         content_map = read_indexed_blobs_batch(entries, repo_root)
     elif content_source == CONTENT_WORKTREE:
         content_map = read_worktree_blobs(entries, repo_root)
+    elif content_source in (CONTENT_CANDIDATE, CONTENT_COMMITTED):
+        # Candidate and committed audits read materialized filesystem bytes in
+        # the per-entry loop below. Populate the same map here so text hygiene
+        # runs against every content source, not only Git-backed modes.
+        for entry in entries:
+            content_map[entry.path] = read_candidate_file(entry, repo_root)
 
     manifest_map: dict[str, dict] = {}
     if manifest_path:
