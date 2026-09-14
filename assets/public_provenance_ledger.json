@@ -267,7 +267,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8ca3eb6bb6a9144758d98440532934ad4a6f553ec9e8f3b9bab2699455b378e2"
+      "sha256": "c37a20ca71043cdb225fe075761f54fee34dee857a2f805826dce76b9501b707"
     },
     {
       "path": "LICENSE",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6efcff5eadbdad600b64f293d38d0997c26b2bb9ee7cedd337143dc7645a58a6"
+      "sha256": "031f0057dbbe8ec94cbdfec2a78c596dd67bf199bc2c4e06bf2716b1bc73d033"
     },
     {
       "path": "assets/release_manifest.json",
@@ -963,7 +963,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "be5cd1f9bc62e2b2e3788787e43a1439ba027da55031df7a5cadeddb0f36b81c"
+      "sha256": "fe62a7b3d38a1c6dfbd5a105864039e2e13ebd352f07995c5e1468639d5fa438"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1009,6 +1009,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7b08a3b505be0e733f11e9f010e48c97eaf4164fc5cea0ec1f2981677f8022af"
+    },
+    {
+      "path": "docs/TITLE_MANAGER_DECOUPLING.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "c1ef5ca31c6e6eabcacb58429b973bc40dce9af8da024310d5a0a4526a86fffd"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -6767,7 +6776,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "179a714ac2453c4b4d55437f1448123ad6491132514208aa7e42330486b265bb"
+      "sha256": "7a8b1ff0078df96275988121516e310f27b1f10bfa261a0d13f22648a9fe851b"
     },
     {
       "path": "tools/mem_debug.py",

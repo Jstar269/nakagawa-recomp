@@ -73,12 +73,12 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # the moment the next object is opened, and the dangerous direction is a frontier that is
 # too LOW, because that is what lets a soon-to-be-live number sit in the denylist unnoticed.
 # Raise it whenever this file is touched during a sweep. The public sequence had allocated
-# at least through 191 as of 2026-09-13 (including PR #191, #190, #189, and issues #187, #188),
-# so 98-191 are live public objects.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 191
+# at least through 197 as of 2026-09-13 (including PR #197, #195, #194, and issue #196),
+# so 98-197 are live public objects.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 197
 
 RETIRED_PRIVATE_ISSUE_NUMBERS = (
-    196, 197, 234, 247, 248, 249,
+    234, 247, 248, 249,
     253, 286, 293, 294, 296, 298, 299, 300, 301, 303,
     304, 339, 346,
 )

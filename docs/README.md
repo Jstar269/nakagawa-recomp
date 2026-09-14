@@ -61,6 +61,8 @@ current work; the productization documents are design, not built state.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
+- [`TITLE_MANAGER_DECOUPLING.md`](TITLE_MANAGER_DECOUPLING.md) — roadmap for
+  decoupling the primary build orchestrator from legacy title defaults.
 - [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
   functional checklist a native player slice is measured against.
 - [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
@@ -125,6 +127,7 @@ in this slice; classification comes first, directory moves separately.
 | `LLE_FIDELITY_ARCHITECTURE.md` | CURRENT | Fidelity doctrine; ranks correctness above convenience |
 | `HLE_AND_WORKAROUND_INVENTORY.md` | CURRENT | The tier doctrine and HLE budget. The per-item inventory inside it is capture-time; live counts come from `tools/test_compat_manifest.py` |
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
+| `TITLE_MANAGER_DECOUPLING.md` | CURRENT | Orchestrator decoupling and nk_manager transition plan |
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
