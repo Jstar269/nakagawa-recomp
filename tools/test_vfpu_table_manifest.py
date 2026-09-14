@@ -188,7 +188,8 @@ class VfpuTableManifestTests(unittest.TestCase):
         make = MAKEFILE.read_text(encoding="utf-8")
         self.assertIn("vfpu-tables-selftest:", make)
         self.assertIn("src/rt/vfpu_tables.c \\", make)  # in RT_SRCS
-        manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
+        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+        manager = mgr_path.read_text(encoding="utf-8")
         self.assertIn("vfpu-tables-selftest", manager)
 
 

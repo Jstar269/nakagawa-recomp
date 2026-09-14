@@ -178,6 +178,7 @@ class CiPathAdversarialTests(unittest.TestCase):
         "assets/vfpu/tables.bin",
         "assets/shaders/blit.frag",
         "hst_manager.ps1",
+        "nk_manager.ps1",
         "hst.ps1",
         "tools/title_codegen_plan.py",
         "tools/title_manifest.py",

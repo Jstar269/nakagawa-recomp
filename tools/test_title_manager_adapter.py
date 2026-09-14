@@ -348,33 +348,28 @@ class RunEntryIsPlanOwned(unittest.TestCase):
 
 
 class ManagerHoldsNoRunEntryCopy(unittest.TestCase):
-    """Source-shape guard on hst_manager.ps1. Tier 4, and it does not pretend
+    """Source-shape guard on nk_manager.ps1. Tier 4, and it does not pretend
     otherwise -- it asserts where the value comes from, not that a run works."""
 
     def setUp(self) -> None:
-        self.manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
+        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+        self.manager = mgr_path.read_text(encoding="utf-8")
 
     def test_the_run_and_difffunc_call_sites_take_it_from_the_plan(self) -> None:
         sites = [line for line in self.manager.splitlines() if '"--image", $imagePath' in line]
         self.assertGreaterEqual(len(sites), 2, "the driver invocation sites moved")
         for line in sites:
-            self.assertIn("(Get-HstRunEntry)", line,
+            self.assertTrue("(Get-NkRunEntry)" in line or "(Get-HstRunEntry)" in line,
                           f"driver invocation still carries its own entry: {line.strip()}")
             self.assertNotIn("0x0029a060", line)
 
-    def test_the_only_remaining_literal_is_the_legacy_fallback(self) -> None:
-        """One copy remains, in one place, and it announces itself when used. Pinning
-        the count is what stops a new one being added quietly."""
-        self.assertEqual(self.manager.count("0x0029a060"), 1)
-        body = self.manager.split("function Get-HstRunEntry", 1)[1].split("\n    function ", 1)[0]
-        self.assertIn("0x0029a060", body)
-        self.assertIn("Write-Host", body, "using the legacy literal must be reported")
+    def test_canonical_manager_holds_zero_guest_literals(self) -> None:
+        """Phase 2 milestone: nk_manager.ps1 has zero hardcoded guest entry literals."""
+        self.assertEqual(self.manager.count("0x0029a060"), 0)
 
     def test_the_plan_supplied_entry_wins_when_a_manifest_is_bound(self) -> None:
-        body = self.manager.split("function Get-HstRunEntry", 1)[1].split("\n    function ", 1)[0]
-        guard = body.index("$script:TitleManagerRunEntry")
-        self.assertLess(guard, body.index("0x0029a060"),
-                        "the literal must only be reached when no plan supplied one")
+        body = self.manager.split("function Get-NkRunEntry", 1)[1].split("\n    function ", 1)[0]
+        self.assertIn("$script:TitleManagerRunEntry", body)
         self.assertIn("$script:TitleManagerRunEntry = $boundPlan.RunEntry", self.manager)
 
 if __name__ == "__main__":

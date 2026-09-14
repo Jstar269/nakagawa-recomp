@@ -211,12 +211,19 @@ This remains subject to legal review.
 
 class ManagerExitPropagationHardeningTests(unittest.TestCase):
     def test_parameterized_manager_actions_fail_closed(self) -> None:
-        manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8-sig")
+        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+        manager = mgr_path.read_text(encoding="utf-8-sig")
         # Each failing action records a nonzero termination code and breaks out of the
         # switch; the single `exit` after the finally block applies it, so the caller
         # sees a nonzero status AND the caller's location is restored first.
-        self.assertIn('"BuildFull" { if (-not (Invoke-HstBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }', manager)
-        self.assertIn('"BuildFast" { if (-not (Invoke-HstBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }', manager)
+        self.assertTrue(
+            '"BuildFull" { if (-not (Invoke-NkBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
+            or '"BuildFull" { if (-not (Invoke-HstBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
+        )
+        self.assertTrue(
+            '"BuildFast" { if (-not (Invoke-NkBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
+            or '"BuildFast" { if (-not (Invoke-HstBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
+        )
         self.assertIn('if (-not (Invoke-Selftest)) { $script:ManagerExitCode = 1; break }', manager)
         self.assertIn('$script:LastRunResult = $null', manager)
         self.assertIn('if ($null -eq $script:LastRunResult) { $script:ManagerExitCode = 1; break }', manager)

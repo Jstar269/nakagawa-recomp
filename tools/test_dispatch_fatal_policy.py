@@ -33,7 +33,7 @@ CORE = ROOT / "src" / "core"
 HLE_C = ROOT / "src" / "rt" / "hle.c"
 RECOMP_C = ROOT / "src" / "rt" / "recomp.c"
 LAUNCH_C = ROOT / "src" / "core" / "nk_launch.c"
-HST_MGR = ROOT / "hst_manager.ps1"
+MGR = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 
@@ -73,8 +73,8 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         self.assertNotIn("SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS", launch_src)
 
     def test_hst_manager_defaults_to_fatal_dispatch(self):
-        """hst_manager.ps1 must enforce SR_DISPATCH_FATAL=1 by default."""
-        mgr_src = HST_MGR.read_text(encoding="utf-8")
+        """Manager must enforce SR_DISPATCH_FATAL=1 by default."""
+        mgr_src = MGR.read_text(encoding="utf-8")
         self.assertIn('$env:SR_DISPATCH_FATAL = "1"', mgr_src)
         self.assertIn('SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS', mgr_src)
 

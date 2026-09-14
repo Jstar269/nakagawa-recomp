@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 GITIGNORE = ROOT / ".gitignore"
 
 

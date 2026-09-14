@@ -17,7 +17,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
 SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
@@ -53,8 +53,12 @@ class HstManagerManifestTests(unittest.TestCase):
         # closed when the workspace identity anchors are missing (#183), so the harness
         # stages a complete fake workspace: the manager itself, its dot-sourced helpers
         # and the repository identity files.
-        self.manager_copy = self.root / "hst_manager.ps1"
+        self.manager_copy = self.root / MANAGER.name
         shutil.copy2(MANAGER, self.manager_copy)
+        if (ROOT / "nk_manager.ps1").exists() and MANAGER.name != "nk_manager.ps1":
+            shutil.copy2(ROOT / "nk_manager.ps1", self.root / "nk_manager.ps1")
+        if (ROOT / "hst_manager.ps1").exists() and MANAGER.name != "hst_manager.ps1":
+            shutil.copy2(ROOT / "hst_manager.ps1", self.root / "hst_manager.ps1")
         tools_dir = self.root / "tools"
         tools_dir.mkdir(exist_ok=True)
         for helper in (
@@ -66,6 +70,8 @@ class HstManagerManifestTests(unittest.TestCase):
             "title_manifest.py",
         ):
             shutil.copy2(ROOT / "tools" / helper, tools_dir / helper)
+        (self.root / "assets").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(ROOT / "assets" / "titles", self.root / "assets" / "titles", dirs_exist_ok=True)
         (self.root / "AGENTS.md").write_text("synthetic anchors\n", encoding="utf-8")
         (self.root / "src" / "rt").mkdir(parents=True)
         (self.root / "src" / "rt" / "recomp.c").write_text("synthetic\n", encoding="ascii")
