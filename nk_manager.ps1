@@ -1189,6 +1189,7 @@ try {
         $env:SR_PERF_CSV = $null
         $env:SR_PROFILE = $null
         $env:SR_PROFILE_DUMP_VBLANKS = $null
+        $env:SR_HLE_DIAGNOSTICS = $null
 
         switch ($Profile) {
             "Standard" {
@@ -1258,6 +1259,7 @@ try {
                 $env:SR_IOLOG = "1"
                 $env:SR_POSTUMD = "1"
                 $env:SR_EXITSNAP = "1"
+                $env:SR_HLE_DIAGNOSTICS = "1"
                 $env:SR_WATCHDOG_EXIT = $null
             }
             "Software" {

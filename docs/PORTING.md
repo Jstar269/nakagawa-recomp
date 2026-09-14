@@ -268,6 +268,15 @@ appear in the `hle.c` census. Retired inventory lives in
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
+As of 2026-09-14, the retained diagnostic reads are inert unless the generated,
+validated title configuration declares `codegen_profile: "hst"` and the operator
+sets `SR_HLE_DIAGNOSTICS`. `sr_title_config_diagnostics_enabled()` is the only
+runtime gate for these groups; `nk_manager.ps1` clears the flag for every profile
+and sets it only for `Diagnostics`. Generic and public fixture profiles therefore
+remain inert even when a diagnostics environment leaks into their process. C-1 is
+retired as a wrong-title execution blocker; the 30-address/36-site inventory stays
+in place for auditability and future source-shape drift detection.
+
 By bucket (live `hle.c` only):
 
 - `GENERIC_PSP_SEMANTIC`: 0 (generic PSP constants are exempted only through
@@ -307,7 +316,10 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. Diagnostic-only groups in `src/rt/hle.c` (C-1). (The VBLANK interrupt stack boundary C-6 is retired).
+1. Diagnostic-only groups in `src/rt/hle.c` (C-1) — **RETIRED** as a wrong-title
+   execution blocker on 2026-09-14; the reads remain inventoried and require the
+   validated HST profile plus `SR_HLE_DIAGNOSTICS`. (The VBLANK interrupt stack
+   boundary C-6 is retired).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.

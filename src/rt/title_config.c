@@ -11,13 +11,15 @@
 
 #include "title_config.h"
 
+#include <stdlib.h>
+
 /* Build-local generated artifact (build/<game>/sr_title_config.h). The build always
  * generates it: with no title configuration it defines the generic all-disabled
  * configuration, so this include is unconditional and a missing artifact is a build
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 3
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 4
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -92,6 +94,20 @@ static const SrTitleRuntimeConfig s_config = {
 };
 
 const SrTitleRuntimeConfig *sr_title_config(void) { return &s_config; }
+
+int sr_title_config_diagnostics_enabled(void) {
+    /* The profile bit is emitted only from the validated manifest's bounded
+     * codegen_profile field. The environment remains an explicit operator opt-in,
+     * so a generic or public fixture build cannot activate the HST-only diagnostic
+     * reads merely because a diagnostics environment leaked into its process. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = (SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE != 0) &&
+                  (s_config.valid != 0u) &&
+                  (getenv("SR_HLE_DIAGNOSTICS") != NULL);
+    }
+    return enabled;
+}
 
 uint32_t sr_title_config_fallback_entry(void) {
     return (s_config.valid & SR_TITLE_CFG_FALLBACK_ENTRY) ? s_config.fallback_entry : 0u;
