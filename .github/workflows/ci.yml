@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  # Pull-request events include the draft/ready transitions so a draft gets
-  # cheap feedback and the ready-for-review transition starts substantive gates.
+  # Pull-request events include the draft/ready transitions so every new head
+  # gets fresh path-applicable validation. Draft status does not suppress
+  # substantive gates.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   # Feature-branch commits are covered by pull_request.  A normal main push
@@ -19,8 +20,8 @@ on:
 
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also
-  # intentionally shared by draft and ready events so stale draft work cannot
-  # consume a runner after the PR advances.
+  # intentionally shared by draft and ready events so stale work cannot consume
+  # a runner after the PR advances.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 

@@ -29,10 +29,12 @@ time more than once. The constraints:
 
 What this script does NOT do, by design:
 
-* It never creates a provenance record and never approves a blob. Those live in
-  the maintainer-controlled authority outside this repository, admission is not
-  a hash refresh, and an approval keys on (path, exact sha256). Automating
-  either would be automating the attestation itself.
+* It never creates a provenance record or attests a new path. Those decisions
+  live in the maintainer-controlled authority outside this repository;
+  admission is not a hash refresh. Ordinary edits to an already-authorized
+  path do not require a new private blob approval. The legacy exact-digest
+  check remains an explicit strict-mode option in the verifier and admission
+  tools.
 * It refuses to add anything to ``include_paths`` unless you pass
   ``--apply-policy``, because putting a file on the public surface is a
   publication decision, not a build step. Without that flag an unclassified
@@ -190,9 +192,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         "\nprovenance refresh: OK\n"
-        "Reminder: the hosted attestation fetches the authority from its GitHub "
-        "repository at run time, so push the private authority BEFORE pushing this "
-        "branch or the hosted gate reports every changed blob as unapproved."
+        "Reminder: the hosted attestation fetches path authority from its GitHub "
+        "repository at run time. Ensure any genuinely new implementation paths "
+        "have external authority before pushing this branch."
     )
     return 0
 

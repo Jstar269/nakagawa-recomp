@@ -907,8 +907,8 @@ class DispatchAddressCensus(unittest.TestCase):
         recomp.c's sr_lookup()/dispatch() consult the exec-span registry and
         interpreter floor implemented in src/rt/guest_interp.c. PR #118 added
         that dependency but three link surfaces kept their stale copies of the
-        recipe (the same drift #97 caused for title_config.c), and Draft-skipped
-        substantive jobs hid all three until the Ready transition:
+        recipe (the same drift #97 caused for title_config.c). The earlier
+        draft-suppressed workflow hid all three until a Ready transition:
 
             undefined reference to `sr_exec_span_owns_fetch'
             undefined reference to `sr_guest_interp_run'

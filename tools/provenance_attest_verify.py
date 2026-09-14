@@ -99,26 +99,24 @@ as the trusted *base tree* recorded them.
     was never made about those bytes.  Content identity is therefore part of
     the tuple, not a side note.
 
-Tier B2 -- exact-blob authorization.
+Tier B2 -- path-authorized implementation content.
 
-A record authorizes a *path*.  It does not authorize arbitrary new bytes placed
-at that path.  Records carry ``paths``, not digests, so path-level authority
-alone would let a candidate replace every byte of an authority-backed file and
-keep its attestation.
+An exact trusted record authorizes an implementation *path*.  The candidate
+still has to bind its public ledger to the actual Git bytes and pass the
+ordinary export, policy, scope, and CI checks, but it does not need a second
+private approval for every later digest.  This removes the duplicate
+per-revision approval that made routine implementation work wait on authority
+maintenance while preserving the independent path decision.
 
-``BLOB_UNAPPROVED``
-    an implementation-class path whose bytes are new or changed, with no
-    ``reviewed_blobs`` approval in the trusted authority naming exactly this
-    path and this SHA-256.
-``BLOB_APPROVAL_RECORD_MISMATCH`` / ``BLOB_APPROVAL_CLASS_MISMATCH``
-    an approval exists but cites a record that is not the exact record covering
-    the path, or authorizes a different classification than the one claimed.
+New implementation paths still need exact external path authority; wildcard
+records remain inert for classification.  The legacy ``reviewed_blobs`` array
+is accepted as optional audit history.  ``--require-reviewed-blobs`` restores
+the former exact-digest gate for a deliberately higher-assurance run, but is
+not part of the normal merge/readiness path.
 
-Only implementation classes are content-gated.  Documentation, configuration,
-fixtures and public metadata are classified by what a file *is*, re-derived
-every run, and need no per-revision approval.  Unchanged blobs keep whatever
-authorization they already had, so introducing the rule does not require
-approving the entire existing tree.
+Only implementation classes require an exact trusted record.  Documentation,
+configuration, fixtures and public metadata are classified by what a file
+*is*, re-derived every run, and need no per-revision approval.
 
 Tier C -- reported, non-fatal:
 
@@ -608,14 +606,12 @@ def _backing(path: str, exact: dict[str, dict], patterns: dict[str, list[str]]) 
 
 
 def load_trusted_approvals(raw: bytes) -> dict[tuple[str, str], dict]:
-    """Read the trusted authority's exact-blob approvals.
+    """Read optional legacy exact-blob approvals for strict mode.
 
-    Path coverage is not content approval.  A record says *what a path is*; an
-    approval says *these exact bytes at this exact path were reviewed under
-    that record*.  The two are deliberately separate documents in the trusted
-    ledger: records are low-churn prose attestations, approvals are high-churn
-    digests, and mixing them would make every content review rewrite a
-    provenance statement.
+    Normal verification is path-authorized and does not consult this optional
+    high-churn history.  The parser remains available for
+    ``--require-reviewed-blobs`` so a maintainer can opt into the former
+    exact-digest policy for a higher-assurance run.
 
     Schema -- a top-level ``reviewed_blobs`` array, sibling to ``records``::
 
@@ -1007,10 +1003,15 @@ def _ephemeral_verdict_findings(
     exact_records: dict[str, dict],
     record_patterns: dict[str, list[str]],
     approvals: dict[tuple[str, str], dict],
+    require_exact_blob_approvals: bool,
     generated_ledger_bytes: bytes,
     generated_export: dict,
 ) -> tuple[list[Finding], list[dict], list[dict], list[dict]]:
-    """Apply the old finding vocabulary to the new trusted generated state."""
+    """Apply the finding vocabulary to the trusted generated state.
+
+    Path authority is the normal policy.  Exact blob approvals are retained as
+    an explicit opt-in for higher-assurance callers and compatibility tests.
+    """
 
     findings: list[Finding] = []
     debt: list[dict] = []
@@ -1112,9 +1113,10 @@ def _ephemeral_verdict_findings(
                     "trusted detailed authority does not classify this implementation path as implementation-grade",
                 ))
 
-        # Exact-blob authorization is independent of the candidate ledger.  A
-        # missing legacy entry must not suppress it: otherwise a contributor
-        # could delete the old entry while changing an implementation blob.
+        # Optional exact-blob authorization is independent of the candidate
+        # ledger.  It is deliberately disabled for the normal path-authorized
+        # merge policy; a caller that needs the former higher-assurance policy
+        # opts in explicitly.
         blob_gate = (
             not content_frozen
             and (
@@ -1122,7 +1124,7 @@ def _ephemeral_verdict_findings(
                 or (is_new and _admission_requires_implementation(path))
             )
         )
-        if blob_gate:
+        if require_exact_blob_approvals and blob_gate:
             digest = hashlib.sha256(candidate_blobs[path]).hexdigest()
             approval = approvals.get((path, digest))
             reason = "new implementation path" if is_new else "implementation bytes changed"
@@ -1216,6 +1218,7 @@ def verify_ephemeral(
     output_dir: Path,
     require_immutable_revisions: bool = False,
     authority_revision: str | None = None,
+    require_exact_blob_approvals: bool = False,
 ) -> dict:
     """Verify a candidate while materializing provenance controls outside Git.
 
@@ -1255,7 +1258,7 @@ def verify_ephemeral(
 
     trusted_raw = trusted_ledger.read_bytes()
     exact_records, record_patterns, record_ids = load_trusted_records(trusted_raw)
-    approvals = load_trusted_approvals(trusted_raw)
+    approvals = load_trusted_approvals(trusted_raw) if require_exact_blob_approvals else {}
     for (approved_path, _digest), approval in approvals.items():
         if approval["record_id"] not in record_ids:
             raise VerifyError(
@@ -1318,6 +1321,7 @@ def verify_ephemeral(
         exact_records=exact_records,
         record_patterns=record_patterns,
         approvals=approvals,
+        require_exact_blob_approvals=require_exact_blob_approvals,
         generated_ledger_bytes=generated_ledger_bytes,
         generated_export=generated_export,
     )
@@ -1363,6 +1367,7 @@ def verify_ephemeral(
         },
         "findings": [finding.as_dict() for finding in findings],
         "fatal_count": len(fatal),
+        "exact_blob_approvals_required": require_exact_blob_approvals,
         "blob_approvals_available": len(approvals),
         "blobs_approved_this_candidate": sorted(blob_approved, key=lambda item: item["path"]),
         "blobs_unapproved": sorted(blob_unapproved, key=lambda item: item["path"]),
@@ -1503,6 +1508,7 @@ def verify(
     workdir: Path,
     require_immutable_revisions: bool = False,
     authority_revision: str | None = None,
+    require_exact_blob_approvals: bool = False,
 ) -> dict:
     """Return a verdict for ``candidate_rev`` against external trusted authority."""
     repo = repo.resolve()
@@ -1538,7 +1544,7 @@ def verify(
 
     trusted_raw = trusted_ledger.read_bytes()
     exact_records, record_patterns, record_ids = load_trusted_records(trusted_raw)
-    approvals = load_trusted_approvals(trusted_raw)
+    approvals = load_trusted_approvals(trusted_raw) if require_exact_blob_approvals else {}
     for (approved_path, _digest), approval in approvals.items():
         if approval["record_id"] not in record_ids:
             raise VerifyError(
@@ -1739,15 +1745,13 @@ def verify(
         claim_frozen = base_claim == claim
         content_frozen = path in base_blobs and base_blobs[path] == candidate_blobs[path]
 
-        # -- exact-blob authorization ------------------------------------
+        # -- optional exact-blob authorization ----------------------------
         #
-        # A record authorizes a *path*.  It does not authorize arbitrary new
-        # bytes placed at that path.  Every implementation-bearing blob this
-        # candidate introduces or changes must be named, by digest, in the
-        # trusted authority.  This runs before the claim ratchet's early exit
-        # precisely because a path whose claim agrees with authority is exactly
-        # the case the ratchet would otherwise wave through.
-        if classification in IMPLEMENTATION_CLASSES and not content_frozen:
+        # Path authority is the normal policy.  The former per-revision blob
+        # gate remains available only when a caller explicitly requests the
+        # higher-assurance mode, and it still runs before the claim ratchet's
+        # early exit.
+        if require_exact_blob_approvals and classification in IMPLEMENTATION_CLASSES and not content_frozen:
             digest = hashlib.sha256(candidate_blobs[path]).hexdigest()
             approval = approvals.get((path, digest))
             reason = "new implementation path" if path not in base_blobs else "implementation bytes changed"
@@ -1824,6 +1828,7 @@ def verify(
         "public_path_count": len(included),
         "findings": [finding.as_dict() for finding in findings],
         "fatal_count": len(fatal),
+        "exact_blob_approvals_required": require_exact_blob_approvals,
         "blob_approvals_available": len(approvals),
         "blobs_approved_this_candidate": sorted(approved_blobs, key=lambda i: i["path"]),
         "blobs_unapproved": sorted(unapproved_blobs, key=lambda i: i["path"]),
@@ -1856,6 +1861,14 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
         )
     if verdict.get("authority_revision"):
         print(f"  authority rev    : {verdict['authority_revision']}")
+    print(
+        "  content policy   : "
+        + (
+            "exact reviewed-blob approvals required"
+            if verdict.get("exact_blob_approvals_required")
+            else "trusted path authority; exact reviewed-blob approvals optional"
+        )
+    )
     print(f"  public paths     : {verdict['public_path_count']}")
     fatal = [item for item in verdict["findings"] if item["fatal"]]
     reported = [item for item in verdict["findings"] if not item["fatal"]]
@@ -1864,7 +1877,7 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
     for item in fatal:
         print(f"  FAIL  {item['code']}: {item['path']}: {item['detail']}")
     approved = verdict.get("blobs_approved_this_candidate", [])
-    if approved:
+    if approved and verdict.get("exact_blob_approvals_required"):
         print(f"  exact-blob approvals matched: {len(approved)}")
         for item in approved:
             print(f"          {item['path']} sha256={item['sha256']}")
@@ -1919,6 +1932,13 @@ def main(argv: list[str] | None = None) -> int:
         help="refuse anything but full 40-hex commit SHAs for --candidate and --base",
     )
     parser.add_argument(
+        "--require-reviewed-blobs", action="store_true",
+        help=(
+            "opt into the legacy exact-digest approval gate for implementation paths; "
+            "normal verification uses trusted path authority"
+        ),
+    )
+    parser.add_argument(
         "--authority-revision", default=None,
         help="the immutable revision the trusted ledger was read at; recorded in the verdict",
     )
@@ -1942,6 +1962,7 @@ def main(argv: list[str] | None = None) -> int:
                         output_dir=Path(temporary),
                         require_immutable_revisions=args.require_immutable_revisions,
                         authority_revision=args.authority_revision,
+                        require_exact_blob_approvals=args.require_reviewed_blobs,
                     )
                     if args.json is not None:
                         args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -1957,6 +1978,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=output_dir,
                 require_immutable_revisions=args.require_immutable_revisions,
                 authority_revision=args.authority_revision,
+                require_exact_blob_approvals=args.require_reviewed_blobs,
             )
         else:
             workdir = args.workdir or args.trusted_ledger.resolve().parent
@@ -1969,6 +1991,7 @@ def main(argv: list[str] | None = None) -> int:
                 workdir=workdir,
                 require_immutable_revisions=args.require_immutable_revisions,
                 authority_revision=args.authority_revision,
+                require_exact_blob_approvals=args.require_reviewed_blobs,
             )
     except VerifyError as error:
         print(f"trusted provenance attestation: {error.code}: {error}", file=sys.stderr)

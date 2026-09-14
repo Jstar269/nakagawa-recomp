@@ -116,9 +116,9 @@ class CiPathClassificationTests(unittest.TestCase):
                 self.assertEqual(result["run_native"], "true")
                 self.assertEqual(result["run_windows"], "true")
 
-    def test_draft_pr_suppresses_substantive_jobs(self) -> None:
+    def test_draft_pr_runs_substantive_jobs(self) -> None:
         result = classify(["src/rt/recomp.c"], draft=True)
-        self.assertEqual(result["allow_substantive"], "false")
+        self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_native"], "true")
 
     def test_ordinary_main_push_keeps_only_smoke_jobs(self) -> None:
@@ -281,19 +281,15 @@ class CiPathAdversarialTests(unittest.TestCase):
         self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_native"], "true")
 
-    def test_draft_keeps_gates_applicable_but_suppressed(self) -> None:
-        """Draft suppression must not rewrite the classification itself.
-
-        ``allow_substantive`` is the only thing that may go false; the path
-        facts stay true so the ready transition needs no reclassification.
-        """
+    def test_draft_keeps_gates_applicable_and_running(self) -> None:
+        """Draft status must not delay path-applicable validation."""
         result = classify(["src/rt/hle.c"], draft=True)
-        self.assertEqual(result["allow_substantive"], "false")
+        self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_native"], "true")
 
-    def test_draft_unknown_path_stays_suppressed_but_fails_closed(self) -> None:
+    def test_draft_unknown_path_runs_full_matrix_and_fails_closed(self) -> None:
         result = classify(["new-tool-input.dat"], draft=True)
-        self.assertEqual(result["allow_substantive"], "false")
+        self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_python"], "true")
         self.assertEqual(result["run_native"], "true")
         self.assertEqual(result["run_dashboard"], "true")

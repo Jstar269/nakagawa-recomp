@@ -358,13 +358,15 @@ class GateCase(unittest.TestCase):
     # -- invocation ----------------------------------------------------------
 
     def run_verify(self, candidate: str, *, base: str | None = None,
-                   trusted_ledger: Path | None = None) -> dict:
+                   trusted_ledger: Path | None = None,
+                   require_exact_blob_approvals: bool = False) -> dict:
         return verifier.verify(
             repo=self.repo.root,
             candidate_rev=candidate,
             base_rev=base or self.base,
             trusted_ledger=trusted_ledger or self.trusted_ledger,
             workdir=self.outside / "work",
+            require_exact_blob_approvals=require_exact_blob_approvals,
         )
 
     def codes(self, verdict: dict, *, fatal_only: bool = True) -> set[str]:
@@ -829,22 +831,21 @@ class AttestationInheritanceTests(GateCase):
             [item["path"] for item in verdict["grandfathered_debt"]], ["README.md"],
         )
 
-    def test_F2_an_agreeing_path_still_needs_its_new_bytes_approved(self) -> None:
-        """An attested path is not a blank cheque for future content.
-
-        This inverts the second-pass behaviour deliberately. Records carry
-        paths, so path-level authority alone once let an agreeing path change
-        content freely; exact-blob authorization is what closes that.
-        """
+    def test_F2_an_agreeing_path_needs_no_duplicate_blob_approval(self) -> None:
+        """An exact path record authorizes ordinary future revisions."""
         replacement = b"int widget(void) { return 4242; }\n"
         head = self._edit(self.ATTESTED, replacement)
         verdict = self.run_verify(head)
-        self.assertFatal(verdict, "BLOB_UNAPPROVED")
+        self.assertPasses(verdict)
+        self.assertNotIn("BLOB_UNAPPROVED", self.codes(verdict))
         self.assertEqual(verdict["changed_unattested_paths"], [])
 
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
         self.approve_blob(self.ATTESTED, replacement, record_id="widget-independent",
                           classification="project-authored-independent")
-        self.assertPasses(self.run_verify(head))
+        self.assertPasses(self.run_verify(head, require_exact_blob_approvals=True))
 
     def test_F3_a_deterministic_path_may_change_content_freely(self) -> None:
         """Documentation with no record is classified by what it is, every run."""
@@ -908,13 +909,11 @@ class AttestationInheritanceTests(GateCase):
 
 
 class ExactBlobAuthorizationTests(GateCase):
-    """Path coverage is not content approval.
+    """Compatibility coverage for the opt-in exact-blob policy.
 
-    ``src/rt/widget.c`` is fully authority-backed: an exact record names it and
-    the public ledger's claim agrees. Under path-level authority alone its
-    content could be replaced wholesale. These cases require the trusted
-    authority to name the exact candidate blob before any new implementation
-    bytes are accepted at that path.
+    Normal verification is path-authorized and does not require these entries.
+    Passing ``require_exact_blob_approvals=True`` preserves the former
+    higher-assurance behavior for callers that deliberately need it.
     """
 
     BACKED = "src/rt/widget.c"          # exact record, claim agrees with authority
@@ -954,10 +953,10 @@ class ExactBlobAuthorizationTests(GateCase):
         self.assertPasses(self.run_verify(self.base))
 
     # -- B ------------------------------------------------------------------
-    def test_B_changed_blob_with_coherent_public_hash_and_no_approval_fails(self) -> None:
+    def test_B_strict_mode_rejects_changed_blob_without_approval(self) -> None:
         """The third-pass headline: the claim agrees, the bytes are new."""
         head = self.edit_backed(b"int widget(void) { return 777; }\n")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         # Not caught by anything else: the claim is untouched and correct.
         self.assertNotIn("CLAIM_UNBACKED", self.codes(verdict))
@@ -979,14 +978,16 @@ class ExactBlobAuthorizationTests(GateCase):
             entries.append(entry)
         self.write_ledger(entries)
         head = self.repo.commit("self-issued approval")
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- D ------------------------------------------------------------------
     def test_D_private_authority_approving_the_exact_digest_passes(self) -> None:
         raw = b"int widget(void) { return 779; }\n"
         self.approve(self.BACKED, raw)
         head = self.edit_backed(raw)
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertPasses(verdict)
         self.assertEqual(
             [item["path"] for item in verdict["blobs_approved_this_candidate"]], [self.BACKED],
@@ -997,7 +998,9 @@ class ExactBlobAuthorizationTests(GateCase):
         """Right path, right record, digest of some other revision."""
         self.approve(self.BACKED, b"int widget(void) { return 111; }\n")
         head = self.edit_backed(b"int widget(void) { return 222; }\n")
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- F ------------------------------------------------------------------
     def test_F_approval_bound_to_another_path_fails(self) -> None:
@@ -1006,7 +1009,9 @@ class ExactBlobAuthorizationTests(GateCase):
         self.approve("src/rt/core.c", raw, record_id="core-runtime",
                      classification="derived-translated")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- G ------------------------------------------------------------------
     def test_G_exact_bytes_copied_to_a_new_path_fail(self) -> None:
@@ -1028,7 +1033,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.write_ledger(entries)
         self.write_policy(list(self.FILES) + ["src/rt/widget_copy.c"])
         head = self.repo.commit("copy approved bytes to a new path")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("TRUSTED_RECORD_UNRESOLVED", self.codes(verdict))
 
@@ -1049,7 +1054,7 @@ class ExactBlobAuthorizationTests(GateCase):
             entries.append(entry)
         self.write_ledger(entries)
         head = self.repo.commit("reclassify and replace")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("CLAIM_UNBACKED", self.codes(verdict))
 
@@ -1058,13 +1063,17 @@ class ExactBlobAuthorizationTests(GateCase):
         raw = b"int widget(void) { return 445; }\n"
         self.approve(self.BACKED, raw, classification="derived-translated")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_APPROVAL_CLASS_MISMATCH")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_APPROVAL_CLASS_MISMATCH"
+        )
 
     def test_H3_approval_citing_a_record_that_does_not_cover_the_path_fails(self) -> None:
         raw = b"int widget(void) { return 446; }\n"
         self.approve(self.BACKED, raw, record_id="core-runtime")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_APPROVAL_RECORD_MISMATCH")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_APPROVAL_RECORD_MISMATCH"
+        )
 
     # -- I ------------------------------------------------------------------
     def test_I_wildcard_record_with_changed_bytes_fails(self) -> None:
@@ -1084,7 +1093,7 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head = self.repo.commit("blanket-backed replacement")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(verdict["verdict"], "fail")
         self.assertTrue(
             {"BLOB_APPROVAL_RECORD_MISMATCH", "CONTENT_UNATTESTED"} & self.codes(verdict),
@@ -1097,7 +1106,7 @@ class ExactBlobAuthorizationTests(GateCase):
         first = b"int widget(void) { return 555; }\n"
         self.approve(self.BACKED, first)
         head = self.edit_backed(first)
-        self.assertPasses(self.run_verify(head))
+        self.assertPasses(self.run_verify(head, require_exact_blob_approvals=True))
 
         second = b"int widget(void) { return 556; }\n"
         self.repo.write(self.BACKED, second)
@@ -1107,7 +1116,9 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head2 = self.repo.commit("push a second revision")
-        self.assertFatal(self.run_verify(head2), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head2, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- K ------------------------------------------------------------------
     def test_K_mutable_revision_selectors_are_refused_in_strict_mode(self) -> None:
@@ -1134,7 +1145,7 @@ class ExactBlobAuthorizationTests(GateCase):
         """Every public artifact agrees with every other, and it is still refused."""
         raw = b"int widget(void) { return 666; }\n"
         head = self.edit_backed(raw)
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         # Prove the internal coherence the attacker achieved.
         self.assertNotIn("CONTENT_MISMATCH", self.codes(verdict))
         self.assertNotIn("LEDGER_SCHEMA", self.codes(verdict))
@@ -1163,7 +1174,7 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head = self.repo.commit("claim the approved digest, ship other bytes")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("CONTENT_MISMATCH", self.codes(verdict))
         self.assertEqual(verdict["blobs_approved_this_candidate"], [])
@@ -1177,7 +1188,7 @@ class ExactBlobAuthorizationTests(GateCase):
         raw = b"int widget(void) { return 888; }\n"
         self.approve(self.BACKED, raw)
         head = self.edit_backed(raw)
-        blob = json.dumps(self.run_verify(head))
+        blob = json.dumps(self.run_verify(head, require_exact_blob_approvals=True))
         self.assertNotIn("PRIVATE REVIEW NOTE", blob)
         self.assertNotIn("reviewed_by", blob)
 
@@ -1186,7 +1197,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.approve(self.BACKED, raw, record_id="no-such-record")
         head = self.edit_backed(raw)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(head)
+            self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
 
     def test_a_repeated_approval_for_one_path_and_digest_is_refused(self) -> None:
@@ -1201,7 +1212,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.write_trusted(document)
         head = self.edit_backed(raw)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(head)
+            self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
 
     def test_several_digests_for_one_path_are_legitimate(self) -> None:
@@ -1210,7 +1221,9 @@ class ExactBlobAuthorizationTests(GateCase):
         newer = b"int widget(void) { return 2; }\n"
         document = self.approve(self.BACKED, older)
         self.approve(self.BACKED, newer, document=document)
-        self.assertPasses(self.run_verify(self.edit_backed(newer)))
+        self.assertPasses(
+            self.run_verify(self.edit_backed(newer), require_exact_blob_approvals=True)
+        )
 
     def test_an_unknown_record_id_covers_nothing(self) -> None:
         """Why the finding needs no separate existence check.
@@ -1233,8 +1246,14 @@ class ExactBlobAuthorizationTests(GateCase):
         }]
         self.write_trusted(document)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(self.base)
+            self.run_verify(self.base, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
+
+    def test_normal_mode_ignores_legacy_blob_history(self) -> None:
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
+        document["reviewed_blobs"] = [{"path": "src/rt/*"}]
+        self.write_trusted(document)
+        self.assertPasses(self.run_verify(self.base))
 
     def test_a_deterministic_path_needs_no_blob_approval(self) -> None:
         """Only implementation-class claims are content-gated."""
@@ -1377,9 +1396,8 @@ class ClassificationFloorTests(GateCase):
     def test_moving_source_under_a_test_looking_name_does_not_exempt_it(self) -> None:
         """``tools/test_*`` is deterministic by path, so the move is a new path.
 
-        The copy needs its own record and its own blob approval; inheriting the
-        old path's treatment by renaming into a fixture-shaped name must not
-        work.
+        The copy needs its own path treatment; inheriting the old path's
+        treatment by renaming into a fixture-shaped name must not work.
         """
         self.repo.branch("attack", self.base)
         raw = self.FILES[self.BACKED]
@@ -2204,7 +2222,8 @@ class EphemeralGenerationTests(unittest.TestCase):
         path.write_bytes(raw)
         return path
 
-    def run_ephemeral(self, candidate: str, *, base: str | None = None) -> dict:
+    def run_ephemeral(self, candidate: str, *, base: str | None = None,
+                      require_exact_blob_approvals: bool = False) -> dict:
         return verifier.verify_ephemeral(
             repo=self.repo.root,
             candidate_rev=candidate,
@@ -2212,6 +2231,7 @@ class EphemeralGenerationTests(unittest.TestCase):
             trusted_ledger=self.trusted_ledger,
             trusted_baseline=self.baseline(base),
             output_dir=self.outside / "generated",
+            require_exact_blob_approvals=require_exact_blob_approvals,
         )
 
 
@@ -2320,7 +2340,6 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
         codes = {finding["code"] for finding in verdict["findings"]}
         self.assertIn("TRUSTED_PATH_MISSING", codes)
-        self.assertIn("BLOB_UNAPPROVED", codes)
         self.assertIn("CLAIM_UNBACKED", codes)
 
     def test_new_build_file_cannot_escape_through_documentation_class(self) -> None:
@@ -2334,7 +2353,6 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
         codes = {finding["code"] for finding in verdict["findings"]}
         self.assertIn("TRUSTED_PATH_UNQUALIFIED", codes)
-        self.assertIn("BLOB_UNAPPROVED", codes)
 
     def test_candidate_policy_cannot_hide_a_new_build_file(self) -> None:
         self.repo.branch("hidden-build-file", self.base)
