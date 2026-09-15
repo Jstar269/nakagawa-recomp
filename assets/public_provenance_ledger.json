@@ -3333,7 +3333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5894dcb7738c3fdf2443ae75fdb280c67985484896727eabcfd35b132df9b3e"
+      "sha256": "655b1b4a67abb7761a121189f343fa590dfbc2c19f28a134743a99f1b5c7de0d"
     },
     {
       "path": "pyproject.toml",
