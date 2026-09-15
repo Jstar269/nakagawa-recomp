@@ -18,10 +18,11 @@ on:
 #   contents: write
 #
 # https://docs.github.com/en/enterprise-cloud@latest/code-security/supply-chain-security/understanding-your-software-supply-chain/using-the-dependency-submission-api
+# Decision (S-19): `comment-summary-in-pr` is deliberately not used, so the
+# workflow needs no pull-requests scope at all. Findings surface through the
+# check run/annotations, which only require contents: read.
 permissions:
   contents: read
-  # Write permissions for pull-requests are required for using the `comment-summary-in-pr` option, comment out if you aren't using this option
-  pull-requests: write
 
 jobs:
   dependency-review:
@@ -34,6 +35,4 @@ jobs:
           persist-credentials: false
       - name: 'Dependency Review'
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        # Commonly enabled options, see https://github.com/actions/dependency-review-action#configuration-options for all available options.
-        with:
-          comment-summary-in-pr: always
+        # See https://github.com/actions/dependency-review-action#configuration-options for all available options.
