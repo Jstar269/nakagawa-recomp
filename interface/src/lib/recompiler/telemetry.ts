@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { db } from "@/lib/db";
 import { findRepoRoot, findLatestRunLog, readLogTailContent } from "./runner";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -36,6 +37,20 @@ function readBoundedJsonText(pathName: string): string | null {
   }
 }
 
+interface ProfileFunctionEntry {
+  pc: string;
+  calls: number;
+  durationNs: number;
+  avgDurationNs: number;
+  readHits: number;
+  writeHits: number;
+}
+
+interface ProfileBlockEntry {
+  pc: string;
+  count: number;
+}
+
 const MIPS_REGS = [
   "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
   "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
@@ -70,7 +85,7 @@ export function parsePerfProfiler(repoRoot: string) {
       if (line.includes("MEM_WATCH[")) {
         const match = line.match(/MEM_WATCH\[(.*?)\]:\s+(WRITE|READ)\s+addr=(0x[0-9a-fA-F]+)\s+val=(0x[0-9a-fA-F]+)\s+pc=(0x[0-9a-fA-F]+)/);
         if (match) {
-          const [_, label, type, addrStr, valStr, pcStr] = match;
+          const [, label, type, , , pcStr] = match;
           const pc = parseInt(pcStr, 16);
           watchHits.push({ label, type: type as "READ" | "WRITE", pc });
 
@@ -98,8 +113,8 @@ export function parsePerfProfiler(repoRoot: string) {
       : content.substring(lastIndex);
 
     const lines = slice.split(/\r?\n/);
-    const functions: any[] = [];
-    const blocks: any[] = [];
+    const functions: ProfileFunctionEntry[] = [];
+    const blocks: ProfileBlockEntry[] = [];
     let timestamp: number | null = null;
     let lookupDrops = 0;
 
@@ -111,7 +126,7 @@ export function parsePerfProfiler(repoRoot: string) {
       } else if (line.startsWith("pc=")) {
         const match = line.match(/pc=(0x[0-9a-fA-F]+) calls=(\d+) blocks=(\d+) duration_ns=(\d+)/);
         if (match) {
-          const [_, pcStr, callsStr, blocksStr, durationStr] = match;
+          const [, pcStr, callsStr, blocksStr, durationStr] = match;
           const calls = Number(callsStr);
           const blocksCount = Number(blocksStr);
           const durationNs = Number(durationStr);
@@ -190,12 +205,12 @@ export function parseStaticVerifyLog(repoRoot: string) {
     }
     const content = readBoundedLogTail(latestLog.path);
     const lines = content.split(/\r?\n/);
-    const mismatches: any[] = [];
+    const mismatches: { pc: string; register: string; activeState: string; expectedLatticeState: string }[] = [];
     for (const line of lines) {
       if (line.includes("SV_MISMATCH")) {
         const match = line.match(/SV_MISMATCH pc=(0x[0-9a-fA-F]+) r(\d+)=(0x[0-9a-fA-F]+) expected=(0x[0-9a-fA-F]+)/);
         if (match) {
-          const [_, pc, reg, active, expected] = match;
+          const [, pc, reg, active, expected] = match;
           mismatches.push({
             pc,
             register: getFriendlyReg(reg),
@@ -218,7 +233,7 @@ export function parseFuzzLog(repoRoot: string) {
   try {
     const content = readBoundedLogTail(logPath);
     const lines = content.split(/\r?\n/);
-    const curve: any[] = [];
+    const curve: { caseIdx: number; total: number; passed: number; failed: number; op: string }[] = [];
     let totalTrials = 0;
     let passedTrials = 0;
     let failedTrials = 0;
@@ -228,7 +243,7 @@ export function parseFuzzLog(repoRoot: string) {
       if (line.startsWith("FUZZ_PROGRESS")) {
         const match = line.match(/FUZZ_PROGRESS case=(\d+) total=(\d+) passed=(\d+) failed=(\d+) op=(0x[0-9a-fA-F]+)/);
         if (match) {
-          const [_, caseIdx, total, passed, failed, op] = match;
+          const [, caseIdx, total, passed, failed, op] = match;
           const t = parseInt(total, 10);
           const p = parseInt(passed, 10);
           const f = parseInt(failed, 10);

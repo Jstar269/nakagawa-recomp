@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";

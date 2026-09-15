@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useEffect, useRef, useState } from "react";
 import { MonitorPlay, Zap } from "lucide-react";
@@ -67,11 +68,8 @@ export function CourtPreview() {
   }, [displayFps]);
 
   // Rally simulation: the ball bounces between two players on opposite sides
-  // of the net. Each rally cycle is 120 frames (2s at 60fps). The ball arcs
-  // from one player to the other, and each player slides horizontally to
-  // intercept.
+  // of the net. Each rally cycle is 120 frames (2s at 60fps).
   const rallyFrame = frame % 120;
-  const rallyPhase = rallyFrame / 120; // 0..1
   // Ball travels left↔right; use a triangle wave for x position.
   const ballGoesRight = rallyFrame < 60;
   const halfPhase = ballGoesRight ? rallyFrame / 60 : (120 - rallyFrame) / 60; // 0..1

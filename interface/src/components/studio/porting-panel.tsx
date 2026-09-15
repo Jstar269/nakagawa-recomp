@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { Compass, Terminal, Settings, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Panel, SectionHeader } from "./ui-bits";

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Maintained architecture data for dashboard panels. Source and ISSUES.md are authoritative.
 
 export interface PipelineStage { id: number; script: string; input: string; output: string; purpose: string; }

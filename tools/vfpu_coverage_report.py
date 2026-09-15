@@ -8,13 +8,15 @@ Categorizes VFPU/COP2 instruction coverage by family and documents the status
 of each category: static emitter (codegen), interpreter (sr_vfpu_interp),
 differential test (vfpu_fuzz.c), direct unit test, fallback-only, or untested.
 
-This report is honest about what "446/446 compute/prefix" means:
+This report is honest about what the historical "446/446 compute/prefix" claim means:
   - The 446-word corpus (previously tools/vfpu_words.txt, now gitignored as
     game-derived) covers only the compute/prefix opcode families 0x18/0x19/0x1B/
     0x34/0x37/0x3C that appear in the private game ELF.
   - It does NOT cover all VFPU instructions or all COP2 operations.
-  - The synthetic corpus (tools/vfpu_synth_gen.py) generates words in the same
-    opcode families without the private ELF.
+  - The public synthetic corpus has a 2742-word arithmetic/prefix/matrix
+    baseline plus a separate 544-word memory/COP2 corpus.  The latter covers
+    only the native-capable aligned memory and register-transfer forms; branch
+    control flow and unaligned left/right forms remain explicit gaps.
 
 Usage:
   python tools/vfpu_coverage_report.py [--format {text,json}]
@@ -42,7 +44,7 @@ COVERAGE_MATRIX = [
     ),
     (
         "compute", "unary transforms (vmov/vabs/vneg/vsqrt/vrcp/vrsq)", True, True, True, False,
-        "Covered by synthetic fuzzer (opcode 0x19). Transcendental results "
+        "Covered by synthetic fuzzer (opcode 0x34 unary forms). Transcendental results "
         "(vrcp, vrsq) use shared math kernel -- tolerance-based comparison needed "
         "for PSP approximation semantics."
     ),
@@ -70,25 +72,37 @@ COVERAGE_MATRIX = [
         "(none / [0,1] / [-1,1]) in the synthetic corpus. Shared helper."
     ),
     (
-        "prefix/state", "VFPU control register (vcst / vnop / vflush)", False, False, False, False,
-        "UNTESTED: no static emitter for vcst (constant source like pi/2); "
-        "no differential test. Fallback to sr_vfpu_interp for any codegen miss."
+        "prefix/state", "vcst (VFPU constant broadcast)", True, True, True, False,
+        "Covered by the synthetic fuzzer (opcode 0x34 jump 3); the constant "
+        "table is shared, so this is emitter/interpreter agreement rather than hardware evidence."
+    ),
+    (
+        "prefix/state", "vflush / vnop control forms", True, False, False, False,
+        "Emitter-owned control/no-op handling is present, but sr_vfpu_interp does "
+        "not claim a matching oracle and the synthetic differential corpus does not include it."
     ),
     # --- Conversions ---
     (
         "conversion", "viim (integer immediate to float)", True, True, True, False,
-        "Immediate encoding tested via synthetic corpus (opcode 0xDF). "
+        "Immediate encoding tested via synthetic corpus (word top byte 0xDF, "
+        "opcode field 0x37). "
         "Boundary values 0, 1, 127, 128, 255 covered."
     ),
     (
         "conversion", "vfim (half-float immediate to float)", True, True, True, False,
-        "Immediate encoding tested via synthetic corpus (opcode 0x7F). "
+        "Immediate encoding tested via synthetic corpus (word top byte 0xDF, "
+        "opcode field 0x37). "
         "Same boundary values as viim."
     ),
     (
-        "conversion", "vt2d / vuc2i / vs2i / vi2f / vf2i / vf2h / vh2f", False, True, False, False,
-        "FALLBACK ONLY: sr_vfpu_interp implements these; no codegen emitter for "
-        "the full family. No differential test -- both sides would be interp."
+        "conversion", "vs2i / vi2uc / vi2c / vi2us / vi2s / vi2f / vf2i", True, True, True, False,
+        "The supported conversion subset is emitted and compared by the "
+        "synthetic corpus. Unsupported conversion forms are not included in this row."
+    ),
+    (
+        "conversion", "vt2d / vuc2i / vf2h / vh2f / vrnds-family", False, True, False, False,
+        "OPEN FALLBACK GAP: sr_vfpu_interp owns these forms, but no independent "
+        "emitter/differential path is claimed."
     ),
     # --- Matrix / vector structured ops ---
     (
@@ -110,18 +124,14 @@ COVERAGE_MATRIX = [
     ),
     # --- COP2 moves ---
     (
-        "COP2 moves", "mfc2 (VFPU scalar to GPR)", False, True, False, False,
-        "FALLBACK ONLY: sr_vfpu_interp handles mfc2; no dedicated emitter path. "
-        "No differential test without emitter."
+        "COP2 moves", "mfc2 / mtc2 (VFPU scalar to/from GPR)", True, True, True, False,
+        "Covered by the separate synthetic memory/COP2 corpus, including the "
+        "physical scalar-register mapping and GPR side effects."
     ),
     (
-        "COP2 moves", "mtc2 (GPR to VFPU scalar)", False, True, False, False,
-        "FALLBACK ONLY: same as mfc2."
-    ),
-    (
-        "COP2 moves", "cfc2 / ctc2 (VFPU control register I/O)", False, True, False, False,
-        "FALLBACK ONLY. VFPU control registers (VPFXS, VPFXT, VPFXD, CC) are "
-        "accessible via cfc2/ctc2; only sr_vfpu_interp handles these paths."
+        "COP2 moves", "cfc2 / ctc2 (VFPU control register I/O)", True, True, True, False,
+        "Covered by the same corpus for control indices 0..15. Invalid control "
+        "indices fail closed in both the emitter and oracle."
     ),
     # --- COP2 branches ---
     (
@@ -131,22 +141,21 @@ COVERAGE_MATRIX = [
     ),
     # --- VFPU memory ---
     (
-        "aligned memory", "lv.s / sv.s (VFPU 32-bit scalar load/store)", False, True, False, False,
-        "FALLBACK ONLY: no static emitter for VFPU memory ops; sr_vfpu_interp "
-        "handles load/store. Memory address alignment is not tested differentially."
+        "aligned memory", "lv.s / sv.s (VFPU 32-bit scalar load/store)", True, True, True, False,
+        "Covered by the separate synthetic memory/COP2 corpus with an in-range "
+        "harness-owned scratch page and full guest-memory comparison."
     ),
     (
-        "aligned memory", "lv.q / sv.q (VFPU 128-bit quad load/store)", False, True, False, False,
-        "FALLBACK ONLY: same as lv.s. 128-bit alignment requirement not unit-tested."
+        "aligned memory", "lv.q / sv.q (VFPU 128-bit quad load/store)", True, True, True, False,
+        "The runtime emitter keeps a guarded fallback for dynamic alignment/span "
+        "failures; the synthetic differential cases force a valid 16-byte-aligned "
+        "span and compare the native path."
     ),
     (
-        "unaligned left/right memory", "lvl.q / lvr.q / svl.q / svr.q", False, True, False, False,
-        "FALLBACK ONLY: unaligned VFPU quad loads/stores. No emitter, no differential "
-        "test. Alignment/byte-lane behavior not verified."
-    ),
-    (
-        "stores", "sv.s / sv.q (stores -- same as aligned above)", False, True, False, False,
-        "Grouped with aligned memory for clarity. Same fallback status."
+        "unaligned left/right memory", "lvl.q / lvr.q / svl.q / svr.q", False, True, False, True,
+        "OPEN DIFFERENTIAL GAP: direct interpreter/dispatch checks cover selected "
+        "byte-lane behavior, but no independent emitter or control-flow/memory "
+        "differential claim is made."
     ),
 ]
 
@@ -189,6 +198,9 @@ def text_report() -> str:
         "  'compute/prefix 446/446' is a subset coverage claim:",
         "  it applies only to opcode families 0x18/0x19/0x1B/0x34/0x37/0x3C",
         "  and does NOT mean 'all VFPU instructions' or 'all COP2 operations'.",
+        "  The public differential extension adds 544 words for native-capable",
+        "  aligned memory and COP2 register-transfer forms; branch and unaligned",
+        "  left/right forms remain explicitly open.",
         "",
         "DIFFERENTIAL INDEPENDENCE NOTE",
         "  The fuzzer compares codegen.vfpu_effect C vs sr_vfpu_interp.",

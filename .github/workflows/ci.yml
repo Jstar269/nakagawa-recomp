@@ -142,7 +142,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.21.0"
 
       - name: Lint repository Markdown
         run: npx --yes markdownlint-cli2@0.23.1
@@ -424,12 +424,38 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: interface/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify dependency install scripts are allowlisted
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep npm's platform-aware diagnostic visible, then enforce the
+          # repository-wide lockfile contract so optional packages cannot hide
+          # an unapproved script merely because this runner did not install them.
+          npm approve-scripts --allow-scripts-pending
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const allowScripts = packageJson.allowScripts ?? {};
+          const pending = Object.entries(lock.packages ?? [])
+            .filter(([location, metadata]) => location && metadata?.hasInstallScript)
+            .map(([location, metadata]) => `${location.replace(/^node_modules\//, "")}@${metadata.version}`)
+            .filter((identity) => allowScripts[identity] !== true)
+            .sort();
+          if (pending.length > 0) {
+            console.error("not yet covered by allowScripts:");
+            for (const identity of pending) console.error(`  ${identity}`);
+            process.exit(1);
+          }
+          console.log("all locked dependency install scripts are covered by allowScripts");
+          NODE
 
       - name: Audit the resolved dashboard dependency graph
         run: |

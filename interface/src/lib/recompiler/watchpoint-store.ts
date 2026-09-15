@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-store.ts — canonical persistence + derived-file publication for
 // watchpoints and debug profiles (issue #188).
 //
@@ -21,7 +22,6 @@ import { findRepoRoot } from "./runner";
 import {
   WATCHPOINT_SCHEMA_VERSION,
   MAX_WATCHPOINTS,
-  normalizeWatchpoint,
   validateWatchpointList,
   parseStoredWatchpoints,
   parseDebugMask,
@@ -34,7 +34,6 @@ import {
   atomicWriteFileSync,
   readWatchpointsFile,
   fileMatchesWatchpoints,
-  contentHash,
 } from "./watchpoint-file.mjs";
 
 export class WatchpointStoreError extends Error {

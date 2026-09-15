@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 

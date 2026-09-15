@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 import { SubprocessError, findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { existsSync, mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
@@ -54,8 +55,6 @@ export async function GET(req: NextRequest) {
     } else {
       childArgs.push("--html", reportPath);
     }
-
-    const abortSignal = req.signal;
 
     await runSubprocess(pythonCmd, childArgs, {
       cwd: repoRoot,

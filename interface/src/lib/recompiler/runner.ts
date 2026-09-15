@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Real runner layer for the repository's native scripts and generated output.
  *
  * Design: this module assumes it is being executed on the same machine as the
  * Nakagawa Recomp project. Resolve REPO_ROOT from cwd; bail with a clear
  * error otherwise. PowerShell is required for hst_manager.ps1. There is no
  * simulated build or runtime fallback. */
-import { spawn, spawnSync, ChildProcess } from "node:child_process";
+import { spawn, ChildProcess } from "node:child_process";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
@@ -140,95 +141,6 @@ export function inspectHst(repoRoot: string): HstExecutableStatus {
   }
   const vulkanSdkFoundAt = findVulkanSdk();
   return { hstExePath, exists, sizeBytes, mtime, vulkanSdkFoundAt };
-}
-
-// ---- PowerShell wrapper --------------------------------------------------
-
-export interface PowerShellCallOptions {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
-  captureStream?: (chunk: Buffer) => void;
-}
-
-export interface PowerShellCallResult {
-  ok: boolean;
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  signal: NodeJS.Signals | null;
-  timedOut: boolean;
-}
-
-export function callPowerShell(
-  command: string,
-  parameters: Record<string, string | number | boolean> = {},
-  opts: PowerShellCallOptions = {},
-): PowerShellCallResult {
-  const cmdPath = "pwsh";
-
-  const psArgs = buildPowerShellArgs(command, parameters);
-  const sync = spawnSync(cmdPath, psArgs, {
-    cwd: opts.cwd ?? process.cwd(),
-    env: opts.env ?? process.env,
-    encoding: "utf8",
-    timeout: opts.timeoutMs ?? 5 * 60 * 1000,
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  return {
-    ok: sync.status === 0 && !sync.error,
-    status: sync.status,
-    stdout: sync.stdout ?? "",
-    stderr: sync.stderr ?? "",
-    signal: sync.signal,
-    timedOut: !!sync.signal && sync.signal === "SIGTERM",
-  };
-}
-
-// ---- BuildFull / BuildFast drivers --------------------------------------
-
-export interface BuildInvocation {
-  action: "BuildFull" | "BuildFast" | "Test" | "Clean";
-  startedAt: number;
-  finishedAt: number | null;
-  status: "queued" | "running" | "completed" | "failed";
-  outputTail: string;
-  result: PowerShellCallResult | null;
-}
-
-export function invokeHstManager(
-  repoRoot: string,
-  action: BuildInvocation["action"],
-  opts: { timeoutMs?: number } = {},
-): BuildInvocation {
-  const inv: BuildInvocation = {
-    action,
-    startedAt: Date.now(),
-    finishedAt: null,
-    status: "running",
-    outputTail: "",
-    result: null,
-  };
-  const ps = path.join(/* turbopackIgnore: true */ repoRoot, "hst_manager.ps1");
-  if (!existsSync(ps)) {
-    inv.status = "failed";
-    inv.finishedAt = Date.now();
-    inv.result = {
-      ok: false,
-      status: null,
-      stdout: "",
-      stderr: `hst_manager.ps1 not found at ${ps}`,
-      signal: null,
-      timedOut: false,
-    };
-    return inv;
-  }
-  const r = callPowerShell(ps, { Action: action }, { cwd: repoRoot, timeoutMs: opts.timeoutMs });
-  inv.finishedAt = Date.now();
-  inv.status = r.ok ? "completed" : "failed";
-  inv.result = r;
-  inv.outputTail = (r.stdout + "\n" + r.stderr).slice(-4000);
-  return inv;
 }
 
 // ---- Log tailing ---------------------------------------------------------
@@ -372,8 +284,7 @@ export function findLatestRunLog(repoRoot: string): LogTail {
 // ---- progress.json reader ------------------------------------------------
 
 import { parseProgressSnapshot } from "./progress-snapshot.mjs";
-import type { ProgressSnapshot, RunIdentity, EvidenceSummary, ProgressPhase } from "./progress-snapshot.mjs";
-export type { RunIdentity, EvidenceSummary, ProgressPhase } from "./progress-snapshot.mjs";
+import type { ProgressSnapshot } from "./progress-snapshot.mjs";
 
 export function readProgressJson(repoRoot: string): ProgressSnapshot | null {
   const p = path.join(/* turbopackIgnore: true */ repoRoot, "progress.json");
@@ -483,8 +394,6 @@ export function runSubprocess(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let timedOut = false;
-    let aborted = false;
 
     const killProcess = () => {
       try {
@@ -512,7 +421,6 @@ export function runSubprocess(
       timeoutTimer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          timedOut = true;
           cleanup();
           killProcess();
           reject(new SubprocessError(`${command} timed out after ${timeoutMs}ms`, {
@@ -528,7 +436,6 @@ export function runSubprocess(
     if (options.signal) {
       if (options.signal.aborted) {
         settled = true;
-        aborted = true;
         cleanup();
         killProcess();
         return reject(new SubprocessError(`${command} aborted before start`, {
@@ -539,7 +446,6 @@ export function runSubprocess(
       abortHandler = () => {
         if (!settled) {
           settled = true;
-          aborted = true;
           cleanup();
           killProcess();
           reject(new SubprocessError(`${command} request aborted`, {

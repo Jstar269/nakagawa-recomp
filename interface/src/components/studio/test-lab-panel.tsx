@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import React, { useState, useEffect } from "react";
 import {
@@ -79,7 +80,7 @@ export function TestLabPanel() {
       if (storedAlerts) {
         try {
           return JSON.parse(storedAlerts);
-        } catch (e) {
+        } catch {
           localStorage.removeItem("hst_watchpoint_alerts");
         }
       }
@@ -116,7 +117,7 @@ export function TestLabPanel() {
         if (l.startsWith("FUZZ_PROGRESS")) {
           const match = l.match(/FUZZ_PROGRESS case=(\d+) total=(\d+) passed=(\d+) failed=(\d+) op=(0x[0-9a-fA-F]+)/);
           if (match) {
-            const [_, caseIdx, total, passed, failed, op] = match;
+            const [, caseIdx, total, passed, failed, op] = match;
             setFuzzData(prev => {
               if (prev.some(d => d.caseIdx === parseInt(caseIdx))) return prev;
               return [
@@ -185,7 +186,7 @@ export function TestLabPanel() {
       if (storedAlerts) {
         try {
           setAlerts(JSON.parse(storedAlerts));
-        } catch (e) {}
+        } catch {}
       } else {
         setAlerts([]);
       }

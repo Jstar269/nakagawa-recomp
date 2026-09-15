@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Minimal pure-Node ZIP writer (STORE / no compression).
 // Refactored to operate directly on Uint8Array buffers without intermediate number[] byte arrays.
 
@@ -50,7 +51,7 @@ function writeU32(buf: Uint8Array, offset: number, n: number): number {
   return offset + 4;
 }
 
-export function buildZip(entries: ZipEntry[]): Uint8Array {
+export function buildZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
   const now = new Date();
   const { time, date } = dosDateTime(now);

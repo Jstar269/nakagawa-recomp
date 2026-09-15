@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -120,7 +121,6 @@ test("accepts a fully valid config and returns a defensive copy", () => {
 });
 
 test("accepts every legal enum value for each enum field", () => {
-  const base = validConfig();
   const cases = [
     ["graphics.resolutionPreset", RESOLUTION_PRESETS],
     ["graphics.frameRateCap", FRAME_RATE_CAPS],

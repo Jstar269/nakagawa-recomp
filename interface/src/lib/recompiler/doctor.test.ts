@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,7 +15,10 @@ import {
 import type { DoctorReport } from "./doctor";
 import { findRepoRoot } from "./runner";
 import { GET as doctorGet } from "@/app/api/recompiler/doctor/route";
-import { summarizeDoctorReport } from "@/components/studio/summary-rail";
+import {
+  shouldRefreshFromBackstop,
+  summarizeDoctorReport,
+} from "@/components/studio/summary-rail";
 
 async function withSyntheticDoctor<T>(script: string, callback: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nakagawa-doctor-test-"));
@@ -97,6 +101,12 @@ test("summary Doctor state never treats loading or unavailable as ALL PASS", () 
   assert.equal(isDoctorReport(syntheticZeroFailureReport), true);
   assert.equal(success.label, "ALL PASS");
   assert.equal(malformed.label, "UNAVAILABLE");
+});
+
+test("summary rail backstop refreshes while EventSource is reconnecting", () => {
+  assert.equal(shouldRefreshFromBackstop(0, 1), true); // CONNECTING
+  assert.equal(shouldRefreshFromBackstop(2, 1), true); // CLOSED
+  assert.equal(shouldRefreshFromBackstop(1, 1), false); // OPEN
 });
 
 test("runDoctor: rejects malformed synthetic output", async () => {

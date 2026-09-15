@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { Wand2, Check } from "lucide-react";
 import { useStudio } from "./studio-context";

@@ -1,8 +1,8 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Activity,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,

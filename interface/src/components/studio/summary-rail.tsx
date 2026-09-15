@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Binary, CircleCheck, CircleX, RefreshCw, Wrench } from "lucide-react";
@@ -103,6 +104,10 @@ export function summarizeDoctorReport(report: DoctorReport | null, state: Doctor
   };
 }
 
+export function shouldRefreshFromBackstop(readyState: number, openState: number): boolean {
+  return readyState !== openState;
+}
+
 type BootState = {
   ok?: boolean;
   status?: string;
@@ -130,9 +135,9 @@ export function SummaryRail() {
   const refresh = useCallback(async () => {
     const requestId = ++refreshSequence.current;
     // Polls must not clear the last good report: on a healthy workspace the
-    // badge would otherwise flash "UNAVAILABLE — retrying" every 4 seconds
-    // while each check runs. Keep the current report (if any) visible and
-    // only show CHECKING while no valid report exists yet.
+    // badge would otherwise flash "UNAVAILABLE — retrying" while each check
+    // runs. Keep the current report (if any) visible and only show CHECKING
+    // while no valid report exists yet.
     setDoctorState((state) => (state === "ready" ? "ready" : "loading"));
     const [bootResponse, binaryResponse, doctorResponse] = await Promise.all([
       fetch("/api/recompiler/boot", { cache: "no-store" }).catch(() => null),
@@ -160,11 +165,26 @@ export function SummaryRail() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
+
+    // Issue O-08: the doctor dashboard refreshes on real lifecycle events from
+    // the manager SSE stream instead of polling doctor?scope=all every 4s.
+    // The manager emits "status" on every run start/spawn/stop/exit, which is
+    // exactly when build artifacts (and thus doctor results) can change. A
+    // slow 60s backstop interval bounds staleness if SSE is unavailable, and
+    // visibility changes still refresh immediately on tab return.
+    const source = new EventSource("/api/recompiler/manager");
+    const onStatus = () => {
+      void refresh();
+    };
+    source.addEventListener("status", onStatus);
+
+    const backstop = window.setInterval(() => {
       if (typeof document === "undefined" || document.visibilityState === "visible") {
-        void refresh();
+        if (shouldRefreshFromBackstop(source.readyState, EventSource.OPEN)) {
+          void refresh();
+        }
       }
-    }, 4000);
+    }, 60_000);
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
@@ -174,7 +194,8 @@ export function SummaryRail() {
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.clearInterval(timer);
+      source.close();
+      window.clearInterval(backstop);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh]);

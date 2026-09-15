@@ -152,6 +152,43 @@ static int vi_unchanged(const CpuState *s, uint32_t base, uint32_t value0) {
     return 1;
 }
 
+static uint32_t cop2_transfer(int sub, int rt, int imm) {
+    return (0x12u << 26) | ((uint32_t)sub << 21) |
+           ((uint32_t)rt << 16) | (uint32_t)imm;
+}
+
+static int check_cop2_control_transfers(void) {
+    CpuState s;
+    int bad = 0;
+
+    /* 128..143 are the complete vfpuCtrl[0..15] register window. Exercise
+     * both directions through the production interpreter, including the
+     * upper twelve indices that previously fell through the guard. */
+    for (int i = 0; i < 16; i++) {
+        const uint32_t value = 0xA5000000u + (uint32_t)i;
+        setup_state(&s);
+        s.vfpuCtrl[i] = value;
+        CHECK(sr_vfpu_interp(&s, cop2_transfer(3, 5, 128 + i)) == SR_VFPU_COMPUTE,
+              "mfvc accepts every VFPU control register");
+        CHECK(s.r[5] == value, "mfvc reads the selected VFPU control register");
+
+        setup_state(&s);
+        s.r[5] = value;
+        CHECK(sr_vfpu_interp(&s, cop2_transfer(7, 5, 128 + i)) == SR_VFPU_COMPUTE,
+              "mtvc accepts every VFPU control register");
+        CHECK(s.vfpuCtrl[i] == value, "mtvc writes the selected VFPU control register");
+    }
+
+    setup_state(&s);
+    const CpuState before = s;
+    CHECK(sr_vfpu_interp(&s, cop2_transfer(3, 5, 144)) == SR_VFPU_OTHER,
+          "mfvc rejects the first control register outside the window");
+    CHECK(memcmp(&s, &before, sizeof(s)) == 0,
+          "invalid mfvc leaves the complete CpuState unchanged");
+    bad |= memcmp(&s, &before, sizeof(s)) != 0;
+    return bad;
+}
+
 static int check_quad_memops(void) {
     CpuState s;
     int bad = 0;
@@ -569,6 +606,7 @@ static int check_vf2i_conversions(void) {
 
 int main(void) {
     int bad = 0;
+    bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vrot_overlap();

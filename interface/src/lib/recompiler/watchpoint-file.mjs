@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-file.mjs — the derived `watchpoints.json` runtime artifact
 // (issue #188).
 //

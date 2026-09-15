@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import unittest
@@ -580,6 +581,45 @@ class PublicationCoverageInvariantTests(unittest.TestCase):
         self.assertIn("tools/publish_audit.py", config)
         self.assertIn("--provenance-self-consistency", config)
         self.assertIn("tools/policy_sync.py", config)
+
+
+class DependencyScriptWorkflowContractTests(unittest.TestCase):
+    """Keep dependency-script approvals and CI enforcement in lockstep."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_dashboard_npmrc_enables_strict_script_policy(self) -> None:
+        npmrc = (self.ROOT / "interface" / ".npmrc").read_text(encoding="utf-8")
+        self.assertIn("strict-allow-scripts=true", npmrc.splitlines())
+
+    def test_every_locked_install_script_has_an_exact_approval(self) -> None:
+        package = json.loads((self.ROOT / "interface" / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((self.ROOT / "interface" / "package-lock.json").read_text(encoding="utf-8"))
+        approvals = package["allowScripts"]
+        approved_identities = set(approvals)
+        locked_identities = set()
+        pending = []
+        for location, metadata in lock["packages"].items():
+            if not location or not metadata.get("version"):
+                continue
+            name = location.removeprefix("node_modules/")
+            locked_identities.add(f"{name}@{metadata['version']}")
+            if not metadata.get("hasInstallScript"):
+                continue
+            pending.append(f"{name}@{metadata['version']}")
+        # npm's lock metadata does not mark sharp's native package as an
+        # install-script package, but it remains an explicitly reviewed
+        # allowScripts identity. Keep the approval exact and reject both stale
+        # versions and approvals for packages absent from the lock.
+        self.assertTrue(approved_identities <= locked_identities)
+        self.assertTrue(set(pending) <= approved_identities)
+        self.assertIn("sharp@0.35.4", approved_identities)
+
+    def test_ci_fails_on_unapproved_install_script_identity(self) -> None:
+        workflow = (self.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("npm approve-scripts --allow-scripts-pending", workflow)
+        self.assertIn("not yet covered by allowScripts", workflow)
+        self.assertIn("allowScripts[identity] !== true", workflow)
 
 
 if __name__ == "__main__":

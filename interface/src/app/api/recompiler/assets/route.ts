@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextResponse } from "next/server";
 import { findRepoRoot, routeError, safeWalkDirectory } from "@/lib/recompiler/runner";
 import { existsSync, readFileSync } from "node:fs";
@@ -21,7 +22,21 @@ interface InventoryMap {
   other: AssetFile[];
 }
 
-let cachedTree: unknown[] | null = null;
+interface ArchiveNode {
+  name: string;
+  path: string;
+  type: string;
+  texturesCount: number;
+  soundsCount: number;
+  sceneGraphsCount: number;
+  otherCount: number;
+  textures: AssetFile[];
+  sounds: AssetFile[];
+  sceneGraphs: AssetFile[];
+  other: AssetFile[];
+}
+
+let cachedTree: ArchiveNode[] | null = null;
 let cachedAt = 0;
 const CACHE_MS = 5 * 60 * 1000;
 
@@ -42,7 +57,7 @@ export async function GET() {
     }
 
     const inventoryFiles = safeWalkDirectory(extractedDir, { targetFileName: "inventory_map.json" });
-    const treeData: any[] = [];
+    const treeData: ArchiveNode[] = [];
 
     for (const invPath of inventoryFiles) {
       const invDir = path.dirname(invPath);
@@ -65,7 +80,7 @@ export async function GET() {
           sceneGraphs: raw.scene_graphs ?? [],
           other: raw.other ?? [],
         });
-      } catch (err) {
+      } catch {
         // Skip bad json
       }
     }

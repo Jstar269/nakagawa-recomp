@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest } from "next/server";
 import { readFileSync, existsSync } from "node:fs";
 import { findRepoRoot } from "@/lib/recompiler/runner";

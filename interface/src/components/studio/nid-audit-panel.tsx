@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import React, { useState, useEffect } from "react";
 import { CheckCircle2, ShieldAlert, XCircle, Search, RefreshCw, BarChart2, Compass, AlertCircle } from "lucide-react";

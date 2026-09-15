@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "befc595033fd620056432cfb7b296a891bfa950dd0bb6f59ad1f09852e9b495a"
+      "sha256": "be97a376ea096ead2feeaecc54e9711743d3db14d62727d7f69c61934923732f"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -147,7 +147,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "31cc00c02d1ec7bbef2df7d5e538cf349412533a3c22e723034c8b369776a747"
+      "sha256": "aa0c7f62b3425fe9c34c44205b4b8ac58e1d5c042fa5b73c89f9500a7957bbd6"
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
@@ -156,7 +156,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a2b9d5594ea82e6b339164f02f4f23ac9180ef20c6a52fc82f6fd0f09c03be52"
+      "sha256": "113765048ea257567e371fc9b6410b49cd8b6985ebe241e78da76ccda8772fc6"
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9142708b773b1043bf10eb241b24103beca67e86cd669a11606a51388f2b416c"
+      "sha256": "0468289710ec30831bce78c5e2c80ae74d3c6ed2e3739e4096ccd4897169f434"
     },
     {
       "path": "assets/release_manifest.json",
@@ -891,7 +891,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "20d39c8360ab9c3616c2131157e9809efe4025cbded3e78c24fd16a6eb8c4f1b"
+      "sha256": "dd6a56b97597365011527dcd2301aea7dcee708d02ceff18ab82ccca77273ccb"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1449,13 +1449,22 @@
       "sha256": "9faa27591d62d7dfefc74602535343b360c579be5530d1638646a4ec9ca5e01d"
     },
     {
+      "path": "interface/.npmrc",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "89570b4333de5a4920e113d299e774c671b4e83ebfe34757ad27c3960a7bd269"
+    },
+    {
       "path": "interface/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "062665dc04069418b3c5036558b68f8f22397818b6eee7a4de55ba985adbb965"
+      "sha256": "c00d938ac196167684430967f8bbff2e955a55e504b94e358dbe4cfc9f5a0ed4"
     },
     {
       "path": "interface/components.json",
@@ -1473,7 +1482,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3e00a443c1b2e2ca51f53e1ae604cbf1d484e2107957a2c226f70f83167fc902"
+      "sha256": "023ea1d73d11a704821ef1445c1be9bb9f677a898d0b30f6c93a5cc21c1f4fb0"
     },
     {
       "path": "interface/next.config.ts",
@@ -1482,7 +1491,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "38c9304a991d6fbe6d6d7707440927f2a106c4b964bac7d4ea977cb83db92291"
+      "sha256": "06e5c0686a1d3058d0cd2ff489f3564d54980f46c068f4d7723c215736619c45"
     },
     {
       "path": "interface/package-lock.json",
@@ -1491,7 +1500,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3c67c04f7cf8cce7589ddbe3ade0cbdbc76d9d5ade301026b1f433d44b10a04f"
+      "sha256": "e56533888a97a590819bab8193041482e1061f8dbf66373aa6e2b08e5791d269"
     },
     {
       "path": "interface/package.json",
@@ -1500,7 +1509,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c0614181424a2a94af49278eb235813f6f0abd9f5b5f8f78269a5888d8166890"
+      "sha256": "881776e1d4fbbfc78187aa25986bcf7020f33f6848a9a86c1e9d7e00a17e59b8"
     },
     {
       "path": "interface/postcss.config.mjs",
@@ -1509,7 +1518,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "141ef24ca27a99d08962210fdf20212d3435fdcfa21b46cd88b44d22f751dfae"
+      "sha256": "77f3de9b7c7053be51a0408da89bd4b6b301e249d51eaba3ba8a78427f69a2ba"
     },
     {
       "path": "interface/prisma.config.ts",
@@ -1518,7 +1527,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a22e527c06973246e4ce05c887a21218ef9b80edca9289b8e23fc5e0f077fef0"
+      "sha256": "ea87f5cd2b3da5ddcbb1fde6002c0cbe09966277a434bfa449eb189d186fd6fb"
     },
     {
       "path": "interface/prisma/schema.prisma",
@@ -1560,7 +1569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c41bf04160688a03497213ddc7768ac3ae1d658eb173e7d9c49f7588dfbff29"
+      "sha256": "63da03214d94a1a116866824f29891286538819ce6cbd076e9ccb0e76cb9719c"
     },
     {
       "path": "interface/scripts/start-standalone.mjs",
@@ -1572,7 +1581,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "59c246308a1bd9bd17b459253d85426563758719fdff7e6b2d736e1fd94ca6ba"
+      "sha256": "2de7865c89b4869a30a008979d5ca51b1e61a785a143fd25b24b0df374db9bdc"
     },
     {
       "path": "interface/src/app/api/recompiler/assets/file/route.ts",
@@ -1584,7 +1593,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9aed8ed501e9ff0e279ecc3de9d046d77d4ca5349a7f8462cea6c2f5e584973d"
+      "sha256": "00cc0c48bb435fb9d488ea827c878e7ead9033b53092dac8a4f0b9068b37b06b"
     },
     {
       "path": "interface/src/app/api/recompiler/assets/route.ts",
@@ -1596,7 +1605,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0679b42d3d679dffea4a62c1a982b87e020673dbc3a72533a2cecc3b65440d1b"
+      "sha256": "7c174e0b9ff61a244c62d418a5b749b5d48c8c0dd65cacb6eafb4f84c0ed6417"
     },
     {
       "path": "interface/src/app/api/recompiler/boot/route.ts",
@@ -1608,7 +1617,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "004e7970e081f1c829809d8aa5d47d63257ccc3840f9e3f05b9c11d4c06d43c5"
+      "sha256": "7bd568a18d44c3b72b1ad6207f7ba0a31a037abaa7a5b9f876c52e87dfd22294"
     },
     {
       "path": "interface/src/app/api/recompiler/config/route.ts",
@@ -1620,7 +1629,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3c4bb207d16395e940b0b35b4ee6a17fcaa076cf66165bdf1bb676078464cb7a"
+      "sha256": "e224c9694e885195921b82d726063c0bd67f9746ecdeaa18c46860daba9ae1a6"
     },
     {
       "path": "interface/src/app/api/recompiler/debug/console/route.ts",
@@ -1632,7 +1641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34c43fd33101ce4de634a6a92a04c6f6c8fc652ab820dfe2f8d7ed85b9f72c56"
+      "sha256": "6f1f1be88f2b175bdd42d209094818dda133e1ab778a9d55b842fe6e64cb2fe0"
     },
     {
       "path": "interface/src/app/api/recompiler/debug/nid-audit/route.ts",
@@ -1644,7 +1653,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bec3cce88b86d07d46464b8588b75fde7e1f0400566c139c8f2c787d74d901e0"
+      "sha256": "6dd3458695561d95abfd58bff0ad01d2460a1e5f4d53001bd404d64b0f5a0f6e"
     },
     {
       "path": "interface/src/app/api/recompiler/doctor/route.ts",
@@ -1656,7 +1665,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "27269a9bd41d0b6cfbc2385c97ec8280c751accb02c699d6cc8e788f77eb3127"
+      "sha256": "0832c7e2da519ddc6f17ce1d0df3b3dd4cb82e95ea2c439f9a4be0df643c25e6"
     },
     {
       "path": "interface/src/app/api/recompiler/issues/route.ts",
@@ -1668,7 +1677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "921eb0044f5a552e486e0b97cb2e5555b2b3ca0867fa2ba39cbc7917dfc91861"
+      "sha256": "5e001528aa1882a129f938c97f90522ebfc36e8f725a6240f363d94339d47a63"
     },
     {
       "path": "interface/src/app/api/recompiler/log/route.ts",
@@ -1680,7 +1689,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25796e638b962d4df8aee6d1e599008e78b8086e0ff3ead058f570352f6e3741"
+      "sha256": "886f5d17a4f419fbc4670de6fd9251284957615cc5a3fdc42fc6ca57ec340fd8"
     },
     {
       "path": "interface/src/app/api/recompiler/manager/route.ts",
@@ -1692,7 +1701,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cb518d3903315bca17bc818ffa548dbc0c3dd78720654cad87ee047089d2e6de"
+      "sha256": "b131899b2f4c02d8c92ae08a737b114693c89ec53f7569fd01608214c6e29680"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/[id]/export/route.ts",
@@ -1704,7 +1713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0b4d48e294d855e8a61f1fc2fbcc94dca317f9ad2a4c5c4eed447013034f4f60"
+      "sha256": "56e5f7d87bb08aa6cb47745f47422da230b829b59689e8ae0f45b41182d5e2ae"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/[id]/route.ts",
@@ -1716,7 +1725,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4381c86ab81205eb8c8312a5e8e4f75cc319e7273d1ca944a3ebc455489271f6"
+      "sha256": "b24d80002a8bc12daaa1f27c7bafaee237fd531155313fd7e33c642c1fa958dc"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/route.ts",
@@ -1728,7 +1737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2fe0992dc07299fa0de9169fa309fc4d9bc5d090c04d584a80c5a4e24115271b"
+      "sha256": "6a55c80303ee596c71fc210c696d4371a395269787952ce0c3aaec91e821285c"
     },
     {
       "path": "interface/src/app/api/recompiler/progress/route.ts",
@@ -1740,7 +1749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b7d210a999715724d43a352357b248de193663a6d28f2731d11dbe43e8158a2"
+      "sha256": "6e5b4461ad4e426e383f8484eb54ff24c72d2cec0999dc67c3b7d808f107fb21"
     },
     {
       "path": "interface/src/app/api/recompiler/run/route.ts",
@@ -1752,7 +1761,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2a83c0f1fe1bad11fe467d03a12d5b1927d3f1f50202956a6a5bfe4d52c2671"
+      "sha256": "61a3917863c2a0a2630d1dacc01164178c565f62f33d466064bcfad843209f2b"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/export/route.ts",
@@ -1764,7 +1773,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce121d0a114e23b6e22d704e5a725d2a348ce187ec57a21ce9b78e2ff1d1a68b"
+      "sha256": "564b737b456ce93f2bfd63e5644081e97c3cee5d602b5d0435245482c07ca5fb"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/profiler/route.ts",
@@ -1776,7 +1785,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5458da87b8a00c3d75aab1c3eb60868b79459fe9f86cfbe7b42ee5ea566f2628"
+      "sha256": "c87217b4cf751db509a45452872dc484ad5f42592d7a4ac93a071ae615b13e8f"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/route.ts",
@@ -1788,7 +1797,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a1a707c3b5a94a7ecffa3231b885366f2e216ed26456a89586af798e7457758"
+      "sha256": "4c11caf3da0f96a03143ffa8085accc981cc93af8597f1523f716a0c76c88103"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/trends/route.ts",
@@ -1800,7 +1809,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8e5f5ff17e0b35dc5cc161c62b70dd62d6264e9226d5361c7588fa6440ec93f"
+      "sha256": "4535ed01e01428271fb4437788f040e2e5077de4c83ec5a5040f960a70210792"
     },
     {
       "path": "interface/src/app/api/recompiler/tests/fuzz/route.ts",
@@ -1812,7 +1821,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "700820c498aa59cbc9bb6e6e5f254d97a14140f6c5aafb1ba6e0962b60103d1c"
+      "sha256": "ee84ad7044b13a938f3be12af2d16f8328f7df89081bf28eb7ff76985efeeab6"
     },
     {
       "path": "interface/src/app/api/recompiler/tests/microtest/route.ts",
@@ -1824,7 +1833,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f780da5b009f8eadbb2bfc6b731a5bc2a60196b7785bc3b3670de9fc02c4f1e9"
+      "sha256": "c679cbed16db4de64b8e64fa344f0f6c814b31de81aaf0b928dc89887c461aaa"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/image/route.ts",
@@ -1836,7 +1845,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49e8a743bd8c0a932e66c59b97949baadb1214f1e8e0cdf25d8d6e7e929dcead"
+      "sha256": "cb3bccb512518c116a0442d6f8639ea209d3141a5d26718e45c190a10b22aa28"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/report/route.ts",
@@ -1848,7 +1857,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a42346a3b61b83f89141b09bd04d9246652e77245868e440365e07ed753b68ad"
+      "sha256": "950e82b71ea67e2748567b0cb05fbd289e83cc67c216ca2da9124e95d3f20665"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/variance/route.ts",
@@ -1860,7 +1869,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "45c931a76837fb0a2a61db84ad7232c2d8cecf93febf5ab6552018c231402f2f"
+      "sha256": "637c17d3cad2f46ef90ecb78991682190b4f3ed3546613376a3cd78d0504fb35"
     },
     {
       "path": "interface/src/app/api/recompiler/watchpoints/profiles/route.ts",
@@ -1872,7 +1881,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e84d03953e3c9113b781c4c171b4aead232b71e142786a6c8db3bfac60a66893"
+      "sha256": "a05d25df839b9f0b7bcdfe96278544603ce106c80a6a4b1d6cd4ddab457f8f40"
     },
     {
       "path": "interface/src/app/api/recompiler/watchpoints/route.ts",
@@ -1884,7 +1893,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c0ae1cafd23fe2b6652315a4f2271cd2f5feb5a84fd73cee8d8325d99a728af"
+      "sha256": "8080467e70eb4131222b2eeb7436b1c0b8889c06575d7c24910c343a759f4728"
     },
     {
       "path": "interface/src/app/api/route.ts",
@@ -1896,7 +1905,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e195f2f4f1e2e3b084989bfd7fc6caa458c1e826d26390502c489a64f3b6c7b6"
+      "sha256": "76b1bab0cd6518d5d9ceeb0d3391a5267af491a0fea89bc7bf20385e1d98204a"
     },
     {
       "path": "interface/src/app/globals.css",
@@ -1908,7 +1917,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0b1682b6690e2c807e7265ae3e37282240c5bcaf890cb6955b6defdc525a6758"
+      "sha256": "202ba7c1fd8817b77df5571158870e625a84f3a30f710268e5a82ca2821d8e99"
     },
     {
       "path": "interface/src/app/layout.tsx",
@@ -1920,7 +1929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51c4049b2e6fd8af22a7ae4719b3d35fa1859e63a5a408aa0a4c6e2c1c72a104"
+      "sha256": "e05cecdae8103dffd9b335e55345f517af88a4a5bd06731bd70041b656dd0568"
     },
     {
       "path": "interface/src/app/page.tsx",
@@ -1932,7 +1941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ab8dee1038a755191cb30f6f1cb5ccfdce50169b032485cf6718dd41b19fb9a"
+      "sha256": "ef5a3383ba084f1e73563176c07830016fe4ab922827238ad7872df0c3d428c2"
     },
     {
       "path": "interface/src/components/studio/assets-panel.tsx",
@@ -1944,7 +1953,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3538513988f984a30ad2ddf415e733e624ff42b7c15fc786575516b90141ff53"
+      "sha256": "1ead9f3fedb362c3cd14330ae2807b8e59f6e08f1ffc13c41f490451ace02d9e"
     },
     {
       "path": "interface/src/components/studio/build-health-panel.tsx",
@@ -1956,7 +1965,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7f32186584efef06bcfedc0961ab2e8b215b4e852369a3a21d7def34a3e92c4e"
+      "sha256": "bf5ac7ddb3bdf92ab76ff5b5982cc2a2140bc40d029f10e4d33c602b7551ca19"
     },
     {
       "path": "interface/src/components/studio/build-panel.tsx",
@@ -1968,7 +1977,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "adeb38510ec88226ac049f5bdc5815494e813fa3472ce8233d29a1369f52c49c"
+      "sha256": "96dd3ad984762bbde8d59b4df78b79d7b2ac36dfdc7fd77efbac01d7f1f5c9dc"
     },
     {
       "path": "interface/src/components/studio/config-diff.tsx",
@@ -1980,7 +1989,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0f80fc6e41e2f095bbd6cd7ad2197427bf6b8b95e515b33abba72a0c91a13538"
+      "sha256": "2beeb5b6e15546491543b88120dd25c9ff3b6e0421b7e32ea0638ef6eb977b38"
     },
     {
       "path": "interface/src/components/studio/controllers-panel.tsx",
@@ -1992,7 +2001,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b8cdf6688c088c086790baa2c63425144a926484e3eb6d1392954d1b11d13b87"
+      "sha256": "9e6f6231897c2be411682df516bf258783b63910c477dea3c4d889c2f97a001b"
     },
     {
       "path": "interface/src/components/studio/court-preview.tsx",
@@ -2004,7 +2013,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1af5ff924fd559dbbc215e4e54d656fbc98e2f9e3ad214ca2c0fb587f707019"
+      "sha256": "67b5cec0d3eca75882173e0cd293bce9c9ad80226a81ac6472915c0b31d5722b"
     },
     {
       "path": "interface/src/components/studio/execution-console.tsx",
@@ -2016,7 +2025,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b1689eb241ab17bf3592ad707eeb26b6434754949b097f6c6d2734c47abf826"
+      "sha256": "be03105ed8eb7c4d0ebef4421df07461d0099757326a984ba99a7af728fe5943"
     },
     {
       "path": "interface/src/components/studio/footer.tsx",
@@ -2028,7 +2037,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "61bd663dcd06c9d3d750c4d46d6b33fb5792c39941f2024fa89ace1c487dedcf"
+      "sha256": "1d7cbd37d18b73642f641c09b83ab0087148b1913c9202ccb95e21b73dd553c7"
     },
     {
       "path": "interface/src/components/studio/gamepad-detector.tsx",
@@ -2040,7 +2049,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9211dc076540c1f5c3370cc4d34d00ba62cdc416b83cb8906ec2814bcfe32040"
+      "sha256": "cb7b3c54ed8a4a343dfca54dcc1b96d099e27eee4304c0106da776e4a2940318"
     },
     {
       "path": "interface/src/components/studio/graphics-panel.tsx",
@@ -2052,7 +2061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9db6fab607ced1111ee2da62756bc0e823efa4a906c906ff81f9e770a4585905"
+      "sha256": "e9dbf94b1730af1b64c0d1b57e85c4197404b795bb6cd14fccfc28cf048d28fa"
     },
     {
       "path": "interface/src/components/studio/internals-panel.tsx",
@@ -2064,7 +2073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68dccc5db80575b12716f855bdaa829941d44a6db67dd6e8bd122a5a4a051b17"
+      "sha256": "a1feec9ed49e2cf6b3a000978b85301ab96b4352f60cfd286595d085e826f240"
     },
     {
       "path": "interface/src/components/studio/iso-file-tree.tsx",
@@ -2076,7 +2085,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c56ee3bf502427a648bda3628da702fad7f1284f7362ba77394a4231ecb7546"
+      "sha256": "bd9d9042b21899aff8273cde5da3a557b929ec04fe5db1fdadc813bd09e3010f"
     },
     {
       "path": "interface/src/components/studio/iso-loader.tsx",
@@ -2088,7 +2097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2334d223e2eeb8c7ae4d632992559c084cc64332e73df899ab4492c9637f4cf"
+      "sha256": "b0c982a8124ef3516ff400661aed18c7bf8d0f27d183341d64be176b330f5156"
     },
     {
       "path": "interface/src/components/studio/limitations-panel.tsx",
@@ -2100,7 +2109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ceb2264e6e0b4ebb210af8e0c0b69f44277b2afa2903248e7e0d8a12b22be56f"
+      "sha256": "56a54831dcc3b6a0eeb83851e08d7bd4e6c40ebfee723baeb40226822460da60"
     },
     {
       "path": "interface/src/components/studio/nid-audit-panel.tsx",
@@ -2112,7 +2121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b43af2851297b0ec665879dd7753b18c9bcfde868cad703299bdd2800bbec85d"
+      "sha256": "5f74817be2223ed218d2c97fbeb9138001400c62dde1e0028bb1c01aa6bc476f"
     },
     {
       "path": "interface/src/components/studio/onboarding-tour.tsx",
@@ -2124,7 +2133,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e7564f4dc93ac5b4c24f8e1113e1244d37f3139a0682263ab260640871d8cfd0"
+      "sha256": "4be8b19762483123de5727df62d49b32c2cf6ea796c236e08dba7c4760895403"
     },
     {
       "path": "interface/src/components/studio/patches-panel.tsx",
@@ -2136,7 +2145,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a847f997fcf828f33bf143f53ce68f19857e5d7cf7d43ee53ecbad091a6cf05"
+      "sha256": "7c1d1cd0f1fc1efa5e7263ecad46e9d5e7a14562eb3cecc1290288231c43c38c"
     },
     {
       "path": "interface/src/components/studio/performance-panel.tsx",
@@ -2148,7 +2157,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3a8680d18110e786ed62c79ec85ddb59babc08c71d4c694ae93cf6624ef9006"
+      "sha256": "59316ce95c4e8f663a13ff1ee3e52bcdbc4e1fb73f607b018ed521a4c2b5652b"
     },
     {
       "path": "interface/src/components/studio/porting-panel.tsx",
@@ -2160,7 +2169,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44c3e8fe1d56f82b4cf476da9e2435c67e3a028a56f675c2d6b291d217928cf4"
+      "sha256": "f551e790facbf7c6c7035b3884a66b38ed46a731be3f5de5c877008c36c75eea"
     },
     {
       "path": "interface/src/components/studio/preflight-card.tsx",
@@ -2172,7 +2181,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c66cb4583d5e28ccb9cbe8924b9cd02b0ba9a50d6ba644289ee69ccfcb8f668"
+      "sha256": "26e4a5d52f9550a23c344923cd3960a0514c544461dfc09777b3ce427225a518"
     },
     {
       "path": "interface/src/components/studio/preset-bar.tsx",
@@ -2184,7 +2193,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "513fa34cd217c49e478e035f703f19ef8e66a5599abe1ef957dd5ceda62dec7a"
+      "sha256": "64a8b44015e866c689470cf28c89f8bff5eea15b5fe3cad80831fc994db12aa4"
     },
     {
       "path": "interface/src/components/studio/profile-switcher.tsx",
@@ -2196,7 +2205,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "67eacb55737f60717bb12690878c1301259b6202f89a1d7525bacb7ce0053b93"
+      "sha256": "a8326e7d078d222292cf2160273e33379a55c77fc1fd79c8f0d49c3e8bbb46cf"
     },
     {
       "path": "interface/src/components/studio/profiler-panel.tsx",
@@ -2208,7 +2217,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "07544d76eeee07f03981c5bff681d103189ade76882066699a214992ab708743"
+      "sha256": "f44b8779c986d026668c5b0fb16e046278216023a02361245cb1a3f35cb5c063"
     },
     {
       "path": "interface/src/components/studio/progress-panel.tsx",
@@ -2220,7 +2229,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "319124ac60895fb7105796b63b547c000cd7a78790c6ee3aa23dfe800dab7290"
+      "sha256": "9fd4b1312b605687013f01ddb2309748b6405b6a6a3a671c780915c15599aa1c"
     },
     {
       "path": "interface/src/components/studio/share-dialog.tsx",
@@ -2232,7 +2241,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83847d8232aa7c185da9c9bdbf073e4f2091bed3379f51239d026af2177fd0d8"
+      "sha256": "64c3ed10287bbf0a5cb651642a01544edaa7b1c0125a202d6661f976d90ed61c"
     },
     {
       "path": "interface/src/components/studio/sidebar.tsx",
@@ -2244,7 +2253,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b9b66e8fddd23e4699c1da583678b887991a4e2214800fd1ddef7e3c75ce90a4"
+      "sha256": "cc6e2528e6c026986c395bd8d67516b8439df6c8ff189b745404b95b5353f4eb"
     },
     {
       "path": "interface/src/components/studio/studio-context.tsx",
@@ -2256,7 +2265,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a8b7d0bea652507b907f5feb811c63876eb12f2561045836221e0c90e06d4d01"
+      "sha256": "9e91d4143c251449d12f060f31a6c61945f487ba56d7a4afc1ce24ad321923d2"
     },
     {
       "path": "interface/src/components/studio/summary-rail.tsx",
@@ -2268,7 +2277,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4da96ec4651e9fc2ffd9c095c2d13c739e16b9ef98a33811adbd142ce65d7e4"
+      "sha256": "1ada9b0cde8a7caa6f33256f4192e6f41381e7eef34827c47fec372997f26dd7"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -2280,7 +2289,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4bf3c48b42d22d5fd5dc579770abbbd80bcaec0595e931bd6c9dd1058aedab3"
+      "sha256": "824699ae06984e1eacc334d2495c79247a9adf9b342dd3959037228d420c1a8d"
     },
     {
       "path": "interface/src/components/studio/topbar.tsx",
@@ -2292,7 +2301,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70f0f23a109272d019e4d4572ab94baac5ee46a37b18eb707a6309600d0e2afd"
+      "sha256": "cef1705e6fb00c4ad55ae518412e4d9b95072f771bbc2828556d10f798e6b01e"
     },
     {
       "path": "interface/src/components/studio/troubleshooting-panel.tsx",
@@ -2304,7 +2313,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1a9f0f67caa6aa9dc9dcdd6c7313cfe60606896dd8418dbe474310e90de19f7"
+      "sha256": "475203617a90d2b0071d584111cb7cc424e815877c7663754f71204748f9a19d"
     },
     {
       "path": "interface/src/components/studio/ui-bits.tsx",
@@ -2316,7 +2325,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f74a4957be42d0376caae764c8a04650b095e61649e5d05176bfdb36221f76e4"
+      "sha256": "c80148f010be9d4058f60035174df5bd1dbdd0c81385f269e1781c6ddf059954"
     },
     {
       "path": "interface/src/components/studio/visual-regression-panel.tsx",
@@ -2328,7 +2337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fdbd321186cfbe0054a8f7ba4bd1ac03aaaacaaa2265f8f0cf326d8c9617f415"
+      "sha256": "a953d5f9d6a91f18d2d04a1d93b0f3ac2413db9a2b6b80a823dfedf19b5a2ca8"
     },
     {
       "path": "interface/src/components/studio/vram-viewer.tsx",
@@ -2340,7 +2349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6c0ed30a614fe35df8478651ead9e00ff678610a4a508a2a72fa2ac74d697c7"
+      "sha256": "ca2de397f0e79d63152eea27030cee1deb418e138791c2782df0bf5eedbdb7a1"
     },
     {
       "path": "interface/src/components/ui/alert-dialog.tsx",
@@ -2355,7 +2364,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "59967c334f56dd44100e49b1fc18db428e7f15f5a28b9c2c4f9a3b7dcb4db4b7"
+      "sha256": "62d57912e1b13a3b42281e22c54bd41a9ee27339979081f0960bd618a42bd29a"
     },
     {
       "path": "interface/src/components/ui/alert.tsx",
@@ -2370,7 +2379,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "49d8311589b810b106aada8ef7b13f70b2b1f68cfce4e1458b7f31a191f420e9"
+      "sha256": "030458764c21a5781be7d4edb6afefee7663f792bc4e3c9662f75b89e8cc3910"
     },
     {
       "path": "interface/src/components/ui/badge.tsx",
@@ -2385,7 +2394,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f41c11fc13e9a1f1b849349cb51b137ddd27de0a17c5339675c789d58f556cc4"
+      "sha256": "6d90a43ffa681824920ad746e1b285e2938a38a8a6d0dacb6a64fd569c38f515"
     },
     {
       "path": "interface/src/components/ui/button.tsx",
@@ -2400,7 +2409,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "82403231e33fd3d45b111e5e819df194cdfa7cef9a726770185724a60bd20932"
+      "sha256": "a3b98e591a37350d46394c10c08b7aef15d6acd07f43092152f7795221f1db38"
     },
     {
       "path": "interface/src/components/ui/dialog.tsx",
@@ -2415,7 +2424,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "491a87bfae8f28773624d353bf56b9288d0852413e814d508e0d086dc7b06edb"
+      "sha256": "58ad3288082e5c39f5b665bc4d30335595f7bf3cc64c3b005fc6c247dba55c79"
     },
     {
       "path": "interface/src/components/ui/dropdown-menu.tsx",
@@ -2430,7 +2439,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9b346378821ba06f9501e4571fd7678cd8819d6833f833daff72bec699565c06"
+      "sha256": "f6ac72e410a42c9d637a4d69788f8dae88b7d75a385a51df9fe161bd4ed73bcb"
     },
     {
       "path": "interface/src/components/ui/input.tsx",
@@ -2445,7 +2454,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "6628e8fde207857b9ba08910d386eeea8213d7d745b4e0ae8b95332b52730db9"
+      "sha256": "74c9bd6d2acdeb6520769baa1f504119cc0dcb1210ad11f02a59de75cb3f1382"
     },
     {
       "path": "interface/src/components/ui/label.tsx",
@@ -2460,7 +2469,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9ec42c8a57e82311118b794318409ee02b2cebfa49ba6cce8457cff6448cd471"
+      "sha256": "ecdcc7475e1f26e85610da14b6b6ddab56e3358ce2a4295762a6ecf522c6c517"
     },
     {
       "path": "interface/src/components/ui/progress.tsx",
@@ -2475,7 +2484,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "e7a89220fb49e18d6613956781cfd5eb38d5da36379e93f5fc90ccec127dc871"
+      "sha256": "2ac404732745fe18cb03d23de3858361799a0f13b2907639dec5c32c10774401"
     },
     {
       "path": "interface/src/components/ui/select.tsx",
@@ -2490,7 +2499,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8795c9fac7c48d565ff6c47cbf4cca8bfefe25d8cb3d7e7aeba36855739a76ab"
+      "sha256": "bfe5468c202565759789fbc17e838e091c3f9b534e537c6f1c211f176cd170ae"
     },
     {
       "path": "interface/src/components/ui/slider.tsx",
@@ -2505,7 +2514,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "55140ef92c201c82d530dede076603611fbfb2cdc899e4d8459b58f6cbb2b235"
+      "sha256": "0be12562c13c51219e311ee755fc8c7adaa1ccd91599bc456272de6ba49a7794"
     },
     {
       "path": "interface/src/components/ui/switch.tsx",
@@ -2520,7 +2529,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "17f2390d98e8ce4d9e90155eac1918266914d6a9ada7c276b5d1c917cef0e969"
+      "sha256": "a051713baf73d20299179c0b3663067ba7b39fd61c2ca5abe4971f64bc449b1c"
     },
     {
       "path": "interface/src/components/ui/toast.tsx",
@@ -2535,7 +2544,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "de232035f4f40233aaddcd130ff494c72cda864e91109244bf55331da13d9a96"
+      "sha256": "c460b5bda0d080539e251c6874d1b2483f8be561a467abb025c0b6805544d861"
     },
     {
       "path": "interface/src/components/ui/toaster.tsx",
@@ -2550,7 +2559,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "05e5b3eb44dce90b44e42ca3b4bdc582c5f4bf1652e38237ff7276aa6bd66d8f"
+      "sha256": "461c94d85aa36f211353d6ea7b722730eb22b92275276cafe0ed996b898fff6c"
     },
     {
       "path": "interface/src/components/ui/toggle-group.tsx",
@@ -2565,7 +2574,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "09eebce0dcbac76f860d4b6df5261c4f385f5ba233f88a0cd8dde91b1772abeb"
+      "sha256": "1bce681cde0ac0531c0b2143a388078797e8784c7c7596dcb7268f7505263694"
     },
     {
       "path": "interface/src/components/ui/toggle.tsx",
@@ -2580,7 +2589,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b201563ea8cdef3680a3d9bf272cfc5918a5ab6e1079d7ff8d6273df7fce2849"
+      "sha256": "d2c60afd36a1a5d6ce4821eb25db6a5ce04076cd5b8dd936030fd20444b7493d"
     },
     {
       "path": "interface/src/components/ui/tooltip.tsx",
@@ -2595,7 +2604,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8d8a3645f547334b759341daf94a20b12a8ba17e8de4ad6e4e1c64b38842c1e3"
+      "sha256": "873406cd5e4a5b8ff819c78dfca1ab62797ad98067732a10e168120ad51ad275"
     },
     {
       "path": "interface/src/hooks/use-gamepads.ts",
@@ -2607,7 +2616,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f6f87e010f7b976afefc97bfca2e13666651eddce6b83665318f802052e1455d"
+      "sha256": "7be3c9081b0fc528a2331bd9f281d39f6d912d22d1e5b900bb186af73e902a37"
     },
     {
       "path": "interface/src/hooks/use-keyboard-shortcuts.ts",
@@ -2619,7 +2628,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "772b109e22cb815a80871f42c42d89eeba1d7dfe14f6bec86c487d453106bba5"
+      "sha256": "2a49172f3885e9b23b7aaf7df40c1d5b91a2cfd2a695cdf9652ef3ce69986a47"
     },
     {
       "path": "interface/src/hooks/use-mobile.ts",
@@ -2634,7 +2643,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f6a4791d0586c106823b45212b1928b1f36ef9ae00d5ab9317cdc83cbdf65238"
+      "sha256": "4f3b51255bdcb95fad367162eccdc2ba5d5be37995db6348d3751921df08826f"
     },
     {
       "path": "interface/src/hooks/use-theme.ts",
@@ -2646,7 +2655,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fb1f70bf27f82a25fb6396649df4806e8e3d2d820bc7f11aa67bc0fa9e36fc49"
+      "sha256": "ec9f2d9262d20a84a479ff88ab694c125ca5b91f19895cb30abdffb6d0a1182b"
     },
     {
       "path": "interface/src/hooks/use-toast.ts",
@@ -2661,7 +2670,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "996f0b576c5695f1219655f0e12326648710e4ce41401fa0eeb458430b71eaa0"
+      "sha256": "12fc88ec2266be8599329e29b8d1943578db8de9195f0c9102edaa843fa33261"
     },
     {
       "path": "interface/src/lib/db.ts",
@@ -2673,7 +2682,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b668c1e2c238dea4881bfcea5e03cc0c1eb6f7ecc161c965af7464c6905af37"
+      "sha256": "50789854649591a6753711040edf248e3be9da0ea9085d2c79d985a4971702ef"
     },
     {
       "path": "interface/src/lib/format.ts",
@@ -2685,7 +2694,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be478d1cbb1cc63d2c4a796c0bc13f5e68ff272fd24c60180c5b55299dd3aed3"
+      "sha256": "3862b1ca0f31d04a3cf9b6aec317bcf35ab947adea659309e51efc12295676df"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.d.mts",
@@ -2709,7 +2718,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c7137875910bb33ab3166e9c959be13a186bb91eefc74f5f36be289f90115cf"
+      "sha256": "119994617d4c434758463c82c239ff7904d8beffa6a717e66fa2c886ddca360a"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.test.mjs",
@@ -2721,7 +2730,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "132968c33607d95277dde44f23a4624376cc73120970357691a585b957aa6211"
+      "sha256": "0b767024476fa2c4095f47d613aa5dc126ed20d27fcbf4debf9dd310815d0559"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.d.mts",
@@ -2745,7 +2754,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "03bc37529e1e1ca5e4936ebbe25d6a9321abff1200177457edf26b3d25bcd029"
+      "sha256": "fac6f53a7d1f27e4151c1d718342c0c83c559a8a6db6bf58de07ba8d845aecae"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.test.mjs",
@@ -2757,7 +2766,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c96310ba512d5453b200dd509feb79029499c15b294a1cfbdbce3f2945e9520e"
+      "sha256": "2b4449a33953d19d957085999b77d227c63f9efe158d45c895538c085042e0d2"
     },
     {
       "path": "interface/src/lib/recompiler/defaults.ts",
@@ -2769,7 +2778,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5798c14a64a90f100bf98b04bae3fec8c1e67ddcf3f707dddfde854f77dee493"
+      "sha256": "dea418483c8d7feb10a308bdbc15777835e65d1a2472509d0c7e9a6c5955aea0"
     },
     {
       "path": "interface/src/lib/recompiler/diff.ts",
@@ -2781,7 +2790,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a4703b7711316d4b62f647a998e5e8e20fe3722eb4e18a3071dc90a871e6cfb"
+      "sha256": "8810dfb6270133b33259f2cf7f543d84eb7fc08dd3a14f03410e56f2fa342b64"
     },
     {
       "path": "interface/src/lib/recompiler/doctor.test.ts",
@@ -2793,7 +2802,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be366ea3e083ca50bb08d4cc527f730cf6529d264c8f358325afa9c4f4c5ea86"
+      "sha256": "3705ee3d081976c7172a25b740fbc6e391ca514f05ad97f096b9db01c650894b"
     },
     {
       "path": "interface/src/lib/recompiler/doctor.ts",
@@ -2805,7 +2814,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8973bb378b98dad270ed447c3308dfb18b6f98c5401ff1b834cec3c0a4269312"
+      "sha256": "809225834c284149020b67ff176e75ffcc81504e4773f7b02f18ef5bcb9f646e"
     },
     {
       "path": "interface/src/lib/recompiler/iso.ts",
@@ -2817,7 +2826,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79981e6a246ea6480588c07bf8203553b4f87cc0b4430d664ce9f0a8911323b8"
+      "sha256": "044e15b8b3e758fb207aeb467bd7fba8906aa17452420615035b0ac07d5b827a"
     },
     {
       "path": "interface/src/lib/recompiler/local-request.ts",
@@ -2829,7 +2838,31 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9ca8c2280d35cf0f48df99f984cf2fd9eb03190f79c922080df1e63f3ab39b78"
+      "sha256": "caffcaf60bea484f8a114be16e3643b2424353d41d1c8b11838397dd1c3fe0e8"
+    },
+    {
+      "path": "interface/src/lib/recompiler/loopback-bind.test.mjs",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-loopback-sse-regressions-20260915",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cfcb67b568f3e20e326e899ba7a42b3f877cc74fc9d6e002fb73a058cdb7ea88"
+    },
+    {
+      "path": "interface/src/lib/recompiler/loopback-guard.test.ts",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-loopback-sse-regressions-20260915",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "03cd6047de5cc9e3f2132e6e9e5fc2df4b32d325d7a3517945004baa7a319b0b"
     },
     {
       "path": "interface/src/lib/recompiler/manager-contract.ts",
@@ -2841,7 +2874,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9bf23f78b1407de6206400a2ac8d8fb5ed05271c36a4cb3abe46d5bb028ba52b"
+      "sha256": "2386e40967d067e5cca2cff2c685c1571dd6ae15f0255b335284c2d89514bade"
     },
     {
       "path": "interface/src/lib/recompiler/manager-process.test.ts",
@@ -2853,7 +2886,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0ed079b8a8de4608836d0a0cc05d7d267c38dbf9f940c45a94e9a6ec183d585"
+      "sha256": "48564aff5eadd870cf6af4d54f8df1f5a15723d9dd9d7529530ee6383d4abca0"
     },
     {
       "path": "interface/src/lib/recompiler/manager-process.ts",
@@ -2865,7 +2898,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2bb305ef6083083b5521ec6408644ce24e8f34eaaadecbb95dce14febba3bfe0"
+      "sha256": "57b4bae200682587d0e113e5548afc8a66162f31565d9dfe77ecc41b55d6f8be"
+    },
+    {
+      "path": "interface/src/lib/recompiler/manager-sse.test.ts",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "dashboard-loopback-sse-regressions-20260915",
+        "evidence_tier": "N",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "42bf5bfab04154ab2770908f5299ac712271737335cf399222be99717a5517f5"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.d.mts",
@@ -2889,7 +2934,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d0a6963712ae204600d038fc8c43e6cd756a9af128a10b675f8cd1bf64e9cf6"
+      "sha256": "5d39424682300632309d32977331becaf958417b7191402713247e46df8095d6"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.test.mjs",
@@ -2901,7 +2946,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bfea5b10caad8f7f4f306fc30e3bfb156f4302ecf6689ba0e4978c9a0a0bdaa6"
+      "sha256": "b4dc34b498eacc538c93b35035a4d206594d408b20e42d424fc60b5874b361d2"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.d.mts",
@@ -2925,7 +2970,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4dcffb735c8c3945bee2d1d063574f041ed9de444bdcb4b766229630befae65e"
+      "sha256": "2b1e35902e64282b9a160035310d1cc62bb26d4c9a22c5e2840d32169572548b"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.test.mjs",
@@ -2937,7 +2982,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "590ee8f6f9766b440878262c352aba0e7cf9462df89828d7dab50ca575447d87"
+      "sha256": "e93b21e75bb3ba13f7a04c71be49bb642e5a920a3fdfbbedd653b9025e03a23d"
     },
     {
       "path": "interface/src/lib/recompiler/presets.ts",
@@ -2949,7 +2994,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34a2505397ddc5148a6d28891caeb39616bfbdd98b589f46e7689dedaf56779f"
+      "sha256": "d8e72b3695b8fcff7181ad1b05b31661b8646a5334ac2eda69c8768d273cd809"
     },
     {
       "path": "interface/src/lib/recompiler/profile-store.test.ts",
@@ -2961,7 +3006,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "607ae6987eaa3e1063c347e591514140063abd444904a4b2669161198f757a31"
+      "sha256": "b6844560fe44e47e35e39b58e2b076cc51d1ec7f2f13de4f359051231f1bfdea"
     },
     {
       "path": "interface/src/lib/recompiler/profile-store.ts",
@@ -2973,7 +3018,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5bc88e9f84b0a51954d5e1f3fc1255fb48113137d7237eda674aeead10e777b0"
+      "sha256": "66828fbaed45805ab30e237e47a19ab780c23d8d75825a2f369abf4f427caf72"
     },
     {
       "path": "interface/src/lib/recompiler/profiles.ts",
@@ -2985,7 +3030,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c9ea1d94aa39e4f5882e6375e8f331b535cc052b06b49c22e0cf27938ea7a40"
+      "sha256": "96cf8641497f2c4c8f2fd2e0279b4a65d9673c41ec9c63bd8df0000026a4187f"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.d.mts",
@@ -3009,7 +3054,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dada16655edd0a6c687f8ed2116ced0858b535bb21c65113b3e53302809641d7"
+      "sha256": "85783ed4331ee76b7d5aa01d127fb1b2fcbbf92a5e692f19eda6af592449ae1b"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.test.mjs",
@@ -3021,7 +3066,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62fe6c25f6f33c84fa08493f05c345cf84f2d0c4f5c3667b29599e4c07ff94e3"
+      "sha256": "cbf64d4c36045d284a072c8f232952ad8b6acd56c9e02a76c87e96805a777d42"
     },
     {
       "path": "interface/src/lib/recompiler/real-data.ts",
@@ -3033,7 +3078,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57321a5bb920c2d3ae35d015ed0223bdf8915e412b622484aef7df3d97816d8d"
+      "sha256": "a3e113591eb80111a8326fb88c1cf89996a10952a8d1b3e43f1c9eaaa6d77ce0"
     },
     {
       "path": "interface/src/lib/recompiler/route-integrity.test.ts",
@@ -3045,7 +3090,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a83b0ac5c26bcc721d7f168eb90b7dbd6be4d44fc310e87c1a2e07b5b66d08ae"
+      "sha256": "555021b70f4fc0d23c6e933d247d11d6fe775b15f247dac2e6913274d4f1b476"
     },
     {
       "path": "interface/src/lib/recompiler/runner.ts",
@@ -3057,7 +3102,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "717cd4a720e7e9c5e2b8c08118585b64713a1ad6dcca3977d1043724964b821c"
+      "sha256": "fa4344549bff1f99a9a6ce68d938bbe8bc1fbbdca3b8c62b5e8972c73121647a"
     },
     {
       "path": "interface/src/lib/recompiler/share.ts",
@@ -3069,7 +3114,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8cc97a2e03170542c799dd6036ba9058097859a8e48c295005cecc0fba98830"
+      "sha256": "c4775f2d9c2ff457e0441f7982f576d410ab6a4cc9f7b16fab5def258a731b9b"
     },
     {
       "path": "interface/src/lib/recompiler/telemetry.ts",
@@ -3081,7 +3126,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "945df292d7297582fc00f69ed64524fac3ba1cc51556a73c5975baff357a52a5"
+      "sha256": "70f798f68d3b1767f7388ecfbfa8b07a5b1b7d1894b71739c4ba6f4978912d78"
     },
     {
       "path": "interface/src/lib/recompiler/types.ts",
@@ -3093,7 +3138,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b754329d9ae0825561e83d1f6766e3faf59404c4cf90eeaa1c99b6a13fb9b021"
+      "sha256": "b5ec583273f60508bfe2d597e5286ac8a18a90f80baace84bd14f469f96be1ae"
     },
     {
       "path": "interface/src/lib/recompiler/visual-regression-route.test.ts",
@@ -3105,7 +3150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "670c8d478cb3da87037c6e1307efa70560ca93ef7554315c49ca6ec2adbd5cd7"
+      "sha256": "628eabdcee38bc3b094017e892eaea6b7615a4734cf11d9a7ecb4f2b5ee4155f"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.d.mts",
@@ -3129,7 +3174,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51198e1fbea4db1d982c04bdbc861df001b3d7066ca64b5c8bb494dbd3e63df6"
+      "sha256": "8702a5a908110f34eefedb7beae9faa0368a7c05b20ac1fa1aa96335a51ecacb"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
@@ -3141,7 +3186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "52cf588b932ef075b9e3bfac9c12b473b68cbdf5346d463d13d0078a68607e8b"
+      "sha256": "530c198a3463310eefba3a7bdbe4aca63e957233cf7a7a6d939d070bbadb2090"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
@@ -3153,7 +3198,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a37a656d5aa4981b2e96d8b957210ee63564649005a1035822b6d32ac7de17f0"
+      "sha256": "c8f3398bf827c16fda7cd98b12961be6bca4df57292d687f7252adb1063664cd"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
@@ -3177,7 +3222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "442d67ad82cc6a6594f12431731f57831da302d2a24115c1c2c102b9f796c606"
+      "sha256": "51e6c1e14e2d8f7c4d85d7b82c223a6b94a441dfb5a5bda6aeeada7bb67b5998"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.test.mjs",
@@ -3189,7 +3234,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c37fae2647b696546ef94620a2c778a4e61d4c827621d3777fd351957a63bb6a"
+      "sha256": "1a13a5d56cd06516d77691d07d86cea2115f1bc8fc4b14bf88aad957c778769c"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.test.ts",
@@ -3201,7 +3246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d639dcdcef7e2c2dc79e350ec0b7d09773f5daf97e16d7ba82ffcbb537f2ab81"
+      "sha256": "466a3e16b57432126a46f363563e9e66000b658b833d0a54a9b356fe47b8167e"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.ts",
@@ -3213,7 +3258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b72986e58c806ed546af4653dcdd4c971c6fbd1a9cb17456b8c6f2323b20bbc6"
+      "sha256": "3ecf46dc35b3da7b67a60025bb656fb29fc47ace7356645eabad09b531e3e38d"
     },
     {
       "path": "interface/src/lib/recompiler/zip.ts",
@@ -3225,7 +3270,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3373b0231493c98dc4a8e9ec2ead5ffd978856020330beab4d2b97715f85dd02"
+      "sha256": "c7fd09231316718c2a822e11f6db30f40fdb73c226f6f2b9268021e2f4d09b5b"
     },
     {
       "path": "interface/src/lib/utils.ts",
@@ -3237,7 +3282,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c8c3dfc0cdd370d44932828eb067ef771c8fe7996693221d5d4b90af6d54f2d"
+      "sha256": "cedb7246ffd014f75d31cd101269e340fe571765b1ffd5deaa444388e886f6c2"
     },
     {
       "path": "interface/src/proxy.ts",
@@ -3249,7 +3294,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "128280f239286a50d3e513c90bfca5afbd3495ce89c01b7a4715ff84d8ae925e"
+      "sha256": "a37df322587526c08de79d6ad8b93a3a5b41cd5d222a58f1a54e0d9f62fbfb33"
     },
     {
       "path": "interface/tailwind.config.ts",
@@ -3258,7 +3303,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d32eea580f3fd1c32f53e860a7075c5f10f82ce914efc5e89d34d571739fd74d"
+      "sha256": "55dc30ffbf5d60bc146637cce5f6a862f0776e6ad82e48eb77fdbe2af2d9f4a1"
     },
     {
       "path": "interface/tsconfig.json",
@@ -5909,7 +5954,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4f068e3fae56fc9482f6a9721bb2309d8821a81888f7c14b23d65a743451350a"
+      "sha256": "a97dfb8f592b4daed8f5c36259bcdb5fa8b0265630aee34c32f93d9d1b1f2df3"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -5927,7 +5972,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "dd4f4772b2207c655120d7c76ecf00be31f79c1f98d63d413e095f852575a4e5"
+      "sha256": "808a5625c73f12f44536274c0e12da48599f6fa6ed62907fba08ad104959732e"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -5939,7 +5984,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a1ce0087a6787067fbf7405a927867a9935348db804aa52a1a43d86a8baaa0f"
+      "sha256": "fc3924bccda492e1d1e210dfb1a921a19a0e3e302874ab2a2b10623b2e5b4de6"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -6327,7 +6372,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "baf4641f0f7cc7c19fbeb90a4d6d2ca811f937c28e4a08bbf10e7ca0069f036f"
+      "sha256": "1a2daf850ccfe26d510c1c17d5370662286f7d8f4efdf2fd2cac68cb848731b5"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7365,7 +7410,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d34fa993422230d5e684467655cada28c83df10fb12813dfbcaab3e729b9b13"
+      "sha256": "75b3cacd251c1ffeb0e017f711b7f922c59488e40fb4910008b2a8ee0bf8e092"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -7491,7 +7536,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ec8e2ef353c9e6d874757f676052bec72caf10e6f7db800ecc7c552ee98b9d05"
+      "sha256": "0d67c2a4a739dd1b28529d38a1dc5bcbfb5409d18e926c9e5e356471bde200e7"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7599,7 +7644,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8429593545623e872c5c999a3857c43517a4b1f7471a4d1a34f7817d2246f987"
+      "sha256": "b1a07f34e1d3199f315b2b9d20bf245f76296352584ec3189d517115c70935c5"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -8343,7 +8388,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02fed5311848b7550b549e8529c242b099b695b275a81c0bf59d6cfbe19b5787"
+      "sha256": "e20dd9f13b2f96f307a343c5735797b0056b8f2d5ee5ab1fd637cb98022dcecf"
     },
     {
       "path": "tools/test_publish_audit.py",
@@ -8352,7 +8397,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7bc747aa60549696bd983346e49a14896568c290ac44d421bfa4584b5c6e7d59"
+      "sha256": "c488b1dd79da24a01a8703159ad8a9baebeea8d86f7514e1717b3108cdc4dc67"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -8616,7 +8661,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "024fcde355def4b68cccf68ad4bc3f9d72424a803e48f41c6c86907c6cb23b5c"
+      "sha256": "bdb283a31e460ee2a2208439a60db462f3c079f9a0d18ac2864f53a90c5fadf3"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
@@ -8837,7 +8882,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "587d1094aae39737cfa852e416d36442db7611a7b2f5e932e4f8755de949310b"
+      "sha256": "e78e37875198218e02f83c63d627968478780a48660cca0285f5f8b43800a3a2"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
@@ -8854,7 +8899,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "7df8354517ea3f053e474e6a2e79e6352d125dac6cfc933de802d409e4f63cfb"
+      "sha256": "034bb53de8493442e9566ef023da5c0ae849506e46bf3b00ffc6d76623f4099f"
     },
     {
       "path": "tools/vfpu_overlap_diff_gen.py",
@@ -8878,7 +8923,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a98cb1b2e143e76fb0e17e3e72835ca2ae664d0962c11b107297cae9adc2068"
+      "sha256": "7ef7abd12bfa8b7d8bd692b838e2d36836c6cafe344f9033f3de117d861ddba0"
     },
     {
       "path": "tools/vulkan_sdk.ps1",

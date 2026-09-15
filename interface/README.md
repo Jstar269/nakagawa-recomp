@@ -27,7 +27,7 @@ simulation flag.
 
 ## Develop
 
-Use Node.js 24 LTS (24.18.1 or newer) and npm 11 (11.17.0 or newer):
+Use Node.js 24 LTS 24.21.0 (or a later 24.x patch) and npm 11 (11.17.0 or newer):
 
 ```powershell
 cd interface

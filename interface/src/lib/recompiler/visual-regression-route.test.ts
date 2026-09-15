@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // visual-regression-route.test.ts — route-level tests for the shared bounded
 // P6 PPM loader (issue #174).  Exercises the real image and variance GET
 // handlers against temp repo roots containing generated PPM fixtures.  Run
