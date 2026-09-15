@@ -23,6 +23,7 @@
 #else
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -217,26 +218,58 @@ static bool discard_tree_wide(const WCHAR *path) {
     return RemoveDirectoryW(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
 }
 #else
-static bool discard_tree_posix(const char *path) {
-    struct stat info;
-    if (lstat(path, &info) != 0) return errno == ENOENT;
-    if (!S_ISDIR(info.st_mode)) return remove(path) == 0 || errno == ENOENT;
-    DIR *directory = opendir(path);
-    if (!directory) return false;
+static bool discard_tree_posix_at(int parent_fd, const char *name);
+
+static bool discard_open_directory_fd_posix(int dir_fd) {
+    int iter_fd = dup(dir_fd);
+    if (iter_fd < 0) return false;
+
+    DIR *directory = fdopendir(iter_fd);
+    if (!directory) {
+        close(iter_fd);
+        return false;
+    }
+
     bool okay = true;
     struct dirent *entry;
     while (okay && (entry = readdir(directory)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-        char child[4096];
-        int written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(child)) {
-            okay = false;
-            break;
-        }
-        okay = discard_tree_posix(child);
+        okay = discard_tree_posix_at(dir_fd, entry->d_name);
     }
+
     closedir(directory);
-    return okay && (rmdir(path) == 0 || errno == ENOENT);
+    return okay;
+}
+
+static bool discard_tree_posix_at(int parent_fd, const char *name) {
+    struct stat info;
+    if (fstatat(parent_fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
+
+    if (!S_ISDIR(info.st_mode)) return unlinkat(parent_fd, name, 0) == 0 || errno == ENOENT;
+
+    int child_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (child_fd < 0) return errno == ENOENT;
+
+    bool okay = discard_open_directory_fd_posix(child_fd);
+    close(child_fd);
+    if (!okay) return false;
+
+    return unlinkat(parent_fd, name, AT_REMOVEDIR) == 0 || errno == ENOENT;
+}
+
+static bool discard_tree_posix(const char *path) {
+    if (unlink(path) == 0) return true;
+    if (errno == ENOENT) return true;
+    if (errno != EISDIR && errno != EPERM) return false;
+
+    int root_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (root_fd < 0) return errno == ENOENT;
+
+    bool okay = discard_open_directory_fd_posix(root_fd);
+    close(root_fd);
+    if (!okay) return false;
+
+    return rmdir(path) == 0 || errno == ENOENT;
 }
 #endif
 
