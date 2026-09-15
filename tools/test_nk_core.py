@@ -179,6 +179,7 @@ class NkCoreTests(unittest.TestCase):
             manifest = json.load(f)
         self.assertEqual(manifest["disc_id"], "TEST00001")
         self.assertEqual(manifest["title_id"], "synthetic-allegrex-v1")
+        self.assertEqual(manifest["game_name"], "synthetic")
 
         # Verify no staging directories were left behind
         staging_dirs = list(dest_root.glob(".staging_*"))
@@ -396,6 +397,36 @@ class NkCoreTests(unittest.TestCase):
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         cmd, _ = launcher.build_launch_plan(game_dir)
         self.assertEqual(cmd[0], str(posix_exe))
+
+    def test_runtime_launcher_honors_manifest_game_name(self) -> None:
+        """The Python launcher follows the manager/native manifest build name."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir(parents=True, exist_ok=True)
+        mock_iso = self.temp_dir / "test.iso"
+        mock_iso.write_bytes(b"mock_iso_content")
+
+        (game_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "title_id": "synthetic-allegrex-v1",
+                    "game_name": "custom-launch",
+                    "disc_id": "TEST00001",
+                    "iso_path": str(mock_iso),
+                }
+            ),
+            encoding="utf-8",
+        )
+        build_dir = self.temp_dir / "build" / "custom-launch"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        mock_exe = build_dir / "custom-launch.exe"
+        mock_exe.write_bytes(b"MZfake")
+        mock_image = build_dir / "custom-launch_image.bin"
+        mock_image.write_bytes(b"image")
+
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+        cmd, _ = launcher.build_launch_plan(game_dir)
+        self.assertEqual(cmd[0], str(mock_exe))
+        self.assertEqual(cmd[2], str(mock_image))
 
     def test_runtime_launcher_missing_binary(self) -> None:
         game_dir = self.temp_dir / "TEST00001"

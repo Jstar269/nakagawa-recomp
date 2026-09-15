@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -22,6 +23,14 @@ from .types import TitleProfile
 # Re-exported from the single home so this module and
 # tools/title_catalog_codegen.py cannot drift apart again.
 SYNTHETIC_DISC_ID_MAP = synthetic_disc_ids.SYNTHETIC_DISC_IDS
+
+
+def _manifest_game_name(manifest: Dict[str, Any]) -> str:
+    explicit = manifest.get("game_name")
+    if explicit:
+        return str(explicit)
+    derived = re.sub(r"-v\d+$", "", manifest["id"])
+    return derived or manifest["id"]
 
 
 def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
@@ -64,6 +73,7 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         name=display_name,
         disc_ids=disc_ids,
         regions=regions,
+        game_name=_manifest_game_name(manifest),
         executable_base=manifest["executable"]["base"],
         executable_entry=manifest["executable"]["entry"],
         fallback_entry=f"0x{manifest['executable']['entry']:08x}",

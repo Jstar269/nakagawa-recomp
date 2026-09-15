@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -21,7 +22,9 @@ class RuntimeLauncher:
     def __init__(self, repo_root: Optional[Path] = None) -> None:
         self.repo_root = Path(repo_root or Path.cwd()).resolve()
 
-    def _resolve_image(self, exe_path: Path, title_id: str) -> Optional[Path]:
+    def _resolve_image(
+        self, exe_path: Path, title_id: str, game_name: str
+    ) -> Optional[Path]:
         """Locate the runtime image, in the same order as find_candidate_image."""
         candidates = [
             exe_path.with_name(exe_path.stem + "_image.bin"),
@@ -29,6 +32,10 @@ class RuntimeLauncher:
             self.repo_root / "build" / "hst" / "hst_image.bin",
             self.repo_root / "runtime" / "hst_image.bin",
         ]
+        if game_name:
+            candidates.append(
+                self.repo_root / "build" / game_name / f"{game_name}_image.bin"
+            )
         if title_id:
             candidates.append(
                 self.repo_root / "build" / title_id / f"{title_id}_image.bin"
@@ -37,6 +44,29 @@ class RuntimeLauncher:
             if cand.is_file():
                 return cand
         return None
+
+    def _resolve_game_name(
+        self, title_id: str, disc_id: str, manifest: Dict[str, Any]
+    ) -> str:
+        """Resolve the same portable build name used by manager/native launch."""
+        game_name = manifest.get("game_name")
+        if not game_name:
+            from .title_registry import get_default_registry
+
+            registry = get_default_registry()
+            profile = registry.lookup_by_disc_id(disc_id) if disc_id else None
+            if profile is None and title_id:
+                profile = registry.lookup_by_id(title_id)
+            game_name = profile.game_name if profile and profile.game_name else None
+        if not game_name:
+            game_name = re.sub(r"-v\d+$", "", title_id) or title_id
+        if not isinstance(game_name, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,63}", game_name
+        ):
+            raise RuntimeLaunchError(
+                f"Game name '{game_name}' is not a portable build identifier."
+            )
+        return game_name
 
     def _resolve_addresses(self, title_id: str, disc_id: str) -> Tuple[int, int]:
         """Base and entry for the title, from the canonical registry.
@@ -80,12 +110,14 @@ class RuntimeLauncher:
         title_id = manifest.get("title_id", "hst")
         disc_id = manifest.get("disc_id", "UCUS98701")
         iso_path = manifest.get("iso_path", "")
+        game_name = self._resolve_game_name(title_id, disc_id, manifest)
 
         # Resolve binary path. Both the extensioned and extensionless names are
         # probed: the runtime has no .exe suffix on Linux or macOS.
         exe_candidates: List[Path] = []
         for stem in (
             self.repo_root / "build" / "hst" / "hst",
+            self.repo_root / "build" / game_name / game_name,
             self.repo_root / "build" / title_id / title_id,
             self.repo_root / "hst",
         ):
@@ -136,7 +168,7 @@ class RuntimeLauncher:
         # the executable alone was therefore never runnable, whatever else it
         # resolved correctly. The native launcher in src/core/nk_launch.c
         # builds exactly this argv, and the two must not drift apart.
-        image_path = self._resolve_image(exe_path, title_id)
+        image_path = self._resolve_image(exe_path, title_id, game_name)
         if image_path is None:
             raise RuntimeLaunchError(
                 f"Runtime image not found for '{title_id}'. Looked beside "
