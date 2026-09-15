@@ -9,6 +9,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/W4 /WX)
 else()
     add_compile_options(-Wall -Wextra -Werror)
@@ -22,6 +23,7 @@ set(CORE_SOURCES
     src/core/nk_library.c
     src/core/nk_launch.c
     src/core/nk_title_manifest.c
+    src/core/nk_xb.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -58,6 +60,14 @@ add_test(NAME manifest_parser_test COMMAND test_manifest_parser --check)
 add_executable(test_launch_resolution tests/native/test_launch_resolution.c)
 target_link_libraries(test_launch_resolution PRIVATE nakagawa_core)
 add_test(NAME launch_resolution_test COMMAND test_launch_resolution)
+
+add_executable(test_xb_parser
+    tests/native/test_xb_parser.c
+    src/player/setup_staging.c
+)
+target_link_libraries(test_xb_parser PRIVATE nakagawa_core)
+target_include_directories(test_xb_parser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/player)
+add_test(NAME xb_parser_test COMMAND test_xb_parser)
 
 # player_state.c is deliberately free of SDL, so the library-state regression
 # links here without pulling the player application into the test build.
@@ -115,6 +125,7 @@ if(BUILD_PLAYER)
         src/player/main.c
         src/player/player_state.c
         src/player/iso_reader.c
+        src/player/setup_staging.c
         src/player/ui_renderer.c
     )
 

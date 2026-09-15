@@ -7,11 +7,101 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
+#define NK_LAUNCH_MAX_ELF_BYTES (256u * 1024u * 1024u)
+#define NK_LAUNCH_MAX_PH_TABLE_BYTES (4u * 1024u * 1024u)
+#define NK_LAUNCH_MAX_PROGRAM_HEADERS 4096u
+#define NK_ELF_PT_LOAD 1u
+#define NK_ELF_PF_X 1u
+
 static inline void safe_copy_path(char *dest, size_t dest_size, const char *src) {
     if (!dest || dest_size == 0) return;
     if (!src) { dest[0] = '\0'; return; }
     strncpy(dest, src, dest_size - 1);
     dest[dest_size - 1] = '\0';
+}
+
+static uint16_t launch_read_u16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t launch_read_u32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void launch_error(char *error_message, size_t error_message_size,
+                         const char *message) {
+    if (!error_message || error_message_size == 0) return;
+    snprintf(error_message, error_message_size, "%s",
+             message ? message : "launch validation failed");
+}
+
+static FILE *launch_fopen(const char *path, const char *mode) {
+#if defined(_WIN32) || defined(_WIN64)
+    if (!path || !mode) return NULL;
+    WCHAR wpath[32768];
+    WCHAR wmode[32];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
+                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
+        return NULL;
+    }
+    return _wfopen(wpath, wmode);
+#else
+    return (path && mode) ? fopen(path, mode) : NULL;
+#endif
+}
+
+static bool launch_join_path(const char *base, const char *relative,
+                             char *out_path, size_t out_size) {
+    if (!base || !base[0] || !relative || !relative[0] ||
+        !out_path || out_size == 0) return false;
+    if (relative[0] == '/' || relative[0] == '\\' ||
+        (relative[0] && relative[1] == ':')) return false;
+    int written = snprintf(out_path, out_size, "%s%c%s", base,
+                           nk_platform_path_separator(), relative);
+    return written >= 0 && (size_t)written < out_size;
+}
+
+static bool launch_store_existing(const char *candidate, bool directory,
+                                  char *out_path, size_t out_size) {
+    if (!candidate || !out_path || out_size == 0) return false;
+    if (directory ? !nk_platform_dir_exists(candidate)
+                  : !nk_platform_file_exists(candidate)) return false;
+    char absolute[NK_MAX_PATH * 2];
+    if (nk_platform_absolute_path(candidate, absolute, sizeof(absolute))) {
+        if (strlen(absolute) >= out_size) return false;
+        safe_copy_path(out_path, out_size, absolute);
+    } else {
+        if (strlen(candidate) >= out_size) return false;
+        safe_copy_path(out_path, out_size, candidate);
+    }
+    return out_path[0] != '\0';
+}
+
+static bool launch_find_staged_executable(const NkGameEntry *game,
+                                          char *out_path, size_t out_size) {
+    if (!game || !game->prepared_root[0] || !out_path || out_size == 0) return false;
+    char candidate[NK_MAX_PATH * 2];
+    if (launch_join_path(game->prepared_root, "EBOOT.BIN",
+                         candidate, sizeof(candidate)) &&
+        launch_store_existing(candidate, false, out_path, out_size)) return true;
+    if (launch_join_path(game->prepared_root, "PSP_GAME/SYSDIR/EBOOT.BIN",
+                         candidate, sizeof(candidate)) &&
+        launch_store_existing(candidate, false, out_path, out_size)) return true;
+    return false;
+}
+
+static bool launch_find_existing_directory(const char *base, const char *relative,
+                                           char *out_path, size_t out_size) {
+    char candidate[NK_MAX_PATH * 2];
+    return launch_join_path(base, relative, candidate, sizeof(candidate)) &&
+           launch_store_existing(candidate, true, out_path, out_size);
 }
 
 /* Confirm a directory exists and can actually be written to.
@@ -108,6 +198,262 @@ bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
     const char *effective_root = (root && *root) ? root : ".";
     return find_candidate_executable(effective_root, title_id, resolved, sizeof(resolved));
+}
+
+NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
+                                              const NkTitleEntry *manifest,
+                                              NkLaunchExecutableInfo *out_info,
+                                              char *error_message,
+                                              size_t error_message_size) {
+    if (error_message && error_message_size > 0) error_message[0] = '\0';
+    if (out_info) memset(out_info, 0, sizeof(*out_info));
+    if (!game || !manifest || !out_info) {
+        launch_error(error_message, error_message_size,
+                     "staged executable validation received invalid arguments");
+        return NK_ERROR_GENERIC;
+    }
+    if (manifest->bss_metadata_source &&
+        strcmp(manifest->bss_metadata_source, "elf") != 0 &&
+        strcmp(manifest->bss_metadata_source, "psp-header") != 0 &&
+        strcmp(manifest->bss_metadata_source, "none") != 0) {
+        launch_error(error_message, error_message_size,
+                     "title manifest has an unsupported BSS metadata source");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
+    char path[NK_MAX_PATH];
+    if (!launch_find_staged_executable(game, path, sizeof(path))) {
+        launch_error(error_message, error_message_size,
+                     "staged EBOOT.BIN was not found under the promoted game root");
+        return NK_ERROR_FILE_NOT_FOUND;
+    }
+    int64_t raw_size = nk_platform_get_file_size(path);
+    if (raw_size <= 0 || (uint64_t)raw_size > NK_LAUNCH_MAX_ELF_BYTES) {
+        launch_error(error_message, error_message_size,
+                     "staged EBOOT.BIN is empty or exceeds the executable size budget");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
+    FILE *file = launch_fopen(path, "rb");
+    if (!file) {
+        launch_error(error_message, error_message_size,
+                     "staged EBOOT.BIN could not be opened for validation");
+        return NK_ERROR_IO;
+    }
+
+    uint8_t header[0x80] = { 0 };
+    size_t header_bytes = (uint64_t)raw_size < sizeof(header)
+        ? (size_t)raw_size : sizeof(header);
+    if (header_bytes < 52 || fread(header, 1, header_bytes, file) != header_bytes) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged EBOOT.BIN has a truncated executable header");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
+    /* Retail PSP EBOOT.BIN files are commonly ~PSP containers. Their inner
+     * ELF is encrypted until the separate lawful decryption phase, so the
+     * native launcher records the container boundary without pretending it
+     * validated inner program headers. */
+    if (memcmp(header, "~PSP", 4) == 0) {
+        /* Offset 4 is the module attribute/version word, not a header length.
+         * Validate the PSP fields that describe the in-memory module instead:
+         * the segment count lives at 0x27, the aggregate BSS size at 0x38,
+         * and the four segment memory sizes begin at 0x54. */
+        if (header_bytes < 0x64 || header[0x27] == 0 || header[0x27] > 4) {
+            fclose(file);
+            launch_error(error_message, error_message_size,
+                         "staged PSP executable container has an invalid segment table");
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+        uint64_t segment_memory = 0;
+        for (unsigned i = 0; i < header[0x27]; i++) {
+            uint32_t segment_size = launch_read_u32(header + 0x54 + i * 4u);
+            if (segment_size == 0 || segment_size > NK_LAUNCH_MAX_ELF_BYTES ||
+                segment_memory > NK_LAUNCH_MAX_ELF_BYTES - segment_size) {
+                fclose(file);
+                launch_error(error_message, error_message_size,
+                             "staged PSP executable container has an invalid segment size");
+                return NK_ERROR_INVALID_EXECUTABLE;
+            }
+            segment_memory += segment_size;
+        }
+        uint32_t bss_size = launch_read_u32(header + 0x38);
+        if ((uint64_t)bss_size > segment_memory ||
+            bss_size > NK_LAUNCH_MAX_ELF_BYTES) {
+            fclose(file);
+            launch_error(error_message, error_message_size,
+                         "staged PSP executable container has invalid BSS metadata");
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+        out_info->is_psp_container = true;
+        fclose(file);
+        return NK_OK;
+    }
+
+    if (memcmp(header, "\x7f" "ELF", 4) != 0 || header[4] != 1 ||
+        header[5] != 1 || header[6] != 1) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged executable is neither a PSP container nor ELF32 little-endian data");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+    if (manifest->bss_metadata_source &&
+        strcmp(manifest->bss_metadata_source, "psp-header") == 0) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "title manifest requires PSP-header BSS metadata, but staged input is a bare ELF");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+    uint16_t elf_type = launch_read_u16(header + 16);
+    uint16_t machine = launch_read_u16(header + 18);
+    if ((elf_type != 2 && elf_type != 3) || machine != 8 ||
+        launch_read_u32(header + 20) != 1 || launch_read_u16(header + 40) < 52) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged ELF must be an ET_EXEC/ET_DYN MIPS32 image");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
+    uint32_t entry_point = launch_read_u32(header + 24);
+    uint32_t program_header_offset = launch_read_u32(header + 28);
+    uint16_t program_header_size = launch_read_u16(header + 42);
+    uint16_t program_header_count = launch_read_u16(header + 44);
+    if (program_header_count == 0 || program_header_count > NK_LAUNCH_MAX_PROGRAM_HEADERS ||
+        program_header_size < 32 || (entry_point & 3u) != 0) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged ELF has no usable program-header table");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+    uint64_t table_size = (uint64_t)program_header_size * program_header_count;
+    if (table_size > NK_LAUNCH_MAX_PH_TABLE_BYTES ||
+        (uint64_t)program_header_offset > (uint64_t)raw_size ||
+        table_size > (uint64_t)raw_size - program_header_offset) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged ELF program-header table is outside the file bounds");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
+    uint8_t *program_headers = (uint8_t *)malloc((size_t)table_size);
+    uint32_t *load_starts = (uint32_t *)calloc(program_header_count, sizeof(*load_starts));
+    uint32_t *load_ends = (uint32_t *)calloc(program_header_count, sizeof(*load_ends));
+    NkResult result = NK_ERROR_INVALID_EXECUTABLE;
+    if (!program_headers || !load_starts || !load_ends) {
+        launch_error(error_message, error_message_size,
+                     "out of memory while validating staged ELF program headers");
+        result = NK_ERROR_OUT_OF_MEMORY;
+        goto staged_elf_cleanup;
+    }
+    if (nk_fseek64(file, (int64_t)program_header_offset, SEEK_SET) != 0 ||
+        fread(program_headers, 1, (size_t)table_size, file) != (size_t)table_size) {
+        launch_error(error_message, error_message_size,
+                     "staged ELF program-header table could not be read");
+        goto staged_elf_cleanup;
+    }
+
+    uint64_t load_base = UINT64_MAX;
+    uint64_t image_end = 0;
+    uint64_t file_backed_end = 0;
+    uint64_t bss_start = UINT64_MAX;
+    uint64_t bss_end = 0;
+    size_t load_count = 0;
+    bool entry_in_executable_segment = false;
+    for (uint16_t i = 0; i < program_header_count; i++) {
+        const uint8_t *ph = program_headers + (size_t)i * program_header_size;
+        uint32_t type = launch_read_u32(ph + 0);
+        if (type != NK_ELF_PT_LOAD) continue;
+
+        uint32_t source_offset = launch_read_u32(ph + 4);
+        uint32_t virtual_address = launch_read_u32(ph + 8);
+        uint32_t file_size = launch_read_u32(ph + 16);
+        uint32_t memory_size = launch_read_u32(ph + 20);
+        uint32_t flags = launch_read_u32(ph + 24);
+        uint32_t alignment = launch_read_u32(ph + 28);
+        if (memory_size == 0 || file_size > memory_size ||
+            (uint64_t)source_offset > (uint64_t)raw_size ||
+            (uint64_t)file_size > (uint64_t)raw_size - source_offset) {
+            launch_error(error_message, error_message_size,
+                         "staged ELF PT_LOAD has invalid file or memory bounds");
+            goto staged_elf_cleanup;
+        }
+        uint64_t memory_end = (uint64_t)virtual_address + memory_size;
+        if (memory_end > (uint64_t)UINT32_MAX ||
+            (alignment > 1 && (alignment & (alignment - 1u)) != 0) ||
+            (alignment > 1 && ((uint64_t)source_offset % alignment) !=
+                              ((uint64_t)virtual_address % alignment))) {
+            launch_error(error_message, error_message_size,
+                         "staged ELF PT_LOAD has invalid address or alignment geometry");
+            goto staged_elf_cleanup;
+        }
+        if (load_count >= program_header_count) {
+            launch_error(error_message, error_message_size,
+                         "staged ELF contains too many load segments");
+            goto staged_elf_cleanup;
+        }
+        load_starts[load_count] = virtual_address;
+        load_ends[load_count] = (uint32_t)memory_end;
+        load_count++;
+        if ((uint64_t)virtual_address < load_base) load_base = virtual_address;
+        if (memory_end > image_end) image_end = memory_end;
+        uint64_t segment_file_end = (uint64_t)virtual_address + file_size;
+        if (segment_file_end > file_backed_end) file_backed_end = segment_file_end;
+        if (file_size < memory_size) {
+            uint64_t segment_bss_start = (uint64_t)virtual_address + file_size;
+            if (segment_bss_start < bss_start) bss_start = segment_bss_start;
+            if (memory_end > bss_end) bss_end = memory_end;
+        }
+        if ((flags & NK_ELF_PF_X) != 0 && entry_point >= virtual_address &&
+            (uint64_t)entry_point < memory_end) {
+            entry_in_executable_segment = true;
+        }
+    }
+    if (load_count == 0 || !entry_in_executable_segment) {
+        launch_error(error_message, error_message_size,
+                     load_count == 0 ? "staged ELF contains no PT_LOAD segments"
+                                     : "staged ELF entry is not inside an executable PT_LOAD segment");
+        goto staged_elf_cleanup;
+    }
+    for (size_t left = 0; left < load_count; left++) {
+        for (size_t right = left + 1; right < load_count; right++) {
+            if (load_starts[left] < load_ends[right] &&
+                load_starts[right] < load_ends[left]) {
+                launch_error(error_message, error_message_size,
+                             "staged ELF PT_LOAD guest ranges overlap");
+                goto staged_elf_cleanup;
+            }
+        }
+    }
+    if (manifest->executable_base != 0 && load_base != manifest->executable_base) {
+        launch_error(error_message, error_message_size,
+                     "staged ELF load base does not match the title manifest");
+        goto staged_elf_cleanup;
+    }
+    if (manifest->executable_entry != 0 && entry_point != manifest->executable_entry) {
+        launch_error(error_message, error_message_size,
+                     "staged ELF entry point does not match the title manifest");
+        goto staged_elf_cleanup;
+    }
+
+    out_info->is_elf = true;
+    out_info->entry_in_executable_segment = entry_in_executable_segment;
+    out_info->has_bss = bss_start != UINT64_MAX;
+    out_info->load_base = (uint32_t)load_base;
+    out_info->image_end = (uint32_t)image_end;
+    out_info->file_backed_end = (uint32_t)file_backed_end;
+    out_info->bss_start = (uint32_t)(out_info->has_bss ? bss_start : image_end);
+    out_info->bss_end = (uint32_t)(out_info->has_bss ? bss_end : image_end);
+    out_info->program_header_count = program_header_count;
+    out_info->load_segment_count = (uint16_t)load_count;
+    result = NK_OK;
+
+staged_elf_cleanup:
+    free(load_ends);
+    free(load_starts);
+    free(program_headers);
+    fclose(file);
+    return result;
 }
 
 static bool find_candidate_image(
@@ -281,9 +627,57 @@ NkResult nk_launch_prepare_session(
     session->base_address = entry->executable_base;
     session->entry_point = entry->executable_entry;
 
+    /* A completed native staging transaction carries the source EBOOT under
+     * prepared_root. Validate it before any launch environment is assembled;
+     * this keeps a malformed or mismatched staged image from being mistaken
+     * for a usable runtime input. PSP ~PSP containers are accepted only as a
+     * bounded container boundary; their encrypted inner ELF is a later
+     * decryption capability. */
+    if (game->assets_staged) {
+        if (!launch_find_staged_executable(game, session->staged_executable_path,
+                                           sizeof(session->staged_executable_path))) {
+            snprintf(session->last_error, sizeof(session->last_error),
+                     "Staged title %s has no EBOOT.BIN under prepared_root",
+                     session->disc_id);
+            return NK_ERROR_FILE_NOT_FOUND;
+        }
+        char staged_error[256];
+        NkLaunchExecutableInfo staged_info;
+        NkResult staged_result = nk_launch_validate_staged_executable(
+            game, entry, &staged_info, staged_error, sizeof(staged_error));
+        if (staged_result != NK_OK) {
+            snprintf(session->last_error, sizeof(session->last_error), "%s",
+                     staged_error[0] ? staged_error : "Staged executable validation failed");
+            return staged_result;
+        }
+        session->staged_executable_checked = true;
+        session->staged_executable_info = staged_info;
+    }
+
     /* 4. Resolve data root */
     char sep = nk_platform_path_separator();
-    if (entry && entry->data_root) {
+    if (game->assets_staged && game->prepared_root[0]) {
+        /* Native staging deliberately writes the decoded XB tree below
+         * prepared_root/xbdata. Prefer a manifest-relative root when it is
+         * present (useful for future staged layouts), then the canonical
+         * native staging names. */
+        if (entry && entry->data_root) {
+            launch_find_existing_directory(game->prepared_root, entry->data_root,
+                                           session->dataroot_path,
+                                           sizeof(session->dataroot_path));
+        }
+        if (session->dataroot_path[0] == '\0') {
+            launch_find_existing_directory(game->prepared_root, "xbdata",
+                                           session->dataroot_path,
+                                           sizeof(session->dataroot_path));
+        }
+        if (session->dataroot_path[0] == '\0') {
+            launch_find_existing_directory(game->prepared_root, "xbdata_extracted",
+                                           session->dataroot_path,
+                                           sizeof(session->dataroot_path));
+        }
+    }
+    if (session->dataroot_path[0] == '\0' && entry && entry->data_root) {
         char cand_data[NK_MAX_PATH * 2];
         int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", session->working_directory, sep, entry->data_root);
         if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
@@ -334,7 +728,20 @@ NkResult nk_launch_prepare_session(
      * per-disc subdirectory, which is writable by construction and keeps
      * titles apart. */
     session->memstick_root[0] = 0;
-    if (entry && entry->memory_stick_root && *entry->memory_stick_root) {
+    if (game->assets_staged && game->prepared_root[0]) {
+        char cand_ms[NK_MAX_PATH * 2];
+        if (launch_join_path(game->prepared_root, "memstick",
+                             cand_ms, sizeof(cand_ms)) &&
+            ensure_writable_dir(cand_ms)) {
+            char absolute[NK_MAX_PATH * 2];
+            if (nk_platform_absolute_path(cand_ms, absolute, sizeof(absolute))) {
+                safe_copy_path(session->memstick_root, sizeof(session->memstick_root), absolute);
+            } else {
+                safe_copy_path(session->memstick_root, sizeof(session->memstick_root), cand_ms);
+            }
+        }
+    }
+    if (session->memstick_root[0] == 0 && entry && entry->memory_stick_root && *entry->memory_stick_root) {
         char cand_ms[NK_MAX_PATH * 2];
         int w = snprintf(cand_ms, sizeof(cand_ms), "%s%c%s",
                          session->working_directory, sep, entry->memory_stick_root);
@@ -370,6 +777,11 @@ NkResult nk_launch_prepare_session(
         snprintf(fallback_iso, sizeof(fallback_iso), "%s%cdisc%cgame.iso", game->prepared_root, sep, sep);
         if (nk_platform_file_exists(fallback_iso)) {
             snprintf(session->iso_path, sizeof(session->iso_path), "%.*s", (int)(sizeof(session->iso_path) - 1), fallback_iso);
+        } else if (game->assets_staged && session->staged_executable_path[0]) {
+            /* The promoted EBOOT and data root are enough for a staged launch
+             * preparation. Leave PSP_ISO unset rather than relabelling the
+             * executable as an ISO. */
+            session->iso_path[0] = '\0';
         } else {
             snprintf(session->last_error, sizeof(session->last_error), "Game source ISO not found: %.*s", (int)(sizeof(session->last_error) - 30), game->iso_path);
             return NK_ERROR_FILE_NOT_FOUND;
@@ -402,11 +814,11 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_font[NK_MAX_PATH + 16];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
+    char env_modules[NK_MAX_PATH * 2 + 32];
     char env_tables[64];
     char env_boot_event[NK_MAX_PATH + 32];
     char sep = nk_platform_path_separator();
 
-    snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
     snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
     snprintf(env_ge, sizeof(env_ge), "SR_GPU_GE=1");
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
@@ -417,7 +829,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
 
     const char *envp[24];
     int env_count = 0;
-    envp[env_count++] = env_iso;
+    if (session->iso_path[0]) {
+        snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
+        envp[env_count++] = env_iso;
+    }
     envp[env_count++] = env_fps;
     envp[env_count++] = env_ge;
     envp[env_count++] = env_scale;
@@ -438,6 +853,22 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     if (session->font_dir[0]) {
         snprintf(env_font, sizeof(env_font), "SR_FONTDIR=%s", session->font_dir);
         envp[env_count++] = env_font;
+    }
+
+    /* A setup transaction promotes already-decrypted support modules below
+     * the selected game's private root. Tell the runtime's late-import loader
+     * where that exact tree lives; otherwise it falls back to the repository
+     * development path and silently ignores the modules just staged. */
+    if (session->prepared_root[0]) {
+        char module_dir[NK_MAX_PATH * 2];
+        if (launch_join_path(session->prepared_root, "EXTRACTED/decrypted",
+                             module_dir, sizeof(module_dir))) {
+            int module_written = snprintf(env_modules, sizeof(env_modules),
+                                          "SR_MODULE_DIR=%s", module_dir);
+            if (module_written > 0 && (size_t)module_written < sizeof(env_modules)) {
+                envp[env_count++] = env_modules;
+            }
+        }
     }
 
     if (session->config.benchmark_mode) {

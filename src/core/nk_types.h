@@ -28,7 +28,9 @@ typedef enum {
     NK_ERROR_PROCESS_SPAWN = -7,
     NK_ERROR_PERMISSION = -8,
     NK_ERROR_CANCELLED = -9,
-    NK_ERROR_ALREADY_EXISTS = -10
+    NK_ERROR_ALREADY_EXISTS = -10,
+    NK_ERROR_INVALID_XB = -11,
+    NK_ERROR_INVALID_EXECUTABLE = -12
 } NkResult;
 
 typedef enum {
@@ -51,6 +53,15 @@ typedef struct {
     uint64_t iso_size_bytes;
     NkGameSupportStatus status;
     bool is_prepared;
+    /* Disc payload staging is deliberately separate from runtime readiness.
+       A staged title has its EBOOT/XB data in prepared_root, but may still
+       need a locally built recompiled runtime or module preparation before
+       PLAY NOW can succeed. */
+    bool assets_staged;
+    uint32_t extracted_asset_count;
+    uint32_t extracted_audio_count;
+    uint32_t extracted_visual_count;
+    uint32_t extracted_layout_count;
     char last_played[32];
 } NkGameEntry;
 

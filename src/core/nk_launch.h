@@ -6,6 +6,7 @@
 
 #include "nk_types.h"
 #include "nk_platform.h"
+#include "generated/nk_title_catalog.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -24,8 +25,25 @@ typedef struct {
 } NkRuntimeConfig;
 
 typedef struct {
+    bool is_elf;
+    bool is_psp_container;
+    bool entry_in_executable_segment;
+    bool has_bss;
+    uint32_t load_base;
+    uint32_t image_end;
+    uint32_t file_backed_end;
+    uint32_t bss_start;
+    uint32_t bss_end;
+    uint16_t program_header_count;
+    uint16_t load_segment_count;
+} NkLaunchExecutableInfo;
+
+typedef struct {
     char executable_path[NK_MAX_PATH];
     char image_path[NK_MAX_PATH];
+    /* Promoted staging payload, when the library entry came from the setup
+       wizard. This is the source executable, not the generated flat image. */
+    char staged_executable_path[NK_MAX_PATH];
     char working_directory[NK_MAX_PATH];
     char iso_path[NK_MAX_PATH];
     char prepared_root[NK_MAX_PATH];
@@ -42,6 +60,8 @@ typedef struct {
     char disc_id[NK_MAX_DISC_ID_LEN];
     uint32_t base_address;
     uint32_t entry_point;
+    bool staged_executable_checked;
+    NkLaunchExecutableInfo staged_executable_info;
 
     /* Runtime configuration */
     NkRuntimeConfig config;
@@ -60,9 +80,20 @@ typedef struct {
  * readiness cannot drift from the eventual launch path. */
 bool nk_launch_runtime_available(const char *root, const char *title_id);
 
-/* Prepare a launch session for the given game entry.
- * Validates executable existence, ISO presence, and builds environment/argv.
- */
+/* Validate a promoted staging EBOOT.BIN against the selected title manifest.
+ * Plain ELF32/MIPS files receive full program-header, load-range, entry, and
+ * BSS checks. A PSP ~PSP container is recognized as a bounded encrypted/source
+ * container; its inner ELF cannot be checked until a lawful decryption phase
+ * supplies it. */
+NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
+                                              const NkTitleEntry *manifest,
+                                              NkLaunchExecutableInfo *out_info,
+                                              char *error_message,
+                                              size_t error_message_size);
+
+/* Prepare a launch session for the given game entry. Validates runtime
+ * executable existence, staged source metadata when present, and resolves the
+ * source ISO/data/save roots before building environment/argv. */
 
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,

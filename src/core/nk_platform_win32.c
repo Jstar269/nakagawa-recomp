@@ -99,6 +99,22 @@ bool nk_platform_mkdir_p(const char *dir_path) {
     return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
 }
 
+bool nk_platform_mkdir_p_private(const char *dir_path) {
+    /* Application-data directories inherit the per-user ACL established by
+     * Windows. Keep the same wide-character path handling as mkdir_p so a
+     * UTF-8 title path cannot fall back to the ANSI filesystem APIs. */
+    return nk_platform_mkdir_p(dir_path);
+}
+
+FILE *nk_platform_fopen_private(const char *path, const char *mode) {
+    if (!path || !mode || mode[0] != 'w' || strchr(mode, '+') != NULL) return NULL;
+    WCHAR wpath[32768];
+    WCHAR wmode[32];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0])) ||
+        !utf8_to_wide(mode, wmode, sizeof(wmode) / sizeof(wmode[0]))) return NULL;
+    return _wfopen(wpath, wmode);
+}
+
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
     if (!out_path || max_len == 0) return false;
     const char *base = getenv("LOCALAPPDATA");

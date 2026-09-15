@@ -55,6 +55,7 @@ typedef struct {
     const char *compat_id_ptrs[MAX_COMPAT_DISC_IDS + 1];
     uint32_t executable_base;
     uint32_t executable_entry;
+    char bss_metadata_source[16];
     char data_root[257];
     char memory_stick_root[129];
     char hle_profile[65];
@@ -1527,6 +1528,7 @@ bool nk_title_manifest_parse_buffer(
 
     temp.executable_base = exe_base;
     temp.executable_entry = exe_entry; /* Canonical projection: represents executable.entry */
+    snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
     snprintf(temp.data_root, sizeof(temp.data_root), "%s", dr_node->u.str_val);
     snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
     snprintf(temp.hle_profile, sizeof(temp.hle_profile), "%s", hle_node->u.str_val);
@@ -1563,6 +1565,7 @@ bool nk_title_manifest_parse_buffer(
     temp.entry.compatible_disc_ids = temp.compat_id_ptrs[0] ? temp.compat_id_ptrs : NULL;
     temp.entry.executable_base = temp.executable_base;
     temp.entry.executable_entry = temp.executable_entry;
+    temp.entry.bss_metadata_source = temp.bss_metadata_source;
     temp.entry.data_root = temp.data_root;
     temp.entry.memory_stick_root = temp.memory_stick_root;
     temp.entry.hle_profile = temp.hle_profile;
@@ -1733,6 +1736,7 @@ bool nk_title_manifest_parse_buffer(
     dest->entry.compatible_disc_ids = dest->compat_id_ptrs[0] ? dest->compat_id_ptrs : NULL;
     dest->entry.executable_base = dest->executable_base;
     dest->entry.executable_entry = dest->executable_entry;
+    dest->entry.bss_metadata_source = dest->bss_metadata_source;
     dest->entry.data_root = dest->data_root;
     dest->entry.memory_stick_root = dest->memory_stick_root;
     dest->entry.hle_profile = dest->hle_profile;

@@ -220,7 +220,7 @@ def _decode_lzs_body(payload: bytes, expanded_size: int, endian: str, limits: XB
                 b0 = reader.u8("LZS long-run distance")
                 b1 = reader.u8("LZS long-run distance")
                 value = (b1 << 16) | (b0 << 8) | code
-                run_len = ((value & 0x3FC) >> 2) + 3
+                run_len = ((value & 0xFFC) >> 2) + 3
                 run_offset = value >> 12
 
             if run_offset <= 0 or run_offset > len(output):
@@ -263,7 +263,7 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
         if code_count > limits.max_huffman_codes:
             raise XBProbeError("Huffman code table is too large")
         for _ in range(code_num):
-            if code >= (1 << length):
+            if length <= _HUF_MAX_DEPTH and code >= (1 << length):
                 raise XBProbeError("oversubscribed Huffman table")
             code_bits = code
             index = 0
@@ -272,18 +272,13 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
                 code_bits >>= 1
             symbol = reader.u8("Huffman symbol")
             while index < _HUF_TABLE_SIZE:
-                previous = table[index]
-                current = _HuffmanSymbol(length, symbol)
-                if previous is not None and previous != current:
-                    raise XBProbeError("conflicting Huffman table entries")
-                table[index] = current
+                table[index] = _HuffmanSymbol(length, symbol)
                 index += 1 << length
-            code += 1
+            if length <= _HUF_MAX_DEPTH:
+                code += 1
         length += 1
         code <<= 1
 
-    if any(entry is None for entry in table):
-        raise XBProbeError("Huffman table does not cover all codes")
     if reader.pos % 2:
         reader.read(1, "Huffman table alignment")
 
@@ -292,12 +287,12 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
     bit_count = 0
     try:
         while len(output) < expanded_size:
-            while bit_count < _HUF_MAX_DEPTH:
-                word = reader.u16("Huffman bitstream")
+            if bit_count < _HUF_MAX_DEPTH:
+                word = reader.u16("Huffman bitstream") if reader.remaining() >= 2 else 0
                 bit_buffer |= word << bit_count
                 bit_count += 16
             entry = table[bit_buffer & (_HUF_TABLE_SIZE - 1)]
-            if entry is None:  # Defensive; the coverage check above proves this.
+            if entry is None:
                 raise XBProbeError("Huffman code has no table entry")
             if entry.length <= _HUF_MAX_DEPTH:
                 output.append(entry.symbol & 0xFF)
@@ -306,8 +301,8 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
             else:
                 bit_buffer >>= _HUF_MAX_DEPTH
                 bit_count -= _HUF_MAX_DEPTH
-                while bit_count < 8:
-                    word = reader.u16("Huffman literal")
+                if bit_count < 16:
+                    word = reader.u16("Huffman literal") if reader.remaining() >= 2 else 0
                     bit_buffer |= word << bit_count
                     bit_count += 16
                 output.append(bit_buffer & 0xFF)
@@ -315,8 +310,8 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
                 bit_count -= 8
     except (IndexError, struct.error) as exc:
         raise XBProbeError("Huffman bitstream is malformed") from exc
-    _check_zero_padding(reader.data[reader.pos :].tobytes(), "Huffman body")
     return bytes(output)
+
 
 
 def _decode_prefixed(
@@ -546,9 +541,6 @@ class XBArchiveReader:
             if expected_hash != _sjis_hash(raw):
                 raise XBProbeError("string-table path hash mismatch")
             canonical = normalize_inner_path(value)
-            if canonical in seen:
-                raise XBProbeError(f"duplicate inner path: {canonical}")
-            seen.add(canonical)
             names.append(canonical)
         if not table_reader.eof():
             raise XBProbeError("string table has trailing bytes")
@@ -610,6 +602,17 @@ class XBArchiveReader:
                 stored_size=stored_size,
                 span_size=span_size,
             )
+
+        seen_paths: dict[str, XBEntry] = {}
+        for entry in entries:
+            if entry is None:
+                continue
+            if entry.path in seen_paths:
+                prev_entry = seen_paths[entry.path]
+                if self.read_entry(prev_entry) != self.read_entry(entry):
+                    raise XBProbeError(f"duplicate inner path: {entry.path}")
+            else:
+                seen_paths[entry.path] = entry
 
         if any(entry is None for entry in entries):
             raise XBProbeError("internal FST/name cardinality mismatch")

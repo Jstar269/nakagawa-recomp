@@ -1193,13 +1193,26 @@ static const uint32_t PRX_LIBFONT_BASE = 0x32200000u; /* must match Makefile GAM
 static const uint32_t PRX_PSMF_BASE    = 0x32280000u; /* must match Makefile GAME_EXTRA_ELFS */
 static const uint32_t PRX_PSMFP_BASE   = 0x322f8868u; /* must match Makefile GAME_EXTRA_ELFS */
 
+static unsigned register_known_module(const char *module_root,
+                                      const char *module_name,
+                                      uint32_t base) {
+    if (!module_root || !module_root[0] || !module_name || !module_name[0]) return 0;
+    char host_path[1024];
+    int written = snprintf(host_path, sizeof(host_path), "%s/%s",
+                           module_root, module_name);
+    if (written < 0 || (size_t)written >= sizeof(host_path)) return 0;
+    return register_prx_exports(host_path, base);
+}
+
 static unsigned populate_known_module(const char *name) {
+    const char *module_root = getenv("SR_MODULE_DIR");
+    if (!module_root || !module_root[0]) module_root = "place_game_here/EXTRACTED/decrypted";
     if (name && (strstr(name, "libfont") || strstr(name, "LIBFONT")))
-        return register_prx_exports("place_game_here/EXTRACTED/decrypted/libfont.prx", PRX_LIBFONT_BASE);
+        return register_known_module(module_root, "libfont.prx", PRX_LIBFONT_BASE);
     if (name && (strstr(name, "PsmfP") || strstr(name, "psmfplayer") || strstr(name, "libpsmfplayer")))
-        return register_prx_exports("place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx", PRX_PSMFP_BASE);
+        return register_known_module(module_root, "scePsmfP_library.prx", PRX_PSMFP_BASE);
     if (name && (strstr(name, "Psmf") || strstr(name, "psmf")))
-        return register_prx_exports("place_game_here/EXTRACTED/decrypted/scePsmf_library.prx", PRX_PSMF_BASE);
+        return register_known_module(module_root, "scePsmf_library.prx", PRX_PSMF_BASE);
     return 0;
 }
 
