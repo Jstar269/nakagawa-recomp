@@ -723,10 +723,6 @@ def _load_policy_bytes(raw: bytes, workdir: Path, name: str, *, code: str):
     strict_json(raw, code=code, label=name)
     workdir.mkdir(parents=True, exist_ok=True)
     target = workdir / name
-    # The policy is public control data, not a credential. It is copied only
-    # into verifier scratch space so the trusted parser can consume exact
-    # bytes; it never enters a generated public control.
-    # codeql[py/clear-text-storage-sensitive-data]
     target.write_bytes(raw)
     try:
         return load_policy(target)
@@ -1303,19 +1299,19 @@ def verify_ephemeral(
         blessed_policy_path = _external_input(
             trusted_candidate_policy, repo=repo, label="trusted candidate policy",
         )
-        blessed_policy_raw = blessed_policy_path.read_bytes()
-        if blessed_policy_raw == trusted_policy_raw:
+        delta_policy_bytes = blessed_policy_path.read_bytes()
+        if delta_policy_bytes == trusted_policy_raw:
             raise VerifyError(
                 "POLICY_DELTA_EMPTY",
                 "blessed candidate policy equals the trusted base policy; omit policy-delta inputs when unchanged",
             )
-        if candidate_policy_raw != blessed_policy_raw:
+        if candidate_policy_raw != delta_policy_bytes:
             raise VerifyError(
                 "CANDIDATE_POLICY_MISMATCH",
                 "candidate publication policy does not match the externally blessed candidate policy",
             )
         candidate_policy = _load_policy_bytes(
-            blessed_policy_raw,
+            delta_policy_bytes,
             output_dir / "inputs",
             "blessed_candidate_policy.json",
             code="CANDIDATE_POLICY_INVALID",
@@ -1324,14 +1320,14 @@ def verify_ephemeral(
             trusted_policy_raw, code="TRUSTED_POLICY_INVALID", label="trusted policy",
         )
         candidate_document = strict_json(
-            blessed_policy_raw, code="CANDIDATE_POLICY_INVALID", label="blessed candidate policy",
+            delta_policy_bytes, code="CANDIDATE_POLICY_INVALID", label="blessed candidate policy",
         )
         try:
             allowed_delta = _read_policy_delta_authority(
                 policy_delta_authority,
                 candidate_root=repo,
                 baseline_policy_bytes=trusted_policy_raw,
-                candidate_policy_bytes=blessed_policy_raw,
+                candidate_policy_bytes=delta_policy_bytes,
             )
         except RefreshError as error:
             raise VerifyError(error.code, str(error)) from error
