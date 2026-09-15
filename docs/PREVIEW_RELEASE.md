@@ -92,8 +92,9 @@ The verified native host contract is the Windows contract in
 
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-The optional dashboard additionally requires Node.js 24.18.1 or newer and npm
-11.17.0 or newer. Keep it bound to `127.0.0.1`; it is not an untrusted-network
+The optional dashboard additionally requires Node.js 24.21.0 or newer within
+the supported 24.x line and npm 11.17.0 or newer. Keep it bound to
+`127.0.0.1`; it is not an untrusted-network
 service. These requirements describe the verified host contract, not a claim
 that every listed component is bundled in the preview archive.
 
