@@ -378,6 +378,14 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     return -1;
 }
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
+    if (guest_path && strcmp(guest_path, "disc0:/data/menu/text") == 0) {
+        if (index > 0u) return 0;
+        memset(out, 0, sizeof(*out));
+        strcpy(out->name, "iso_only.to");
+        out->lba = 0x1234u;
+        out->size = 11u;
+        return 1;
+    }
     (void)index; (void)out;
     /* Keep one known ISO directory for the descriptor baseline.  Other paths
      * model an ISO miss so the extracted-data VFS fallback is exercised. */
@@ -2699,6 +2707,19 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
                MEM_R32(dirent_addr + 8u) == 6u &&
                MEM_R8(dirent_addr + 0x58u) == 'c',
            "full disc0 directory enumeration returns the indexed child");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 1u &&
+               MEM_R32(dirent_addr + 8u) == 11u &&
+               MEM_R32(dirent_addr + 0x40u) == 0x1234u &&
+               MEM_R8(dirent_addr + 0x58u) == 'i',
+           "full disc0 directory enumeration retains the ISO child metadata");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 0u,
+           "full disc0 directory enumeration terminates after both sources");
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,

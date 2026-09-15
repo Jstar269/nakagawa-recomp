@@ -6058,13 +6058,11 @@ static uint32_t h_IoDopen(CpuState *s) {
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
             int device_path = _strnicmp(path, "disc0:", 6) == 0 ||
                                _strnicmp(path, "umd:", 4) == 0;
-            int use_iso = 0;
+            int iso_first_result = -1;
+            IsoDirEntry iso_first = {0};
             if (device_path) {
-                IsoDirEntry probe;
-                int iso_result = iso_list(path, 0, &probe);
-                if (iso_result >= 0) {
-                    use_iso = 1;
-                } else {
+                iso_first_result = iso_list(path, 0, &iso_first);
+                if (iso_first_result < 0) {
                     uint32_t iso_lba = 0, iso_size = 0;
                     /* A file on the ISO must not be shadowed by the extracted
                      * directory index merely because its directory probe failed. */
@@ -6074,56 +6072,87 @@ static uint32_t h_IoDopen(CpuState *s) {
                     }
                 }
             }
-            if (use_iso) {
-                d->backend = 0;
-            } else {
-                /* One guest namespace, two host sources, merged in sceIoOpen's
-                 * own precedence order: the writable overlay first, then the
-                 * read-only extracted-data index. Both are materialized here so
-                 * a listing the guest walks cannot change under it mid-walk. */
-                sr_vfs_dirlist_init(&d->list);
+            /* One guest namespace, three possible sources, materialized here
+             * so a listing the guest walks cannot change mid-walk.  An ISO
+             * directory is the source sceIoOpen resolves first; the writable
+             * overlay and then the extracted-data index fill in names the ISO
+             * does not provide.  A missing ISO directory still reaches the
+             * same overlay/index fallback below. */
+            sr_vfs_dirlist_init(&d->list);
 
-                int overlay_found = 0;
-                uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
-                if (overlay_rc != 0) {
-                    sr_vfs_dirlist_destroy(&d->list);
-                    free(d->path); memset(d, 0, sizeof(*d));
-                    return overlay_rc;
-                }
-                if (overlay_found) d->list.exists = 1;
-
-                int wanted_variant = -2;
-                char *norm_key = data_normalize_guest_key(path, &wanted_variant);
-                if (norm_key) {
-                    if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
-                        SR_DATA_STATE_READY) {
-                        if (sr_asset_index_list_dir(&s_data_index, norm_key,
-                                                    wanted_variant, &d->list) < 0) {
-                            free(norm_key);
-                            sr_vfs_dirlist_destroy(&d->list);
-                            free(d->path); memset(d, 0, sizeof(*d));
-                            return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
-                        }
+            if (iso_first_result >= 0) {
+                d->list.exists = 1;
+                for (uint32_t iso_index = 0;; iso_index++) {
+                    IsoDirEntry entry;
+                    int iso_result;
+                    if (iso_index == 0u) {
+                        entry = iso_first;
+                        iso_result = iso_first_result;
+                    } else {
+                        iso_result = iso_list(path, iso_index, &entry);
                     }
-                    free(norm_key);
+                    if (iso_result == 0) break;
+                    if (iso_result < 0) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+                    }
+                    if (!sr_vfs_dirlist_merge_lba(
+                            &d->list, entry.name, entry.is_dir,
+                            entry.is_dir ? 0u : (uint64_t)entry.size,
+                            entry.lba)) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                    }
+                    if (iso_index == UINT32_MAX) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+                    }
                 }
-
-                /* ABSENT and EMPTY are different answers. Only a directory no
-                 * source has is a not-found; a directory that exists with no
-                 * representable children opens and reads back zero entries. */
-                if (!d->list.exists) {
-                    sr_vfs_dirlist_destroy(&d->list);
-                    free(d->path); memset(d, 0, sizeof(*d));
-                    return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
-                }
-                if (d->list.skipped != 0u) {
-                    fprintf(stderr,
-                            "sceIoDopen: '%s' listing omits %zu entry/entries the guest "
-                            "namespace cannot represent\n", path, d->list.skipped);
-                }
-                sr_vfs_dirlist_sort(&d->list);
-                d->backend = 1;
             }
+
+            int overlay_found = 0;
+            uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
+            if (overlay_rc != 0) {
+                sr_vfs_dirlist_destroy(&d->list);
+                free(d->path); memset(d, 0, sizeof(*d));
+                return overlay_rc;
+            }
+            if (overlay_found) d->list.exists = 1;
+
+            int wanted_variant = -2;
+            char *norm_key = data_normalize_guest_key(path, &wanted_variant);
+            if (norm_key) {
+                if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
+                    SR_DATA_STATE_READY) {
+                    if (sr_asset_index_list_dir(&s_data_index, norm_key,
+                                                wanted_variant, &d->list) < 0) {
+                        free(norm_key);
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                    }
+                }
+                free(norm_key);
+            }
+
+            /* ABSENT and EMPTY are different answers. Only a directory no
+             * source has is a not-found; a directory that exists with no
+             * representable children opens and reads back zero entries. */
+            if (!d->list.exists) {
+                sr_vfs_dirlist_destroy(&d->list);
+                free(d->path); memset(d, 0, sizeof(*d));
+                return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+            }
+            if (d->list.skipped != 0u) {
+                fprintf(stderr,
+                        "sceIoDopen: '%s' listing omits %zu entry/entries the guest "
+                        "namespace cannot represent\n", path, d->list.skipped);
+            }
+            sr_vfs_dirlist_sort(&d->list);
+            d->backend = 1;
             return 0x100u + i;
         }
     }
@@ -6152,7 +6181,7 @@ static uint32_t h_IoDread(CpuState *s) {
         memcpy(e.name, ve->name, strlen(ve->name) + 1u);
         e.is_dir = ve->is_dir;
         e.size = (uint32_t)ve->size;
-        e.lba = 0;
+        e.lba = ve->lba;
     }
     for (uint32_t i = 0; i < 0x15cu; i++) MEM_W8(de + i, 0);
     MEM_W32(de + 0x00, (e.is_dir ? 0x1000u : 0x2000u) | 0x0124u);

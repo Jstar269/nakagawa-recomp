@@ -302,6 +302,10 @@ typedef struct {
     char name[SR_VFS_NAME_MAX];
     int is_dir;
     uint64_t size;
+    /* Physical ISO start sector for an ISO contribution; host-backed sources
+     * leave this zero.  Keeping it in the merged descriptor preserves the
+     * sceIoDread contract for guests that use directory-entry LBAs. */
+    uint32_t lba;
 } SrVfsDirEntry;
 
 typedef struct {
@@ -408,8 +412,9 @@ static inline int sr_vfs_dirlist_reserve(SrVfsDirList *list, size_t wanted) {
  * Returns 1 when the child was merged, 0 on allocation failure.  A name that
  * does not fit the namespace is counted in `skipped` and reported as merged,
  * so one unrepresentable child never destroys an otherwise-valid directory. */
-static inline int sr_vfs_dirlist_merge(SrVfsDirList *list, const char *name,
-                                       int is_dir, uint64_t size) {
+static inline int sr_vfs_dirlist_merge_lba(SrVfsDirList *list, const char *name,
+                                           int is_dir, uint64_t size,
+                                           uint32_t lba) {
     if (!list || !name) return 0;
     size_t len = strlen(name);
     if (len == 0u || len >= SR_VFS_NAME_MAX) {
@@ -431,8 +436,14 @@ static inline int sr_vfs_dirlist_merge(SrVfsDirList *list, const char *name,
     memcpy(slot->name, name, len + 1u);
     slot->is_dir = is_dir;
     slot->size = is_dir ? 0u : size;
+    slot->lba = is_dir ? 0u : lba;
     list->count++;
     return 1;
+}
+
+static inline int sr_vfs_dirlist_merge(SrVfsDirList *list, const char *name,
+                                       int is_dir, uint64_t size) {
+    return sr_vfs_dirlist_merge_lba(list, name, is_dir, size, 0u);
 }
 
 static inline void sr_vfs_dirlist_sort(SrVfsDirList *list) {
