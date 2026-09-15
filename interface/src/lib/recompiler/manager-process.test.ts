@@ -105,9 +105,13 @@ test("run A stopped, run B starts, then A emits close: B intact", async () => {
   assert.equal(mgr.state.child, runB, "B's child must survive A's stale events");
   assert.equal(mgr.state.phase, "running");
   assert.equal(mgr.state.runId, 2);
-  // The stale close/error must not emit terminal events to listeners (A's
-  // terminal event was emitted at stop time with runId=1).
-  assert.ok(!messages.some((m) => m.endsWith(":2")), `no terminal for B: ${messages}`);
+  // The stale close/error must not emit TERMINAL events for B (its close came
+  // from B's own lifecycle). Lifecycle-wide "status" broadcasts are exempt:
+  // they are deliberately generation-agnostic (O-08).
+  assert.ok(
+    !messages.some((m) => (m.startsWith("close:") || m.startsWith("error:")) && m.endsWith(":2")),
+    `no terminal for B: ${messages}`,
+  );
 
   runB.emit("close", 0);
   assert.equal(mgr.state.child, null);
@@ -178,6 +182,33 @@ test("watcher spawn failure reports against owning run without killing manager c
   assert.ok(errors.some((e) => e.runId === 1 && /watcher failed/.test(e.message ?? "")));
 
   runA.emit("close", 0);
+  rmSync(deps.findRepoRoot!(), { recursive: true, force: true });
+});
+
+test("status events broadcast every lifecycle transition (O-08)", async () => {
+  const { deps, children } = makeDeps();
+  const mgr = createManagerProcess(deps);
+
+  const statuses: { phase?: string; action?: string | null; runId?: number }[] = [];
+  mgr.state.listeners.add((m) => {
+    if (m.type === "status") statuses.push(m);
+  });
+
+  await mgr.startFuzzManagerProcess({ trials: 4, seed: "0x1", constraint: "none" });
+  const run = children[0];
+  run.emit("spawn");
+  mgr.stopActiveManagerProcess();
+
+  const phases = statuses.map((s) => s.phase);
+  assert.ok(phases.includes("starting"), `expected starting: ${phases}`);
+  assert.ok(phases.includes("running"), `expected running: ${phases}`);
+  assert.ok(phases.includes("stopping"), `expected stopping: ${phases}`);
+  assert.ok(phases.includes("exited"), `expected exited: ${phases}`);
+  // Status carries the action so subscribers know what changed.
+  assert.ok(statuses.every((s) => s.action === "Fuzz" || s.action === null), "status carries action");
+  // The final status reflects the tombstone even though the run is gone.
+  assert.equal(statuses[statuses.length - 1].phase, "exited");
+
   rmSync(deps.findRepoRoot!(), { recursive: true, force: true });
 });
 
