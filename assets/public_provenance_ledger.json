@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7d02fff23f1c6896df21cdb928403dbfd28c992817da9eb4cdfc325c594318d5"
+      "sha256": "be97a376ea096ead2feeaecc54e9711743d3db14d62727d7f69c61934923732f"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -891,7 +891,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "20d39c8360ab9c3616c2131157e9809efe4025cbded3e78c24fd16a6eb8c4f1b"
+      "sha256": "dd6a56b97597365011527dcd2301aea7dcee708d02ceff18ab82ccca77273ccb"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1464,7 +1464,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "062665dc04069418b3c5036558b68f8f22397818b6eee7a4de55ba985adbb965"
+      "sha256": "c00d938ac196167684430967f8bbff2e955a55e504b94e358dbe4cfc9f5a0ed4"
     },
     {
       "path": "interface/components.json",
@@ -1500,7 +1500,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3c67c04f7cf8cce7589ddbe3ade0cbdbc76d9d5ade301026b1f433d44b10a04f"
+      "sha256": "e56533888a97a590819bab8193041482e1061f8dbf66373aa6e2b08e5791d269"
     },
     {
       "path": "interface/package.json",
@@ -8388,7 +8388,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02fed5311848b7550b549e8529c242b099b695b275a81c0bf59d6cfbe19b5787"
+      "sha256": "e20dd9f13b2f96f307a343c5735797b0056b8f2d5ee5ab1fd637cb98022dcecf"
     },
     {
       "path": "tools/test_publish_audit.py",

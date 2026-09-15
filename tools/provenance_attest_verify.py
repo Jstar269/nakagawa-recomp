@@ -724,10 +724,6 @@ def _load_policy_bytes(raw: bytes, workdir: Path, name: str, *, code: str):
     strict_json(raw, code=code, label=name)
     workdir.mkdir(parents=True, exist_ok=True)
     target = workdir / name
-    # The policy is public control data, not a credential. It is copied only
-    # into verifier scratch space so the trusted parser can consume exact
-    # bytes; it never enters a generated public control.
-    # codeql[py/clear-text-storage-sensitive-data]
     target.write_bytes(raw)
     try:
         return load_policy(target)
