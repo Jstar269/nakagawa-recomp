@@ -107,25 +107,30 @@ bool nk_platform_mkdir_p_private(const char *dir_path) {
     if (len >= sizeof(tmp)) return false;
     memcpy(tmp, dir_path, len + 1);
 
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p != '/') continue;
+    /* Only newly-created components are made private. Existing ancestors can
+       be shared application or system directories (for example /home or
+       /tmp); changing their mode here would be an unrelated permission
+       mutation. lstat() also keeps a symlink from satisfying the directory
+       check and redirecting later writes outside the intended tree. */
+    for (char *p = tmp + 1;; p++) {
+        if (*p != '/' && *p != '\0') continue;
+        char saved = *p;
         *p = '\0';
-        if (tmp[0] != '\0' && mkdir(tmp, 0700) != 0 && errno != EEXIST) {
-            *p = '/';
-            return false;
-        }
         if (tmp[0] != '\0') {
+            if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+                *p = saved;
+                return false;
+            }
             struct stat st;
-            if (stat(tmp, &st) != 0 || !S_ISDIR(st.st_mode) || chmod(tmp, 0700) != 0) {
-                *p = '/';
+            if (lstat(tmp, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                *p = saved;
                 return false;
             }
         }
-        *p = '/';
+        *p = saved;
+        if (saved == '\0') break;
     }
-    if (mkdir(tmp, 0700) != 0 && errno != EEXIST) return false;
-    struct stat st;
-    return stat(tmp, &st) == 0 && S_ISDIR(st.st_mode) && chmod(tmp, 0700) == 0;
+    return true;
 }
 
 FILE *nk_platform_fopen_private(const char *path, const char *mode) {
