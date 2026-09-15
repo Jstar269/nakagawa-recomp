@@ -217,19 +217,54 @@ try {
         $script:ManifestId = $manifestJson.id
         $script:IsRetail = ($manifestJson.kind -eq "retail")
 
-        # Determine GameName dynamically
+        # Determine GameName (issue #196 Phase 4). Order: explicit -GameName,
+        # then the manifest's own game_name declaration, then a portable
+        # derivation from the manifest id. No manifest-id prefix ever mints a
+        # built-in title name: the manager cannot know what a title wants to be
+        # called, and a prefix rule is title coupling in generic tooling. The
+        # deprecated hst_manager.ps1 wrapper declares -GameName hst explicitly
+        # for the legacy default route.
         if ([string]::IsNullOrWhiteSpace($GameName)) {
-            if ($manifestJson.id -like "hst-*") {
-                $GameName = "hst"
-            } elseif ($manifestJson.id -like "synthetic-allegrex*") {
-                $GameName = "synthetic"
+            $manifestProps = @($manifestJson.PSObject.Properties.Name)
+            if (($manifestProps -contains 'game_name') -and -not [string]::IsNullOrWhiteSpace($manifestJson.game_name)) {
+                $GameName = [string]$manifestJson.game_name
             } elseif ($manifestJson.id) {
                 $GameName = ($manifestJson.id -replace '-v\d+$', '') -replace '[^a-zA-Z0-9_.-]', '_'
             } else {
                 $GameName = "recomp"
             }
         }
+        if ($GameName -notmatch '^[a-z0-9][a-z0-9._-]*$') {
+            throw "GameName '$GameName' is not a portable build identifier (must match ^[a-z0-9][a-z0-9._-]*$; same contract as the codegen planner)"
+        }
         $script:ActiveGameName = $GameName
+
+        # Title input layout (issue #196 Phase 4): a manifest DECLARES where its
+        # private inputs live; generic code paths never assume a layout. The
+        # legacy input layout is consulted only for retail manifests (the HST
+        # adapter compatibility surface) and only where the manifest did not
+        # declare the location.
+        $script:LegacyInputLayout = ($manifestJson.kind -eq "retail")
+        $script:TitleDataRoot = $null
+        $script:TitleModuleDir = $null
+        $script:TitlePspHeader = $null
+        $script:TitleDiscImage = $null
+        $fsProps = @()
+        if ($manifestJson.filesystem) { $fsProps = @($manifestJson.filesystem.PSObject.Properties.Name) }
+        foreach ($decl in @(
+            @{ Key = 'data_root'; Var = 'TitleDataRoot' },
+            @{ Key = 'module_dir'; Var = 'TitleModuleDir' },
+            @{ Key = 'psp_header'; Var = 'TitlePspHeader' },
+            @{ Key = 'disc_image'; Var = 'TitleDiscImage' }
+        )) {
+            if (($fsProps -contains $decl.Key) -and -not [string]::IsNullOrWhiteSpace($manifestJson.filesystem.($decl.Key))) {
+                $value = [string]$manifestJson.filesystem.($decl.Key)
+                if ($value -notmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') {
+                    throw "Title manifest filesystem.$($decl.Key) must be a relative path with forward slashes: $value"
+                }
+                Set-Variable -Name "script:$($decl.Var)" -Value $value
+            }
+        }
 
         $BuildDirForMake = "build/$GameName"
         $BuildDir = "build\$GameName"
@@ -238,7 +273,9 @@ try {
         $ExePath = Join-Path $BuildDir $ExecutableName
         $ImagePath = Join-Path $BuildDir "$($GameName)_image.bin"
 
-        # Private input discovery (adaptive to title kind)
+        # Private input discovery (issue #196 Phase 4): manifest declarations
+        # first, then (retail/legacy-layout only) the legacy layout. Generic and
+        # synthetic titles get no implicit input location.
         $GameElfPath = $null
         if ($script:IsRetail) {
             foreach ($candidate in @("place_game_here\EBOOT.elf", "eboot.elf")) {
@@ -252,8 +289,6 @@ try {
             $candidates += @(
                 "build\fixtures\$GameName.elf",
                 "fixtures\$GameName.elf",
-                "place_game_here\EBOOT.elf",
-                "place_game_here\eboot.elf",
                 "eboot.elf"
             )
             foreach ($candidate in $candidates) {
@@ -262,9 +297,11 @@ try {
         }
 
         $GameIsoPath = $null
-        if (Test-Path -LiteralPath "game.iso") {
+        if ($script:TitleDiscImage) {
+            if (Test-Path -LiteralPath $script:TitleDiscImage -PathType Leaf) { $GameIsoPath = $script:TitleDiscImage }
+        } elseif (Test-Path -LiteralPath "game.iso") {
             $GameIsoPath = "game.iso"
-        } else {
+        } elseif ($script:LegacyInputLayout) {
             $isoCandidates = @(Get-ChildItem -LiteralPath "place_game_here\ISO" -File -Filter "*.iso" -ErrorAction SilentlyContinue)
             if ($isoCandidates.Count -eq 1) {
                 $GameIsoPath = $isoCandidates[0].FullName
@@ -272,10 +309,20 @@ try {
         }
 
         $GameElfForMake = if ($GameElfPath) { $GameElfPath -replace "\\", "/" } else { "eboot.elf" }
-        $ModuleDirPath = "place_game_here\EXTRACTED\decrypted"
-        $ModuleDirForMake = $ModuleDirPath -replace "\\", "/"
-        $PspHeaderPath = "place_game_here\EXTRACTED\PSP_GAME\SYSDIR\EBOOT.BIN"
-        $PspHeaderForMake = $PspHeaderPath -replace "\\", "/"
+        $ModuleDirPath = $null
+        if ($script:TitleModuleDir) {
+            $ModuleDirPath = $script:TitleModuleDir
+        } elseif ($script:LegacyInputLayout -and (Test-Path -LiteralPath "place_game_here\EXTRACTED\decrypted" -PathType Container)) {
+            $ModuleDirPath = "place_game_here\EXTRACTED\decrypted"
+        }
+        $ModuleDirForMake = if ($ModuleDirPath) { $ModuleDirPath -replace "\\", "/" } else { $null }
+        $PspHeaderPath = $null
+        if ($script:TitlePspHeader) {
+            $PspHeaderPath = $script:TitlePspHeader
+        } elseif ($script:LegacyInputLayout -and (Test-Path -LiteralPath "place_game_here\EXTRACTED\PSP_GAME\SYSDIR\EBOOT.BIN" -PathType Leaf)) {
+            $PspHeaderPath = "place_game_here\EXTRACTED\PSP_GAME\SYSDIR\EBOOT.BIN"
+        }
+        $PspHeaderForMake = if ($PspHeaderPath) { $PspHeaderPath -replace "\\", "/" } else { $null }
 
         # Title planning via title_codegen_plan.py
         $plannerScript = Join-Path $PSScriptRoot "tools\title_codegen_plan.py"
@@ -300,8 +347,8 @@ try {
             "--build-dir=$BuildDirForMake",
             "--funcs-per-chunk=$effectiveFuncsPerChunk"
         )
-        if ($needsModuleDir) { $plannerArgs += "--module-dir=$ModuleDirForMake" }
-        if ($needsPspHeader) { $plannerArgs += "--psp-header=$PspHeaderForMake" }
+        if ($needsModuleDir -and $ModuleDirForMake) { $plannerArgs += "--module-dir=$ModuleDirForMake" }
+        if ($needsPspHeader -and $PspHeaderForMake) { $plannerArgs += "--psp-header=$PspHeaderForMake" }
 
         $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("nk-title-plan-" + [guid]::NewGuid().ToString('N') + '.err')
         try {
@@ -320,6 +367,9 @@ try {
 
         # Bind Make arguments: delegate to HST adapter for retail HST profile, or use generic contract
         if ($script:TitleManagerPlan.title_kind -eq 'retail' -and $script:TitleManagerPlan.codegen_profile -eq 'hst') {
+            if (-not $ModuleDirForMake -or -not $PspHeaderForMake) {
+                throw "HST adapter requires module_dir/psp_header input locations (declare them in the title manifest's filesystem block, or provide the legacy retail input layout)"
+            }
             $boundPlan = Get-HstManifestMakeArgs `
                 -Plan $script:TitleManagerPlan `
                 -GameElfForMake $GameElfForMake `
@@ -487,7 +537,7 @@ try {
         $missing = @()
         $req = $script:TitleManagerPlan.private_binding_requirements
         if ($req.game_elf -and (-not $GameElfPath -or -not (Test-Path -LiteralPath $GameElfPath -PathType Leaf))) {
-            $missing += "executable ELF (place_game_here/EBOOT.elf or $GameElfForMake)"
+            $missing += "executable ELF ($GameElfForMake)"
         }
         if ($req.module_dir) {
             if (-not (Test-Path -LiteralPath $ModuleDirPath -PathType Container)) {
@@ -504,10 +554,17 @@ try {
         }
         if ($Runtime -and $script:IsRetail) {
             if (-not $GameIsoPath) {
-                $missing += "one ISO at place_game_here/ISO/<game>.iso (or game.iso)"
+                $missing += "a disc image (declare filesystem.disc_image in the title manifest, or provide game.iso)"
             }
-            $dataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
-            if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+            $dataRoot = $null
+            if ($script:TitleDataRoot) {
+                $dataRoot = $script:TitleDataRoot
+            } elseif ($script:LegacyInputLayout) {
+                $dataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
+            }
+            if (-not $dataRoot) {
+                $missing += "filesystem.data_root declaration in the title manifest (required for retail runtime)"
+            } elseif (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
                 $missing += $dataRoot
             }
         }
@@ -919,7 +976,7 @@ try {
         if ($script:IsRetail) {
             $missingBuildInputs = @()
             if (-not $GameElfPath -or -not (Test-Path -LiteralPath $GameElfPath)) {
-                $missingBuildInputs += "place_game_here/EBOOT.elf"
+                $missingBuildInputs += "executable ELF ($GameElfForMake)"
             }
             if ($missingBuildInputs.Count -gt 0) {
                 Write-BuildError -Message "Missing required private build inputs: $($missingBuildInputs -join ', ')"
@@ -1088,10 +1145,19 @@ try {
 
         if ($script:IsRetail) {
             if (-not $GameIsoPath -or -not (Test-Path -LiteralPath $GameIsoPath)) {
-                Write-Host "[!] Cannot run game: No game ISO found at place_game_here/ISO/<game>.iso (or game.iso)." -ForegroundColor Red
+                Write-Host "[!] Cannot run game: no disc image found (declare filesystem.disc_image in the title manifest, or provide game.iso)." -ForegroundColor Red
                 return
             }
-            $effectiveDataRoot = if ($env:SR_DATAROOT) { $env:SR_DATAROOT } else { "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted" }
+            $effectiveDataRoot = $null
+            if ($script:TitleDataRoot) {
+                $effectiveDataRoot = $script:TitleDataRoot
+            } elseif ($script:LegacyInputLayout) {
+                $effectiveDataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
+            }
+            if (-not $effectiveDataRoot) {
+                Write-Host "[!] Cannot run game: the title manifest does not declare filesystem.data_root and no legacy layout is present." -ForegroundColor Red
+                return
+            }
             if (-not (Test-Path -LiteralPath $effectiveDataRoot -PathType Container)) {
                 Write-Host "[!] Cannot run game: Extracted asset tree was not found at $effectiveDataRoot." -ForegroundColor Red
                 return

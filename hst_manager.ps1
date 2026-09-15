@@ -128,12 +128,24 @@ foreach ($paramName in $PSBoundParameters.Keys) {
     $forwardArgs[$paramName] = $PSBoundParameters[$paramName]
 }
 
-# If TitleManifest was not supplied, default to the HST manifest if available
+# If TitleManifest was not supplied, default to the HST manifest if available.
+# Issue #196 Phase 4: the wrapper DECLARES the legacy build name explicitly
+# (-GameName hst). nk_manager no longer mints built-in names from manifest-id
+# prefixes, so this declaration is what keeps the legacy default route building
+# the 'hst' target (Makefile's GAME_NAME=hst compatibility block) without any
+# title coupling in the generic manager.
 if (-not $forwardArgs.ContainsKey('TitleManifest') -or -not $forwardArgs['TitleManifest']) {
     $HstManifest = Join-Path $RepoRoot "assets\titles\hst-ucus98701.json"
     if (Test-Path -LiteralPath $HstManifest) {
         $forwardArgs['TitleManifest'] = "assets/titles/hst-ucus98701.json"
     }
+}
+
+# Issue #196 Phase 4: declare the legacy build name explicitly. The generic
+# manager derives game_name only from -GameName, the manifest's own game_name
+# declaration, or the manifest id — it never mints "hst" from an id prefix.
+if (-not $forwardArgs.ContainsKey('GameName') -or -not $forwardArgs['GameName']) {
+    $forwardArgs['GameName'] = "hst"
 }
 
 & $NkManager @forwardArgs

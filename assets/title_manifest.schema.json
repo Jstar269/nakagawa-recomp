@@ -45,6 +45,10 @@
     "filesystem": {
       "$ref": "#/$defs/filesystem"
     },
+    "game_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
     "hle_profile": {
       "$ref": "#/$defs/identifier"
     },
@@ -199,10 +203,12 @@
     },
     "filesystem": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["data_root", "memory_stick_root", "device_prefixes"],
-      "properties": {
+      "additionalProperties": false,      "required": ["data_root", "memory_stick_root", "device_prefixes"],
+        "properties": {
         "data_root": {"$ref": "#/$defs/relativePath"},
+        "module_dir": {"$ref": "#/$defs/relativePath"},
+        "psp_header": {"$ref": "#/$defs/relativePath"},
+        "disc_image": {"$ref": "#/$defs/relativePath"},
         "memory_stick_root": {"$ref": "#/$defs/relativePath"},
         "device_prefixes": {
           "type": "array",

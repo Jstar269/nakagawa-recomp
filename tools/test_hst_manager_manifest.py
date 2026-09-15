@@ -49,6 +49,12 @@ class HstManagerManifestTests(unittest.TestCase):
         (private / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN").write_text(
             "synthetic\n", encoding="ascii"
         )
+        # Issue #196 Phase 4: synthetic/generic manifests no longer discover the
+        # legacy retail layout. The synthetic route discovers its ELF from the
+        # generic fixtures/ candidates instead.
+        fixtures = self.root / "fixtures"
+        fixtures.mkdir(exist_ok=True)
+        (fixtures / "synthetic.elf").write_text("synthetic private binding\n", encoding="ascii")
         # The manager now anchors every managed path to its own script location and fails
         # closed when the workspace identity anchors are missing (#183), so the harness
         # stages a complete fake workspace: the manager itself, its dot-sourced helpers

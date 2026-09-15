@@ -892,7 +892,7 @@ bool nk_title_manifest_parse_buffer(
         "schema_version", "id", "display_name", "kind", "disc", "executable",
         "modules", "filesystem", "hle_profile", "feature_requirements",
         "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
-        "runtime_contract", "profile_zero", "runtime_bindings", NULL
+        "runtime_contract", "profile_zero", "runtime_bindings", "game_name", NULL
     };
     static const char * const required_root_keys[] = {
         "schema_version", "id", "display_name", "kind", "executable",
@@ -925,6 +925,16 @@ bool nk_title_manifest_parse_buffer(
     JsonNode *dn_node = obj_get(root, "display_name");
     if (dn_node->type != JSON_STRING || strlen(dn_node->u.str_val) < 1 || strlen(dn_node->u.str_val) > 128) {
         if (error_buf) snprintf(error_buf, error_buf_len, "$.display_name: length must be in range 1..128");
+        json_free(root);
+        return false;
+    }
+
+    /* 4b. game_name: optional explicit build-name declaration (issue #196 Phase 4).
+     * The manager accepts -GameName, this field, or a portable id derivation —
+     * never an id-prefix mint. Same identifier contract as $.id. */
+    JsonNode *gn_node = obj_get(root, "game_name");
+    if (gn_node && (gn_node->type != JSON_STRING || !is_valid_identifier(gn_node->u.str_val))) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.game_name: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
         json_free(root);
         return false;
     }
@@ -1193,8 +1203,13 @@ bool nk_title_manifest_parse_buffer(
 
     /* 9. filesystem validation */
     JsonNode *fs_node = obj_get(root, "filesystem");
-    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
-    if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, allowed_fs_keys, error_buf, error_buf_len)) {
+    /* module_dir/psp_header/disc_image are optional input-location declarations
+     * (issue #196 Phase 4): a manifest declares where its private inputs live.
+     * The runtime consumes only the required runtime-filesystem contract today;
+     * the optional declarations are accepted (and validated) for tool parity. */
+    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "module_dir", "psp_header", "disc_image", NULL};
+    static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
+    if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
         json_free(root);
         return false;
     }
@@ -1209,6 +1224,18 @@ bool nk_title_manifest_parse_buffer(
         if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.memory_stick_root: must be a portable relative POSIX-style path");
         json_free(root);
         return false;
+    }
+    {
+        static const char * const optional_fs_paths[] = {"module_dir", "psp_header", "disc_image"};
+        for (int oi = 0; oi < 3; oi++) {
+            JsonNode *opt_node = obj_get(fs_node, optional_fs_paths[oi]);
+            if (opt_node && (opt_node->type != JSON_STRING || !is_valid_portable_path(opt_node->u.str_val))) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "$.filesystem.%s: must be a portable relative POSIX-style path", optional_fs_paths[oi]);
+                json_free(root);
+                return false;
+            }
+        }
     }
     JsonNode *pfx_node = obj_get(fs_node, "device_prefixes");
     if (!pfx_node || pfx_node->type != JSON_ARRAY) {

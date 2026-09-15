@@ -420,7 +420,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0788f81a2be37a7d2719141c8e8176377a43a3ca7fe4fba11c3928c21fd8acd0"
+      "sha256": "a2214edb3835c8491561ebc7ee357bf74e6f4c5d0d1a45f870b72eeafdcf7c75"
     },
     {
       "path": "assets/titles/README.md",
@@ -465,7 +465,7 @@
         "source": "title-manifest schema and public PSP metadata review",
         "statement": "manifest contains user-supplied title metadata, not retail content"
       },
-      "sha256": "0253047413322cf990f74d57ca1b4194b66b0f81948221497110eb7dc9ae31fd"
+      "sha256": "58c62715dc2fae30b88ab897febf75b3f2f3f9571583e2994cd02e9ffb7df490"
     },
     {
       "path": "assets/upstream/pspdev.NOTICE.md",
@@ -1428,7 +1428,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f858d600b0d4afda27837d615e90e68a561e83d01b2f7eb96fdf9c1d43b26d9"
+      "sha256": "378e18154f92fe70b9872aeda311d3886dd343cadfb1c9eaca4a0a055cf01062"
     },
     {
       "path": "interface/.env.example",
@@ -3333,7 +3333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17868c59e18a0e463f277e2ae36c095545bc9224bd1b0612da2b64c3bd681bf1"
+      "sha256": "34301014bccd0e83f9dfffd5c10350a3089cc35f48ca2f7f77b937f2ece4672e"
     },
     {
       "path": "pyproject.toml",
@@ -8019,7 +8019,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e57416c0c69e572a1a3110500f023b3225bfcd718756feb1e9f6bfa89159356b"
+      "sha256": "045441bf5f2490f532fc80b62d13c4258b2091c00fae196715ecd8eca848167e"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -8121,7 +8121,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "c03441e58aeabdd288be5717f5d813e8c34ae71c50483e2a96efbf22d7d5549f"
+      "sha256": "dfe3ab4c39fc701d02a34ee7f3c47b1c11ffc6b5bdea7522556eecc70d614ca1"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -8841,7 +8841,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a577884d2b5064d3b06e79e16910852d234a16c685cc403d28010c4aa253b212"
+      "sha256": "19676697016e4f11c3aa537b4951c00df2d9cd5e4fefd7b220c8f9de8a464f34"
     },
     {
       "path": "tools/title_runtime_config.py",

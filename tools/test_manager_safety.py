@@ -168,11 +168,26 @@ class ManagerSafetyContractTests(unittest.TestCase):
     def test_manager_prebuild_and_prerun_fail_fast(self) -> None:
         # Invoke-HstBuild validates required private inputs before invoking make
         self.assertIn('Missing required private build inputs', self.manager)
-        self.assertIn('place_game_here/EBOOT.elf', self.manager)
+        self.assertIn('executable ELF (', self.manager)
         # Run-HstEngine validates required runtime assets before spawning
-        self.assertIn('No game ISO found at place_game_here/ISO/<game>.iso', self.manager)
+        self.assertIn('no disc image found (declare filesystem.disc_image', self.manager)
         self.assertIn('Extracted asset tree was not found', self.manager)
         self.assertIn('=== NAKAGAWA RECOMP RUNTIME LAUNCH ===', self.manager)
+
+    def test_generic_paths_make_no_layout_assumptions(self) -> None:
+        # Issue #196 Phase 4: every place_game_here/ reference in the manager
+        # must sit inside (or within a few lines of) an explicit retail/
+        # legacy-layout guard. Unguarded generic paths make no layout assumption.
+        lines = self.manager.splitlines()
+        for index, line in enumerate(lines):
+            if 'place_game_here' not in line:
+                continue
+            context = "\n".join(lines[max(0, index - 6):index + 1])
+            guarded = ('IsRetail' in context) or ('LegacyInputLayout' in context)
+            self.assertTrue(
+                guarded,
+                f"legacy-layout reference not inside a retail/legacy guard (line {index + 1}): {line.strip()}",
+            )
 
 
 if __name__ == "__main__":
