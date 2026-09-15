@@ -16,6 +16,7 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
+#include <windows.h>
 #define test_rmdir _rmdir
 #else
 #include <unistd.h>
@@ -507,6 +508,50 @@ static void test_staging_cleanup_boundary(void) {
     printf("[XB_TEST] Staging cleanup boundary and safe basename check PASSED\n");
 }
 
+static void test_staging_discard_reparse_boundary(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    const char *root = "build/.staging_reparse_boundary";
+    const char *outside = "build/staging_discard_outside";
+    const char *outside_file = "build/staging_discard_outside/sentinel.bin";
+    (void)player_stage_discard(root);
+    remove(outside_file);
+    test_rmdir(outside);
+    assert(nk_platform_mkdir_p(root));
+    assert(nk_platform_mkdir_p(outside));
+    static const uint8_t data[] = "outside";
+    write_file_bytes(outside_file, data, sizeof(data) - 1);
+
+    /* The relative target resolves outside the staging root. On hosts without
+     * symlink creation rights, retain the rest of the native suite but make
+     * the missing adversarial capability explicit. */
+    if (!CreateSymbolicLinkW(L"build/.staging_reparse_boundary/escaped",
+                             L"..\\staging_discard_outside",
+                             SYMBOLIC_LINK_FLAG_DIRECTORY |
+                             SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        DWORD error = GetLastError();
+        remove(outside_file);
+        test_rmdir(outside);
+        (void)player_stage_discard(root);
+        if (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD) {
+            printf("[XB_TEST] Windows reparse-point discard regression SKIP (symlink creation unavailable)\n");
+            return;
+        }
+        assert(!"CreateSymbolicLinkW failed unexpectedly");
+    }
+
+    assert(player_stage_discard(root));
+    assert(GetFileAttributesW(L"build/staging_discard_outside/sentinel.bin") !=
+           INVALID_FILE_ATTRIBUTES);
+    assert(GetFileAttributesW(L"build/.staging_reparse_boundary") ==
+           INVALID_FILE_ATTRIBUTES);
+    remove(outside_file);
+    test_rmdir(outside);
+    printf("[XB_TEST] Windows reparse-point discard boundary PASSED\n");
+#else
+    printf("[XB_TEST] Windows reparse-point discard boundary SKIP (Windows-only)\n");
+#endif
+}
+
 typedef struct {
     const char *name;
     uint32_t lba;
@@ -776,6 +821,7 @@ int main(void) {
     test_duplicate_canonical_path();
     test_deterministic_mutation_fuzz();
     test_staging_cleanup_boundary();
+    test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
     printf("[XB_TEST] ALL NATIVE XB PARSER TESTS PASSED\n");
     return 0;

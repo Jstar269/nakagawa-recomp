@@ -186,36 +186,155 @@ static bool stage_utf8_to_wide(const char *utf8, WCHAR *wide, int wide_count) {
            MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, wide_count) > 0;
 }
 
-static bool discard_tree_wide(const WCHAR *path) {
-    WCHAR pattern[32768];
-    int pattern_length = _snwprintf(pattern, sizeof(pattern) / sizeof(pattern[0]),
-                                    L"%ls\\*", path);
-    if (pattern_length < 0 || (size_t)pattern_length >= sizeof(pattern) / sizeof(pattern[0])) return false;
-    WIN32_FIND_DATAW data;
-    HANDLE find = FindFirstFileW(pattern, &data);
-    if (find == INVALID_HANDLE_VALUE) {
-        DWORD error = GetLastError();
-        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+static bool discard_missing_error_wide(DWORD error) {
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
+           error == ERROR_DELETE_PENDING;
+}
+
+static HANDLE discard_open_wide(const WCHAR *path) {
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+
+    /* GENERIC_READ supplies FILE_LIST_DIRECTORY for ordinary directories. A
+     * reparse point may only grant attribute/delete access, so retry with the
+     * narrower request; the handle is still the object that will be deleted. */
+    HANDLE handle = CreateFileW(path, GENERIC_READ | DELETE, share, NULL,
+                                OPEN_EXISTING, flags, NULL);
+    if (handle != INVALID_HANDLE_VALUE) return handle;
+    return CreateFileW(path, FILE_READ_ATTRIBUTES | DELETE, share, NULL,
+                       OPEN_EXISTING, flags, NULL);
+}
+
+static bool discard_file_id_wide(HANDLE handle, ULONGLONG *file_id) {
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!file_id || !GetFileInformationByHandle(handle, &info)) return false;
+    *file_id = ((ULONGLONG)info.nFileIndexHigh << 32) |
+               (ULONGLONG)info.nFileIndexLow;
+    return true;
+}
+
+static bool discard_delete_handle_wide(HANDLE handle) {
+    FILE_DISPOSITION_INFO disposition;
+    disposition.DeleteFile = TRUE;
+    bool deleted = SetFileInformationByHandle(handle, FileDispositionInfo,
+                                              &disposition, sizeof(disposition)) != 0;
+    DWORD error = deleted ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    return deleted || discard_missing_error_wide(error);
+}
+
+static bool discard_child_path_wide(const WCHAR *parent_path, const WCHAR *name,
+                                    size_t name_length, WCHAR *child,
+                                    size_t child_count) {
+    if (!parent_path || !name || name_length == 0 || !child || child_count == 0) return false;
+    size_t parent_length = wcslen(parent_path);
+    bool has_separator = parent_length > 0 &&
+                         (parent_path[parent_length - 1] == L'\\' ||
+                          parent_path[parent_length - 1] == L'/');
+    int written = _snwprintf(child, child_count, has_separator ? L"%ls%.*ls" : L"%ls\\%.*ls",
+                             parent_path, (int)name_length, name);
+    return written >= 0 && (size_t)written < child_count;
+}
+
+static bool discard_directory_wide(HANDLE directory, const WCHAR *directory_path);
+
+static bool discard_entry_wide(const WCHAR *directory_path,
+                               const FILE_ID_BOTH_DIR_INFO *entry) {
+    if ((entry->FileNameLength % sizeof(WCHAR)) != 0) return false;
+    size_t name_length = (size_t)entry->FileNameLength / sizeof(WCHAR);
+    if (name_length == 0 || name_length > 32767u) return false;
+    if ((name_length == 1 && entry->FileName[0] == L'.') ||
+        (name_length == 2 && entry->FileName[0] == L'.' && entry->FileName[1] == L'.')) {
+        return true;
     }
-    bool okay = true;
-    do {
-        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
-        WCHAR child[32768];
-        int child_length = _snwprintf(child, sizeof(child) / sizeof(child[0]),
-                                      L"%ls\\%ls", path, data.cFileName);
-        if (child_length < 0 || (size_t)child_length >= sizeof(child) / sizeof(child[0])) {
-            okay = false;
-            break;
+
+    WCHAR child_path[32768];
+    if (!discard_child_path_wide(directory_path, entry->FileName, name_length,
+                                 child_path, sizeof(child_path) / sizeof(child_path[0]))) {
+        return false;
+    }
+
+    /* The directory is enumerated through its handle. Opening the name again
+     * is only a way to obtain a delete handle on Win32, so bind that handle to
+     * the enumerated object before inspecting or deleting it. */
+    HANDLE child = discard_open_wide(child_path);
+    if (child == INVALID_HANDLE_VALUE) return discard_missing_error_wide(GetLastError());
+    ULONGLONG actual_id;
+    ULONGLONG enumerated_id = (ULONGLONG)entry->FileId.QuadPart;
+    if (!discard_file_id_wide(child, &actual_id) || actual_id != enumerated_id) {
+        CloseHandle(child);
+        return false;
+    }
+
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(child, &info)) {
+        CloseHandle(child);
+        return false;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return discard_delete_handle_wide(child);
+    }
+
+    bool okay = discard_directory_wide(child, child_path);
+    if (!okay) {
+        CloseHandle(child);
+        return false;
+    }
+    return discard_delete_handle_wide(child);
+}
+
+static bool discard_directory_wide(HANDLE directory, const WCHAR *directory_path) {
+    if (!directory || !directory_path) return false;
+    BYTE buffer[64 * 1024];
+    for (;;) {
+        if (!GetFileInformationByHandleEx(directory, FileIdBothDirectoryInfo,
+                                           buffer, sizeof(buffer))) {
+            DWORD error = GetLastError();
+            return error == ERROR_NO_MORE_FILES;
         }
-        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            if (!discard_tree_wide(child)) okay = false;
-        } else if (!DeleteFileW(child)) {
-            okay = false;
+
+        BYTE *cursor = buffer;
+        for (;;) {
+            const FILE_ID_BOTH_DIR_INFO *entry = (const FILE_ID_BOTH_DIR_INFO *)cursor;
+            if (!discard_entry_wide(directory_path, entry)) return false;
+            if (entry->NextEntryOffset == 0) break;
+            if (entry->NextEntryOffset >= sizeof(buffer) ||
+                entry->NextEntryOffset > sizeof(buffer) - (size_t)(cursor - buffer)) {
+                return false;
+            }
+            cursor += entry->NextEntryOffset;
         }
-    } while (okay && FindNextFileW(find, &data));
-    FindClose(find);
-    if (!okay) return false;
-    return RemoveDirectoryW(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+    }
+}
+
+static bool discard_tree_wide(const WCHAR *path) {
+    HANDLE root = discard_open_wide(path);
+    if (root == INVALID_HANDLE_VALUE) return discard_missing_error_wide(GetLastError());
+
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(root, &info)) {
+        CloseHandle(root);
+        return false;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return discard_delete_handle_wide(root);
+    }
+
+    WCHAR directory_path[32768];
+    DWORD path_length = GetFinalPathNameByHandleW(root, directory_path,
+                                                   (DWORD)(sizeof(directory_path) / sizeof(directory_path[0])),
+                                                   FILE_NAME_NORMALIZED);
+    if (path_length == 0 || path_length >= sizeof(directory_path) / sizeof(directory_path[0])) {
+        CloseHandle(root);
+        return false;
+    }
+    if (!discard_directory_wide(root, directory_path)) {
+        CloseHandle(root);
+        return false;
+    }
+    return discard_delete_handle_wide(root);
 }
 #else
 static bool discard_tree_posix_at(int parent_fd, const char *name);
@@ -278,9 +397,6 @@ bool player_stage_discard(const char *staging_root) {
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wide[32768];
     if (!stage_utf8_to_wide(staging_root, wide, (int)(sizeof(wide) / sizeof(wide[0])))) return false;
-    DWORD attributes = GetFileAttributesW(wide);
-    if (attributes == INVALID_FILE_ATTRIBUTES) return GetLastError() == ERROR_FILE_NOT_FOUND;
-    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return DeleteFileW(wide) != 0;
     return discard_tree_wide(wide);
 #else
     return discard_tree_posix(staging_root);
