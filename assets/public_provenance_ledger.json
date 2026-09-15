@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3d8df21170ee9dca01fda4fc0d7e5d8cfb4c12ae0e0d8726b1575185d59f097d"
+      "sha256": "05241af44f6c9ea0258d6769be484abbde6ed66993ea80c11e59b5291c45e205"
     },
     {
       "path": "assets/release_manifest.json",
@@ -3351,8 +3351,8 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-000",
         "evidence_tier": "S",
-        "generator": "documented public-source data path",
-        "source_family": "public source data"
+        "generator": "project-owned generator; recomputable from tracked public inputs",
+        "source_family": "tracked public project inputs"
       },
       "sha256": "adb94f9e6a6ef28d370f8602dc332ecf593907ac9cf5211c6ddcb17f7623028d"
     },
@@ -3363,8 +3363,8 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-001",
         "evidence_tier": "S",
-        "generator": "documented public-source data path",
-        "source_family": "public source data"
+        "generator": "project-owned generator; recomputable from tracked public inputs",
+        "source_family": "tracked public project inputs"
       },
       "sha256": "28d6e6cef6f631c09ca577560a30fe1db20cb617c232f31479010464d68c66ca"
     },
@@ -3606,7 +3606,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "42a57f03ad4ac40929ceeada0f386271ab6bd907e76abb0a75a4c086fd30af74"
+      "sha256": "2f0346d24381447eb88c48b4a78565fe14d80f848e7b5d576854b0596c2e9f05"
     },
     {
       "path": "src/player/setup_staging.h",
@@ -6272,7 +6272,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30762b70a7e66bb02401b17098f3b99e777e4c40554e608f609fb10206c4f4be"
+      "sha256": "17abff4e1f3a0e9591a3c6f13e9f2bf50053659e473a51c7412d0ca7c2874ca1"
     },
     {
       "path": "tools/README.md",
@@ -9021,35 +9021,5 @@
       },
       "sha256": "5ebecfddd9ec6401d53ddabee4fa5954b3596e577bdce7f390372fbaa12a6acf"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "95c459df23f3a3c6155d1275dc5238924996ac9d",
-    "candidate_tree": "2dbf5e47a51c238bcedaee19322280a6bd1afaed",
-    "refreshed_paths": [
-      "CMakeLists.txt",
-      "Makefile",
-      "docs/NATIVE_PLAYER_ARCHITECTURE.md",
-      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
-      "docs/NATIVE_UI_REGRESSION_MATRIX.md",
-      "src/core/generated/nk_title_catalog.c",
-      "src/core/generated/nk_title_catalog.h",
-      "src/core/nk_iso.c",
-      "src/core/nk_iso.h",
-      "src/core/nk_launch.c",
-      "src/core/nk_launch.h",
-      "src/core/nk_library.c",
-      "src/core/nk_title_manifest.c",
-      "src/core/nk_types.h",
-      "src/player/main.c",
-      "src/player/player_state.c",
-      "src/player/player_state.h",
-      "src/player/ui_renderer.c",
-      "tests/native/test_launch_resolution.c",
-      "tests/native/test_player_state.c",
-      "tools/nk_core/library.py",
-      "tools/title_catalog_codegen.py",
-      "tools/xb_probe.py"
-    ]
-  }
+  ]
 }
