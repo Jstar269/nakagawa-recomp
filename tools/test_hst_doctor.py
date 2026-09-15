@@ -353,22 +353,61 @@ class CliTests(unittest.TestCase):
 
 class EnvironmentContractTests(unittest.TestCase):
     def test_powerShell_accepts_current_core_line(self) -> None:
-        with mock.patch.object(
-            hst_doctor_checks,
-            "_probe_powershell",
-            return_value=(Path("pwsh"), "Core", "7.6.4", None),
-        ):
-            report = hst_doctor.Report(Path.cwd(), "build")
-            hst_doctor_checks.check_powershell(report)
-        result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
-        self.assertEqual(result.status, "PASS")
+        for version in ("7.6.4", "7.6.5", "7.7.0"):
+            with self.subTest(version=version), mock.patch.object(
+                hst_doctor_checks,
+                "_probe_powershell",
+                return_value=(Path("pwsh"), "Core", version, None),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                hst_doctor_checks.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "PASS")
+
+    def test_powerShell_accepts_future_major_core(self) -> None:
+        for version in ("8.0.0", "8.1.2", "9.0.0"):
+            with self.subTest(version=version), mock.patch.object(
+                hst_doctor_checks,
+                "_probe_powershell",
+                return_value=(Path("pwsh"), "Core", version, None),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                hst_doctor_checks.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "PASS")
 
     def test_powerShell_rejects_windows_powerShell_or_old_core(self) -> None:
-        for edition, version in (("Desktop", "5.1.22621"), ("Core", "7.5.3")):
+        for edition, version in (
+            ("Desktop", "5.1.22621"),
+            ("Desktop", "8.0.0"),
+            ("Core", "7.5.3"),
+            ("Core", "7.5.10"),
+            ("Core", "7.4.19"),
+            ("Core", "6.2.0"),
+        ):
             with self.subTest(edition=edition, version=version), mock.patch.object(
                 hst_doctor_checks,
                 "_probe_powershell",
                 return_value=(Path("pwsh"), edition, version, None),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                hst_doctor_checks.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "FAIL")
+
+    def test_powerShell_fails_on_malformed_or_unreadable_probe(self) -> None:
+        cases = (
+            (Path("pwsh"), "Core", "malformed", None),
+            (Path("pwsh"), "Core", "7", None),
+            (Path("pwsh"), "Core", "-1.6", None),
+            (None, None, None, "pwsh was not found on PATH"),
+            (Path("pwsh"), None, None, "exit 1"),
+        )
+        for executable, edition, version, error in cases:
+            with self.subTest(executable=executable, edition=edition, version=version, error=error), mock.patch.object(
+                hst_doctor_checks,
+                "_probe_powershell",
+                return_value=(executable, edition, version, error),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
                 hst_doctor_checks.check_powershell(report)
@@ -463,11 +502,14 @@ class SimpleFrontEndTests(unittest.TestCase):
 
     def test_frontend_exposes_small_supported_surface(self) -> None:
         for script in (
+            ROOT / "copy_build_assets.ps1",
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "copy_build_assets.ps1",
             ROOT / "tools" / "hst_run_support.ps1",
+            ROOT / "tools" / "hst_safety.ps1",
+            ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
@@ -505,6 +547,41 @@ class SimpleFrontEndTests(unittest.TestCase):
             self.assertLess(block.index('ManagerAction -ManagerAction'), block.index('DoctorScope "products"'))
         self.assertNotIn('Invoke-ManagerBuild', self.frontend)
         self.assertNotIn('.pre-hst-launcher', self.frontend)
+
+    def test_all_tracked_powershell_scripts_declare_consistent_requires_version(self) -> None:
+        expected_scripts = {
+            ROOT / "copy_build_assets.ps1",
+            ROOT / "hst.ps1",
+            ROOT / "hst_manager.ps1",
+            ROOT / "nk_manager.ps1",
+            ROOT / "tools" / "hst_run_support.ps1",
+            ROOT / "tools" / "hst_safety.ps1",
+            ROOT / "tools" / "test_manager_safety.ps1",
+            ROOT / "tools" / "test_visual_oracle.ps1",
+            ROOT / "tools" / "title_manager_plan.ps1",
+            ROOT / "tools" / "vulkan_sdk.ps1",
+        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked PowerShell policy surface")
+        try:
+            listing = subprocess.run(
+                ["git", "-C", str(ROOT), "ls-files", "-z", "--", ":(icase)*.ps1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            self.fail(f"git ls-files failed to enumerate tracked PowerShell scripts: {exc}")
+
+        discovered_scripts = {ROOT / entry for entry in listing.split("\0") if entry}
+        self.assertEqual(discovered_scripts, expected_scripts)
+        for script in discovered_scripts:
+            content = script.read_text(encoding="utf-8-sig")
+            self.assertIn(
+                "#requires -Version 7.6",
+                content,
+                f"{script.relative_to(ROOT)} does not contain expected '#requires -Version 7.6' header",
+            )
 
 
 

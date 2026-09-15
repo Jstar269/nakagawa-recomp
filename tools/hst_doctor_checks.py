@@ -76,11 +76,17 @@ def check_powershell(report: Report) -> None:
         return
     assert executable is not None and edition is not None and version_text is not None
     try:
-        major, minor = (int(part) for part in version_text.split(".", 2)[:2])
-    except ValueError:
+        parts = version_text.split(".", 2)
+        if len(parts) < 2:
+            raise ValueError("insufficient version components")
+        major = int(parts[0])
+        minor = int(parts[1])
+        if major < 0 or minor < 0:
+            raise ValueError("negative version component")
+    except (ValueError, TypeError):
         major, minor = -1, -1
     metadata = {"edition": edition, "version": version_text}
-    if edition != "Core" or major != 7 or minor < 6:
+    if edition != "Core" or (major, minor) < (7, 6):
         report.fail(
             "POWERSHELL_VERSION",
             "PowerShell 7.6+ (`pwsh`) is required",

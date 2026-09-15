@@ -404,9 +404,10 @@ function Get-HstManifestMakeArgs {
 function Push-TitleAnalyzerEnvironment {
     <#
         Apply the plan's analyzer span and return the exact prior state so it can be
-        unwound. Windows cannot hold a defined-but-empty environment variable, so
-        "absent" and "empty" are the same observable state and both unwind to removal.
-        Setting to "" removes the variable (Test-Path returns False).
+        unwound. In PowerShell 7.5+ (.NET 9+), environment variables can hold an empty
+        string, while setting to $null or using Remove-Item removes them. For title
+        analyzer scoping, empty and absent span values both normalize to removal
+        (Remove-Item) so child processes see an unset variable.
 
         GENERIC: scopes only TITLE_EXTRA_SPANS. HST-specific callers that still need
         the legacy HST_EXTRA_SPANS must use Push-HstAnalyzerEnvironment, which scopes
@@ -433,11 +434,11 @@ function Pop-TitleAnalyzerEnvironment {
     param([Parameter(Mandatory = $true)][object]$State)
     $titleExisted = if ($State.PSObject.Properties.Name -contains 'TitleExisted') { $State.TitleExisted } elseif ($State.PSObject.Properties.Name -contains 'Existed') { $State.Existed } else { $false }
     $titleValue   = if ($State.PSObject.Properties.Name -contains 'TitleValue')   { $State.TitleValue }   elseif ($State.PSObject.Properties.Name -contains 'Value')   { $State.Value }   else { $null }
-    # Windows env: empty and absent are the same (setting to "" removes). Restore empty as Remove-Item.
+    # Restore non-empty value; normalize empty or absent prior state to removal via Remove-Item.
     if ($titleExisted -and -not [string]::IsNullOrEmpty($titleValue)) {
         $env:TITLE_EXTRA_SPANS = $titleValue
     } elseif ($titleExisted -and [string]::IsNullOrEmpty($titleValue)) {
-        # Previously existed but value was empty (which PowerShell stores as absent). Ensure removed.
+        # Previously existed but value was empty. Ensure removed for clean unsetting.
         Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
     } else {
         Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue

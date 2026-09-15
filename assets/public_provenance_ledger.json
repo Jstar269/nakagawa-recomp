@@ -6771,7 +6771,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e4c477d5bcd53eac341c262e8baa2bacc5ced4c7263c15faff144dc35090618"
+      "sha256": "187eb5a1e5ff2fe8ce31d094cc20e472efb8a10d00968dadc5a2dabacc7f2fd6"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -8001,7 +8001,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "429e8facfc11caaccd2401bffcf5bdf1b0fa09e4773711ec284aa98a9b639d03"
+      "sha256": "1c9b961f359281a9e322bfb675ea9e333969453c93d9ceb83f4fd163ad0b9747"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8829,7 +8829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92388dd8160a3eff09edf8f4c6f5f5b28192788e6f0379810121e942a995fd61"
+      "sha256": "4eb2117a3997c09aaeaabc8ae48125138dc9e13131da8d9202c49da579395e96"
     },
     {
       "path": "tools/title_manifest.py",
