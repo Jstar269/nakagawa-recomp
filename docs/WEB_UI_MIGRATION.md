@@ -1,7 +1,7 @@
 # Web UI Inventory, Evaluation, and Native Migration Record
 
 > **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, but the preparation backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability.
-
+>
 > **Boundary:** ISO inspection in the current native player is bounded and read-only; no ISO-to-prepared-runtime, module-decryption, or end-user AOT pipeline is connected. See NATIVE_PLAYER_ARCHITECTURE.md and ISO_ONLY_GAP_ANALYSIS.md.
 
 ## 1. Inventory of Current Web UI Components

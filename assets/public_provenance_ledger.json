@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f967749e5ce6ae3dbd96b369bd8af9d720f2975f0e033918a91ee60304dac226"
+      "sha256": "126eb1156b22f6de120b5d23ee7de6accbe9ad4ab82667c878b5d278af96aa50"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1044,7 +1044,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "11a938ec6bf73349e778c80888979e3113fc5dfab3c87d121f394badb8f1f40c"
+      "sha256": "e41d14e534540f02cf6b6ff87abd08acce1ebe6bcb5378f5796083b5ecb3164b"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",

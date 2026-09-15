@@ -5,7 +5,7 @@
 > source. Module decryption, complete retail preparation, progress reporting for
 > every preparation route, and end-user productization remain unbuilt and are
 > marked as targets below.
-
+>
 > **Current build boundary:** The native player connects a bounded ISO/XB
 > staging pipeline for the first-time setup wizard. It records the extracted
 > asset/audio/visual/layout counts, promotes the transaction, registers the
