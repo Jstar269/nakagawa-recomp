@@ -77,7 +77,9 @@
     "sharp": "$sharp"
   },
   "allowScripts": {
-    "sharp@0.35.3": true,
+    "sharp@0.35.4": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
     "unrs-resolver@1.12.2": true,
     "better-sqlite3@12.11.1": true,
     "prisma@7.9.1": true,
