@@ -372,8 +372,7 @@ export function findLatestRunLog(repoRoot: string): LogTail {
 // ---- progress.json reader ------------------------------------------------
 
 import { parseProgressSnapshot } from "./progress-snapshot.mjs";
-import type { ProgressSnapshot, RunIdentity, EvidenceSummary, ProgressPhase } from "./progress-snapshot.mjs";
-export type { RunIdentity, EvidenceSummary, ProgressPhase } from "./progress-snapshot.mjs";
+import type { ProgressSnapshot } from "./progress-snapshot.mjs";
 
 export function readProgressJson(repoRoot: string): ProgressSnapshot | null {
   const p = path.join(/* turbopackIgnore: true */ repoRoot, "progress.json");
@@ -483,8 +482,6 @@ export function runSubprocess(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let timedOut = false;
-    let aborted = false;
 
     const killProcess = () => {
       try {
@@ -512,7 +509,6 @@ export function runSubprocess(
       timeoutTimer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          timedOut = true;
           cleanup();
           killProcess();
           reject(new SubprocessError(`${command} timed out after ${timeoutMs}ms`, {
@@ -528,7 +524,6 @@ export function runSubprocess(
     if (options.signal) {
       if (options.signal.aborted) {
         settled = true;
-        aborted = true;
         cleanup();
         killProcess();
         return reject(new SubprocessError(`${command} aborted before start`, {
@@ -539,7 +534,6 @@ export function runSubprocess(
       abortHandler = () => {
         if (!settled) {
           settled = true;
-          aborted = true;
           cleanup();
           killProcess();
           reject(new SubprocessError(`${command} request aborted`, {

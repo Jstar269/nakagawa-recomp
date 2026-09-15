@@ -29,7 +29,6 @@ export function GamepadDetector() {
     updateControllers,
     captureTarget,
     capturePadIdx,
-    startCapture,
     stopCapture,
   } = useStudio();
   const { bindings } = config.controllers;

@@ -54,7 +54,7 @@ function post(url: string, body: unknown): NextRequest {
   });
 }
 
-function patch(url: string, body: unknown, id: string): NextRequest {
+function patch(url: string, body: unknown): NextRequest {
   return new NextRequest(url, { method: "PATCH", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
 }
 
@@ -117,7 +117,7 @@ test("PATCH activate switches the active profile transactionally", async () => {
   const list = await bodyOf(await profilesRoute.GET());
   const second = (list.profiles as { id: string; name: string }[]).find((p) => p.name === "Second")!;
   const res = await idRoute.PATCH(
-    patch("http://localhost/api/recompiler/profiles/x", { activate: true }, second.id),
+    patch("http://localhost/api/recompiler/profiles/x", { activate: true }),
     { params: Promise.resolve({ id: second.id }) },
   );
   const body = await bodyOf(res);
@@ -172,7 +172,7 @@ test("no-op PATCH on a corrupt profile still returns metadata", async () => {
   const { db } = await import("@/lib/db");
   await db.recompilerProfile.update({ where: { id: second.id }, data: { configJson: "[]" } });
 
-  const res = await idRoute.PATCH(patch("http://localhost/api/recompiler/profiles/x", {}, second.id), {
+  const res = await idRoute.PATCH(patch("http://localhost/api/recompiler/profiles/x", {}), {
     params: Promise.resolve({ id: second.id }),
   });
   assert.equal(res.status, 200, "a metadata no-op must not require a valid stored config");

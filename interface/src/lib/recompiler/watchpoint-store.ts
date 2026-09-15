@@ -21,7 +21,6 @@ import { findRepoRoot } from "./runner";
 import {
   WATCHPOINT_SCHEMA_VERSION,
   MAX_WATCHPOINTS,
-  normalizeWatchpoint,
   validateWatchpointList,
   parseStoredWatchpoints,
   parseDebugMask,
@@ -34,7 +33,6 @@ import {
   atomicWriteFileSync,
   readWatchpointsFile,
   fileMatchesWatchpoints,
-  contentHash,
 } from "./watchpoint-file.mjs";
 
 export class WatchpointStoreError extends Error {

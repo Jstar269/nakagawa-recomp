@@ -1,6 +1,6 @@
 "use client";
 
-import { Gamepad2, Sliders, Activity, ArrowLeftRight, Crosshair } from "lucide-react";
+import { Gamepad2, Sliders, ArrowLeftRight, Crosshair } from "lucide-react";
 import { useStudio } from "./studio-context";
 import { Panel, SectionHeader, Field } from "./ui-bits";
 import { GamepadDetector } from "./gamepad-detector";

@@ -68,10 +68,6 @@ function makeDeps(overrides: Partial<Parameters<typeof createManagerProcess>[0]>
   return { deps, children, terminated, repoRoot };
 }
 
-function emitStdout(child: FakeChild, text: string) {
-  child.stdout.emit("data", Buffer.from(text, "utf8"));
-}
-
 test("run A stopped, run B starts, then A emits close: B intact", async () => {
   const { deps, children } = makeDeps();
   const mgr = createManagerProcess(deps);

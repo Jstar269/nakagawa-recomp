@@ -182,20 +182,6 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setCanRedo(redoStackRef.current.length > 0);
   }, []);
 
-  // Snapshot the config into the undo stack (throttled to 1 snapshot per 400ms).
-  const pushUndoSnapshot = useCallback(
-    (cfg: RecompilerConfig) => {
-      const now = Date.now();
-      if (now - lastSnapshotRef.current < 400) return;
-      lastSnapshotRef.current = now;
-      undoStackRef.current.push(cfg);
-      if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-      redoStackRef.current = [];
-      syncUndoFlags();
-    },
-    [syncUndoFlags],
-  );
-
   // Load saved profile and profile list on mount.
   useEffect(() => {
     let cancelled = false;
@@ -368,7 +354,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       return defaultConfig("minimal");
     });
     setDirty(true);
-  }, []);
+  }, [snapshotForUndo]);
 
   const save = useCallback(async () => {
     setSaving(true);

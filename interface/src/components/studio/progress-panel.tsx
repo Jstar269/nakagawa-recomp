@@ -13,6 +13,12 @@ import { cn } from "@/lib/utils";
  * The real progress.json stores phases keyed by a numeric id; PROGRESS_PHASES
  * uses string keys ("P1"..). We map between the two by sorting instead of
  * joining — the API returns whatever the file has, and we display them regardless. */
+type TelemetryPoint = {
+  timestamp: string;
+  completionPct: number;
+  byteCompletionPct: number | null;
+};
+
 type LiveProgress = {
   total: number;
   earned: number;
@@ -41,7 +47,7 @@ export function ProgressPanel() {
   const [live, setLive] = useState<LiveProgress | null>(null);
   const [refreshState, setRefreshState] = useState<"idle" | "fetching" | "error" | "unanchored">("idle");
   const [verifyState, setVerifyState] = useState<string | null>(null);
-  const [telemetry, setTelemetry] = useState<any[]>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([]);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -61,7 +67,7 @@ export function ProgressPanel() {
         // (the "Record Telemetry Snapshot" button in the build-health panel),
         // never an automatic side effect of rendering this panel.
       }
-    } catch (e) {
+    } catch {
       /* ignore */
     }
   }
@@ -85,7 +91,7 @@ export function ProgressPanel() {
       if (!r.ok) { setRefreshState(d?.error === "progress-missing" ? "unanchored" : "error"); setLive(null); return; }
       setLive(d);
       setRefreshState("idle");
-    } catch (e) {
+    } catch {
       setRefreshState("error");
     }
   }
@@ -97,8 +103,8 @@ export function ProgressPanel() {
       const d = await r.json();
       setVerifyState(`exit=${d.ok ? 0 : 1}\n${(d.stdout || d.stderr || "").slice(-2000)}`);
       await refresh();
-    } catch (e) {
-      setVerifyState(`error: ${String(e)}`);
+    } catch {
+      setVerifyState(`error: fetch failed`);
     }
   }
 

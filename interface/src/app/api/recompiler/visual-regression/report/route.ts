@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { readFileSync, existsSync } from "node:fs";
 import { findRepoRoot, routeError } from "@/lib/recompiler/runner";
 import path from "node:path";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const repoRoot = findRepoRoot();
     const p = path.join(repoRoot, "visual_regression_report.json");

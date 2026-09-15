@@ -55,8 +55,6 @@ export async function GET(req: NextRequest) {
       childArgs.push("--html", reportPath);
     }
 
-    const abortSignal = req.signal;
-
     await runSubprocess(pythonCmd, childArgs, {
       cwd: repoRoot,
       timeoutMs: CHILD_TIMEOUT_MS,

@@ -120,7 +120,6 @@ test("accepts a fully valid config and returns a defensive copy", () => {
 });
 
 test("accepts every legal enum value for each enum field", () => {
-  const base = validConfig();
   const cases = [
     ["graphics.resolutionPreset", RESOLUTION_PRESETS],
     ["graphics.frameRateCap", FRAME_RATE_CAPS],

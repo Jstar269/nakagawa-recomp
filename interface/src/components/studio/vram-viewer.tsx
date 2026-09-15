@@ -36,8 +36,8 @@ export function VramViewerPanel() {
       if (data.base64) {
         renderVram(data.base64);
       }
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -122,6 +122,9 @@ export function VramViewerPanel() {
       if (initial) clearTimeout(initial);
       if (interval) clearInterval(interval);
     };
+    // fetchVram is stable in practice (reads no reactive values); refresh is
+    // driven by autoRefresh and the pixel format via the manual controls.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, format]);
 
   return (

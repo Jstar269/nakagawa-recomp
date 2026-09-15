@@ -6,15 +6,12 @@ import {
   RefreshCw,
   Cpu,
   Activity,
-  Play,
   Search,
-  TrendingDown,
-  HelpCircle,
   Gauge
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Panel, SectionHeader, StatPill } from "./ui-bits";
+import { SectionHeader, StatPill } from "./ui-bits";
 import {
   ResponsiveContainer,
   BarChart,
@@ -41,6 +38,12 @@ interface ProfileBlock {
   count: number;
 }
 
+interface TrendPoint {
+  build: string;
+  timestamp: string;
+  [pc: string]: string | number;
+}
+
 interface WatchpointStat {
   label: string;
   reads: number;
@@ -55,7 +58,7 @@ interface ProfilerResponse {
     timestamp: number | null;
     watchpointStats?: WatchpointStat[];
   };
-  trend: any[];
+  trend: TrendPoint[];
 }
 
 function formatBytes(bytes: number) {

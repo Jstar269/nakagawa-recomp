@@ -50,7 +50,7 @@ function writeU32(buf: Uint8Array, offset: number, n: number): number {
   return offset + 4;
 }
 
-export function buildZip(entries: ZipEntry[]): Uint8Array {
+export function buildZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
   const now = new Date();
   const { time, date } = dosDateTime(now);

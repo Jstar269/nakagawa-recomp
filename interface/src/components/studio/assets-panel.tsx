@@ -3,9 +3,9 @@
 import { useEffect, useState, useMemo } from "react";
 import {
   FolderOpen, FileImage, Volume2, Network, Search, Database,
-  ChevronRight, ChevronDown, Library, Music, Layers, Eye, Loader2, HelpCircle
+  ChevronRight, ChevronDown, Library, Music, Layers, Loader2, HelpCircle
 } from "lucide-react";
-import { Panel, SectionHeader } from "./ui-bits";
+import { SectionHeader } from "./ui-bits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,11 @@ interface ArchiveNode {
   sceneGraphs: AssetFile[];
   other: AssetFile[];
 }
+
+type FolderNode = {
+  __archive?: ArchiveNode;
+  children: Record<string, FolderNode>;
+};
 
 export function AssetsPanel() {
   const [archives, setArchives] = useState<ArchiveNode[]>([]);
@@ -60,8 +65,8 @@ export function AssetsPanel() {
         if (data.archives && data.archives.length > 0) {
           setSelectedArchive(data.archives[0]);
         }
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);
       }
@@ -71,17 +76,17 @@ export function AssetsPanel() {
 
   // Compute folder hierarchy of archives
   const folderTree = useMemo(() => {
-    const root: Record<string, any> = {};
+    const root: FolderNode = { children: {} };
     for (const arc of archives) {
       const parts = arc.name.split("/");
       let current = root;
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
         if (i === parts.length - 1) {
-          current[part] = { __archive: arc };
+          current.children[part] = { __archive: arc, children: {} };
         } else {
-          if (!current[part]) current[part] = {};
-          current = current[part];
+          current.children[part] ??= { children: {} };
+          current = current.children[part];
         }
       }
     }
@@ -138,7 +143,7 @@ export function AssetsPanel() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const renderFolderNode = (node: Record<string, any>, name: string, currentPath: string = "") => {
+  const renderFolderNode = (node: FolderNode, name: string, currentPath: string = "") => {
     const fullPath = currentPath ? `${currentPath}/${name}` : name;
 
     if (node.__archive) {
@@ -180,7 +185,7 @@ export function AssetsPanel() {
         </button>
         {isExpanded && (
           <div className="pl-3.5 border-l border-border/40 ml-3 space-y-0.5">
-            {Object.keys(node).sort().map(key => renderFolderNode(node[key], key, fullPath))}
+            {Object.keys(node.children).sort().map(key => renderFolderNode(node.children[key], key, fullPath))}
           </div>
         )}
       </div>
@@ -244,7 +249,7 @@ export function AssetsPanel() {
             <Library className="size-3.5 text-primary" /> Archives Tree
           </span>
           <div className="flex-1 overflow-y-auto thin-scroll space-y-1 pr-1">
-            {Object.keys(folderTree).sort().map(key => renderFolderNode(folderTree[key], key))}
+            {Object.keys(folderTree.children).sort().map(key => renderFolderNode(folderTree.children[key], key))}
           </div>
         </div>
 
@@ -337,6 +342,8 @@ export function AssetsPanel() {
                           >
                             <div className="aspect-square w-full bg-black/40 rounded border border-border/20 flex items-center justify-center overflow-hidden mb-2 relative">
                               {file.png_path ? (
+                                // Local API-served preview bytes: the optimizer is not applicable here.
+                                // eslint-disable-next-line @next/next/no-img-element
                                 <img
                                   src={`/api/recompiler/assets/file?path=${encodeURIComponent(pathString)}`}
                                   alt={file.name}
@@ -466,6 +473,8 @@ export function AssetsPanel() {
             {/* Content Preview */}
             <div className="bg-black/50 border border-border/40 rounded-lg p-4 flex flex-col items-center justify-center min-h-48 max-h-[300px] overflow-hidden">
               {selectedFile.type === "texture" && (
+                // Local API-served preview bytes: the optimizer is not applicable here.
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={`/api/recompiler/assets/file?path=${encodeURIComponent(`${selectedFile.archivePath}/${selectedFile.file.png_path}`)}`}
                   alt={selectedFile.file.name}

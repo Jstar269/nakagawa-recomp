@@ -2,9 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle,
   AlertTriangle,
-  CheckCircle2,
   CircleCheck,
   Cpu,
   FlaskConical,

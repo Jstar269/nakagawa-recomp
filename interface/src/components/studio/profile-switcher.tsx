@@ -31,16 +31,12 @@ export function ProfileSwitcher() {
     activeProfileId,
     activateProfile,
     createProfile,
-    deleteProfile,
-    renameProfile,
     profilesOpen,
     setProfilesOpen,
     dirty,
   } = useStudio();
   const { toast } = useToast();
   const [newName, setNewName] = useState("");
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [renameVal, setRenameVal] = useState("");
 
   const active = profiles.find((p) => p.id === activeProfileId);
 
@@ -54,18 +50,6 @@ export function ProfileSwitcher() {
   async function handleActivate(id: string, name: string) {
     await activateProfile(id);
     toast({ title: "Profile switched", description: name });
-  }
-
-  async function handleDelete(id: string, name: string) {
-    await deleteProfile(id);
-    toast({ title: "Profile deleted", description: name });
-  }
-
-  async function handleRename(id: string) {
-    if (!renameVal.trim()) return;
-    await renameProfile(id, renameVal.trim());
-    setRenaming(null);
-    setRenameVal("");
   }
 
   return (
@@ -151,12 +135,10 @@ export function ProfilesDialog({
   const {
     profiles,
     activeProfileId,
-    activateProfile,
     createProfile,
     deleteProfile,
     renameProfile,
     refreshProfiles,
-    config,
   } = useStudio();
   const { toast } = useToast();
   const [renaming, setRenaming] = useState<string | null>(null);

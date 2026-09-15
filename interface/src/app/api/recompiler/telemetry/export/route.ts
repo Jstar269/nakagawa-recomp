@@ -41,6 +41,19 @@ interface InventoryMap {
   other: AssetFile[];
 }
 
+interface CombinedInventoryEntry {
+  archive: string;
+  path: string;
+  texturesCount: number;
+  soundsCount: number;
+  sceneGraphsCount: number;
+  otherCount: number;
+  textures: AssetFile[];
+  sounds: AssetFile[];
+  sceneGraphs: AssetFile[];
+  other: AssetFile[];
+}
+
 const WARNING_MANIFEST = `========================================================================
 PRIVATE DIAGNOSTIC TELEMETRY EXPORT — DO NOT PUBLISH OR UPLOAD PUBLICLY
 ========================================================================
@@ -110,7 +123,7 @@ export async function GET() {
 
     // 4. Gather and pack the combined asset inventory map
     const extractedDir = path.join(repoRoot, "place_game_here", "EXTRACTED", "PSP_GAME", "USRDIR", "xbdata_extracted");
-    const combinedInventory: any[] = [];
+    const combinedInventory: CombinedInventoryEntry[] = [];
     if (existsSync(extractedDir)) {
       const inventoryFiles = safeWalkDirectory(extractedDir, {
         maxFiles: MAX_INVENTORY_FILES,
@@ -163,7 +176,7 @@ export async function GET() {
       );
     }
 
-    return new Response(zipBytes as any, {
+    return new Response(zipBytes, {
       headers: {
         "Content-Type": "application/zip",
         "Content-Disposition": "attachment; filename=private-diagnostic-telemetry-export.zip",

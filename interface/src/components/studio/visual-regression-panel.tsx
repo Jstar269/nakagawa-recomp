@@ -43,16 +43,32 @@ interface RegressionReport {
   frames: FrameDiff[];
 }
 
+interface VarianceGridCell {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+interface VarianceData {
+  width: number;
+  height: number;
+  histogram: { range: string; R: number; G: number; B: number; A: number }[];
+  grid: {
+    rows: number;
+    cols: number;
+    cells: VarianceGridCell[];
+  };
+}
+
 export function VisualRegressionPanel() {
   const [report, setReport] = useState<RegressionReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedFrame, setSelectedFrame] = useState<FrameDiff | null>(null);
   const [sliderVal, setSliderVal] = useState(50);
-  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null);
 
   const [showDiffMask, setShowDiffMask] = useState(false);
-  const [varianceData, setVarianceData] = useState<any>(null);
-  const [varianceLoading, setVarianceLoading] = useState(false);
+  const [varianceData, setVarianceData] = useState<VarianceData | null>(null);
   const [activeChannels, setActiveChannels] = useState<{ R: boolean; G: boolean; B: boolean; A: boolean }>({
     R: true,
     G: true,
@@ -61,7 +77,6 @@ export function VisualRegressionPanel() {
   });
 
   const fetchVariance = useCallback(async (filename: string) => {
-    setVarianceLoading(true);
     try {
       const res = await fetch(`/api/recompiler/visual-regression/variance?file=${filename}`);
       if (res.ok) {
@@ -70,11 +85,9 @@ export function VisualRegressionPanel() {
       } else {
         setVarianceData(null);
       }
-    } catch (e) {
-      console.error("Failed to load variance details", e);
+    } catch {
+      console.error("Failed to load variance details");
       setVarianceData(null);
-    } finally {
-      setVarianceLoading(false);
     }
   }, []);
 
@@ -102,8 +115,8 @@ export function VisualRegressionPanel() {
           if (updated) setSelectedFrame(updated);
         }
       }
-    } catch (e) {
-      console.error("Failed to load visual regression report", e);
+    } catch {
+      console.error("Failed to load visual regression report");
     } finally {
       setLoading(false);
     }
@@ -112,12 +125,11 @@ export function VisualRegressionPanel() {
   useEffect(() => {
     fetchReport();
 
-    // Set up polling interval to fetch report updates every 2 seconds
+    // Poll the report file while a capture run may be writing new frames.
     const interval = setInterval(fetchReport, 2000);
-    setRefreshInterval(interval);
 
     return () => {
-      if (interval) clearInterval(interval);
+      clearInterval(interval);
     };
   }, [fetchReport]);
 
@@ -281,6 +293,8 @@ export function VisualRegressionPanel() {
                   <div className="relative w-full max-w-[540px] aspect-[480/272] select-none overflow-hidden rounded-xl border-2 border-border/80 bg-black shadow-2xl">
 
                     {/* Golden Reference (Oracle) - Underneath */}
+                    {/* Local API-served comparison frames: the optimizer is not applicable here. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`/api/recompiler/visual-regression/image?type=golden&file=${selectedFrame.filename}`}
                       alt="Oracle Reference"
@@ -293,6 +307,7 @@ export function VisualRegressionPanel() {
                       className="absolute inset-0 pointer-events-none"
                       style={{ clipPath: `polygon(0 0, ${sliderVal}% 0, ${sliderVal}% 100%, 0 100%)` }}
                     >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`/api/recompiler/visual-regression/image?type=snapshot&file=${selectedFrame.filename}`}
                         alt="Recompiler Active Render"
@@ -317,6 +332,7 @@ export function VisualRegressionPanel() {
 
                     {/* Diff Highlight Mask Overlay */}
                     {showDiffMask && (
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={`/api/recompiler/visual-regression/image?type=diff&file=${selectedFrame.filename}&channels=${Object.keys(activeChannels).filter(k => activeChannels[k as keyof typeof activeChannels]).join(",")}`}
                         alt="Diff Highlight"
@@ -456,7 +472,7 @@ export function VisualRegressionPanel() {
                           </div>
                           <div className="rounded-lg border border-border/40 bg-background/20 p-3 flex flex-col justify-center items-center">
                             <div className="grid grid-cols-[repeat(30,minmax(0,1fr))] gap-[1px] w-full aspect-[480/272] bg-card/60 p-1 rounded border border-border/30">
-                              {varianceData.grid.cells.map((cell: any, idx: number) => {
+                              {varianceData.grid.cells.map((cell, idx) => {
                                 let totalDiff = 0;
                                 let activeCount = 0;
                                 if (activeChannels.R) { totalDiff += cell.r; activeCount++; }
