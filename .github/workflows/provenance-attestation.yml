@@ -122,6 +122,8 @@ jobs:
         id: authority
         env:
           GH_TOKEN: ${{ secrets.PROVENANCE_AUTHORITY_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TRUSTED_REPO: Jstar269/nakagawa-recomp-history-private
           TRUSTED_REF: main
           TRUSTED_LEDGER_PATH: docs/provenance/IMPLEMENTATION_PROVENANCE.json
@@ -150,6 +152,43 @@ jobs:
           echo "trusted authority ${TRUSTED_REPO}@${authority_sha}"
           echo "authority_sha=${authority_sha}" >> "${GITHUB_OUTPUT}"
 
+          # A candidate policy is still untrusted data. If its exact bytes
+          # differ from the trusted base policy, require the private authority
+          # to provide both the independently blessed bytes and a document
+          # binding the exact semantic delta. The verifier repeats every
+          # digest and semantic check; these outputs only select its external
+          # inputs. The path is keyed by the candidate policy digest so an
+          # authority document cannot be reused accidentally for another
+          # policy.
+          base_policy_sha="$(git show "${BASE_SHA}:assets/public_source_profile.json" | sha256sum | cut -d' ' -f1)"
+          candidate_policy_sha="$(git show "${HEAD_SHA}:assets/public_source_profile.json" | sha256sum | cut -d' ' -f1)"
+          for value in "${base_policy_sha}" "${candidate_policy_sha}"; do
+            case "${value}" in
+              [0-9a-f]*) [ "${#value}" -eq 64 ] || { echo "policy sha malformed" >&2; exit 1; } ;;
+              *) echo "policy sha malformed" >&2; exit 1 ;;
+            esac
+          done
+          echo "base policy sha256 ${base_policy_sha}"
+          echo "candidate policy sha256 ${candidate_policy_sha}"
+          if [ "${base_policy_sha}" != "${candidate_policy_sha}" ]; then
+            policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"
+            gh api \
+              -H "Accept: application/vnd.github.raw" \
+              "repos/${TRUSTED_REPO}/contents/${policy_dir}/candidate-policy.json?ref=${authority_sha}" \
+              > "${RUNNER_TEMP}/trusted/candidate-policy.json"
+            gh api \
+              -H "Accept: application/vnd.github.raw" \
+              "repos/${TRUSTED_REPO}/contents/${policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
+              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+            test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"
+            test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+            echo "policy delta authority materialized for candidate policy ${candidate_policy_sha}"
+            echo "trusted_candidate_policy=${RUNNER_TEMP}/trusted/candidate-policy.json" >> "${GITHUB_OUTPUT}"
+            echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
+          else
+            echo "candidate policy equals trusted base policy; no policy delta authority required"
+          fi
+
       # During the migration window the public ledger still exists in the
       # trusted base tree.  Copy that exact blob outside the checkout so the
       # verifier can bind it to BASE_SHA without reading the candidate's copy.
@@ -175,6 +214,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           AUTHORITY_SHA: ${{ steps.authority.outputs.authority_sha }}
+          TRUSTED_CANDIDATE_POLICY: ${{ steps.authority.outputs.trusted_candidate_policy }}
+          POLICY_DELTA_AUTHORITY: ${{ steps.authority.outputs.policy_delta_authority }}
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/verify"
@@ -183,6 +224,17 @@ jobs:
           # opt-in via --require-reviewed-blobs for higher-assurance runs.
           # Exact immutable SHAs from the event, never branch names: resolving
           # a branch twice can name two different trees.
+          policy_args=()
+          if [ -n "${TRUSTED_CANDIDATE_POLICY:-}" ] || [ -n "${POLICY_DELTA_AUTHORITY:-}" ]; then
+            if [ -z "${TRUSTED_CANDIDATE_POLICY:-}" ] || [ -z "${POLICY_DELTA_AUTHORITY:-}" ]; then
+              echo "policy delta authority outputs must be paired" >&2
+              exit 1
+            fi
+            policy_args+=(
+              --trusted-candidate-policy "${TRUSTED_CANDIDATE_POLICY}"
+              --policy-delta-authority "${POLICY_DELTA_AUTHORITY}"
+            )
+          fi
           python tools/provenance_attest_verify.py \
             --repo "${GITHUB_WORKSPACE}" \
             --candidate "${HEAD_SHA}" \
@@ -194,6 +246,7 @@ jobs:
             --trusted-baseline "${RUNNER_TEMP}/trusted/public-provenance-baseline.json" \
             --output-dir "${RUNNER_TEMP}/verify" \
             --json "${RUNNER_TEMP}/verify/verdict.json" \
+            "${policy_args[@]}" \
             | tee "${RUNNER_TEMP}/verify/report.txt"
 
       # Runs on failure too, so a maintainer reads the finding codes in the pull

@@ -47,7 +47,7 @@ it agree with every other artifact.
 | T9 | Declare a second job under the required check's context name so a green candidate-controlled result answers for the gate | `CI_CONTEXT_COLLISION` — the context string is reserved |
 | T10 | Change file content without updating the ledger hash | `CONTENT_MISMATCH` |
 | T11 | Publish a file with no ledger entry, or keep an entry for a deleted file | `LEDGER_COVERAGE` |
-| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` — scope may tighten, never loosen |
+| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external blessed policy and exact policy-delta authority authorize that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
 | T13 | Edit the ledger without regenerating the export | `EXPORT_FIELD_MISMATCH` |
 | T14 | Replay a green result from an earlier head | the verdict is bound to the candidate commit and tree, and the run fails closed if the fetched head is not the head the event named |
 | T15 | Merge on a stale base | the ruleset's `strict_required_status_checks_policy` requires the head to be up to date, and the ratchet is evaluated against the base branch tip |
@@ -84,7 +84,11 @@ it agree with every other artifact.
 `.github/workflows/provenance-attestation.yml`, the publication policy, and the
 previous public ledger — all taken from the base branch, not the pull request.
 The detailed implementation ledger, fetched at run time from the private
-authority repository into `$RUNNER_TEMP`, outside the workspace.
+authority repository into `$RUNNER_TEMP`, outside the workspace. When a
+candidate changes the publication policy, the workflow also fetches an
+independently blessed copy of the candidate policy and an exact policy-delta
+authority from that repository; both are keyed by the candidate policy's
+SHA-256 and are checked again by the verifier.
 
 **Untrusted.** Every blob in the candidate tree, without exception: its source,
 its policy, its ledger, its export, its workflows, and its own copy of the
@@ -106,8 +110,14 @@ The boundary is enforced structurally, not by convention:
 
 **Tier A — absolute, whole tree, never grandfathered.** `LEDGER_SCHEMA`,
 `LEDGER_COVERAGE`, `CONTENT_MISMATCH`, `RECORD_ABSENT`, `RECORD_NOT_COVERING`,
-`POLICY_SUBSTITUTION`, `EXPORT_LEDGER_DIGEST_STALE`,
+unapproved `POLICY_SUBSTITUTION`, `EXPORT_LEDGER_DIGEST_STALE`,
 `TRUSTED_WORKFLOW_WEAKENED`, `CI_CONTEXT_COLLISION`.
+
+An externally blessed candidate policy may remove only the exact path-list
+entries named by its separately bound `policy-delta-authority` document. Those
+authorized removals are not grandfathering: the authority binds both policy
+digests and the complete semantic delta, and the resulting protected universe
+still receives the normal ledger, export, and content checks.
 
 **Tier B — the grandfathering predicate.** The trusted authority derives
 exactly one claim for a path. A candidate claim that disagrees with it survives
@@ -332,6 +342,25 @@ operation:
 git show private/main:docs/provenance/IMPLEMENTATION_PROVENANCE.json > "$TRUSTED_DIR/ledger.json"
 python tools/provenance_attest_verify.py --repo . --candidate HEAD --base origin/main --trusted-ledger "$TRUSTED_DIR/ledger.json" --show-debt
 ```
+
+For a candidate whose policy bytes differ from the exact trusted base, the
+maintainer must additionally supply both external files:
+
+```bash
+python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha> \
+  --trusted-ledger "$TRUSTED_DIR/ledger.json" --ephemeral \
+  --trusted-baseline "$TRUSTED_DIR/public-provenance-baseline.json" \
+  --trusted-candidate-policy "$TRUSTED_DIR/candidate-policy.json" \
+  --policy-delta-authority "$TRUSTED_DIR/policy-delta-authority.json"
+```
+
+The blessed policy must byte-match the candidate. The authority binds both
+policy digests and the complete semantic delta; version 1 permits only exact
+include/exclude path-list changes and refuses rule changes. Unpaired inputs,
+candidate-controlled inputs, empty deltas, digest mismatches, and any computed
+delta other than the approved one fail closed. The workflow supplies these
+files only when the candidate policy digest differs from the base digest, so
+ordinary policy-stable pull requests use the original two-input route.
 
 Exit status: `0` pass, `1` fatal findings, `2` the verifier's own inputs are
 unusable. All three are fail-closed.
