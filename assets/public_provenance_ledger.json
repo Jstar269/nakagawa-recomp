@@ -6840,7 +6840,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fc24b9b6e1e1b9c6e1174cf451ce642ad07d50a2353667f1e487dde105691701"
+      "sha256": "16dc2b62fd2a40b3df9a027853bce2dac35db9bf209f4f36336ff0f19ed8121c"
     },
     {
       "path": "tools/import_audit_gate.py",
