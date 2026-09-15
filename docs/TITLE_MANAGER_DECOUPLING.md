@@ -66,12 +66,12 @@ legacy values with validated, canonical plan projections.
 
 ## 4. Migration & Transition Roadmap
 
-### Phase 1: Tracking & Design Specification (Current)
+### Phase 1: Tracking & Design Specification (Complete)
 
 - Document the decoupling strategy and register [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196).
 - Define the transition interface and backward-compatibility rules.
 
-### Phase 2: Introduction of `nk_manager.ps1` & Forwarding Shim
+### Phase 2: Introduction of `nk_manager.ps1` & Forwarding Shim (Complete)
 
 - Create `nk_manager.ps1` as the canonical build manager.
 - Implement title-agnostic parameter handling:
@@ -79,18 +79,36 @@ legacy values with validated, canonical plan projections.
   - Derive `GAME_NAME`, build directories, and executable names dynamically from the active plan.
 - Retain `hst_manager.ps1` as a thin backward-compatibility wrapper that issues a warning and invokes `nk_manager.ps1` with the HST manifest.
 
-### Phase 3: Retirement of Hardcoded HST Literals
+Merged in PR #198. `nk_manager.ps1` is the canonical entry point and
+`hst_manager.ps1` remains the compatibility wrapper. The wrapper and manager
+still intentionally preserve the current local HST input route until the
+companion-tooling migration is admitted and validated.
+
+### Phase 3: Companion Tooling Decoupling (In progress; provenance-blocked)
+
+- [ ] Add `nk.ps1` and preserve `hst.ps1` as a deprecated forwarding wrapper.
+- [ ] Add `tools/nk_safety.ps1` and preserve `tools/hst_safety.ps1` as a deprecated wrapper.
+- [ ] Add title-neutral `tools/nk_doctor*.py` modules and preserve the `hst_doctor*.py` names as deprecated wrappers.
+- [ ] Update the public source profile and exact reviewed-blob admission for every new implementation-bearing path.
+
+The C-1 runtime diagnostic gate is complete independently: retained HLE diagnostic
+reads require the validated HST code-generation profile and `SR_HLE_DIAGNOSTICS`.
+The companion paths are not claimed here because the current external provenance
+authority has no exact records for the new `nk_*` paths; candidate-side records or
+policy edits would be self-attestation.
+
+### Phase 4: Retirement of Hardcoded HST Literals
 
 - Delete the `0x0029a060` entry literal and `GAME_NAME=hst` fallback.
 - Remove hardcoded assumptions about `place_game_here/` layout in generic code paths; delegate input location checks to manifest validation.
 
-### Phase 4: Companion Tooling Rename
+### Phase 5: Companion Tooling Rename
 
 - `hst.ps1` → `nk.ps1`
 - `tools/hst_safety.ps1` → `tools/nk_safety.ps1` (updating `Assert-HstWorkspaceRoot` → `Assert-NkWorkspaceRoot`)
 - `tools/hst_doctor.py` → `tools/nk_doctor.py`
 
-### Phase 5: Documentation & Test Sweep
+### Phase 6: Documentation & Test Sweep
 
 - Update references in `docs/DEBUGGING.md`, `docs/PORTING.md`, `docs/TITLE_CODEGEN_PLAN.md`, and developer guides.
 - Update test cases in `tools/test_*.py` that invoke `hst_manager.ps1`.

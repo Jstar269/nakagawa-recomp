@@ -30,7 +30,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 3
+GENERATED_SCHEMA_VERSION = 4
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -77,7 +77,11 @@ class TitleRuntimeConfigError(ValueError):
 def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
     """Return the normalized binding set for a manifest (or the generic empty set)."""
     if manifest is None:
-        return {"source_id": GENERIC_SOURCE_ID, "bindings": {}}
+        return {
+            "source_id": GENERIC_SOURCE_ID,
+            "codegen_profile": "none",
+            "bindings": {},
+        }
     normalized = title_manifest.validate_manifest(manifest)
     block = dict(normalized.get("runtime_bindings") or {})
     block.pop("schema_version", None)
@@ -88,7 +92,11 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
         raise TitleRuntimeConfigError(
             "runtime binding(s) have no runtime representation: " + ", ".join(unknown)
         )
-    return {"source_id": normalized["id"], "bindings": block}
+    return {
+        "source_id": normalized["id"],
+        "codegen_profile": normalized.get("codegen_profile", "none"),
+        "bindings": block,
+    }
 
 
 def config_digest(config: dict[str, Any]) -> str:
@@ -100,6 +108,7 @@ def config_digest(config: dict[str, Any]) -> str:
     payload = {
         "generated_schema_version": GENERATED_SCHEMA_VERSION,
         "source_id": config["source_id"],
+        "codegen_profile": config.get("codegen_profile", "none"),
         "bindings": config["bindings"],
     }
     rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -143,6 +152,11 @@ def render_header(config: dict[str, Any]) -> str:
                    {COUNT_BITS[name] for name in bindings if name in COUNT_BITS})
     valid_text = " | ".join(valid) if valid else "0u"
     source_id = config["source_id"]
+    codegen_profile = config.get("codegen_profile", "none")
+    if codegen_profile not in {"none", "hst"}:
+        raise TitleRuntimeConfigError(
+            f"unsupported codegen profile: {codegen_profile!r}"
+        )
     if '"' in source_id or "\\" in source_id:
         raise TitleRuntimeConfigError("title id is not representable as a C string literal")
     lines = [
@@ -159,6 +173,7 @@ def render_header(config: dict[str, Any]) -> str:
         f'#define SR_TITLE_CONFIG_SOURCE_ID "{source_id}"',
         f'#define SR_TITLE_CONFIG_DIGEST "{config_digest(config)}"',
         f"#define SR_TITLE_CONFIG_VALID ({valid_text})",
+        f"#define SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE {1 if codegen_profile == 'hst' else 0}",
         "",
     ]
     for name in FIELD_BITS:

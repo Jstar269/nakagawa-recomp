@@ -738,7 +738,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "512e311ba3ab1430617d15184c78213b22bf9b6a9ae27012005ed66345e66b82"
+      "sha256": "a3b4aa7c797712fc02077862806ff18cf25ec3ac07a227a26778fb6d5e785ef2"
     },
     {
       "path": "docs/CI.md",
@@ -765,7 +765,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5da8af2adfaa4dd2b695a5a5b972b61d2031677bbcffabb595b7954a19a24f80"
+      "sha256": "2eea8a446e1e946eeff42540e598f26d67e30df19376fc09d5c2d83bd75ce294"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -882,7 +882,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d437b931df4355d54155368a341bfaffd96f2cb1f120f307378c84100fd3a4fa"
+      "sha256": "fec2e2ad7c956488414418c64adaec108ac008177b153b637a7d268bbb66eab3"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1017,7 +1017,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c1ef5ca31c6e6eabcacb58429b973bc40dce9af8da024310d5a0a4526a86fffd"
+      "sha256": "108048dec80028ec8f7684af7dcac3f35eb0c87893a6b980ffd364a99a9f414e"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -3333,7 +3333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5894dcb7738c3fdf2443ae75fdb280c67985484896727eabcfd35b132df9b3e"
+      "sha256": "655b1b4a67abb7761a121189f343fa590dfbc2c19f28a134743a99f1b5c7de0d"
     },
     {
       "path": "pyproject.toml",
@@ -5567,7 +5567,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9fbe9ea1bfaa155bd828f8167893f97962dc9c4a4d951636284710caac89e413"
+      "sha256": "80d561912aed96d2c27396b930cce7c35484514fb0d0275b9436e944deda254e"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -5579,7 +5579,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9da8a0e84686db1ace752c4f0d0e316fbc63081d591dabadd3656ee307970d6"
+      "sha256": "75d880b8f17d785d43103c11c7307d6c9624eef8d8b36048c92948afaf24f977"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5963,7 +5963,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9839fa2bc7ddc35482fa8a5e62691e6ff97233f075ec71750f62a34be1c7e5e"
+      "sha256": "b986ba1032661323f5b7a345e3e19e51875c044d05934f1403a31c6e7fc6cbe1"
     },
     {
       "path": "src/rt/title_config.h",
@@ -5975,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13f5e9b8a3e820fe280e4ad9ae1eaf7b16115167f7ed630a02a515a5bf774146"
+      "sha256": "743bb29e12c4f37340701cdbee11ac3fef64020d077a5c5322dd0d2696eac02e"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -7974,7 +7974,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d027c9a584bd114ccd2a276be775ca75868d602f47bdf4e03090f6a246954090"
+      "sha256": "04543580f19de82b4c38d07cd1c9e0a03cfee0049ee05a5f1e621de025f89ffa"
     },
     {
       "path": "tools/test_hle_title_isolation.py",
@@ -8853,7 +8853,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6721c8a60d1779b274eaa268d2e9159d8a21acfe1a01ee6001214770732c2d15"
+      "sha256": "4fa92a82d7c0b707fa04542874e2f0fe221aabe7f2daf60b1944ebdcdbe9884b"
     },
     {
       "path": "tools/tracediff.py",

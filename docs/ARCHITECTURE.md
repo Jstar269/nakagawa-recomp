@@ -530,6 +530,7 @@ the maintained references for exact behavior.
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
 | `SR_FBSNAP` | positive integer | Rotating PPM snapshot interval |
 | `SR_HLELOG` | present/unset | HLE dispatch diagnostics |
+| `SR_HLE_DIAGNOSTICS` | present/unset | Retained title-scoped HLE diagnostic reads; requires the validated HST code-generation profile |
 | `SR_SYSLOG` | present/unset | System-call diagnostics |
 | `SR_THLOG` | present/unset | Scheduler/thread diagnostics |
 | `SR_BLOCKLOG` | present/unset | Blocking/basic diagnostic output where consumed |

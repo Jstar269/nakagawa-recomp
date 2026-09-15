@@ -106,6 +106,11 @@ typedef struct SrTitleRuntimeConfig {
 /* The build's configuration. Never NULL; a generic build reports valid == 0. */
 const SrTitleRuntimeConfig *sr_title_config(void);
 
+/* HST-profile diagnostic opt-in. Returns 1 only when the validated build profile
+ * permits the retained title-scoped diagnostics and SR_HLE_DIAGNOSTICS is present;
+ * generic and public fixture profiles always return 0. */
+int sr_title_config_diagnostics_enabled(void);
+
 /* Configured fallback entry, or 0 when the build has none. 0 is not a usable guest
  * entry here, and the manifest validator rejects a configured zero, so callers can
  * treat 0 as "unconfigured" without a second predicate. */

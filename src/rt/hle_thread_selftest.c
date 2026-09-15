@@ -509,6 +509,7 @@ static void title_hle_write_cstr(uint32_t addr, const char *text) {
  * the negative direction because they do not configure migrated HLE groups. */
 static void test_title_config_hle_bindings(void) {
     const SrTitleRuntimeConfig *cfg = sr_title_config();
+    const char *expected_diagnostics = getenv("SR_EXPECT_HLE_DIAGNOSTICS");
     SrTitleDisplayBringup bringup;
     uint32_t sync_base = 0, sync_name = 0;
     const SrTitleRuntimeSyncWrapper *wrappers = NULL;
@@ -524,6 +525,13 @@ static void test_title_config_hle_bindings(void) {
     memset(g_mem_base, 0, 0x0c000000u);
     memset(&cpu, 0, sizeof(cpu));
     sr_hle_init();
+
+    if (expected_diagnostics) {
+        int expected = (expected_diagnostics[0] == '1' &&
+                        expected_diagnostics[1] == '\0');
+        expect(sr_title_config_diagnostics_enabled() == expected,
+               "title diagnostic profile matches the explicit selftest expectation");
+    }
 
     expect((has_bringup && has_sync && has_libfont && has_latch) ||
            (!has_bringup && !has_sync && !has_libfont && !has_latch),

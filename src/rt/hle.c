@@ -299,6 +299,7 @@ static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded addr
 /* Run as: sr_capture_mainthread_diag(s, &sr_last_mt_diag); re-used by both the printf
  * and ExitThread hooks so a second snapshot lands beside the first without another struct. */
 static MainThreadDiag *sr_capture_mainthread_diag(CpuState *s, MainThreadDiag *d) {
+    if (!sr_title_config_diagnostics_enabled()) return d;
     uint32_t sp = s->r[29];
     d->pc  = s->pc;
     d->ra  = MEM_R32(sp + 4u);
@@ -323,6 +324,7 @@ static MainThreadDiag *sr_capture_mainthread_diag(CpuState *s, MainThreadDiag *d
 }
 
 static void sr_dump_mainthread_diag(const char *prefix, const MainThreadDiag *d) {
+    if (!sr_title_config_diagnostics_enabled()) return;
     fprintf(stderr,
         "==%s== pc=0x%08x ra=0x%08x a0=0x%08x a1=0x%08x cur_uid=0x%x\n"
         "  bss[0x0030a000..+0x10]=%08x %08x %08x %08x\n"
@@ -669,12 +671,14 @@ static uint32_t h_ExitThread(CpuState *s) {
     }
     fprintf(stderr, "HLE: ExitThread cur_uid=0x%x ra=0x%08x (death_wish=%d)\n",
             uid, s->r[31], death_wish);
-    fprintf(stderr,
-            "  re-snapshot: cur_uid=0x%x libc_main_id[0x0030a040]=0x%08x [0x0030a058]=0x%08x "
-            "frame_head[0x0031a03c]=0x%08x last_alloc=0x%08x\n",
-            sched_current_uid(),
-            MEM_R32(0x0030a040u), MEM_R32(0x0030a058u),
-            MEM_R32(0x0031a03cu), sr_last_alloc_addr);
+    if (sr_title_config_diagnostics_enabled()) {
+        fprintf(stderr,
+                "  re-snapshot: cur_uid=0x%x libc_main_id[0x0030a040]=0x%08x [0x0030a058]=0x%08x "
+                "frame_head[0x0031a03c]=0x%08x last_alloc=0x%08x\n",
+                sched_current_uid(),
+                MEM_R32(0x0030a040u), MEM_R32(0x0030a058u),
+                MEM_R32(0x0031a03cu), sr_last_alloc_addr);
+    }
     fprintf(stderr,
             "  regs uid=0x%x: pc=0x%08x sp=0x%08x gp=0x%08x k0=0x%08x k0+4=0x%08x k0+0x38c=0x%08x "
             "v0=0x%08x a0=0x%08x t0..t3=0x%08x/0x%08x/0x%08x/0x%08x s0..s3=0x%08x/0x%08x/0x%08x/0x%08x\n",
@@ -1505,9 +1509,12 @@ static uint32_t h_ExitGame(CpuState *s) {
          * window disappears. */
         fprintf(stderr, "  pc=0x%08x ra=0x%08x sp=0x%08x gp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x\n",
                 s->pc, s->r[31], s->r[29], s->r[28], s->r[2], s->r[4], s->r[5]);
-        fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x 0x310a034=0x%08x 0x002cf6b4=0x%08x\n",
-                s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0,
-                MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u));
+        fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
+                s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
+        if (sr_title_config_diagnostics_enabled()) {
+            fprintf(stderr, "  exit-context[0x310a034]=0x%08x [0x002cf6b4]=0x%08x\n",
+                    MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u));
+        }
         fflush(stderr);
         /* Give the host a chance to drain. Without this, stdio buffers get truncated by
          * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
@@ -1696,7 +1703,7 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
         /* Role-resolved rather than UID-literal (the historical literals drifted and
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
-        if (sched_current_is_worker()) {
+        if (sched_current_is_worker() && sr_title_config_diagnostics_enabled()) {
             fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, r26 (k0)=0x%x, k0+4=0x%x, MEM(0x002cf6b4)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
                     sched_current_uid(), s->r[16], s->r[26], s->r[26] ? MEM_R32(s->r[26] + 4) : 0, MEM_R32(0x002cf6b4u), s->r[31], s->r[29]);
             for (int i = 0; i < 20; i++) {
@@ -1704,7 +1711,7 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
             }
             fprintf(stderr, "\n");
         }
-        if (sched_current_is_launcher()) {
+        if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
             fprintf(stderr, "DEBUG: CpuSuspendIntr launcher=0x%x: r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x\n",
                     sched_current_uid(), s->r[16], s->r[17], s->r[26], s->r[31]);
         }
@@ -1726,7 +1733,7 @@ static uint32_t h_CpuResumeIntr(CpuState *s) {
             }
             fprintf(stderr, "\n");
         }
-        if (sched_current_is_launcher()) {
+        if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x, MEM(0x0030aa88)=0x%x\n",
                     sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31], MEM_R32(0x0030aa88u));
         }
@@ -5705,7 +5712,8 @@ static uint32_t h_IoRead(CpuState *s) {
      * buffer) arms tracking. We record path+dst for every subsequent Read so we can see
      * if engine_Shutdown pre-empted a missing-file IoOpen. SR_POSTUMD env-gates; default
      * off by default so normal runs don't get spammed. */
-    if (getenv("SR_POSTUMD") && sched_current_is_worker()) {
+    if (getenv("SR_POSTUMD") && sr_title_config_diagnostics_enabled() &&
+        sched_current_is_worker()) {
         if (dst == 0x0030b8d0u) {
             sr_postumd_advance(1);   /* arm */
             fprintf(stderr, "POSTUMD: armed at first umd.ufl Read fd=%u size=%u dst=0x%08x -> %u\n",
@@ -5728,7 +5736,8 @@ static uint32_t h_IoRead(CpuState *s) {
      * Pivot: Phase 2.A revealed this buffer is a CSV path-manifest, not a PRX. The
      * guest launcher walks it to validate inner-file boundaries against ISO UMD disc
      * queries. Sample rows here so we can match the tokenizer the engine uses. */
-    if (dst == 0x0030b8d0u && count == 411568u && getenv("SR_UMDDUMP")) {
+    if (sr_title_config_diagnostics_enabled() && dst == 0x0030b8d0u &&
+        count == 411568u && getenv("SR_UMDDUMP")) {
         static int dumped = 0;
         if (!dumped) {
             dumped = 1;
