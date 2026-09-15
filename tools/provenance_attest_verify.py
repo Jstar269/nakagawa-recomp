@@ -29,6 +29,8 @@ Trusted (never candidate-controlled):
 * the publication policy and previous public baseline, read from the trusted
   base commit or an externally bound snapshot rather than from the candidate's
   working tree;
+* when a candidate changes policy, an externally supplied blessed copy of the
+  candidate policy and a separately bound policy-delta authority;
 * the canonical generator imported from this trusted checkout.
 
 Untrusted (data only, never executed, never a trust anchor):
@@ -153,14 +155,16 @@ from pathlib import Path, PurePosixPath
 
 try:
     from .provenance_ledger import (
-        ALLOWED_CLASSES, _admission_requires_implementation, _class_for,
+        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
     from provenance_ledger import (
-        ALLOWED_CLASSES, _admission_requires_implementation, _class_for,
+        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from public_export import build_document as _build_export_document
@@ -719,6 +723,10 @@ def _load_policy_bytes(raw: bytes, workdir: Path, name: str, *, code: str):
     strict_json(raw, code=code, label=name)
     workdir.mkdir(parents=True, exist_ok=True)
     target = workdir / name
+    # The policy is public control data, not a credential. It is copied only
+    # into verifier scratch space so the trusted parser can consume exact
+    # bytes; it never enters a generated public control.
+    # codeql[py/clear-text-storage-sensitive-data]
     target.write_bytes(raw)
     try:
         return load_policy(target)
@@ -1216,6 +1224,8 @@ def verify_ephemeral(
     trusted_ledger: Path,
     trusted_baseline: Path,
     output_dir: Path,
+    trusted_candidate_policy: Path | None = None,
+    policy_delta_authority: Path | None = None,
     require_immutable_revisions: bool = False,
     authority_revision: str | None = None,
     require_exact_blob_approvals: bool = False,
@@ -1233,6 +1243,11 @@ def verify_ephemeral(
     # Named without "trusted": CodeQL's sensitive-data heuristic treats that word as a
     # secret, and this public ledger baseline flows into the generated output file.
     baseline_file = _external_input(trusted_baseline, repo=repo, label="trusted public baseline")
+    if (trusted_candidate_policy is None) != (policy_delta_authority is None):
+        raise VerifyError(
+            "POLICY_DELTA_ARGUMENT_REQUIRED",
+            "--trusted-candidate-policy and --policy-delta-authority must be supplied together",
+        )
     output_dir = output_dir.resolve()
     if _path_is_within(output_dir, repo):
         raise VerifyError(
@@ -1266,8 +1281,9 @@ def verify_ephemeral(
                 f"a blob approval for {approved_path} cites a record that does not exist",
             )
 
+    trusted_policy_raw = base_blobs.get(POLICY_PATH) or b""
     trusted_policy = _load_policy_bytes(
-        base_blobs.get(POLICY_PATH) or b"",
+        trusted_policy_raw,
         output_dir / "inputs",
         "trusted_policy.json",
         code="TRUSTED_POLICY_INVALID",
@@ -1281,6 +1297,55 @@ def verify_ephemeral(
         "candidate_policy.json",
         code="CANDIDATE_POLICY_INVALID",
     )
+    candidate_policy_matches_trusted = candidate_policy_raw == trusted_policy_raw
+    policy_delta: dict | None = None
+    if trusted_candidate_policy is not None:
+        blessed_policy_path = _external_input(
+            trusted_candidate_policy, repo=repo, label="trusted candidate policy",
+        )
+        blessed_policy_raw = blessed_policy_path.read_bytes()
+        if blessed_policy_raw == trusted_policy_raw:
+            raise VerifyError(
+                "POLICY_DELTA_EMPTY",
+                "blessed candidate policy equals the trusted base policy; omit policy-delta inputs when unchanged",
+            )
+        if candidate_policy_raw != blessed_policy_raw:
+            raise VerifyError(
+                "CANDIDATE_POLICY_MISMATCH",
+                "candidate publication policy does not match the externally blessed candidate policy",
+            )
+        candidate_policy = _load_policy_bytes(
+            blessed_policy_raw,
+            output_dir / "inputs",
+            "blessed_candidate_policy.json",
+            code="CANDIDATE_POLICY_INVALID",
+        )
+        baseline_document = strict_json(
+            trusted_policy_raw, code="TRUSTED_POLICY_INVALID", label="trusted policy",
+        )
+        candidate_document = strict_json(
+            blessed_policy_raw, code="CANDIDATE_POLICY_INVALID", label="blessed candidate policy",
+        )
+        try:
+            allowed_delta = _read_policy_delta_authority(
+                policy_delta_authority,
+                candidate_root=repo,
+                baseline_policy_bytes=trusted_policy_raw,
+                candidate_policy_bytes=blessed_policy_raw,
+            )
+        except RefreshError as error:
+            raise VerifyError(error.code, str(error)) from error
+        policy_delta = _classify_policy_delta(baseline_document, candidate_document)
+        if policy_delta != allowed_delta:
+            raise VerifyError(
+                "POLICY_DELTA_UNAUTHORIZED",
+                "policy delta differs from the independently approved delta; "
+                f"computed={policy_delta} allowed={allowed_delta}",
+            )
+        # The external policy is now the candidate policy for all subsequent
+        # generation and scope checks. The equality to candidate_policy_raw was
+        # checked above; this flag controls only the substitution finding.
+        candidate_policy_matches_trusted = True
     baseline_bytes = baseline_file.read_bytes()
     baseline, baseline_entries = _validate_public_baseline(
         baseline_bytes,
@@ -1314,7 +1379,7 @@ def verify_ephemeral(
         base_blobs=base_blobs,
         candidate_policy=candidate_policy,
         trusted_policy=trusted_policy,
-        candidate_policy_matches_trusted=(candidate_policy_raw == base_blobs.get(POLICY_PATH)),
+        candidate_policy_matches_trusted=candidate_policy_matches_trusted,
         trusted_scope=trusted_scope,
         protected=protected,
         baseline_entries=baseline_entries,
@@ -1353,6 +1418,10 @@ def verify_ephemeral(
         "trusted_ledger_sha256": hashlib.sha256(trusted_raw).hexdigest(),
         "trusted_baseline_sha256": hashlib.sha256(baseline_bytes).hexdigest(),
         "authority_revision": authority_revision,
+        "policy_delta": policy_delta,
+        "blessed_candidate_policy_sha256": (
+            hashlib.sha256(candidate_policy_raw).hexdigest() if policy_delta is not None else None
+        ),
         "trusted_record_count": len(record_ids),
         "public_path_count": len(protected),
         "generated_outputs": {
@@ -1919,6 +1988,20 @@ def main(argv: list[str] | None = None) -> int:
             "compatibility window this is an exact copy of the trusted base ledger"
         ),
     )
+    parser.add_argument(
+        "--trusted-candidate-policy", type=Path, default=None,
+        help=(
+            "ephemeral mode: external blessed candidate publication policy bytes; must be outside --repo "
+            "and supplied with --policy-delta-authority"
+        ),
+    )
+    parser.add_argument(
+        "--policy-delta-authority", type=Path, default=None,
+        help=(
+            "ephemeral mode: external authority binding the baseline/candidate policy digests and exact "
+            "allowed semantic delta; must be supplied with --trusted-candidate-policy"
+        ),
+    )
     parser.add_argument("--workdir", type=Path, default=None,
                         help="scratch directory for trusted inputs; must be outside --repo")
     parser.add_argument(
@@ -1945,6 +2028,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if not args.ephemeral and (
+            args.trusted_candidate_policy is not None or args.policy_delta_authority is not None
+        ):
+            raise VerifyError(
+                "POLICY_DELTA_ARGUMENT_REJECTED",
+                "--trusted-candidate-policy and --policy-delta-authority belong to --ephemeral mode only",
+            )
         if args.ephemeral:
             if args.trusted_baseline is None:
                 raise VerifyError("TRUSTED_BASELINE_REQUIRED", "--ephemeral requires --trusted-baseline")
@@ -1960,6 +2050,8 @@ def main(argv: list[str] | None = None) -> int:
                         trusted_ledger=args.trusted_ledger,
                         trusted_baseline=args.trusted_baseline,
                         output_dir=Path(temporary),
+                        trusted_candidate_policy=args.trusted_candidate_policy,
+                        policy_delta_authority=args.policy_delta_authority,
                         require_immutable_revisions=args.require_immutable_revisions,
                         authority_revision=args.authority_revision,
                         require_exact_blob_approvals=args.require_reviewed_blobs,
@@ -1976,6 +2068,8 @@ def main(argv: list[str] | None = None) -> int:
                 trusted_ledger=args.trusted_ledger,
                 trusted_baseline=args.trusted_baseline,
                 output_dir=output_dir,
+                trusted_candidate_policy=args.trusted_candidate_policy,
+                policy_delta_authority=args.policy_delta_authority,
                 require_immutable_revisions=args.require_immutable_revisions,
                 authority_revision=args.authority_revision,
                 require_exact_blob_approvals=args.require_reviewed_blobs,

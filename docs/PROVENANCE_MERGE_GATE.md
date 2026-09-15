@@ -84,7 +84,11 @@ it agree with every other artifact.
 `.github/workflows/provenance-attestation.yml`, the publication policy, and the
 previous public ledger — all taken from the base branch, not the pull request.
 The detailed implementation ledger, fetched at run time from the private
-authority repository into `$RUNNER_TEMP`, outside the workspace.
+authority repository into `$RUNNER_TEMP`, outside the workspace. When a
+candidate changes the publication policy, the workflow also fetches an
+independently blessed copy of the candidate policy and an exact policy-delta
+authority from that repository; both are keyed by the candidate policy's
+SHA-256 and are checked again by the verifier.
 
 **Untrusted.** Every blob in the candidate tree, without exception: its source,
 its policy, its ledger, its export, its workflows, and its own copy of the
@@ -332,6 +336,25 @@ operation:
 git show private/main:docs/provenance/IMPLEMENTATION_PROVENANCE.json > "$TRUSTED_DIR/ledger.json"
 python tools/provenance_attest_verify.py --repo . --candidate HEAD --base origin/main --trusted-ledger "$TRUSTED_DIR/ledger.json" --show-debt
 ```
+
+For a candidate whose policy bytes differ from the exact trusted base, the
+maintainer must additionally supply both external files:
+
+```bash
+python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha> \
+  --trusted-ledger "$TRUSTED_DIR/ledger.json" --ephemeral \
+  --trusted-baseline "$TRUSTED_DIR/public-provenance-baseline.json" \
+  --trusted-candidate-policy "$TRUSTED_DIR/candidate-policy.json" \
+  --policy-delta-authority "$TRUSTED_DIR/policy-delta-authority.json"
+```
+
+The blessed policy must byte-match the candidate. The authority binds both
+policy digests and the complete semantic delta; version 1 permits only exact
+include/exclude path-list changes and refuses rule changes. Unpaired inputs,
+candidate-controlled inputs, empty deltas, digest mismatches, and any computed
+delta other than the approved one fail closed. The workflow supplies these
+files only when the candidate policy digest differs from the base digest, so
+ordinary policy-stable pull requests use the original two-input route.
 
 Exit status: `0` pass, `1` fatal findings, `2` the verifier's own inputs are
 unusable. All three are fail-closed.
