@@ -1428,7 +1428,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "378e18154f92fe70b9872aeda311d3886dd343cadfb1c9eaca4a0a055cf01062"
+      "sha256": "2c63657118ffe975bb678ed96b7ffc91533a988795f3e077723bd69548d3c1e8"
     },
     {
       "path": "interface/.env.example",
@@ -3333,7 +3333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34301014bccd0e83f9dfffd5c10350a3089cc35f48ca2f7f77b937f2ece4672e"
+      "sha256": "b5894dcb7738c3fdf2443ae75fdb280c67985484896727eabcfd35b132df9b3e"
     },
     {
       "path": "pyproject.toml",
@@ -3354,7 +3354,7 @@
         "generator": "project-owned generator; recomputable from tracked public inputs",
         "source_family": "tracked public project inputs"
       },
-      "sha256": "adb94f9e6a6ef28d370f8602dc332ecf593907ac9cf5211c6ddcb17f7623028d"
+      "sha256": "7e7e84fff3f225f437d78dc33e9b635bfbf0a9692b8f2755816e249ff7041fe8"
     },
     {
       "path": "src/core/generated/nk_title_catalog.h",
@@ -3366,7 +3366,7 @@
         "generator": "project-owned generator; recomputable from tracked public inputs",
         "source_family": "tracked public project inputs"
       },
-      "sha256": "a20045b46b9d8e45177afd8f1cd50e489b1680b934bd5c737db666d283f2a514"
+      "sha256": "228a569b2bcd4aaccf4a691fd36867e641bde865ad3111567c7f527e5fd12655"
     },
     {
       "path": "src/core/nk_iso.c",
@@ -3402,7 +3402,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b6907cc5597e459fcf8f68b3ecd5d354cbc9491a68f512cc29b6543428961865"
+      "sha256": "70330716c89357c05097fb874c849134d80bf1f272d86df135f11e76fcbd6a5d"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3486,7 +3486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8fcf5af970b6107981a3eeabb9149467fe20a3c71c9cf0258577cfcce64c822"
+      "sha256": "499bb664745e508684fdb80d49bb4ba46b9aa87576d97d08fb97e06bd367c7bf"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -6188,7 +6188,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b3daed18d8dbb7de7237d313ddce35def95a3a114b5ff8bb2cc548be3fe6420"
+      "sha256": "e312b49f1bc4a4040349ae2ead4ba809aa2c35f56d3150afe12881dfecbb6abd"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
@@ -6200,7 +6200,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12875dea5953799e59b1550902608f5ff23d269d12b97a5e6558728aa8e12fcc"
+      "sha256": "641e2b07f0b94ac86d131d4086a51127164eed05c099a0c6f902f76c9ecbb586"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -8121,7 +8121,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "dfe3ab4c39fc701d02a34ee7f3c47b1c11ffc6b5bdea7522556eecc70d614ca1"
+      "sha256": "4228c2ec502212024b8b7de0578958a6e5e59f0adb62dd585d11d618ff368fe4"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -8637,7 +8637,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25a114a7cc40157121ee93f16de0f8f13d23915c15c3eeddfa4f33d86fb5d1bc"
+      "sha256": "8661cd45b5980063e51ebf88af2255427d46c224a853aa3515f0cde6c0da1c5c"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -8805,7 +8805,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dba47563bec4fe0c160d0a53c5376cf7a07fd842ddad123f91b0b0b96dc733aa"
+      "sha256": "7d414f17cd5784e1259918f4dd77eb802fa230e197a6bbac006bca9e77bafb73"
     },
     {
       "path": "tools/title_codegen_plan.py",

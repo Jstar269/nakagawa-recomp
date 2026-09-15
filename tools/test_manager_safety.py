@@ -174,6 +174,20 @@ class ManagerSafetyContractTests(unittest.TestCase):
         self.assertIn('Extracted asset tree was not found', self.manager)
         self.assertIn('=== NAKAGAWA RECOMP RUNTIME LAUNCH ===', self.manager)
 
+    def test_runtime_exports_the_selected_manifest_data_root(self) -> None:
+        # The native runtime rejects relative data roots. The manager must pass
+        # the selected manifest/legacy root as an absolute inherited variable,
+        # and must not retain a previous title's value when none is selected.
+        self.assertIn('$resolvedDataRoot = Resolve-Path -LiteralPath $effectiveDataRoot', self.manager)
+        self.assertIn('$env:SR_DATAROOT = $null', self.manager)
+        self.assertIn('$env:SR_DATAROOT = $resolvedDataRoot.Path', self.manager)
+
+    def test_hst_wrapper_only_declares_legacy_name_for_hst_manifest(self) -> None:
+        wrapper = (ROOT / 'hst_manager.ps1').read_text(encoding='utf-8-sig')
+        self.assertIn('$hstManifestSelected = $false', wrapper)
+        self.assertIn('$hstManifestSelected = $true', wrapper)
+        self.assertIn('if ($hstManifestSelected -and', wrapper)
+
     def test_generic_paths_make_no_layout_assumptions(self) -> None:
         # Issue #196 Phase 4: every place_game_here/ reference in the manager
         # must sit inside (or within a few lines of) an explicit retail/

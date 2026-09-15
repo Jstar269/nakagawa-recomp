@@ -134,17 +134,30 @@ foreach ($paramName in $PSBoundParameters.Keys) {
 # prefixes, so this declaration is what keeps the legacy default route building
 # the 'hst' target (Makefile's GAME_NAME=hst compatibility block) without any
 # title coupling in the generic manager.
+$HstManifest = Join-Path $RepoRoot "assets\titles\hst-ucus98701.json"
+$hstManifestSelected = $false
 if (-not $forwardArgs.ContainsKey('TitleManifest') -or -not $forwardArgs['TitleManifest']) {
-    $HstManifest = Join-Path $RepoRoot "assets\titles\hst-ucus98701.json"
     if (Test-Path -LiteralPath $HstManifest) {
         $forwardArgs['TitleManifest'] = "assets/titles/hst-ucus98701.json"
+        $hstManifestSelected = $true
+    }
+}
+
+# An explicitly selected HST manifest is also eligible for the legacy name;
+# an explicitly selected non-HST manifest must keep its own name or derivation.
+if (-not $hstManifestSelected -and $forwardArgs.ContainsKey('TitleManifest') -and $forwardArgs['TitleManifest']) {
+    try {
+        $requestedManifest = [IO.Path]::GetFullPath((Join-Path $RepoRoot ([string]$forwardArgs['TitleManifest'])))
+        $hstManifestSelected = $requestedManifest -ieq ([IO.Path]::GetFullPath($HstManifest))
+    } catch {
+        $hstManifestSelected = $false
     }
 }
 
 # Issue #196 Phase 4: declare the legacy build name explicitly. The generic
 # manager derives game_name only from -GameName, the manifest's own game_name
 # declaration, or the manifest id — it never mints "hst" from an id prefix.
-if (-not $forwardArgs.ContainsKey('GameName') -or -not $forwardArgs['GameName']) {
+if ($hstManifestSelected -and (-not $forwardArgs.ContainsKey('GameName') -or -not $forwardArgs['GameName'])) {
     $forwardArgs['GameName'] = "hst"
 }
 

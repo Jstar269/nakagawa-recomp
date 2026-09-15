@@ -48,6 +48,7 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 /* Bounded storage for in-memory registered overlays */
 typedef struct {
     char id[65];
+    char game_name[65];
     char display_name[129];
     NkTitleKind kind;
     char primary_disc_id[17];
@@ -712,6 +713,29 @@ static bool is_valid_identifier(const char *s) {
     return true;
 }
 
+/* Keep the native fallback identical to the generic manager's documented
+ * derivation. Explicit manifest game_name values are copied by the caller;
+ * this helper only handles older manifests that rely on the version suffix
+ * convention. */
+static void derive_game_name(const char *id, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!id || !*id) return;
+
+    snprintf(out, out_size, "%s", id);
+    size_t len = strlen(out);
+    size_t suffix_start = len;
+    while (suffix_start > 0) {
+        char c = out[suffix_start - 1];
+        if (c < '0' || c > '9') break;
+        suffix_start--;
+    }
+    if (suffix_start < len && suffix_start >= 2 &&
+        out[suffix_start - 2] == '-' && out[suffix_start - 1] == 'v') {
+        out[suffix_start - 2] = '\0';
+    }
+}
+
 static bool is_valid_disc_id(const char *s) {
     if (!s || strlen(s) != 9) return false;
     for (int i = 0; i < 4; i++) {
@@ -759,6 +783,11 @@ static bool is_valid_portable_path(const char *s) {
     size_t len = strlen(s);
     if (len > 240) return false;
     if (s[0] == '/' || s[0] == '\\' || strchr(s, '\\') != NULL || strchr(s, ':') != NULL) return false;
+    /* strtok() treats repeated and trailing separators as delimiters rather
+       than empty path components. Reject them before tokenization so the
+       native parser agrees with the schema parser and never normalizes an
+       ambiguous path into a different path. */
+    if (s[len - 1] == '/' || strstr(s, "//") != NULL) return false;
 
     char temp[256];
     snprintf(temp, sizeof(temp), "%s", s);
@@ -1531,6 +1560,11 @@ bool nk_title_manifest_parse_buffer(
     memset(&temp, 0, sizeof(temp));
 
     snprintf(temp.id, sizeof(temp.id), "%s", id_node->u.str_val);
+    if (gn_node) {
+        snprintf(temp.game_name, sizeof(temp.game_name), "%s", gn_node->u.str_val);
+    } else {
+        derive_game_name(temp.id, temp.game_name, sizeof(temp.game_name));
+    }
     snprintf(temp.display_name, sizeof(temp.display_name), "%s", dn_node->u.str_val);
     temp.kind = kind;
 
@@ -1586,6 +1620,7 @@ bool nk_title_manifest_parse_buffer(
     }
 
     temp.entry.id = temp.id;
+    temp.entry.game_name = temp.game_name;
     temp.entry.display_name = temp.display_name;
     temp.entry.kind = temp.kind;
     temp.entry.primary_disc_id = temp.primary_disc_id[0] ? temp.primary_disc_id : NULL;
@@ -1754,6 +1789,7 @@ bool nk_title_manifest_parse_buffer(
     /* Re-anchor self pointers for the chosen slot */
     OverlayStorageSlot *dest = &s_overlay_slots[target_slot];
     dest->entry.id = dest->id;
+    dest->entry.game_name = dest->game_name;
     dest->entry.display_name = dest->display_name;
     dest->entry.kind = dest->kind;
     dest->entry.primary_disc_id = dest->primary_disc_id[0] ? dest->primary_disc_id : NULL;

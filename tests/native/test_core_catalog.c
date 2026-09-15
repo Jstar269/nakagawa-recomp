@@ -25,6 +25,7 @@ int main(void) {
     for (int i = 0; i < nk_title_catalog_count; i++) {
         const NkTitleEntry *e = &nk_title_catalog_entries[i];
         assert(e->id != NULL && e->id[0] != '\0');
+        assert(e->game_name != NULL && e->game_name[0] != '\0');
         assert(e->display_name != NULL && e->display_name[0] != '\0');
         assert(e->primary_disc_id != NULL && e->primary_disc_id[0] != '\0');
         /* Every disc id resolves, and resolves to THIS entry. Two entries sharing
@@ -56,6 +57,7 @@ int main(void) {
     assert(t_disp != NULL);
     assert(strcmp(t_disp->id, "display-smoke-v1") == 0);
     assert(t_disp->kind == NK_TITLE_KIND_SYNTHETIC);
+    assert(strcmp(t_disp->game_name, "display-smoke") == 0);
     assert(t_disp->executable_base == 0x08810000u);
     assert(t_disp->executable_entry == 0x08810000u);
 

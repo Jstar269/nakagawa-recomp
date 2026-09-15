@@ -1143,22 +1143,27 @@ try {
             return
         }
 
+        $effectiveDataRoot = $null
+        if ($script:TitleDataRoot) {
+            $effectiveDataRoot = $script:TitleDataRoot
+        } elseif ($script:IsRetail -and $script:LegacyInputLayout) {
+            $effectiveDataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
+        }
+        $resolvedDataRoot = $null
+        if ($effectiveDataRoot) {
+            $resolvedDataRoot = Resolve-Path -LiteralPath $effectiveDataRoot -ErrorAction SilentlyContinue
+        }
+
         if ($script:IsRetail) {
             if (-not $GameIsoPath -or -not (Test-Path -LiteralPath $GameIsoPath)) {
                 Write-Host "[!] Cannot run game: no disc image found (declare filesystem.disc_image in the title manifest, or provide game.iso)." -ForegroundColor Red
                 return
             }
-            $effectiveDataRoot = $null
-            if ($script:TitleDataRoot) {
-                $effectiveDataRoot = $script:TitleDataRoot
-            } elseif ($script:LegacyInputLayout) {
-                $effectiveDataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
-            }
             if (-not $effectiveDataRoot) {
                 Write-Host "[!] Cannot run game: the title manifest does not declare filesystem.data_root and no legacy layout is present." -ForegroundColor Red
                 return
             }
-            if (-not (Test-Path -LiteralPath $effectiveDataRoot -PathType Container)) {
+            if (-not $resolvedDataRoot -or -not (Test-Path -LiteralPath $resolvedDataRoot.Path -PathType Container)) {
                 Write-Host "[!] Cannot run game: Extracted asset tree was not found at $effectiveDataRoot." -ForegroundColor Red
                 return
             }
@@ -1170,6 +1175,13 @@ try {
         Remove-Item "$LogDir/stdout_run.log", "$LogDir/stderr_run.log" -ErrorAction SilentlyContinue
 
         if ($GameIsoPath) { $env:PSP_ISO = $GameIsoPath }
+        # The runtime requires an absolute data root. Clear an inherited value
+        # first so a title without a usable declaration cannot accidentally
+        # launch against a previous title's tree.
+        $env:SR_DATAROOT = $null
+        if ($resolvedDataRoot) {
+            $env:SR_DATAROOT = $resolvedDataRoot.Path
+        }
         $env:PSP_VFPU_TABLES = "assets/vfpu"
 
         $env:SR_QUIET = $null

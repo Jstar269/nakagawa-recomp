@@ -26,6 +26,7 @@ typedef struct {
 
 typedef struct {
     const char *id;                     /* e.g. "synthetic-allegrex-v1" */
+    const char *game_name;              /* portable build/launch name */
     const char *display_name;
     NkTitleKind kind;
     const char *primary_disc_id;

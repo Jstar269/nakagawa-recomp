@@ -18,6 +18,7 @@
 
 #include "nk_launch.h"
 #include "nk_platform.h"
+#include "nk_title_manifest.h"
 #include "nk_types.h"
 
 #include <assert.h>
@@ -236,11 +237,70 @@ int main(void) {
     /* The addresses must come from the catalog, not from a constant. */
     assert(session.base_address == 0x08810000u);
     assert(session.entry_point == 0x08810000u);
+    assert(strcmp(nk_title_catalog_find_by_id("display-smoke-v1")->game_name,
+                  "display-smoke") == 0);
 
-    /* 6. A promoted staging root is the source-side launch contract: the
+    /* 6. A manifest may choose a build name that is different from its
+     * versioned title id. The parser must retain it and launch discovery must
+     * probe the manager's build/<game_name>/<game_name> layout. */
+    printf("[LAUNCH_TEST] Subtest 6: manifest-selected game name\n");
+    fflush(stdout);
+    char custom_manifest[900];
+    char custom_build_dir[900];
+    char custom_exe[1000];
+    char custom_img[1100];
+    char custom_data[1000];
+    char custom_ms[1000];
+    snprintf(custom_manifest, sizeof(custom_manifest), "%s%claunch-name-test.json", base, sep);
+    snprintf(custom_build_dir, sizeof(custom_build_dir), "%s%cbuild%ccustom-launch", base, sep, sep);
+    snprintf(custom_exe, sizeof(custom_exe), "%s%ccustom-launch", custom_build_dir, sep);
+    snprintf(custom_img, sizeof(custom_img), "%s%ccustom-launch_image.bin", custom_build_dir, sep);
+    snprintf(custom_data, sizeof(custom_data), "%s%ccustom-data", base, sep);
+    snprintf(custom_ms, sizeof(custom_ms), "%s%ccustom-ms", base, sep);
+    const char *custom_manifest_json =
+        "{\"schema_version\":1,\"id\":\"launch-name-test-v1\","
+        "\"game_name\":\"custom-launch\",\"display_name\":\"Launch Name Test\","
+        "\"kind\":\"synthetic\","
+        "\"executable\":{\"base\":\"0x08820000\",\"entry\":\"0x08820000\","
+        "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
+        "\"modules\":[],\"filesystem\":{\"data_root\":\"custom-data\","
+        "\"memory_stick_root\":\"custom-ms\",\"device_prefixes\":[\"host0:\"]},"
+        "\"hle_profile\":\"standard\",\"feature_requirements\":[\"allegrex\"],"
+        "\"verification_profile\":\"smoke\"}";
+    write_file(custom_manifest, custom_manifest_json);
+    assert(nk_platform_mkdir_p(custom_build_dir));
+    assert(nk_platform_mkdir_p(custom_data));
+    assert(nk_platform_mkdir_p(custom_ms));
+    write_file(custom_exe, "binary");
+    write_file(custom_img, "image");
+
+    char custom_error[512];
+    assert(nk_title_manifest_load_overlay_ext(custom_manifest, false,
+                                              custom_error, sizeof(custom_error)));
+    const NkTitleEntry *custom_entry = nk_title_catalog_find_by_id("launch-name-test-v1");
+    assert(custom_entry != NULL);
+    assert(strcmp(custom_entry->game_name, "custom-launch") == 0);
+    make_game(&game, iso_path);
+    game.disc_id[0] = '\0';
+    snprintf(game.title_id, sizeof(game.title_id), "launch-name-test-v1");
+    assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(nk_launch_runtime_available(base, "launch-name-test-v1"));
+    assert(ends_with(session.executable_path, "custom-launch"));
+    assert(ends_with(session.image_path, "custom-launch_image.bin"));
+    assert(strstr(session.dataroot_path, "custom-data") != NULL);
+    assert(strstr(session.memstick_root, "custom-ms") != NULL);
+    nk_title_catalog_clear_overlay();
+    remove(custom_exe);
+    remove(custom_img);
+    remove(custom_manifest);
+    test_rmdir(custom_build_dir);
+    test_rmdir(custom_data);
+    test_rmdir(custom_ms);
+
+    /* 7. A promoted staging root is the source-side launch contract: the
      * staged EBOOT is checked, decoded XB data is preferred over the catalog's
      * repository-relative data root, and saves are scoped below the game. */
-    printf("[LAUNCH_TEST] Subtest 6: staged EBOOT and VFS roots\n");
+    printf("[LAUNCH_TEST] Subtest 7: staged EBOOT and VFS roots\n");
     fflush(stdout);
     char staged_root[800];
     char staged_eboot[900];
@@ -308,9 +368,9 @@ int main(void) {
     }
     test_rmdir(staged_root);
 
-    /* 7. A title the catalog does not describe is refused, not launched at a
+    /* 8. A title the catalog does not describe is refused, not launched at a
      * guessed address. */
-    printf("[LAUNCH_TEST] Subtest 7: unknown title fails closed\n");
+    printf("[LAUNCH_TEST] Subtest 8: unknown title fails closed\n");
     fflush(stdout);
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "ZZZZ99999");
