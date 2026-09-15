@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { CircleDot, CircleHelp, Volleyball, Sun, Moon, Hammer, Loader2 } from "lucide-react";
 import { useStudio } from "./studio-context";

@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useEffect, useState, useMemo } from "react";
 import { BarChart3, TrendingUp, TrendingDown, Clock, Target, RefreshCcw, Loader2 } from "lucide-react";

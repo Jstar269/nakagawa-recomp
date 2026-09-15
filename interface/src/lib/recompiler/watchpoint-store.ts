@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-store.ts — canonical persistence + derived-file publication for
 // watchpoints and debug profiles (issue #188).
 //

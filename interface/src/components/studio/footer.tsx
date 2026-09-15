@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { AlertCircle, CircleCheck, Disc3, Hammer, Loader2, TriangleAlert } from "lucide-react";
 import { useStudio } from "./studio-context";

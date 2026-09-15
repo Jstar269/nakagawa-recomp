@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Core configuration types for the Hot Shots Tennis: Get a Grip recompiler.
 
 export type ResolutionPreset =

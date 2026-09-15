@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useRef, useState } from "react";
 import { Layers, ChevronDown, Check, Plus, Trash2, Pencil, Copy, Star, Download, Upload } from "lucide-react";

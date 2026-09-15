@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { db } from "@/lib/db";
 import { findRepoRoot, findLatestRunLog, readLogTailContent } from "./runner";
 import { existsSync, readFileSync, statSync } from "node:fs";

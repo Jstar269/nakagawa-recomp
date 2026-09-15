@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Real runner layer for the repository's native scripts and generated output.
  *
  * Design: this module assumes it is being executed on the same machine as the

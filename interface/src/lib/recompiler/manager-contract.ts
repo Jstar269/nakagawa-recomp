@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export const DASHBOARD_MANAGER_ACTIONS = ["BuildFull", "BuildFast", "Run", "Test"] as const;
 export const RUN_PROFILES = ["Standard", "Performance", "Benchmark", "Diagnostics", "Software"] as const;
 

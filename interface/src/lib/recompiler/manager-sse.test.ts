@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // manager-sse.test.ts — regression coverage for the manager SSE route's
 // lifecycle behavior (issue O-08): idle streams stay open and emit a status
 // event instead of closing, so dashboard panels can refresh on real state

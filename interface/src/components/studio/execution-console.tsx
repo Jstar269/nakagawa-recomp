@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal, Send, Play, Pause, RefreshCw } from "lucide-react";

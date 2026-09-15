@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const PARAMETER_NAME = /^[A-Za-z][A-Za-z0-9]*$/;
 
 /**

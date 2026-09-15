@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Minimal pure-Node ZIP writer (STORE / no compression).
 // Refactored to operate directly on Uint8Array buffers without intermediate number[] byte arrays.
 

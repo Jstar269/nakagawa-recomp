@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { AnimatePresence, motion } from "framer-motion";
 import { StudioProvider, useStudio } from "@/components/studio/studio-context";

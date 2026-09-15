@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { Gamepad2, Sliders, ArrowLeftRight, Crosshair } from "lucide-react";
 import { useStudio } from "./studio-context";

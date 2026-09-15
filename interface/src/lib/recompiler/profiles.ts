@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import type { ControllerBinding, IsoMeta, PatchId, PspLimit } from "./types";
 
 // Hot Shots Tennis: Get a Grip (Everybody's Tennis / Minna no Tennis)

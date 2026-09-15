@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // loopback-bind.test.mjs — regression coverage for the dashboard's loopback
 // bind policy (S-21). Two layers must hold:
 //

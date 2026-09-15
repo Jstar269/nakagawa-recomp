@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import path from "node:path";

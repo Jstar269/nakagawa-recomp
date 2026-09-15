@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createWriteStream, type WriteStream } from "node:fs";
 import path from "node:path";

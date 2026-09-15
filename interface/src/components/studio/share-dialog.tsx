@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useState } from "react";
 import { Share2, Copy, Check, Link2 } from "lucide-react";

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // profile-store.ts — transactional persistence for recompiler profiles.
 //
 // Issue #188: activating/deactivating profiles previously ran as multiple

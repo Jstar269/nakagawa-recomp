@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, FileText, RefreshCw, Search, ShieldCheck } from "lucide-react";

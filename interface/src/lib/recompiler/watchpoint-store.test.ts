@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-store.test.ts — DB-backed integration tests for the watchpoint /
 // debug-profile store (issue #188 PR-b). Run with `npm run test:db`.
 

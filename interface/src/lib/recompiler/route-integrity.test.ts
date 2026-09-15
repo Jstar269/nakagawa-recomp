@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // route-integrity.test.ts — DB-backed tests that exercise the real API route
 // handlers (config / profiles / profiles/[id] / profiles/[id]/export) against
 // a throwaway SQLite database. Run with `npm run test:db`.

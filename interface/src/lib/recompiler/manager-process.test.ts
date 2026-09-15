@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // manager-process.test.ts — deterministic lifecycle tests for the
 // generation-bound manager process registry (issue #186).  No real process is
 // spawned: spawn/terminate/repo-root primitives are injected as fakes.  Run

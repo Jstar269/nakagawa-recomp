@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);

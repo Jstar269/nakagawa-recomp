@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // loopback-guard.test.ts — regression coverage for the request-side half of
 // the dashboard's loopback policy (S-21): the control-route guard must accept
 // every loopback authority form and reject anything that could be reached

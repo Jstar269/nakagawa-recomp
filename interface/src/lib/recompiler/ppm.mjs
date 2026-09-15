@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ppm.mjs — shared bounded P6 PPM loader for the visual-regression surface
 // (issue #174).
 //

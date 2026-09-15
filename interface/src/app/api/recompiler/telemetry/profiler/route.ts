@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextResponse } from "next/server";
 import { findRepoRoot, routeError } from "@/lib/recompiler/runner";
 import { parsePerfProfiler } from "@/lib/recompiler/telemetry";
