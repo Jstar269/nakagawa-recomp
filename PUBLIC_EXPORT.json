@@ -71,7 +71,7 @@
     "font/*.pgf"
   ],
   "excluded_present_paths": [],
-  "provenance_ledger_sha256": "086ebb55f6a3587077eb5ae1d769d7c7d274397f8552f4f62879d1752e59ffa4",
+  "provenance_ledger_sha256": "827ab4b8d0a8feedcb9d6d544ab09769e32c152c2d35c12aa8a1149ede740a91",
   "manifest_sha256": "fb2075c8134325b883145e9dad90240a6d8885e16911bb8734c2afc07608ecfc",
-  "candidate_tree": "83a3b1409703d62487abd574b026b5726cd4521c"
+  "candidate_tree": "ebafede187203c1839b36e4adb94b821f8e2aa38"
 }

@@ -5551,9 +5551,21 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-core",
         "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "ppsspp",
+        "upstream_paths": [
+          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
+          "Core/HLE/sceCtrl.cpp (sample ring)",
+          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
+          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
+          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
+          "Core/HLE/sceMpeg.cpp (delay constants)",
+          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
+          "GPU/GPU.h (GE_STATUS layout)",
+          "Core/HW/Display.cpp (hCountPerVblank)"
+        ],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "16869ba6e538631b28cbbbf42acd36387200eb5ad69f0c09e720741f9f6622a1"
     },
@@ -5787,9 +5799,16 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "ppsspp",
+        "upstream_paths": [
+          "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
+          "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
+          "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
+          "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
+        ],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "74e6a0badab771f9f8606f7cb556c1b7951dbf0b06545ed7b2e3148c0a0bb5c3"
     },
@@ -5818,9 +5837,11 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "scheduler",
         "evidence_tier": "H",
-        "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
-        "modification_status": "modified_or_translated; see trusted record"
+        "upstream": "sal063",
+        "upstream_paths": [],
+        "upstream_revision": null,
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see record"
       },
       "sha256": "d212062c52cea3bf5c0041f009034607a79ba790f560d669bb1b7db0dda0176e"
     },
@@ -9000,34 +9021,5 @@
       },
       "sha256": "5ebecfddd9ec6401d53ddabee4fa5954b3596e577bdce7f390372fbaa12a6acf"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "70de3a51a16c15cb4441a194c7bb39d8015cad72",
-    "candidate_tree": "83a3b1409703d62487abd574b026b5726cd4521c",
-    "refreshed_paths": [
-      "assets/title_manifest.schema.json",
-      "assets/titles/README.md",
-      "docs/PSP_INTR_WAITS_MATRIX.md",
-      "fixtures/psp_oracle/Makefile",
-      "fixtures/psp_oracle/README.md",
-      "fixtures/psp_oracle/probe.c",
-      "src/rt/asset_index.h",
-      "src/rt/asset_index_selftest.c",
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/recomp.h",
-      "src/rt/sched.c",
-      "src/rt/sched_selftest.c",
-      "tools/gate_stub.c",
-      "tools/import_audit_baseline.json",
-      "tools/psp_oracle/manifest.json",
-      "tools/test_psp_oracle.py",
-      "tools/test_sched_invariants.py",
-      "tools/test_title_manifest.py",
-      "tools/test_title_runtime_config.py",
-      "tools/title_manifest.py",
-      "tools/title_runtime_config.py"
-    ]
-  }
+  ]
 }
