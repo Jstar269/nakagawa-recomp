@@ -5926,6 +5926,19 @@ static uint32_t h_IoClose(CpuState *s) {
     return 0;
 }
 
+/* Classify the initial FindFirstFileW result for an existing, contained host
+ * directory.  An empty directory reports ERROR_FILE_NOT_FOUND for the `*`
+ * pattern and is still an existing directory; every other initial failure is
+ * an incomplete listing and must stay fail-closed. */
+static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) {
+    if (found) *found = 0;
+    if (error == ERROR_FILE_NOT_FOUND) {
+        if (found) *found = 1;
+        return 0;
+    }
+    return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+}
+
 /* Merge the writable host overlay's children for `guest_path` into `list`.
  *
  * `*found` reports whether the overlay actually has this directory; the return
@@ -6011,6 +6024,15 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
                                 "refusing a short listing\n", guest_path, last_err);
                         rc = 0x80010005u;
                     }
+                } else {
+                    DWORD first_error = GetLastError();
+                    rc = vfs_overlay_initial_find_error(first_error, found);
+                    if (rc != 0) {
+                        fprintf(stderr,
+                                "sceIoDopen: initial host enumeration of '%s' failed "
+                                "(error=%lu); refusing a short listing\n",
+                                guest_path, (unsigned long)first_error);
+                    }
                 }
             }
         }
@@ -6034,11 +6056,25 @@ static uint32_t h_IoDopen(CpuState *s) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            if (_strnicmp(path, "disc0:", 6) == 0 || _strnicmp(path, "umd:", 4) == 0) {
+            int device_path = _strnicmp(path, "disc0:", 6) == 0 ||
+                               _strnicmp(path, "umd:", 4) == 0;
+            int use_iso = 0;
+            if (device_path) {
                 IsoDirEntry probe;
-                if (iso_list(path, 0, &probe) < 0) {
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
+                int iso_result = iso_list(path, 0, &probe);
+                if (iso_result >= 0) {
+                    use_iso = 1;
+                } else {
+                    uint32_t iso_lba = 0, iso_size = 0;
+                    /* A file on the ISO must not be shadowed by the extracted
+                     * directory index merely because its directory probe failed. */
+                    if (iso_lookup(path, &iso_lba, &iso_size) == 0) {
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+                    }
                 }
+            }
+            if (use_iso) {
                 d->backend = 0;
             } else {
                 /* One guest namespace, two host sources, merged in sceIoOpen's
@@ -6196,6 +6232,9 @@ uint32_t sr_hle_test_io_lseek32(CpuState *s) { return h_IoLseek32(s); }
 uint32_t sr_hle_test_io_dopen(CpuState *s) { return h_IoDopen(s); }
 uint32_t sr_hle_test_io_dread(CpuState *s) { return h_IoDread(s); }
 uint32_t sr_hle_test_io_dclose(CpuState *s) { return h_IoDclose(s); }
+uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
+    return vfs_overlay_initial_find_error(error, found);
+}
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }

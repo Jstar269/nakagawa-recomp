@@ -218,9 +218,8 @@ static int vfs_dir_tests(void) {
     sr_vfs_dirlist_destroy(&list);
 
     /* Overlay precedence: the first source to contribute a name owns its
-     * spelling and metadata, and a later directory sighting only promotes
-     * is_dir.  Guest-visible casing therefore does not depend on which
-     * sources happen to be present alongside it. */
+     * spelling and complete metadata.  A later source cannot turn an overlay
+     * file into a directory that sceIoOpen would not resolve. */
     sr_vfs_dirlist_init(&list);
     if (!sr_vfs_dirlist_merge(&list, "Body.gim", 0, 999u) ||
         sr_asset_index_list_dir(&ix, "data/chara/model", -1, &list) != 1 ||
@@ -234,9 +233,10 @@ static int vfs_dir_tests(void) {
     sr_vfs_dirlist_init(&list);
     if (!sr_vfs_dirlist_merge(&list, "Model", 0, 7u) ||
         sr_asset_index_list_dir(&ix, "data/chara", -1, &list) != 1 ||
-        list.count != 2u || !list.entries[dir_index_of(&list, "Model")].is_dir) {
+        list.count != 2u || list.entries[dir_index_of(&list, "Model")].is_dir ||
+        list.entries[dir_index_of(&list, "Model")].size != 7u) {
         sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
-        return fail("VFS directory promotion across sources wrong");
+        return fail("VFS first-source type and size were not preserved");
     }
     sr_vfs_dirlist_destroy(&list);
 

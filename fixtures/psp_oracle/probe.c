@@ -1870,31 +1870,51 @@ static void dwp_run(int emulated, int with_low, uint32_t period_ns) {
     g_dwp_stop = 0;
 
     SceUID low = -1;
+    int low_started = 0;
     if (with_low) {
         low = sceKernelCreateThread("dwp_low", dwp_low_thread, DWP_LOW_PRIO,
                                     0x1000, THREAD_ATTR_USER, NULL);
-        if (low >= 0) sceKernelStartThread(low, 0, NULL);
+        if (low >= 0) {
+            const int low_start = sceKernelStartThread(low, 0, NULL);
+            if (low_start >= 0) low_started = 1;
+        }
     }
 
-    SceUID high = sceKernelCreateThread("dwp_high", dwp_high_thread, DWP_HIGH_PRIO,
-                                        0x2000, THREAD_ATTR_USER, NULL);
     uint32_t setup_ok = 0;
-    if (high >= 0) {
-        setup_ok = 1u;
-        sceKernelStartThread(high, 0, NULL);
-        sceKernelWaitThreadEnd(high, NULL);
-        sceKernelDeleteThread(high);
+    int high_started = 0;
+    SceUID high = -1;
+    /* The experiment is meaningful only with its always-runnable peer.  Do not
+     * silently turn a failed peer setup into the high-only control case. */
+    if (!with_low || low_started) {
+        high = sceKernelCreateThread("dwp_high", dwp_high_thread, DWP_HIGH_PRIO,
+                                     0x2000, THREAD_ATTR_USER, NULL);
+        if (high >= 0) {
+            const int high_start = sceKernelStartThread(high, 0, NULL);
+            if (high_start >= 0) {
+                high_started = 1;
+                setup_ok = 1u;
+                sceKernelWaitThreadEnd(high, NULL);
+                sceKernelDeleteThread(high);
+            } else {
+                sceKernelDeleteThread(high);
+                high = -1;
+            }
+        }
     }
 
     g_dwp_stop = 1;
     if (low >= 0) {
-        /* The low thread exits on the flag; the join is bounded by a terminate
-         * fallback so a probe can never be left with a spinning thread. */
-        SceUInt join_us = 2000000u;
-        if (sceKernelWaitThreadEnd(low, &join_us) < 0) {
-            sceKernelTerminateDeleteThread(low);
-        } else {
+        if (!low_started) {
             sceKernelDeleteThread(low);
+        } else {
+            /* The low thread exits on the flag; the join is bounded by a terminate
+             * fallback so a probe can never be left with a spinning thread. */
+            SceUInt join_us = 2000000u;
+            if (sceKernelWaitThreadEnd(low, &join_us) < 0) {
+                sceKernelTerminateDeleteThread(low);
+            } else {
+                sceKernelDeleteThread(low);
+            }
         }
     }
 
@@ -1910,7 +1930,7 @@ static void dwp_run(int emulated, int with_low, uint32_t period_ns) {
     };
     emit_record_extended(emulated, "PSP-DISPLAY-003",
                          with_low ? "priority-experiment" : "priority-control",
-                         setup_ok && g_dwp.iters == DWP_ITERS ? "PASS" : "FAIL",
+                         setup_ok && high_started && g_dwp.iters == DWP_ITERS ? "PASS" : "FAIL",
                          setup_ok, out, sizeof(out) / sizeof(out[0]));
 }
 

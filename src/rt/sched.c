@@ -3236,7 +3236,11 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * waiters, so a run of iterations that delivers none and readies
              * nobody means the source stopped for a reason not enumerated
              * above. Report it with the same dump rather than looping forever. */
-            if (s_vbl_count == idle_vbl_mark) {
+            /* A finite deadline is its own progress source.  It may be longer than
+             * the VBLANK watchdog window when the display source is masked or
+             * saturated, but the scheduler must still advance to and honor it. */
+            if (soonest == SCHED_WAIT_FOREVER &&
+                s_vbl_count == idle_vbl_mark) {
                 if (++idle_no_progress >= SCHED_IDLE_NO_PROGRESS_LIMIT) {
                     fprintf(stderr, "SCHED: %d idle iterations delivered no VBLANK and readied "
                                     "no thread. Dumping thread states:\n",

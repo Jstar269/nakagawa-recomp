@@ -144,6 +144,19 @@ class DisplayWaitIsReadinessIndependentTests(unittest.TestCase):
         )
 
 
+class IdleProgressGuardTests(unittest.TestCase):
+    """A finite timer is progress even when the display source is not."""
+
+    def test_vblank_watchdog_does_not_abort_finite_waits(self):
+        body = strip_comments(function_body(SCHED, "sched_run"))
+        self.assertRegex(
+            body,
+            r"if\s*\(\s*soonest\s*==\s*SCHED_WAIT_FOREVER\s*&&\s*"
+            r"s_vbl_count\s*==\s*idle_vbl_mark",
+            "the VBLANK watchdog must be scoped to all-infinite waits",
+        )
+
+
 class ThreadLifecycleTests(unittest.TestCase):
     def test_entry_return_routes_through_full_exit(self):
         body = strip_comments(function_body(SCHED, "coro_body"))

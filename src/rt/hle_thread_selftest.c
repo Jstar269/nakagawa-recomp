@@ -108,6 +108,7 @@ extern uint32_t sr_hle_test_io_lseek32(CpuState *s);
 extern uint32_t sr_hle_test_io_dopen(CpuState *s);
 extern uint32_t sr_hle_test_io_dread(CpuState *s);
 extern uint32_t sr_hle_test_io_dclose(CpuState *s);
+extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
@@ -377,8 +378,10 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     return -1;
 }
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
-    (void)guest_path; (void)index; (void)out;
-    return 0;
+    (void)index; (void)out;
+    /* Keep one known ISO directory for the descriptor baseline.  Other paths
+     * model an ISO miss so the extracted-data VFS fallback is exercised. */
+    return guest_path && strcmp(guest_path, "disc0:/") == 0 ? 0 : -1;
 }
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
@@ -797,6 +800,16 @@ static void test_fd_namespace(void) {
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
+    int initial_find_found = 0;
+    expect(sr_hle_test_vfs_initial_find_error(ERROR_FILE_NOT_FOUND,
+                                               &initial_find_found) == 0u &&
+               initial_find_found,
+           "an empty contained overlay directory remains an existing directory");
+    initial_find_found = 0;
+    expect(sr_hle_test_vfs_initial_find_error(ERROR_ACCESS_DENIED,
+                                               &initial_find_found) == 0x80010005u &&
+               !initial_find_found,
+           "an initial overlay enumeration failure stays a loud I/O error");
     expect(sr_hle_test_fd_kind(0) == FD_KIND_STD &&
            sr_hle_test_fd_kind(1) == FD_KIND_STD &&
            sr_hle_test_fd_kind(2) == FD_KIND_STD,
@@ -977,6 +990,27 @@ static void test_fd_namespace(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u, "dclose on valid dir fd succeeds");
+
+    /* An actual empty overlay directory is successful and immediately at end
+     * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
+     * directory. */
+    CreateDirectoryA("build/hle_fd_namespace_fs/empty", NULL);
+    memset(&cpu, 0, sizeof cpu);
+    fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
+    cpu.r[4] = path_addr;
+    uint32_t empty_dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(empty_dir_fd == 0x100u,
+           "dopen on an empty overlay directory succeeds");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = empty_dir_fd;
+    cpu.r[5] = payload_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 0u,
+           "dread on an empty overlay directory reaches end-of-directory");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = empty_dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u,
+           "the empty overlay directory descriptor closes cleanly");
+    RemoveDirectoryA("build/hle_fd_namespace_fs/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -2639,6 +2673,39 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = fd;
     expect(sr_hle_test_io_close(&cpu) == 0u, "the served descriptor closes cleanly");
+
+    /* A full device-qualified path whose ISO lookup misses must still reach the
+     * prepared extracted-data index.  The ISO stub retains only disc0:/ as an
+     * actual directory, so this enters the production VFS fallback. */
+    const char *old_fs_value = getenv("SR_FSDIR");
+    char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
+    if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
+    SetEnvironmentVariableA("SR_FSDIR", "build/hle_dopen_vfs_fs");
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA("build/hle_dopen_vfs_fs", NULL);
+    static const uint32_t dir_path_addr = 0x09101000u;
+    static const uint32_t dirent_addr = 0x09102000u;
+    static const char dir_path[] = "disc0:/data/menu/text";
+    memset(&cpu, 0, sizeof cpu);
+    fd_guest_copy(dir_path_addr, dir_path, sizeof dir_path);
+    cpu.r[4] = dir_path_addr;
+    uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(dir_fd == 0x100u,
+           "an indexed directory remains discoverable through a full disc0 path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 1u &&
+               MEM_R32(dirent_addr + 8u) == 6u &&
+               MEM_R8(dirent_addr + 0x58u) == 'c',
+           "full disc0 directory enumeration returns the indexed child");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u,
+           "the full disc0 indexed directory descriptor closes cleanly");
+    SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
+    RemoveDirectoryA("build/hle_dopen_vfs_fs");
+    free(old_fs);
 
     prewarm_env_restore();
     sr_hle_test_data_reset(0);

@@ -399,11 +399,11 @@ static inline int sr_vfs_dirlist_reserve(SrVfsDirList *list, size_t wanted) {
  *
  *   - the FIRST source to contribute a name owns that name's spelling and its
  *     metadata, because that is the source an open of that name resolves to;
- *   - a later source observing the same name as a DIRECTORY promotes is_dir,
- *     since a directory node is real wherever it appears;
- *   - a later source never overwrites a spelling.  Guest-visible casing is
- *     therefore a function of the sources present, never of the order two
- *     equal-precedence sources happened to be walked in.
+ *   - a later source observing the same name is ignored completely.  It cannot
+ *     change the first source's type, size, or spelling: the overlay-first open
+ *     result and the directory entry must describe the same object;
+ *   - guest-visible casing is therefore a function of the first source that
+ *     contributed the name, never of a later source's walk order.
  *
  * Returns 1 when the child was merged, 0 on allocation failure.  A name that
  * does not fit the namespace is counted in `skipped` and reported as merged,
@@ -420,12 +420,10 @@ static inline int sr_vfs_dirlist_merge(SrVfsDirList *list, const char *name,
      * just merged is the common case and is answered without a scan. */
     if (list->count > 0u &&
         sr_vfs_strcasecmp(list->entries[list->count - 1u].name, name) == 0) {
-        if (is_dir) list->entries[list->count - 1u].is_dir = 1;
         return 1;
     }
     for (size_t i = 0; i < list->count; i++) {
         if (sr_vfs_strcasecmp(list->entries[i].name, name) != 0) continue;
-        if (is_dir) list->entries[i].is_dir = 1;
         return 1;
     }
     if (!sr_vfs_dirlist_reserve(list, list->count + 1u)) return 0;
