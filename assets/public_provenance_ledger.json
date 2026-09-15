@@ -3729,7 +3729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fb5e748c3d277ccfa90986c14bb7c3ce0702bc2e9ea06b591f39985ea80d58aa"
+      "sha256": "742a4c8d85e4dcedafdc8153cccf417ba6c600838d4a083b41e955ad79198c2a"
     },
     {
       "path": "src/rt/asset_index_selftest.c",
@@ -5555,7 +5555,7 @@
         "license": "see NOTICE.md",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ba0dd633697db183ae195090727e7ad7474eab9a27d3a5734c1e06cf490c3557"
+      "sha256": "16869ba6e538631b28cbbbf42acd36387200eb5ad69f0c09e720741f9f6622a1"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -5567,7 +5567,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "60e63320e74a6064e722622144ea78ea51ba4f36e023c63864a59d682447a7e4"
+      "sha256": "4b53a7157cbf2db6305ae467391e8872660c6d098fa6d8f69ae889fed8d4eab7"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9004,7 +9004,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "70de3a51a16c15cb4441a194c7bb39d8015cad72",
-    "candidate_tree": "ae274e60a037aadd723a132f0641c5cc09f12227",
+    "candidate_tree": "83a3b1409703d62487abd574b026b5726cd4521c",
     "refreshed_paths": [
       "assets/title_manifest.schema.json",
       "assets/titles/README.md",
