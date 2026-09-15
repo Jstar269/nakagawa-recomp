@@ -92,7 +92,9 @@ static void write_valid_elf(const char *path, uint32_t base, uint32_t entry) {
 static void write_psp_container(const char *path) {
     uint8_t image[0x150] = { 0 };
     memcpy(image, "~PSP", 4);
-    write_le32(image + 4, 0x150);
+    image[0x27] = 1;                 /* one PT_LOAD segment */
+    write_le32(image + 0x38, 0);     /* no BSS */
+    write_le32(image + 0x54, 0x1000); /* segment file size */
     write_bytes(path, image, sizeof(image));
 }
 

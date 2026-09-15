@@ -417,13 +417,15 @@ static FILE *stage_fopen(const char *path, const char *mode) {
 #endif
 }
 
-static bool make_prx_source_path(const char *root, const char *file_name,
-                                 bool include_prx_directory,
-                                 char *out_path, size_t out_size) {
-    if (!root || !root[0] || !file_name || !file_name[0] || !out_path || out_size == 0) return false;
-    const char *suffix = include_prx_directory ? "PPSSPP/PSP/SYSTEM/DUMP/PRX/%s"
-                                               : "PPSSPP/PSP/SYSTEM/DUMP/%s";
-    int written = snprintf(out_path, out_size, "%s%c%s", root,
+static bool make_prx_tree_path(const char *root, const char *layout,
+                               const char *file_name, bool include_prx_directory,
+                               char *out_path, size_t out_size) {
+    if (!root || !root[0] || !layout || !layout[0] || !file_name || !file_name[0] ||
+        !out_path || out_size == 0) return false;
+    const char *suffix = include_prx_directory
+        ? "PSP/SYSTEM/DUMP/PRX/%s" : "PSP/SYSTEM/DUMP/%s";
+    int written = snprintf(out_path, out_size, "%s%c%s%c%s", root,
+                           nk_platform_path_separator(), layout,
                            nk_platform_path_separator(), "");
     if (written < 0 || (size_t)written >= out_size) return false;
     int remaining = (int)(out_size - (size_t)written);
@@ -432,20 +434,55 @@ static bool make_prx_source_path(const char *root, const char *file_name,
     return suffix_written >= 0 && (size_t)suffix_written < (size_t)remaining;
 }
 
-static bool make_userprofile_prx_path(const char *root, const char *file_name,
-                                      bool include_prx_directory,
-                                      char *out_path, size_t out_size) {
-    if (!root || !root[0] || !file_name || !file_name[0] || !out_path || out_size == 0) return false;
-    const char *suffix = include_prx_directory
-        ? "Documents/PPSSPP/PSP/SYSTEM/DUMP/PRX/%s"
-        : "Documents/PPSSPP/PSP/SYSTEM/DUMP/%s";
-    int written = snprintf(out_path, out_size, "%s%c%s", root,
-                           nk_platform_path_separator(), "");
-    if (written < 0 || (size_t)written >= out_size) return false;
-    int remaining = (int)(out_size - (size_t)written);
-    int suffix_written = snprintf(out_path + written, (size_t)remaining,
-                                  suffix, file_name);
-    return suffix_written >= 0 && (size_t)suffix_written < (size_t)remaining;
+static bool try_prx_tree(const char *root, const char *layout,
+                         const char *file_name, char *out_path,
+                         size_t out_size) {
+    if (!make_prx_tree_path(root, layout, file_name, false,
+                            out_path, out_size)) return false;
+    if (nk_platform_file_exists(out_path)) return true;
+    if (!make_prx_tree_path(root, layout, file_name, true,
+                            out_path, out_size)) return false;
+    return nk_platform_file_exists(out_path);
+}
+
+static bool find_prx_source(const char *file_name, char *out_path,
+                            size_t out_size) {
+    if (!file_name || !file_name[0] || !out_path || out_size == 0) return false;
+#if defined(_WIN32) || defined(_WIN64)
+    const char *appdata = getenv("APPDATA");
+    const char *userprofile = getenv("USERPROFILE");
+    if (appdata && try_prx_tree(appdata, "PPSSPP", file_name, out_path, out_size)) return true;
+    if (userprofile && try_prx_tree(userprofile, "Documents/PPSSPP", file_name,
+                                    out_path, out_size)) return true;
+#else
+    const char *home = getenv("HOME");
+    const char *xdg_data = getenv("XDG_DATA_HOME");
+    const char *xdg_config = getenv("XDG_CONFIG_HOME");
+    if (xdg_data && try_prx_tree(xdg_data, "PPSSPP", file_name, out_path, out_size)) return true;
+    if (xdg_data && try_prx_tree(xdg_data, "ppsspp", file_name, out_path, out_size)) return true;
+    if (xdg_config && try_prx_tree(xdg_config, "PPSSPP", file_name, out_path, out_size)) return true;
+    if (xdg_config && try_prx_tree(xdg_config, "ppsspp", file_name, out_path, out_size)) return true;
+    if (home) {
+        static const char *const layouts[] = {
+            ".local/share/PPSSPP", ".local/share/ppsspp",
+            ".config/PPSSPP", ".config/ppsspp",
+            "Library/Application Support/PPSSPP", "Documents/PPSSPP",
+            "PPSSPP"
+        };
+        for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++) {
+            if (try_prx_tree(home, layouts[i], file_name, out_path, out_size)) return true;
+        }
+    }
+    /* Keep the legacy variables as a compatibility fallback for test fixtures
+     * and existing portable installs; POSIX discovery above is the normal path. */
+    const char *appdata = getenv("APPDATA");
+    const char *userprofile = getenv("USERPROFILE");
+    if (appdata && try_prx_tree(appdata, "PPSSPP", file_name, out_path, out_size)) return true;
+    if (userprofile && try_prx_tree(userprofile, "Documents/PPSSPP", file_name,
+                                    out_path, out_size)) return true;
+#endif
+    out_path[0] = '\0';
+    return false;
 }
 
 static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
@@ -465,13 +502,13 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     if (backslash && (!slash || backslash > slash)) slash = backslash;
     if (!slash) return false;
     *slash = '\0';
-    if (!nk_platform_mkdir_p(parent)) {
+    if (!nk_platform_mkdir_p_private(parent)) {
         stage_error(context, NK_ERROR_IO, "cannot create decrypted PRX staging directory");
         return false;
     }
 
     FILE *source = stage_fopen(source_path, "rb");
-    FILE *destination = stage_fopen(destination_path, "wb");
+    FILE *destination = nk_platform_fopen_private(destination_path, "wb");
     if (!source || !destination) {
         if (source) fclose(source);
         if (destination) fclose(destination);
@@ -513,31 +550,11 @@ static bool discover_prx_for_stage(PlayerStageContext *context) {
         "scePsmf_library.prx",
         "scePsmfP_library.prx"
     };
-    const char *appdata = getenv("APPDATA");
-    const char *userprofile = getenv("USERPROFILE");
     size_t discovered = 0;
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (stage_cancelled(context)) return false;
         char source_path[4096];
-        source_path[0] = '\0';
-        if (appdata && appdata[0]) {
-            if (make_prx_source_path(appdata, names[i], false,
-                                     source_path, sizeof(source_path)) &&
-                !nk_platform_file_exists(source_path)) {
-                make_prx_source_path(appdata, names[i], true,
-                                     source_path, sizeof(source_path));
-            }
-        }
-        if ((!source_path[0] || !nk_platform_file_exists(source_path)) &&
-            userprofile && userprofile[0]) {
-            if (!make_userprofile_prx_path(userprofile, names[i], false,
-                                           source_path, sizeof(source_path)) ||
-                !nk_platform_file_exists(source_path)) {
-                make_userprofile_prx_path(userprofile, names[i], true,
-                                         source_path, sizeof(source_path));
-            }
-        }
-        if (!source_path[0] || !nk_platform_file_exists(source_path)) continue;
+        if (!find_prx_source(names[i], source_path, sizeof(source_path))) continue;
 
         char relative_destination[256];
         int relative_written = snprintf(relative_destination,
@@ -655,7 +672,7 @@ NkResult player_stage_game_with_summary(const char *iso_path,
         }
         return NK_ERROR_ALREADY_EXISTS;
     }
-    if (!nk_platform_mkdir_p(staging_root)) {
+    if (!nk_platform_mkdir_p_private(staging_root)) {
         if (error_message && error_message_size > 0) {
             snprintf(error_message, error_message_size, "cannot create staging directory");
         }

@@ -378,6 +378,32 @@ static void test_corrupt_huffman_prefix(void) {
     printf("[XB_TEST] Corrupt Huffman prefix rejected: %s\n", error);
 }
 
+static void test_truncated_huffman_body(void) {
+    static const uint8_t data[] = "huffman";
+    const FixtureEntry entry = { "data/truncated.bin", data, sizeof(data) - 1,
+                                 NK_XB_COMPRESSION_HUFFMAN };
+    ByteBuffer bytes = make_archive(&entry, 1, false);
+    uint32_t packed = read_le32_test(bytes.data + 12);
+    size_t payload_offset = (size_t)(packed & 0x0fffffffu) * 4u;
+    assert(payload_offset < bytes.size);
+    /* Keep the structural header and table, but remove the final encoded word.
+     * The decoder must reject the missing word instead of fabricating zeros. */
+    assert(bytes.size >= payload_offset + 2 + 2);
+    bytes.size -= 2;
+
+    NkXbArchive archive;
+    char error[256];
+    assert(open_archive(&bytes, &archive, error, sizeof(error)) == NK_OK);
+    uint8_t output[32];
+    size_t output_size = 0;
+    assert(nk_xb_read_entry(&archive, 0, output, sizeof(output), &output_size,
+                            error, sizeof(error)) != NK_OK);
+    assert(strstr(error, "truncated Huffman bitstream") != NULL);
+    nk_xb_close(&archive);
+    free(bytes.data);
+    printf("[XB_TEST] Truncated Huffman bitstream rejected: %s\n", error);
+}
+
 static void test_lzs_lookback_floor(void) {
     static const uint8_t data[] = "bad";
     const FixtureEntry entry = { "data/bad-lzs.bin", data, sizeof(data) - 1,
@@ -758,15 +784,37 @@ static void test_iso_to_native_staging_pipeline(void) {
     iso_directory(image + 22 * 2048, 22, 20, xb_children, 1);
     memcpy(image + 21 * 2048, "BOOT", 4);
     memcpy(image + 23 * 2048, xb.data, xb.size);
-    write_file_bytes(iso_path, image, image_size);
-    free(image);
-    free(xb.data);
 
     PlayerStageCallbacks callbacks = { NULL, staging_progress, NULL };
     PlayerStageSummary summary;
     char error[256];
-    assert(player_stage_game_with_summary(iso_path, stage_root, &callbacks,
-                                          &summary, error, sizeof(error)) == NK_OK);
+
+    /* ISO directory identifiers carry an explicit byte length. A raw NUL in
+     * that span must not be accepted and then truncated into a colliding C
+     * string by the staging walker. The first root child starts after the two
+     * 34-byte structural records. */
+    uint8_t *root_child = image + 17 * 2048 + 68;
+    assert(root_child[0] == 42 && root_child[32] == 8);
+    root_child[32] = 9; /* PSP_GAME plus the following raw NUL byte */
+    const char *nul_stage_root = "build/.staging_xb_nul_identifier";
+    (void)player_stage_discard(nul_stage_root);
+    write_file_bytes(iso_path, image, image_size);
+    assert(player_stage_game_with_summary(iso_path, nul_stage_root, &callbacks,
+                                          &summary, error, sizeof(error)) == NK_ERROR_INVALID_ISO);
+    assert(player_stage_discard(nul_stage_root));
+    remove(iso_path);
+    root_child[32] = 8;
+    write_file_bytes(iso_path, image, image_size);
+    free(image);
+    free(xb.data);
+
+    NkResult stage_result = player_stage_game_with_summary(
+        iso_path, stage_root, &callbacks, &summary, error, sizeof(error));
+    if (stage_result != NK_OK) {
+        fprintf(stderr, "[XB_TEST] valid staging unexpectedly failed (%d): %s\n",
+                (int)stage_result, error);
+    }
+    assert(stage_result == NK_OK);
     assert(summary.extracted_asset_count == 4);
     assert(summary.extracted_audio_count == 1);
     assert(summary.extracted_visual_count == 1);
@@ -849,6 +897,7 @@ int main(void) {
     test_truncated_header();
     test_path_traversal();
     test_corrupt_huffman_prefix();
+    test_truncated_huffman_body();
     test_lzs_lookback_floor();
     test_expansion_limit();
     test_compressed_header_expansion_limit();

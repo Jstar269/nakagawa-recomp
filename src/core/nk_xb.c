@@ -394,9 +394,11 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
     while (produced < expanded_size) {
         if (bit_count < NK_XB_HUFFMAN_LOOKAHEAD_BITS) {
             uint16_t word = 0;
-            if (reader_u16(&reader, &word)) {
-                bit_buffer |= (uint64_t)word << bit_count;
+            if (!reader_u16(&reader, &word)) {
+                return xb_fail(error_message, error_message_size,
+                               "truncated Huffman bitstream");
             }
+            bit_buffer |= (uint64_t)word << bit_count;
             bit_count += 16;
         }
 
@@ -414,9 +416,11 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
             bit_count -= NK_XB_HUFFMAN_LOOKAHEAD_BITS;
             if (bit_count < 16) {
                 uint16_t word = 0;
-                if (reader_u16(&reader, &word)) {
-                    bit_buffer |= (uint64_t)word << bit_count;
+                if (!reader_u16(&reader, &word)) {
+                    return xb_fail(error_message, error_message_size,
+                                   "truncated Huffman bitstream");
                 }
+                bit_buffer |= (uint64_t)word << bit_count;
                 bit_count += 16;
             }
             output[produced++] = (uint8_t)(bit_buffer & 0xffu);
@@ -920,6 +924,42 @@ static FILE *xb_fopen(const char *path, const char *mode) {
 #endif
 }
 
+/* Archive member identifiers are stored as Shift-JIS bytes. On POSIX those
+ * bytes remain the filesystem name, matching the format-native VFS view. The
+ * Win32 path backend is UTF-8, so transcode the validated identifier before
+ * passing it to the wide-character writer. */
+static bool xb_member_path_to_host_utf8(const char *member,
+                                        char *out_path, size_t out_size) {
+    if (!member || !out_path || out_size == 0) return false;
+#if defined(_WIN32) || defined(_WIN64)
+    int wide_count = MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, member, -1,
+                                         NULL, 0);
+    if (wide_count <= 0) return false;
+    WCHAR *wide = (WCHAR *)malloc((size_t)wide_count * sizeof(*wide));
+    if (!wide) return false;
+    bool okay = MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, member, -1,
+                                    wide, wide_count) == wide_count;
+    if (okay) {
+        int utf8_count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                             wide, -1, NULL, 0, NULL, NULL);
+        if (utf8_count <= 0 || (size_t)utf8_count > out_size) {
+            okay = false;
+        } else {
+            okay = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                       wide, -1, out_path, utf8_count,
+                                       NULL, NULL) == utf8_count;
+        }
+    }
+    free(wide);
+    return okay;
+#else
+    size_t length = strlen(member);
+    if (length >= out_size) return false;
+    memcpy(out_path, member, length + 1);
+    return true;
+#endif
+}
+
 NkResult nk_xb_open_file(const char *path, bool big_endian,
                          const NkXbLimits *limits, NkXbArchive *out_archive,
                          char *error_message, size_t error_message_size) {
@@ -1031,7 +1071,7 @@ static bool make_parent_directory(const char *path) {
     if (backslash && (!slash || backslash > slash)) slash = backslash;
     if (!slash) return false;
     *slash = '\0';
-    return nk_platform_mkdir_p(parent);
+    return nk_platform_mkdir_p_private(parent);
 }
 
 NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
@@ -1042,7 +1082,7 @@ NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
         return xb_fail(error_message, error_message_size,
                        "invalid XB unpack destination");
     }
-    if (!nk_platform_mkdir_p(destination_root)) {
+    if (!nk_platform_mkdir_p_private(destination_root)) {
         return xb_fail(error_message, error_message_size,
                        "cannot create XB unpack destination");
     }
@@ -1069,14 +1109,17 @@ NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
                                   (size_t)entry->expanded_size, &decoded_size,
                                   error_message, error_message_size);
         if (result == NK_OK) {
+            char host_member[4096];
             char output_path[4096];
-            if (!make_member_path(destination_root, entry->path,
+            if (!xb_member_path_to_host_utf8(entry->path, host_member,
+                                             sizeof(host_member)) ||
+                !make_member_path(destination_root, host_member,
                                   output_path, sizeof(output_path)) ||
                 !make_parent_directory(output_path)) {
                 result = xb_fail(error_message, error_message_size,
                                  "XB member path is too long or cannot be contained");
             } else {
-                FILE *file = xb_fopen(output_path, "wb");
+                FILE *file = nk_platform_fopen_private(output_path, "wb");
                 if (!file) {
                     result = NK_ERROR_IO;
                 } else {

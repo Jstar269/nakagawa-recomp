@@ -126,7 +126,7 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                if (game && (game->is_prepared || game->assets_staged || app->is_game_running)) count++;
+                if (game && (game->is_prepared || app->is_game_running)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;

@@ -1197,11 +1197,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (game->assets_staged) {
-        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                "LAUNCH PREPARED", true, in, primary_focused)) {
-            player_app_launch_game(app, app->selected_game_index);
-        }
-        focus++;
+        /* Disc extraction is useful progress, but it is not a runnable
+         * recompiled title. Keep this state visible without exposing a
+         * launch action until the runtime probe succeeds. */
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, "RUNTIME REQUIRED");
     } else {
         /* There is no preparation backend in this build. Draw a non-interactive
          * status control so the card does not imply that one is connected. */

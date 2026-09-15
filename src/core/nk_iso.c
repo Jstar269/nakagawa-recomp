@@ -722,6 +722,7 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
 #define NK_ISO_STAGE_MAX_VISITED_DIRS 1024u
 #define NK_ISO_STAGE_MAX_PATH 4096u
 #define NK_ISO_STAGE_MAX_FILES 100000u
+#define NK_ISO_STAGE_MAX_BYTES (1ull * 1024ull * 1024ull * 1024ull)
 
 typedef struct {
     uint32_t lba;
@@ -760,12 +761,16 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
     return offset <= file_size && (uint64_t)size <= file_size - offset;
 }
 
-static bool nk_iso_stage_component_valid(const char *name) {
-    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return false;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-        if (*p < 0x20u || *p == 0x7fu || *p == '/' || *p == '\\' ||
-            *p == '<' || *p == '>' || *p == ':' || *p == '"' ||
-            *p == '|' || *p == '?' || *p == '*') return false;
+static bool nk_iso_stage_component_valid(const uint8_t *name, size_t name_size) {
+    if (!name || name_size == 0) return false;
+    if ((name_size == 1 && name[0] == '.') ||
+        (name_size == 2 && name[0] == '.' && name[1] == '.')) return false;
+    for (size_t i = 0; i < name_size; i++) {
+        uint8_t value = name[i];
+        if (value == 0 || value < 0x20u || value == 0x7fu ||
+            value == '/' || value == '\\' || value == '<' || value == '>' ||
+            value == ':' || value == '"' || value == '|' || value == '?' ||
+            value == '*') return false;
     }
     return true;
 }
@@ -817,6 +822,13 @@ static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
          * records. They are structural links, never payload components. */
         const uint8_t *name_bytes = &buffer[pos + 33];
         if (name_length != 1 || (name_bytes[0] != 0 && name_bytes[0] != 1)) {
+            for (size_t i = 0; i < name_length; i++) {
+                if (name_bytes[i] == 0) {
+                    okay = false;
+                    break;
+                }
+            }
+            if (!okay) break;
             size_t component_length = name_length;
             for (size_t i = 0; i < component_length; i++) {
                 if (name_bytes[i] == ';') {
@@ -824,7 +836,8 @@ static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
                     break;
                 }
             }
-            if (component_length == 0 || component_length >= 256) {
+            if (component_length == 0 || component_length >= 256 ||
+                !nk_iso_stage_component_valid(name_bytes, component_length)) {
                 okay = false;
                 break;
             }
@@ -832,10 +845,6 @@ static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
             memset(&entry, 0, sizeof(entry));
             memcpy(entry.name, name_bytes, component_length);
             entry.name[component_length] = '\0';
-            if (!nk_iso_stage_component_valid(entry.name)) {
-                okay = false;
-                break;
-            }
             entry.lba = extent_lba_le;
             entry.size = extent_size_le;
             entry.is_directory = (buffer[pos + 25] & 0x02u) != 0;
@@ -917,7 +926,8 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     if (walk->count_only) {
         if (stage->total_files >= NK_ISO_STAGE_MAX_FILES ||
             stage->total_files == SIZE_MAX ||
-            UINT64_MAX - stage->bytes_total < entry->size) return false;
+            stage->bytes_total > NK_ISO_STAGE_MAX_BYTES ||
+            entry->size > NK_ISO_STAGE_MAX_BYTES - stage->bytes_total) return false;
         stage->total_files++;
         stage->bytes_total += entry->size;
         return true;
@@ -935,9 +945,9 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     if (last_backslash && (!last_slash || last_backslash > last_slash)) last_slash = last_backslash;
     if (!last_slash) return false;
     *last_slash = '\0';
-    if (!nk_platform_mkdir_p(parent)) return false;
+    if (!nk_platform_mkdir_p_private(parent)) return false;
 
-    FILE *out = nk_iso_fopen(host_path, "wb");
+    FILE *out = nk_platform_fopen_private(host_path, "wb");
     if (!out) return false;
     uint64_t source_offset = (uint64_t)entry->lba * SECTOR_SIZE;
     if (nk_fseek64(stage->iso, (int64_t)source_offset, SEEK_SET) != 0) {
@@ -1062,6 +1072,11 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         return result;
     }
 
+    if (eboot.size > NK_ISO_STAGE_MAX_BYTES) {
+        fclose(iso);
+        return NK_ERROR_INVALID_ISO;
+    }
+
     NkIsoStageContext stage;
     memset(&stage, 0, sizeof(stage));
     stage.iso = iso;
@@ -1084,7 +1099,7 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         return result == NK_OK ? NK_ERROR_FILE_NOT_FOUND : result;
     }
 
-    if (!nk_platform_mkdir_p(host_root)) {
+    if (!nk_platform_mkdir_p_private(host_root)) {
         fclose(iso);
         return NK_ERROR_IO;
     }
@@ -1095,7 +1110,7 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         fclose(iso);
         return NK_ERROR_IO;
     }
-    FILE *eboot_out = nk_iso_fopen(eboot_path, "wb");
+    FILE *eboot_out = nk_platform_fopen_private(eboot_path, "wb");
     if (!eboot_out || nk_fseek64(iso, (int64_t)eboot.lba * SECTOR_SIZE, SEEK_SET) != 0) {
         if (eboot_out) fclose(eboot_out);
         fclose(iso);

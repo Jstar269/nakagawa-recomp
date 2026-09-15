@@ -100,6 +100,50 @@ bool nk_platform_mkdir_p(const char *dir_path) {
     return nk_platform_dir_exists(dir_path);
 }
 
+bool nk_platform_mkdir_p_private(const char *dir_path) {
+    if (!dir_path || !*dir_path) return false;
+    char tmp[1024];
+    size_t len = strlen(dir_path);
+    if (len >= sizeof(tmp)) return false;
+    memcpy(tmp, dir_path, len + 1);
+
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        if (tmp[0] != '\0' && mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+            *p = '/';
+            return false;
+        }
+        if (tmp[0] != '\0') {
+            struct stat st;
+            if (stat(tmp, &st) != 0 || !S_ISDIR(st.st_mode) || chmod(tmp, 0700) != 0) {
+                *p = '/';
+                return false;
+            }
+        }
+        *p = '/';
+    }
+    if (mkdir(tmp, 0700) != 0 && errno != EEXIST) return false;
+    struct stat st;
+    return stat(tmp, &st) == 0 && S_ISDIR(st.st_mode) && chmod(tmp, 0700) == 0;
+}
+
+FILE *nk_platform_fopen_private(const char *path, const char *mode) {
+    if (!path || !mode || mode[0] != 'w' || strchr(mode, '+') != NULL) return NULL;
+    int flags = O_WRONLY | O_CREAT | O_TRUNC;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = open(path, flags, 0600);
+    if (fd < 0) return NULL;
+    FILE *file = fdopen(fd, mode);
+    if (!file) close(fd);
+    return file;
+}
+
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
     if (!out_path || max_len == 0) return false;
 

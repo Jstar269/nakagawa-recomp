@@ -32,6 +32,11 @@ bool nk_platform_file_exists(const char *path);
 bool nk_platform_dir_exists(const char *path);
 int64_t nk_platform_get_file_size(const char *path);
 bool nk_platform_mkdir_p(const char *dir_path);
+/* Create a directory tree and private files for user-owned source material.
+ * POSIX uses owner-only permissions and refuses a final symlink; Win32 uses
+ * the user's application-data ACLs through the wide-character backend. */
+bool nk_platform_mkdir_p_private(const char *dir_path);
+FILE *nk_platform_fopen_private(const char *path, const char *mode);
 
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);

@@ -241,9 +241,10 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
         return NK_ERROR_IO;
     }
 
-    uint8_t header[52];
-    if (raw_size < (int64_t)sizeof(header) ||
-        fread(header, 1, sizeof(header), file) != sizeof(header)) {
+    uint8_t header[0x80] = { 0 };
+    size_t header_bytes = (uint64_t)raw_size < sizeof(header)
+        ? (size_t)raw_size : sizeof(header);
+    if (header_bytes < 52 || fread(header, 1, header_bytes, file) != header_bytes) {
         fclose(file);
         launch_error(error_message, error_message_size,
                      "staged EBOOT.BIN has a truncated executable header");
@@ -255,12 +256,34 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
      * native launcher records the container boundary without pretending it
      * validated inner program headers. */
     if (memcmp(header, "~PSP", 4) == 0) {
-        uint32_t container_header_size = launch_read_u32(header + 4);
-        if (raw_size < 0x150 || container_header_size < 0x150 ||
-            (uint64_t)container_header_size > (uint64_t)raw_size) {
+        /* Offset 4 is the module attribute/version word, not a header length.
+         * Validate the PSP fields that describe the in-memory module instead:
+         * the segment count lives at 0x27, the aggregate BSS size at 0x38,
+         * and the four segment memory sizes begin at 0x54. */
+        if (header_bytes < 0x64 || header[0x27] == 0 || header[0x27] > 4) {
             fclose(file);
             launch_error(error_message, error_message_size,
-                         "staged PSP executable container has invalid header bounds");
+                         "staged PSP executable container has an invalid segment table");
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+        uint64_t segment_memory = 0;
+        for (unsigned i = 0; i < header[0x27]; i++) {
+            uint32_t segment_size = launch_read_u32(header + 0x54 + i * 4u);
+            if (segment_size == 0 || segment_size > NK_LAUNCH_MAX_ELF_BYTES ||
+                segment_memory > NK_LAUNCH_MAX_ELF_BYTES - segment_size) {
+                fclose(file);
+                launch_error(error_message, error_message_size,
+                             "staged PSP executable container has an invalid segment size");
+                return NK_ERROR_INVALID_EXECUTABLE;
+            }
+            segment_memory += segment_size;
+        }
+        uint32_t bss_size = launch_read_u32(header + 0x38);
+        if ((uint64_t)bss_size > segment_memory ||
+            bss_size > NK_LAUNCH_MAX_ELF_BYTES) {
+            fclose(file);
+            launch_error(error_message, error_message_size,
+                         "staged PSP executable container has invalid BSS metadata");
             return NK_ERROR_INVALID_EXECUTABLE;
         }
         out_info->is_psp_container = true;
@@ -791,6 +814,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_font[NK_MAX_PATH + 16];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
+    char env_modules[NK_MAX_PATH * 2 + 32];
     char env_tables[64];
     char env_boot_event[NK_MAX_PATH + 32];
     char sep = nk_platform_path_separator();
@@ -829,6 +853,22 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     if (session->font_dir[0]) {
         snprintf(env_font, sizeof(env_font), "SR_FONTDIR=%s", session->font_dir);
         envp[env_count++] = env_font;
+    }
+
+    /* A setup transaction promotes already-decrypted support modules below
+     * the selected game's private root. Tell the runtime's late-import loader
+     * where that exact tree lives; otherwise it falls back to the repository
+     * development path and silently ignores the modules just staged. */
+    if (session->prepared_root[0]) {
+        char module_dir[NK_MAX_PATH * 2];
+        if (launch_join_path(session->prepared_root, "EXTRACTED/decrypted",
+                             module_dir, sizeof(module_dir))) {
+            int module_written = snprintf(env_modules, sizeof(env_modules),
+                                          "SR_MODULE_DIR=%s", module_dir);
+            if (module_written > 0 && (size_t)module_written < sizeof(env_modules)) {
+                envp[env_count++] = env_modules;
+            }
+        }
     }
 
     if (session->config.benchmark_mode) {

@@ -234,6 +234,40 @@ static bool promote_staging_root(const char *staging_root, const char *final_roo
 #endif
 }
 
+static bool staged_payload_is_complete(const char *root) {
+    if (!root || !root[0]) return false;
+    char eboot_path[4096];
+    char xbdata_path[4096];
+    int eboot_written = snprintf(eboot_path, sizeof(eboot_path), "%s%cEBOOT.BIN",
+                                 root, nk_platform_path_separator());
+    int xbdata_written = snprintf(xbdata_path, sizeof(xbdata_path), "%s%cxbdata",
+                                  root, nk_platform_path_separator());
+    return eboot_written > 0 && xbdata_written > 0 &&
+           (size_t)eboot_written < sizeof(eboot_path) &&
+           (size_t)xbdata_written < sizeof(xbdata_path) &&
+           nk_platform_file_exists(eboot_path) && nk_platform_dir_exists(xbdata_path);
+}
+
+/* A completed promotion can outlive the library write if the user-data
+ * filesystem is full or temporarily unavailable. Reuse only the exact root
+ * derived from the inspected disc ID and only when the transaction's two
+ * required payload roots are present; never replace it with a fresh tree. */
+static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
+    if (!app || !final_root || !staged_payload_is_complete(final_root) ||
+        !copy_bounded_text(app->inspecting_game.prepared_root,
+                           sizeof(app->inspecting_game.prepared_root),
+                           final_root)) return false;
+    app->inspecting_game.assets_staged = true;
+    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+        app->runtime_root[0] ? app->runtime_root : NULL,
+        app->inspecting_game.title_id);
+    app->inspecting_game.status = app->inspecting_game.is_prepared
+        ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
+    copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
+                      final_root);
+    return player_app_register_staged_game(app);
+}
+
 static void request_staging_cancel(PlayerStagingJob *job) {
     if (!job || !job->mutex) return;
     SDL_LockMutex(job->mutex);
@@ -270,6 +304,22 @@ static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
         free(job);
         player_app_wizard_finish_extraction(app, NK_ERROR_IO,
                                             "The local application data path is too long for the player record.");
+        return false;
+    }
+    if (nk_platform_dir_exists(job->final_root)) {
+        bool complete = staged_payload_is_complete(job->final_root);
+        if (complete && adopt_existing_staged_root(app, job->final_root)) {
+            free(job);
+            player_app_wizard_finish_extraction(
+                app, NK_OK, "Recovered the previously promoted staging tree.");
+            return true;
+        }
+        free(job);
+        player_app_wizard_finish_extraction(
+            app, NK_ERROR_IO,
+            complete
+                ? "The existing staged title could not be saved to the library."
+                : "An incomplete staged title already exists; it was left untouched.");
         return false;
     }
     job->mutex = SDL_CreateMutex();
@@ -392,6 +442,18 @@ static int stage_iso_synchronously(PlayerApp *app) {
         fprintf(stderr, "[PLAYER] Could not derive a safe staging path for %s.\n",
                 app->inspecting_game.disc_id);
         return 3;
+    }
+
+    if (nk_platform_dir_exists(final_root)) {
+        if (adopt_existing_staged_root(app, final_root)) {
+            player_app_wizard_finish_extraction(
+                app, NK_OK, "Recovered the previously promoted staging tree.");
+            printf("[PLAYER] STAGING_RESULT status=PASS recovered=1 disc_id=%s\n",
+                   app->inspecting_game.disc_id);
+            return 0;
+        }
+        fprintf(stderr, "[PLAYER] --stage-only found an existing staged title that could not be adopted.\n");
+        return 7;
     }
 
     PlayerStageSummary summary;
@@ -920,17 +982,18 @@ int main(int argc, char *argv[]) {
     PlayerStagingJob *staging_job = NULL;
 
     bool running = true;
-    /* The first frame is rendered before the event wait. Subsequent frames are
-       driven by SDL input/window events and by the staging worker's user
-       events; there is no timer or progress poller in the UI loop. */
+    /* The first frame is rendered before the event wait. A bounded wait keeps
+       process-exit monitoring alive while the user is idle; staging progress
+       and normal input still wake the loop immediately. */
     ui_render_frame(renderer, &app, &input);
     while (running && !app.should_quit) {
         input.mouse_clicked = false;
         input.activate_pressed = false;
         SDL_Event event;
-        if (!SDL_WaitEvent(&event)) break;
-        do {
-            switch (event.type) {
+        bool event_available = SDL_WaitEventTimeout(&event, 50);
+        if (event_available) {
+            do {
+                switch (event.type) {
                 case SDL_EVENT_QUIT:
                     running = false;
                     break;
@@ -1114,8 +1177,9 @@ int main(int argc, char *argv[]) {
                     break;
                 default:
                     break;
-            }
-        } while (SDL_PollEvent(&event));
+                }
+            } while (SDL_PollEvent(&event));
+        }
 
         /* A renderer control asked for the host file dialog. The renderer has
            no window handle and must stay free of platform dialog calls, so the
