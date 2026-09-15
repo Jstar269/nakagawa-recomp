@@ -59,7 +59,11 @@ def _check_no_interp_call(body: str) -> bool:
     return "sr_vfpu_interp" not in body
 
 
-def generate_cases(words: dict[int, int]) -> tuple[list[tuple[int, int, str]], int, int]:
+def generate_cases(
+    words: dict[int, int],
+    *,
+    allow_conditional_fallback_words: set[int] | None = None,
+) -> tuple[list[tuple[int, int, str]], int, int]:
     """Translate instruction words to codegen bodies.
 
     Args:
@@ -70,10 +74,18 @@ def generate_cases(words: dict[int, int]) -> tuple[list[tuple[int, int, str]], i
         cases: list of (word, addr, body) for successfully translated instructions
         n_unsupported: count of words skipped because codegen raised Unsupported
         n_self_compare: count of words skipped because generated body calls sr_vfpu_interp
+            unconditionally, or is not explicitly proven safe by the caller
+
+    ``lv.q`` and ``sv.q`` have a runtime alignment/span guard in the production
+    emitter.  The public synthetic harness supplies an in-range, 16-byte-aligned
+    address for those exact words, so their guarded fallback is not the path
+    under comparison.  Callers must opt in with the exact words; game-observed
+    corpora do not opt in and remain fail-closed.
     """
     cases: list[tuple[int, int, str]] = []
     n_unsupported = 0
     n_self_compare = 0
+    allowed = allow_conditional_fallback_words or set()
 
     for w, addr in sorted(words.items()):
         try:
@@ -84,6 +96,11 @@ def generate_cases(words: dict[int, int]) -> tuple[list[tuple[int, int, str]], i
             continue
 
         if not _check_no_interp_call(body):
+            op = (w >> 26) & 0x3F
+            guarded_quad = op in (0x36, 0x3E) and w in allowed and "sr_guest_span_" in body
+            if guarded_quad:
+                cases.append((w, addr, body))
+                continue
             sys.stderr.write(
                 f"skip (self-compare VIOLATION): 0x{w:08x} @0x{addr:08x}: "
                 f"generated body calls sr_vfpu_interp -- excluded from differential test\n"
@@ -123,6 +140,7 @@ def main(argv: list[str]) -> int:
     synthetic = "--synthetic" in opts
     base = None
     extra_span_arg = None
+    conditional_fallback_words: set[int] | None = None
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
@@ -139,15 +157,23 @@ def main(argv: list[str]) -> int:
             return 2
         out_path = args[0]
         try:
-            from vfpu_synth_gen import generate_synthetic_corpus
+            from vfpu_synth_gen import generate_synthetic_corpus, generate_memory_cop2_corpus
         except ImportError:
             sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-            from vfpu_synth_gen import generate_synthetic_corpus  # noqa: F811
+            from vfpu_synth_gen import generate_synthetic_corpus, generate_memory_cop2_corpus  # noqa: F811
 
-        corpus = generate_synthetic_corpus()
+        # Issue G-25: the differential corpus now includes the aligned VFPU
+        # memory ops and COP2 register transfers, which have both an emitter
+        # and an interpreter oracle. Memory-op trials read/write a harness-
+        # owned scratch page, so stores cannot corrupt other cases' state.
+        extended = generate_memory_cop2_corpus()
+        corpus = generate_synthetic_corpus() + extended
         # Assign synthetic addresses starting at 0x08900000 (typical MIPS text base)
         words = {w: 0x08900000 + 4 * i for i, w in enumerate(corpus)}
         mode_label = "SYNTHETIC"
+        conditional_fallback_words = {
+            w for w in extended if ((w >> 26) & 0x3F) in (0x36, 0x3E)
+        }
     else:
         # PRIVATE GAME-OBSERVED MODE (requires local ELF — never committed)
         use_env_elf = "--env-elf" in opts
@@ -204,7 +230,10 @@ def main(argv: list[str]) -> int:
                         words[w] = a - 4
         mode_label = "GAME-OBSERVED (local only -- do not commit output)"
 
-    cases, n_unsupported, n_self_compare = generate_cases(words)
+    cases, n_unsupported, n_self_compare = generate_cases(
+        words,
+        allow_conditional_fallback_words=conditional_fallback_words,
+    )
 
     if n_self_compare > 0:
         sys.stderr.write(

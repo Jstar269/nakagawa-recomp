@@ -743,6 +743,55 @@ class CategoryDistinguishingTests(unittest.TestCase):
             body,_,_=codegen.vfpu_effect(0x08900000,w)
             self.assertNotIn("sr_vfpu_interp",body)
 
+
+class MemoryCop2CorpusTests(unittest.TestCase):
+    """Keep the native-capable G-25 families in a real differential corpus."""
+
+    def setUp(self):
+        from vfpu_synth_gen import generate_memory_cop2_corpus
+        self.corpus = generate_memory_cop2_corpus()
+
+    def test_family_counts_are_explicit_and_deduplicated(self):
+        counts = Counter(_op6(w) for w in self.corpus)
+        self.assertEqual(len(self.corpus), 400)
+        self.assertEqual(len(self.corpus), len(set(self.corpus)))
+        self.assertEqual(counts, {0x12: 144, 0x32: 80, 0x36: 48, 0x3A: 80, 0x3E: 48})
+
+    def test_each_word_has_an_emitter_or_an_explicit_quad_guard(self):
+        import codegen
+        from vfpu_fuzz_gen import generate_cases
+
+        words = {w: 0x08900000 + i * 4 for i, w in enumerate(self.corpus)}
+        quad = {w for w in self.corpus if _op6(w) in (0x36, 0x3E)}
+        cases, unsupported, self_compare = generate_cases(
+            words, allow_conditional_fallback_words=quad
+        )
+        self.assertEqual((len(cases), unsupported, self_compare), (400, 0, 0))
+        for w, _, body in cases:
+            if w in quad:
+                self.assertIn("sr_guest_span_", body)
+                self.assertIn("sr_vfpu_interp", body)
+            else:
+                self.assertNotIn("sr_vfpu_interp", body)
+            # Re-run the emitter at the test address to ensure the corpus is
+            # not merely accepted by a generator-side special case.
+            codegen.vfpu_effect(0x08900000, w)
+
+    def test_cop2_invalid_register_number_is_rejected(self):
+        import codegen
+        invalid = (0x12 << 26) | (3 << 21) | (1 << 16) | 132
+        with self.assertRaises(codegen.Unsupported):
+            codegen.vfpu_effect(0x08900000, invalid)
+
+    def test_cop2_scalar_uses_physical_scalar_mapping(self):
+        import codegen
+        from vfpu_synth_gen import _iter_vfpu_memory_cop2
+        word = next(w for w in _iter_vfpu_memory_cop2()
+                    if _op6(w) == 0x12 and (w & 0xFF) == 32 and ((w >> 21) & 0x1F) == 3)
+        body, _, _ = codegen.vfpu_effect(0x08900000, word)
+        self.assertIn("s->vi[1]", body)
+        self.assertNotIn("s->vi[32]", body)
+
 class VfpuWordsTxtAbsenceTest(unittest.TestCase):
     def test_vfpu_words_txt_is_not_committed(self):
         gitignore=(ROOT/".gitignore").read_text(encoding="utf-8")

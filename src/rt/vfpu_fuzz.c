@@ -109,6 +109,48 @@ static uint32_t rand_dprefix(void) {
     return p;
 }
 
+/* The synthetic memory corpus uses one harness-owned, in-range scratch page.
+ * It is reset between the interpreter and emitter runs so a store is compared
+ * against the same pre-instruction memory and cannot contaminate the next case. */
+#define FUZZ_MEMORY_BASE  0x08001000u
+#define FUZZ_MEMORY_WORDS 16
+
+static int fuzz_is_memory_case(uint32_t w) {
+    uint32_t op = w >> 26;
+    return op == 0x32u || op == 0x36u || op == 0x3Au || op == 0x3Eu;
+}
+
+static void fuzz_reset_memory(void) {
+    for (int i = 0; i < FUZZ_MEMORY_WORDS; i++)
+        MEM_W32(FUZZ_MEMORY_BASE + (uint32_t)i * 4u,
+                0x51000000u ^ ((uint32_t)i * 0x01010101u));
+}
+
+static int fuzz_prepare_memory_state(CpuState *s, uint32_t w) {
+    if (!fuzz_is_memory_case(w)) return 0;
+    int base = (int)((w >> 21) & 0x1Fu);
+    int32_t offset = (int32_t)(int16_t)(uint16_t)(w & 0xFFFCu);
+    /* The public corpus deliberately uses a nonzero base register.  Keeping
+     * r0 architecturally constant makes a malformed future corpus fail closed
+     * instead of turning the harness into a second decoder. */
+    if (base == 0) return 0;
+    s->r[base] = FUZZ_MEMORY_BASE - (uint32_t)offset;
+    fuzz_reset_memory();
+    return 1;
+}
+
+static void fuzz_capture_memory(uint32_t out[FUZZ_MEMORY_WORDS]) {
+    for (int i = 0; i < FUZZ_MEMORY_WORDS; i++)
+        out[i] = MEM_R32(FUZZ_MEMORY_BASE + (uint32_t)i * 4u);
+}
+
+static int fuzz_memory_matches(const uint32_t expected[FUZZ_MEMORY_WORDS]) {
+    for (int i = 0; i < FUZZ_MEMORY_WORDS; i++) {
+        if (MEM_R32(FUZZ_MEMORY_BASE + (uint32_t)i * 4u) != expected[i]) return 0;
+    }
+    return 1;
+}
+
 static int check_transcendentals(void) {
     float trig_err=0.0f,asin_err=0.0f,log_err=0.0f,sqrt_rel=0.0f;
     for(int i=-256;i<=256;i++){
@@ -194,6 +236,7 @@ int main(int argc, char **argv) {
     }
 
     int tested = 0, skipped = 0;
+    sr_mem_init();
     int bad_cases = check_transcendentals()+check_unaligned_dispatch()+check_vcrs_width_guard();
     unsigned long long mismatches = 0, total = 0;
 
@@ -201,6 +244,11 @@ int main(int argc, char **argv) {
         uint32_t w = fuzz_cases[c].w;
         int case_bad = 0, interp_other = 0;
         int trials_failed = 0;
+        /* Memory and COP2 cases need deterministic base/rt registers; compute
+         * the classification once per case. */
+        uint32_t top = w >> 26;
+        int is_mem = fuzz_is_memory_case(w);
+        int is_cop2 = (top == 0x12);
         for (int t = 0; t < trials; t++) {
             CpuState s0;
             memset(&s0, 0, sizeof(s0));
@@ -212,14 +260,30 @@ int main(int argc, char **argv) {
 
             /* vcrsp/vqmul and vrot have hardware-quirky prefix interactions that neither
              * side models (the game never prefixes them) — fuzz those identity-prefix only */
-            uint32_t top = w >> 26, sub3 = (w >> 23) & 7;
+            uint32_t sub3 = (w >> 23) & 7;
             if (top == 0x3c && (sub3 == 5 || (sub3 == 7 && ((w >> 21) & 0x1F) == 29))) {
                 s0.vfpuCtrl[0] = 0xe4; s0.vfpuCtrl[1] = 0xe4; s0.vfpuCtrl[2] = 0;
+            }
+
+            /* G-25: point memory operands at the scratch page and make GPRs
+             * deterministic so memory and COP2 transfers compare meaningfully. */
+            if (is_mem || is_cop2) {
+                for (int i = 1; i < 32; i++) s0.r[i] = (uint32_t)(t * 2654435761u) + 0x3000u * (uint32_t)i;
+            }
+            if (is_mem && !fuzz_prepare_memory_state(&s0, w)) {
+                interp_other = 1;
+                break;
             }
 
             CpuState s1 = s0, s2 = s0;
             int kind = sr_vfpu_interp(&s2, w);
             if (kind == SR_VFPU_OTHER) { interp_other = 1; break; }
+            uint32_t interp_mem[FUZZ_MEMORY_WORDS];
+            if (is_mem) {
+                fuzz_capture_memory(interp_mem);
+                /* Both lanes must observe the same pre-instruction bytes. */
+                fuzz_reset_memory();
+            }
             /* SR_VFPU_STATE (vcmp/vpfx) still mutates vfpuCtrl — compare it like the rest */
             fuzz_run_codegen(&s1, c);
             total++;
@@ -243,6 +307,22 @@ int main(int argc, char **argv) {
                                 w, fuzz_cases[c].addr, t, i, s1.vfpuCtrl[i], s2.vfpuCtrl[i]);
                     bad = 1;
                 }
+            }
+            for (int i = 0; i < 32; i++) {
+                if (s1.r[i] != s2.r[i]) {
+                    if (!bad && mismatches < 40)
+                        fprintf(stderr,
+                                "MISMATCH op=0x%08x (sample @0x%08x) trial %d: r%d codegen=0x%08x interp=0x%08x\n",
+                                w, fuzz_cases[c].addr, t, i, s1.r[i], s2.r[i]);
+                    bad = 1;
+                }
+            }
+            if (is_mem && !fuzz_memory_matches(interp_mem)) {
+                if (!bad && mismatches < 40)
+                    fprintf(stderr,
+                            "MISMATCH op=0x%08x (sample @0x%08x) trial %d: guest scratch memory differs\n",
+                            w, fuzz_cases[c].addr, t);
+                bad = 1;
             }
             if (bad) { mismatches++; case_bad = 1; trials_failed++; }
         }
