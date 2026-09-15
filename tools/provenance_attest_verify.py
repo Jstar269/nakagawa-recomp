@@ -77,8 +77,9 @@ Tier A -- absolute, whole tree, never grandfathered:
     from merging is not the tree this run attested.
 ``POLICY_SUBSTITUTION``
     the candidate policy is loadable and never removes an exclusion that the
-    trusted policy carries.  Publication scope may tighten in a pull request;
-    it may not loosen behind the gate's back.
+    trusted policy carries without an externally blessed policy and an exact
+    policy-delta authority.  Publication scope may tighten in a pull request;
+    it may not loosen behind the gate's back without that separate authority.
 ``TRUSTED_WORKFLOW_WEAKENED`` / ``CI_CONTEXT_COLLISION``
     the candidate does not disarm this gate's own workflow, and no other
     candidate workflow declares the gate's required check name.  Required
@@ -1001,6 +1002,7 @@ def _ephemeral_verdict_findings(
     candidate_policy,
     trusted_policy,
     candidate_policy_matches_trusted: bool,
+    authorized_policy_delta: dict | None,
     trusted_scope: set[str],
     protected: set[str],
     baseline_entries: dict[str, dict],
@@ -1028,7 +1030,11 @@ def _ephemeral_verdict_findings(
             "candidate publication policy differs from the trusted base; an external blessed policy "
             "and policy-delta authority are required for an intentional change",
         ))
-    findings.extend(_policy_findings(candidate_policy, trusted_policy))
+    findings.extend(_policy_findings(
+        candidate_policy,
+        trusted_policy,
+        authorized_delta=authorized_policy_delta,
+    ))
     findings.extend(_ci_findings(candidate_blobs, base_blobs))
 
     candidate_included = {
@@ -1244,6 +1250,15 @@ def verify_ephemeral(
             "POLICY_DELTA_ARGUMENT_REQUIRED",
             "--trusted-candidate-policy and --policy-delta-authority must be supplied together",
         )
+    blessed_policy_file: Path | None = None
+    policy_delta_authority_file: Path | None = None
+    if trusted_candidate_policy is not None:
+        blessed_policy_file = _external_input(
+            trusted_candidate_policy, repo=repo, label="trusted candidate policy",
+        )
+        policy_delta_authority_file = _external_input(
+            policy_delta_authority, repo=repo, label="policy delta authority",
+        )
     output_dir = output_dir.resolve()
     if _path_is_within(output_dir, repo):
         raise VerifyError(
@@ -1251,6 +1266,24 @@ def verify_ephemeral(
             "ephemeral provenance outputs must live outside the repository under verification",
         )
     output_dir.mkdir(parents=True, exist_ok=True)
+    trusted_inputs = {trusted_ledger.resolve(), baseline_file.resolve()}
+    if blessed_policy_file is not None:
+        trusted_inputs.add(blessed_policy_file.resolve())
+    if policy_delta_authority_file is not None:
+        trusted_inputs.add(policy_delta_authority_file.resolve())
+    generated_targets = {
+        (output_dir / "public_provenance_ledger.json").resolve(),
+        (output_dir / "PUBLIC_EXPORT.json").resolve(),
+        (output_dir / "inputs" / "trusted_policy.json").resolve(),
+        (output_dir / "inputs" / "candidate_policy.json").resolve(),
+        (output_dir / "inputs" / "blessed_candidate_policy.json").resolve(),
+    }
+    collisions = sorted(trusted_inputs & generated_targets, key=str)
+    if collisions:
+        raise VerifyError(
+            "OUTPUT_TRUSTED_INPUT_COLLISION",
+            "ephemeral output would overwrite trusted input: " + str(collisions[0]),
+        )
 
     if require_immutable_revisions:
         for role, selector in (("candidate", candidate_rev), ("base", base_rev)):
@@ -1296,10 +1329,9 @@ def verify_ephemeral(
     candidate_policy_matches_trusted = candidate_policy_raw == base_policy_bytes
     policy_delta: dict | None = None
     if trusted_candidate_policy is not None:
-        blessed_policy_path = _external_input(
-            trusted_candidate_policy, repo=repo, label="trusted candidate policy",
-        )
-        delta_policy_bytes = blessed_policy_path.read_bytes()
+        # Both paths were resolved and checked above before any scratch output
+        # was created. They are still external inputs, never candidate data.
+        delta_policy_bytes = blessed_policy_file.read_bytes()
         if delta_policy_bytes == base_policy_bytes:
             raise VerifyError(
                 "POLICY_DELTA_EMPTY",
@@ -1324,7 +1356,7 @@ def verify_ephemeral(
         )
         try:
             allowed_delta = _read_policy_delta_authority(
-                policy_delta_authority,
+                policy_delta_authority_file,
                 candidate_root=repo,
                 baseline_policy_bytes=base_policy_bytes,
                 candidate_policy_bytes=delta_policy_bytes,
@@ -1385,6 +1417,7 @@ def verify_ephemeral(
         require_exact_blob_approvals=require_exact_blob_approvals,
         generated_ledger_bytes=generated_ledger_bytes,
         generated_export=generated_export,
+        authorized_policy_delta=policy_delta,
     )
     if not _is_ancestor(repo, base_commit, candidate_commit):
         findings.insert(0, Finding(
@@ -1395,8 +1428,6 @@ def verify_ephemeral(
 
     ledger_output = output_dir / "public_provenance_ledger.json"
     export_output = output_dir / "PUBLIC_EXPORT.json"
-    if ledger_output.resolve() in {trusted_ledger, baseline_file} or export_output.resolve() in {trusted_ledger, baseline_file}:
-        raise VerifyError("OUTPUT_TRUSTED_INPUT_COLLISION", "ephemeral output would overwrite trusted input")
     ledger_output.write_bytes(generated_ledger_bytes)
     export_output.write_bytes(generated_export_bytes)
 
@@ -1441,10 +1472,19 @@ def verify_ephemeral(
     }
 
 
-def _policy_findings(candidate_policy, trusted_policy) -> list[Finding]:
+def _policy_findings(
+    candidate_policy,
+    trusted_policy,
+    *,
+    authorized_delta: dict | None = None,
+) -> list[Finding]:
     """Publication scope may tighten in a pull request; it may never loosen."""
     findings: list[Finding] = []
-    dropped = sorted(trusted_policy.exclude_paths - candidate_policy.exclude_paths)
+    authorized_exclude_removed = set((authorized_delta or {}).get("exclude_removed", ()))
+    dropped = sorted(
+        (trusted_policy.exclude_paths - candidate_policy.exclude_paths)
+        - authorized_exclude_removed
+    )
     for path in dropped:
         findings.append(Finding(
             "POLICY_SUBSTITUTION", POLICY_PATH,

@@ -2319,6 +2319,49 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             {finding["code"] for finding in verdict["findings"]},
         )
 
+    def test_blessed_candidate_policy_can_remove_exact_obsolete_exclusion(self) -> None:
+        self.repo.branch("authorized-exclusion-removal", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["exclude_paths"] = []
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("authorized obsolete exclusion removal")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        blessed_policy = self.outside / "blessed-exclusion-removal-policy.json"
+        blessed_policy.write_bytes(candidate_policy_raw)
+        authority = self.outside / "exclusion-removal-policy-delta-authority.json"
+        authority.write_bytes(_canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_policy_raw),
+            "allowed_delta": {
+                "include_added": [],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": ["secret.txt"],
+                "rule_changes": [],
+            },
+        }))
+
+        verdict = self.run_ephemeral(
+            head,
+            trusted_candidate_policy=blessed_policy,
+            policy_delta_authority=authority,
+        )
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["policy_delta"]["exclude_removed"], ["secret.txt"])
+        self.assertNotIn(
+            "POLICY_SUBSTITUTION",
+            {finding["code"] for finding in verdict["findings"]},
+        )
+
     def test_blessed_candidate_policy_and_exact_delta_can_authorize_a_change(self) -> None:
         self.repo.branch("authorized-policy-change", self.base)
         policy_path = self.repo.root / verifier.POLICY_PATH
@@ -2360,6 +2403,63 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertIsNone(
             next((item for item in verdict["findings"] if item["code"] == "POLICY_SUBSTITUTION"), None),
         )
+
+    def test_external_policy_delta_inputs_cannot_share_generated_output_paths(self) -> None:
+        self.repo.branch("output-collision-policy-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("policy change for output collision test")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        authority_document = _canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_policy_raw),
+            "allowed_delta": {
+                "include_added": ["docs/new.md"],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": [],
+                "rule_changes": [],
+            },
+        })
+
+        for output_name in ("public_provenance_ledger.json", "PUBLIC_EXPORT.json"):
+            with self.subTest(output_name=output_name):
+                output_dir = self.outside / f"collision-{output_name}"
+                output_dir.mkdir()
+                blessed_policy = self.outside / f"blessed-{output_name}.json"
+                blessed_policy.write_bytes(candidate_policy_raw)
+                authority = self.outside / f"authority-{output_name}.json"
+                authority.write_bytes(authority_document)
+                if output_name == "public_provenance_ledger.json":
+                    blessed_policy = output_dir / output_name
+                    blessed_policy.write_bytes(candidate_policy_raw)
+                else:
+                    authority = output_dir / output_name
+                    authority.write_bytes(authority_document)
+
+                with self.assertRaises(verifier.VerifyError) as caught:
+                    verifier.verify_ephemeral(
+                        repo=self.repo.root,
+                        candidate_rev=head,
+                        base_rev=self.base,
+                        trusted_ledger=self.trusted_ledger,
+                        trusted_baseline=self.baseline(),
+                        output_dir=output_dir,
+                        trusted_candidate_policy=blessed_policy,
+                        policy_delta_authority=authority,
+                    )
+                self.assertEqual(caught.exception.code, "OUTPUT_TRUSTED_INPUT_COLLISION")
+                self.assertTrue(blessed_policy.is_file())
+                self.assertTrue(authority.is_file())
 
     def test_blessed_candidate_policy_must_match_candidate_bytes(self) -> None:
         self.repo.branch("mismatched-policy-change", self.base)

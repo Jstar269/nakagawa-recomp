@@ -47,7 +47,7 @@ it agree with every other artifact.
 | T9 | Declare a second job under the required check's context name so a green candidate-controlled result answers for the gate | `CI_CONTEXT_COLLISION` — the context string is reserved |
 | T10 | Change file content without updating the ledger hash | `CONTENT_MISMATCH` |
 | T11 | Publish a file with no ledger entry, or keep an entry for a deleted file | `LEDGER_COVERAGE` |
-| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` — scope may tighten, never loosen |
+| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external blessed policy and exact policy-delta authority authorize that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
 | T13 | Edit the ledger without regenerating the export | `EXPORT_FIELD_MISMATCH` |
 | T14 | Replay a green result from an earlier head | the verdict is bound to the candidate commit and tree, and the run fails closed if the fetched head is not the head the event named |
 | T15 | Merge on a stale base | the ruleset's `strict_required_status_checks_policy` requires the head to be up to date, and the ratchet is evaluated against the base branch tip |
@@ -110,8 +110,14 @@ The boundary is enforced structurally, not by convention:
 
 **Tier A — absolute, whole tree, never grandfathered.** `LEDGER_SCHEMA`,
 `LEDGER_COVERAGE`, `CONTENT_MISMATCH`, `RECORD_ABSENT`, `RECORD_NOT_COVERING`,
-`POLICY_SUBSTITUTION`, `EXPORT_LEDGER_DIGEST_STALE`,
+unapproved `POLICY_SUBSTITUTION`, `EXPORT_LEDGER_DIGEST_STALE`,
 `TRUSTED_WORKFLOW_WEAKENED`, `CI_CONTEXT_COLLISION`.
+
+An externally blessed candidate policy may remove only the exact path-list
+entries named by its separately bound `policy-delta-authority` document. Those
+authorized removals are not grandfathering: the authority binds both policy
+digests and the complete semantic delta, and the resulting protected universe
+still receives the normal ledger, export, and content checks.
 
 **Tier B — the grandfathering predicate.** The trusted authority derives
 exactly one claim for a path. A candidate claim that disagrees with it survives

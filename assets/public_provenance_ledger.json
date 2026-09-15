@@ -918,7 +918,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "61ade08f7060f06adb87c609a3091aeef86a25c5f86ded1e682387e75e3c9edd"
+      "sha256": "8e938e0db9e1e948e9db0bda907a86904dbc467d231702ce75ddeab449ea0bf4"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -7084,7 +7084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db4ede6dd0c2302786a55d8bc864a2ad519b7b2869734784eb3782809ba8f535"
+      "sha256": "37fb7d4f1a6406072ca155959afd0c9ef1885687fc6cf50d79f2575fae9fcce8"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -8193,7 +8193,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "be1f78d493d3e538b23a37170ac090f12b33a7f52d2acde39c3fe9c2025b2933"
+      "sha256": "46ebfa52435c8260c7779e5058667551182d3f5b99bed42aa30e674961c657b1"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
