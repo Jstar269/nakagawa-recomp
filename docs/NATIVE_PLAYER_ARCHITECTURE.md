@@ -1,5 +1,11 @@
 # Native Cross-Platform Player UI Architecture
 
+> **Status: CURRENT — maintained architecture record.** The native SDL3 player,
+> launch/session core, and bounded ISO/XB staging pipeline exist in the public
+> source. Module decryption, complete retail preparation, progress reporting for
+> every preparation route, and end-user productization remain unbuilt and are
+> marked as targets below.
+
 > **Current build boundary:** The native player connects a bounded ISO/XB
 > staging pipeline for the first-time setup wizard. It records the extracted
 > asset/audio/visual/layout counts, promotes the transaction, registers the
@@ -62,10 +68,10 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 | **Couch / Controller Navigation** | **First-Class** (SDL3 Gamepad API) | Complex focus management | Moderate | Web Gamepad API limits |
 | **Unified Game Window** | **Yes** (Launcher & Game in 1 window) | No (Separate launcher & render window) | No | No |
 | **In-Game Overlay Capable** | **Yes** (Draws over Vulkan swapchain) | No | No | No |
-| **Linux / Steam Deck Parity** | **Flawless** (Standard SDL3/Vulkan) | Good | Good | WebKitGTK packaging fragmentation |
+| **Linux / Steam Deck Parity** | **Target** (SDL3/Vulkan; platform acceptance not run) | Good | Good | WebKitGTK packaging fragmentation |
 | **macOS (Metal/MoltenVK)** | **Supported** | Supported | Supported | Supported |
-| **Build-System Burden** | **Zero** (Compiles cleanly with Makefile) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
-| **Startup Latency** | **< 50 milliseconds** | ~300–600 ms | ~100 ms | ~400–800 ms |
+| **Build-System Burden** | **Target: native Makefile path** (developer toolchain still required today) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
+| **Startup Latency** | **Target estimate; not acceptance evidence** | ~300–600 ms | ~100 ms | ~400–800 ms |
 
 ### Selection Rationale
 
@@ -78,6 +84,10 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 ---
 
 ## 3. Architecture & Separation of Concerns
+
+The diagram below is the target separation. The implemented public slice currently reaches
+title lookup, bounded ISO inspection, launch-session validation, and child-process
+lifecycle. Preparation, archive/decryption work, and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -114,6 +124,10 @@ capability layers rather than being reimplemented in the launcher.
 ---
 
 ## 4. First-Run & Onboarding Flow
+
+The flow below is the productization target, not a description of the current executable.
+Today the player can inspect a selected ISO and launch an already-prepared runtime; the
+native file-picker, preparation, and one-click-play stages still require implementation.
 
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.

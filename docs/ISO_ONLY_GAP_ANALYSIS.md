@@ -1,6 +1,11 @@
 # Gap Analysis: Achieving Authentic Execution from "Program + ISO"
 
-## 1. Architectural Correction & Superceded Recommendations
+> **Status: CURRENT — maintained LLE gap analysis.** This document distinguishes
+> existing bounded ISO helpers from the absent retail-preparation path. Its proposed
+> cryptography, middleware, VFS, and firmware work is not implemented merely because
+> it appears in a resolution column.
+
+## 1. Architectural Correction & Superseded Recommendations
 
 > [!IMPORTANT]
 > **SUPERSEDED ARCHITECTURAL NOTE:**
@@ -16,18 +21,25 @@
 
 ## 2. Updated Gap Analysis Matrix: True LLE Resolution Path
 
+The matrix is a decision and gap record. In the current public source, ISO/PARAM.SFO
+inspection and bounded file extraction exist; encrypted retail preparation, module
+decryption, complete archive mounting, and title acceptance remain open.
+
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Main Executable** | Decrypted flat MIPS ELF (`place_game_here/EBOOT.elf`) | `EBOOT.BIN` is encrypted with Kirk tag `0x08000000` | Implement clean-room KIRK CMD 1/7 engine in runtime; decouple key store to user-supplied keyring | **REQUIRES_NEW_IMPLEMENTATION** (Clean-room KIRK) |
 | **Encrypted PRXs** | Decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx` | Modules are encrypted `~PSP`/`~SCE` containers; `module_start` previously hung on `WaitSema` | Decrypt modules via local KIRK engine; fix kernel semaphore/scheduler contracts to execute original `module_start` | **REQUIRES_NEW_IMPLEMENTATION** (Kernel synchronization) |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` with StartModule bypass | PSMF SDK requires kernel memory heaps and hardware MPEG decoding | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **REQUIRES_NEW_IMPLEMENTATION** (Hardware codec bridge) |
-| **Game Assets** | Unpacked `xbdata_extracted/` (~56k loose files) | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **AUTOMATABLE_WITH_EXISTING_SOURCE** |
-| **Title Manifest** | Private `assets/titles/hst-ucus98701.json` | Excluded from public tree due to guest addresses | TitleRegistry in `nk_core` parameterizes disc ID & modules without hardcoding patches | **ALREADY_AUTOMATABLE** |
+| **Game Assets** | Unpacked `xbdata_extracted/` (~56k loose files) | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **TARGET — NOT CONNECTED** |
+| **Title Manifest** | Private title-specific manifest | Excluded from public tree due to guest addresses | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; TITLE ACCEPTANCE NOT RUN** |
 
 ---
 
 ## 3. Deep Technical Analysis of LLE Gaps
+
+The subsections below describe proposed implementation paths and known blockers. They
+are not evidence that the paths have landed in the current player.
 
 ### 3.1 Retail EBOOT and PRX Cryptography
 
@@ -85,7 +97,8 @@
 ### 3.5 XB Archive & Filesystem Invariants
 
 * **Preserving PSP-Visible Filesystem Invariants:**
-  * Direct XB access must be implemented as a transparent block driver in `src/rt/iso.c`.
+  * Direct XB access is a future target for a transparent block driver; the current
+    public ISO helper is `src/core/nk_iso.c` and does not provide the complete guest VFS.
   * The guest program must observe identical file paths, file sizes, seek offsets, partial reads, and error codes (`SCE_ERROR_ERRNO_FILE_NOT_FOUND`).
   * No game-specific path aliases or asset redirects may leak into generic guest execution.
 
@@ -96,4 +109,7 @@
 $$\text{Ideal Target:} \quad \text{Nakagawa} + \text{Game ISO} \implies \text{Play}$$
 $$\text{Authentic Reality:} \quad \text{Nakagawa} + \text{Game ISO} + \text{Firmware PGF (flash0)} + \text{KIRK Keys} \implies \text{Play (100\% Faithful)}$$
 
-Nakagawa will continue automating everything possible (ISO inspection, local Kirk decryption, transparent VFS mounting, dynamic module loading) without compromising fidelity or cutting architectural corners.
+The project can continue automating everything possible (ISO inspection, local KIRK
+decryption, transparent VFS mounting, and dynamic module loading) without compromising
+fidelity or cutting architectural corners. At this snapshot, only the bounded ISO
+inspection/file-helper slice is present; the other items remain proposed work.

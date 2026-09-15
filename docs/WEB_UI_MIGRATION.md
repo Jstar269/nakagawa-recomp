@@ -1,4 +1,8 @@
-# Web UI Inventory, Evaluation, and Native Migration Plan
+# Web UI Inventory, Evaluation, and Native Migration Record
+
+> **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, but the preparation backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability.
+
+> **Boundary:** ISO inspection in the current native player is bounded and read-only; no ISO-to-prepared-runtime, module-decryption, or end-user AOT pipeline is connected. See NATIVE_PLAYER_ARCHITECTURE.md and ISO_ONLY_GAP_ANALYSIS.md.
 
 ## 1. Inventory of Current Web UI Components
 
@@ -51,7 +55,7 @@ The existing prototype UI is located under [`interface/`](../interface/):
 
 ## 4. Functions That Must Be Preserved During Migration
 
-The web UI was created to give developers deep visibility into the recompiler. The following capabilities must **not be lost**; they are migrated to the native player UI (under an accessible **"Studio Tools"** menu) and headless CLI tools:
+The web UI was created to give developers deep visibility into the recompiler. The following capabilities are the **parity target** for a native "Studio Tools" surface and headless CLI tools; this document does not claim that parity is complete:
 
 1. **Preflight Diagnostics:** Validating Vulkan drivers, system specs, and game inputs.
 2. **Recompiler Task Execution:** Live build/compile triggers with streaming log feedback.
@@ -89,20 +93,26 @@ graph TD
     Phase 2 --> Phase 3
 ```
 
-### Phase 1: Decoupling & Portable Core (Completed in Current Worktree)
+### Phase 1: Decoupling & Portable Core (PARTIAL / SOURCE-ANCHORED)
 
-* Business logic (ISO inspection, title registry, transactional preparation, launch planning) has been fully decoupled from the web UI and implemented in the standalone, portable `tools/nk_core/` library and `tools/nk_cli.py`.
-* A dedicated **Player Mode** (`launcher-panel.tsx`) with a top-level mode toggle was added to `interface/` to prototype the streamlined end-user flow.
+* The current source owns a native player and core slice for ISO inspection,
+  title-catalog lookup, launch planning, and isolated child-process startup.
+* The web **Player Mode** (`launcher-panel.tsx`) remains a prototype of the
+  streamlined end-user flow.
+* Transactional preparation, module decryption, and end-user AOT generation
+  are not connected; they must not be inferred from this phase label.
 
-### Phase 2: Native SDL3 Launcher & In-Engine Overlay
+### Phase 2: Native SDL3 Launcher & In-Engine Overlay (UNBUILT / TARGET)
 
-* Build the native SDL3 Game Library window with `IFileDialog` / native platform file picker.
-* Wire `nk_core` into the native launcher.
+* Build the native SDL3 Game Library window with a native platform file picker.
+* Wire the eventual preparation core into the native launcher.
 * Embed an in-engine overlay into the SDL3 Vulkan swapchain for the in-game pause menu.
 
-### Phase 3: Feature Parity & Complete Retirement of Web Components
+### Phase 3: Feature Parity & Complete Retirement of Web Components (UNBUILT / TARGET)
 
-* Once the native SDL3 launcher implements game selection, preparation, settings, and developer diagnostics, completely retire and remove the `interface/` directory and Node.js dependencies from the repository.
+* Once the native SDL3 launcher implements game selection, preparation, settings,
+  and developer diagnostics with evidence, evaluate retiring the `interface/`
+  directory and Node.js dependencies. No removal is authorized by this plan alone.
 
 ---
 
