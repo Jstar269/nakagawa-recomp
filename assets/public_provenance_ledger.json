@@ -3729,7 +3729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92a3e030351ed72a3200c646ea84037497e05311b5a18de1b52605cc272a568c"
+      "sha256": "b9bc2741b128d0f5c48210424347f90b0e735faa8ae59e0c0d09e493799a4747"
     },
     {
       "path": "src/rt/asset_index_selftest.c",
@@ -3741,7 +3741,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "63a3c2f51bf5c6fb344aa92238d1e508a6c9dc7e0359f93ac5b6e73b8a9a6965"
+      "sha256": "4462d7d2d979618c9ee348311ed10488cf7ff7f5d9094f966b6bf287487d659d"
     },
     {
       "path": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
@@ -5567,7 +5567,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "80d561912aed96d2c27396b930cce7c35484514fb0d0275b9436e944deda254e"
+      "sha256": "188d29d0c820edba852fd23ab2bbbfdd3a53d35642e90c7d861c8fd0d0986425"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -8664,7 +8664,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7da954de065205414bd55f926b20b0ec72a0098340049e58705cbe0d39fa6fe8"
+      "sha256": "df56b133755ac23a24286b74ebc2daa1e48041ea3a3beb872b1972fb74fbcca2"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
