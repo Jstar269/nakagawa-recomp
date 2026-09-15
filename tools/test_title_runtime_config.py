@@ -1497,6 +1497,172 @@ class DisplayBringupAndRuntimeSyncReservedTests(unittest.TestCase):
         self.assertEqual(normalized["runtime_bindings"]["display_bringup"]["malloc_entry"], 0x08901000)
 
 
+class RequiredRuntimeBindingsTests(unittest.TestCase):
+    """The whole-family omission hole, and the declaration that closes it.
+
+    Every test here is a FAIL-BEFORE test in the strict sense: each manifest
+    below is accepted by the validator WITHOUT the ``required_runtime_bindings``
+    key -- that is the shape the regression shipped in -- and rejected with it.
+    ``test_omission_is_still_legal_without_the_declaration`` pins the "before"
+    half so the pair cannot rot into a vacuous assertion.
+    """
+
+    #: A complete, valid display bring-up family, used as the thing that goes
+    #: missing. Addresses are synthetic fixture values, not any title's.
+    BRINGUP = {
+        "malloc_entry": 0x08901000,
+        "vblank_device_init_entry": 0x08901010,
+        "render_context_init_entry": 0x08901020,
+        "render_context_magic_addr": 0x08902000,
+        "render_table_ready_flag_addr": 0x08902004,
+        "render_context_word_addr": 0x08902008,
+    }
+
+    def manifest(self, *, bindings=None, required=None):
+        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+        if bindings is None:
+            m.pop("runtime_bindings", None)
+        else:
+            m["runtime_bindings"] = bindings
+        if required is not None:
+            m["required_runtime_bindings"] = required
+        return m
+
+    def assert_rejects(self, manifest, fragment):
+        with self.assertRaises(title_manifest.TitleManifestError) as caught:
+            title_manifest.validate_manifest(manifest)
+        self.assertIn(fragment, str(caught.exception))
+
+    # ---- the "before" half: this is exactly what used to pass silently ----
+
+    def test_omission_is_still_legal_without_the_declaration(self) -> None:
+        """No declaration: every omission shape validates, as it always has.
+
+        This is the regression's actual shape. It stays legal on purpose --
+        a title that does not need these facilities must remain valid -- which
+        is why the declaration, not a global mandate, is the fix.
+        """
+        for label, bindings in (
+            ("whole block absent", None),
+            ("family absent", {"schema_version": 1, "fallback_entry": 0x08900100}),
+        ):
+            with self.subTest(shape=label):
+                normalized = title_manifest.validate_manifest(self.manifest(bindings=bindings))
+                self.assertNotIn("display_bringup", normalized.get("runtime_bindings") or {})
+
+    def test_omitted_family_generates_a_disabled_binding(self) -> None:
+        """And it generates cleanly, which is why the runtime never noticed."""
+        config = title_runtime_config.bindings_from_manifest(
+            self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100}))
+        self.assertNotIn("display_bringup", config["bindings"])
+
+    # ---- the "after" half: the same shapes, now declared and refused ----
+
+    def test_absent_family_rejected_when_required(self) -> None:
+        self.assert_rejects(
+            self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100},
+                          required=["display_bringup"]),
+            "does not configure: display_bringup")
+
+    def test_absent_runtime_bindings_block_rejected_when_required(self) -> None:
+        """The widest shape: no bindings block at all."""
+        self.assert_rejects(
+            self.manifest(bindings=None, required=["display_bringup", "frame_ready_latch_addr"]),
+            "does not configure: display_bringup, frame_ready_latch_addr")
+
+    def test_absent_scalar_binding_rejected_when_required(self) -> None:
+        for field in ("frame_ready_latch_addr", "libfont_ready_flag_addr", "fallback_entry"):
+            with self.subTest(field=field):
+                self.assert_rejects(
+                    self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                                  required=[field]),
+                    f"does not configure: {field}")
+
+    def test_partial_required_family_still_rejected(self) -> None:
+        """A declared family cannot be satisfied by a half-configured one."""
+        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+            with self.subTest(missing_field=field):
+                bringup = dict(self.BRINGUP)
+                del bringup[field]
+                self.assert_rejects(
+                    self.manifest(bindings={"schema_version": 1, "display_bringup": bringup},
+                                  required=["display_bringup"]),
+                    "missing required field(s)")
+
+    def test_zero_in_required_family_still_rejected(self) -> None:
+        """Nor by a family whose addresses are the runtime's disabled sentinel."""
+        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+            with self.subTest(zero_field=field):
+                bringup = dict(self.BRINGUP)
+                bringup[field] = 0
+                self.assert_rejects(
+                    self.manifest(bindings={"schema_version": 1, "display_bringup": bringup},
+                                  required=["display_bringup"]),
+                    "must not be zero")
+
+    def test_zero_required_scalar_rejected(self) -> None:
+        self.assert_rejects(
+            self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100,
+                                    "frame_ready_latch_addr": 0},
+                          required=["frame_ready_latch_addr"]),
+            "must not be zero")
+
+    def test_generation_refuses_a_required_family_it_cannot_emit(self) -> None:
+        """The generator is a second gate, so no build path emits zero macros
+        for a family the title says it requires."""
+        manifest = self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100},
+                                 required=["display_bringup"])
+        with self.assertRaises((title_manifest.TitleManifestError,
+                                title_runtime_config.TitleRuntimeConfigError)) as caught:
+            title_runtime_config.bindings_from_manifest(manifest)
+        self.assertIn("display_bringup", str(caught.exception))
+
+    # ---- the declaration itself must fail closed ----
+
+    def test_complete_required_family_accepted(self) -> None:
+        normalized = title_manifest.validate_manifest(
+            self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                          required=["display_bringup"]))
+        self.assertEqual(normalized["required_runtime_bindings"], ["display_bringup"])
+        self.assertIn("display_bringup", normalized["runtime_bindings"])
+
+    def test_unknown_family_name_rejected(self) -> None:
+        """A typo must not silently declare nothing and reopen the hole."""
+        for name in ("display_bringups", "displaybringup", "not_a_family"):
+            with self.subTest(name=name):
+                self.assert_rejects(
+                    self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                                  required=[name]),
+                    "is not a runtime binding family")
+
+    def test_duplicate_and_malformed_declarations_rejected(self) -> None:
+        self.assert_rejects(
+            self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                          required=["display_bringup", "display_bringup"]),
+            "duplicate required binding family")
+        for bad in ({}, "display_bringup", 7, [5], [None]):
+            with self.subTest(value=bad):
+                with self.assertRaises(title_manifest.TitleManifestError):
+                    title_manifest.validate_manifest(
+                        self.manifest(bindings={"schema_version": 1,
+                                                "display_bringup": self.BRINGUP},
+                                      required=bad))
+
+    def test_empty_declaration_is_legal_and_requires_nothing(self) -> None:
+        normalized = title_manifest.validate_manifest(self.manifest(bindings=None, required=[]))
+        self.assertEqual(normalized["required_runtime_bindings"], [])
+
+    def test_every_declarable_family_can_actually_be_satisfied(self) -> None:
+        """The declarable set is the schema's own family list, so no name in it
+        can be impossible to configure."""
+        self.assertEqual(
+            set(title_manifest.DECLARABLE_BINDING_FAMILIES),
+            set(title_manifest.RUNTIME_BINDING_FIELDS)
+            | set(title_manifest.RUNTIME_BINDING_COUNTS)
+            | set(title_manifest.RUNTIME_BINDING_COLLECTIONS)
+            | set(title_manifest.RUNTIME_BINDING_OBJECTS))
+
+
 class ExpectedDataFileCountTests(unittest.TestCase):
     """Slice B hardening: bounded, zero-disabled, malformed/absurd, mismatch."""
 

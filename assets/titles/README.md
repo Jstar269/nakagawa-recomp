@@ -55,6 +55,28 @@ builds one scheduler source against a generic configuration and against each of 
 two, so behavior bound to one fixture's addresses cannot pass as generic. Neither
 fixture reuses any address the runtime previously hardcoded.
 
+Every binding family inside that block is individually optional, and that is what
+keeps the schema generic: a title needing none of them is a valid title, and no
+family is globally mandatory. Optionality alone, though, cannot tell "this title
+does not use display bring-up" apart from "this title's display bring-up was
+lost" — the runtime reads both as the same disabled binding and silently falls
+back to generic PSP semantics. `required_runtime_bindings` is the optional
+root-level list where a title names the families it cannot function without:
+
+```json
+"required_runtime_bindings": ["display_bringup", "frame_ready_latch_addr"]
+```
+
+Declaring a family makes its loss a validation failure instead of a run-time
+behavior change. A declared family must be present and completely configured;
+the existing per-family rules continue to reject a half-configured family and an
+explicitly zero address, so all three shapes — whole family absent, family
+partially present, required address zero — are refused. Names are checked
+against the schema's own family list, so a typo cannot silently declare nothing.
+`tools/title_runtime_config.py` re-checks the same contract before it emits, so
+no build path can turn a required family into a header full of disabled macros.
+Titles that omit the key are unaffected.
+
 - `synthetic-title2.json` is a third source-owned fixture added for the
   generic-title planning proof: it uses a deliberately distinct synthetic
   address family (`0x0A4xxxxx`, never HST's `0x003xxxxx` or the other

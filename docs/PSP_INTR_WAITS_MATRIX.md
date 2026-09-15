@@ -81,6 +81,30 @@ inside an interrupt handler.
    sample count (L228/L229); and `sceDisplayWaitVblank` **succeeds from inside an
    interrupt**, returning 1 (L323) where every neighbouring API returns `ILLEGAL_CONTEXT`.
 
+**The normal-context display waits are no longer `unknown`.** Both display NIDs used to
+carry a `WOULD_BLOCK` control in the normal-context row, which recorded that the probe
+declined to measure a call that would block -- not a hardware fact. Issue #70's display-wait
+work measured them directly (`PSP-DISPLAY-002`, `PSP-DISPLAY-003`, `PSP-DISPLAY-004`; probe
+cases `display-wait-late`, `display-wait-priority`, `display-vblank-window`):
+
+1. **There is no missed-edge memory.** After 0.25, 0.75, 1.25, 1.75 and 2.5 periods of
+   un-yielded CPU since the last edge, both NIDs blocked on 240/240 trials each, waited
+   exactly the remainder of the period in progress, and advanced VCOUNT by exactly 1 --
+   never 0, and never 2 even when two whole edges had passed. A late caller is not owed the
+   edges it slept through.
+2. **The two NIDs differ in exactly one cell.** Called from inside the vblank interval,
+   `sceDisplayWaitVblank` returns in 3..5 us (syscall overhead) with the value 1, while
+   `sceDisplayWaitVblankStart` waits a full 16.669..16.693 ms period and returns 0. At every
+   phase outside the interval they are indistinguishable.
+3. **The interval begins at the start edge**, not at the end of the period: `sceDisplayIsVblank`
+   was true immediately after `sceDisplayWaitVblankStart` returned on 48/48 trials and fell
+   721..734 us later, at hcount 14 of 286.
+4. **The wait does not consult the ready queue.** With an always-runnable lower-priority peer
+   present, the caller's wall time moved by 2 us over 2.006 s and its summed wait by 220 us
+   over 120 waits, with identical VCOUNT progression. Separately, the peer made progress only
+   while the caller was genuinely blocked -- exactly zero during its pure-CPU segments, across
+   all 120 iterations -- which is strict priority with no aging.
+
 **Interrupts-disabled and dispatch-disabled are genuinely different states.** They agree
 in all but two cells out of roughly 110, which is exactly why the two exceptions matter:
 
@@ -325,11 +349,13 @@ route hardware uses rather than by an unsatisfiable-wait accident.
 | `sceKernelSleepThreadCB` | - | intr-off | L22 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelSleepThreadCB` | - | intr-ctx | L322 | 0x80020064 | not run | NOT RUN | context |
 | `sceKernelSleepThreadCB` | - | disp-off | L23 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceDisplayWaitVblank` | - | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceDisplayWaitVblank` | late (0.25-2.5 periods) | normal | PSP-DISPLAY-002 | blocks to next edge, VCOUNT +1, returns 0 | same | **CONFORMS** | n/a |
+| `sceDisplayWaitVblank` | inside vblank interval | normal | PSP-DISPLAY-002 | returns 1 in 3..5 us, no block | same | **CONFORMS** | n/a |
 | `sceDisplayWaitVblank` | - | intr-off | L26 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceDisplayWaitVblank` | - | intr-ctx | L323 | 0x00000001 | not run | NOT RUN | n/a |
 | `sceDisplayWaitVblank` | - | disp-off | L27 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceDisplayWaitVblankStart` | - | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceDisplayWaitVblankStart` | late (0.25-2.5 periods) | normal | PSP-DISPLAY-002 | blocks to next edge, VCOUNT +1, returns 0 | same | **CONFORMS** | n/a |
+| `sceDisplayWaitVblankStart` | inside vblank interval | normal | PSP-DISPLAY-002 | blocks a full period, returns 0 | same | **CONFORMS** | n/a |
 | `sceDisplayWaitVblankStart` | - | intr-off | L34 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceDisplayWaitVblankStart` | - | intr-ctx | L325 | 0x80020064 | not run | NOT RUN | context |
 | `sceDisplayWaitVblankStart` | - | disp-off | L35 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |

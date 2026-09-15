@@ -84,7 +84,8 @@ int     sched_interrupts_enabled(void) { return 1; }
 void    sched_delay_current(uint32_t usec) { (void)usec; }
 void    sched_preempt(void) {}
 void    sched_block_on(uint32_t obj) { (void)obj; }
-void    sched_wait_vblank(void) {}
+void    sched_wait_vblank_start(void) {}
+int     sched_wait_vblank(void) { return 0; }
 int     sched_block_on_timeout(uint32_t obj, uint32_t usec) { (void)obj; (void)usec; return 0; }
 void    sched_wake(uint32_t obj) { (void)obj; }
 void    sched_thread_sleep(void) {}

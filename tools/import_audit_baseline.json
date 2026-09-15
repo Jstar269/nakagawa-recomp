@@ -1381,7 +1381,7 @@
   },
   "0x984c27e7": {
     "classification": "dedicated",
-    "handler": "h_DisplayWaitVblank",
+    "handler": "h_DisplayWaitVblankStart",
     "name": "sceDisplayWaitVblankStart",
     "status": "unreviewed"
   },
