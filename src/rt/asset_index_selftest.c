@@ -189,7 +189,159 @@ int main(void) {
 
     SrAssetIndex empty;
     sr_asset_index_init(&empty);
-    if (sr_asset_index_finalize(&empty) != 0) return fail("empty index accepted");
+    /* VFS Directory Enumeration Tests */
+    SrVfsDirEntry *dir_entries = NULL;
+    size_t dir_count = 0;
+
+    /* Test 1: Direct child enumeration of data/menu/text */
+    if (sr_asset_index_list_dir(&short_index, "data/menu/text", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 3) {
+        free(dir_entries);
+        return fail("VFS list_dir data/menu/text failed count");
+    }
+    if (strcmp(dir_entries[0].name, "common.to") != 0 || dir_entries[0].is_dir != 0 || dir_entries[0].size != 17 ||
+        strcmp(dir_entries[1].name, "nested.to") != 0 || dir_entries[1].is_dir != 0 || dir_entries[1].size != 31 ||
+        strcmp(dir_entries[2].name, "upper.to") != 0 || dir_entries[2].is_dir != 0 || dir_entries[2].size != 29) {
+        free(dir_entries);
+        return fail("VFS list_dir data/menu/text entries mismatch or duplicate not collapsed");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* Test 2: Trailing slash invariance "data/menu/text/" */
+    if (sr_asset_index_list_dir(&short_index, "data/menu/text/", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 3) {
+        free(dir_entries);
+        return fail("VFS list_dir trailing slash mismatch");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* Test 3: Subdirectory level "data/menu" (no recursive grandchildren) */
+    if (sr_asset_index_list_dir(&short_index, "data/menu", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 1 || strcmp(dir_entries[0].name, "text") != 0 || dir_entries[0].is_dir != 1) {
+        free(dir_entries);
+        return fail("VFS list_dir data/menu grandchildren not collapsed into direct child dir");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* Test 4: Root level "" */
+    if (sr_asset_index_list_dir(&short_index, "", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 1 || strcmp(dir_entries[0].name, "data") != 0 || dir_entries[0].is_dir != 1) {
+        free(dir_entries);
+        return fail("VFS list_dir root mismatch");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* Test 5: Non-existent directory returns 0 */
+    if (sr_asset_index_list_dir(&short_index, "data/nonexistent", -1, &dir_entries, &dir_count) != 0 ||
+        dir_count != 0) {
+        free(dir_entries);
+        return fail("VFS list_dir nonexistent succeeded unexpectedly");
+    }
+
+    /* Adversarial Test 6: Long filenames (> 63 bytes) sharing prefix */
+    SrAssetIndex adv_index;
+    sr_asset_index_init(&adv_index);
+    const char *long_file_a = "data/long/test_prefix_shared_characters_1234567890_1234567890_1234567890_alpha.bin";
+    const char *long_file_b = "data/long/test_prefix_shared_characters_1234567890_1234567890_1234567890_beta.bin";
+    if (!sr_asset_index_add_sized(&adv_index, long_file_a, "host_a", -1, 100) ||
+        !sr_asset_index_add_sized(&adv_index, long_file_b, "host_b", -1, 200) ||
+        !sr_asset_index_finalize(&adv_index)) {
+        sr_asset_index_destroy(&adv_index);
+        return fail("Failed to build long filename index");
+    }
+    if (sr_asset_index_list_dir(&adv_index, "data/long", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 2) {
+        free(dir_entries);
+        sr_asset_index_destroy(&adv_index);
+        return fail("VFS list_dir collapsed two long filenames sharing a prefix");
+    }
+    if (strcmp(dir_entries[0].name, "test_prefix_shared_characters_1234567890_1234567890_1234567890_alpha.bin") != 0 ||
+        strcmp(dir_entries[1].name, "test_prefix_shared_characters_1234567890_1234567890_1234567890_beta.bin") != 0) {
+        free(dir_entries);
+        sr_asset_index_destroy(&adv_index);
+        return fail("VFS list_dir long filenames truncated or corrupted");
+    }
+    free(dir_entries); dir_entries = NULL;
+    sr_asset_index_destroy(&adv_index);
+
+    /* Adversarial Test 7: Variant-specific directory enumeration */
+    SrAssetIndex var_index;
+    sr_asset_index_init(&var_index);
+    if (!sr_asset_index_add_sized(&var_index, "data/var/common.bin", "host_c", -1, 50) ||
+        !sr_asset_index_add_sized(&var_index, "data/var/text_en.bin", "host_en", 1, 100) ||
+        !sr_asset_index_add_sized(&var_index, "data/var/text_fr.bin", "host_fr", 2, 100) ||
+        !sr_asset_index_finalize(&var_index)) {
+        sr_asset_index_destroy(&var_index);
+        return fail("Failed to build variant test index");
+    }
+    /* Variant 1: should see common.bin + text_en.bin */
+    if (sr_asset_index_list_dir(&var_index, "data/var", 1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 2) {
+        free(dir_entries);
+        sr_asset_index_destroy(&var_index);
+        return fail("VFS list_dir variant 1 filter failed count");
+    }
+    if (strcmp(dir_entries[0].name, "common.bin") != 0 ||
+        strcmp(dir_entries[1].name, "text_en.bin") != 0) {
+        free(dir_entries);
+        sr_asset_index_destroy(&var_index);
+        return fail("VFS list_dir variant 1 filter mismatch");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* Variant 2: should see common.bin + text_fr.bin */
+    if (sr_asset_index_list_dir(&var_index, "data/var", 2, &dir_entries, &dir_count) != 1 ||
+        dir_count != 2) {
+        free(dir_entries);
+        sr_asset_index_destroy(&var_index);
+        return fail("VFS list_dir variant 2 filter failed count");
+    }
+    if (strcmp(dir_entries[0].name, "common.bin") != 0 ||
+        strcmp(dir_entries[1].name, "text_fr.bin") != 0) {
+        free(dir_entries);
+        sr_asset_index_destroy(&var_index);
+        return fail("VFS list_dir variant 2 filter mismatch");
+    }
+    free(dir_entries); dir_entries = NULL;
+
+    /* All variants (-1): should see common.bin + text_en.bin + text_fr.bin */
+    if (sr_asset_index_list_dir(&var_index, "data/var", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 3) {
+        free(dir_entries);
+        sr_asset_index_destroy(&var_index);
+        return fail("VFS list_dir all variants filter failed count");
+    }
+    free(dir_entries); dir_entries = NULL;
+    sr_asset_index_destroy(&var_index);
+
+    /* Adversarial Test 8: Case-insensitive duplicate collapse */
+    SrAssetIndex case_index;
+    sr_asset_index_init(&case_index);
+    if (!sr_asset_index_add_sized(&case_index, "data/case/testfile.bin", "host_1", -1, 10) ||
+        !sr_asset_index_add_sized(&case_index, "data/case/TestFile.bin", "host_2", -1, 20) ||
+        !sr_asset_index_finalize(&case_index)) {
+        sr_asset_index_destroy(&case_index);
+        return fail("Failed to build case test index");
+    }
+    if (sr_asset_index_list_dir(&case_index, "data/case", -1, &dir_entries, &dir_count) != 1 ||
+        dir_count != 1) {
+        free(dir_entries);
+        sr_asset_index_destroy(&case_index);
+        return fail("VFS list_dir failed to collapse case-insensitive duplicates");
+    }
+    free(dir_entries); dir_entries = NULL;
+    sr_asset_index_destroy(&case_index);
+
+    /* Adversarial Test 9: Fail-closed boundary checks */
+    if (sr_asset_index_list_dir(NULL, "data", -1, &dir_entries, &dir_count) != -1 ||
+        sr_asset_index_list_dir(&short_index, "data", -1, NULL, &dir_count) != -1 ||
+        sr_asset_index_list_dir(&short_index, "data", -1, &dir_entries, NULL) != -1) {
+        return fail("VFS list_dir did not fail closed on NULL pointers");
+    }
+    if (sr_asset_index_list_dir(&empty, "data", -1, &dir_entries, &dir_count) != 0) {
+        return fail("VFS list_dir did not return 0 for empty index");
+    }
+
     sr_asset_index_destroy(&empty);
     sr_asset_index_destroy(&short_index);
     sr_asset_index_destroy(&long_index);

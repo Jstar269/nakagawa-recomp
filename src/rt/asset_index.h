@@ -279,4 +279,167 @@ static inline size_t sr_asset_index_lower_bound(const SrAssetIndex *index,
     return lo;
 }
 
+typedef struct {
+    char name[256];
+    int is_dir;
+    uint64_t size;
+} SrVfsDirEntry;
+
+static inline int sr_vfs_ascii_tolower(int c) {
+    if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
+    return c;
+}
+
+static inline int sr_vfs_strcasecmp(const char *s1, const char *s2) {
+    if (!s1 || !s2) return s1 ? 1 : (s2 ? -1 : 0);
+    while (*s1 && *s2) {
+        int c1 = sr_vfs_ascii_tolower((unsigned char)*s1);
+        int c2 = sr_vfs_ascii_tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 < c2 ? -1 : 1;
+        s1++;
+        s2++;
+    }
+    int c1 = sr_vfs_ascii_tolower((unsigned char)*s1);
+    int c2 = sr_vfs_ascii_tolower((unsigned char)*s2);
+    return c1 < c2 ? -1 : (c1 > c2 ? 1 : 0);
+}
+
+static inline int sr_vfs_dir_entry_cmp(const void *a, const void *b) {
+    const SrVfsDirEntry *ea = (const SrVfsDirEntry *)a;
+    const SrVfsDirEntry *eb = (const SrVfsDirEntry *)b;
+    int r = sr_vfs_strcasecmp(ea->name, eb->name);
+    if (r != 0) return r;
+    return strcmp(ea->name, eb->name);
+}
+
+/* Enumerate the direct children of a normalized directory key from a finalized SrAssetIndex.
+ * - `dir_key`: normalized directory key, lowercase with forward slashes (e.g. "data/chara/model/body").
+ *   Leading and trailing slashes may be present or absent. An empty string or NULL represents the root.
+ * - `wanted_variant`: archive variant filter:
+ *     >= 0: only include entries matching this variant or unqualified (-1).
+ *     < 0:  include all entries across variants.
+ * - `entries_out`: points to a malloc'd array of SrVfsDirEntry upon success, which caller frees.
+ * - `count_out`: receives the number of entries in `entries_out`.
+ * Returns:
+ *   1 on success (matching directory found and direct children enumerated, count_out >= 0).
+ *   0 if the directory does not exist in the index (no entries match the prefix).
+ *  -1 on memory allocation error or overlong path component (> 255 bytes).
+ */
+static inline int sr_asset_index_list_dir(const SrAssetIndex *index,
+                                          const char *dir_key,
+                                          int wanted_variant,
+                                          SrVfsDirEntry **entries_out,
+                                          size_t *count_out) {
+    if (!index || !entries_out || !count_out) return -1;
+    *entries_out = NULL;
+    *count_out = 0;
+    if (!index->entries || index->count == 0) return 0;
+
+    char prefix[512];
+    size_t prefix_len = 0;
+    if (dir_key && dir_key[0] != '\0') {
+        const char *p = dir_key;
+        while (*p == '/') p++;
+        size_t len = strlen(p);
+        while (len > 0 && p[len - 1] == '/') len--;
+        if (len > 0) {
+            if (len >= sizeof(prefix) - 2u) return -1;
+            memcpy(prefix, p, len);
+            prefix[len] = '/';
+            prefix[len + 1] = '\0';
+            prefix_len = len + 1;
+        }
+    }
+
+    size_t first = sr_asset_index_lower_bound(index, prefix_len > 0 ? prefix : "");
+    if (prefix_len > 0) {
+        if (first >= index->count || strncmp(index->entries[first].key, prefix, prefix_len) != 0) {
+            return 0; /* Directory does not exist in the index */
+        }
+    } else if (index->count == 0) {
+        return 0;
+    }
+
+    size_t cap = 64;
+    size_t count = 0;
+    SrVfsDirEntry *entries = (SrVfsDirEntry *)malloc(cap * sizeof(SrVfsDirEntry));
+    if (!entries) return -1;
+
+    for (size_t i = first; i < index->count; i++) {
+        const char *key = index->entries[i].key;
+        if (prefix_len > 0 && strncmp(key, prefix, prefix_len) != 0) break;
+
+        /* Filter by variant if requested */
+        if (wanted_variant >= 0) {
+            int evar = index->entries[i].variant;
+            if (evar != -1 && evar != wanted_variant) continue;
+        }
+
+        const char *tail = key + prefix_len;
+        if (*tail == '\0') continue;
+
+        const char *slash = strchr(tail, '/');
+        char child[256];
+        int is_dir = 0;
+        uint64_t size = 0;
+        if (slash != NULL) {
+            size_t clen = (size_t)(slash - tail);
+            if (clen >= sizeof(child)) {
+                free(entries);
+                return -1; /* Name component exceeds buffer, fail closed */
+            }
+            memcpy(child, tail, clen);
+            child[clen] = '\0';
+            is_dir = 1;
+            size = 0;
+        } else {
+            size_t clen = strlen(tail);
+            if (clen >= sizeof(child)) {
+                free(entries);
+                return -1; /* Name component exceeds buffer, fail closed */
+            }
+            memcpy(child, tail, clen);
+            child[clen] = '\0';
+            is_dir = 0;
+            size = index->entries[i].size;
+        }
+
+        /* Check for duplicate of the previously added child (index is sorted by key) */
+        if (count > 0 && sr_vfs_strcasecmp(entries[count - 1].name, child) == 0) {
+            if (is_dir) entries[count - 1].is_dir = 1;
+            continue;
+        }
+
+        if (count == cap) {
+            if (cap > SIZE_MAX / (2u * sizeof(SrVfsDirEntry))) {
+                free(entries);
+                return -1;
+            }
+            size_t next_cap = cap * 2u;
+            SrVfsDirEntry *grown = (SrVfsDirEntry *)realloc(entries, next_cap * sizeof(SrVfsDirEntry));
+            if (!grown) {
+                free(entries);
+                return -1;
+            }
+            entries = grown;
+            cap = next_cap;
+        }
+
+        memcpy(entries[count].name, child, strlen(child) + 1u);
+        entries[count].is_dir = is_dir;
+        entries[count].size = size;
+        count++;
+    }
+
+    if (count == 0 && prefix_len > 0) {
+        /* All matching entries were filtered out by variant */
+        free(entries);
+        return 0;
+    }
+
+    *entries_out = entries;
+    *count_out = count;
+    return 1;
+}
+
 #endif /* SR_ASSET_INDEX_H */

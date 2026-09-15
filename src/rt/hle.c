@@ -5032,8 +5032,10 @@ static int hle_fd_is_std(uint32_t fd) {
 }
 typedef struct {
     int used;
-    int backend;                 /* 0 = ISO9660, 1 = hierarchical host storage */
+    int backend;                 /* 0 = ISO9660, 1 = hierarchical host storage, 2 = unified VFS */
     uint32_t index;
+    uint32_t count;
+    SrVfsDirEntry *entries;
     char *path;
     HANDLE find;
     WIN32_FIND_DATAW data;
@@ -5928,63 +5930,157 @@ static uint32_t h_IoClose(CpuState *s) {
 
 static uint32_t h_IoDopen(CpuState *s) {
     char path[512]; guest_cstr(A0, path, sizeof(path));
+    if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
+
     for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
         if (!s_dirfds[i].used) {
             DirFd *d = &s_dirfds[i];
             memset(d, 0, sizeof(*d));
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
-            if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
+            if (!d->path) {
+                memset(d, 0, sizeof(*d));
+                return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+            }
             if (_strnicmp(path, "disc0:", 6) == 0 || _strnicmp(path, "umd:", 4) == 0) {
                 IsoDirEntry probe;
                 if (iso_list(path, 0, &probe) < 0) {
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
+                    free(d->path); memset(d, 0, sizeof(*d));
+                    return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
                 }
                 d->backend = 0;
             } else {
-                char *hp = host_dir_path_alloc(path);
-                wchar_t *root = NULL, *pattern = NULL;
-                if (!hp || !sr_wide_path_alloc(hp, &root) ||
-                    !sr_wide_join_alloc(root, L"*", &pattern)) {
-                    free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                    return 0x80010014u;
-                }
-#ifdef _WIN32
-                /* Generic VFS enumeration containment: the resolved host
-                 * directory must open onto an object whose FINAL path lives
-                 * under SR_FSDIR's canonical root. A pre-planted junction in
-                 * place of (or above) the enumerated directory resolves to its
-                 * target here and is refused before FindFirstFileW ever runs. */
-                {
-                    char *configured_fs = NULL;
-                    int configured_fs_present = 0;
-                    sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
-                    const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
-                    wchar_t canonical_fs[MAX_PATH * 2];
-                    int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
-                                                      sizeof(canonical_fs)/sizeof(wchar_t));
-                    free(configured_fs);
-
-                    HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
-                                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                               NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-                    if (h_dir == INVALID_HANDLE_VALUE || !fs_ok ||
-                        !sr_vfs_handle_is_contained(h_dir, canonical_fs)) {
-                        if (h_dir != INVALID_HANDLE_VALUE) CloseHandle(h_dir);
-                        free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                        return 0x80010014u;
+                int wanted_var = -2;
+                char *norm_key = data_normalize_guest_key(path, &wanted_var);
+                SrVfsDirEntry *entries = NULL;
+                size_t entry_count = 0;
+                int index_found = 0;
+                if (norm_key != NULL) {
+                    if (atomic_load_explicit(&s_data_state, memory_order_acquire) == SR_DATA_STATE_READY) {
+                        int list_rc = sr_asset_index_list_dir(&s_data_index, norm_key, wanted_var, &entries, &entry_count);
+                        if (list_rc < 0) {
+                            free(norm_key);
+                            free(d->path);
+                            memset(d, 0, sizeof(*d));
+                            return 0x80010005u; /* Fail closed on memory or overlong path */
+                        }
+                        index_found = (list_rc > 0);
                     }
-                    CloseHandle(h_dir);
+                    free(norm_key);
                 }
+
+                char *hp = host_dir_path_alloc(path);
+                int host_found = 0;
+                if (hp) {
+                    wchar_t *root = NULL, *pattern = NULL;
+                    if (sr_wide_path_alloc(hp, &root) && sr_wide_join_alloc(root, L"*", &pattern)) {
+#ifdef _WIN32
+                        char *configured_fs = NULL;
+                        int configured_fs_present = 0;
+                        sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
+                        const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
+                        wchar_t canonical_fs[MAX_PATH * 2];
+                        int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs, sizeof(canonical_fs)/sizeof(wchar_t));
+                        free(configured_fs);
+
+                        HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
+                                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                   NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+                        if (h_dir != INVALID_HANDLE_VALUE && fs_ok && sr_vfs_handle_is_contained(h_dir, canonical_fs)) {
+                            CloseHandle(h_dir);
+                            WIN32_FIND_DATAW fd_data;
+                            HANDLE h_find = FindFirstFileW(pattern, &fd_data);
+                            if (h_find != INVALID_HANDLE_VALUE) {
+                                host_found = 1;
+                                BOOL next_ok = TRUE;
+                                while (next_ok) {
+                                    if (!(fd_data.cFileName[0] == L'.' &&
+                                         (fd_data.cFileName[1] == L'\0' ||
+                                          (fd_data.cFileName[1] == L'.' && fd_data.cFileName[2] == L'\0')))) {
+                                        int is_dir = (fd_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                                        if (!is_dir && fd_data.nFileSizeHigh != 0u) {
+                                            FindClose(h_find);
+                                            free(pattern); free(root); free(hp);
+                                            free(entries); free(d->path); memset(d, 0, sizeof(*d));
+                                            return 0x80010005u; /* Fail closed on >4 GiB host file */
+                                        }
+                                        char *child_utf8 = NULL;
+                                        if (!sr_wide_to_utf8_alloc(fd_data.cFileName, &child_utf8)) {
+                                            FindClose(h_find);
+                                            free(pattern); free(root); free(hp);
+                                            free(entries); free(d->path); memset(d, 0, sizeof(*d));
+                                            return 0x80010005u; /* Fail closed on conversion error */
+                                        }
+                                        if (strlen(child_utf8) >= sizeof(entries[0].name)) {
+                                            free(child_utf8);
+                                            FindClose(h_find);
+                                            free(pattern); free(root); free(hp);
+                                            free(entries); free(d->path); memset(d, 0, sizeof(*d));
+                                            return 0x80010016u; /* SCE_KERNEL_ERROR_NAMETOOLONG */
+                                        }
+                                        uint64_t fsz = is_dir ? 0 : (uint64_t)fd_data.nFileSizeLow;
+                                        size_t existing = (size_t)-1;
+                                        for (size_t k = 0; k < entry_count; k++) {
+                                            if (sr_vfs_strcasecmp(entries[k].name, child_utf8) == 0) {
+                                                existing = k; break;
+                                            }
+                                        }
+                                        if (existing != (size_t)-1) {
+                                            if (is_dir) entries[existing].is_dir = 1;
+                                            if (!is_dir && !entries[existing].is_dir) entries[existing].size = fsz;
+                                            memcpy(entries[existing].name, child_utf8, strlen(child_utf8) + 1u);
+                                        } else {
+                                            SrVfsDirEntry *grown = (SrVfsDirEntry *)realloc(entries, (entry_count + 1) * sizeof(SrVfsDirEntry));
+                                            if (!grown) {
+                                                free(child_utf8);
+                                                FindClose(h_find);
+                                                free(pattern); free(root); free(hp);
+                                                free(entries); free(d->path); memset(d, 0, sizeof(*d));
+                                                return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                                            }
+                                            entries = grown;
+                                            memcpy(entries[entry_count].name, child_utf8, strlen(child_utf8) + 1u);
+                                            entries[entry_count].is_dir = is_dir;
+                                            entries[entry_count].size = fsz;
+                                            entry_count++;
+                                        }
+                                        free(child_utf8);
+                                    }
+                                    next_ok = FindNextFileW(h_find, &fd_data);
+                                }
+                                DWORD last_err = GetLastError();
+                                FindClose(h_find);
+                                if (last_err != ERROR_NO_MORE_FILES) {
+                                    free(pattern); free(root); free(hp);
+                                    free(entries); free(d->path); memset(d, 0, sizeof(*d));
+                                    return 0x80010005u; /* Fail closed on incomplete host enumeration */
+                                }
+                            }
+                        } else if (h_dir != INVALID_HANDLE_VALUE) {
+                            CloseHandle(h_dir);
+                        }
 #endif
-                d->find = FindFirstFileW(pattern, &d->data);
-                DWORD first_error = d->find == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-                free(hp); free(root); free(pattern);
-                if (d->find == INVALID_HANDLE_VALUE) {
-                    fprintf(stderr, "sceIoDopen: enumeration failed (error=%lu)\n", first_error);
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
+                        free(pattern);
+                        free(root);
+                    }
+                    free(hp);
                 }
-                d->backend = 1; d->first = 1;
+
+                if (!index_found && !host_found) {
+                    free(entries);
+                    free(d->path);
+                    memset(d, 0, sizeof(*d));
+                    return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+                }
+
+                if (entry_count > 1) {
+                    qsort(entries, entry_count, sizeof(SrVfsDirEntry), sr_vfs_dir_entry_cmp);
+                }
+
+                d->backend = 2;
+                d->entries = entries;
+                d->count = (uint32_t)entry_count;
+                d->index = 0;
             }
             return 0x100u + i;
         }
@@ -6004,6 +6100,14 @@ static uint32_t h_IoDread(CpuState *s) {
         int r = iso_list(d->path, d->index, &e);
         if (r <= 0) return r < 0 ? 0x80010005u : 0;
         d->index++;
+    } else if (d->backend == 2) {
+        if (d->index >= d->count) return 0;
+        SrVfsDirEntry *ve = &d->entries[d->index++];
+        memset(&e, 0, sizeof(e));
+        strncpy(e.name, ve->name, sizeof(e.name) - 1);
+        e.is_dir = ve->is_dir;
+        e.size = (uint32_t)ve->size;
+        e.lba = 0;
     } else {
         for (;;) {
             if (!d->first && !FindNextFileW(d->find, &d->data)) {
@@ -6049,6 +6153,10 @@ static uint32_t h_IoDclose(CpuState *s) {
     DirFd *d = &s_dirfds[fd - 0x100u];
     if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (d->backend == 1 && d->find != NULL && d->find != INVALID_HANDLE_VALUE) FindClose(d->find);
+    if (d->backend == 2 && d->entries) {
+        free(d->entries);
+        d->entries = NULL;
+    }
     free(d->path);
     memset(d, 0, sizeof(*d)); return 0;
 }

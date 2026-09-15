@@ -1496,6 +1496,44 @@ class DisplayBringupAndRuntimeSyncReservedTests(unittest.TestCase):
         normalized = title_manifest.validate_manifest(m)
         self.assertEqual(normalized["runtime_bindings"]["display_bringup"]["malloc_entry"], 0x08901000)
 
+    def test_display_bringup_missing_required_field_rejected(self) -> None:
+        """When a binding family is configured, missing any required field fails closed."""
+        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+            with self.subTest(missing_field=field):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {
+                    "schema_version": 1,
+                    "display_bringup": {
+                        "malloc_entry": 0x08901000,
+                        "vblank_device_init_entry": 0x08901010,
+                        "render_context_init_entry": 0x08901020,
+                        "render_context_magic_addr": 0x08902000,
+                        "render_table_ready_flag_addr": 0x08902004,
+                        "render_context_word_addr": 0x08902008,
+                    },
+                }
+                del m["runtime_bindings"]["display_bringup"][field]
+                self.assert_python_rejects(m, "missing required field(s)")
+
+    def test_zero_or_omitted_cannot_masquerade_as_valid_required_family(self) -> None:
+        """Zero values in a required binding family cannot masquerade as valid configuration."""
+        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+            with self.subTest(zero_field=field):
+                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
+                m["runtime_bindings"] = {
+                    "schema_version": 1,
+                    "display_bringup": {
+                        "malloc_entry": 0x08901000,
+                        "vblank_device_init_entry": 0x08901010,
+                        "render_context_init_entry": 0x08901020,
+                        "render_context_magic_addr": 0x08902000,
+                        "render_table_ready_flag_addr": 0x08902004,
+                        "render_context_word_addr": 0x08902008,
+                    },
+                }
+                m["runtime_bindings"]["display_bringup"][field] = 0
+                self.assert_python_rejects(m, "must not be zero")
+
 
 class ExpectedDataFileCountTests(unittest.TestCase):
     """Slice B hardening: bounded, zero-disabled, malformed/absurd, mismatch."""
