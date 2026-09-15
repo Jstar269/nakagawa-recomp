@@ -3606,7 +3606,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "58c1ca9c7ea9ada7f730c8ccb893631ec83a9917668b540ffb8bb0a8c46bf135"
+      "sha256": "030c4170f541fc5126b615588a6e1a65e02de6847c68df71f2218538e28cb3b8"
     },
     {
       "path": "src/player/setup_staging.h",
@@ -6272,7 +6272,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "480e6c0dd9e61df70d6dd604bb3d332da56904e90611e1aa73b5f2538f4c946d"
+      "sha256": "36d5ef4ea68adc4da1cec345495238c9539e7f93d50184f13142e968bf7c6f0e"
     },
     {
       "path": "tools/README.md",

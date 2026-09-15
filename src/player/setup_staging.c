@@ -367,7 +367,8 @@ static bool discard_tree_posix_at(int parent_fd, const char *name) {
 
     if (!S_ISDIR(info.st_mode)) return unlinkat(parent_fd, name, 0) == 0 || errno == ENOENT;
 
-    int child_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int child_fd = openat(parent_fd, name,
+                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (child_fd < 0) return errno == ENOENT;
 
     bool okay = discard_open_directory_fd_posix(child_fd);
@@ -382,7 +383,7 @@ static bool discard_tree_posix(const char *path) {
     if (errno == ENOENT) return true;
     if (errno != EISDIR && errno != EPERM) return false;
 
-    int root_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int root_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (root_fd < 0) return errno == ENOENT;
 
     bool okay = discard_open_directory_fd_posix(root_fd);

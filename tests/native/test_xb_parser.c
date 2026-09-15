@@ -23,6 +23,7 @@
 #include <windows.h>
 #define test_rmdir _rmdir
 #else
+#include <errno.h>
 #include <unistd.h>
 #define test_rmdir rmdir
 #endif
@@ -552,7 +553,36 @@ static void test_staging_discard_reparse_boundary(void) {
     test_rmdir(outside);
     printf("[XB_TEST] Windows reparse-point discard boundary PASSED\n");
 #else
-    printf("[XB_TEST] Windows reparse-point discard boundary SKIP (Windows-only)\n");
+    const char *root = "build/.staging_symlink_boundary";
+    const char *outside = "build/staging_discard_posix_outside";
+    const char *outside_file = "build/staging_discard_posix_outside/sentinel.bin";
+    const char *escaped = "build/.staging_symlink_boundary/escaped";
+    (void)player_stage_discard(root);
+    remove(outside_file);
+    test_rmdir(outside);
+    assert(nk_platform_mkdir_p(root));
+    assert(nk_platform_mkdir_p(outside));
+    static const uint8_t data[] = "outside";
+    write_file_bytes(outside_file, data, sizeof(data) - 1);
+
+    if (symlink("../staging_discard_posix_outside", escaped) != 0) {
+        int error = errno;
+        (void)player_stage_discard(root);
+        remove(outside_file);
+        test_rmdir(outside);
+        if (error == EACCES || error == EPERM || error == ENOSYS) {
+            printf("[XB_TEST] POSIX symlink discard regression SKIP (symlink creation unavailable)\n");
+            return;
+        }
+        assert(!"symlink failed unexpectedly");
+    }
+
+    assert(player_stage_discard(root));
+    assert(access(outside_file, F_OK) == 0);
+    assert(!nk_platform_dir_exists(root));
+    remove(outside_file);
+    test_rmdir(outside);
+    printf("[XB_TEST] POSIX symlink discard boundary PASSED\n");
 #endif
 }
 
