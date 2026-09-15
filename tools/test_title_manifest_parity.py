@@ -207,6 +207,20 @@ class TitleManifestParityTests(unittest.TestCase):
             (lambda d: d.update({"schema_version": 1.5}), "float schema version"),
             # 13. Uppercase identifier
             (lambda d: d.update({"id": "UPPERCASE_INVALID"}), "uppercase identifier"),
+            # 14. Repeated path separator (strtok would otherwise collapse it)
+            (lambda d: d["filesystem"].update({"data_root": "data//nested"}), "repeated data-root separator"),
+            # 15. Trailing path separator (strtok would otherwise discard it)
+            (lambda d: d["filesystem"].update({"data_root": "data/"}), "trailing data-root separator"),
+            # 16. Repeated memory-stick separator
+            (lambda d: d["filesystem"].update({"memory_stick_root": "ms//nested"}), "repeated memory-stick separator"),
+            # 17. Trailing memory-stick separator
+            (lambda d: d["filesystem"].update({"memory_stick_root": "ms/"}), "trailing memory-stick separator"),
+            # 18. Repeated optional module-directory separator
+            (lambda d: d["filesystem"].update({"module_dir": "modules//nested"}), "repeated module-directory separator"),
+            # 19. Trailing optional PSP-header separator
+            (lambda d: d["filesystem"].update({"psp_header": "boot/"}), "trailing PSP-header separator"),
+            # 20. Repeated optional disc-image separator
+            (lambda d: d["filesystem"].update({"disc_image": "disc//image.iso"}), "repeated disc-image separator"),
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:

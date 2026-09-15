@@ -200,6 +200,7 @@ class PreparationEngine:
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "engine_version": PREP_ENGINE_VERSION,
                 "title_id": profile.id,
+                "game_name": profile.game_name or profile.id,
                 "disc_id": disc_id,
                 "title_name": profile.name,
                 "iso_path": str(iso),

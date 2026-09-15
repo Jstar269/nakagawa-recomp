@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -47,6 +48,23 @@ def _c_string_escape(value: str) -> str:
     either previously emitted a broken or misinterpreted literal.
     """
     return value.replace(chr(92), chr(92) * 2).replace('"', chr(92) + '"')
+
+
+def _default_game_name(title_id: str) -> str:
+    """Derive the portable build name used by the generic manager.
+
+    The manifest's optional ``game_name`` is authoritative when present.  For
+    older manifests, keep the manager's documented ``-v<digits>`` suffix
+    derivation in the native catalog so launch discovery and build planning
+    share one name even when the title id is versioned.
+    """
+    derived = re.sub(r"-v\d+$", "", title_id)
+    return derived or title_id
+
+
+def _manifest_game_name(manifest: Dict[str, Any]) -> str:
+    explicit = manifest.get("game_name")
+    return str(explicit) if explicit else _default_game_name(manifest["id"])
 
 
 def compute_manifest_digest(manifest_files: List[Path]) -> str:
@@ -163,6 +181,7 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "",
         "typedef struct {",
         "    const char *id;                     /* e.g. \"synthetic-allegrex-v1\" */",
+        "    const char *game_name;              /* portable build/launch name */",
         "    const char *display_name;",
         "    NkTitleKind kind;",
         "    const char *primary_disc_id;",
@@ -288,6 +307,7 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
 
     for idx, t in enumerate(titles):
         t_id = t["id"]
+        t_game_name = _c_string_escape(_manifest_game_name(t))
         t_name = _c_string_escape(t["display_name"])
         kind = t["kind"]
         if kind == "retail":
@@ -319,6 +339,7 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
 
         lines.append("    {")
         lines.append(f'        "{t_id}",')
+        lines.append(f'        "{t_game_name}",')
         lines.append(f'        "{t_name}",')
         lines.append(f"        {kind_enum},")
         lines.append(f'        "{disc_id}",')

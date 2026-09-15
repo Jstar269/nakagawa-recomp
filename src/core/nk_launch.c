@@ -129,6 +129,7 @@ static bool ensure_writable_dir(const char *path) {
 static bool find_candidate_executable(
     const char *root,
     const char *title_id,
+    const char *game_name,
     char *out_path,
     size_t max_len
 ) {
@@ -141,7 +142,7 @@ static bool find_candidate_executable(
     char sep = nk_platform_path_separator();
     char cand[NK_MAX_PATH];
 
-    /* Candidate 1: build/hst/hst.exe or build/hst/hst */
+    /* Candidate 1: legacy build/hst/hst.exe or build/hst/hst */
     snprintf(cand, sizeof(cand), "%s%cbuild%chst%chst.exe", root, sep, sep, sep);
     if (nk_platform_file_exists(cand)) {
         snprintf(out_path, max_len, "%s", cand);
@@ -153,7 +154,23 @@ static bool find_candidate_executable(
         return true;
     }
 
-    /* Candidate 2: build/<title_id>/<title_id>.exe */
+    /* Candidate 2: manifest-selected build/<game_name>/<game_name>[.exe].
+     * The generic manager plans and builds by game_name, which may be an
+     * explicit manifest value rather than the versioned title id. */
+    if (game_name && *game_name) {
+        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s.exe", root, sep, sep, game_name, sep, game_name);
+        if (nk_platform_file_exists(cand)) {
+            snprintf(out_path, max_len, "%s", cand);
+            return true;
+        }
+        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s", root, sep, sep, game_name, sep, game_name);
+        if (nk_platform_file_exists(cand)) {
+            snprintf(out_path, max_len, "%s", cand);
+            return true;
+        }
+    }
+
+    /* Candidate 3: title-id compatibility layout build/<title_id>/<title_id>.exe */
     if (title_id && *title_id) {
         snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s.exe", root, sep, sep, title_id, sep, title_id);
         if (nk_platform_file_exists(cand)) {
@@ -167,7 +184,7 @@ static bool find_candidate_executable(
         }
     }
 
-    /* Candidate 3: bin/nakagawa_runtime.exe or bin/nakagawa_runtime */
+    /* Candidate 4: bin/nakagawa_runtime.exe or bin/nakagawa_runtime */
     snprintf(cand, sizeof(cand), "%s%cbin%cnakagawa_runtime.exe", root, sep, sep);
     if (nk_platform_file_exists(cand)) {
         snprintf(out_path, max_len, "%s", cand);
@@ -179,7 +196,7 @@ static bool find_candidate_executable(
         return true;
     }
 
-    /* Candidate 4: hst.exe in root */
+    /* Candidate 5: hst.exe in root */
     snprintf(cand, sizeof(cand), "%s%chst.exe", root, sep);
     if (nk_platform_file_exists(cand)) {
         snprintf(out_path, max_len, "%s", cand);
@@ -197,7 +214,9 @@ static bool find_candidate_executable(
 bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
     const char *effective_root = (root && *root) ? root : ".";
-    return find_candidate_executable(effective_root, title_id, resolved, sizeof(resolved));
+    const NkTitleEntry *entry = nk_title_catalog_find_by_id(title_id);
+    const char *game_name = entry ? entry->game_name : NULL;
+    return find_candidate_executable(effective_root, title_id, game_name, resolved, sizeof(resolved));
 }
 
 NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
@@ -460,6 +479,7 @@ static bool find_candidate_image(
     const char *working_dir,
     const char *executable_path,
     const char *title_id,
+    const char *game_name,
     char *out_path,
     size_t max_len
 ) {
@@ -532,7 +552,16 @@ static bool find_candidate_image(
         return true;
     }
 
-    /* 4. <working_dir>/build/<title_id>/<title_id>_image.bin */
+    /* 4. <working_dir>/build/<game_name>/<game_name>_image.bin */
+    if (game_name && *game_name) {
+        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s_image.bin", working_dir, sep, sep, game_name, sep, game_name);
+        if (nk_platform_file_exists(cand)) {
+            snprintf(out_path, max_len, "%s", cand);
+            return true;
+        }
+    }
+
+    /* 5. <working_dir>/build/<title_id>/<title_id>_image.bin */
     if (title_id && *title_id) {
         snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s_image.bin", working_dir, sep, sep, title_id, sep, title_id);
         if (nk_platform_file_exists(cand)) {
@@ -601,18 +630,22 @@ NkResult nk_launch_prepare_session(
     session->config.diagnostic_mode = false;
     session->config.gui_mode = false;
 
+    /* Resolve the catalog entry before executable discovery so the native
+     * launch route uses the same manifest-selected game_name as the manager. */
+    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(session->disc_id);
+    if (!entry) entry = nk_title_catalog_find_by_id(session->title_id);
+    const char *game_name = entry ? entry->game_name : NULL;
+
     /* 1. Resolve executable */
-    if (!find_candidate_executable(root, game->title_id, session->executable_path, sizeof(session->executable_path))) {
+    if (!find_candidate_executable(root, game->title_id, game_name, session->executable_path, sizeof(session->executable_path))) {
         snprintf(session->last_error, sizeof(session->last_error), "Runtime binary not found under root: %s", root);
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
     /* 2. Resolve image.bin */
-    find_candidate_image(session->working_directory, session->executable_path, game->title_id, session->image_path, sizeof(session->image_path));
+    find_candidate_image(session->working_directory, session->executable_path, game->title_id, game_name, session->image_path, sizeof(session->image_path));
 
     /* 3. Resolve title catalog entry & addresses */
-    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(session->disc_id);
-    if (!entry) entry = nk_title_catalog_find_by_id(session->title_id);
     /* No catalog entry means no known load address. The previous fallback started
        the runtime at a hard-coded 0x0029a060 with a zero base -- an address that
        belongs to no title in this tree, so the guest was loaded at 0 and executed

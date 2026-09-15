@@ -100,6 +100,7 @@ class TitleProfile:
     runtime_profile: str = "standard"
     codegen_profile: str = "default"
     min_iso_bytes: int = 10 * 1024 * 1024  # 10 MB minimum
+    game_name: str = ""
 
     def matches_disc_id(self, disc_id: str) -> bool:
         norm = disc_id.strip().upper().replace("-", "").replace("_", "")

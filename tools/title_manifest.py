@@ -43,7 +43,7 @@ ROOT_KEYS = {
     "schema_version", "id", "display_name", "kind", "disc", "executable",
     "modules", "filesystem", "hle_profile", "feature_requirements",
     "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
-    "runtime_contract", "profile_zero", "runtime_bindings",
+    "runtime_contract", "profile_zero", "runtime_bindings", "game_name",
 }
 
 #: Optional title bindings the compiled runtime may consume. Every field is
@@ -883,7 +883,14 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
 
 
 def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
-    value = obj(value, path, {"data_root", "memory_stick_root", "device_prefixes"})
+    # module_dir/psp_header/disc_image are optional input-location declarations
+    # (issue #196 Phase 4): a manifest DECLARES where its private inputs live so
+    # generic manager paths never assume a layout. data_root/memory_stick_root/
+    # device_prefixes remain the required runtime-filesystem contract.
+    value = obj(value, path, {
+        "data_root", "memory_stick_root", "device_prefixes",
+        "module_dir", "psp_header", "disc_image",
+    })
     require(value, path, "data_root", "memory_stick_root", "device_prefixes")
     prefixes: set[str] = set()
     for index, prefix in enumerate(array(value["device_prefixes"], f"{path}.device_prefixes", 16)):
@@ -894,11 +901,15 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
         if prefix in prefixes:
             fail(f"{path}.device_prefixes[{index}]", "duplicate device prefix")
         prefixes.add(prefix)
-    return {
+    result = {
         "data_root": portable_path(value["data_root"], f"{path}.data_root"),
         "memory_stick_root": portable_path(value["memory_stick_root"], f"{path}.memory_stick_root"),
         "device_prefixes": sorted(prefixes),
     }
+    for optional_key in ("module_dir", "psp_header", "disc_image"):
+        if optional_key in value:
+            result[optional_key] = portable_path(value[optional_key], f"{path}.{optional_key}")
+    return result
 
 
 def validate_manifest(value: Any) -> dict[str, Any]:
@@ -920,6 +931,12 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         "display_name": text(value["display_name"], "$.display_name", 128),
         "kind": kind,
     }
+    if "game_name" in value:
+        # Optional explicit build-name declaration (issue #196 Phase 4). The
+        # manager accepts -GameName, this field, or a portable id derivation —
+        # never an id-prefix mint. Same portable-identifier contract the
+        # codegen planner enforces for --game-name.
+        result["game_name"] = identifier(value["game_name"], "$.game_name")
     if kind == "retail":
         if "disc" not in value:
             fail("$", "retail manifests require disc")

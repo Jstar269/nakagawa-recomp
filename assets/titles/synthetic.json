@@ -3,6 +3,7 @@
   "id": "synthetic-allegrex-v1",
   "display_name": "Nakagawa Synthetic Allegrex Fixture",
   "kind": "synthetic",
+ "game_name": "synthetic",
   "executable": {
     "base": 142606336,
     "entry": 142606336,

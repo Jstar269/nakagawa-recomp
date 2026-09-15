@@ -55,6 +55,7 @@ const int nk_title_catalog_count = 4;
 const NkTitleEntry nk_title_catalog_entries[] = {
     {
         "display-smoke-v1",
+        "display-smoke",
         "Nakagawa Display Smoke Fixture",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00006",
@@ -74,6 +75,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
     },
     {
         "pspdev-phase5-v1",
+        "pspdev-phase5",
         "PSPDEV Phase 5 Source-Owned Fixture",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00005",
@@ -93,6 +95,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
     },
     {
         "synthetic-allegrex-v1",
+        "synthetic",
         "Nakagawa Synthetic Allegrex Fixture",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00001",
@@ -112,6 +115,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
     },
     {
         "synthetic-title2-v1",
+        "synthetic-title2",
         "Nakagawa Synthetic Title 2 Fixture",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00002",
