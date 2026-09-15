@@ -647,7 +647,23 @@ static uint64_t s_vbl_count = 0;     /* vblanks delivered so far (latch referenc
 void sched_wait_vblank(void) {
     if (s_cur >= 0) {
         TCB *t = &s_tcb[s_cur];
-        if (t->vbl_seen != s_vbl_count) { t->vbl_seen = s_vbl_count; return; }
+        /* If there are any other ready threads in the system, we must not
+         * bypass blocking on VBLANK. Doing so completely starves lower-priority
+         * threads (such as background asset loaders) because strict-priority
+         * scheduling never selects lower-priority threads while a higher-priority
+         * thread remains runnable. Only take the non-blocking latch path if NO
+         * other thread is waiting in TH_READY. */
+        int any_other_ready = 0;
+        for (int i = 0; i < s_ntcb; i++) {
+            if (i != s_cur && s_tcb[i].state == TH_READY) {
+                any_other_ready = 1;
+                break;
+            }
+        }
+        if (!any_other_ready && t->vbl_seen != s_vbl_count) {
+            t->vbl_seen = s_vbl_count;
+            return;
+        }
         sched_block_on(VBLANK_WAIT_OBJ);
         t->vbl_seen = s_vbl_count;
         return;

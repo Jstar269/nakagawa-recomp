@@ -5032,12 +5032,10 @@ static int hle_fd_is_std(uint32_t fd) {
 }
 typedef struct {
     int used;
-    int backend;                 /* 0 = ISO9660, 1 = hierarchical host storage */
+    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
     uint32_t index;
+    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
     char *path;
-    HANDLE find;
-    WIN32_FIND_DATAW data;
-    int first;
 } DirFd;
 static DirFd s_dirfds[32];
 
@@ -5503,10 +5501,12 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
     for (size_t i = first; i < s_data_index.count &&
                            strcmp(s_data_index.entries[i].key, key) == 0; i++) {
         const SrAssetIndexEntry *candidate = &s_data_index.entries[i];
-        if (wanted_variant >= 0) {
-            if (candidate->variant == wanted_variant) { chosen = candidate; break; }
-        } else if (!chosen || candidate->variant == -1 ||
-                   (chosen->variant != -1 && candidate->variant < chosen->variant)) {
+        /* Same selection rule enumeration uses, so a name sceIoDread reported
+         * is a name sceIoOpen resolves under the identical variant. */
+        if (!sr_asset_index_variant_selected(candidate->variant, wanted_variant)) continue;
+        if (wanted_variant >= 0) { chosen = candidate; break; }
+        if (!chosen || candidate->variant == -1 ||
+            (chosen->variant != -1 && candidate->variant < chosen->variant)) {
             chosen = candidate;
         }
     }
@@ -5926,8 +5926,107 @@ static uint32_t h_IoClose(CpuState *s) {
     return 0;
 }
 
+/* Merge the writable host overlay's children for `guest_path` into `list`.
+ *
+ * `*found` reports whether the overlay actually has this directory; the return
+ * value is 0 on success or a PSP error when the overlay has the directory but
+ * it cannot be enumerated safely.  Containment stays fail-closed AND loud: a
+ * host directory whose final path resolves outside SR_FSDIR's canonical root
+ * is refused here and the refusal is the caller's answer, so a planted
+ * junction can never be quietly papered over by the index leg.
+ *
+ * A single child the guest namespace cannot represent (an overlong name, or a
+ * size the guest's 32-bit stat field cannot carry) is skipped and counted, not
+ * escalated: one malformed entry must not destroy an otherwise-valid
+ * directory.  A truncated enumeration IS escalated, because a short listing
+ * the guest believes is complete is a correctness failure. */
+static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list, int *found) {
+    *found = 0;
+    char *hp = host_dir_path_alloc(guest_path);
+    if (!hp) return 0;
+    wchar_t *root = NULL;
+    wchar_t *pattern = NULL;
+    uint32_t rc = 0;
+    if (sr_wide_path_alloc(hp, &root) && sr_wide_join_alloc(root, L"*", &pattern)) {
+#ifdef _WIN32
+        char *configured_fs = NULL;
+        int configured_fs_present = 0;
+        sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
+        const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
+        wchar_t canonical_fs[MAX_PATH * 2];
+        int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
+                                          sizeof(canonical_fs) / sizeof(wchar_t));
+        free(configured_fs);
+
+        HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h_dir != INVALID_HANDLE_VALUE) {
+            int contained = fs_ok && sr_vfs_handle_is_contained(h_dir, canonical_fs);
+            CloseHandle(h_dir);
+            if (!contained) {
+                fprintf(stderr,
+                        "sceIoDopen: refusing '%s': host directory resolves outside the "
+                        "configured VFS root\n", guest_path);
+                fflush(stderr);
+                rc = 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+            } else {
+                WIN32_FIND_DATAW fd;
+                HANDLE h_find = FindFirstFileW(pattern, &fd);
+                if (h_find != INVALID_HANDLE_VALUE) {
+                    *found = 1;
+                    BOOL more = TRUE;
+                    while (more && rc == 0) {
+                        int dot = fd.cFileName[0] == L'.' &&
+                                  (fd.cFileName[1] == L'\0' ||
+                                   (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'));
+                        if (!dot) {
+                            int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                            char *child = NULL;
+                            if (!sr_wide_to_utf8_alloc(fd.cFileName, &child)) {
+                                fprintf(stderr,
+                                        "sceIoDopen: host child name is not convertible in '%s'; "
+                                        "skipping one entry\n", guest_path);
+                                list->skipped++;
+                            } else if (!is_dir && fd.nFileSizeHigh != 0u) {
+                                fprintf(stderr,
+                                        "sceIoDopen: host file '%s' exceeds the guest size limit; "
+                                        "skipping one entry\n", child);
+                                list->skipped++;
+                                free(child);
+                            } else {
+                                if (!sr_vfs_dirlist_merge(list, child, is_dir,
+                                                          is_dir ? 0u : (uint64_t)fd.nFileSizeLow))
+                                    rc = 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                                free(child);
+                            }
+                        }
+                        if (rc == 0) more = FindNextFileW(h_find, &fd);
+                    }
+                    DWORD last_err = GetLastError();
+                    FindClose(h_find);
+                    if (rc == 0 && !more && last_err != ERROR_NO_MORE_FILES) {
+                        fprintf(stderr,
+                                "sceIoDopen: host enumeration of '%s' ended early (error=%lu); "
+                                "refusing a short listing\n", guest_path, last_err);
+                        rc = 0x80010005u;
+                    }
+                }
+            }
+        }
+#else
+        (void)list;
+#endif
+    }
+    free(pattern);
+    free(root);
+    free(hp);
+    return rc;
+}
+
 static uint32_t h_IoDopen(CpuState *s) {
     char path[512]; guest_cstr(A0, path, sizeof(path));
+    if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
     for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
         if (!s_dirfds[i].used) {
             DirFd *d = &s_dirfds[i];
@@ -5942,49 +6041,52 @@ static uint32_t h_IoDopen(CpuState *s) {
                 }
                 d->backend = 0;
             } else {
-                char *hp = host_dir_path_alloc(path);
-                wchar_t *root = NULL, *pattern = NULL;
-                if (!hp || !sr_wide_path_alloc(hp, &root) ||
-                    !sr_wide_join_alloc(root, L"*", &pattern)) {
-                    free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                    return 0x80010014u;
-                }
-#ifdef _WIN32
-                /* Generic VFS enumeration containment: the resolved host
-                 * directory must open onto an object whose FINAL path lives
-                 * under SR_FSDIR's canonical root. A pre-planted junction in
-                 * place of (or above) the enumerated directory resolves to its
-                 * target here and is refused before FindFirstFileW ever runs. */
-                {
-                    char *configured_fs = NULL;
-                    int configured_fs_present = 0;
-                    sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
-                    const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
-                    wchar_t canonical_fs[MAX_PATH * 2];
-                    int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
-                                                      sizeof(canonical_fs)/sizeof(wchar_t));
-                    free(configured_fs);
+                /* One guest namespace, two host sources, merged in sceIoOpen's
+                 * own precedence order: the writable overlay first, then the
+                 * read-only extracted-data index. Both are materialized here so
+                 * a listing the guest walks cannot change under it mid-walk. */
+                sr_vfs_dirlist_init(&d->list);
 
-                    HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
-                                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                               NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-                    if (h_dir == INVALID_HANDLE_VALUE || !fs_ok ||
-                        !sr_vfs_handle_is_contained(h_dir, canonical_fs)) {
-                        if (h_dir != INVALID_HANDLE_VALUE) CloseHandle(h_dir);
-                        free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                        return 0x80010014u;
+                int overlay_found = 0;
+                uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
+                if (overlay_rc != 0) {
+                    sr_vfs_dirlist_destroy(&d->list);
+                    free(d->path); memset(d, 0, sizeof(*d));
+                    return overlay_rc;
+                }
+                if (overlay_found) d->list.exists = 1;
+
+                int wanted_variant = -2;
+                char *norm_key = data_normalize_guest_key(path, &wanted_variant);
+                if (norm_key) {
+                    if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
+                        SR_DATA_STATE_READY) {
+                        if (sr_asset_index_list_dir(&s_data_index, norm_key,
+                                                    wanted_variant, &d->list) < 0) {
+                            free(norm_key);
+                            sr_vfs_dirlist_destroy(&d->list);
+                            free(d->path); memset(d, 0, sizeof(*d));
+                            return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                        }
                     }
-                    CloseHandle(h_dir);
+                    free(norm_key);
                 }
-#endif
-                d->find = FindFirstFileW(pattern, &d->data);
-                DWORD first_error = d->find == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-                free(hp); free(root); free(pattern);
-                if (d->find == INVALID_HANDLE_VALUE) {
-                    fprintf(stderr, "sceIoDopen: enumeration failed (error=%lu)\n", first_error);
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
+
+                /* ABSENT and EMPTY are different answers. Only a directory no
+                 * source has is a not-found; a directory that exists with no
+                 * representable children opens and reads back zero entries. */
+                if (!d->list.exists) {
+                    sr_vfs_dirlist_destroy(&d->list);
+                    free(d->path); memset(d, 0, sizeof(*d));
+                    return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
                 }
-                d->backend = 1; d->first = 1;
+                if (d->list.skipped != 0u) {
+                    fprintf(stderr,
+                            "sceIoDopen: '%s' listing omits %zu entry/entries the guest "
+                            "namespace cannot represent\n", path, d->list.skipped);
+                }
+                sr_vfs_dirlist_sort(&d->list);
+                d->backend = 1;
             }
             return 0x100u + i;
         }
@@ -6005,34 +6107,16 @@ static uint32_t h_IoDread(CpuState *s) {
         if (r <= 0) return r < 0 ? 0x80010005u : 0;
         d->index++;
     } else {
-        for (;;) {
-            if (!d->first && !FindNextFileW(d->find, &d->data)) {
-                DWORD error = GetLastError();
-                if (error == ERROR_NO_MORE_FILES) return 0;
-                fprintf(stderr, "sceIoDread: enumeration failed (error=%lu)\n", error);
-                return 0x80010005u;
-            }
-            d->first = 0;
-            if (!(d->data.cFileName[0] == L'.' &&
-                  (d->data.cFileName[1] == L'\0' ||
-                   (d->data.cFileName[1] == L'.' && d->data.cFileName[2] == L'\0')))) break;
-        }
+        /* The listing was materialized and bounded at Dopen: every name fits
+         * e.name and every size fits the guest's 32-bit field, so this walk
+         * has no failure mode of its own and simply runs out of entries. */
+        if (d->index >= d->list.count) return 0;
+        const SrVfsDirEntry *ve = &d->list.entries[d->index++];
         memset(&e, 0, sizeof(e));
-        char *name = NULL;
-        if (!sr_wide_to_utf8_alloc(d->data.cFileName, &name)) return 0x80010005u;
-        if (strlen(name) >= sizeof(e.name)) {
-            free(name);
-            fprintf(stderr, "sceIoDread: directory entry name exceeds guest buffer\n");
-            return 0x80010005u;
-        }
-        memcpy(e.name, name, strlen(name) + 1u);
-        free(name);
-        e.is_dir = (d->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (!e.is_dir && d->data.nFileSizeHigh != 0u) {
-            fprintf(stderr, "sceIoDread: file exceeds guest size limit\n");
-            return 0x80010005u;
-        }
-        e.size = d->data.nFileSizeLow;
+        memcpy(e.name, ve->name, strlen(ve->name) + 1u);
+        e.is_dir = ve->is_dir;
+        e.size = (uint32_t)ve->size;
+        e.lba = 0;
     }
     for (uint32_t i = 0; i < 0x15cu; i++) MEM_W8(de + i, 0);
     MEM_W32(de + 0x00, (e.is_dir ? 0x1000u : 0x2000u) | 0x0124u);
@@ -6048,7 +6132,7 @@ static uint32_t h_IoDclose(CpuState *s) {
     if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     DirFd *d = &s_dirfds[fd - 0x100u];
     if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    if (d->backend == 1 && d->find != NULL && d->find != INVALID_HANDLE_VALUE) FindClose(d->find);
+    if (d->backend == 1) sr_vfs_dirlist_destroy(&d->list);
     free(d->path);
     memset(d, 0, sizeof(*d)); return 0;
 }
@@ -8011,13 +8095,16 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
     FILE *f = fopen(path, "wb");
     if (!f) return;
     if (!stride) stride = 512;
-    fprintf(f, "P6\n480 272\n255\n");
-    for (int y = 0; y < 272; y++)
+    static unsigned char ppm_buf[480 * 272 * 3];
+    unsigned char *dst = ppm_buf;
+    for (int y = 0; y < 272; y++) {
         for (int x = 0; x < 480; x++) {
-            unsigned char rgb[3];
-            fb_decode_px(fbaddr, fmt, stride, x, y, rgb);
-            fwrite(rgb, 1, 3, f);
+            fb_decode_px(fbaddr, fmt, stride, x, y, dst);
+            dst += 3;
         }
+    }
+    fprintf(f, "P6\n480 272\n255\n");
+    fwrite(ppm_buf, 1, sizeof(ppm_buf), f);
     fclose(f);
     fprintf(stderr, "dumped framebuffer 0x%08x fmt=%d stride=%u -> %s\n", fbaddr, fmt, stride, path);
 }

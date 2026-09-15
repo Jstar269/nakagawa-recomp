@@ -99,6 +99,224 @@ static const SrAssetIndexEntry *find_variant(const SrAssetIndex *index,
     return NULL;
 }
 
+/* ---- Guest-visible directory enumeration -------------------------------
+ *
+ * These run against the same host-neutral merge entry point the Windows HLE
+ * uses for sceIoDopen, so the merge policy, the variant rule, the ABSENT vs
+ * EMPTY distinction and the name-recovery rule are all covered without a
+ * Windows host or private game data. */
+
+static int dir_index_of(const SrVfsDirList *list, const char *name) {
+    for (size_t i = 0; i < list->count; i++)
+        if (strcmp(list->entries[i].name, name) == 0) return (int)i;
+    return -1;
+}
+
+static int vfs_dir_tests(void) {
+    SrAssetIndex ix;
+    SrVfsDirList list;
+
+    /* A tree whose KEYS are folded but whose host paths keep real casing, plus
+     * a second archive variant and a localized-only child. */
+    sr_asset_index_init(&ix);
+    if (!sr_asset_index_add_sized(&ix, "data/chara/model/body.gim",
+                                  "root/Data/Chara/Model/Body.gim", -1, 100u) ||
+        !sr_asset_index_add_sized(&ix, "data/chara/model/body.gim",
+                                  "root/Data/Chara/Model/Body.gim", 2, 100u) ||
+        !sr_asset_index_add_sized(&ix, "data/chara/model/head.gim",
+                                  "root/Data/Chara/Model/Head.gim", -1, 200u) ||
+        !sr_asset_index_add_sized(&ix, "data/chara/parameter/parts.txt",
+                                  "root/Data/Chara/Parameter/Parts.txt", -1, 300u) ||
+        !sr_asset_index_add_sized(&ix, "data/lang/only_fr.bin",
+                                  "root/Data/Lang/Only_FR.bin", 2, 400u) ||
+        !sr_asset_index_finalize(&ix)) {
+        sr_asset_index_destroy(&ix);
+        return fail("VFS fixture index construction failed");
+    }
+
+    /* Direct children only, with on-host casing recovered from the host path
+     * rather than reported out of the folded key. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/chara/model", -1, &list) != 1 ||
+        !list.exists || list.count != 2u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS direct-child enumeration wrong");
+    }
+    sr_vfs_dirlist_sort(&list);
+    if (dir_index_of(&list, "Body.gim") < 0 || dir_index_of(&list, "Head.gim") < 0) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS enumeration folded the on-host name casing");
+    }
+    if (list.entries[dir_index_of(&list, "Body.gim")].size != 100u ||
+        list.entries[dir_index_of(&list, "Body.gim")].is_dir != 0) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS file metadata wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* A grandchild contributes its DIRECTORY component, not a recursive walk,
+     * and that component also keeps its host casing. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/chara", -1, &list) != 1 ||
+        list.count != 2u ||
+        dir_index_of(&list, "Model") < 0 || dir_index_of(&list, "Parameter") < 0 ||
+        !list.entries[dir_index_of(&list, "Model")].is_dir ||
+        list.entries[dir_index_of(&list, "Model")].size != 0u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS grandchild collapse wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* Trailing/leading slashes and the root are all the same namespace. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "/data/chara/", -1, &list) != 1 || list.count != 2u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS slash normalization wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "", -1, &list) != 1 ||
+        list.count != 1u || dir_index_of(&list, "Data") < 0) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS root enumeration wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* A qualified request selects EXACTLY its variant -- the same rule the
+     * lookup uses -- so enumeration never offers a name the open would refuse. */
+    if (sr_asset_index_variant_selected(-1, 2) || !sr_asset_index_variant_selected(2, 2) ||
+        sr_asset_index_variant_selected(3, 2) || !sr_asset_index_variant_selected(3, -2) ||
+        !sr_asset_index_variant_selected(-1, -1)) {
+        sr_asset_index_destroy(&ix);
+        return fail("VFS variant selection rule disagrees with lookup");
+    }
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/chara/model", 2, &list) != 1 ||
+        list.count != 1u || dir_index_of(&list, "Body.gim") < 0) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS qualified-variant enumeration wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* EXISTS and EMPTY are not the same answer as ABSENT: every child of this
+     * directory belongs to another variant, so it exists with zero entries. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/lang", 1, &list) != 1 ||
+        !list.exists || list.count != 0u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS variant-emptied directory did not stay EXISTING");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* A directory no source has is absent, and says so distinctly. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/nope", -1, &list) != 1 ||
+        list.exists || list.count != 0u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS absent directory reported as existing");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* Overlay precedence: the first source to contribute a name owns its
+     * spelling and metadata, and a later directory sighting only promotes
+     * is_dir.  Guest-visible casing therefore does not depend on which
+     * sources happen to be present alongside it. */
+    sr_vfs_dirlist_init(&list);
+    if (!sr_vfs_dirlist_merge(&list, "Body.gim", 0, 999u) ||
+        sr_asset_index_list_dir(&ix, "data/chara/model", -1, &list) != 1 ||
+        list.count != 2u ||
+        strcmp(list.entries[dir_index_of(&list, "Body.gim")].name, "Body.gim") != 0 ||
+        list.entries[dir_index_of(&list, "Body.gim")].size != 999u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS overlay precedence not first-source-wins");
+    }
+    sr_vfs_dirlist_destroy(&list);
+    sr_vfs_dirlist_init(&list);
+    if (!sr_vfs_dirlist_merge(&list, "Model", 0, 7u) ||
+        sr_asset_index_list_dir(&ix, "data/chara", -1, &list) != 1 ||
+        list.count != 2u || !list.entries[dir_index_of(&list, "Model")].is_dir) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS directory promotion across sources wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* Case-insensitive duplicates collapse to one guest-visible entry. */
+    sr_vfs_dirlist_init(&list);
+    if (!sr_vfs_dirlist_merge(&list, "Body.gim", 0, 1u) ||
+        !sr_vfs_dirlist_merge(&list, "BODY.GIM", 0, 2u) ||
+        !sr_vfs_dirlist_merge(&list, "body.gim", 0, 3u) ||
+        list.count != 1u || strcmp(list.entries[0].name, "Body.gim") != 0 ||
+        list.entries[0].size != 1u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS case-insensitive collapse wrong");
+    }
+    sr_vfs_dirlist_destroy(&list);
+
+    /* Fail-closed inputs. */
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(NULL, "data", -1, &list) != -1 ||
+        sr_asset_index_list_dir(&ix, "data", -1, NULL) != -1) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS list_dir did not fail closed on NULL");
+    }
+    {
+        char overlong[1024];
+        memset(overlong, 'a', sizeof(overlong) - 1u);
+        overlong[sizeof(overlong) - 1u] = '\0';
+        if (sr_asset_index_list_dir(&ix, overlong, -1, &list) != -1) {
+            sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+            return fail("VFS list_dir accepted an unrepresentable key");
+        }
+    }
+    sr_vfs_dirlist_destroy(&list);
+    sr_asset_index_destroy(&ix);
+
+    /* An empty index enumerates as an absent directory, never as an error and
+     * never as a phantom listing. */
+    sr_asset_index_init(&ix);
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data", -1, &list) != 1 ||
+        list.exists || list.count != 0u) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS empty index did not enumerate as absent");
+    }
+    sr_vfs_dirlist_destroy(&list);
+    sr_asset_index_destroy(&ix);
+
+    /* One child the guest namespace cannot represent is skipped and counted;
+     * the rest of the directory still enumerates. */
+    sr_asset_index_init(&ix);
+    {
+        char big_key[600];
+        char big_host[600];
+        size_t n = 300u;
+        memcpy(big_key, "data/skip/", 10u);
+        memset(big_key + 10, 'n', n);
+        big_key[10 + n] = '\0';
+        memcpy(big_host, "root/skip/", 10u);
+        memset(big_host + 10, 'n', n);
+        big_host[10 + n] = '\0';
+        if (!sr_asset_index_add_sized(&ix, "data/skip/ok.bin", "root/skip/OK.bin", -1, 5u) ||
+            !sr_asset_index_add_sized(&ix, big_key, big_host, -1, 6u) ||
+            !sr_asset_index_add_sized(&ix, "data/skip/huge.bin", "root/skip/Huge.bin", -1,
+                                      0x100000000ull) ||
+            !sr_asset_index_finalize(&ix)) {
+            sr_asset_index_destroy(&ix);
+            return fail("VFS skip fixture construction failed");
+        }
+    }
+    sr_vfs_dirlist_init(&list);
+    if (sr_asset_index_list_dir(&ix, "data/skip", -1, &list) != 1 ||
+        !list.exists || list.count != 1u || list.skipped != 2u ||
+        dir_index_of(&list, "OK.bin") < 0) {
+        sr_vfs_dirlist_destroy(&list); sr_asset_index_destroy(&ix);
+        return fail("VFS unrepresentable child destroyed a valid directory");
+    }
+    sr_vfs_dirlist_destroy(&list);
+    sr_asset_index_destroy(&ix);
+    return 0;
+}
+
 int main(void) {
     SrAssetIndex short_index, long_index;
     sr_asset_index_init(&short_index);
@@ -191,6 +409,8 @@ int main(void) {
     sr_asset_index_init(&empty);
     if (sr_asset_index_finalize(&empty) != 0) return fail("empty index accepted");
     sr_asset_index_destroy(&empty);
+
+    if (vfs_dir_tests() != 0) return 1;
     sr_asset_index_destroy(&short_index);
     sr_asset_index_destroy(&long_index);
     puts("asset index selftest: OK");
