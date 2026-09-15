@@ -311,7 +311,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "20b4efffcd4a9b778bb4f707df3d6eb67894de5e71a43eeeacdc044a7af886f5"
+      "sha256": "ef1f3e3e8b2b93ad5e9435ae8b4ab8c9b5a7fcecf9fa4353a0707772644f6690"
     },
     {
       "path": "SECURITY.md",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05241af44f6c9ea0258d6769be484abbde6ed66993ea80c11e59b5291c45e205"
+      "sha256": "b1f18ebc0f017e0a6b8ceddeb7a7d83c7a740ee6c7659fca73299534413bb620"
     },
     {
       "path": "assets/release_manifest.json",
@@ -819,7 +819,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1c237728b1cc7b13c14f304c5853a187834fbb3030d8cac37ad4e48b58d2bcbd"
+      "sha256": "79426f844a7b4d52ca66a3d9e3a625dc2edc88de3166a499d7d19712ceb0c07e"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -981,7 +981,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5ed4263e56396edb655e045aa0cb82cc47d58f19e94eac7face6e58ef410a6cf"
+      "sha256": "f00c277d0963d28ec1b5d002fbf661cac329d132a1bd5228ed8f98c71e119099"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1053,7 +1053,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87f2fbb0f96be7b0eccdb914c050a5d37b66ed6c3178e1779104d92fb02e2589"
+      "sha256": "d6cd42cdc63ba8dfd32668c61cecac9c7ea462644496f7515e2782f1735cb517"
     },
     {
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
@@ -6281,7 +6281,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "460676a629298a0a50d2b9ad14bee0bb222eb5a60a86bbfc1ab221be1a62f4ef"
+      "sha256": "337ebbc84e4e3521986b697711321252c73a23d9c0a2a7804b7877ab621f7225"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6533,7 +6533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "451e54d4f8032b36c46bc1e0e353a96019e3945f1baafe23c8844d88182eefdb"
+      "sha256": "fcfa750d3b8db2db67ad99e7ef42a1b068c7e2eee99f65fe9d37a9c02a5f3103"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -6771,7 +6771,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "187eb5a1e5ff2fe8ce31d094cc20e472efb8a10d00968dadc5a2dabacc7f2fd6"
+      "sha256": "b7d5e2d34d6acaa92666b5dac5e0b570a0b99803e8a79d2392c107f858453d9c"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -7864,6 +7864,15 @@
         "upstream_attribution": null
       },
       "sha256": "a07714750510bcb0741e087cc0596b6a5402c2ba0da926c84a1345e1ce5fb121"
+    },
+    {
+      "path": "tools/test_extract_xb_security.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "3b13352f5f8378db5fffb1a40074b5781eb0e108e76af1f239a72f676ef4cf25"
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",
