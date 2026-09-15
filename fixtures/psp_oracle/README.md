@@ -14,7 +14,8 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
 of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
-`CASE=display-ge-mask`.
+`CASE=display-ge-mask`. Display-wait sessions use `CASE=display-wait-late`,
+`CASE=display-wait-priority`, or `CASE=display-vblank-window`.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove
@@ -38,6 +39,36 @@ matrix.
 
 All records contain only scalar arithmetic and API results; pointers and raw
 memory are never treated as stable evidence.
+
+## Display-wait cases (issue 70)
+
+Three cases answer what a PSP display wait actually does, because
+`docs/PSP_INTR_WAITS_MATRIX.md` recorded the normal-context rows for both NIDs
+as `hardware = unknown / WOULD_BLOCK control`: only the error cells had ever been
+measured. Each is bounded by both an elapsed-system-time test and an iteration
+cap, so a stopped clock yields a finite record rather than a hang, and none of
+them touches game content or firmware state.
+
+`CASE=display-wait-late` (`PSP-DISPLAY-002`) phase-aligns to an edge, busy-spins a
+controlled fraction of a calibrated period without any voluntary yield, then
+times the call under test. Offsets of 2/8, 6/8, 10/8, 14/8 and 20/8 of a period
+straddle one and two boundaries, so "several periods elapsed while the caller was
+busy" is covered rather than only a narrow late window. A separate in-vblank cell
+polls `sceDisplayIsVblank` and calls from inside the interval, which is the only
+phase at which the two NIDs can differ. The period is calibrated on the same
+device in the same run; nothing assumes 60000/1001.
+
+`CASE=display-wait-priority` (`PSP-DISPLAY-003`) runs identical high-priority work
+twice, once alone and once alongside an always-runnable lower-priority peer that
+never issues a blocking call. Per iteration the caller samples the peer's counter
+before its display wait, after it, and again after a pure-CPU spin, so progress
+made while BLOCKED is separated from progress made while merely RUNNABLE. The
+control/experiment pair is what distinguishes "a real block hands the CPU over"
+from "the syscall behaves differently because another thread exists".
+
+`CASE=display-vblank-window` (`PSP-DISPLAY-004`) aligns to an edge and times
+`sceDisplayIsVblank`'s falling transition, recording hcount at entry and exit so
+the interval is expressed in the display's own units as well as microseconds.
 
 ## Issue 23 DMA cases
 

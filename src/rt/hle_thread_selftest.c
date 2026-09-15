@@ -51,6 +51,10 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
+/* Live-input latch hooks (defined in hle.c under SR_HLE_THREAD_SELFTEST). */
+extern void sr_ctrl_test_reset_live_input(void);
+extern int sr_ctrl_test_live_input_seen(void);
+extern int sr_ctrl_test_pulse_suppressed(uint32_t keys);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
 /* Selftest-only entry into the real route_tick path (defined in hle.c under
@@ -1602,17 +1606,47 @@ static void test_display_clock_reads_are_observational(void) {
     expect(current1 > current0 && accumulated1 > accumulated0,
            "elapsed scheduler time advances current and accumulated HCOUNT");
 
-    /* 16,670 us is still inside the rational 59.94-Hz frame.  The previous
-     * 16,667-us modulo made this read look like the next frame and cleared the
-     * VBLANK bit three microseconds early. */
+    /* The vblank interval BEGINS at the delivered start edge and lasts ~729 us;
+     * it does not occupy the tail of the period. Measured on PSP-3001/6.61-ARK,
+     * record PSP-DISPLAY-004: IsVblank() was true immediately after
+     * sceDisplayWaitVblankStart returned on 48/48 trials and fell 721..734 us
+     * later, at hcount 14 of 286. This block previously asserted the opposite
+     * placement -- that a read 13 us BEFORE the next frame boundary was inside
+     * vblank -- which is the shape hardware disproved.
+     *
+     * With no edge delivered yet there is no interval to be inside of. */
+    s_vbl_count = 0;
     s_vtime_us = 16670u;
     cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
+           "display VBLANK is clear before any edge has been delivered");
+
+    /* Deliver an edge at a known stamp, then walk the interval. */
+    s_vbl_count = 1;
+    s_vbl_last_us = 16683u;
+
+    s_vtime_us = 16683u;
+    cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 1u,
-           "display VBLANK uses the rational scheduler frame phase");
-    s_vtime_us = 16684u;
+           "display VBLANK is set at the delivered start edge");
+
+    s_vtime_us = 16683u + 700u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 1u,
+           "display VBLANK is still set 700 us into the measured interval");
+
+    s_vtime_us = 16683u + 729u;
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
-           "display VBLANK clears at the next rational frame");
+           "display VBLANK clears at the end of the measured 729 us interval");
+
+    /* The cell that pins the placement: late in the period, just before the
+     * NEXT edge, hardware is not in vblank. The superseded end-of-period model
+     * asserted 1 here. */
+    s_vtime_us = 16683u + 16670u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
+           "display VBLANK is clear just before the next edge, not set");
 }
 
 static int s_delay_done;      /* set when the delay guest body returned */
@@ -3300,23 +3334,29 @@ static void test_can_not_wait_semantics(void) {
         cnw_end(0, token);
     }
 
-    /* ---- 4. vblank: the latch is not consumed -------------------------------- */
+    /* ---- 4. vblank: the context gate precedes the in-vblank fast return ------- */
     for (int i = 0; i < 2; i++) {
         const uint32_t nid = i ? NID_CNW_WAIT_VBLANK_START : NID_CNW_WAIT_VBLANK;
         const char *who = i ? "sceDisplayWaitVblankStart" : "sceDisplayWaitVblank";
         TCB *self = cnw_begin(0, &token);
-        /* Arrange an UNSEEN vblank: without the gate, sched_wait_vblank() would
-         * take this latch and return 0 without blocking at all. */
+        /* Put the display INSIDE the vblank interval. That is the one state in
+         * which sceDisplayWaitVblank is entitled to return 1 without blocking
+         * (measured: PSP-DISPLAY-002 `invblank-waitvblank`), so it is the state
+         * that proves the context rejection is evaluated first. Hardware agrees
+         * on both NIDs here: L26/L27 and L34/L35 are CAN_NOT_WAIT. */
         s_vbl_count = 7;
-        self->vbl_seen = 3;
+        s_vbl_last_us = s_vtime_us;
+        expect(sched_display_is_vblank(),
+               "fixture places the display inside the vblank interval");
         memset(&cpu, 0, sizeof cpu);
         uint32_t rc = sr_syscall(&cpu, nid);
 
         char msg[192];
         snprintf(msg, sizeof msg, "%s returns CAN_NOT_WAIT with dispatch disabled", who);
         expect(rc == CNW_ERR, msg);
-        snprintf(msg, sizeof msg, "%s: rejected call did not consume the vblank latch", who);
-        expect(self->vbl_seen == 3, msg);
+        snprintf(msg, sizeof msg,
+                 "%s: rejected call did not take the in-vblank fast return", who);
+        expect(rc != 1u, msg);
         snprintf(msg, sizeof msg, "%s: rejected call did not block on VBLANK_WAIT_OBJ", who);
         expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
         cnw_end(0, token);
@@ -4893,12 +4933,62 @@ static void ctrl_env(const char *noinput, const char *pad,
     _putenv("SR_INLOG=");
 }
 
+/* The auto-START bootstrap pulse must stop once a human is seen driving on ANY
+ * input source, keyboard included (gui_pad_present() reports gamepads only).
+ * The latch is sticky: a press proves presence, a quiet frame proves nothing.
+ * Driven through the exact production gate (sr_ctrl_test_pulse_suppressed),
+ * plus one end-to-end pass proving the emitted pulse cannot latch itself. */
+static void test_ctrl_live_input_latch_suppresses_phantom_start(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();   /* no route program: the env pulse below is the only input source */
+    ctrl_env("", "", "", "");   /* neutral: no SR_NOINPUT, default START pulse cadence */
+    sr_ctrl_test_reset_live_input();
+
+    /* --- quiet frames never latch -------------------------------------- */
+    for (int i = 0; i < 300; i++)
+        expect(!sr_ctrl_test_pulse_suppressed(0u),
+               "quiet frames with no live input keep the bootstrap pulse enabled");
+    expect(!sr_ctrl_test_live_input_seen(),
+           "quiet frames leave the live-input latch unset");
+
+    /* --- first live press latches -------------------------------------- *
+     * The very vblank that carries the press already suppresses: a human is
+     * provably driving on that vblank, so no synthetic START is needed. */
+    expect(sr_ctrl_test_pulse_suppressed(CTRL_BTN_START),
+           "the vblank carrying the first live press already suppresses the pulse");
+    expect(sr_ctrl_test_live_input_seen(),
+           "the first nonzero live key mask sets the sticky latch");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "once latched, even a quiet frame suppresses the phantom pulse");
+    expect(sr_ctrl_test_pulse_suppressed(CTRL_BTN_START),
+           "latched suppression holds while input continues");
+
+    /* --- the emitted pulse cannot latch itself -------------------------- *
+     * Run the production sampler with the default START pulse active and no
+     * live keys (the harness stubs gui_buttons() to 0). If the pulse fed back
+     * into the latch, it would set it within one period (240 vblanks). */
+    sr_ctrl_test_reset_live_input();
+    ctrl_drain(&cpu);
+    ctrl_tick(480u);
+    expect(!sr_ctrl_test_live_input_seen(),
+           "two full pulse periods of emitted START set no latch: the pulse is not self-triggering");
+
+    /* --- existing pulse contract still holds after reset ---------------- */
+    sr_ctrl_test_reset_live_input();
+    expect(!sr_ctrl_test_live_input_seen(),
+           "the test reset clears the latch for subsequent cases");
+}
+
 static void test_ctrl_read_buffer_contract(void) {
     CpuState cpu;
 
     reset_fixture();
     sr_hle_init();
     sr_route_reset();   /* no route program: the env pulse below is the only input source */
+    sr_ctrl_test_reset_live_input();   /* the latch is process-sticky: never leak it across cases */
 
     expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_POSITIVE),
            "sceCtrlReadBufferPositive is a registered NID in this build");
@@ -9880,6 +9970,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();

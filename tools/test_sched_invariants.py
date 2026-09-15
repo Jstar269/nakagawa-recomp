@@ -92,6 +92,58 @@ class PickNextStrictPriorityTests(unittest.TestCase):
         self.assertRegex(body, r"state\s*==\s*TH_READY")
 
 
+class DisplayWaitIsReadinessIndependentTests(unittest.TestCase):
+    """The display wait must not consult any other thread's scheduling state.
+
+    Measured on PSP-3001/6.61-ARK (record PSP-DISPLAY-003): with an always-runnable
+    lower-priority peer present, the high-priority caller's total wall time moved by
+    2 us over 2.006 s and its summed wait by 220 us over 120 waits, with identical
+    VCOUNT progression. The syscall does not read the ready queue.
+
+    A superseded candidate blocked the caller whenever any other thread was
+    TH_READY, so that a lower-priority asset loader would be scheduled. The
+    executable proof lives in sched_selftest.c
+    (test_display_wait_ignores_other_ready_threads, which fails against that
+    design); this is the cheap textual tripwire against reintroducing it in the
+    same place, and nothing more.
+    """
+
+    def _wait_bodies(self):
+        return {
+            name: strip_comments(function_body(SCHED, name))
+            for name in ("sched_wait_vblank_start", "sched_wait_vblank",
+                         "sched_vblank_block")
+        }
+
+    def test_no_ready_state_scan_in_the_display_wait(self):
+        for name, body in self._wait_bodies().items():
+            self.assertNotIn(
+                "TH_READY", body,
+                f"{name} must not consult another thread's READY state; "
+                "the PSP display wait is readiness-independent (PSP-DISPLAY-003)",
+            )
+
+    def test_display_wait_has_no_missed_edge_latch(self):
+        self.assertNotIn(
+            "vbl_seen", strip_comments(SCHED),
+            "the per-thread missed-vblank latch is disproven by PSP-DISPLAY-002; "
+            "a late display wait blocks to the next edge",
+        )
+
+    def test_the_two_display_nids_have_separate_handlers(self):
+        hle = strip_comments(HLE)
+        self.assertRegex(
+            hle,
+            r'sr_hle_register\(0x984c27e7,\s*"sceDisplayWaitVblankStart",\s*h_DisplayWaitVblankStart\)',
+            "sceDisplayWaitVblankStart must resolve to the always-block handler",
+        )
+        self.assertRegex(
+            hle,
+            r'sr_hle_register\(0x36cdfade,\s*"sceDisplayWaitVblank",\s*h_DisplayWaitVblank\)',
+            "sceDisplayWaitVblank must resolve to the in-vblank fast-return handler",
+        )
+
+
 class ThreadLifecycleTests(unittest.TestCase):
     def test_entry_return_routes_through_full_exit(self):
         body = strip_comments(function_body(SCHED, "coro_body"))
