@@ -578,7 +578,7 @@ static void test_staging_discard_reparse_boundary(void) {
     }
 
     assert(player_stage_discard(root));
-    assert(access(outside_file, F_OK) == 0);
+    assert(nk_platform_get_file_size(outside_file) == (int64_t)(sizeof(data) - 1));
     assert(!nk_platform_dir_exists(root));
     remove(outside_file);
     test_rmdir(outside);
