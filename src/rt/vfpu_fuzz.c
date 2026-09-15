@@ -257,6 +257,7 @@ int main(int argc, char **argv) {
             s0.vfpuCtrl[1] = rand_sprefix();
             s0.vfpuCtrl[2] = rand_dprefix();
             s0.vfpuCtrl[3] = rng() & 0x3Fu;     /* VFPU_CC */
+            for (int i = 4; i < 16; i++) s0.vfpuCtrl[i] = rng();
 
             /* vcrsp/vqmul and vrot have hardware-quirky prefix interactions that neither
              * side models (the game never prefixes them) — fuzz those identity-prefix only */
@@ -299,7 +300,7 @@ int main(int argc, char **argv) {
                     bad = 1;
                 }
             }
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 16; i++) {
                 if (s1.vfpuCtrl[i] != s2.vfpuCtrl[i]) {
                     if (!bad && mismatches < 40)
                         fprintf(stderr,

@@ -6,6 +6,16 @@ import codegen
 
 
 class VfpuFallbackTests(unittest.TestCase):
+    def test_all_vfpu_control_registers_are_translated(self):
+        for sub in (3, 7):  # mfvc / mtvc
+            for imm in range(128, 144):
+                word=(0x12<<26)|(sub<<21)|(5<<16)|imm
+                with self.subTest(sub=sub, imm=imm):
+                    effect, _, span = codegen.effect(0x1200 + imm, word)
+                    self.assertEqual(span, 0)
+                    self.assertNotIn("sr_vfpu_interp", effect)
+                    self.assertIn(f"s->vfpuCtrl[{imm - 128}]", effect)
+
     def test_unknown_vfpu_form_stays_inside_translated_function(self):
         word=(0x34<<26)|(31<<21)  # unsupported VFPU4 jump group
         line=codegen.normal_line(0x1234,word)

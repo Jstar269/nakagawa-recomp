@@ -2277,7 +2277,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e815f6cc6f87530b2646581be06c8454015332f5bbe9736ac2a505c22e75954"
+      "sha256": "1ada9b0cde8a7caa6f33256f4192e6f41381e7eef34827c47fec372997f26dd7"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -2802,7 +2802,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee507bfef8b2de54291701b234a40bf3291b3a2e6f8e967d5f9a51ee0c386e68"
+      "sha256": "3705ee3d081976c7172a25b740fbc6e391ca514f05ad97f096b9db01c650894b"
     },
     {
       "path": "interface/src/lib/recompiler/doctor.ts",
@@ -5954,7 +5954,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9c1a79c8b7b8a0bbbdcb5e853b18b5bea83679733850bb2203a99145e9ccc6de"
+      "sha256": "a97dfb8f592b4daed8f5c36259bcdb5fa8b0265630aee34c32f93d9d1b1f2df3"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -5972,7 +5972,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "90f048751c85cf322b2df4fdde3ae8d4e0997e602a602aa3cd95382f42e7980a"
+      "sha256": "808a5625c73f12f44536274c0e12da48599f6fa6ed62907fba08ad104959732e"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -5984,7 +5984,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a1ce0087a6787067fbf7405a927867a9935348db804aa52a1a43d86a8baaa0f"
+      "sha256": "fc3924bccda492e1d1e210dfb1a921a19a0e3e302874ab2a2b10623b2e5b4de6"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -6372,7 +6372,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b637b465da45dc003ebd00fe111d028f0f60869304c404e895eb49a74b341ad8"
+      "sha256": "1a2daf850ccfe26d510c1c17d5370662286f7d8f4efdf2fd2cac68cb848731b5"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7644,7 +7644,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8429593545623e872c5c999a3857c43517a4b1f7471a4d1a34f7817d2246f987"
+      "sha256": "b1a07f34e1d3199f315b2b9d20bf245f76296352584ec3189d517115c70935c5"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -8661,7 +8661,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8d1ec0441f569877eea8f59ed116a8dcf40a29460be27b85cb5857e8c8f8d95b"
+      "sha256": "bdb283a31e460ee2a2208439a60db462f3c079f9a0d18ac2864f53a90c5fadf3"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
@@ -8882,7 +8882,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c96c6c17cad9dfe27f7c71d23effd65f5e98ed616472f0e69bb2cb455fbe54f"
+      "sha256": "e78e37875198218e02f83c63d627968478780a48660cca0285f5f8b43800a3a2"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
@@ -8923,7 +8923,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f206d36766813e989c036b02ce84a924e8eac503dc34abcb23af43550fae97e6"
+      "sha256": "7ef7abd12bfa8b7d8bd692b838e2d36836c6cafe344f9033f3de117d861ddba0"
     },
     {
       "path": "tools/vulkan_sdk.ps1",

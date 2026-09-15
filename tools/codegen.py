@@ -739,7 +739,7 @@ def vfpu_effect(addr, w):
     if op == 0x12:
         sub = (w >> 21) & 0x1F
         imm = w & 0xFF
-        if sub not in (3, 7) or imm >= 132:
+        if sub not in (3, 7) or imm >= 144:
             raise Unsupported(f"cop2 sub {sub} or register {imm} at 0x{addr:08x}")
         if imm < 128:
             vidx = vreg_indices(imm, 1)[0]

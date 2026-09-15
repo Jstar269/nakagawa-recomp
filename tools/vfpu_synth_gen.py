@@ -709,7 +709,7 @@ def iter_synthetic_corpus_raw() -> Iterator[int]:
 #       aligned fast path and falls back to the interpreter otherwise, so the
 #       differential harness compares the merged behavior.
 #   op 0x12 mfv/mfvc (sub 3) / mtv/mtvc (sub 7): GPR <-> v[0..127] and GPR
-#       <-> vfpuCtrl[0..3]; the interpreter oracle covers exactly imm 0..131.
+#       <-> vfpuCtrl[0..15]; the interpreter oracle covers exactly imm 0..143.
 # lv.S/sv.S offsets are masked with 0xFFFC by both sides before sign
 # extension, so only multiples of 4 are generated. The fuzz harness relocates
 # every generated effective address onto its aligned scratch page; unaligned
@@ -743,12 +743,12 @@ def _iter_vfpu_memory_cop2() -> Iterator[int]:
                         seen.add(w)
                         yield w
     # COP2 transfers: mfv/mfvc (sub 3) and mtv/mtvc (sub 7).
-    # imm 0..127 = v[imm], 128..131 = vfpuCtrl[imm-128]; rt spans r1-r6 so
+    # imm 0..127 = v[imm], 128..143 = vfpuCtrl[imm-128]; rt spans r1-r6 so
     # register identity is exercised, never r0 (writes to r0 are architecturally
     # discarded, so the oracle refuses rt=0 rather than diverging silently).
     for sub in (3, 7):
         for rt in (1, 2, 3, 4, 5, 6):
-            for imm in (0, 1, 31, 32, 63, 64, 96, 127, 128, 129, 130, 131):
+            for imm in (0, 1, 31, 32, 63, 64, 96, 127, *range(128, 144)):
                 w = (0x12 << 26) | (sub << 21) | (rt << 16) | imm
                 if w not in seen:
                     seen.add(w)

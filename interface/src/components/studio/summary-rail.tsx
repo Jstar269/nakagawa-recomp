@@ -104,6 +104,10 @@ export function summarizeDoctorReport(report: DoctorReport | null, state: Doctor
   };
 }
 
+export function shouldRefreshFromBackstop(readyState: number, openState: number): boolean {
+  return readyState !== openState;
+}
+
 type BootState = {
   ok?: boolean;
   status?: string;
@@ -176,7 +180,7 @@ export function SummaryRail() {
 
     const backstop = window.setInterval(() => {
       if (typeof document === "undefined" || document.visibilityState === "visible") {
-        if (source.readyState === EventSource.CLOSED) {
+        if (shouldRefreshFromBackstop(source.readyState, EventSource.OPEN)) {
           void refresh();
         }
       }

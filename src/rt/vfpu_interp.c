@@ -94,7 +94,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     /* COP2 register transfers (issue G-25): mfv/mfvc (sub 3) and mtv/mtvc
      * (sub 7) are the differential oracle for the op-0x12 codegen emitter.
      * The seven-bit VFPU register number uses the same scalar physical-register
-     * mapping as codegen.vreg_indices(); 128..131 address vfpuCtrl[0..3].
+     * mapping as codegen.vreg_indices(); 128..143 address vfpuCtrl[0..15].
      * Reject the remaining control-register numbers before touching state. */
     if (op == 0x12) {
         int sub = (w >> 21) & 0x1F;
@@ -102,7 +102,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         int imm = w & 0xFF;
         uint8_t vi_idx[1];
         if (sub != 3 && sub != 7) return SR_VFPU_OTHER;
-        if (imm >= 132) return SR_VFPU_OTHER;
+        if (imm >= 144) return SR_VFPU_OTHER;
         if (sub == 3) {           /* mfv / mfvc: VFPU -> GPR */
             if (rt == 0) return SR_VFPU_COMPUTE;
             if (imm < 128) {

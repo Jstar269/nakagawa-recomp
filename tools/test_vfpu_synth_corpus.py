@@ -753,9 +753,9 @@ class MemoryCop2CorpusTests(unittest.TestCase):
 
     def test_family_counts_are_explicit_and_deduplicated(self):
         counts = Counter(_op6(w) for w in self.corpus)
-        self.assertEqual(len(self.corpus), 400)
+        self.assertEqual(len(self.corpus), 544)
         self.assertEqual(len(self.corpus), len(set(self.corpus)))
-        self.assertEqual(counts, {0x12: 144, 0x32: 80, 0x36: 48, 0x3A: 80, 0x3E: 48})
+        self.assertEqual(counts, {0x12: 288, 0x32: 80, 0x36: 48, 0x3A: 80, 0x3E: 48})
 
     def test_each_word_has_an_emitter_or_an_explicit_quad_guard(self):
         import codegen
@@ -766,7 +766,7 @@ class MemoryCop2CorpusTests(unittest.TestCase):
         cases, unsupported, self_compare = generate_cases(
             words, allow_conditional_fallback_words=quad
         )
-        self.assertEqual((len(cases), unsupported, self_compare), (400, 0, 0))
+        self.assertEqual((len(cases), unsupported, self_compare), (544, 0, 0))
         for w, _, body in cases:
             if w in quad:
                 self.assertIn("sr_guest_span_", body)
@@ -779,7 +779,7 @@ class MemoryCop2CorpusTests(unittest.TestCase):
 
     def test_cop2_invalid_register_number_is_rejected(self):
         import codegen
-        invalid = (0x12 << 26) | (3 << 21) | (1 << 16) | 132
+        invalid = (0x12 << 26) | (3 << 21) | (1 << 16) | 144
         with self.assertRaises(codegen.Unsupported):
             codegen.vfpu_effect(0x08900000, invalid)
 

@@ -14,7 +14,7 @@ This report is honest about what the historical "446/446 compute/prefix" claim m
     0x34/0x37/0x3C that appear in the private game ELF.
   - It does NOT cover all VFPU instructions or all COP2 operations.
   - The public synthetic corpus has a 2742-word arithmetic/prefix/matrix
-    baseline plus a separate 400-word memory/COP2 corpus.  The latter covers
+    baseline plus a separate 544-word memory/COP2 corpus.  The latter covers
     only the native-capable aligned memory and register-transfer forms; branch
     control flow and unaligned left/right forms remain explicit gaps.
 
@@ -130,7 +130,7 @@ COVERAGE_MATRIX = [
     ),
     (
         "COP2 moves", "cfc2 / ctc2 (VFPU control register I/O)", True, True, True, False,
-        "Covered by the same corpus for control indices 0..3. Invalid control "
+        "Covered by the same corpus for control indices 0..15. Invalid control "
         "indices fail closed in both the emitter and oracle."
     ),
     # --- COP2 branches ---
@@ -198,7 +198,7 @@ def text_report() -> str:
         "  'compute/prefix 446/446' is a subset coverage claim:",
         "  it applies only to opcode families 0x18/0x19/0x1B/0x34/0x37/0x3C",
         "  and does NOT mean 'all VFPU instructions' or 'all COP2 operations'.",
-        "  The public differential extension adds 400 words for native-capable",
+        "  The public differential extension adds 544 words for native-capable",
         "  aligned memory and COP2 register-transfer forms; branch and unaligned",
         "  left/right forms remain explicitly open.",
         "",
