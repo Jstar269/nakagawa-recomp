@@ -1277,9 +1277,9 @@ def verify_ephemeral(
                 f"a blob approval for {approved_path} cites a record that does not exist",
             )
 
-    trusted_policy_raw = base_blobs.get(POLICY_PATH) or b""
+    base_policy_bytes = base_blobs.get(POLICY_PATH) or b""
     trusted_policy = _load_policy_bytes(
-        trusted_policy_raw,
+        base_policy_bytes,
         output_dir / "inputs",
         "trusted_policy.json",
         code="TRUSTED_POLICY_INVALID",
@@ -1293,14 +1293,14 @@ def verify_ephemeral(
         "candidate_policy.json",
         code="CANDIDATE_POLICY_INVALID",
     )
-    candidate_policy_matches_trusted = candidate_policy_raw == trusted_policy_raw
+    candidate_policy_matches_trusted = candidate_policy_raw == base_policy_bytes
     policy_delta: dict | None = None
     if trusted_candidate_policy is not None:
         blessed_policy_path = _external_input(
             trusted_candidate_policy, repo=repo, label="trusted candidate policy",
         )
         delta_policy_bytes = blessed_policy_path.read_bytes()
-        if delta_policy_bytes == trusted_policy_raw:
+        if delta_policy_bytes == base_policy_bytes:
             raise VerifyError(
                 "POLICY_DELTA_EMPTY",
                 "blessed candidate policy equals the trusted base policy; omit policy-delta inputs when unchanged",
@@ -1317,7 +1317,7 @@ def verify_ephemeral(
             code="CANDIDATE_POLICY_INVALID",
         )
         baseline_document = strict_json(
-            trusted_policy_raw, code="TRUSTED_POLICY_INVALID", label="trusted policy",
+            base_policy_bytes, code="TRUSTED_POLICY_INVALID", label="trusted policy",
         )
         candidate_document = strict_json(
             delta_policy_bytes, code="CANDIDATE_POLICY_INVALID", label="blessed candidate policy",
@@ -1326,7 +1326,7 @@ def verify_ephemeral(
             allowed_delta = _read_policy_delta_authority(
                 policy_delta_authority,
                 candidate_root=repo,
-                baseline_policy_bytes=trusted_policy_raw,
+                baseline_policy_bytes=base_policy_bytes,
                 candidate_policy_bytes=delta_policy_bytes,
             )
         except RefreshError as error:
