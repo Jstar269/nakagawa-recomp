@@ -5,16 +5,17 @@ primary build, test, and verification manager (`hst_manager.ps1`) from legacy
 title-specific coupling (*Hot Shots Tennis: Get a Grip!*, UCUS98701) and transitioning
 to the project's canonical orchestrator: `nk_manager.ps1`.
 
-This work is tracked under [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196)
+This work was tracked under [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196)
 as part of the broader Title-#2 readiness roadmap ([issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98)).
+Both issues are now closed; see the linked live records.
 
 ---
 
 ## 1. Context & Motivation
 
-At 1,662 lines, `hst_manager.ps1` is the central orchestration layer for developer
-workflows in Nakagawa Recomp. Despite its name, the vast majority of its implementation
-is **generic recompiler infrastructure**:
+At 1,445 lines (`wc -l`), `nk_manager.ps1` is the canonical orchestration layer for
+developer workflows in Nakagawa Recomp; `hst_manager.ps1` is now a deprecated
+forwarding wrapper (165 lines by `wc -l`). The manager provides **generic recompiler infrastructure**:
 
 - **Build Orchestration**: Invoking Make with toolchain detection, parallel jobs, and profile compilation flags.
 - **Run Profiles**: Managing runtime presets (`Standard`, `Performance`, `Benchmark`, `Diagnostics`, `Software`).
@@ -32,8 +33,9 @@ the manager must reflect the same multi-title genericity.
 
 ## 2. Technical Audit: Legacy HST Coupling Inventory
 
-The legacy HST coupling in `hst_manager.ps1` is remarkably narrow — approximately 56 lines
-out of 1,662:
+This historical census describes the pre-decoupling `hst_manager.ps1`, before
+PR #198: approximately 56 lines out of its then 1,662 lines. The locations and
+quotation below refer to that version, not the current forwarding wrapper:
 
 | Coupled Surface | Location in `hst_manager.ps1` | Description / Issue |
 | --- | --- | --- |
@@ -80,22 +82,20 @@ legacy values with validated, canonical plan projections.
 - Retain `hst_manager.ps1` as a thin backward-compatibility wrapper that issues a warning and invokes `nk_manager.ps1` with the HST manifest.
 
 Merged in PR #198. `nk_manager.ps1` is the canonical entry point and
-`hst_manager.ps1` remains the compatibility wrapper. The wrapper and manager
-still intentionally preserve the current local HST input route until the
-companion-tooling migration is admitted and validated.
+`hst_manager.ps1` remains the compatibility wrapper for the local HST input route.
 
-### Phase 3: Companion Tooling Decoupling (In progress; provenance-blocked)
+### Phase 3: Companion Tooling Decoupling (Implementation complete; provenance validation separate)
 
-- [ ] Add `nk.ps1` and preserve `hst.ps1` as a deprecated forwarding wrapper.
-- [ ] Add `tools/nk_safety.ps1` and preserve `tools/hst_safety.ps1` as a deprecated wrapper.
-- [ ] Add title-neutral `tools/nk_doctor*.py` modules and preserve the `hst_doctor*.py` names as deprecated wrappers.
+- [x] Add `nk.ps1` and preserve `hst.ps1` as a deprecated forwarding wrapper.
+- [x] Add `tools/nk_safety.ps1` and preserve `tools/hst_safety.ps1` as a deprecated wrapper.
+- [x] Add title-neutral `tools/nk_doctor*.py` modules and preserve the `hst_doctor*.py` names as deprecated wrappers.
 - [ ] Update the public source profile and exact reviewed-blob admission for every new implementation-bearing path.
 
 The C-1 runtime diagnostic gate is complete independently: retained HLE diagnostic
 reads require the validated HST code-generation profile and `SR_HLE_DIAGNOSTICS`.
-The companion paths are not claimed here because the current external provenance
-authority has no exact records for the new `nk_*` paths; candidate-side records or
-policy edits would be self-attestation.
+The companion scripts and wrappers now exist in the current tree. Their presence
+establishes implementation status, not external provenance attestation; the
+publication checklist item still requires trusted evidence.
 
 ### Phase 4: Retirement of Hardcoded HST Literals
 
