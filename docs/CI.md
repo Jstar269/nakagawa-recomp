@@ -83,6 +83,27 @@ limits of the evidence.
 
 ## Local readiness before opening a pull request
 
+Discover the available build and verification surfaces first:
+
+```bash
+mingw32-make --no-print-directory help
+```
+
+For the public checkout's inner loop, run the public-safe composition before
+the strict authority-bound gate:
+
+```bash
+mingw32-make --no-print-directory check
+```
+
+`check` covers documentation and policy checks, both publication-audit legs,
+the native host-core tests, and a fast Python subset. It does not replace
+`make readiness`: readiness additionally verifies the exact candidate against
+the external detailed ledger and therefore remains `BLOCKED` when
+`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the
+ordering-safe wrapper for regenerating the tracked public controls; it also
+stages the worktree because the ledger generator reads the Git index.
+
 Readiness used to be assembled ad hoc and was repeatedly wrong: a locally green
 candidate failed the hosted publication audit, and the repaired candidate then
 failed the hosted *attestation* gate — a verifier that was runnable locally the

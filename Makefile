@@ -13,6 +13,12 @@ GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
 
+# Goals that only print information. When every requested goal is one of these,
+# parse-time work with side effects (profile stamps and their invalidation, build
+# directories, Python bytecode) is skipped, so `make help` never touches the tree.
+NK_INFO_ONLY_GOALS := help
+NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(MAKECMDGOALS)),,1),)
+
 
 # ---------------------------------------------------------------------------
 # GENERIC TITLE CONTRACT (title-neutral, host-portable):
@@ -333,7 +339,11 @@ TITLE_CONFIG_HEADER := $(TITLE_CONFIG_DIR)/sr_title_config.h
 TITLE_CONFIG_ARG := $(if $(strip $(TITLE_MANIFEST)),--manifest $(strip $(TITLE_MANIFEST)),)
 # Identity of the effective configuration. Bound into RUNTIME_PROFILE_HASH below so a
 # changed title binding invalidates stale runtime objects instead of relinking silently.
+ifdef NK_INFO_ONLY
+TITLE_CONFIG_DIGEST := info-only
+else
 TITLE_CONFIG_DIGEST := $(shell $(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
+endif
 # An unreadable or invalid manifest prints nothing. Refusing here keeps a rejected title
 # configuration from becoming an empty profile entry that hashes like some other build.
 ifeq ($(strip $(TITLE_CONFIG_DIGEST)),)
@@ -449,7 +459,9 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 # per-recipe mkdir is needed.
 # Use Python for fully portable directory creation across Windows cmd.exe, MSYS2,
 # PowerShell, and POSIX environments.
+ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
@@ -535,8 +547,193 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: check test native-core-tests readiness FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects player public-safe-verify production-smoke production-smoke-clean production-smoke-gap display-smoke display-smoke-run display-smoke-gui display-smoke-player display-smoke-clean production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+# Public targets are listed once so `make help` and phony-target behaviour cannot
+# drift apart.  FORCE is intentionally separate: it is an implementation detail,
+# not an entry-point a contributor should discover by accident.
+PUBLIC_TARGETS := \
+	help \
+	check \
+	test \
+	native-core-tests \
+	readiness \
+	provenance-refresh \
+	all \
+	pipeline \
+	compile \
+	compiler-info \
+	runtime-objects \
+	portable-core-objects \
+	atrac3p-objects \
+	player \
+	public-safe-verify \
+	production-smoke \
+	production-smoke-clean \
+	production-smoke-gap \
+	display-smoke \
+	display-smoke-run \
+	display-smoke-gui \
+	display-smoke-player \
+	display-smoke-clean \
+	production-smoke-gap-clean \
+	platform-ladder \
+	platform-ladder-zero \
+	platform-ladder-reloc \
+	platform-ladder-gap \
+	platform-ladder-sched \
+	platform-ladder-fpu \
+	platform-ladder-fs \
+	platform-ladder-fs-negative \
+	platform-ladder-title2 \
+	platform-ladder-title2-negative \
+	platform-ladder-clean \
+	cosim-selftest \
+	cosim-selftest-run \
+	cosim-selftest-clean \
+	cosim-mutants \
+	clean \
+	clean-fixtures \
+	tidy \
+	distclean \
+	clean-all \
+	verify \
+	selftest \
+	strbuf-selftest \
+	sched-selftest \
+	sched-selftest-one \
+	heap-selftest \
+	profiler-selftest \
+	coro-selftest \
+	hle-thread-selftest \
+	hle-thread-selftest-build \
+	hle-title-selftest \
+	hle-title-selftest-one \
+	dispatch-selftest \
+	dispatch-isolation-selftest \
+	dispatch-isolation-selftest-one \
+	asset-index-selftest \
+	fp-convert-selftest \
+	vfpu-tables-selftest \
+	watchpoints-file-selftest \
+	vfpu-interp-selftest \
+	atrac3p-selftest \
+	atrac3p-bridge-selftest \
+	atrac3p-title-accept \
+	gpu-coherence-selftest \
+	gpu-snapsync-selftest \
+	ge-replay \
+	run \
+	run_elf \
+	vfpu_fuzz \
+	vfpu_fuzz_build \
+	shaders \
+	shader-verify \
+	shader-repro-verify \
+	psp-oracle \
+	psp-oracle-nakagawa \
+	psp-oracle-vfpu \
+	psp-oracle-vfpu-build \
+	psp-oracle-nakagawa-smoke \
+	psp-oracle-nakagawa-smoke-build \
+	psp-oracle-nakagawa-smoke-generate \
+	gpu-capture-selftest
+
+INTERNAL_TARGETS := FORCE
+.PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
+
+HELP_DESCRIPTION_help := list every public Make target and its purpose
+HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
+HELP_DESCRIPTION_test := run the complete Python tooling test suite
+HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
+HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
+HELP_DESCRIPTION_provenance-refresh := refresh controls with an external ledger and stage them
+HELP_DESCRIPTION_all := generate and compile the current title runtime
+HELP_DESCRIPTION_pipeline := generate image, imports, and recomputed source artifacts
+HELP_DESCRIPTION_compile := compile and link the generated runtime
+HELP_DESCRIPTION_compiler-info := print the effective compiler and build settings
+HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
+HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
+HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
+HELP_DESCRIPTION_player := build the native player
+HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
+HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
+HELP_DESCRIPTION_production-smoke-clean := remove production smoke artifacts
+HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke test
+HELP_DESCRIPTION_display-smoke := build the display smoke fixture
+HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
+HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
+HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
+HELP_DESCRIPTION_production-smoke-gap-clean := remove AOT-gap smoke artifacts
+HELP_DESCRIPTION_platform-ladder := run the complete public platform ladder
+HELP_DESCRIPTION_platform-ladder-zero := run the zero-base platform fixture
+HELP_DESCRIPTION_platform-ladder-reloc := run the relocation platform fixture
+HELP_DESCRIPTION_platform-ladder-gap := run the interpreter-gap platform fixture
+HELP_DESCRIPTION_platform-ladder-sched := run the scheduler platform fixture
+HELP_DESCRIPTION_platform-ladder-fpu := run the FPU platform fixture
+HELP_DESCRIPTION_platform-ladder-fs := run the filesystem platform fixture
+HELP_DESCRIPTION_platform-ladder-fs-negative := run the negative filesystem fixture
+HELP_DESCRIPTION_platform-ladder-title2 := run the second-title platform fixture
+HELP_DESCRIPTION_platform-ladder-title2-negative := run the negative second-title fixture
+HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
+HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
+HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
+HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
+HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
+HELP_DESCRIPTION_clean := remove current-title build outputs
+HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
+HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
+HELP_DESCRIPTION_distclean := remove intermediates and ephemeral build logs
+HELP_DESCRIPTION_clean-all := remove all build and fixture outputs
+HELP_DESCRIPTION_verify := compare generated output against external oracle data
+HELP_DESCRIPTION_selftest := run the runtime selftest
+HELP_DESCRIPTION_strbuf-selftest := run the checked-formatting selftest
+HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
+HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
+HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
+HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
+HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
+HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
+HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
+HELP_DESCRIPTION_hle-title-selftest := run title-configured HLE selftests
+HELP_DESCRIPTION_hle-title-selftest-one := run one title-configured HLE selftest
+HELP_DESCRIPTION_dispatch-selftest := run the production dispatch selftest
+HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
+HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
+HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
+HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
+HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
+HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
+HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
+HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
+HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
+HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
+HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
+HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
+HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
+HELP_DESCRIPTION_run := build and launch the current title runtime
+HELP_DESCRIPTION_run_elf := build the reference interpreter runner
+HELP_DESCRIPTION_vfpu_fuzz := build and run the VFPU differential fuzzer
+HELP_DESCRIPTION_vfpu_fuzz_build := build the VFPU differential fuzzer only
+HELP_DESCRIPTION_shaders := regenerate embedded shader artifacts
+HELP_DESCRIPTION_shader-verify := verify embedded shader hashes
+HELP_DESCRIPTION_shader-repro-verify := recompile and compare shader bytes
+HELP_DESCRIPTION_psp-oracle := run the scalar Nakagawa PSP oracle stream
+HELP_DESCRIPTION_psp-oracle-nakagawa := run the scalar host and PSP comparison helper
+HELP_DESCRIPTION_psp-oracle-vfpu := emit the host VFPU oracle stream
+HELP_DESCRIPTION_psp-oracle-vfpu-build := build the host VFPU oracle
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke := run the generated-code PSP oracle smoke
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-build := build the generated-code PSP oracle smoke
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-generate := generate the PSP oracle smoke artifacts
+HELP_DESCRIPTION_gpu-capture-selftest := run the GPU capture selftest
+
 .SECONDARY:
+
+help:
+	$(info Nakagawa Recomp Make targets)
+	$(info Usage: mingw32-make [VARIABLE=value ...] TARGET)
+	$(info )
+	$(foreach target,$(PUBLIC_TARGETS),$(info   $(target) - $(HELP_DESCRIPTION_$(target))))
+	@:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
 # compilation and makes GNU Make's selected compiler and assignment origin explicit.
@@ -595,6 +792,25 @@ endif
 	$(PYTHON) tools/policy_sync.py --regen-export
 	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
 	@echo "== readiness: OK (the suite is separate and still yours to run)"
+
+# One-command wrapper for the ordering-sensitive public-control refresh. The
+# underlying tool stages the worktree because its ledger generator reads the
+# index; keep the external authority requirement explicit and fail closed when
+# it is unavailable. Set PROVENANCE_REFRESH_APPLY_POLICY=1 only when the
+# maintainer has already decided that newly seen routine paths belong on the
+# public surface.
+PROVENANCE_REFRESH_APPLY_POLICY ?= 0
+PROVENANCE_REFRESH_POLICY_ARG = $(if $(filter 1 true yes,$(PROVENANCE_REFRESH_APPLY_POLICY)),--apply-policy,)
+
+provenance-refresh:
+ifndef NK_TRUSTED_LEDGER
+	@echo "provenance-refresh: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "  Set it to the external IMPLEMENTATION_PROVENANCE.json and retry."
+	@echo "  This target stages the worktree because the ledger reads the index."
+	@exit 1
+else
+	$(PYTHON) tools/provenance_refresh.py --implementation-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
+endif
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
@@ -733,8 +949,6 @@ PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
 PL_TITLE2_BASE := 0x08A40000
 PL_TITLE2_NEGATIVE_BASE := 0x08A80000
-
-.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-clean
 
 platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative
 
@@ -1075,7 +1289,7 @@ cosim-selftest-clean:
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
 # before target freshness is evaluated (avoiding timestamp-resolution races).
-ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))),)
+ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 -include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP) $(TITLE_CONFIG_STAMP)
 endif
 -include $(DEP_FILES)
