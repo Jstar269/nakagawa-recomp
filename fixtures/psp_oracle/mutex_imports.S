@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+
 #include "pspimport.s"
 
     IMPORT_START "ThreadManForUser", 0x40010000
