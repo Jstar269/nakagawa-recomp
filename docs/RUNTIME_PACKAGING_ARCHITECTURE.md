@@ -56,7 +56,7 @@ The native player (`nakagawa_player`) acts as an authentic front-end and library
 Communication and handoff occur via:
 
 * Clean environment variables: `PSP_ISO`, `SR_FPS_CAP`, `SR_GPU_GE=1`, `SR_DEBUG`, `SR_DISPATCH_FATAL=1`.
-* Process lifecycle tracking: native wait, status queries, and graceful termination.
+* Process lifecycle tracking: native wait, status queries, and platform-specific termination (forced on Windows; SIGTERM with bounded grace and SIGKILL escalation on POSIX).
 
 * **Advantages:**
   * **Total Fault Isolation:** A crash or abort in guest execution never brings down the launcher UI. The launcher detects child process exit, captures the exit code, and reports diagnostic facts cleanly to the user.
@@ -74,7 +74,7 @@ list is not evidence that a distributable installer or title package exists:
 
 * `src/core/nk_types.h`: `NkGameEntry`, `NkResult`.
 * `src/core/nk_platform.h`: `NkProcessHandle`, `nk_platform_spawn_process`, `nk_platform_is_process_running`, `nk_platform_wait_process`.
-* `src/core/nk_platform_win32.c`: Win32 `CreateProcessA` with environment block generation and wait handles.
+* `src/core/nk_platform_win32.c`: Win32 `CreateProcessW` with UTF-16 executable/command-line conversion, environment block generation, and wait handles.
 * `src/core/nk_platform_posix.c`: POSIX `fork` + `execv` with environment configuration.
 * `src/core/nk_launch.h` & `src/core/nk_launch.c`: typed `NkLaunchSession` candidate resolution, environment construction, and process lifecycle management.
 * `src/player/ui_renderer.c`: UI "PLAY NOW" / "STOP GAME" action triggers and active PID indicators.

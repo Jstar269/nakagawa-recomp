@@ -21,7 +21,7 @@ The existing prototype UI is located under [`interface/`](../interface/). The pl
 | **VRAM Viewer** | `components/studio/vram-viewer.tsx` | React canvas | Fetches VRAM buffers over the debug console API and renders them in-browser |
 | **Performance/Profiler Panels** | `components/studio/performance-panel.tsx`, `components/studio/profiler-panel.tsx` | React, SVG visualizer | Performance configuration plus generated-function/basic-block counts, durations, and watchpoint statistics; no FPS/frame-time telemetry view |
 | **Visual Regression** | `components/studio/visual-regression-panel.tsx` | Node.js comparison routes | Compares captured snapshots against same-named golden frames; the route does not establish the golden files' rendering provenance |
-| **Fuzz Lab** | `components/studio/test-lab-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
+| **Fuzz Lab** | `components/studio/test-lab-panel.tsx` | Next.js API, Python harness | Triggers the VFPU differential fuzzer through the manager API; cosimulation gates remain separate Make/CI targets |
 | **Execution Console** | `components/studio/execution-console.tsx` | React | Runtime diagnostics console for process status, pause/resume, register and memory inspection, opt-in writes, and crash traces |
 
 ---
@@ -75,7 +75,7 @@ The plan below records the target sequence. The native SDL3 launcher window, nat
 graph TD
     subgraph Phase 1: Core Decoupling
         P1A[Create portable nk_core API] --> P1B[Create Headless CLI nk_cli.py]
-        P1B --> P1C[Wire Launcher Mode into Interface]
+        P1B --> P1C[Connect Core to Native Launcher and Setup Wizard (LANDED)]
     end
 
     subgraph Phase 2: Native Shell Implementation

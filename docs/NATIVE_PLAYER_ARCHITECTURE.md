@@ -189,8 +189,8 @@ Instead of exposing raw exception stack traces or compiler lines, errors provide
 
 ## 6. Controller & High-DPI Navigation
 
-- **Gamepad First**: Full navigation via D-Pad, Left Stick, Cross (A) to select, Circle (B) to go back.
-- **High-DPI Scaling**: Vector/SDF typography automatically scales with monitor DPI (100%, 150%, 200%).
+- **Gamepad First**: D-Pad and mapped buttons provide navigation; Cross (A) selects and Circle (B) goes back. Left-stick navigation remains a target until axis events are handled.
+- **High-DPI Scaling**: DPI-aware raster text uses density-specific SDL_ttf size buckets. Vector/SDF typography remains a target.
 - **Theme**: Modern dark court palette with crisp contrast, soft glass panels, and clear visual hierarchy.
 
 ---
