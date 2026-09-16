@@ -57,7 +57,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e158f0e82141bb9994cc3512a1f0a082919eb1a8fecc72223fc8d821a2c6084e"
+      "sha256": "2a37f17803060e534371fc1c1587c4dbdeffe221827e8cd4c194ba39be03021a"
     },
     {
       "path": ".github/CODEOWNERS",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "401b56b177b806e3993b5e32ba59a9e96515ea8bf21a179f35414eaf42e551cd"
+      "sha256": "6beb12a950479616f44e563fb8436a6a5450d3bbef48211221b456f1df42c24d"
     },
     {
       "path": "NOTICE.md",
@@ -747,7 +747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0592e9e6d1d75e73f229cf071897af7203bfc502d4cdb24de28fb79287c37447"
+      "sha256": "9aa1083c1fe67d8f65015f6d369df1288c77b67ef3965a1ee2630d01b48cfa6d"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -7638,7 +7638,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "47aa08ed812aa3eb721ef7800b95ee01f3f78018142091e752991dd8de97290b"
+      "sha256": "cd2776b773d048b2931a841d9f17e2ac916de6a5d354e3050150a415f6e55d7e"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -7647,7 +7647,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cbc062e2d4da6b799777b04a51574b1c7e3d3709d3a56987311d5b949aaabd1b"
+      "sha256": "ff0a4698030ee2da6d123de2f237d41ddfef57090de70d6f9d05f3a82e9911ed"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -9102,5 +9102,17 @@
       },
       "sha256": "d9b8852429cabbe9adf1c73278af285fee7a52924a4db07051385452320b031e"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "d64b8d18c41bf5b3169c3023ae4ac8c0e58a138a",
+    "candidate_tree": "128ed36b331f178a9ce39f1baa645384c938e2dc",
+    "refreshed_paths": [
+      ".gitattributes",
+      "Makefile",
+      "docs/CI.md",
+      "tools/test_build_system_parity.py",
+      "tools/test_build_truth.py"
+    ]
+  }
 }
