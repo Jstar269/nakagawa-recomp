@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -155,7 +158,12 @@ class BuildSystemParityTests(unittest.TestCase):
         self.assertIn("NK_TRUSTED_LEDGER", self.makefile_text)
         self.assertIn("PROVENANCE_REFRESH_APPLY_POLICY", self.makefile_text)
 
-    def test_generated_public_controls_are_marked_as_generated(self) -> None:
+    def test_audited_public_controls_stay_diff_visible(self) -> None:
+        """The provenance controls are audited bytes, so PR diffs must show them.
+
+        GitHub collapses diffs of paths marked ``linguist-generated``; marking the
+        ledger or export that way would hide exactly the bytes a reviewer must see.
+        """
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         for path in (
             "/PUBLIC_EXPORT.json",
@@ -163,11 +171,35 @@ class BuildSystemParityTests(unittest.TestCase):
             "/assets/public_source_profile.json",
         ):
             with self.subTest(path=path):
-                self.assertRegex(
+                self.assertNotRegex(
                     attributes,
-                    rf"(?m)^{re.escape(path)}\s+linguist-generated=true$",
+                    rf"(?m)^{re.escape(path)}\s+.*linguist-generated",
                 )
 
+    def test_help_skips_parse_time_side_effects(self) -> None:
+        """`make help` must not create or invalidate profile stamps or build dirs."""
+        self.assertRegex(self.makefile_text, r"(?m)^NK_INFO_ONLY_GOALS := help$")
+        self.assertIn(
+            "ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)",
+            self.makefile_text,
+        )
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        python = shutil.which("python") or shutil.which("python3")
+        if not make or not python:
+            self.skipTest("GNU Make and Python are required for the behavioural check")
+        with tempfile.TemporaryDirectory() as tmp:
+            build_dir = Path(tmp) / "help-build"
+            proc = subprocess.run(
+                [make, "--no-print-directory", "help", f"BUILD_DIR={build_dir.as_posix()}"],
+                cwd=ROOT, capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("help - list every public Make target", proc.stdout)
+            self.assertFalse(
+                build_dir.exists(),
+                "make help created build state: "
+                + ", ".join(sorted(p.name for p in build_dir.rglob("*"))),
+            )
 
 if __name__ == "__main__":
     unittest.main()

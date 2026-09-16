@@ -13,6 +13,12 @@ GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
 
+# Goals that only print information. When every requested goal is one of these,
+# parse-time work with side effects (profile stamps and their invalidation, build
+# directories, Python bytecode) is skipped, so `make help` never touches the tree.
+NK_INFO_ONLY_GOALS := help
+NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(MAKECMDGOALS)),,1),)
+
 
 # ---------------------------------------------------------------------------
 # GENERIC TITLE CONTRACT (title-neutral, host-portable):
@@ -333,7 +339,11 @@ TITLE_CONFIG_HEADER := $(TITLE_CONFIG_DIR)/sr_title_config.h
 TITLE_CONFIG_ARG := $(if $(strip $(TITLE_MANIFEST)),--manifest $(strip $(TITLE_MANIFEST)),)
 # Identity of the effective configuration. Bound into RUNTIME_PROFILE_HASH below so a
 # changed title binding invalidates stale runtime objects instead of relinking silently.
+ifdef NK_INFO_ONLY
+TITLE_CONFIG_DIGEST := info-only
+else
 TITLE_CONFIG_DIGEST := $(shell $(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
+endif
 # An unreadable or invalid manifest prints nothing. Refusing here keeps a rejected title
 # configuration from becoming an empty profile entry that hashes like some other build.
 ifeq ($(strip $(TITLE_CONFIG_DIGEST)),)
@@ -449,7 +459,9 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 # per-recipe mkdir is needed.
 # Use Python for fully portable directory creation across Windows cmd.exe, MSYS2,
 # PowerShell, and POSIX environments.
+ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
@@ -1277,7 +1289,7 @@ cosim-selftest-clean:
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
 # before target freshness is evaluated (avoiding timestamp-resolution races).
-ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))),)
+ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 -include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP) $(TITLE_CONFIG_STAMP)
 endif
 -include $(DEP_FILES)

@@ -20,14 +20,6 @@
 *.yaml            text eol=lf
 Makefile          text eol=lf
 
-# Derived public controls remain tracked and audited, but are generated data
-# rather than hand-authored source. Keep language statistics from presenting
-# their mechanical JSON churn as implementation code; leave review diffs
-# visible because these controls are audited bytes.
-/PUBLIC_EXPORT.json                         linguist-generated=true
-/assets/public_provenance_ledger.json      linguist-generated=true
-/assets/public_source_profile.json         linguist-generated=true
-
 # Binaries: never touch line endings.
 *.dll             binary
 *.exe             binary
