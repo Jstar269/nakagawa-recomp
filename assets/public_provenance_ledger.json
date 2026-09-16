@@ -9030,19 +9030,5 @@
       },
       "sha256": "5ebecfddd9ec6401d53ddabee4fa5954b3596e577bdce7f390372fbaa12a6acf"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "4f6a3874e5f55b134b488aaf24073f4e78826455",
-    "candidate_tree": "1ce8263973a5fb2d1dfb178e571f954fdc3af9d5",
-    "refreshed_paths": [
-      "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
-      "docs/ISO_ONLY_GAP_ANALYSIS.md",
-      "docs/NATIVE_PLAYER_ARCHITECTURE.md",
-      "docs/README.md",
-      "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
-      "docs/WEB_UI_MIGRATION.md",
-      "docs/research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md"
-    ]
-  }
+  ]
 }
