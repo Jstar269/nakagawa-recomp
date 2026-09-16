@@ -1216,9 +1216,19 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         """Verify that clean-fixtures, tidy, and clean-all are declared as phony targets."""
         phony_match = re.search(r"^\.PHONY:\s*(.+)$", self.makefile_text, re.MULTILINE)
         self.assertIsNotNone(phony_match, "No .PHONY declaration found in Makefile")
-        phony_targets = set(phony_match.group(1).split())
+        self.assertEqual(
+            set(phony_match.group(1).split()),
+            {"$(PUBLIC_TARGETS)", "$(INTERNAL_TARGETS)"},
+            "The .PHONY declaration must consume the single-source target catalogs",
+        )
+        catalog_match = re.search(
+            r"(?ms)^PUBLIC_TARGETS := \\\n(?P<targets>.*?)(?=^INTERNAL_TARGETS :=)",
+            self.makefile_text,
+        )
+        self.assertIsNotNone(catalog_match, "No PUBLIC_TARGETS catalog found in Makefile")
+        public_targets = set(catalog_match.group("targets").replace("\\", "").split())
         for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
-            self.assertIn(target, phony_targets, f"Target {target} missing from .PHONY")
+            self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
 
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
