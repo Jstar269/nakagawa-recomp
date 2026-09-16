@@ -1003,7 +1003,7 @@ static void case_name_discipline(void) {
     nuke(root);
 }
 
-#ifdef _WIN32
+#if defined(SR_CD_BACKEND_WINDOWS)
 /* An invalid UTF-8 leaf must never be "repaired" into U+FFFD: that would delete
  * a different, existing object whose name happens to be U+FFFD. */
 static void case_invalid_utf8_leaf_is_refused(void) {
@@ -1098,7 +1098,7 @@ int main(void) {
     case_large_directory_delete();
     case_partial_failure();
     case_name_discipline();
-#ifdef _WIN32
+#if defined(SR_CD_BACKEND_WINDOWS)
     case_invalid_utf8_leaf_is_refused();
 #endif
     case_final_symlink_entry(&skipped);

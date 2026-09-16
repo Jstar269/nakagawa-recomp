@@ -33,12 +33,11 @@ static bool utf8_to_wide(const char *utf8, WCHAR *out_wide, size_t max_wide_char
     return true;
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
-#endif
+/* Bounded UTF-16 -> UTF-8 conversion; unpaired surrogates are refused. */
 static bool wide_to_utf8(const WCHAR *wide, char *out_utf8, size_t max_utf8_bytes) {
     if (!wide || !out_utf8 || max_utf8_bytes == 0) return false;
-    int res = WideCharToMultiByte(CP_UTF8, 0, wide, -1, out_utf8, (int)max_utf8_bytes, NULL, NULL);
+    int res = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1, out_utf8,
+                                  (int)max_utf8_bytes, NULL, NULL);
     if (res <= 0) {
         out_utf8[0] = '\0';
         return false;
@@ -115,16 +114,23 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode) {
     return _wfopen(wpath, wmode);
 }
 
+/* Reads an environment variable through the wide API as UTF-8. The narrow CRT
+ * getenv() yields active-code-page bytes, which strict UTF-8 path consumers refuse. */
+static bool env_get_utf8(const WCHAR *name, char *out_utf8, size_t max_utf8_bytes) {
+    WCHAR wvalue[32768];
+    DWORD n = GetEnvironmentVariableW(name, wvalue, (DWORD)(sizeof(wvalue) / sizeof(WCHAR)));
+    if (n == 0 || n >= sizeof(wvalue) / sizeof(WCHAR)) return false;
+    return wide_to_utf8(wvalue, out_utf8, max_utf8_bytes);
+}
+
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
     if (!out_path || max_len == 0) return false;
-    const char *base = getenv("LOCALAPPDATA");
-    if (!base || !*base) {
-        base = getenv("APPDATA");
+    char base[32768];
+    if (!env_get_utf8(L"LOCALAPPDATA", base, sizeof(base)) &&
+        !env_get_utf8(L"APPDATA", base, sizeof(base)) &&
+        !env_get_utf8(L"USERPROFILE", base, sizeof(base))) {
+        return false;
     }
-    if (!base || !*base) {
-        base = getenv("USERPROFILE");
-    }
-    if (!base || !*base) return false;
 
     const char *subdir = "data";
     switch (type) {
@@ -239,6 +245,7 @@ static WCHAR *build_controlled_unicode_environment(const char * const *envp) {
         return NULL;
     }
     size_t count = 0;
+    bool failed = false;
 
     for (LPCWCH p = parent_env; *p; p += wcslen(p) + 1) {
         if (*p == L'=') continue;
@@ -248,20 +255,26 @@ static WCHAR *build_controlled_unicode_environment(const char * const *envp) {
         if (count >= capacity) {
             capacity *= 2;
             WEnvVar *new_vars = (WEnvVar *)realloc(vars, capacity * sizeof(WEnvVar));
-            if (!new_vars) break;
+            if (!new_vars) { failed = true; break; }
             vars = new_vars;
         }
 
         vars[count].str = _wcsdup(p);
         vars[count].key_len = klen;
-        if (vars[count].str) count++;
+        if (!vars[count].str) { failed = true; break; }
+        count++;
     }
     FreeEnvironmentStringsW(parent_env);
 
-    if (envp) {
+    if (envp && !failed) {
         for (int i = 0; envp[i]; i++) {
             WCHAR witem[4096];
-            if (!utf8_to_wide(envp[i], witem, sizeof(witem) / sizeof(WCHAR))) continue;
+            /* A requested variable that cannot be represented must not silently
+             * fall back to the parent's value. */
+            if (!utf8_to_wide(envp[i], witem, sizeof(witem) / sizeof(WCHAR))) {
+                failed = true;
+                break;
+            }
 
             WCHAR *eq = wcschr(witem, L'=');
             size_t klen = eq ? (size_t)(eq - witem) : wcslen(witem);
@@ -274,22 +287,30 @@ static WCHAR *build_controlled_unicode_environment(const char * const *envp) {
                 }
             }
 
+            WCHAR *dup = _wcsdup(witem);
+            if (!dup) { failed = true; break; }
             if (found_idx >= 0) {
                 free(vars[found_idx].str);
-                vars[found_idx].str = _wcsdup(witem);
+                vars[found_idx].str = dup;
                 vars[found_idx].key_len = klen;
             } else {
                 if (count >= capacity) {
                     capacity *= 2;
                     WEnvVar *new_vars = (WEnvVar *)realloc(vars, capacity * sizeof(WEnvVar));
-                    if (!new_vars) break;
+                    if (!new_vars) { free(dup); failed = true; break; }
                     vars = new_vars;
                 }
-                vars[count].str = _wcsdup(witem);
+                vars[count].str = dup;
                 vars[count].key_len = klen;
-                if (vars[count].str) count++;
+                count++;
             }
         }
+    }
+
+    if (failed) {
+        for (size_t i = 0; i < count; i++) free(vars[i].str);
+        free(vars);
+        return NULL;
     }
 
     qsort(vars, count, sizeof(WEnvVar), env_var_cmp);
@@ -357,12 +378,16 @@ bool nk_platform_spawn_process(
     WCHAR wwd_buf[32768];
     WCHAR *wwd = NULL;
     if (working_directory && *working_directory) {
-        if (utf8_to_wide(working_directory, wwd_buf, sizeof(wwd_buf) / sizeof(WCHAR))) {
-            wwd = wwd_buf;
+        /* Never launch in the parent's directory in place of a rejected one. */
+        if (!utf8_to_wide(working_directory, wwd_buf, sizeof(wwd_buf) / sizeof(WCHAR))) {
+            return false;
         }
+        wwd = wwd_buf;
     }
 
+    /* A NULL block would make CreateProcessW inherit the parent environment. */
     WCHAR *wenv_block = build_controlled_unicode_environment(envp);
+    if (!wenv_block) return false;
     DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
 
     STARTUPINFOW si;

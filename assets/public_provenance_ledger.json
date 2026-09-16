@@ -3495,7 +3495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "10f7e686c4240a50b09b1332b1748a7443edb4e9525451d0143fc5d36b067e39"
+      "sha256": "7d51a86ef7fd74be4327cc2535c4cdbe9fd4cb404a66433df44785c6663e4c48"
     },
     {
       "path": "src/core/nk_title_manifest.c",
@@ -6125,7 +6125,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d27c3f03fe2cc214fa799bc962c5fad7232b943c4da3a0a541276e9468a8e0a3"
+      "sha256": "dedc44e54609227bcdbe2131f0fe993edb3919b253f9e228e18d29c9c962c4c4"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -6281,7 +6281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c97a84729ffdd835ba4ff4cb80ba25847e77f9797e9db7ef6aafcd97c151fddc"
+      "sha256": "ceb8357fc9996175cee221f5ec5ea725ed55040c14ca9b1ab59f853557beac97"
     },
     {
       "path": "tests/native/test_xb_parser.c",
