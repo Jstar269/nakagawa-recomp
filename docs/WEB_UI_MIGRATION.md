@@ -20,9 +20,9 @@ The existing prototype UI is located under [`interface/`](../interface/). The pl
 | **Internals Panel** | `components/studio/internals-panel.tsx` | React | Streams manager logs, parses crash-register snapshots, and renders static pipeline, subsystem, function, and thread-map views; no live semaphore, module, or memory-partition inspector |
 | **VRAM Viewer** | `components/studio/vram-viewer.tsx` | React canvas | Fetches VRAM buffers over the debug console API and renders them in-browser |
 | **Performance/Profiler Panels** | `components/studio/performance-panel.tsx`, `components/studio/profiler-panel.tsx` | React, SVG visualizer | Performance configuration plus generated-function/basic-block counts, durations, and watchpoint statistics; no FPS/frame-time telemetry view |
-| **Visual Regression** | `components/studio/visual-regression-panel.tsx` | Node.js comparison routes | Compares GPU render output against software reference frames |
+| **Visual Regression** | `components/studio/visual-regression-panel.tsx` | Node.js comparison routes | Compares captured snapshots against same-named golden frames; the route does not establish the golden files' rendering provenance |
 | **Fuzz Lab** | `components/studio/test-lab-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
-| **Execution Console** | `components/studio/execution-console.tsx` | React | Live console for build and engine output |
+| **Execution Console** | `components/studio/execution-console.tsx` | React | Runtime diagnostics console for process status, pause/resume, register and memory inspection, opt-in writes, and crash traces |
 
 ---
 
@@ -62,14 +62,14 @@ The web UI was created to give developers deep visibility into the recompiler. T
 3. **Performance Profiling:** Telemetry graphs (FPS, vblank rate, CPU/GPU frame times).
 4. **VRAM & Texture Inspection:** Visualizing active GE textures and framebuffer targets.
 5. **Gamepad Calibration & Testing:** Live visual controller input verification.
-6. **Visual Regression Comparator:** Validating GPU render parity against software ground truth.
+6. **Visual Regression Comparator:** Comparing captured output against a designated reference set.
 7. **LLE State Inspector:** Inspecting active guest threads, semaphores, loaded PRX modules, and memory partitions.
 
 ---
 
 ## 5. Phased Migration Plan
 
-The plan below records the target sequence. The wizard and bounded ISO/XB staging landed in PR #202, so the preparation slice of Phase 2 has a source-owned implementation; the native file-picker window, in-engine overlay, full parity, and web retirement remain unbuilt.
+The plan below records the target sequence. The native SDL3 launcher window, native file picker, and bounded ISO/XB staging landed in PR #202; the in-engine overlay, full diagnostic parity, and web retirement remain unbuilt.
 
 ```mermaid
 graph TD
@@ -79,10 +79,10 @@ graph TD
     end
 
     subgraph Phase 2: Native Shell Implementation
-        P2A[Implement SDL3 Native Launcher Window]
-        P2B[Add Native OS File Picker]
-        P2C[Wire Transactional Prep Engine]
-        P2D[Integrate In-Engine Pause Overlay]
+        P2A[SDL3 Native Launcher Window (LANDED)]
+        P2B[Native OS File Picker (LANDED)]
+        P2C[Bounded Transactional ISO/XB Staging (LANDED)]
+        P2D[Integrate In-Engine Pause Overlay (TARGET)]
     end
 
     subgraph Phase 3: Parity & Retirement

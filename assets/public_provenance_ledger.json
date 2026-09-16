@@ -1044,7 +1044,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "def26d90b143134badf33de8888dcd9791eec7f2f019f399888d8ec104f35769"
+      "sha256": "b422c6cbce3794b10a8533bdf134b7a022975da347210619934975ce4177d823"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1143,7 +1143,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5b96d6f1f9a80fc5c68e1684b098ba7d11eaf2ae3d79d2fd33098699116b0cc4"
+      "sha256": "c53190a856e761919b9c70f5107ecb80a19022dfd5d315d18d0ec9091a1c756f"
     },
     {
       "path": "docs/ui-baseline/README.md",

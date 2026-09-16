@@ -45,11 +45,9 @@ The following claims are separate:
 - The earlier `buffy/project-truth-snapshot-155` branch was inspected as a dated
   2026-09-05 reference. Its unrelated source and documentation changes were not
   cherry-picked; only its snapshot shape informed this new file.
-- The workspace debt handoff remains open: the C-1 diagnostics set is preserved in its
-  dedicated worktree, 24 local branches retain unlanded content, and the remote-head
-  count needs reconciliation. The debt register lives in the workspace
-  `reports/WORKSPACE_DEBT_REPORT_2026-09-14.md` outside this public tree, so no in-tree
-  link is offered here.
+- The workspace debt handoff remains open, with local diagnostics and other unlanded
+  content preserved outside this public tree. Detailed workspace audit records are
+  maintainer-side evidence and are intentionally not reproduced or linked here.
 
 ## Native player: what exists
 
@@ -105,17 +103,10 @@ evidence land.
 
 ## Open controls that qualify this snapshot
 
-The dated registers remain the owners of their namespaces and are unchanged. They live
-outside the public tree; the paths below are workspace-side names, not links:
-
-- `reports/SECURITY_AUDIT_2026-09-13.md` owns `S-`, including hosted trust posture,
-  credential-store disposition, history-gate hygiene, loopback exposure, npm policy,
-  and workflow hardening.
-- `reports/IMPROVEMENT_AUDIT_2026-09-13.md` owns `O-`, `OV-`, and `X-`, including
-  stale-copy topology, doctor polling, interface SPDX coverage, and Makefile
-  discoverability.
-- `reports/FULL_WORKSPACE_AUDIT_2026-09-11.md` owns `F-` and `G-`, including the stale
-  hardware lock, disabled ESLint rules, and VFPU coverage limits.
+The dated security, improvement, and full-workspace registers remain the owners of
+their respective namespaces and are unchanged. They are maintainer-side records
+outside this public tree; their workspace paths and detailed contents are not part of
+this snapshot.
 
 No register identifier is renumbered or closed by this snapshot. Missing private,
 hosted, or hardware evidence remains `BLOCKED`, `NOT_RUN`, or open as appropriate.
