@@ -5376,7 +5376,9 @@ static void cbabi_scribble(CpuState *cpu, uint32_t tag) {
     for (int i = 0; i < 16; i++) cpu->vfpuCtrl[i] = tag + 0x300u + (uint32_t)i;
     cpu->fcr31 = tag ^ 0x33333333u;
     cpu->fpcond = tag & 1u;
-    cpu->status = tag ^ 0x44444444u;
+    for (int i = 0; i < 32; i++) cpu->cop0[i] = tag ^ (0x44444444u + (uint32_t)i);
+    cpu->flow_kind = tag ^ 0x55555555u;
+    cpu->flow_target = tag ^ 0x66666666u;
 }
 
 /* Called from the selftest's dispatch() for the synthetic guest entries above.
@@ -5491,8 +5493,14 @@ static void test_nested_guest_call_abi(void) {
         expect(cbabi_other_gprs_zero(seen),
                "every GPR the call does not populate is zeroed: no caller state leaks in");
         expect(seen->hi == 0u && seen->lo == 0u, "HI/LO are zeroed for the callee");
-        expect(seen->fcr31 == 0u && seen->fpcond == 0u && seen->status == 0u,
+        expect(seen->fcr31 == 0u && seen->fpcond == 0u &&
+                   seen->cop0[SR_CP0_STATUS] == 0u,
                "FPU control, FP condition and COP0 status are zeroed for the callee");
+        {
+            int cop0_clear = 1;
+            for (int i = 0; i < 32; i++) if (seen->cop0[i] != 0u) cop0_clear = 0;
+            expect(cop0_clear, "all 32 COP0 registers are zeroed for the callee");
+        }
         {
             int fpu_clear = 1, vfpu_clear = 1;
             for (int i = 0; i < 32; i++) if (seen->fi[i] != 0u) fpu_clear = 0;

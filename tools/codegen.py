@@ -17,6 +17,9 @@ from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
 
 
+CPU_STATE_ABI_VERSION = 2
+
+
 @dataclass(frozen=True)
 class EntryInfo:
     """Independent roles and provenance for one emitted guest entry."""
@@ -231,6 +234,25 @@ def build_entry_catalog(analyzed, ranges, profile=None, elf=None):
 
 def entry_symbol(addr, resume_owners=None):
     return f"r_{addr:08x}" if resume_owners and addr in resume_owners else f"f_{addr:08x}"
+
+
+def write_funcs_header(path, emitted, resume_owners=None):
+    """Write the shared generated declarations with the runtime ABI contract."""
+    if resume_owners is None:
+        resume_owners = {}
+    with open(path, "w", encoding="ascii", newline="\n") as f:
+        f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
+        f.write('#include "recomp.h"\n\n')
+        f.write("#ifndef SR_CPUSTATE_ABI_VERSION\n")
+        f.write('#error "generated functions require SR_CPUSTATE_ABI_VERSION"\n')
+        f.write(f"#elif SR_CPUSTATE_ABI_VERSION != {CPU_STATE_ABI_VERSION}u\n")
+        f.write(
+            f'#error "generated functions require CpuState ABI version {CPU_STATE_ABI_VERSION}u"\n'
+        )
+        f.write("#endif\n\n")
+        for a in emitted:
+            f.write(f"void {entry_symbol(a, resume_owners)}(CpuState *s);\n")
+        f.write("#endif\n")
 
 
 def emit_host_return(resumable, comment=None):
@@ -2349,12 +2371,7 @@ def main(argv):
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
-    with open(funcs_h_path, "w", encoding="ascii", newline="\n") as f:
-        f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
-        f.write('#include "recomp.h"\n\n')
-        for a in emitted:
-            f.write(f"void {entry_symbol(a, resume_owners)}(CpuState *s);\n")
-        f.write("#endif\n")
+    write_funcs_header(funcs_h_path, emitted, resume_owners)
 
     # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
     # Preserve its exact end-exclusive ranges in generated registration. Exact

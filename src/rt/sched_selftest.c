@@ -1189,7 +1189,9 @@ static void test_callback_dispatch_one_preserves_context(void) {
     cpu.fcr31 = 0x5001u; cpu.fpcond = 0x5002u;
     for (int i = 0; i < 128; i++) cpu.vi[i] = 0x6000u + (uint32_t)i;
     for (int i = 0; i < 16; i++) cpu.vfpuCtrl[i] = 0x7000u + (uint32_t)i;
-    cpu.status = 0x8001u; cpu.next_pc = 0x8002u; cpu.in_delay_slot = 0x8003u;
+    cpu.cop0[SR_CP0_STATUS] = 0x8001u;
+    cpu.next_pc = 0x8002u; cpu.in_delay_slot = 0x8003u;
+    cpu.flow_kind = 0x8004u; cpu.flow_target = 0x8005u;
 
     CpuState pre = cpu;
     memset(&s_ctx_test_dispatch, 0, sizeof(s_ctx_test_dispatch));
