@@ -9033,22 +9033,5 @@
       },
       "sha256": "5b5b3c7136ca797e1f235284ccfdad7d37064c9e31e2cbd55ee220f78d9e9178"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "2413bb7c15647b2086047458e7a0ece7ab0248c3",
-    "candidate_tree": "54cdc99958d1a19f9ba5cf66225e546f8b142894",
-    "refreshed_paths": [
-      "README.md",
-      "docs/ISSUE196_DIRECT_XB.md",
-      "docs/SETUP.md",
-      "docs/WORKSPACE_DOCTOR.md",
-      "tools/README.md",
-      "tools/extract_xb.py",
-      "tools/hst_doctor_checks.py",
-      "tools/test_extract_xb_security.py",
-      "tools/test_xb_probe.py",
-      "tools/xb_probe.py"
-    ]
-  }
+  ]
 }
