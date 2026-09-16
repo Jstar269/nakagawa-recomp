@@ -6533,7 +6533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fcfa750d3b8db2db67ad99e7ef42a1b068c7e2eee99f65fe9d37a9c02a5f3103"
+      "sha256": "0c0ccea4006c87b755443da18607215bd5b555346de12cd2ed91191fcfb8de1c"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7875,7 +7875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b13352f5f8378db5fffb1a40074b5781eb0e108e76af1f239a72f676ef4cf25"
+      "sha256": "4776e2f82719a9418d8ffe6e688986a0d0d290b1f0bc31d202207e17558452d5"
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",
@@ -8805,7 +8805,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "08950758d2bf2becfeb798a8fbd1ab5a290071e5159e03dc01794e63d2e8d5be"
+      "sha256": "f2ffb0a5cf27634aec79fcb41b601676686aaa084840471b092c300ec74c7d82"
     },
     {
       "path": "tools/title_catalog_codegen.py",
@@ -9031,7 +9031,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b5b3c7136ca797e1f235284ccfdad7d37064c9e31e2cbd55ee220f78d9e9178"
+      "sha256": "d9b8852429cabbe9adf1c73278af285fee7a52924a4db07051385452320b031e"
     }
   ]
 }
