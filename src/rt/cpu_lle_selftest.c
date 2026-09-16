@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // LLE Phase 1 (PR 2) CPU selftest: COP0 access, mode checks, exception entry,
 // and eret. Standalone host executable, no game inputs required:

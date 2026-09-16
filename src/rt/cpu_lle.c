@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
-// Modified by Nakagawa Recomp contributors, 2026-09-16.
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // LLE Phase 1 (PR 2): COP0 access, mode checks, exception entry, and eret.
 //
