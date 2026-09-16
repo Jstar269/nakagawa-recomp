@@ -157,15 +157,16 @@ function Safe-ClearHost {
 
 try {
     # ---------------------------------------------------------------------
-    # Repository-root identity (#183). Anchored to the manager script root.
+    # Repository-root identity (#183, #196). Anchored to the manager script root.
+    # nk_safety.ps1 is the canonical helper (Phase 3); hst_safety.ps1 is a forwarding wrapper.
     # ---------------------------------------------------------------------
     $script:OriginalLocation = (Get-Location).Path
-    $SafetySupport = Join-Path $PSScriptRoot "tools\hst_safety.ps1"
+    $SafetySupport = Join-Path $PSScriptRoot "tools\nk_safety.ps1"
     if (-not (Test-Path -LiteralPath $SafetySupport -PathType Leaf)) {
-        throw "Missing required helper: $SafetySupport"
+        throw "Missing required helper: $(Join-Path $PSScriptRoot 'tools\nk_safety.ps1')"
     }
     . $SafetySupport
-    $script:RepoRoot = Assert-HstWorkspaceRoot -Root $PSScriptRoot
+    $script:RepoRoot = Assert-NkWorkspaceRoot -Root $PSScriptRoot
     Set-Location -LiteralPath $script:RepoRoot
 
     if (-not (Test-Path -LiteralPath $VulkanDiscovery -PathType Leaf)) {

@@ -230,7 +230,10 @@ class ManagerExitPropagationHardeningTests(unittest.TestCase):
         self.assertIn('if ($Action -and $script:ManagerExitCode -ne 0) {\n    exit $script:ManagerExitCode', manager)
 
     def test_frontend_does_not_mask_manager_failure(self) -> None:
-        frontend = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        # Phase 3 (#196): nk.ps1 is canonical; hst.ps1 is a forwarding wrapper.
+        nk_path = ROOT / "nk.ps1"
+        hst_path = ROOT / "hst.ps1"
+        frontend = nk_path.read_text(encoding="utf-8-sig") if nk_path.exists() else hst_path.read_text(encoding="utf-8-sig")
         self.assertNotIn("Invoke-ManagerBuild", frontend)
         self.assertNotIn("Get-HstProductBackupPath", frontend)
         self.assertIn("$LASTEXITCODE = 0", frontend)

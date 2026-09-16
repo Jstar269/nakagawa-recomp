@@ -192,6 +192,10 @@ class CiPathAdversarialTests(unittest.TestCase):
         "tools/gen_microtest.py",
         "tools/verify_gates.py",
         "tools/hst_doctor.py",
+        "tools/nk_doctor.py",
+        "tools/nk_doctor_checks.py",
+        "tools/nk_doctor_core.py",
+        "tools/nk_safety.ps1",
         "tools/pspdev_lock.py",
     )
 

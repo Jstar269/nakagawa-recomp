@@ -203,6 +203,12 @@ def _is_build_system(path: str) -> bool:
         or logical_path.startswith("cmake/")
         or logical_path.startswith("tools/build")
         or logical_path.startswith("tools/hst_")
+        or logical_path in {
+            "tools/nk_doctor.py",
+            "tools/nk_doctor_checks.py",
+            "tools/nk_doctor_core.py",
+            "tools/nk_safety.ps1",
+        }
         or logical_path.startswith("tools/pspdev_")
         or name.endswith(".mk")
     )

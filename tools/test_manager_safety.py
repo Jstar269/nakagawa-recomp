@@ -25,7 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 SUPPORT = ROOT / "tools" / "hst_run_support.ps1"
-SAFETY = ROOT / "tools" / "hst_safety.ps1"
+# Phase 3 (#196): nk_safety.ps1 is the canonical location; hst_safety.ps1 is a forwarding wrapper.
+SAFETY = ROOT / "tools" / "nk_safety.ps1" if (ROOT / "tools" / "nk_safety.ps1").exists() else ROOT / "tools" / "hst_safety.ps1"
 PS_TESTS = ROOT / "tools" / "test_manager_safety.ps1"
 
 
@@ -64,9 +65,10 @@ class ManagerSafetyContractTests(unittest.TestCase):
 
     def test_manager_anchors_to_its_own_script_location(self) -> None:
         # The canonical root is $PSScriptRoot, never the caller's CWD.
-        self.assertIn("Assert-HstWorkspaceRoot -Root $PSScriptRoot", self.manager)
+        # Phase 3 (#196): nk_manager uses Assert-NkWorkspaceRoot and nk_safety.ps1.
+        self.assertIn("Assert-NkWorkspaceRoot -Root $PSScriptRoot", self.manager)
         self.assertIn("Set-Location -LiteralPath $script:RepoRoot", self.manager)
-        self.assertIn("hst_safety.ps1", self.manager)
+        self.assertIn("nk_safety.ps1", self.manager)
         # Managed paths derive from the canonical root.
         self.assertIn('$LogDir = Join-Path $script:RepoRoot "logs"', self.manager)
 
