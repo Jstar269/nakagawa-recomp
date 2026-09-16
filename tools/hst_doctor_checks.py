@@ -537,7 +537,7 @@ def check_private_inputs(
                     "INPUT_XB_DATA",
                     "Missing extracted XB asset tree",
                     path=data_root,
-                    remediation="Run the documented libxb extraction workflow from your own game files.",
+                    remediation="Run the documented extraction workflow (tools/extract_xb.py) from your own game files.",
                 )
             else:
                 count, error = _bounded_nonempty_directory(data_root)

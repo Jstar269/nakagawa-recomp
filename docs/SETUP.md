@@ -138,19 +138,45 @@ Unifying generic `ms0:` I/O with the savedata storage root is still portability
 work; do not remove `fs/` until that runtime change is implemented and the
 current menu route is revalidated.
 
-To regenerate the extracted asset tree, fetch libxb locally and run the extractor:
+To regenerate the extracted asset tree, run the extractor. It has no
+third-party dependency:
+
+```powershell
+python tools/extract_xb.py place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata --output place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted -v
+```
+
+Extraction is entirely repository-owned: `tools/xb_probe.py` parses the archive
+and decodes every member — including the nested `DEFLATE → LZS` layer — under
+the budgets declared at the top of `tools/extract_xb.py`, and that same module
+normalizes each member name once and writes it itself. The name that is
+validated is the name that is written, on every host. An archive containing an
+escaping, ambiguous, or colliding member name, one that breaches a decode
+budget, or one the reader cannot parse at all is refused rather than extracted;
+each archive is built in a staging directory and promoted only after the whole
+of it succeeds. The extractor refuses to reuse a non-empty destination or
+replace an existing generated file unless `--overwrite` is passed, `--workers`
+defaults to a small cap rather than the CPU count because each worker holds a
+whole archive in memory, and the number of in-flight worker tasks is bounded
+independently of how many archives were found.
+
+[libxb](https://github.com/kiwi515/libxb) is **no longer used**. It was
+previously the extraction back end, pinned to the audited 0.2.0 source snapshot
+`ce6df78e5ca99241dd2bbbd68ca485e34003d760`. It remains a useful independent
+reference for the XB container format and may still be checked out for
+comparison work:
 
 ```powershell
 git clone https://github.com/kiwi515/libxb.git third_party/libxb
 git -C third_party/libxb checkout --detach ce6df78e5ca99241dd2bbbd68ca485e34003d760
-python tools/extract_xb.py place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata --output place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted -v
 ```
 
-The detached commit is the audited libxb 0.2.0 source snapshot. Upstream has no
-release/tag, so do not leave this optional checkout tracking `main`; record the
-commit above (and verify the 0.2.0 sdist hash in
-[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md)) when reproducing an
-extraction.
+Upstream has no release/tag, so do not leave that optional checkout tracking
+`main`; record the commit above and verify the 0.2.0 sdist hash in
+[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md). Nothing in the build,
+the runtime, or the extractor reads it. Dropping it is not a statement that
+libxb is unsafe in general — see
+[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md) for what was actually
+measured and what that does and does not establish.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
