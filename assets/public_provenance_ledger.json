@@ -7867,10 +7867,13 @@
     },
     {
       "path": "tools/test_extract_xb_security.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "xb-extractor-security-test-204",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3b13352f5f8378db5fffb1a40074b5781eb0e108e76af1f239a72f676ef4cf25"
     },
@@ -8802,7 +8805,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "32eff0ab6d88414f6ec78cc863c9711b361b1eec6117c3825511c6997fb0f3cb"
+      "sha256": "08950758d2bf2becfeb798a8fbd1ab5a290071e5159e03dc01794e63d2e8d5be"
     },
     {
       "path": "tools/title_catalog_codegen.py",
@@ -9028,7 +9031,24 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ebecfddd9ec6401d53ddabee4fa5954b3596e577bdce7f390372fbaa12a6acf"
+      "sha256": "5b5b3c7136ca797e1f235284ccfdad7d37064c9e31e2cbd55ee220f78d9e9178"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "2413bb7c15647b2086047458e7a0ece7ab0248c3",
+    "candidate_tree": "54cdc99958d1a19f9ba5cf66225e546f8b142894",
+    "refreshed_paths": [
+      "README.md",
+      "docs/ISSUE196_DIRECT_XB.md",
+      "docs/SETUP.md",
+      "docs/WORKSPACE_DOCTOR.md",
+      "tools/README.md",
+      "tools/extract_xb.py",
+      "tools/hst_doctor_checks.py",
+      "tools/test_extract_xb_security.py",
+      "tools/test_xb_probe.py",
+      "tools/xb_probe.py"
+    ]
+  }
 }
