@@ -69,7 +69,7 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 | **Unified Game Window** | **Target** (launcher and title currently run as separate processes) | No (Separate launcher & render window) | No | No |
 | **In-Game Overlay Capable** | **Target** (overlay parity is not built) | No | No | No |
 | **Linux / Steam Deck Parity** | **Target** (SDL3/Vulkan; platform acceptance not run) | Good | Good | WebKitGTK packaging fragmentation |
-| **macOS (Metal/MoltenVK)** | **Supported** | Supported | Supported | Supported |
+| **macOS (Metal/MoltenVK)** | **Target** (framework path; project acceptance not run) | Framework capability; project acceptance not run | Framework capability; project acceptance not run | Framework capability; project acceptance not run |
 | **Build-System Burden** | **Target: native Makefile path** (developer toolchain still required today) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
 | **Startup Latency** | **Target estimate; not acceptance evidence** | ~300–600 ms | ~100 ms | ~400–800 ms |
 
@@ -86,8 +86,9 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 ## 3. Architecture & Separation of Concerns
 
 The diagram below is the target separation. The implemented public slice currently reaches
-title lookup, bounded ISO inspection, launch-session validation, and child-process
-lifecycle. Preparation, archive/decryption work, and overlay parity remain unbuilt.
+title lookup, bounded ISO inspection and ISO/XB staging, launch-session validation, and
+child-process lifecycle. Preparation beyond bounded staging, complete archive/decryption
+work, and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -154,14 +155,18 @@ decryption, generated-runtime provisioning, and arbitrary-ISO one-click play rem
 
 ### Progress Contracts
 
-The native staging worker emits structured progress events through SDL user
-events; it does not use a timer or poll the worker:
+The native staging worker emits progress notifications through SDL user events; it does
+not use a timer or poll the worker. For the connected bounded ISO/XB path, each progress
+update carries only:
 
-- **Stage**: `INSPECTING_ISO`, `EXTRACTING_CONTAINERS`, `DECRYPTING_MODULES`, `VALIDATING_ELFS`, `PREPARING_VFS`, `READY`.
-- **Metrics**: Completed count, total count, elapsed time in milliseconds, current processing item, and the final asset/audio/visual/layout census.
-- **Truthfulness**: Percentages are derived from the bounded ISO byte/file
-  walk and XB entry completion. Decryption and other unimplemented phases do
-  not fabricate readiness.
+- **Metrics**: Percent, completed file count, total file count, and the current processing path.
+- **Transport**: The SDL event identifies progress or completion and carries the worker
+  context; the payload above is read from that context on the UI thread.
+- **Completion**: The asset/audio/visual/layout census is recorded by the completed
+  staging transaction, not emitted as per-event progress data.
+- **Truthfulness**: Percentages are derived from the bounded ISO byte/file walk and XB
+  entry completion. Stage labels such as `DECRYPTING_MODULES`, elapsed time, and richer
+  preparation-route metrics are a future contract, not fields populated by this worker.
 
 ### Transactional Integrity
 
