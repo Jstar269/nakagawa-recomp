@@ -411,6 +411,36 @@ class PreflightTests(unittest.TestCase):
                 preflight_archive_members(archive, dest)
             self.assertIn("colliding", str(caught.exception))
 
+    def test_case_colliding_directory_components_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            archive = _write_archive(
+                base,
+                [
+                    ("Foo/a.bin", b"first", XBCompression.NONE),
+                    ("foo/b.bin", b"second", XBCompression.NONE),
+                ],
+            )
+            dest = os.path.join(base, "out")
+            os.makedirs(dest)
+            with self.assertRaises(UnsafeArchivePathError) as caught:
+                preflight_archive_members(archive, dest)
+            self.assertIn("path components", str(caught.exception))
+
+    def test_file_directory_prefix_collisions_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            archive = _write_archive(
+                base,
+                [
+                    ("data/menu", b"file", XBCompression.NONE),
+                    ("data/menu/item.bin", b"nested", XBCompression.NONE),
+                ],
+            )
+            dest = os.path.join(base, "out")
+            os.makedirs(dest)
+            with self.assertRaises(UnsafeArchivePathError) as caught:
+                preflight_archive_members(archive, dest)
+            self.assertIn("existing file", str(caught.exception))
+
     def test_an_unparsable_archive_is_refused_rather_than_extracted(self) -> None:
         with tempfile.TemporaryDirectory() as base:
             archive = os.path.join(base, "broken.xb")
@@ -1113,6 +1143,32 @@ class PromotionTests(unittest.TestCase):
 
             self.assertEqual(Path(dest, "a.bin").read_bytes(), b"old-a")
             self.assertEqual(Path(dest, "b.bin").read_bytes(), b"old-b")
+
+    def test_post_commit_cleanup_failure_does_not_rollback_replacements(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            staging = os.path.join(base, "staging")
+            dest = os.path.join(base, "dest")
+            os.makedirs(staging)
+            os.makedirs(dest)
+            Path(staging, "a.bin").write_bytes(b"new-a")
+            Path(staging, "b.bin").write_bytes(b"new-b")
+            Path(dest, "a.bin").write_bytes(b"old-a")
+            Path(dest, "b.bin").write_bytes(b"old-b")
+
+            original_discard = extract_xb._discard_staging
+
+            def fail_cleanup(_staging):
+                raise OSError("synthetic cleanup failure")
+
+            extract_xb._discard_staging = fail_cleanup
+            try:
+                self.assertFalse(extract_xb._promote_staging(staging, dest))
+            finally:
+                extract_xb._discard_staging = original_discard
+
+            self.assertEqual(Path(dest, "a.bin").read_bytes(), b"new-a")
+            self.assertEqual(Path(dest, "b.bin").read_bytes(), b"new-b")
+            self.assertTrue(os.path.isdir(staging))
 
 
 class WriteExclusiveTests(unittest.TestCase):

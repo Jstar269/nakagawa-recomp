@@ -6533,7 +6533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c0ccea4006c87b755443da18607215bd5b555346de12cd2ed91191fcfb8de1c"
+      "sha256": "a34cf7eb6c35a122802f5da803d2e52048c51d3cb730b5c3df082b4f601d74f4"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7875,7 +7875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4776e2f82719a9418d8ffe6e688986a0d0d290b1f0bc31d202207e17558452d5"
+      "sha256": "1cdefc21ec66e6b37c0f78c8cb1e3cc216fdbef534567abfa257ddba8e60b245"
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",

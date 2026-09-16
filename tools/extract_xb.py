@@ -400,21 +400,57 @@ def plan_archive_members(reader, dest_dir):
     """Normalize and contain every member name; return ``[(rel, entry), ...]``.
 
     The ``rel`` values returned here are the identities the writer uses.  No
-    later stage re-reads ``entry.path``.
+    later stage re-reads ``entry.path``.  The plan also rejects collisions in
+    the case-insensitive component identity used by Windows filesystems.  A
+    complete lowercased path is not enough: ``Foo/a.bin`` and ``foo/b.bin``
+    would otherwise be distinct strings while sharing one on-disk directory.
     """
 
     root_real = canonical_root(dest_dir)
     plan = []
-    seen = {}
+    # Keep a small path trie keyed by case-folded components.  Besides
+    # rejecting case-colliding sibling components, the terminal marker catches
+    # a member that is both a file and a directory prefix of another member.
+    trie = {"children": {}, "terminal": None}
     for entry in reader.entries:
         rel = normalize_member_path(entry.path)
         contained_path(root_real, rel)
-        key = rel.lower()
-        if key in seen:
+        node = trie
+        components = member_components(rel)
+        for index, component in enumerate(components):
+            key = component.casefold()
+            child = node["children"].get(key)
+            if child is None:
+                child = {
+                    "name": component,
+                    "owner": entry.path,
+                    "children": {},
+                    "terminal": None,
+                }
+                node["children"][key] = child
+            elif child["name"] != component:
+                raise UnsafeArchivePathError(
+                    "colliding member path components in archive: "
+                    f"{child['owner']!r} and {entry.path!r}"
+                )
+            if index < len(components) - 1 and child["terminal"] is not None:
+                raise UnsafeArchivePathError(
+                    "member path collides with an existing file in archive: "
+                    f"{child['terminal']!r} and {entry.path!r}"
+                )
+            node = child
+        if node["terminal"] is not None:
             raise UnsafeArchivePathError(
-                f"colliding member names in archive: {seen[key]!r} and {entry.path!r}"
+                f"colliding member names in archive: {node['terminal']!r} and "
+                f"{entry.path!r}"
             )
-        seen[key] = entry.path
+        if node["children"]:
+            child_owner = next(iter(node["children"].values()))["owner"]
+            raise UnsafeArchivePathError(
+                "member path collides with a directory in archive: "
+                f"{entry.path!r} and {child_owner!r}"
+            )
+        node["terminal"] = entry.path
         plan.append((rel, entry))
     return plan
 
@@ -1059,12 +1095,15 @@ def _discard_staging(staging):
         verify_extracted_tree(staging)
     except UnsafeArchivePathError:
         return False
-    for dirpath, dirnames, filenames in os.walk(staging, topdown=False):
-        for name in filenames:
-            os.unlink(os.path.join(dirpath, name))
-        for name in dirnames:
-            os.rmdir(os.path.join(dirpath, name))
-    os.rmdir(staging)
+    try:
+        for dirpath, dirnames, filenames in os.walk(staging, topdown=False):
+            for name in filenames:
+                os.unlink(os.path.join(dirpath, name))
+            for name in dirnames:
+                os.rmdir(os.path.join(dirpath, name))
+        os.rmdir(staging)
+    except OSError:
+        return False
     return True
 
 
@@ -1078,6 +1117,8 @@ def _promote_staging(staging, dest_real):
     merge is preflighted before the first replacement, and replaced files are
     kept in the staging tree until the merge succeeds so an unexpected
     filesystem error can be rolled back without leaving a hybrid destination.
+    Once every replacement succeeds, promotion is committed; staging cleanup
+    is best effort and never rolls back the committed tree.
     """
 
     if _is_reparse_point(staging):
@@ -1087,7 +1128,7 @@ def _promote_staging(staging, dest_real):
     verify_extracted_tree(staging)
     if not os.path.lexists(dest_real):
         os.rename(staging, dest_real)
-        return
+        return True
 
     root_real = canonical_root(dest_real)
     if not os.path.isdir(dest_real):
@@ -1160,8 +1201,6 @@ def _promote_staging(staging, dest_real):
             os.replace(stage_path, target)
             action["promoted"] = True
 
-        if not _discard_staging(staging):
-            raise OSError(f"promotion staging tree could not be removed: {staging}")
     except Exception as exc:
         rollback_errors = []
         for action in reversed(actions):
@@ -1193,6 +1232,16 @@ def _promote_staging(staging, dest_real):
             detail = "; ".join(rollback_errors)
             raise OSError(f"promotion failed and rollback failed: {detail}") from exc
         raise
+
+    # Commit point: every staged file has reached its validated destination,
+    # and all old files remain available in the staging backup until this point.
+    # Cleanup is now post-commit.  A partial unlink/rmdir must leave the new
+    # destination intact; the leftover staging path is safer evidence than
+    # deleting a promoted file and losing the old one during rollback.
+    try:
+        return _discard_staging(staging)
+    except Exception:
+        return False
 
 
 def extract_one(archive_path, out_dir, verbose=False, overwrite=False):
@@ -1230,9 +1279,11 @@ def extract_one(archive_path, out_dir, verbose=False, overwrite=False):
         verify_extracted_tree(staging)
         process_extracted_directory(staging, overwrite=False)
         verify_extracted_tree(staging)
-        _promote_staging(staging, dest_real)
+        cleanup_complete = _promote_staging(staging, dest_real)
         if verbose:
             print(f"  {archive_path}: {len(written)} members, {decoded} decoded bytes")
+            if not cleanup_complete:
+                print(f"  promotion cleanup deferred; staging remains at {staging}")
         return archive_path, "ok", None
     except Exception as e:
         detail = str(e)
