@@ -159,6 +159,25 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
         )
         self.assertEqual(len(issues), 4)
 
+    def test_priority_experiment_requires_a_started_peer_and_high_thread(self) -> None:
+        probe = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c"
+        source = probe.read_text(encoding="utf-8")
+        start = source.index("static void dwp_run")
+        end = source.index("static void run_display_wait_priority", start)
+        body = source[start:end]
+        self.assertIn("int low_started = 0;", body)
+        self.assertRegex(
+            body,
+            r"const int low_start\s*=\s*sceKernelStartThread\(low, 0, NULL\)",
+        )
+        self.assertIn("if (!with_low || low_started)", body)
+        self.assertIn("const int high_start = sceKernelStartThread(high, 0, NULL);", body)
+        self.assertRegex(
+            body,
+            r"setup_ok\s*&&\s*high_started\s*&&\s*g_dwp\.iters\s*==\s*DWP_ITERS",
+        )
+        self.assertIn("if (!low_started)", body)
+
 
 class PspOracleRunnerTests(unittest.TestCase):
     def test_capture_records_distinguish_result_skip_and_no_record(self) -> None:

@@ -53,6 +53,13 @@ class TitleManifestTests(unittest.TestCase):
             schema["$defs"]["profileZero"]["properties"]["source_program"]["properties"]["entry_symbol"]["pattern"],
             "^[A-Za-z_][A-Za-z0-9_]*$",
         )
+        required_bindings = schema["properties"]["required_runtime_bindings"]
+        self.assertEqual(required_bindings["maxItems"], len(title_manifest.DECLARABLE_BINDING_FAMILIES))
+        self.assertTrue(required_bindings["uniqueItems"])
+        self.assertEqual(
+            set(required_bindings["items"]["enum"]),
+            set(title_manifest.DECLARABLE_BINDING_FAMILIES),
+        )
 
     def test_schema_enums_equal_the_python_vocabularies(self) -> None:
         schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))

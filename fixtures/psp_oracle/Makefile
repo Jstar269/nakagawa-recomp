@@ -48,6 +48,12 @@ else ifeq ($(CASE),display-mask-duty)
 CASE_ID = 14
 else ifeq ($(CASE),display-ge-mask)
 CASE_ID = 15
+else ifeq ($(CASE),display-wait-late)
+CASE_ID = 16
+else ifeq ($(CASE),display-wait-priority)
+CASE_ID = 17
+else ifeq ($(CASE),display-vblank-window)
+CASE_ID = 18
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

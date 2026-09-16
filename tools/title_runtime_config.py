@@ -92,6 +92,17 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
         raise TitleRuntimeConfigError(
             "runtime binding(s) have no runtime representation: " + ", ".join(unknown)
         )
+    # Second gate on the required-family contract. The validator already enforces
+    # it, so reaching this is either a hand-built manifest dict that bypassed
+    # validation or a future regression in it -- and this is the last point
+    # before a required family becomes a header full of zero macros.
+    required = normalized.get("required_runtime_bindings") or []
+    missing = [name for name in required if name not in block]
+    if missing:
+        raise TitleRuntimeConfigError(
+            "refusing to generate: title requires binding families it does not configure: "
+            + ", ".join(missing)
+        )
     return {
         "source_id": normalized["id"],
         "codegen_profile": normalized.get("codegen_profile", "none"),

@@ -613,7 +613,8 @@ uint32_t sched_pending_interrupts(void);             /* source bits not yet serv
 void     sched_delay_current(uint32_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
-void     sched_wait_vblank(void);                   /* block current thread until the next delivered vblank */
+void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
+int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
