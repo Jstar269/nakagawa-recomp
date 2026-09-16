@@ -38,6 +38,7 @@ from nk_doctor_checks import (
     check_save_root,
     check_toolchain,
     check_vfpu_assets,
+    title_diagnostic_context,
 )
 
 
@@ -65,10 +66,10 @@ def render_text(report: Report) -> str:
     return "\n".join(lines)
 
 
-def render_json(report: Report, strict: bool) -> str:
+def render_json(report: Report, strict: bool, *, tool_name: str = "nk_doctor") -> str:
     payload = {
         "schema_version": 1,
-        "tool": "nk_doctor",
+        "tool": tool_name,
         "root": str(report.root),
         "scope": report.scope,
         "strict": strict,
@@ -111,12 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional title manifest path (validates title identity against manifest.disc.id)",
     )
+    parser.add_argument(
+        "--game-name",
+        default=None,
+        help="optional portable build target name (otherwise use the selected manifest)",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="make warnings produce exit status 2")
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    tool_name: str = "nk_doctor",
+    legacy_default_title: bool = False,
+) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -132,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = Report(root, args.scope)
 
     manifest_arg = args.title_manifest
+    manifest_data: dict[str, object] | None = None
     if manifest_arg is not None:
         manifest_path = manifest_arg if manifest_arg.is_absolute() else (root / manifest_arg)
         if not manifest_path.is_file():
@@ -145,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             try:
                 import title_manifest
-                title_manifest.load_manifest(manifest_path)
+                manifest_data = title_manifest.load_manifest(manifest_path)
             except Exception as exc:
                 report.fail(
                     "INPUT_TITLE_MANIFEST",
@@ -153,6 +165,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     path=manifest_path,
                     remediation="Fix the title manifest syntax or schema.",
                 )
+    elif not legacy_default_title:
+        # nk.ps1 and nk_doctor default to the public synthetic title.  The
+        # deprecated HST wrapper opts into its own compatibility default.
+        default_path = root / "assets" / "titles" / "synthetic.json"
+        if default_path.is_file():
+            try:
+                import title_manifest
+                manifest_data = title_manifest.load_manifest(default_path)
+            except Exception as exc:
+                report.fail(
+                    "INPUT_TITLE_MANIFEST",
+                    f"Invalid default synthetic title manifest: {exc}",
+                    path=default_path,
+                    remediation="Fix the default synthetic title manifest syntax or schema.",
+                )
+
+    title_context = title_diagnostic_context(
+        root,
+        manifest_data,
+        game_name=args.game_name,
+        legacy_default=legacy_default_title,
+    )
 
     if args.scope in {"repo", "all"}:
         check_repository_contract(report)
@@ -166,7 +200,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             report,
             need_iso=args.scope in {"inputs", "all"},
             need_assets=args.scope in {"inputs", "all"},
-            title_manifest=manifest_arg,
+            title_manifest=manifest_data,
+            title_context=title_context,
         )
     if args.scope in {"inputs", "run", "all"}:
         check_save_root(report, root)
@@ -175,16 +210,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             report,
             need_iso=True,
             need_assets=True,
-            title_manifest=manifest_arg,
+            title_manifest=manifest_data,
+            title_context=title_context,
         )
     if args.scope in {"products", "run", "all"}:
-        check_build_products(report)
-        check_build_profile(report, root)
+        check_build_products(report, title_context.game_name)
+        check_build_profile(report, root, title_context.game_name)
     if args.scope in {"run", "all"}:
         check_vfpu_assets(report)
-        check_runtime_dependencies(report, args.msys_path)
+        check_runtime_dependencies(report, args.msys_path, title_context.game_name)
 
-    output = render_json(report, args.strict) if args.json else render_text(report)
+    output = render_json(report, args.strict, tool_name=tool_name) if args.json else render_text(report)
     print(output)
     return report.exit_code(args.strict)
 

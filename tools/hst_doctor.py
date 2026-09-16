@@ -15,8 +15,8 @@ documentation that reference it (#196).
 
 from __future__ import annotations
 
-import sys
 import warnings
+import nk_doctor as _nk_doctor
 
 warnings.warn(
     "hst_doctor is deprecated (issue #196); use nk_doctor instead.",
@@ -25,13 +25,25 @@ warnings.warn(
 )
 
 # Re-export everything from the canonical entry-point module so
-# `from hst_doctor import X` and `hst_doctor.X(...)` continue to work.
-from nk_doctor import (  # noqa: F401, E402
-    build_parser,
-    main,
-    render_json,
-    render_text,
-)
+# `from hst_doctor import X` and `hst_doctor.X(...)` continue to work.  The
+# wrapper owns the two compatibility-sensitive entry points below so the
+# legacy CLI identity remains observable without duplicating the doctor.
+build_parser = _nk_doctor.build_parser
+render_text = _nk_doctor.render_text
+
+
+def render_json(report, strict):
+    """Render the legacy JSON schema with its historical tool identifier."""
+    return _nk_doctor.render_json(report, strict, tool_name="hst_doctor")
+
+
+def main(argv=None):
+    """Run the canonical doctor with legacy defaults and output identity."""
+    return _nk_doctor.main(
+        argv,
+        tool_name="hst_doctor",
+        legacy_default_title=True,
+    )
 
 # Re-export core types so `hst_doctor.Report(...)` continues to work.
 from nk_doctor_core import Report, _parse_elf, _validate_iso, _validate_pe_x64  # noqa: F401, E402

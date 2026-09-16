@@ -25,7 +25,8 @@ param(
 
     [string]$MsysPath = "C:\msys64\ucrt64\bin",
     [string]$VulkanSdk = "",
-    [string]$TitleManifest = ""
+    [string]$TitleManifest = "",
+    [string]$GameName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,8 +35,26 @@ $NkScript = Join-Path $PSScriptRoot "nk.ps1"
 if (-not (Test-Path -LiteralPath $NkScript)) {
     throw "Cannot forward to nk.ps1: file not found at $NkScript"
 }
+$HstManifest = Join-Path $PSScriptRoot "assets\titles\hst-ucus98701.json"
+$hstManifestSelected = $false
+if (-not $TitleManifest -and (Test-Path -LiteralPath $HstManifest -PathType Leaf)) {
+    # Preserve the old HST frontend default when the private/local manifest is
+    # available, while leaving a generic invocation entirely title-neutral.
+    $TitleManifest = "assets/titles/hst-ucus98701.json"
+    $hstManifestSelected = $true
+}
+if (-not $hstManifestSelected -and $TitleManifest) {
+    try {
+        $requestedManifest = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $TitleManifest))
+        $hstManifestSelected = $requestedManifest -ieq ([IO.Path]::GetFullPath($HstManifest))
+    } catch {
+        $hstManifestSelected = $false
+    }
+}
+if ($hstManifestSelected -and -not $GameName) { $GameName = "hst" }
 $forwardArgs = @{ Action = $Action; Scope = $Scope; Json = $Json; Strict = $Strict; MsysPath = $MsysPath }
 if ($VulkanSdk) { $forwardArgs["VulkanSdk"] = $VulkanSdk }
 if ($TitleManifest) { $forwardArgs["TitleManifest"] = $TitleManifest }
+if ($GameName) { $forwardArgs["GameName"] = $GameName }
 & $NkScript @forwardArgs
 exit $LASTEXITCODE

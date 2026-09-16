@@ -163,10 +163,6 @@ try {
     $script:OriginalLocation = (Get-Location).Path
     $SafetySupport = Join-Path $PSScriptRoot "tools\nk_safety.ps1"
     if (-not (Test-Path -LiteralPath $SafetySupport -PathType Leaf)) {
-        # Backward-compat fallback during the deprecation window.
-        $SafetySupport = Join-Path $PSScriptRoot "tools\hst_safety.ps1"
-    }
-    if (-not (Test-Path -LiteralPath $SafetySupport -PathType Leaf)) {
         throw "Missing required helper: $(Join-Path $PSScriptRoot 'tools\nk_safety.ps1')"
     }
     . $SafetySupport

@@ -15,6 +15,8 @@ documentation that reference it (#196).
 
 from __future__ import annotations
 
+import importlib
+import sys
 import warnings
 
 warnings.warn(
@@ -23,38 +25,10 @@ warnings.warn(
     stacklevel=2,
 )
 
-# Re-export all public names.
-from nk_doctor_checks import *  # noqa: F401, F403, E402
-
-# Re-export public check functions explicitly for IDE support.
-from nk_doctor_checks import (  # noqa: F401, E402
-    check_agent_identity,
-    check_build_products,
-    check_build_profile,
-    check_platform,
-    check_private_inputs,
-    check_repository_contract,
-    check_runtime_dependencies,
-    check_save_root,
-    check_toolchain,
-    check_vfpu_assets,
-)
-
-# Re-export private helpers needed by tests that use mock.patch.object(hst_doctor_checks, ...).
-# These are stable implementation details that tests must patch on the module they import.
-from nk_doctor_checks import (  # noqa: F401, E402
-    _find_executable,
-    _probe_powershell,
-    _run_version,
-)
-
-# Optional helpers that may not exist in all versions; ignore ImportError.
-try:
-    from nk_doctor_checks import _probe_windows_info  # noqa: F401
-except ImportError:
-    pass
-
-try:
-    from nk_doctor_checks import check_shader_provenance  # noqa: F401
-except ImportError:
-    pass
+# Keep the legacy import name as an actual module alias.  A star-imported
+# forwarding surface copies function objects, so mock.patch.object() against
+# hst_doctor_checks does not change the globals those functions resolve.  An
+# alias preserves both the old import path and patching/monkey-patching
+# semantics while the canonical module remains the sole implementation.
+_canonical = importlib.import_module("nk_doctor_checks")
+sys.modules[__name__] = _canonical

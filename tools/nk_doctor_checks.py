@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -127,7 +129,7 @@ def check_platform(report: Report) -> None:
     else:
         report.fail(
             "HOST_WINDOWS",
-            "The complete Nakagawa HST build/runtime is Windows-only",
+            "The complete Nakagawa Recomp build/runtime is Windows-only",
             detail=platform.platform(),
             remediation="Run Build/Run diagnostics on Windows 11 x64.",
         )
@@ -393,6 +395,208 @@ def _resolve_disc_id(manifest: Path | str | dict[str, object] | None) -> str | N
     return None
 
 
+@dataclass(frozen=True)
+class TitleDiagnosticContext:
+    """Manifest-derived paths and requirements used by the workspace doctor.
+
+    The manager plan is the authority for which title is being built.  The
+    doctor cannot safely infer that title from an HST-shaped directory, so the
+    caller supplies this small, path-only projection of the selected manifest.
+    No private bytes are loaded while constructing it.
+    """
+
+    kind: str
+    game_name: str
+    game_elf_candidates: tuple[Path, ...]
+    module_dir: Path | None
+    psp_header_path: Path | None
+    data_root: Path | None
+    disc_image: Path | None
+    required_modules: tuple[str, ...]
+    requires_game_elf: bool
+    requires_module_dir: bool
+    requires_psp_header: bool
+    requires_iso: bool
+    requires_assets: bool
+    allow_legacy_layout: bool
+
+
+_BUILD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.IGNORECASE)
+_MANIFEST_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
+_MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _safe_manifest_path(root: Path, value: object) -> Path | None:
+    """Resolve one manifest-relative path without accepting traversal syntax."""
+    if not isinstance(value, str) or not _MANIFEST_PATH_RE.fullmatch(value):
+        return None
+    return root.joinpath(*value.split("/"))
+
+
+def _manifest_mapping(
+    root: Path,
+    manifest: Path | str | dict[str, object] | None,
+) -> dict[str, object] | None:
+    if isinstance(manifest, dict):
+        return manifest
+    if manifest is None:
+        return None
+    path = Path(manifest)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        import title_manifest
+
+        value = title_manifest.load_manifest(path)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _safe_game_name(data: dict[str, object], override: str | None) -> str:
+    candidates: list[object] = []
+    if override:
+        candidates.append(override)
+    candidates.append(data.get("game_name"))
+    title_id = data.get("id")
+    if isinstance(title_id, str) and title_id:
+        candidates.append(re.sub(r"-v\d+$", "", title_id).replace(" ", "_"))
+    candidates.append("recomp")
+    for candidate in candidates:
+        if isinstance(candidate, str) and _BUILD_NAME_RE.fullmatch(candidate):
+            return candidate
+    return "recomp"
+
+
+def _legacy_title_diagnostic_context(root: Path) -> TitleDiagnosticContext:
+    """Return the pre-Phase-3 HST layout for direct legacy callers."""
+    return TitleDiagnosticContext(
+        kind="retail",
+        game_name="hst",
+        game_elf_candidates=(
+            root / "place_game_here" / "EBOOT.elf",
+            root / "eboot.elf",
+        ),
+        module_dir=root / "place_game_here" / "EXTRACTED" / "decrypted",
+        psp_header_path=root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN",
+        data_root=root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted",
+        disc_image=None,
+        required_modules=("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"),
+        requires_game_elf=True,
+        requires_module_dir=True,
+        requires_psp_header=True,
+        requires_iso=True,
+        requires_assets=True,
+        allow_legacy_layout=True,
+    )
+
+
+def title_diagnostic_context(
+    root: Path,
+    manifest: Path | str | dict[str, object] | None = None,
+    *,
+    game_name: str | None = None,
+    legacy_default: bool = False,
+) -> TitleDiagnosticContext:
+    """Project a selected manifest into the paths the doctor must inspect.
+
+    ``legacy_default`` is used only by the deprecated HST entry point and by
+    the direct legacy helper API.  The canonical ``nk_doctor`` entry point
+    supplies the public synthetic manifest when no title was selected, so it
+    never silently falls back to HST paths.
+    """
+    data = _manifest_mapping(root, manifest)
+    if data is None and manifest is None and legacy_default:
+        return _legacy_title_diagnostic_context(root)
+
+    if data is None:
+        data = {}
+    raw_kind = data.get("kind")
+    kind = raw_kind if raw_kind in {"retail", "homebrew", "synthetic"} else "synthetic"
+    effective_name = _safe_game_name(data, game_name)
+    filesystem = data.get("filesystem")
+    filesystem = filesystem if isinstance(filesystem, dict) else {}
+
+    declared_data_root = _safe_manifest_path(root, filesystem.get("data_root"))
+    declared_module_dir = _safe_manifest_path(root, filesystem.get("module_dir"))
+    declared_psp_header = _safe_manifest_path(root, filesystem.get("psp_header"))
+    declared_disc_image = _safe_manifest_path(root, filesystem.get("disc_image"))
+    allow_legacy = kind == "retail"
+
+    data_root = declared_data_root
+    if data_root is None and allow_legacy:
+        data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
+    module_dir = declared_module_dir
+    if module_dir is None and allow_legacy:
+        module_dir = root / "place_game_here" / "EXTRACTED" / "decrypted"
+    psp_header = declared_psp_header
+    if psp_header is None and allow_legacy:
+        psp_header = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN"
+
+    executable = data.get("executable")
+    executable = executable if isinstance(executable, dict) else {}
+    if allow_legacy:
+        elf_candidates = (
+            root / "place_game_here" / "EBOOT.elf",
+            root / "eboot.elf",
+        )
+    else:
+        candidates: list[Path] = []
+        declared_executable = _safe_manifest_path(root, executable.get("path"))
+        if declared_executable is not None:
+            candidates.append(declared_executable)
+        candidates.extend(
+            (
+                root / "build" / "fixtures" / f"{effective_name}.elf",
+                root / "fixtures" / f"{effective_name}.elf",
+                root / "eboot.elf",
+            )
+        )
+        elf_candidates = tuple(candidates)
+
+    required_modules: list[str] = []
+    requires_module_dir = False
+    modules = data.get("modules")
+    if isinstance(modules, list):
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            role = module.get("role")
+            if role == "guest-prx":
+                requires_module_dir = True
+                name = module.get("name")
+                if module.get("required") is True and isinstance(name, str) and _MODULE_NAME_RE.fullmatch(name):
+                    required_modules.append(name)
+    if allow_legacy and legacy_default and not required_modules:
+        # A direct legacy call may provide the old minimal manifest used by
+        # compatibility tests.  The real HST manifest carries its own module
+        # declarations; this fallback preserves the old wrapper contract only.
+        requires_module_dir = True
+        required_modules = ["libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"]
+
+    requires_psp_header = executable.get("bss_metadata_source") == "psp-header"
+    if allow_legacy and legacy_default and "bss_metadata_source" not in executable:
+        requires_psp_header = True
+    requires_iso = kind == "retail" or declared_disc_image is not None
+    requires_assets = data_root is not None
+    return TitleDiagnosticContext(
+        kind=kind,
+        game_name=effective_name,
+        game_elf_candidates=elf_candidates,
+        module_dir=module_dir,
+        psp_header_path=psp_header,
+        data_root=data_root,
+        disc_image=declared_disc_image,
+        required_modules=tuple(required_modules),
+        requires_game_elf=True,
+        requires_module_dir=requires_module_dir,
+        requires_psp_header=requires_psp_header,
+        requires_iso=requires_iso,
+        requires_assets=requires_assets,
+        allow_legacy_layout=allow_legacy,
+    )
+
+
 def check_private_inputs(
     report: Report,
     *,
@@ -400,40 +604,49 @@ def check_private_inputs(
     need_assets: bool,
     title_manifest: Path | str | dict[str, object] | None = None,
     expected_disc_id: str | None = None,
+    title_context: TitleDiagnosticContext | None = None,
 ) -> None:
     root = report.root
+    context_was_supplied = title_context is not None
+    context = title_context or title_diagnostic_context(
+        root,
+        title_manifest,
+        legacy_default=True,
+    )
     if expected_disc_id is None and title_manifest is not None:
         expected_disc_id = _resolve_disc_id(title_manifest)
     if expected_disc_id is None and os.environ.get("TITLE_MANIFEST"):
         env_manifest = Path(os.environ["TITLE_MANIFEST"])
         if env_manifest.is_file():
             expected_disc_id = _resolve_disc_id(env_manifest)
-    if expected_disc_id is None:
+    if expected_disc_id is None and context.allow_legacy_layout:
         local_hst = root / "assets" / "titles" / "hst-ucus98701.json"
         if local_hst.is_file():
             expected_disc_id = _resolve_disc_id(local_hst)
 
-    elf_path = root / "place_game_here" / "EBOOT.elf"
-    if not elf_path.is_file() and (root / "eboot.elf").is_file():
-        elf_path = root / "eboot.elf"
-    elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted EBOOT ELF")
+    elf_meta: dict[str, int] | None = None
+    if context.requires_game_elf:
+        elf_candidates = context.game_elf_candidates or (root / "eboot.elf",)
+        elf_path = next((path for path in elf_candidates if path.is_file()), elf_candidates[0])
+        elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
 
-    psp_header_path = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN"
     psp_meta: dict[str, object] | None = None
-    if psp_header_path.is_file():
-        psp_meta, error = _parse_psp_header(psp_header_path)
-        if error:
-            report.fail(
-                "INPUT_EBOOT_BIN",
-                "Invalid original EBOOT.BIN PSP header",
-                path=psp_header_path,
-                detail=error,
-                remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same lawful ISO used by this workspace.",
-            )
+    if context.requires_psp_header:
+        psp_header_path = context.psp_header_path or (root / "EBOOT.BIN")
+        if psp_header_path.is_file():
+            psp_meta, error = _parse_psp_header(psp_header_path)
+            if error:
+                report.fail(
+                    "INPUT_EBOOT_BIN",
+                    "Invalid original EBOOT.BIN PSP header",
+                    path=psp_header_path,
+                    detail=error,
+                    remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same lawful ISO used by this workspace.",
+                )
+            else:
+                report.pass_("INPUT_EBOOT_BIN", "Validated original EBOOT.BIN PSP header", path=psp_header_path, metadata=psp_meta or {})
         else:
-            report.pass_("INPUT_EBOOT_BIN", "Validated original EBOOT.BIN PSP header", path=psp_header_path, metadata=psp_meta or {})
-    else:
-        report.fail("INPUT_EBOOT_BIN", "Missing original PSP_GAME/SYSDIR/EBOOT.BIN", path=psp_header_path)
+            report.fail("INPUT_EBOOT_BIN", "Missing original PSP_GAME/SYSDIR/EBOOT.BIN", path=psp_header_path)
 
     if elf_meta and psp_meta:
         expected_segments = int(psp_meta["segment_count"])
@@ -441,23 +654,49 @@ def check_private_inputs(
         if expected_segments == actual_segments:
             report.pass_(
                 "INPUT_EBOOT_PAIR",
-                "EBOOT.elf and EBOOT.BIN agree on load-segment count",
+                "Title EBOOT ELF and PSP header agree on load-segment count",
                 metadata={"segments": actual_segments},
             )
         else:
             report.fail(
                 "INPUT_EBOOT_PAIR",
-                "EBOOT.elf and EBOOT.BIN appear to be mismatched",
+                "Title EBOOT ELF and PSP header appear to be mismatched",
                 detail=f"ELF PT_LOAD count={actual_segments}; PSP header segment count={expected_segments}",
                 remediation="Regenerate both files from the same game image/revision.",
             )
 
-    decrypted_dir = root / "place_game_here" / "EXTRACTED" / "decrypted"
-    for name in ("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"):
-        _check_elf_file(report, f"INPUT_PRX_{name.upper().replace('.', '_')}", decrypted_dir / name, f"decrypted {name}")
+    if context.requires_module_dir:
+        module_dir = context.module_dir or (root / "modules")
+        if not module_dir.is_dir():
+            if context.allow_legacy_layout and context.required_modules:
+                # Keep the legacy report's per-module diagnostics stable while
+                # using the same derived directory for the actual checks.
+                for name in context.required_modules:
+                    _check_elf_file(
+                        report,
+                        f"INPUT_PRX_{name.upper().replace('.', '_')}",
+                        module_dir / name,
+                        f"decrypted {name}",
+                    )
+            else:
+                report.fail("INPUT_MODULE_DIR", "Missing declared title module directory", path=module_dir)
+        else:
+            for name in context.required_modules:
+                _check_elf_file(
+                    report,
+                    f"INPUT_PRX_{name.upper().replace('.', '_')}",
+                    module_dir / name,
+                    f"decrypted {name}",
+                )
 
-    if need_iso:
-        selected, candidates = discover_iso(root)
+    if need_iso and context.requires_iso:
+        if context.disc_image is not None:
+            selected = context.disc_image if context.disc_image.is_file() else None
+            candidates = [context.disc_image] if selected is not None else []
+        elif context.allow_legacy_layout:
+            selected, candidates = discover_iso(root)
+        else:
+            selected, candidates = None, []
         if not candidates:
             remediation = (
                 f"Place exactly one lawfully obtained {expected_disc_id} ISO in place_game_here/ISO/."
@@ -498,10 +737,10 @@ def check_private_inputs(
                         "INPUT_DISC_ID",
                         "No title manifest with disc ID supplied; skipping disc ID confirmation",
                         path=selected,
-                    )
+                )
 
-    if need_assets:
-        sr_dataroot = os.environ.get("SR_DATAROOT")
+    if need_assets and context.requires_assets:
+        sr_dataroot = None if context_was_supplied and context.data_root is not None else os.environ.get("SR_DATAROOT")
         if sr_dataroot:
             data_path = Path(sr_dataroot)
             if not data_path.is_absolute():
@@ -532,7 +771,9 @@ def check_private_inputs(
                         metadata={"files_scanned": count, "scan_capped": count >= 100_000},
                     )
         else:
-            data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
+            data_root = context.data_root
+            if data_root is None:
+                data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
             if not data_root.is_dir():
                 report.fail(
                     "INPUT_XB_DATA",
@@ -620,8 +861,8 @@ def check_save_root(report: Report, root: Path) -> None:
         )
 
 
-def check_build_profile(report: Report, root: Path) -> None:
-    profile_file = root / "build" / "hst" / "runtime_profile.json"
+def check_build_profile(report: Report, root: Path, game_name: str = "hst") -> None:
+    profile_file = root / "build" / game_name / "runtime_profile.json"
     if profile_file.is_file():
         try:
             data = json.loads(profile_file.read_text(encoding="utf-8"))
@@ -694,10 +935,10 @@ def check_vfpu_assets(report: Report) -> None:
         report.warn("VFPU_EXTRA", "Unexpected .dat files are present in assets/vfpu", detail=", ".join(extras))
 
 
-def check_runtime_dependencies(report: Report, msys_path: Path) -> None:
+def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str = "hst") -> None:
     root = report.root
     candidates = (
-        root / "build" / "hst" / "SDL3.dll",
+        root / "build" / game_name / "SDL3.dll",
         root / "SDL3.dll",
         msys_path / "SDL3.dll",
     )
@@ -716,7 +957,7 @@ def check_runtime_dependencies(report: Report, msys_path: Path) -> None:
             report.fail("RUNTIME_SDL3", "Resolved SDL3.dll is not a valid x86-64 DLL", path=sdl, detail=detail)
 
     vulkan_candidates = [
-        root / "build" / "hst" / "vulkan-1.dll",
+        root / "build" / game_name / "vulkan-1.dll",
         root / "vulkan-1.dll",
         msys_path / "vulkan-1.dll",
     ]
@@ -738,22 +979,22 @@ def check_runtime_dependencies(report: Report, msys_path: Path) -> None:
             report.fail("RUNTIME_VULKAN", "Resolved Vulkan loader is not a valid x86-64 DLL", path=vulkan, detail=detail)
 
 
-def check_build_products(report: Report) -> None:
-    build = report.root / "build" / "hst"
-    exe = build / "hst.exe"
-    image = build / "hst_image.bin"
+def check_build_products(report: Report, game_name: str = "hst") -> None:
+    build = report.root / "build" / game_name
+    exe = build / f"{game_name}.exe"
+    image = build / f"{game_name}_image.bin"
     if exe.is_file():
         ok, detail = _validate_pe_x64(exe)
         if ok:
-            report.pass_("BUILD_EXE", "Validated build/hst/hst.exe", path=exe, detail=detail)
+            report.pass_("BUILD_EXE", f"Validated build/{game_name}/{game_name}.exe", path=exe, detail=detail)
         else:
-            report.fail("BUILD_EXE", "build/hst/hst.exe is not a valid x86-64 PE executable", path=exe, detail=detail)
+            report.fail("BUILD_EXE", f"build/{game_name}/{game_name}.exe is not a valid x86-64 PE executable", path=exe, detail=detail)
     else:
-        report.fail("BUILD_EXE", "Missing build/hst/hst.exe", path=exe, remediation="Run BuildFull or BuildFast first.")
+        report.fail("BUILD_EXE", f"Missing build/{game_name}/{game_name}.exe", path=exe, remediation="Run BuildFull or BuildFast first.")
     if image.is_file() and image.stat().st_size > 0:
-        report.pass_("BUILD_IMAGE", "Found nonempty hst_image.bin", path=image, metadata={"bytes": image.stat().st_size})
+        report.pass_("BUILD_IMAGE", f"Found nonempty {game_name}_image.bin", path=image, metadata={"bytes": image.stat().st_size})
     else:
-        report.fail("BUILD_IMAGE", "Missing or empty build/hst/hst_image.bin", path=image, remediation="Run the full code-generation pipeline.")
+        report.fail("BUILD_IMAGE", f"Missing or empty build/{game_name}/{game_name}_image.bin", path=image, remediation="Run the full code-generation pipeline.")
 
 
 class _GitConfigError(Exception):

@@ -28,7 +28,8 @@ param(
 
     [string]$MsysPath = "C:\msys64\ucrt64\bin",
     [string]$VulkanSdk = "",
-    [string]$TitleManifest = ""
+    [string]$TitleManifest = "",
+    [string]$GameName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +58,7 @@ function Invoke-WorkspaceDoctor {
     )
     if ($VulkanSdk) { $arguments += @("--vulkan-sdk", $VulkanSdk) }
     if ($TitleManifest) { $arguments += @("--title-manifest", $TitleManifest) }
+    if ($GameName) { $arguments += @("--game-name", $GameName) }
     if ($AsJson) { $arguments += "--json" }
     if ($WarningsFail) { $arguments += "--strict" }
 
@@ -73,6 +75,7 @@ function Invoke-ManagerAction {
     $arguments = @("-Action", $ManagerAction, "-MsysPath", $MsysPath)
     if ($VulkanSdk) { $arguments += @("-VulkanSdk", $VulkanSdk) }
     if ($TitleManifest) { $arguments += @("-TitleManifest", $TitleManifest) }
+    if ($GameName) { $arguments += @("-GameName", $GameName) }
     $LASTEXITCODE = 0
     & $Manager @arguments | Out-Host
     $exitCode = [int]$LASTEXITCODE
@@ -120,6 +123,7 @@ try {
             $arguments = @("-MsysPath", $MsysPath)
             if ($VulkanSdk) { $arguments += @("-VulkanSdk", $VulkanSdk) }
             if ($TitleManifest) { $arguments += @("-TitleManifest", $TitleManifest) }
+            if ($GameName) { $arguments += @("-GameName", $GameName) }
             & $Manager @arguments
         }
     }

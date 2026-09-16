@@ -22,7 +22,21 @@
     Dot-source this file; it defines functions and returns nothing.
 #>
 
-. (Join-Path $PSScriptRoot "hst_safety.ps1")
+# The runner is shared by the canonical manager and the legacy HST wrapper.
+# Load the canonical helper directly so normal manager invocations do not emit
+# the legacy deprecation warning (or turn it into a terminating error under a
+# caller's WarningPreference).  The fallback is retained only for an older
+# checkout that predates the canonical helper.
+$NkSafetyPath = Join-Path $PSScriptRoot "nk_safety.ps1"
+if (Test-Path -LiteralPath $NkSafetyPath -PathType Leaf) {
+    . $NkSafetyPath
+} else {
+    $HstSafetyPath = Join-Path $PSScriptRoot "hst_safety.ps1"
+    if (-not (Test-Path -LiteralPath $HstSafetyPath -PathType Leaf)) {
+        throw "Missing required safety helper: $NkSafetyPath"
+    }
+    . $HstSafetyPath
+}
 
 # Wait-ProcessOrKill: bounded, process-aware wait.
 #

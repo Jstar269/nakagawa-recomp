@@ -25,10 +25,9 @@ import hst_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
 
-# Phase 3 (#196): nk_doctor_checks is the canonical module. Tests that use
-# mock.patch.object to patch internal helpers must target nk_doctor_checks
-# (where the functions are actually defined), not hst_doctor_checks (the
-# forwarding wrapper). Import nk_doctor_checks for use in those patches.
+# Phase 3 (#196): nk_doctor_checks is the canonical module. The legacy module
+# name is an alias, so patching either import path changes the canonical
+# implementation used by the checks.
 try:
     import nk_doctor_checks as _nk_checks  # noqa: E402
     import nk_doctor_core as _nk_core  # noqa: E402
@@ -363,6 +362,49 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["scope"], "repo")
             self.assertEqual(payload["counts"]["FAIL"], 0)
 
+    def test_legacy_json_keeps_the_historical_tool_identifier(self) -> None:
+        report = hst_doctor.Report(Path.cwd(), "repo")
+        payload = json.loads(hst_doctor.render_json(report, False))
+        self.assertEqual(payload["tool"], "hst_doctor")
+
+    def test_legacy_checks_module_is_a_patchable_alias(self) -> None:
+        self.assertIs(hst_doctor_checks, _CHECKS_MODULE)
+        with mock.patch.object(hst_doctor_checks, "_probe_powershell", return_value=(None, None, None, "patched")):
+            report = hst_doctor.Report(Path.cwd(), "build")
+            hst_doctor_checks.check_powershell(report)
+        result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+        self.assertIn("patched", result.detail or "")
+
+    def test_canonical_manifest_does_not_probe_hst_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema_version": 1,
+                "id": "widget-v1",
+                "display_name": "Widget",
+                "kind": "synthetic",
+                "game_name": "widget",
+                "filesystem": {"data_root": "fixtures/widget/data"},
+                "executable": {"bss_metadata_source": "none"},
+                "modules": [],
+            }
+            context = hst_doctor_checks.title_diagnostic_context(root, manifest)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(
+                report,
+                need_iso=True,
+                need_assets=True,
+                title_manifest=manifest,
+                title_context=context,
+            )
+            failed_codes = {result.code for result in report.results if result.status == "FAIL"}
+            self.assertEqual(failed_codes, {"INPUT_EBOOT_ELF", "INPUT_XB_DATA"})
+            self.assertNotIn("INPUT_EBOOT_BIN", failed_codes)
+            self.assertNotIn("INPUT_PRX_LIBFONT_PRX", failed_codes)
+            self.assertNotIn("INPUT_ISO", failed_codes)
+            data_result = next(result for result in report.results if result.code == "INPUT_XB_DATA")
+            self.assertEqual(data_result.path, "fixtures/widget/data")
+
 
 class EnvironmentContractTests(unittest.TestCase):
     def test_powerShell_accepts_current_core_line(self) -> None:
@@ -538,6 +580,13 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertIn('$TitleManifest', self.frontend)
         self.assertNotIn('VisualOracle', self.frontend)
         self.assertNotIn('DiffFunc', self.frontend)
+
+    def test_legacy_frontend_preserves_hst_manifest_and_name_when_available(self) -> None:
+        legacy = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn('$HstManifest = Join-Path $PSScriptRoot "assets\\titles\\hst-ucus98701.json"', legacy)
+        self.assertIn('$hstManifestSelected = $true', legacy)
+        self.assertIn('if ($hstManifestSelected -and -not $GameName) { $GameName = "hst" }', legacy)
+        self.assertIn('$forwardArgs["GameName"] = $GameName', legacy)
 
     def test_play_validates_before_and_after_build(self) -> None:
         play = self.frontend[self.frontend.index('"Play" {') : self.frontend.index('"Verify" {')]
