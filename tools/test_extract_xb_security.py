@@ -43,6 +43,7 @@ from test_xb_probe import (  # noqa: E402
     _pad4,
     _reverse_bits,
 )
+from test_extract_xb_gim import gim, image_block, palette_block  # noqa: E402
 from xb_probe import XBArchiveReader, XBCompression, XBLimits, _sjis_hash  # noqa: E402
 
 
@@ -1023,6 +1024,75 @@ class OverwriteTests(unittest.TestCase):
                 Path(dest, "tex.png").read_bytes(),
                 b"member that already owns this name",
             )
+
+
+    def test_extraction_keeps_archive_member_when_png_name_collides(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            gim_data = gim(
+                image_block(raw=b"\0\0\0\0"),
+                palette_block(raw=b"\x00\x00\xff\xff"),
+            )
+            archive = _write_archive(
+                base,
+                [
+                    ("tex.gim", gim_data, XBCompression.NONE),
+                    ("tex.png", b"archive-owned member", XBCompression.NONE),
+                ],
+            )
+            dest = os.path.join(base, "out")
+            _, status, err = extract_xb.extract_one(archive, dest, overwrite=True)
+            self.assertEqual((status, err), ("ok", None))
+            self.assertEqual(
+                Path(dest, "tex.png").read_bytes(), b"archive-owned member"
+            )
+
+
+class PromotionTests(unittest.TestCase):
+    def test_promotion_preflights_type_conflicts_before_replacing(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            staging = os.path.join(base, "staging")
+            dest = os.path.join(base, "dest")
+            os.makedirs(staging)
+            os.makedirs(dest)
+            Path(staging, "a.bin").write_bytes(b"new-a")
+            Path(staging, "b.bin").write_bytes(b"new-b")
+            Path(dest, "a.bin").write_bytes(b"old-a")
+            os.makedirs(Path(dest, "b.bin"))
+
+            with self.assertRaises(UnsafeArchivePathError):
+                extract_xb._promote_staging(staging, dest)
+            self.assertEqual(Path(dest, "a.bin").read_bytes(), b"old-a")
+            self.assertTrue(Path(dest, "b.bin").is_dir())
+
+    def test_promotion_rolls_back_when_a_later_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            staging = os.path.join(base, "staging")
+            dest = os.path.join(base, "dest")
+            os.makedirs(staging)
+            os.makedirs(dest)
+            Path(staging, "a.bin").write_bytes(b"new-a")
+            Path(staging, "b.bin").write_bytes(b"new-b")
+            Path(dest, "a.bin").write_bytes(b"old-a")
+            Path(dest, "b.bin").write_bytes(b"old-b")
+
+            original_replace = extract_xb.os.replace
+            failing_source = os.path.join(staging, "b.bin")
+            failing_target = os.path.join(dest, "b.bin")
+
+            def fail_second_file(source, target):
+                if source == failing_source and target == failing_target:
+                    raise OSError("synthetic promotion failure")
+                return original_replace(source, target)
+
+            extract_xb.os.replace = fail_second_file
+            try:
+                with self.assertRaisesRegex(OSError, "synthetic promotion failure"):
+                    extract_xb._promote_staging(staging, dest)
+            finally:
+                extract_xb.os.replace = original_replace
+
+            self.assertEqual(Path(dest, "a.bin").read_bytes(), b"old-a")
+            self.assertEqual(Path(dest, "b.bin").read_bytes(), b"old-b")
 
 
 class WriteExclusiveTests(unittest.TestCase):

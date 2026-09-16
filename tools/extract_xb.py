@@ -76,6 +76,7 @@ import argparse
 import time
 import struct
 import stat
+import tempfile
 import zlib
 import json
 import re
@@ -1053,34 +1054,128 @@ def _discard_staging(staging):
 def _promote_staging(staging, dest_real):
     """Move a fully verified staging tree onto the destination.
 
-    The fast path is a plain rename onto an empty destination, which is what a
-    normal run produces.  A destination that already holds files only exists
-    under ``--overwrite``, and is merged entry by entry so the promotion cannot
-    be used to remove anything the caller did not opt into replacing.
+    The fast path is a plain rename onto a missing destination, which is what a
+    normal run produces.  An existing destination—including an empty one—is
+    merged entry by entry under ``--overwrite`` so the promotion cannot be used
+    to remove anything the caller did not opt into replacing.  The complete
+    merge is preflighted before the first replacement, and replaced files are
+    kept in the staging tree until the merge succeeds so an unexpected
+    filesystem error can be rolled back without leaving a hybrid destination.
     """
 
-    if os.path.isdir(dest_real) and not os.listdir(dest_real):
-        os.rmdir(dest_real)
+    if _is_reparse_point(staging):
+        raise UnsafeArchivePathError(f"staging is a reparse point: {staging}")
+    if os.path.lexists(dest_real) and _is_reparse_point(dest_real):
+        raise UnsafeArchivePathError(f"destination is a reparse point: {dest_real}")
+    verify_extracted_tree(staging)
     if not os.path.lexists(dest_real):
         os.rename(staging, dest_real)
         return
 
     root_real = canonical_root(dest_real)
-    for dirpath, dirnames, filenames in os.walk(staging):
+    if not os.path.isdir(dest_real):
+        raise UnsafeArchivePathError(
+            f"destination is not a real directory: {dest_real}"
+        )
+
+    directories = []
+    files = []
+    for dirpath, dirnames, filenames in os.walk(
+        staging, topdown=True, followlinks=False
+    ):
+        dirnames.sort()
+        filenames.sort()
         rel_dir = os.path.relpath(dirpath, staging)
-        for name in filenames:
-            rel = name if rel_dir == "." else f"{rel_dir}{os.sep}{name}"
-            rel_posix = rel.replace(os.sep, "/")
-            _make_parents_within(root_real, rel_posix)
-            os.replace(
-                os.path.join(dirpath, name), contained_path(root_real, rel_posix)
-            )
         for name in dirnames:
             rel = name if rel_dir == "." else f"{rel_dir}{os.sep}{name}"
-            os.makedirs(
-                contained_path(root_real, rel.replace(os.sep, "/")), exist_ok=True
+            directories.append(rel.replace(os.sep, "/"))
+        for name in filenames:
+            rel = name if rel_dir == "." else f"{rel_dir}{os.sep}{name}"
+            files.append(rel.replace(os.sep, "/"))
+
+    directories.sort(key=lambda rel: (rel.count("/"), rel))
+    files.sort()
+    for rel_posix in directories:
+        target = contained_path(root_real, rel_posix)
+        if os.path.lexists(target) and (
+            _is_reparse_point(target) or not os.path.isdir(target)
+        ):
+            raise UnsafeArchivePathError(
+                f"cannot promote directory over existing non-directory: {target}"
             )
-    _discard_staging(staging)
+    for rel_posix in files:
+        target = contained_path(root_real, rel_posix)
+        if os.path.lexists(target) and (
+            _is_reparse_point(target) or not os.path.isfile(target)
+        ):
+            raise UnsafeArchivePathError(
+                f"cannot promote file over existing non-file: {target}"
+            )
+
+    actions = []
+    created_dirs = []
+    backup_root = None
+    try:
+        for rel_posix in directories:
+            target = contained_path(root_real, rel_posix)
+            if not os.path.lexists(target):
+                os.makedirs(target)
+                created_dirs.append(target)
+
+        for rel_posix in files:
+            stage_path = os.path.join(staging, *rel_posix.split("/"))
+            target = contained_path(root_real, rel_posix)
+            backup_path = None
+            if os.path.lexists(target):
+                if backup_root is None:
+                    backup_root = tempfile.mkdtemp(
+                        prefix=".promotion-backup-", dir=staging
+                    )
+                backup_path = os.path.join(backup_root, *rel_posix.split("/"))
+                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                os.replace(target, backup_path)
+            action = {
+                "target": target,
+                "backup": backup_path,
+                "promoted": False,
+            }
+            actions.append(action)
+            os.replace(stage_path, target)
+            action["promoted"] = True
+
+        if not _discard_staging(staging):
+            raise OSError(f"promotion staging tree could not be removed: {staging}")
+    except Exception as exc:
+        rollback_errors = []
+        for action in reversed(actions):
+            target = action["target"]
+            backup_path = action["backup"]
+            try:
+                if action["promoted"]:
+                    if os.path.lexists(target):
+                        if _is_reparse_point(target):
+                            raise UnsafeArchivePathError(
+                                f"promoted target became a reparse point: {target}"
+                            )
+                        os.unlink(target)
+                if backup_path is not None and os.path.lexists(backup_path):
+                    if os.path.lexists(target):
+                        raise OSError(
+                            f"rollback target is unexpectedly occupied: {target}"
+                        )
+                    os.replace(backup_path, target)
+            except Exception as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        for directory in reversed(created_dirs):
+            try:
+                if os.path.isdir(directory) and not _is_reparse_point(directory):
+                    os.rmdir(directory)
+            except OSError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        if rollback_errors:
+            detail = "; ".join(rollback_errors)
+            raise OSError(f"promotion failed and rollback failed: {detail}") from exc
+        raise
 
 
 def extract_one(archive_path, out_dir, verbose=False, overwrite=False):
@@ -1113,10 +1208,10 @@ def extract_one(archive_path, out_dir, verbose=False, overwrite=False):
 
     try:
         written, decoded = extract_archive(
-            archive_path, staging, overwrite=overwrite
+            archive_path, staging, overwrite=False
         )
         verify_extracted_tree(staging)
-        process_extracted_directory(staging, overwrite=overwrite)
+        process_extracted_directory(staging, overwrite=False)
         verify_extracted_tree(staging)
         _promote_staging(staging, dest_real)
         if verbose:
