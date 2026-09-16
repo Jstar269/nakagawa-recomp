@@ -9102,17 +9102,5 @@
       },
       "sha256": "d9b8852429cabbe9adf1c73278af285fee7a52924a4db07051385452320b031e"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "d64b8d18c41bf5b3169c3023ae4ac8c0e58a138a",
-    "candidate_tree": "128ed36b331f178a9ce39f1baa645384c938e2dc",
-    "refreshed_paths": [
-      ".gitattributes",
-      "Makefile",
-      "docs/CI.md",
-      "tools/test_build_system_parity.py",
-      "tools/test_build_truth.py"
-    ]
-  }
+  ]
 }
