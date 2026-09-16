@@ -114,6 +114,60 @@ class BuildSystemParityTests(unittest.TestCase):
             "Missing check target in Makefile",
         )
 
+    def test_public_target_catalog_covers_phony_targets(self) -> None:
+        """`make help` must expose every public target exactly once (Issue #188 O-16)."""
+        catalog = re.search(
+            r"(?ms)^PUBLIC_TARGETS := \\\n(.*?)(?=^INTERNAL_TARGETS :=)",
+            self.makefile_text,
+        )
+        self.assertIsNotNone(catalog, "Makefile must define the public target catalog")
+        targets = re.findall(
+            r"(?m)^\s*([A-Za-z0-9_.%/+?-]+)\s*\\?$",
+            catalog.group(1),
+        )
+        self.assertEqual(len(targets), len(set(targets)), "public target catalog contains a duplicate")
+        self.assertIn("help", targets)
+        self.assertIn("psp-oracle", targets)
+        self.assertIn("psp-oracle-nakagawa", targets)
+        self.assertIn(".PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)", self.makefile_text)
+
+        defined_targets = set(re.findall(
+            r"(?m)^([A-Za-z0-9_.%/+?-]+):",
+            self.makefile_text,
+        ))
+        defined_targets.difference_update({".PHONY", ".SECONDARY"})
+        self.assertEqual(
+            defined_targets,
+            set(targets) | {"FORCE"},
+            "public and internal target catalogs must cover every named target",
+        )
+
+        descriptions = dict(re.findall(
+            r"(?m)^HELP_DESCRIPTION_([A-Za-z0-9_.%/+?-]+)\s*:=\s*(.+)$",
+            self.makefile_text,
+        ))
+        self.assertEqual(set(targets), set(descriptions), "every public target needs one description")
+        self.assertTrue(all(description.strip() for description in descriptions.values()))
+
+    def test_provenance_refresh_wrapper_keeps_authority_explicit(self) -> None:
+        self.assertRegex(self.makefile_text, r"(?m)^provenance-refresh:")
+        self.assertIn("tools/provenance_refresh.py", self.makefile_text)
+        self.assertIn("NK_TRUSTED_LEDGER", self.makefile_text)
+        self.assertIn("PROVENANCE_REFRESH_APPLY_POLICY", self.makefile_text)
+
+    def test_generated_public_controls_are_marked_as_generated(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        for path in (
+            "/PUBLIC_EXPORT.json",
+            "/assets/public_provenance_ledger.json",
+            "/assets/public_source_profile.json",
+        ):
+            with self.subTest(path=path):
+                self.assertRegex(
+                    attributes,
+                    rf"(?m)^{re.escape(path)}\s+linguist-generated=true$",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
