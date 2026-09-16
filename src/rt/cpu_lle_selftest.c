@@ -1,0 +1,425 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025-2026 the psp-recomp authors
+//
+// LLE Phase 1 (PR 2) CPU selftest: COP0 access, mode checks, exception entry,
+// and eret. Standalone host executable, no game inputs required:
+//
+//   mingw32-make CC=gcc cpu-lle-selftest
+//
+// The harness #includes recomp.c and cpu_lle.c for direct access to the same
+// helpers the generated code and the interpreter call, and links the real
+// guest_interp.c so the interpreter lane is exercised, not modeled. The stub
+// block below mirrors src/rt/heap_selftest.c: symbols recomp.c references
+// that live in scheduler/HLE translation units we deliberately do not link.
+//
+// Failing-before evidence (PR 2, spec section 11): on the base tree there is
+// no cpu_lle.h/.c, generated syscalls use sr_raw_syscall, generated breaks
+// use sr_break, and the interpreter answers UNSUPPORTED for syscall/break
+// with no eret path, so every assertion here fails to build or fails closed.
+
+#include "recomp.c"   /* arena, dispatch table, MEM_* backing */
+#include "cpu_lle.c"  /* helpers under test (white-box, same TU) */
+
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- stubs for runtime symbols recomp.c references -------------------------------- */
+
+uint32_t g_sr_debug = 0;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count = 0;
+int g_sr_metadata_watch = 0;
+uint32_t g_sr_mem_watch_context_pc = 0;
+unsigned g_sr_mem_watch_context_limit = 0;
+unsigned g_sr_mem_watch_context_count = 0;
+int g_sr_mem_watch_context_fpr = -1;
+uint32_t g_sr_mem_watch_context_fpr_value = 0;
+uint32_t g_sr_store_context_pc = 0;
+unsigned g_sr_store_context_count = 0;
+unsigned g_sr_store_context_limit = 0;
+int g_sr_store_context_mem_gpr = -1;
+uint32_t g_sr_store_context_mem_offset = 0;
+unsigned g_sr_store_context_mem_words = 0;
+int g_sr_last_writer_enabled = 0;
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t val, uint32_t pc) {
+    (void)addr; (void)width; (void)val; (void)pc;
+}
+CpuState *s_cpu = NULL;
+int sr_sched_on = 0;
+atomic_int_least32_t sr_timeslice;
+
+uint32_t sched_current_uid(void) { return 0u; }
+void sched_exit_current(int32_t status) { (void)status; }
+void sched_exit_current_delete(int32_t status) { (void)status; }
+uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) { (void)uid; (void)arglen; (void)argp; return 0; }
+uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_delete_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_thread_wakeup(uint32_t uid) { (void)uid; return 0; }
+void sched_set_current_join_target(uint32_t uid) { (void)uid; }
+void sched_clear_current_join_target(void) {}
+int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (void)uid; (void)result_out; return 0; }
+uint32_t sr_get_ge_status(void) { return 0u; }
+uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
+uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
+void sr_yield(CpuState *s) { (void)s; }
+int sr_vfpu_interp(CpuState *s, uint32_t op) { (void)s; (void)op; return 0; }
+uint64_t SDL_GetTicksNS(void) { return 0u; }
+
+/* ---- harness ---------------------------------------------------------------------- */
+
+static int g_failed = 0;
+
+#define CHECK(cond, ...) do { \
+    if (!(cond)) { fprintf(stderr, "FAIL L%d: ", __LINE__); \
+                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); g_failed = 1; } \
+} while (0)
+
+#define CAUSE_EXCCODE(cause) (((cause) >> 2) & 0x1Fu)
+#define CAUSE_CE(cause) (((cause) >> 28) & 3u)
+
+#define TEST_BASE 0x08810000u
+#define TEST_SPAN_END 0x08811000u
+#define TEST_VECTOR 0x80000180u
+#define TEST_VSPAN_END 0x80001000u
+
+static void fresh_state(CpuState *s) {
+    memset(s, 0, sizeof *s);
+    sr_cpu_lle_reset_config();
+    sr_cpu_clear_flow(s);
+}
+
+static uint32_t enc_mfc0(unsigned rt, unsigned rd) {
+    return (0x10u << 26) | (rt << 16) | (rd << 11);
+}
+
+static uint32_t enc_mtc0(unsigned rt, unsigned rd) {
+    return (0x10u << 26) | (4u << 21) | (rt << 16) | (rd << 11);
+}
+
+static void setup_spans(void) {
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(TEST_BASE, TEST_SPAN_END), "test span rejected");
+    CHECK(sr_exec_span_register(TEST_VECTOR, TEST_VSPAN_END), "vector span rejected");
+}
+
+/* Exception entry sets EPC/Cause/EXL and transfers to the vector. */
+static void test_exception_entry_plain(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    rc = sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08810000u, 0x08810000u, 0u, 0u, 0u);
+    CHECK(rc < 0, "raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "EPC=0x%08x, want fault pc", s.cop0[SR_CP0_EPC]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "BD must be clear outside a delay slot");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u, "EXL must be set");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "flow=%u, want EXCEPTION", s.flow_kind);
+    CHECK(s.flow_target == TEST_VECTOR, "target=0x%08x, want vector", s.flow_target);
+    CHECK(s.pc == TEST_VECTOR, "pc=0x%08x, want vector", s.pc);
+}
+
+/* A delay-slot fault names the branch in EPC and sets Cause.BD. */
+static void test_exception_delay_slot(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    rc = sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08810004u, 0x08810000u, 0u, 1u, 0u);
+    CHECK(rc < 0, "delay raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "EPC=0x%08x, want branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "BD must be set for a delay-slot fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "ExcCode lost on delay path");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR, "delay transfer must reach the vector");
+}
+
+/* Coprocessor faults carry CE; address faults carry BadVAddr. */
+static void test_exception_ce_badvaddr(void) {
+    CpuState s;
+    fresh_state(&s);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_CPU, 0x08810000u, 0x08810000u, 0u, 0u, 2u) < 0,
+          "CPU raise must transfer");
+    CHECK(CAUSE_CE(s.cop0[SR_CP0_CAUSE]) == 2u, "CE=%u, want 2", CAUSE_CE(s.cop0[SR_CP0_CAUSE]));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "ExcCode=%u, want CPU",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+
+    fresh_state(&s);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x08810000u, 0x08810000u, 0xDEAD0001u, 0u, 0u) < 0,
+          "ADEL raise must transfer");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0xDEAD0001u, "BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+}
+
+/* BEV selects the bootstrap vector; an unowned vector fails closed. */
+static void test_vector_selection(void) {
+    CpuState s;
+    uint32_t g, i, b;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_BEV;
+    CHECK(sr_cpu_in_kernel(&s), "BEV kernel status must read as kernel");
+    /* Point bootstrap at an owned span: selection is what is under test,
+     * while the raw default (outside the flat arena) must fail closed. */
+    sr_cpu_lle_set_vectors(TEST_VECTOR, TEST_VECTOR, TEST_VECTOR);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "BEV raise must transfer");
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(s.pc == b && s.flow_target == b, "BEV must select bootstrap 0x%08x (got 0x%08x)", b, s.pc);
+    (void)g;
+    (void)i;
+
+    /* The untouched bootstrap default is outside the flat arena and must
+     * fail closed rather than dispatch blind. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_BEV;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "default-bootstrap raise must unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "default bootstrap must be FATAL, got %u", s.flow_kind);
+
+    fresh_state(&s);
+    sr_cpu_lle_set_vectors(0x09000000u, 0x09000000u, 0x09000000u);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "unowned vector must still unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "unowned vector must be FATAL, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x09000000u, "fatal target must name the bad vector");
+}
+
+/* eret returns to EPC and clears EXL; user-mode and bad targets fail closed. */
+static void test_eret(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "eret must report a transfer");
+    CHECK(s.flow_kind == SR_FLOW_ERET, "flow=%u, want ERET", s.flow_kind);
+    CHECK(s.pc == TEST_BASE + 0x10u && s.flow_target == TEST_BASE + 0x10u,
+          "eret must target EPC (pc=0x%08x)", s.pc);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u, "eret must clear EXL");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "user eret must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "user eret must trap, got flow %u", s.flow_kind);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user eret must trap as CPU");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "trap EPC must be the eret pc");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x3u;  /* misaligned */
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "misaligned eret target must unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "misaligned eret target must be FATAL");
+}
+
+/* Kernel/user mode follows KSU unless EXL/ERL pin kernel mode. */
+static void test_mode_checks(void) {
+    CpuState s;
+    fresh_state(&s);
+    CHECK(sr_cpu_in_kernel(&s), "zero status must be kernel");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    CHECK(!sr_cpu_in_kernel(&s), "KSU=user must read as user");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER | SR_STATUS_EXL;
+    CHECK(sr_cpu_in_kernel(&s), "EXL must pin kernel mode");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER | SR_STATUS_ERL;
+    CHECK(sr_cpu_in_kernel(&s), "ERL must pin kernel mode");
+}
+
+/* MFC0/MTC0 round-trip with Status/Cause masking in kernel mode. */
+static void test_cop0_roundtrip(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.r[5] = 0x08810020u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_EPC, 0u, TEST_BASE) == 0, "kernel mtc0 EPC must succeed");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810020u, "EPC not stored");
+    s.r[6] = 0u;
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_EPC, 0u, TEST_BASE + 4u) == 0, "kernel mfc0 EPC must succeed");
+    CHECK(s.r[6] == 0x08810020u, "EPC round-trip gave 0x%08x", s.r[6]);
+
+    s.r[7] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 7u, SR_CP0_STATUS, 0u, TEST_BASE + 8u) == 0, "status write must succeed");
+    CHECK(s.cop0[SR_CP0_STATUS] == (SR_STATUS_WRITABLE_MASK & 0xFFFFFFFFu),
+          "status must be masked to writable bits (got 0x%08x)", s.cop0[SR_CP0_STATUS]);
+
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;  /* hardware-pending bits, INTC-owned */
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE + 12u) == 0, "cause write must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == (0x0000FC00u | SR_CAUSE_IP_SW_MASK),
+          "cause must keep HW pending, set SW pair (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    s.r[9] = 0x12340000u;
+    CHECK(sr_cp0_mtc0(&s, 9u, SR_CP0_COUNT, 0u, TEST_BASE + 16u) == 0, "count write must succeed");
+    CHECK(sr_cp0_mfc0(&s, 10u, SR_CP0_COUNT, 0u, TEST_BASE + 20u) == 0, "count read must succeed");
+    CHECK(s.r[10] == 0x12340000u, "count round-trip gave 0x%08x", s.r[10]);
+
+    /* $zero semantics: mfc0 to $zero writes nothing, mtc0 from $zero moves zero. */
+    s.r[11] = 0xAAAAAAAAu;
+    CHECK(sr_cp0_mfc0(&s, 0u, SR_CP0_EPC, 0u, TEST_BASE + 24u) == 0, "mfc0 to $zero must succeed");
+    CHECK(s.r[0] == 0u && s.r[11] == 0xAAAAAAAAu, "$zero move clobbered state");
+    CHECK(sr_cp0_mtc0(&s, 0u, SR_CP0_EPC, 0u, TEST_BASE + 28u) == 0, "mtc0 from $zero must succeed");
+    CHECK(s.cop0[SR_CP0_EPC] == 0u, "mtc0 from $zero must store zero");
+    CHECK(s.flow_kind == SR_FLOW_NONE, "clean COP0 traffic must not set flow");
+}
+
+/* User-mode COP0 access traps; unsupported encodings raise RI. */
+static void test_cop0_traps(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.r[5] = 1u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_STATUS, 0u, TEST_BASE) < 0, "user mtc0 must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "user mtc0 must trap");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user mtc0 must trap as CPU");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE && (s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "user trap needs exact EPC/BD");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_STATUS, 0u, TEST_BASE) < 0, "user mfc0 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user mfc0 must trap as CPU");
+
+    /* Unsupported register/select combinations raise RI, never answer zero. */
+    fresh_state(&s);
+    CHECK(sr_cp0_mfc0(&s, 6u, 7u, 0u, TEST_BASE) < 0, "mfc0 rd=7 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad rd must raise RI");
+    CHECK(s.r[6] == 0u, "failed mfc0 must not write its destination");
+
+    fresh_state(&s);
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_STATUS, 1u, TEST_BASE) < 0, "mfc0 sel=1 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad sel must raise RI");
+
+    fresh_state(&s);
+    CHECK(sr_cp0_mtc0(&s, 5u, 20u, 0u, TEST_BASE) < 0, "mtc0 rd=20 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad mtc0 rd must raise RI");
+
+    fresh_state(&s);
+    s.r[5] = 0x11111111u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_PRID, 0u, TEST_BASE) < 0, "mtc0 PRID must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "PRID write must raise RI");
+
+    /* Delay-slot privilege faults name the branch (spec 3.3 BD rule). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.in_delay_slot = 1u;
+    s.next_pc = TEST_BASE;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_STATUS, 0u, TEST_BASE + 4u) < 0, "delay mtc0 must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "delay trap EPC must be the branch (got 0x%08x)",
+          s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "delay trap must set BD");
+}
+
+/* Interpreter lane with the LLE gate on: syscall/break trap, eret returns,
+ * COP0 round-trips; with the gate off the old UNSUPPORTED stands. */
+static void test_interp_lane(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);  /* syscall */
+    MEM_W32_PC(TEST_BASE + 4u, 0x00000000u, TEST_BASE);  /* nop (never reached) */
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "interp syscall must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp EPC=0x%08x", s.cop0[SR_CP0_EPC]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "interp ExcCode must be SYS");
+    CHECK(s.pc == TEST_VECTOR && s.flow_target == TEST_VECTOR, "interp must transfer to vector");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Du, TEST_BASE);  /* break */
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "interp break must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "interp ExcCode must be BP");
+
+    /* eret with an owned EPC target. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, SR_OPCODE_ERET, TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    MEM_W32_PC(TEST_BASE + 0x10u, 0x00000000u, TEST_BASE);  /* landing nop */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_ERET, "interp eret must report ERET (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.pc == TEST_BASE + 0x10u, "interp eret pc=0x%08x", s.pc);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u, "interp eret must clear EXL");
+
+    /* COP0 round-trip through the interpreter. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, enc_mfc0(6u, SR_CP0_EPC), TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x03E00008u, TEST_BASE + 8u);  /* jr $ra (returns) */
+    MEM_W32_PC(TEST_BASE + 12u, 0x00000000u, TEST_BASE + 12u);
+    s.pc = TEST_BASE;
+    s.r[5] = 0x08810020u;
+    s.r[31] = TEST_SPAN_END;  /* jr $ra lands outside any span: stops cleanly */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(s.r[6] == 0x08810020u, "interp COP0 round-trip gave 0x%08x", s.r[6]);
+    CHECK(s.flow_kind == SR_FLOW_NONE, "clean interp COP0 traffic must not set flow");
+    (void)r;
+
+    /* Gate off: the historical fail-closed contract stands. */
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_UNSUPPORTED, "gate-off syscall must stay UNSUPPORTED (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(fault.pc == TEST_BASE, "gate-off fault must name the probe word");
+}
+
+/* Config accessors round-trip and reset restores every default. */
+static void test_config(void) {
+    uint32_t g, i, b;
+    sr_cpu_lle_reset_config();
+    CHECK(!sr_cpu_lle_enabled(), "gate must default off");
+    sr_cpu_lle_set_enabled(1);
+    CHECK(sr_cpu_lle_enabled(), "gate enable must stick");
+    sr_cpu_lle_set_vectors(1u, 2u, 3u);
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(g == 1u && i == 2u && b == 3u, "vector accessors must round-trip");
+    sr_cpu_lle_set_prid(0x12345678u);
+    {
+        CpuState s;
+        fresh_state(&s);
+        /* fresh_state resets config; re-apply after it. */
+        sr_cpu_lle_set_prid(0x12345678u);
+        CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_PRID, 0u, TEST_BASE) == 0, "PRID read must succeed");
+        CHECK(s.r[6] == 0x12345678u, "PRID must report the configured value");
+    }
+    sr_cpu_lle_reset_config();
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(g == 0x80000180u && !sr_cpu_lle_enabled(), "reset must restore defaults");
+    CHECK(b == 0xBFC00200u, "reset must restore the bootstrap default");
+    {
+        CpuState s;
+        fresh_state(&s);
+        sr_cpu_clear_flow(&s);
+        CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u, "clear_flow must zero the channel");
+    }
+}
+
+int main(void) {
+    sr_mem_init();
+    setup_spans();
+    test_exception_entry_plain();
+    test_exception_delay_slot();
+    test_exception_ce_badvaddr();
+    test_vector_selection();
+    test_eret();
+    test_mode_checks();
+    test_cop0_roundtrip();
+    test_cop0_traps();
+    test_interp_lane();
+    test_config();
+    sr_cpu_lle_reset_config();
+    if (g_failed) {
+        fprintf(stderr, "cpu-lle selftest: FAILED\n");
+        return 1;
+    }
+    printf("cpu-lle selftest: OK\n");
+    return 0;
+}
