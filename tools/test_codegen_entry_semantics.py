@@ -181,6 +181,7 @@ class EntrySemanticsPipelineTests(unittest.TestCase):
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 2u
 typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
 uint32_t test_mem_r32(uint32_t addr);
 void test_mem_w32(uint32_t addr, uint32_t value);
@@ -343,6 +344,7 @@ int main(void) {{
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 2u
 typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
 uint32_t test_mem_r32(uint32_t addr);
 void test_mem_w32(uint32_t addr, uint32_t value);
@@ -454,6 +456,7 @@ int main(void) {{
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 2u
 typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
 uint32_t test_mem_r32(uint32_t addr);
 void test_mem_w32(uint32_t addr, uint32_t value);
@@ -596,6 +599,7 @@ int main(void) {{
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 2u
 typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
 uint32_t test_mem_r32(uint32_t addr);
 void test_mem_w32(uint32_t addr, uint32_t value);

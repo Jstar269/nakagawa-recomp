@@ -319,6 +319,7 @@ endif
 include mk/build_common.mk
 
 BUILD_PROFILE_TOOL := tools/build_profile.py
+CPU_STATE_ABI_HEADER := src/rt/recomp.h
 
 # Runtime title configuration. The compiled runtime carries no title identity of its
 # own: tools/title_runtime_config.py turns a *validated* title manifest's optional
@@ -1085,11 +1086,11 @@ platform-ladder-clean:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY))
+CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -1112,12 +1113,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1141,10 +1142,10 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
-RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)")
+RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)")
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Compile the chunked generated C code.
 

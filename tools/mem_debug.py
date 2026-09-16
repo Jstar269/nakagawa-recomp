@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import ctypes
 import hashlib
+import re
 
 # Define standard PE image base for Mingw-w64 (64-bit)
 DEFAULT_IMAGE_BASE = 0x140000000
@@ -60,6 +61,17 @@ SR_VRAM_BASE = 0x04000000
 SR_VRAM_SIZE = 0x00200000         # 2 MiB VRAM/eDRAM at 0x04000000
 SR_SCRATCHPAD_BASE = 0x00010000
 SR_SCRATCHPAD_SIZE = 0x00001000   # 4 KiB scratchpad
+
+# CpuState ABI v2 offsets from src/rt/recomp.h.  Keep the debugger's raw process
+# view in lockstep with the runtime rather than silently reading the old 864-byte
+# status-only tail.
+CPU_STATE_SIZE = 996
+CPU_STATE_COP0_OFFSET = 852
+CPU_STATE_COP0_COUNT = 32
+CPU_STATE_NEXT_PC_OFFSET = 980
+CPU_STATE_DELAY_SLOT_OFFSET = 984
+CPU_STATE_FLOW_KIND_OFFSET = 988
+CPU_STATE_FLOW_TARGET_OFFSET = 992
 
 SUPPORTED_REGIONS = ("ram", "vram", "scratchpad")
 
@@ -408,9 +420,11 @@ def load_mock_state():
             "fpcond": 0,
             "v": [0.0] * 128,
             "vfpuCtrl": [0] * 16,
-            "status": 0,
+            "cop0": [0] * CPU_STATE_COP0_COUNT,
             "next_pc": 0x08804004,
-            "in_delay_slot": 0
+            "in_delay_slot": 0,
+            "flow_kind": 0,
+            "flow_target": 0,
         },
         "memory": {}
     }
@@ -882,7 +896,7 @@ class MemoryDebugger:
             return {"success": False,
                     "error": "s_cpu pointer is NULL or process uninitialized"}
 
-        cpu_bytes = self._read_process_bytes(s_cpu_val, 864)
+        cpu_bytes = self._read_process_bytes(s_cpu_val, CPU_STATE_SIZE)
         if not cpu_bytes:
             return {"success": False, "error": "Failed to read CpuState structure"}
 
@@ -902,9 +916,29 @@ class MemoryDebugger:
                     for i in range(128)]
         cpu["vfpuCtrl"] = [int.from_bytes(cpu_bytes[788 + i * 4:788 + (i + 1) * 4],
                                           byteorder='little') for i in range(16)]
-        cpu["status"] = int.from_bytes(cpu_bytes[852:856], byteorder='little')
-        cpu["next_pc"] = int.from_bytes(cpu_bytes[856:860], byteorder='little')
-        cpu["in_delay_slot"] = int.from_bytes(cpu_bytes[860:864], byteorder='little')
+        cpu["cop0"] = [
+            int.from_bytes(
+                cpu_bytes[CPU_STATE_COP0_OFFSET + i * 4:CPU_STATE_COP0_OFFSET + (i + 1) * 4],
+                byteorder='little',
+            )
+            for i in range(CPU_STATE_COP0_COUNT)
+        ]
+        cpu["next_pc"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_NEXT_PC_OFFSET:CPU_STATE_NEXT_PC_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["in_delay_slot"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_DELAY_SLOT_OFFSET:CPU_STATE_DELAY_SLOT_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["flow_kind"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_FLOW_KIND_OFFSET:CPU_STATE_FLOW_KIND_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["flow_target"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_FLOW_TARGET_OFFSET:CPU_STATE_FLOW_TARGET_OFFSET + 4],
+            byteorder='little',
+        )
 
         return {"success": True, "cpu": cpu, "mode": "process"}
 
@@ -926,6 +960,8 @@ class MemoryDebugger:
                 self.mock["cpu"]["f"][int(field[1:])] = float(val)
             elif field.startswith("v") and field[1:].isdigit():
                 self.mock["cpu"]["v"][int(field[1:])] = float(val)
+            elif field.startswith("cop0[") and field.endswith("]"):
+                self.mock["cpu"]["cop0"][int(field[5:-1])] = val
             else:
                 self.mock["cpu"][field] = val
             save_mock_state(self.mock)
@@ -957,10 +993,10 @@ class MemoryDebugger:
             return {"error": "crash_dump.bin not found. Did the game exit?"}
 
         with open(dump_path, "rb") as f:
-            cpu_bytes = f.read(864)
+            cpu_bytes = f.read(CPU_STATE_SIZE)
             stack_bytes = f.read()
 
-        if len(cpu_bytes) < 864:
+        if len(cpu_bytes) < CPU_STATE_SIZE:
             return {"error": "Invalid crash_dump.bin size"}
 
         cpu = {}
@@ -1029,12 +1065,19 @@ def _cpu_field_offset(field):
         return 268, False
     if field == "fpcond":
         return 272, False
-    if field == "status":
-        return 852, False
+    cop0_match = re.fullmatch(r"cop0\[(\d+)\]", field)
+    if cop0_match:
+        cop0_idx = int(cop0_match.group(1))
+        if 0 <= cop0_idx < CPU_STATE_COP0_COUNT:
+            return CPU_STATE_COP0_OFFSET + cop0_idx * 4, False
     if field == "next_pc":
-        return 856, False
+        return CPU_STATE_NEXT_PC_OFFSET, False
     if field == "in_delay_slot":
-        return 860, False
+        return CPU_STATE_DELAY_SLOT_OFFSET, False
+    if field == "flow_kind":
+        return CPU_STATE_FLOW_KIND_OFFSET, False
+    if field == "flow_target":
+        return CPU_STATE_FLOW_TARGET_OFFSET, False
     if field.startswith("f") and field[1:].isdigit():
         f_idx = int(field[1:])
         if 0 <= f_idx < 32:

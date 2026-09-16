@@ -25,6 +25,7 @@ COMMON_MK = ROOT / "mk" / "build_common.mk"
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_profile
+import codegen
 
 
 _MTIME_MARGIN_NS = 2_000_000_000
@@ -168,6 +169,107 @@ class BuildTruthTests(unittest.TestCase):
             stamp, ".profile-*", "same", invalidate=[obj]
         )
         self.assertTrue(obj.exists())
+
+
+class CpuStateAbiTests(unittest.TestCase):
+    """The native and generated sides must agree on the versioned CpuState ABI."""
+
+    def setUp(self) -> None:
+        self.cc = os.environ.get("CC") or shutil.which("gcc") or shutil.which("cc")
+        if not self.cc:
+            self.skipTest("a C compiler is required")
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-cpustate-abi-")
+        self.work = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _compile(self, source: Path, include_dir: Path, output: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [self.cc, "-std=c11", "-I", str(include_dir), "-c", str(source), "-o", str(output)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+
+    def test_cpustate_v2_layout_and_generated_header_guard(self) -> None:
+        layout_source = self.work / "layout.c"
+        layout_source.write_text(
+            textwrap.dedent(
+                """
+                #include <stddef.h>
+                #include "recomp.h"
+
+                _Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "ABI version");
+                _Static_assert(offsetof(CpuState, cop0) == 852u, "cop0 offset");
+                _Static_assert(offsetof(CpuState, next_pc) == 980u, "next_pc offset");
+                _Static_assert(offsetof(CpuState, in_delay_slot) == 984u, "delay offset");
+                _Static_assert(offsetof(CpuState, flow_kind) == 988u, "flow kind offset");
+                _Static_assert(offsetof(CpuState, flow_target) == 992u, "flow target offset");
+                _Static_assert(sizeof(CpuState) == 996u, "CpuState size");
+
+                int abi_probe(void) {
+                    CpuState state = {0};
+                    *sr_cp0_status_ptr(&state) = 0x12345678u;
+                    return state.cop0[SR_CP0_STATUS] != 0x12345678u;
+                }
+                """
+            ).lstrip(),
+            encoding="ascii",
+        )
+        layout = self._compile(layout_source, ROOT / "src" / "rt", self.work / "layout.o")
+        self.assertEqual(
+            layout.returncode,
+            0,
+            "the base runtime must compile the asserted CpuState ABI:\n"
+            + layout.stdout
+            + layout.stderr,
+        )
+
+        stale_dir = self.work / "stale"
+        stale_dir.mkdir()
+        generated_header = stale_dir / "generated_funcs.h"
+        codegen.write_funcs_header(generated_header, [0x00001000])
+        (stale_dir / "recomp.h").write_text(
+            "#include <stdint.h>\n"
+            "#define SR_CPUSTATE_ABI_VERSION 1u\n"
+            "typedef struct CpuState CpuState;\n",
+            encoding="ascii",
+        )
+        stale_source = stale_dir / "stale.c"
+        stale_source.write_text('#include "generated_funcs.h"\n', encoding="ascii")
+        stale = self._compile(stale_source, stale_dir, self.work / "stale.o")
+        self.assertNotEqual(
+            stale.returncode,
+            0,
+            "a generated header must reject a runtime with a mismatched ABI version",
+        )
+        self.assertRegex(stale.stdout + stale.stderr, r"SR_CPUSTATE_ABI_VERSION|CpuState ABI version")
+
+
+class CpuStateAbiProfileTests(unittest.TestCase):
+    """Profile hashing needs no compiler; keep it out of the compiler-gated suite."""
+
+    def test_profile_hash_tracks_recomp_header_content(self) -> None:
+        compiler = "cc-placeholder-for-profile-hash"
+        with tempfile.TemporaryDirectory(prefix="nakagawa-cpustate-profile-") as temp:
+            header = Path(temp) / "recomp.h"
+            header.write_text("#define SR_CPUSTATE_ABI_VERSION 2u\n", encoding="ascii")
+            first = build_profile.profile_hash(
+                build_profile.profile_payload(compiler, ["RECOMP_FLAGS=-O0"], files=[str(header)])
+            )
+            header.write_text("#define SR_CPUSTATE_ABI_VERSION 3u\n", encoding="ascii")
+            second = build_profile.profile_hash(
+                build_profile.profile_payload(compiler, ["RECOMP_FLAGS=-O0"], files=[str(header)])
+            )
+            self.assertNotEqual(first, second)
+
+            makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+            self.assertIn('CPU_STATE_ABI_HEADER := src/rt/recomp.h', makefile)
+            self.assertIn('--file "$(CPU_STATE_ABI_HEADER)"', makefile)
 
 
 SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"

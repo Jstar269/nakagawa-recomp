@@ -1806,7 +1806,7 @@ static int dispatch_try_with_boundary(
     /* CpuState corruption guard: a PC of 0 means the thread state has collapsed.
      * Terminate the thread to prevent infinite spinning/deadlock. */
     if (s->pc == 0) {
-        s->status = 0;
+        s->cop0[SR_CP0_STATUS] = 0u;
         if (sched_current_uid() != 0) {
             sched_terminate_thread(sched_current_uid());
         }

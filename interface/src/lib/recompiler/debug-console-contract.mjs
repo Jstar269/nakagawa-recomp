@@ -75,7 +75,7 @@ function validateWriteCpu(args) {
   requireArgumentCount("write_cpu", args, 2);
   const field = args[0];
   const validField =
-    /^(?:r(?:[0-9]|[12][0-9]|3[01])|f(?:[0-9]|[12][0-9]|3[01])|v(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])|hi|lo|pc|fcr31|fpcond|status|next_pc|in_delay_slot)$/.test(
+    /^(?:r(?:[0-9]|[12][0-9]|3[01])|f(?:[0-9]|[12][0-9]|3[01])|v(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])|cop0\[(?:[0-9]|[12][0-9]|3[01])\]|hi|lo|pc|fcr31|fpcond|next_pc|in_delay_slot|flow_kind|flow_target)$/.test(
       field,
     );
   if (!validField) {

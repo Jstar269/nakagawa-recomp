@@ -267,8 +267,12 @@ contains:
 - `fcr31`, `fpcond` — FPU control/condition state;
 - `v[128]` / `vi[128]` — physical VFPU register file;
 - `vfpuCtrl[16]` — VFPU control/prefix/condition state;
-- `status` — modeled COP0 status state;
-- `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping.
+- `cop0[32]` — modeled COP0 register bank; COP0 status is `cop0[SR_CP0_STATUS]`;
+- `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping;
+- `flow_kind`, `flow_target` — runtime transfer metadata.
+
+The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `2u`) and is
+checked in both C and C++ at compile time.
 
 There is **no separate `lr` member**. MIPS `$ra` is general register `r[31]`; similarly `$sp` is
 `r[29]` and `$gp` is `r[28]`.

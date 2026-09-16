@@ -33,6 +33,7 @@ ISOLATED_RECOMP_H = """\
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 2u
 #include "fp_convert.h"
 typedef struct CpuState {
     uint32_t r[32];

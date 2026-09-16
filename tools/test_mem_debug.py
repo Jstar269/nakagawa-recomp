@@ -391,6 +391,20 @@ class SimulationBehaviorTest(unittest.TestCase):
         self.assertEqual(status["mutation"], "enabled")
         self.assertEqual(status["rva_provenance"], "fallback")
 
+    def test_simulated_cpu_uses_cpustate_abi_v2_tail(self):
+        dbg = self._sim(mutate=True)
+        cpu = dbg.read_cpu()["cpu"]
+        self.assertEqual(len(cpu["cop0"]), 32)
+        self.assertIn("flow_kind", cpu)
+        self.assertIn("flow_target", cpu)
+
+        self.assertEqual(md._cpu_field_offset("cop0[0]"), (852, False))
+        self.assertEqual(md._cpu_field_offset("cop0[12]"), (900, False))
+        self.assertEqual(md._cpu_field_offset("next_pc"), (980, False))
+        self.assertEqual(md._cpu_field_offset("in_delay_slot"), (984, False))
+        self.assertEqual(md._cpu_field_offset("flow_kind"), (988, False))
+        self.assertEqual(md._cpu_field_offset("flow_target"), (992, False))
+
 
 class ResolverFailureTest(unittest.TestCase):
     def test_guest_memory_resolver_rejects_bad_span(self):
