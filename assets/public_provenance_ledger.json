@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fa3f4b86f4a4988b0c30937f7e93b9780a70185a7b0a45dfad2192d0ca64723f"
+      "sha256": "56a767a2b1c1e001d5f5fc573c4c873c2d8be273ecd56089ff969c854155897b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -786,6 +786,15 @@
       "sha256": "52635bae46f38daf8fa2f9aa6d81470bee4e397e809890895a5f168870644853"
     },
     {
+      "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "baac58ab421868e217626e741a8977f12852b0695329e1cc2fcb497b19052175"
+    },
+    {
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -963,7 +972,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dab689b2125a044e700ae32863107b8a3845975d29130673f413ed9e40e235de"
+      "sha256": "84d0bab08c99759faa4ddb8aad1fb0d5debabf96022e340cbd3a610f216e72b3"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1302,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "10e1be343fd8cc6bcd42dd17b55632df6473a1bc50417c8ef26243b84c1e7515"
+      "sha256": "70da4d487bcd0c2e4d581b3733b09fb223bc7369140731f5c8e631f644f75c57"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1311,7 +1320,16 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "600037afcfaede2f48e035724cbe34f1f9b3ef67fc4865cdf35d0b3df2b3ae1e"
+      "sha256": "cb574b86c085626a26971810f39c5fe86a7776cdf6d796d1ec5d6efdff3fa8cc"
+    },
+    {
+      "path": "fixtures/psp_oracle/mutex_imports.S",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "b2d36ab9fd3308bd4cd745bc9a4c655f8be31eed46943368e8d0aee72bd8b773"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1320,7 +1338,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4aacca863689fd2cde5a83441ebf39b029221f59236108bb17b195bfdc454251"
+      "sha256": "a545bf258d659c0f2da47263ffa14db589ded3c96f8f95d68548db6fd5296954"
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
@@ -6379,6 +6397,18 @@
       "sha256": "84ba76be7b69439091248dd244b46d17c2d1735fff5ae8fb6e89b6b1e1ceecb2"
     },
     {
+      "path": "tools/build_graph_snapshot.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "80332d6f2f54b563932a5f1b94e83283e10b6c02f22c8caf9fc2fdff209b2626"
+    },
+    {
       "path": "tools/build_profile.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7203,6 +7233,18 @@
       "sha256": "251b982db8956266e75d8d389419e44b95391be37ec2f0635f0c37b125a85f5c"
     },
     {
+      "path": "tools/portability_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8371a82181486d0864db3982ce49d2948d238187fa793e0655ebaaa63b028312"
+    },
+    {
       "path": "tools/ppm2png.py",
       "classification": "upstream_derived",
       "evidence": {
@@ -7359,7 +7401,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2087e853656a070877dbb0427c7a4400f75e5877bb308e4f8caf2f0d0074560"
+      "sha256": "a0768f0977b4ab9a3a200d107b4538fe76bcb879939f4b062a5fd4c329c9c0d6"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -7627,6 +7669,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a8e4d080f6008610ed9305ba5bdba7281e917baed6a1121c276704ecdf21fea0"
+    },
+    {
+      "path": "tools/test_build_graph_snapshot.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c210f7561d8b520d40431dc7e64de47dcf5e6c48a84e3d75a667fec02f17ee4e"
     },
     {
       "path": "tools/test_build_system_parity.py",
@@ -8031,6 +8085,18 @@
       "sha256": "8f4368928e10be6dfb6c693bc08333665abb7ed4f0d05b0a5dbcb03f380fc95a"
     },
     {
+      "path": "tools/test_hardware_runner_protocol.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
+        "evidence_tier": "H",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "972752bd9aec66c2b7a8d56afbf1fecced21b46e588d8f12113028cb60219ebe"
+    },
+    {
       "path": "tools/test_history_audit.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -8346,6 +8412,18 @@
       "sha256": "6577314d0aa6ad57cb55e00fda1980a417c50ed5b1aac459020b562737f845c0"
     },
     {
+      "path": "tools/test_portability_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3db58eaab49792f092978b3fa00a0753b5e37e82bf92c7f9332eb78c565e2712"
+    },
+    {
       "path": "tools/test_production_smoke.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -8445,7 +8523,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "149e61e9f3a5e0dbb0868486eba7cca475a2865eb8b849e5a9c2fc06da62dded"
+      "sha256": "91460512afeb2dd5dc852ad0f7b5373fe8ea3d36232c7593714e63c6a86bc87a"
     },
     {
       "path": "tools/test_psp_readiness.py",
