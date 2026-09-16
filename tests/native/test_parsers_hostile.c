@@ -521,6 +521,40 @@ static void test_hostile_iso_parser(const char *test_dir) {
     printf("[HOSTILE_TEST] ISO parser tests PASSED!\n");
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+
+/* Invalid UTF-8 must never be "repaired" into U+FFFD and then resolve to a
+ * different file. A decoy named U+FFFD.iso sits next to the requested path; a
+ * lenient conversion would find it and report it as a malformed ISO. */
+static void test_invalid_utf8_path_is_refused(const char *test_dir) {
+    printf("[HOSTILE_TEST] Testing invalid UTF-8 path refusal...\n");
+    fflush(stdout);
+
+    WCHAR wdir[1024];
+    assert(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, test_dir, -1,
+                               wdir, (int)(sizeof(wdir) / sizeof(wdir[0]))) > 0);
+    WCHAR wdecoy[1100];
+    _snwprintf(wdecoy, sizeof(wdecoy) / sizeof(wdecoy[0]), L"%ls\\\xFFFD.iso", wdir);
+    wdecoy[(sizeof(wdecoy) / sizeof(wdecoy[0])) - 1] = L'\0';
+    FILE *decoy = _wfopen(wdecoy, L"wb");
+    assert(decoy != NULL);
+    fputs("not an iso", decoy);
+    fclose(decoy);
+
+    char bad_path[600];
+    snprintf(bad_path, sizeof(bad_path), "%s\\\xff.iso", test_dir);
+
+    assert(!nk_platform_file_exists(bad_path));
+    NkIsoMetadata meta;
+    NkResult res = nk_iso_inspect(bad_path, &meta);
+    assert(res == NK_ERROR_FILE_NOT_FOUND);
+
+    DeleteFileW(wdecoy);
+    printf("[HOSTILE_TEST] Invalid UTF-8 path refused.\n");
+}
+#endif
+
 int main(void) {
     char test_dir[512];
     assert(nk_platform_get_path(NK_PATH_CACHE, test_dir, sizeof(test_dir)));
@@ -530,6 +564,9 @@ int main(void) {
 
     test_hostile_library_json(hostile_dir);
     test_hostile_iso_parser(hostile_dir);
+#if defined(_WIN32) || defined(_WIN64)
+    test_invalid_utf8_path_is_refused(hostile_dir);
+#endif
 
     printf("[HOSTILE_TEST] ALL HOSTILE/MALFORMED PARSER TESTS COMPLETED SUCCESSFULLY!\n");
     return 0;

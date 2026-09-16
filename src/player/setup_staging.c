@@ -184,7 +184,7 @@ static bool staging_root_name_is_safe(const char *staging_root) {
 #if defined(_WIN32) || defined(_WIN64)
 static bool stage_utf8_to_wide(const char *utf8, WCHAR *wide, int wide_count) {
     return utf8 && wide && wide_count > 0 &&
-           MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, wide_count) > 0;
+           MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wide, wide_count) > 0;
 }
 
 static bool discard_missing_error_wide(DWORD error) {

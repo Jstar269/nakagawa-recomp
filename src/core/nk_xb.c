@@ -914,8 +914,8 @@ static FILE *xb_fopen(const char *path, const char *mode) {
     WCHAR wpath[32768];
     WCHAR wmode[32];
     if (!path || !mode ||
-        MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, 0, mode, -1, wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
         return NULL;
     }
     return _wfopen(wpath, wmode);
