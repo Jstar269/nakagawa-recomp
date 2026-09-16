@@ -53,11 +53,11 @@ For the privately route-validated HST title, the opt-in manager path is
 retail HST manifest, so it is not runnable from a public clone):
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull `
+.\nk_manager.ps1 -Action BuildFull -GameName hst `
   -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
-The manager accepts only that local HST retail manifest in this slice. Every
+The canonical manager accepts validated title manifests, including public synthetic fixtures. Every
 build-facing value comes from the validated plan — the manager keeps no second copy
 of the title contract — and it re-checks the manifest's protected digest immediately
 before running Make, so a manifest edited after planning fails closed rather than
@@ -65,9 +65,9 @@ building half of each contract. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and
 `-FuncsPerChunk` remain operational overrides. An explicit override wins only where
 the contract permits it. The planner default is the single authority for the
 chunk-size default; the matching Make, manager, and codegen fallbacks must agree
-with it rather than define it. Without `-TitleManifest`, the existing HST
-discovery/default path is preserved exactly as a LEGACY_ADAPTER: it exists only
-for the pre-manifest HST workflow and is retired together with that path.
+with it rather than define it. Without `-TitleManifest`, `nk_manager.ps1` selects
+`assets/titles/synthetic.json`. The deprecated `hst_manager.ps1` wrapper retains
+the legacy HST manifest and target defaults for compatibility.
 
 `assets/titles/pspdev-phase5.json` is one of three materially different
 source-owned fixtures (with `synthetic.json` and `synthetic-title2.json`, the
@@ -134,15 +134,12 @@ not edit HST Makefile constants to configure a new title. Each module needs:
 mingw32-make GAME_NAME=mygame GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0x08804000 GAME_ENTRY=0x08804000
 ```
 
-The checked-in `hst_manager.ps1` is still an HST-specific orchestration layer,
-not a generic title runner. The manifest adapter is read-only and currently
-accepts only the local HST retail manifest (publication-excluded, never
-checked in); it does not prove runtime portability
-or correctness for another title. Use Make directly with that title's validated
-manifest and explicit private bindings until a title-specific manager path has
-been deliberately added and verified. Direct Make without a manifest remains an
-explicit non-canonical escape hatch: it bypasses the planner and its protected
-digest, so it carries no title contract.
+Use `nk_manager.ps1 -TitleManifest` with the title's validated manifest and
+explicit private bindings. The canonical manager supports generic title planning;
+this does not prove runtime portability or correctness for another title.
+`hst_manager.ps1` remains a deprecated HST compatibility wrapper. Direct Make
+without a manifest remains an explicit non-canonical escape hatch: it bypasses
+the planner and its protected digest, so it carries no title contract.
 
 The first build can be substantially slower than a runtime-only rebuild because codegen must translate the title's MIPS functions and compile the generated translation units.
 
@@ -223,8 +220,8 @@ inventoried as static source-shape (tier 4) and gated by `tools/test_compat_mani
 The inventory is *not* an executable proof of unsupported-interpreter fail-closed; that
 property is proven by the production interpreter floor (`src/rt/guest_interp.c`) through
 `fixtures/cosim/cosim_selftest.c` (fail-closed negative corpus, control sweep, jalr link
-shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retiring these entries
-is tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98). (This
+shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retirement work was
+tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98), now closed. (This
 previously cited #20, which is a merged pull request about `sceSasCore` routing and has
 no relation to this surface — so the surface had no tracker at all.)
 

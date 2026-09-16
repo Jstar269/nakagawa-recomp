@@ -76,13 +76,13 @@ The private `place_game_here/` layout is Git-ignored. A complete ISO-only bootst
 
 ## Build and run
 
-Use the HST manager from the repository root. It supplies HST's required `GAME_BASE=0 GAME_ENTRY=0` values and canonical private-input paths.
+Use the canonical manager from the repository root with the local HST manifest and explicit `-GameName hst`. It supplies HST's required `GAME_BASE=0 GAME_ENTRY=0` values and private-input paths; without a manifest it selects the public synthetic title.
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json  # pipeline + compile
-.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json  # incremental/runtime build
-.\hst_manager.ps1 -Action Test       # configured project test route
-.\hst_manager.ps1 -Action Run        # launch with the GUI
+.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # pipeline + compile
+.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # incremental/runtime build
+.\nk_manager.ps1 -Action Test       # configured project test route
+.\nk_manager.ps1 -Action Run -TitleManifest assets/titles/hst-ucus98701.json -GameName hst # launch with the GUI
 ```
 
 > [!CAUTION]
@@ -129,7 +129,7 @@ Generated `build/<game>/<game>_recomp_*.c` files must never be edited. Change ge
 ## Verification
 
 ```powershell
-.\hst_manager.ps1 -Action Test
+.\nk_manager.ps1 -Action Test
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree --public-scope
 ```
