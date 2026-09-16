@@ -22,7 +22,7 @@ but a successful object compile is not the same as a linked, running port.
 
 ### 1. Keep Windows green and expose portable code
 
-- Keep `hst_manager.ps1` and the current Makefile as the validated Windows path.
+- Keep `nk_manager.ps1` and the current Makefile as the validated Windows path.
 - Run the synthetic Windows runtime-object CI gate; it needs no proprietary inputs.
 - Run the Linux host-neutral object gate. It deliberately excludes unresolved GUI/HLE platform
   work and must not be described as Linux support.

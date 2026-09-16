@@ -136,6 +136,8 @@ compile, and execute the header; no retail input is required.
 NakagawaRecomp/
 ├── tools/              # Python offline compilation, verification, and audit tooling
 ├── src/
+│   ├── core/           # Shared native library, title, and launch services
+│   ├── player/         # Native player UI and setup staging
 │   ├── rt/             # C native runtime
 │   │   ├── gpu_sdl3vk/ # SDL3 + Vulkan backend
 │   │   └── ...
@@ -145,7 +147,9 @@ NakagawaRecomp/
 ├── build/              # Generated build output (Git-ignored)
 ├── docs/               # Maintained documentation and dated investigation records
 ├── Makefile            # Build driver
-├── hst_manager.ps1     # HST-specific build/run/inspection orchestration
+├── nk_manager.ps1      # Canonical build/run/inspection orchestration
+├── nk.ps1              # Simple build, doctor, and play entry point
+├── hst_manager.ps1     # Deprecated HST compatibility wrapper
 └── README.md           # Project entry point
 ```
 
@@ -207,12 +211,12 @@ The runtime executes generated guest functions and implements the host side of P
 | --- | --- |
 | `hle.c` | PSP syscall/NID dispatch and a large portion of kernel/user HLE behavior |
 | `hle_thread_selftest.c` | Game-input-free Windows harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
-| `audio.c` | PSP audio services through SDL3 host audio |
-| `iso.c` / `iso.h` | UMD/ISO filesystem access |
-| `pgd.c` | PGD/installed-data handling |
+| `audio_unavailable.c` | Public-tree stub linked under `PUBLIC_SAFE=1`; SDL3 audio backend `audio.c` is private-only |
+| `iso_unavailable.c` / `iso.h` | Public-tree UMD/ISO stub linked under `PUBLIC_SAFE=1`; `iso.c` backend is private-only |
+| `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; installed-data backend `pgd.c` is private-only |
 | `mpeg.c` | MPEG/SAS/Atrac-related behavior derived in part from PPSSPP lineage |
 | `savedata.c` | Utility savedata mapped to host storage |
-| `pgf.c` / `pgf.h` | PGF parsing/rasterization; licensing/provenance is tracked separately as a publication blocker |
+| `pgf_unavailable.c` | Public-tree PGF stub linked under `PUBLIC_SAFE=1`; parsing/rasterization backend `pgf.c` is private-only, with provenance/distribution review separate |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
 | `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
 | `osk_win.c` | Win32 on-screen keyboard integration |

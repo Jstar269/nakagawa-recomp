@@ -1,6 +1,6 @@
 # Optional local symbol-reference setup
 
-`hst_manager.ps1 -Action FindSymbol` can search an OpenGrip-style
+`nk_manager.ps1 -Action FindSymbol` can search an OpenGrip-style
 `functions.csv` when a contributor keeps that reference data locally. This is
 an optional reverse-engineering aid; it is not required to build or run
 Nakagawa Recomp.
@@ -38,8 +38,8 @@ git check-ignore -v OpenGrip_For_Inspiration/functions.csv
 Then run a lookup from the repository root:
 
 ```powershell
-.\hst_manager.ps1 -Action FindSymbol -FindName Camera_Update
-.\hst_manager.ps1 -Action FindSymbol -FindName 47054
+.\nk_manager.ps1 -Action FindSymbol -FindName Camera_Update
+.\nk_manager.ps1 -Action FindSymbol -FindName 47054
 ```
 
 The command performs a text search and prints at most 20 matching CSV rows. It

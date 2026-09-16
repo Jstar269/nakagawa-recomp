@@ -117,7 +117,7 @@ externally trusted ledger byte-for-byte, so any self-authored record fails;
 * a bare audit (no flag) reports `PROVENANCE_UNVERIFIED` and fails instead of
 passing on the candidate's own bytes;
 * `--provenance-self-consistency` is the explicitly non-attesting developer
-tripwire scope (pre-commit and `hst_manager.ps1 -Action Verify`): coverage,
+tripwire scope (pre-commit and `nk_manager.ps1 -Action Verify`): coverage,
 resolution, and content hashes are enforced against the audited ledger itself,
 but no attestation claim is made or cleared.
 
