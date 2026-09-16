@@ -375,6 +375,21 @@ class XBProbeTests(unittest.TestCase):
         with self.assertRaises(XBProbeError):
             reader.read_entry("a.bin")
 
+    def test_huffman_truncated_bitstream(self) -> None:
+        # A one-symbol table is valid, but a declared output cannot be decoded
+        # without at least one complete 16-bit bitstream word.  The old reader
+        # substituted zero words and fabricated repeated symbols instead.
+        huf_table = bytes([1, 1, 65, 0])
+        payload = struct.pack("<II", 3, len(huf_table)) + huf_table
+        raw = _make_archive([("a.bin", b"AAA", XBCompression.NONE)])
+        data_start = raw.find(b"AAA")
+        mutated = bytearray(raw[:data_start] + _pad4(payload))
+        struct.pack_into("<I", mutated, 8, 3)
+        struct.pack_into("<I", mutated, 12, (1 << 28) | (data_start // 4))
+        reader = XBArchiveReader.from_bytes(bytes(mutated))
+        with self.assertRaisesRegex(XBProbeError, "Huffman bitstream is truncated"):
+            reader.read_entry("a.bin")
+
     def test_variant_labeling(self) -> None:
         self.assertEqual(variant_from_path("data.xb").label, "base")
         self.assertEqual(variant_from_path("data.xb0").label, "xb0")

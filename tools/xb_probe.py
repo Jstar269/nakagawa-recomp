@@ -288,7 +288,9 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
     try:
         while len(output) < expanded_size:
             if bit_count < _HUF_MAX_DEPTH:
-                word = reader.u16("Huffman bitstream") if reader.remaining() >= 2 else 0
+                if reader.remaining() < 2:
+                    raise XBProbeError("Huffman bitstream is truncated")
+                word = reader.u16("Huffman bitstream")
                 bit_buffer |= word << bit_count
                 bit_count += 16
             entry = table[bit_buffer & (_HUF_TABLE_SIZE - 1)]
@@ -302,7 +304,9 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
                 bit_buffer >>= _HUF_MAX_DEPTH
                 bit_count -= _HUF_MAX_DEPTH
                 if bit_count < 16:
-                    word = reader.u16("Huffman literal") if reader.remaining() >= 2 else 0
+                    if reader.remaining() < 2:
+                        raise XBProbeError("Huffman literal is truncated")
+                    word = reader.u16("Huffman literal")
                     bit_buffer |= word << bit_count
                     bit_count += 16
                 output.append(bit_buffer & 0xFF)
