@@ -6,8 +6,8 @@ lines. It prints deterministic JSON; it does not execute commands, inspect priva
 inputs, or modify the manifest.
 
 With `--manager-plan`, the same validated configuration produces a bounded,
-versioned manager/build contract. `hst_manager.ps1` consumes that contract only
-when `-TitleManifest` is supplied; the legacy no-manifest path remains unchanged.
+versioned manager/build contract. `nk_manager.ps1` consumes that contract from
+`-TitleManifest`, defaulting to `assets/titles/synthetic.json` when omitted.
 The manager contract contains title semantics, a protected-contract digest, and
 private-binding requirements, not absolute private paths or command strings.
 
@@ -26,7 +26,7 @@ The planner is the only place a manifest becomes build configuration on the
 manager path. PowerShell
 adapts that plan to a process invocation and re-derives nothing of its own: it
 checks that each build-facing projection (`make.*`, `environment.*`) follows from
-the plan's own semantic fields, then pins the single title the HST manager
+the plan's own semantic fields, then pins the selected title `nk_manager.ps1`
 orchestrates. Make consumes explicit values and contributes no title-specific
 default beyond the direct-build HST bindings at the top of the `Makefile`.
 A manifest-less direct Make invocation bypasses the planner and its protected
@@ -385,7 +385,7 @@ HST's real values live only in the local `assets/titles/hst-ucus98701.json` —
 intentionally never checked in and publication-excluded via
 `assets/public_source_profile.json`, with an explicit `.gitignore` accident
 guard (see the titles README)
-and reach the build through `hst_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
+and reach the build through `nk_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
 direct Make line). They are deliberately not encoded in the `Makefile`, in `src/rt`, or
 in any checked-in manifest.
 
