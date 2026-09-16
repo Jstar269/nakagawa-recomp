@@ -3,7 +3,9 @@
 > **Status: CURRENT — maintained LLE gap analysis.** This document distinguishes
 > existing bounded ISO helpers from the absent retail-preparation path. Its proposed
 > cryptography, middleware, VFS, and firmware work is not implemented merely because
-> it appears in a resolution column.
+> it appears in a resolution column. The current player performs bounded ISO/PARAM.SFO
+> inspection plus staged XB extraction for supported wizard inputs; it does not
+> decrypt retail containers or serve guest reads from archives at runtime.
 
 ## 1. Architectural Correction & Superseded Recommendations
 

@@ -134,11 +134,11 @@ in this slice; classification comes first, directory moves separately.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
-| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture and onboarding target; preparation remains unbuilt and is marked inline |
+| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202), while module decryption and full retail preparation remain unbuilt and are marked inline |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and distributable title packages remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and absent retail-preparation stages are distinguished inline |
-| `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; web retirement and full parity remain unbuilt |
+| `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
@@ -148,7 +148,7 @@ in this slice; classification comes first, directory moves separately.
 | `research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md` | REFERENCE | Dated cross-project comparison; cites other repositories, not this one |
 | `research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md` | REFERENCE | Dated action register derived from that audit; live issues authoritative |
 | `research/project-truth/` | REFERENCE (dated snapshots) | Frozen public-source truth snapshots; each carries its own base, evidence class, and admission boundary |
-| `research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md` | REFERENCE | Dated public-source truth snapshot at its recorded base; not a provenance or release approval |
+| `research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md` | REFERENCE | Dated public-source truth snapshot at its recorded base; captured before PR #202, so some player claims there are superseded; not a provenance or release approval |
 | `OSPS_BASELINE.md` | HISTORICAL | Pre-republication snapshot; do not cite as status |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |

@@ -1,28 +1,27 @@
 # Web UI Inventory, Evaluation, and Native Migration Record
 
-> **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, but the preparation backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability.
+> **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, including the first-time setup wizard with its bounded ISO/XB staging pipeline (PR #202), but the module-decryption backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability. The dated reconciliation of the player-slice claims lives in [`research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md`](research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md).
 >
-> **Boundary:** ISO inspection in the current native player is bounded and read-only; no ISO-to-prepared-runtime, module-decryption, or end-user AOT pipeline is connected. See NATIVE_PLAYER_ARCHITECTURE.md and ISO_ONLY_GAP_ANALYSIS.md.
+> **Boundary:** ISO/PARAM.SFO inspection in the current native player is bounded, and the wizard's staged extraction writes only into its own staging area; no runtime guest reads over archives, module decryption, or end-user AOT pipeline is connected. See NATIVE_PLAYER_ARCHITECTURE.md and ISO_ONLY_GAP_ANALYSIS.md.
 
 ## 1. Inventory of Current Web UI Components
 
-The existing prototype UI is located under [`interface/`](../interface/):
+The existing prototype UI is located under [`interface/`](../interface/). The player flow lives in the native player; the web prototype has no player hero launcher today. Rows below are source-anchored to the current `interface/` tree; a function with no current row is a target, not a hidden component.
 
 | Subsystem | Location | Technologies | Function / Scope |
 | :--- | :--- | :--- | :--- |
-| **Frontend Shell** | `src/app/page.tsx`, `layout.tsx` | Next.js 16, React 19, Tailwind CSS 4 | Studio and Player container with topbar, sidebar, and dynamic panel routing |
-| **Player Hero Launcher** | `components/studio/launcher-panel.tsx` | React 19, Lucide icons | Streamlined hero launcher, quick settings, and 1-click ISO dropzone |
+| **Frontend Shell** | `src/app/page.tsx`, `src/app/layout.tsx` | Next.js 16, React 19, Tailwind CSS 4 | Studio container with topbar, sidebar, and panel routing |
 | **ISO Loader** | `components/studio/iso-loader.tsx` | Client-side ISO9660 reader (`lib/recompiler/iso.ts`) | Inspects ISO9660 PVD/directory in-browser (read-only, no disk write) |
-| **Pipeline Panel** | `components/studio/pipeline-panel.tsx` | React, SSE | Triggers `tools/recompile.ps1` / `hst_manager.ps1` (`BuildFull`, `BuildFast`) |
+| **Build Pipeline Panel** | `components/studio/build-panel.tsx` | React, SSE | Triggers root `hst_manager.ps1` manager actions (build/test flows) over the manager API |
 | **Process Manager** | `lib/recompiler/manager-process.ts` | Node.js `child_process.spawn`, `taskkill.exe` | Background process registry, log ring buffer, clean process cancellation |
 | **Process API** | `app/api/recompiler/manager/route.ts` | Next.js API route | Streams stdout/stderr over SSE; validates `ManagerLaunchRequest` |
 | **Preflight Doctor** | `app/api/recompiler/doctor/route.ts` | Node.js, `tools/hst_doctor.py` | Runs workspace diagnostics and returns structured JSON report |
-| **Inspector Panel** | `components/studio/inspector-panel.tsx` | React, JSON editor | Memory watchpoint management and interactive memory inspector |
-| **VRAM Viewer** | `components/studio/vram-panel.tsx` | React canvas | Renders PSP VRAM buffers, GE textures, and framebuffers |
-| **Benchmarks Panel** | `components/studio/benchmarks-panel.tsx` | React, SVG visualizer | Visualizes generated-PC call counts, block hotspots, and performance data |
-| **Shader Regression** | `components/studio/shader-panel.tsx` | Node.js, SPIR-V probes | Compares GPU shader pipelines against software reference rasters |
-| **Fuzz Lab** | `components/studio/fuzz-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
-| **Terminal Drawer** | `components/studio/terminal-drawer.tsx` | React, ANSI parser | Live streaming terminal drawer for build and engine logs |
+| **Internals Panel** | `components/studio/internals-panel.tsx` | React | Guest internals: threads, semaphores, loaded modules, and memory partitions |
+| **VRAM Viewer** | `components/studio/vram-viewer.tsx` | React canvas | Fetches VRAM buffers over the debug console API and renders them in-browser |
+| **Performance/Profiler Panels** | `components/studio/performance-panel.tsx`, `components/studio/profiler-panel.tsx` | React, SVG visualizer | FPS/frame-time telemetry and generated-PC profiling views |
+| **Visual Regression** | `components/studio/visual-regression-panel.tsx` | Node.js comparison routes | Compares GPU render output against software reference frames |
+| **Fuzz Lab** | `components/studio/test-lab-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
+| **Execution Console** | `components/studio/execution-console.tsx` | React | Live console for build and engine output |
 
 ---
 
@@ -55,7 +54,7 @@ The existing prototype UI is located under [`interface/`](../interface/):
 
 ## 4. Functions That Must Be Preserved During Migration
 
-The web UI was created to give developers deep visibility into the recompiler. The following capabilities are the **parity target** for a native "Studio Tools" surface and headless CLI tools; this document does not claim that parity is complete:
+The web UI was created to give developers deep visibility into the recompiler. The following capabilities are the **parity target** for a native "Studio Tools" surface and headless CLI tools; this document does not claim that parity is complete. Only the game-input inspection part of item 1 has a native counterpart today, via the wizard's bounded ISO staging:
 
 1. **Preflight Diagnostics:** Validating Vulkan drivers, system specs, and game inputs.
 2. **Recompiler Task Execution:** Live build/compile triggers with streaming log feedback.
@@ -68,6 +67,8 @@ The web UI was created to give developers deep visibility into the recompiler. T
 ---
 
 ## 5. Phased Migration Plan
+
+The plan below records the target sequence. The wizard and bounded ISO/XB staging landed in PR #202, so the preparation slice of Phase 2 has a source-owned implementation; the native file-picker window, in-engine overlay, full parity, and web retirement remain unbuilt.
 
 ```mermaid
 graph TD
@@ -97,10 +98,12 @@ graph TD
 
 * The current source owns a native player and core slice for ISO inspection,
   title-catalog lookup, launch planning, and isolated child-process startup.
-* The web **Player Mode** (`launcher-panel.tsx`) remains a prototype of the
-  streamlined end-user flow.
-* Transactional preparation, module decryption, and end-user AOT generation
-  are not connected; they must not be inferred from this phase label.
+* The streamlined end-user flow runs in the native player's setup wizard
+  (`VIEW_SETUP_WIZARD` in `src/player/player_state.h`), not in the web
+  prototype; the web tree has no player panel today.
+* Transactional staging for supported inputs landed with the wizard (PR #202);
+  module decryption and end-user AOT generation remain unconnected and must
+  not be inferred from this phase label.
 
 ### Phase 2: Native SDL3 Launcher & In-Engine Overlay (UNBUILT / TARGET)
 

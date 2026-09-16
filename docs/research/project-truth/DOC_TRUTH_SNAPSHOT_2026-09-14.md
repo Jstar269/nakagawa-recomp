@@ -28,12 +28,18 @@ The following claims are separate:
 | Productization architecture | maintained decision record | selected boundaries and unbuilt work are annotated |
 | Private title execution | private route | `NOT_RUN` here |
 | PSP hardware correctness | hardware route | `NOT_RUN` here |
-| Publication readiness | trusted policy and maintainer gate | not self-authorized by this snapshot |
+| Publication readiness | trusted policy and maintainer gate | not self-authorized by this snapshot; new files admit only through the trusted `admit-new-reviewed` route merged in PR #157 |
 
 ## Repository anchors
 
 - `origin/main` was fetched before the documentation branch was created. The truth-pass
-  branch starts exactly at `PUBLIC_BASE`.
+  branch starts at base `ffb9381c35e29be04e7b0d0399ab9913277d3aa5`, which already
+  contained the merged first-time setup wizard and clean-room XB staging (PR #202), so
+  it is a later public commit than `PUBLIC_BASE`.
+- This snapshot was captured from `PUBLIC_BASE` before PR #202 landed, so its native
+  player claims describe the pre-wizard slice and are superseded on this branch. The
+  wizard's bounded ISO/XB staging exists here; module decryption, end-user AOT
+  generation, and full retail preparation remain unbuilt.
 - GitHub reported PR #199 merged and no open pull requests at the capture. The repository
   wiki is disabled. These are live-state observations, not permanent document facts.
 - The earlier `buffy/project-truth-snapshot-155` branch was inspected as a dated
@@ -41,8 +47,9 @@ The following claims are separate:
   cherry-picked; only its snapshot shape informed this new file.
 - The workspace debt handoff remains open: the C-1 diagnostics set is preserved in its
   dedicated worktree, 24 local branches retain unlanded content, and the remote-head
-  count needs reconciliation. See
-  [`reports/WORKSPACE_DEBT_REPORT_2026-09-14.md`](../../../reports/WORKSPACE_DEBT_REPORT_2026-09-14.md).
+  count needs reconciliation. The debt register lives in the workspace
+  `reports/WORKSPACE_DEBT_REPORT_2026-09-14.md` outside this public tree, so no in-tree
+  link is offered here.
 
 ## Native player: what exists
 
@@ -98,7 +105,8 @@ evidence land.
 
 ## Open controls that qualify this snapshot
 
-The dated registers remain the owners of their namespaces and are unchanged:
+The dated registers remain the owners of their namespaces and are unchanged. They live
+outside the public tree; the paths below are workspace-side names, not links:
 
 - `reports/SECURITY_AUDIT_2026-09-13.md` owns `S-`, including hosted trust posture,
   credential-store disposition, history-gate hygiene, loopback exposure, npm policy,
@@ -114,7 +122,7 @@ hosted, or hardware evidence remains `BLOCKED`, `NOT_RUN`, or open as appropriat
 
 ## Verification boundary
 
-At this branch boundary:
+At the capture boundary (`PUBLIC_BASE`, before the branch existed):
 
 ```text
 git rev-parse HEAD
@@ -125,5 +133,8 @@ exit 2: No rule to make target 'help'
 ```
 
 Documentation and policy gates run after the edits are complete. A new snapshot path
-requires external trusted admission; the candidate-controlled ledger, export, or a
+requires external trusted admission through the `admit-new-reviewed` route of
+`tools/provenance_ledger.py` (merged in PR #157; first production use was PR #154's
+reviewed competitive snapshots), run against the trusted private ledger with exact
+path/hash authority for this file. The candidate-controlled ledger, export, or a
 stranded policy patch cannot authorize this file.
