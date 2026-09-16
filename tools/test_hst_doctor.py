@@ -25,6 +25,19 @@ import hst_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
 
+# Phase 3 (#196): nk_doctor_checks is the canonical module. Tests that use
+# mock.patch.object to patch internal helpers must target nk_doctor_checks
+# (where the functions are actually defined), not hst_doctor_checks (the
+# forwarding wrapper). Import nk_doctor_checks for use in those patches.
+try:
+    import nk_doctor_checks as _nk_checks  # noqa: E402
+    import nk_doctor_core as _nk_core  # noqa: E402
+    _CHECKS_MODULE = _nk_checks  # canonical target for mock.patch.object
+except ImportError:
+    _nk_checks = None
+    _nk_core = None
+    _CHECKS_MODULE = hst_doctor_checks  # fallback if nk_* not yet present
+
 
 class ElfValidationTests(unittest.TestCase):
     def test_valid_mips_elf(self) -> None:
@@ -355,24 +368,24 @@ class EnvironmentContractTests(unittest.TestCase):
     def test_powerShell_accepts_current_core_line(self) -> None:
         for version in ("7.6.4", "7.6.5", "7.7.0"):
             with self.subTest(version=version), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(Path("pwsh"), "Core", version, None),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
-                hst_doctor_checks.check_powershell(report)
+                _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "PASS")
 
     def test_powerShell_accepts_future_major_core(self) -> None:
         for version in ("8.0.0", "8.1.2", "9.0.0"):
             with self.subTest(version=version), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(Path("pwsh"), "Core", version, None),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
-                hst_doctor_checks.check_powershell(report)
+                _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "PASS")
 
@@ -386,12 +399,12 @@ class EnvironmentContractTests(unittest.TestCase):
             ("Core", "6.2.0"),
         ):
             with self.subTest(edition=edition, version=version), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(Path("pwsh"), edition, version, None),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
-                hst_doctor_checks.check_powershell(report)
+                _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "FAIL")
 
@@ -405,12 +418,12 @@ class EnvironmentContractTests(unittest.TestCase):
         )
         for executable, edition, version, error in cases:
             with self.subTest(executable=executable, edition=edition, version=version, error=error), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(executable, edition, version, error),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
-                hst_doctor_checks.check_powershell(report)
+                _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "FAIL")
 
@@ -424,9 +437,9 @@ class EnvironmentContractTests(unittest.TestCase):
         powershell_path = Path("pwsh")
         for build, product_type, expected in cases:
             with self.subTest(build=build, product_type=product_type), mock.patch.object(
-                hst_doctor_checks.os, "name", "nt"
+                _CHECKS_MODULE.os, "name", "nt"
             ), mock.patch.object(
-                hst_doctor_checks.sys,
+                _CHECKS_MODULE.sys,
                 "getwindowsversion",
                 return_value=type(
                     "WindowsVersion", (tuple,), {
@@ -438,12 +451,12 @@ class EnvironmentContractTests(unittest.TestCase):
                 )((10, 0, build, 2, "")),
                 create=True,
             ), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(powershell_path, "Core", "7.6.4", None),
             ):
                 report = hst_doctor.Report(report_root, "build")
-                hst_doctor_checks.check_platform(report)
+                _CHECKS_MODULE.check_platform(report)
                 result = next(item for item in report.results if item.code == "HOST_WINDOWS_11")
                 self.assertEqual(result.status, expected)
 
@@ -462,8 +475,8 @@ class EnvironmentContractTests(unittest.TestCase):
             os.utime(source, (newer, newer))
 
             report = hst_doctor.Report(root, "build")
-            with mock.patch.object(hst_doctor_checks, "_find_executable") as find_executable:
-                hst_doctor_checks.check_shader_provenance(report, root, None)
+            with mock.patch.object(_CHECKS_MODULE, "_find_executable") as find_executable:
+                _CHECKS_MODULE.check_shader_provenance(report, root, None)
             result = next(item for item in report.results if item.code == "GLSLC")
             self.assertEqual(result.status, "INFO")
             self.assertEqual(
@@ -485,8 +498,8 @@ class EnvironmentContractTests(unittest.TestCase):
             source.write_text(source.read_text(encoding="utf-8") + "\n// stale test\n", encoding="utf-8")
 
             report = hst_doctor.Report(root, "build")
-            with mock.patch.object(hst_doctor_checks, "_find_executable", return_value=None):
-                hst_doctor_checks.check_shader_provenance(report, root, None)
+            with mock.patch.object(_CHECKS_MODULE, "_find_executable", return_value=None):
+                _CHECKS_MODULE.check_shader_provenance(report, root, None)
             provenance = next(item for item in report.results if item.code == "SHADER_PROVENANCE")
             glslc = next(item for item in report.results if item.code == "GLSLC")
             self.assertEqual(provenance.status, "FAIL")
@@ -496,13 +509,16 @@ class EnvironmentContractTests(unittest.TestCase):
 
 class SimpleFrontEndTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.frontend = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        # Phase 3 (#196): nk.ps1 is the canonical frontend; hst.ps1 is a forwarding wrapper.
+        nk_frontend = ROOT / "nk.ps1"
+        hst_frontend = ROOT / "hst.ps1"
+        self.frontend = nk_frontend.read_text(encoding="utf-8-sig") if nk_frontend.exists() else hst_frontend.read_text(encoding="utf-8-sig")
         self.manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8-sig")
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
     def test_frontend_exposes_small_supported_surface(self) -> None:
         for script in (
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "nk.ps1",
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
             ROOT / "nk_manager.ps1",
@@ -553,9 +569,11 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "copy_build_assets.ps1",
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
+            ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "hst_run_support.ps1",
             ROOT / "tools" / "hst_safety.ps1",
+            ROOT / "tools" / "nk_safety.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
             ROOT / "tools" / "title_manager_plan.ps1",
