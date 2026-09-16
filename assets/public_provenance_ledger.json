@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ee64c070e1ad7a0999746bba7eab0786fad58f2a34e01fc8c2036f69e05293b4"
+      "sha256": "b2d36ab9fd3308bd4cd745bc9a4c655f8be31eed46943368e8d0aee72bd8b773"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -7672,10 +7672,13 @@
     },
     {
       "path": "tools/test_build_graph_snapshot.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c210f7561d8b520d40431dc7e64de47dcf5e6c48a84e3d75a667fec02f17ee4e"
     },
@@ -8083,10 +8086,13 @@
     },
     {
       "path": "tools/test_hardware_runner_protocol.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hardware-oracle-toolchain",
+        "evidence_tier": "H",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "972752bd9aec66c2b7a8d56afbf1fecced21b46e588d8f12113028cb60219ebe"
     },
@@ -8407,10 +8413,13 @@
     },
     {
       "path": "tools/test_portability_inventory.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3db58eaab49792f092978b3fa00a0753b5e37e82bf92c7f9332eb78c565e2712"
     },
