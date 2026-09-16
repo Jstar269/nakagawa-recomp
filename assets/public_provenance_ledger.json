@@ -5606,7 +5606,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "16869ba6e538631b28cbbbf42acd36387200eb5ad69f0c09e720741f9f6622a1"
+      "sha256": "0c6875d3b97e0d0bb9455cc45ec5619c84513d87a996c488c7522d9c9b69a29b"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -5882,7 +5882,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "d212062c52cea3bf5c0041f009034607a79ba790f560d669bb1b7db0dda0176e"
+      "sha256": "3c764fd84dea04fb75e39f8ce5806147697df5f6ab1c82c88085808ed527968c"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6956,7 +6956,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "47b9eb3ee120e568a0940b718853857a16bfdc146f49ae6d662782af9b31ffdc"
+      "sha256": "0a9eb9d17920f7f1cc2e26ea3fc39b355bfc632d23002e10774d72dc3ea91312"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -7701,7 +7701,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "3b8ce7f995637f6a60d1080c1693b4cdd5475594c3764f911aef3b5edd64690c"
+      "sha256": "ed0d93447f153e64bcba3007efc3f51859daab6f5ab5f813452acb452c140b5b"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -8307,7 +8307,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7a73dbfae9abe2efd0f2bb058cdf77632772be86998554a256d4deba179187a"
+      "sha256": "4c28b8c147f44085ef6976570f3f2702cbffcda9a956ced725c7396c33f02a9c"
     },
     {
       "path": "tools/test_modified_file_notice_audit.py",
