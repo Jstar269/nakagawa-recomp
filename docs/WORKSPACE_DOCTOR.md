@@ -148,8 +148,8 @@ Before implementing those commands, the project should complete the following in
 1. parse the ISO's `PARAM.SFO` and bind the disc ID/version to every derived input;
 2. test current decrypters against the exact three game PRXs and record a versioned compatibility
    matrix rather than relying on generic tool claims;
-3. pin `libxb` and make extraction containment, interruption recovery, and completeness
-   machine-verifiable;
+3. make extraction interruption recovery and completeness machine-verifiable (containment and
+   decode budgets are now repository-owned; `libxb` is no longer an extraction dependency);
 4. determine whether a direct XB virtual filesystem can remove the expanded asset tree entirely;
 5. separate build-time dependencies from the files required only to run a completed local build;
 6. unify the flattened `fs/` and hierarchical `memstick/` mappings under one safe Memory Stick root.
