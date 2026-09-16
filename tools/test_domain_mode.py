@@ -166,8 +166,10 @@ class MakefileWiringTests(unittest.TestCase):
         self.assertIn("$(BUILD_DIR)/domain_mode_selftest.exe", recipe)
 
     def test_domain_mode_selftest_is_phony(self):
-        phony = [line for line in MAKEFILE.splitlines() if line.startswith(".PHONY:")]
-        self.assertTrue(any("domain-mode-selftest" in line for line in phony))
+        block = re.search(r"(?ms)^PUBLIC_TARGETS := \\\n(.*?)(?=^INTERNAL_TARGETS :=)", MAKEFILE)
+        self.assertIsNotNone(block)
+        self.assertIn("domain-mode-selftest", block.group(1).split())
+        self.assertIn(".PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)", MAKEFILE)
 
     def test_runtime_source_lists_carry_domain_mode(self):
         for var in ("RT_SRCS", "PORTABLE_CORE_SRCS"):
