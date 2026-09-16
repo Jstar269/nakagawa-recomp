@@ -68,6 +68,7 @@ class HstManagerManifestTests(unittest.TestCase):
         tools_dir = self.root / "tools"
         tools_dir.mkdir(exist_ok=True)
         for helper in (
+            "nk_safety.ps1",
             "hst_safety.ps1",
             "hst_run_support.ps1",
             "vulkan_sdk.ps1",
