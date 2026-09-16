@@ -7828,8 +7828,8 @@ static void test_td23_guest_pointer_validation(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;          /* NULL name pointer */
     cpu.r[7] = 64u;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
-           "CreateMsgPipe rejects NULL name pointer");
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == 0x80020190u,
+           "CreateMsgPipe rejects NULL name pointer with NO_MEMORY");
 
     /* 2. Unterminated string rejected (not truncated and accepted) */
     const uint32_t unterminated_buf = 0x08050000u;

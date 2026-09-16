@@ -9782,6 +9782,11 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
      * outside the modeled range.  Both fail before malloc, before a UID is
      * handed out, and before a slot is reserved, so a rejected create leaves
      * no observable state behind. */
+    /* A NULL name is rejected first with NO_MEMORY, matching PPSSPP's
+     * sceKernelCreateMsgPipe (emulator consensus, not measured here). A non-NULL
+     * name that is unmapped or unterminated fails closed with ILLEGAL_ADDR
+     * (project choice) instead of silently becoming "". */
+    if (!A0) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
     if (A3 == 0 || A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
     char name[32];
     if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
