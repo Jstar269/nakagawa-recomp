@@ -175,6 +175,8 @@ static void reset_sched(void) {
     s_servicing_interrupts = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
+    s_vbl_count = 0;
+    s_vbl_last_us = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     g_test_vblank_delivered = 0;
@@ -1901,6 +1903,318 @@ static void test_expired_timed_wait_enters_strict_priority(void) {
 
 /* ---- main -------------------------------------------------------------------------- */
 
+/* ---- PSP display-wait semantics -----------------------------------------------------
+ *
+ * Every assertion below is pinned to a hardware record measured on
+ * PSP-3001/6.61-ARK by fixtures/psp_oracle/probe.c:
+ *
+ *   PSP-DISPLAY-002 `display-wait-late`      -- late-call behaviour, both NIDs
+ *   PSP-DISPLAY-003 `display-wait-priority`  -- readiness dependence, strict priority
+ *   PSP-DISPLAY-004 `display-vblank-window`  -- where the interval sits and how wide
+ *
+ * These execute the production functions. The superseded design shipped with a
+ * scheduler change that all three suites passed identically when fully reverted;
+ * each test here is written so that restoring a specific piece of that design
+ * makes it fail. The mutants are listed in the block comment above each test. */
+
+/* Guest body: performs exactly one sceDisplayWaitVblankStart-shaped wait. */
+static int g_dw_body_calls;
+static int g_dw_body_returned;
+static void dw_body_wait_start(CpuState *s) {
+    (void)s;
+    g_dw_body_calls++;
+    sched_wait_vblank_start();
+    g_dw_body_returned++;
+    /* Returning is the thread's clean exit; coro_body does the bookkeeping. */
+}
+
+/* A) sceDisplayWaitVblankStart always blocks -- there is no missed-edge latch.
+ *
+ * Hardware (PSP-DISPLAY-002): at 2/8, 6/8, 10/8, 14/8 and 20/8 of a period after
+ * the last edge, 240/240 trials blocked and advanced VCOUNT by exactly 1. A late
+ * caller is never handed a remembered edge, not even when two whole edges passed.
+ *
+ * MUTANT: restore the vbl_seen fast return
+ *   (`if (t->vbl_seen != s_vbl_count) { t->vbl_seen = s_vbl_count; return; }`)
+ *   -- the thread returns RUNNING instead of parking, and this fails. */
+static void test_waitvblankstart_always_blocks(void) {
+    reset_sched();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_test_body = dw_body_wait_start;
+
+    /* Arrange the exact state the old latch treated as "an edge is owed me":
+     * edges have been delivered and this thread has consumed none of them --
+     * and place the caller well OUTSIDE the vblank interval so this is a pure
+     * late-call, with no in-vblank fast return available to either NID. */
+    s_vbl_count = 9;
+    s_vbl_last_us = 1000u;
+    s_vtime_us = 1000u + 4u * SCHED_DISPLAY_VBLANK_WINDOW_US;
+    expect(!sched_display_is_vblank(), "the late caller is outside the vblank interval");
+
+    uint32_t uid = sched_create_thread(0x3000u, 32, 0);
+    int idx = index_of_uid(uid);
+    expect(idx >= 0, "display-wait fixture thread created");
+    sched_start_thread(uid, 0, 0);
+    run_one_slice(idx);
+
+    expect(g_dw_body_calls == 1, "the fixture body issued exactly one display wait");
+    expect(g_dw_body_returned == 0,
+           "sceDisplayWaitVblankStart did not return without an edge");
+    expect(s_tcb[idx].state == TH_WAIT_OBJ,
+           "a late sceDisplayWaitVblankStart blocks rather than consuming a missed edge");
+    expect(s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+           "the blocked caller is parked on the VBLANK object");
+    expect(s_tcb[idx].wake == SCHED_WAIT_FOREVER,
+           "a display wait carries no deadline: only a delivered edge releases it");
+
+    /* And a delivered edge is what releases it. */
+    deliver_vblank();
+    expect(s_tcb[idx].state == TH_READY,
+           "the delivered VBLANK readies the waiter");
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 1, "the waiter resumed after the edge");
+}
+
+/* B) The in-vblank fast return belongs to sceDisplayWaitVblank alone.
+ *
+ * Hardware (PSP-DISPLAY-002 `invblank-*`): inside the interval,
+ * sceDisplayWaitVblank returned in 3..5 us with value 1 on 48/48 trials, while
+ * sceDisplayWaitVblankStart waited a full 16.669..16.693 ms period and returned 0.
+ * Outside the interval the two are indistinguishable.
+ *
+ * MUTANT: give WaitVblankStart the same fast return, or take it away from
+ *   WaitVblank -- either direction fails a cell here. */
+static void test_display_wait_nid_split(void) {
+    reset_sched();
+    /* Inside the interval. */
+    s_vbl_count = 1;
+    s_vbl_last_us = 1000u;
+    s_vtime_us = 1000u;
+    expect(sched_display_is_vblank(), "fixture is inside the vblank interval");
+
+    TCB *t = &s_tcb[mk(0x300u, TH_RUNNING, 32)];
+    s_cur = (int)(t - s_tcb);
+    expect(sched_wait_vblank() == 1,
+           "sceDisplayWaitVblank returns 1 without blocking inside the interval");
+    expect(t->state == TH_RUNNING,
+           "the in-vblank fast return does not park the caller");
+    expect(t->wait_obj == 0u, "the in-vblank fast return touches no wait object");
+
+    /* The same interval, the other NID: hardware waited a FULL period here
+     * (PSP-DISPLAY-002 `invblank-waitvblankstart`, 48/48 blocked). The fast
+     * return belongs to sceDisplayWaitVblank alone. */
+    t->state = TH_RUNNING;
+    t->wait_obj = 0u;
+    t->wake = SCHED_WAIT_FOREVER;
+    expect(sched_display_is_vblank(), "still inside the vblank interval");
+    sched_wait_vblank_start();
+    expect(t->state == TH_WAIT_OBJ && t->wait_obj == VBLANK_WAIT_OBJ,
+           "sceDisplayWaitVblankStart blocks even from inside the vblank interval");
+
+    /* Outside the interval sceDisplayWaitVblank must block like Start does. */
+    reset_sched();
+    s_vbl_count = 1;
+    s_vbl_last_us = 1000u;
+    s_vtime_us = 1000u + SCHED_DISPLAY_VBLANK_WINDOW_US;
+    expect(!sched_display_is_vblank(), "fixture has left the vblank interval");
+    TCB *o = &s_tcb[mk(0x301u, TH_RUNNING, 32)];
+    s_cur = (int)(o - s_tcb);
+    expect(sched_wait_vblank() == 0,
+           "sceDisplayWaitVblank blocks and returns 0 outside the interval");
+    expect(o->state == TH_WAIT_OBJ && o->wait_obj == VBLANK_WAIT_OBJ,
+           "the blocked sceDisplayWaitVblank parked on the VBLANK object");
+}
+
+/* C) READY-thread independence -- the assertion that kills the rejected design.
+ *
+ * Hardware (PSP-DISPLAY-003): control vs experiment differed by 2 us of wall time
+ * over 2.006 s and by 220 us of summed wait over 120 waits, with identical
+ * VCOUNT progression (120 both) and identical maximum wait. The syscall does not
+ * consult the ready queue.
+ *
+ * MUTANT: restore
+ *   `for (i) if (i != s_cur && s_tcb[i].state == TH_READY) any_other_ready = 1;`
+ *   and gate the return on it -- the two halves of this test diverge and it fails. */
+static void test_display_wait_ignores_other_ready_threads(void) {
+    /* Identical caller, identical display state, run twice: once alone, once
+     * with an unrelated READY peer of each relative priority. */
+    int state_alone, obj_alone, ret_alone;
+    int state_peer,  obj_peer,  ret_peer;
+
+    reset_sched();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_test_body = dw_body_wait_start;
+    s_vbl_count = 9;
+    uint32_t a = sched_create_thread(0x3100u, 32, 0);
+    int ia = index_of_uid(a);
+    sched_start_thread(a, 0, 0);
+    run_one_slice(ia);
+    state_alone = s_tcb[ia].state;
+    obj_alone   = (int)s_tcb[ia].wait_obj;
+    ret_alone   = g_dw_body_returned;
+
+    reset_sched();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_test_body = dw_body_wait_start;
+    s_vbl_count = 9;
+    uint32_t b = sched_create_thread(0x3100u, 32, 0);
+    int ib = index_of_uid(b);
+    /* Unrelated always-READY peers, one weaker and one stronger than the caller.
+     * Neither is anything the display syscall is entitled to notice. */
+    mk(0x3101u, TH_READY, 80);
+    mk(0x3102u, TH_READY, 16);
+    sched_start_thread(b, 0, 0);
+    run_one_slice(ib);
+    state_peer = s_tcb[ib].state;
+    obj_peer   = (int)s_tcb[ib].wait_obj;
+    ret_peer   = g_dw_body_returned;
+
+    expect(state_alone == state_peer,
+           "display wait reaches the same thread state whether or not other threads are READY");
+    expect(obj_alone == obj_peer,
+           "display wait parks on the same object whether or not other threads are READY");
+    expect(ret_alone == ret_peer,
+           "display wait returns the same way whether or not other threads are READY");
+    expect(state_peer == TH_WAIT_OBJ,
+           "the caller blocked because the syscall blocks, not because a peer was READY");
+}
+
+/* B') Strict priority is preserved: the weaker thread runs because the stronger
+ * one is genuinely blocked in the syscall, never because of a fairness rule.
+ *
+ * Hardware (PSP-DISPLAY-003): the low-priority peer accumulated 23,472,701 of its
+ * 23,650,375 increments (99.25%) inside the display-wait window, and EXACTLY ZERO
+ * during the high-priority thread's pure-CPU spin segments (0 of 120 iterations
+ * showed any progress there). Blocked hands over; runnable never does.
+ *
+ * MUTANT: reintroduce any aging/rotation in pick_next -- the "never selected
+ *   while the stronger thread is runnable" half fails. */
+static void test_display_wait_hands_over_only_while_blocked(void) {
+    reset_sched();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_test_body = dw_body_wait_start;
+    s_vbl_count = 9;
+
+    uint32_t hi = sched_create_thread(0x3200u, 32, 0);
+    int ihi = index_of_uid(hi);
+    int ilo = mk(0x3201u, TH_READY, 80);   /* weaker, always runnable */
+    sched_start_thread(hi, 0, 0);
+
+    /* While the stronger thread is merely READY, the weaker one is never chosen. */
+    for (int i = 0; i < 200; i++)
+        expect(pick_next() == ihi,
+               "a runnable stronger thread starves the weaker one -- no aging");
+
+    /* Once it actually blocks in the display wait, the weaker thread is next. */
+    run_one_slice(ihi);
+    expect(s_tcb[ihi].state == TH_WAIT_OBJ, "the stronger thread blocked in the display wait");
+    expect(pick_next() == ilo,
+           "the weaker thread runs only because the display wait genuinely blocked");
+}
+
+/* D) A VBLANK-only wait set is not a deadlock: the source is runtime-owned.
+ *
+ * MUTANT: restore `if (soonest == (uint64_t)-1) { report; break; }` -- the
+ *   unwakeable verdict becomes true here and this fails. */
+static void test_vblank_only_wait_is_not_deadlock(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0);
+    TCB *t = &s_tcb[mk(0x3300u, TH_WAIT_OBJ, 32)];
+    t->wait_obj = VBLANK_WAIT_OBJ;
+    t->wake = SCHED_WAIT_FOREVER;
+
+    SchedIdleState st = sched_classify_idle();
+    expect(st.waiting_on_vblank, "the VBLANK waiter is seen");
+    expect(st.soonest == SCHED_WAIT_FOREVER, "no finite deadline exists");
+    expect(st.vblank_can_wake, "the runtime can still produce and deliver the edge");
+    expect(!st.unwakeable,
+           "a VBLANK-only wait set is not classified as deadlocked");
+}
+
+/* E) ...but only while the event is actually producible AND serviceable.
+ *
+ * MUTANT: restore 7a4fafc's `waiting_on_vblank` test, which asked only whether a
+ *   thread was parked on the object -- both halves here fail, and the runtime
+ *   spins at ~60 Hz forever instead of reporting. */
+static void test_unwakeable_vblank_states_are_reported(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0);
+    TCB *t = &s_tcb[mk(0x3400u, TH_WAIT_OBJ, 32)];
+    t->wait_obj = VBLANK_WAIT_OBJ;
+    t->wake = SCHED_WAIT_FOREVER;
+
+    /* Delivery half: interrupts disabled means scheduler_service_pending is a
+     * no-op, so a raised source is never turned into a wake. */
+    s_interrupts_enabled = 0;
+    SchedIdleState st = sched_classify_idle();
+    expect(!st.vblank_can_wake, "a masked VBLANK cannot wake its waiter");
+    expect(st.unwakeable,
+           "interrupts disabled with only VBLANK waiters is reported, not spun on");
+    s_interrupts_enabled = 1;
+
+    /* Production half: a saturated source deadline raises nothing further. */
+    s_vbl_next_us = UINT64_MAX;
+    st = sched_classify_idle();
+    expect(!st.vblank_can_wake, "a saturated source deadline produces no further edges");
+    expect(st.unwakeable,
+           "a saturated VBLANK source with only VBLANK waiters is reported, not spun on");
+
+    /* Restoring both halves makes it wakeable again. */
+    s_vbl_next_us = 0;
+    st = sched_classify_idle();
+    expect(st.vblank_can_wake && !st.unwakeable,
+           "a live source with interrupts enabled is wakeable again");
+
+    /* A finite deadline elsewhere keeps the set wakeable regardless. */
+    s_interrupts_enabled = 0;
+    s_vbl_next_us = UINT64_MAX;
+    TCB *d = &s_tcb[mk(0x3401u, TH_WAIT_DELAY, 32)];
+    d->wake = 5000u;
+    st = sched_classify_idle();
+    expect(!st.unwakeable, "a finite deadline still makes the set wakeable");
+    s_interrupts_enabled = 1;
+}
+
+/* F) Turbo: advancing virtual time to the source boundary must LATCH and SERVICE
+ * the event, and the saturation sentinel must never satisfy a display wait.
+ *
+ * MUTANT: restore 7a4fafc's `if (soonest == -1 && waiting_on_vblank) soonest =
+ *   s_vbl_next_us;` -- it moves the clock and nothing else, so the waiter stays
+ *   parked and the first half fails. Remove the SCHED_WAIT_FOREVER guard from
+ *   sched_promote_expired_waits and the second half fails. */
+static void test_turbo_vblank_latches_and_services(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0);          /* turbo */
+    g_test_vblank_handler = 0;
+    TCB *t = &s_tcb[mk(0x3500u, TH_WAIT_OBJ, 32)];
+    t->wait_obj = VBLANK_WAIT_OBJ;
+    t->wake = SCHED_WAIT_FOREVER;
+
+    s_vbl_next_us = 20000u;
+    s_vtime_us = 0;
+    expect(pick_next() < 0, "nothing is runnable before the source fires");
+
+    /* Drive the production helper, not a local re-implementation of it. */
+    sched_turbo_advance_to_vblank();
+    expect(g_test_vblank_delivered >= 1u,
+           "advancing virtual time to the boundary actually delivers the VBLANK");
+    expect(t->state == TH_READY,
+           "the delivered VBLANK readies the waiter in turbo mode");
+
+    /* The clock alone must never do it. An infinite wait has no deadline, so even
+     * a saturated clock cannot expire it. */
+    reset_sched();
+    TCB *u = &s_tcb[mk(0x3501u, TH_WAIT_OBJ, 32)];
+    u->wait_obj = VBLANK_WAIT_OBJ;
+    u->wake = SCHED_WAIT_FOREVER;
+    s_vtime_us = UINT64_MAX;
+    sched_promote_expired_waits();
+    expect(u->state == TH_WAIT_OBJ,
+           "a saturated virtual clock never satisfies a display wait");
+    expect(pick_next() < 0,
+           "a saturated virtual clock readies no thread");
+}
+
 int main(void) {
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) {
@@ -1963,6 +2277,15 @@ int main(void) {
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
     test_expired_timed_wait_enters_strict_priority();
+
+    /* PSP display-wait semantics (hardware-pinned; see the block above these). */
+    test_waitvblankstart_always_blocks();
+    test_display_wait_nid_split();
+    test_display_wait_ignores_other_ready_threads();
+    test_display_wait_hands_over_only_while_blocked();
+    test_vblank_only_wait_is_not_deadlock();
+    test_unwakeable_vblank_states_are_reported();
+    test_turbo_vblank_latches_and_services();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);

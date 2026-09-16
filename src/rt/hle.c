@@ -5032,12 +5032,10 @@ static int hle_fd_is_std(uint32_t fd) {
 }
 typedef struct {
     int used;
-    int backend;                 /* 0 = ISO9660, 1 = hierarchical host storage */
+    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
     uint32_t index;
+    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
     char *path;
-    HANDLE find;
-    WIN32_FIND_DATAW data;
-    int first;
 } DirFd;
 static DirFd s_dirfds[32];
 
@@ -5503,10 +5501,12 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
     for (size_t i = first; i < s_data_index.count &&
                            strcmp(s_data_index.entries[i].key, key) == 0; i++) {
         const SrAssetIndexEntry *candidate = &s_data_index.entries[i];
-        if (wanted_variant >= 0) {
-            if (candidate->variant == wanted_variant) { chosen = candidate; break; }
-        } else if (!chosen || candidate->variant == -1 ||
-                   (chosen->variant != -1 && candidate->variant < chosen->variant)) {
+        /* Same selection rule enumeration uses, so a name sceIoDread reported
+         * is a name sceIoOpen resolves under the identical variant. */
+        if (!sr_asset_index_variant_selected(candidate->variant, wanted_variant)) continue;
+        if (wanted_variant >= 0) { chosen = candidate; break; }
+        if (!chosen || candidate->variant == -1 ||
+            (chosen->variant != -1 && candidate->variant < chosen->variant)) {
             chosen = candidate;
         }
     }
@@ -5926,8 +5926,129 @@ static uint32_t h_IoClose(CpuState *s) {
     return 0;
 }
 
+/* Classify the initial FindFirstFileW result for an existing, contained host
+ * directory.  An empty directory reports ERROR_FILE_NOT_FOUND for the `*`
+ * pattern and is still an existing directory; every other initial failure is
+ * an incomplete listing and must stay fail-closed. */
+static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) {
+    if (found) *found = 0;
+    if (error == ERROR_FILE_NOT_FOUND) {
+        if (found) *found = 1;
+        return 0;
+    }
+    return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+}
+
+/* Merge the writable host overlay's children for `guest_path` into `list`.
+ *
+ * `*found` reports whether the overlay actually has this directory; the return
+ * value is 0 on success or a PSP error when the overlay has the directory but
+ * it cannot be enumerated safely.  Containment stays fail-closed AND loud: a
+ * host directory whose final path resolves outside SR_FSDIR's canonical root
+ * is refused here and the refusal is the caller's answer, so a planted
+ * junction can never be quietly papered over by the index leg.
+ *
+ * A single child the guest namespace cannot represent (an overlong name, or a
+ * size the guest's 32-bit stat field cannot carry) is skipped and counted, not
+ * escalated: one malformed entry must not destroy an otherwise-valid
+ * directory.  A truncated enumeration IS escalated, because a short listing
+ * the guest believes is complete is a correctness failure. */
+static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list, int *found) {
+    *found = 0;
+    char *hp = host_dir_path_alloc(guest_path);
+    if (!hp) return 0;
+    wchar_t *root = NULL;
+    wchar_t *pattern = NULL;
+    uint32_t rc = 0;
+    if (sr_wide_path_alloc(hp, &root) && sr_wide_join_alloc(root, L"*", &pattern)) {
+#ifdef _WIN32
+        char *configured_fs = NULL;
+        int configured_fs_present = 0;
+        sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
+        const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
+        wchar_t canonical_fs[MAX_PATH * 2];
+        int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
+                                          sizeof(canonical_fs) / sizeof(wchar_t));
+        free(configured_fs);
+
+        HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h_dir != INVALID_HANDLE_VALUE) {
+            int contained = fs_ok && sr_vfs_handle_is_contained(h_dir, canonical_fs);
+            CloseHandle(h_dir);
+            if (!contained) {
+                fprintf(stderr,
+                        "sceIoDopen: refusing '%s': host directory resolves outside the "
+                        "configured VFS root\n", guest_path);
+                fflush(stderr);
+                rc = 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+            } else {
+                WIN32_FIND_DATAW fd;
+                HANDLE h_find = FindFirstFileW(pattern, &fd);
+                if (h_find != INVALID_HANDLE_VALUE) {
+                    *found = 1;
+                    BOOL more = TRUE;
+                    while (more && rc == 0) {
+                        int dot = fd.cFileName[0] == L'.' &&
+                                  (fd.cFileName[1] == L'\0' ||
+                                   (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'));
+                        if (!dot) {
+                            int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                            char *child = NULL;
+                            if (!sr_wide_to_utf8_alloc(fd.cFileName, &child)) {
+                                fprintf(stderr,
+                                        "sceIoDopen: host child name is not convertible in '%s'; "
+                                        "skipping one entry\n", guest_path);
+                                list->skipped++;
+                            } else if (!is_dir && fd.nFileSizeHigh != 0u) {
+                                fprintf(stderr,
+                                        "sceIoDopen: host file '%s' exceeds the guest size limit; "
+                                        "skipping one entry\n", child);
+                                list->skipped++;
+                                free(child);
+                            } else {
+                                if (!sr_vfs_dirlist_merge(list, child, is_dir,
+                                                          is_dir ? 0u : (uint64_t)fd.nFileSizeLow))
+                                    rc = 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                                free(child);
+                            }
+                        }
+                        if (rc == 0) more = FindNextFileW(h_find, &fd);
+                    }
+                    DWORD last_err = GetLastError();
+                    FindClose(h_find);
+                    if (rc == 0 && !more && last_err != ERROR_NO_MORE_FILES) {
+                        fprintf(stderr,
+                                "sceIoDopen: host enumeration of '%s' ended early (error=%lu); "
+                                "refusing a short listing\n", guest_path, last_err);
+                        rc = 0x80010005u;
+                    }
+                } else {
+                    DWORD first_error = GetLastError();
+                    rc = vfs_overlay_initial_find_error(first_error, found);
+                    if (rc != 0) {
+                        fprintf(stderr,
+                                "sceIoDopen: initial host enumeration of '%s' failed "
+                                "(error=%lu); refusing a short listing\n",
+                                guest_path, (unsigned long)first_error);
+                    }
+                }
+            }
+        }
+#else
+        (void)list;
+#endif
+    }
+    free(pattern);
+    free(root);
+    free(hp);
+    return rc;
+}
+
 static uint32_t h_IoDopen(CpuState *s) {
     char path[512]; guest_cstr(A0, path, sizeof(path));
+    if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
     for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
         if (!s_dirfds[i].used) {
             DirFd *d = &s_dirfds[i];
@@ -5935,57 +6056,103 @@ static uint32_t h_IoDopen(CpuState *s) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            if (_strnicmp(path, "disc0:", 6) == 0 || _strnicmp(path, "umd:", 4) == 0) {
-                IsoDirEntry probe;
-                if (iso_list(path, 0, &probe) < 0) {
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
-                }
-                d->backend = 0;
-            } else {
-                char *hp = host_dir_path_alloc(path);
-                wchar_t *root = NULL, *pattern = NULL;
-                if (!hp || !sr_wide_path_alloc(hp, &root) ||
-                    !sr_wide_join_alloc(root, L"*", &pattern)) {
-                    free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                    return 0x80010014u;
-                }
-#ifdef _WIN32
-                /* Generic VFS enumeration containment: the resolved host
-                 * directory must open onto an object whose FINAL path lives
-                 * under SR_FSDIR's canonical root. A pre-planted junction in
-                 * place of (or above) the enumerated directory resolves to its
-                 * target here and is refused before FindFirstFileW ever runs. */
-                {
-                    char *configured_fs = NULL;
-                    int configured_fs_present = 0;
-                    sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
-                    const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
-                    wchar_t canonical_fs[MAX_PATH * 2];
-                    int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
-                                                      sizeof(canonical_fs)/sizeof(wchar_t));
-                    free(configured_fs);
-
-                    HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
-                                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                               NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-                    if (h_dir == INVALID_HANDLE_VALUE || !fs_ok ||
-                        !sr_vfs_handle_is_contained(h_dir, canonical_fs)) {
-                        if (h_dir != INVALID_HANDLE_VALUE) CloseHandle(h_dir);
-                        free(hp); free(root); free(pattern); free(d->path); memset(d, 0, sizeof(*d));
-                        return 0x80010014u;
+            int device_path = _strnicmp(path, "disc0:", 6) == 0 ||
+                               _strnicmp(path, "umd:", 4) == 0;
+            int iso_first_result = -1;
+            IsoDirEntry iso_first = {0};
+            if (device_path) {
+                iso_first_result = iso_list(path, 0, &iso_first);
+                if (iso_first_result < 0) {
+                    uint32_t iso_lba = 0, iso_size = 0;
+                    /* A file on the ISO must not be shadowed by the extracted
+                     * directory index merely because its directory probe failed. */
+                    if (iso_lookup(path, &iso_lba, &iso_size) == 0) {
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
                     }
-                    CloseHandle(h_dir);
                 }
-#endif
-                d->find = FindFirstFileW(pattern, &d->data);
-                DWORD first_error = d->find == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-                free(hp); free(root); free(pattern);
-                if (d->find == INVALID_HANDLE_VALUE) {
-                    fprintf(stderr, "sceIoDopen: enumeration failed (error=%lu)\n", first_error);
-                    free(d->path); memset(d, 0, sizeof(*d)); return 0x80010014u;
-                }
-                d->backend = 1; d->first = 1;
             }
+            /* One guest namespace, three possible sources, materialized here
+             * so a listing the guest walks cannot change mid-walk.  An ISO
+             * directory is the source sceIoOpen resolves first; the writable
+             * overlay and then the extracted-data index fill in names the ISO
+             * does not provide.  A missing ISO directory still reaches the
+             * same overlay/index fallback below. */
+            sr_vfs_dirlist_init(&d->list);
+
+            if (iso_first_result >= 0) {
+                d->list.exists = 1;
+                for (uint32_t iso_index = 0;; iso_index++) {
+                    IsoDirEntry entry;
+                    int iso_result;
+                    if (iso_index == 0u) {
+                        entry = iso_first;
+                        iso_result = iso_first_result;
+                    } else {
+                        iso_result = iso_list(path, iso_index, &entry);
+                    }
+                    if (iso_result == 0) break;
+                    if (iso_result < 0) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+                    }
+                    if (!sr_vfs_dirlist_merge_lba(
+                            &d->list, entry.name, entry.is_dir,
+                            entry.is_dir ? 0u : (uint64_t)entry.size,
+                            entry.lba)) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                    }
+                    if (iso_index == UINT32_MAX) {
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+                    }
+                }
+            }
+
+            int overlay_found = 0;
+            uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
+            if (overlay_rc != 0) {
+                sr_vfs_dirlist_destroy(&d->list);
+                free(d->path); memset(d, 0, sizeof(*d));
+                return overlay_rc;
+            }
+            if (overlay_found) d->list.exists = 1;
+
+            int wanted_variant = -2;
+            char *norm_key = data_normalize_guest_key(path, &wanted_variant);
+            if (norm_key) {
+                if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
+                    SR_DATA_STATE_READY) {
+                    if (sr_asset_index_list_dir(&s_data_index, norm_key,
+                                                wanted_variant, &d->list) < 0) {
+                        free(norm_key);
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                    }
+                }
+                free(norm_key);
+            }
+
+            /* ABSENT and EMPTY are different answers. Only a directory no
+             * source has is a not-found; a directory that exists with no
+             * representable children opens and reads back zero entries. */
+            if (!d->list.exists) {
+                sr_vfs_dirlist_destroy(&d->list);
+                free(d->path); memset(d, 0, sizeof(*d));
+                return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
+            }
+            if (d->list.skipped != 0u) {
+                fprintf(stderr,
+                        "sceIoDopen: '%s' listing omits %zu entry/entries the guest "
+                        "namespace cannot represent\n", path, d->list.skipped);
+            }
+            sr_vfs_dirlist_sort(&d->list);
+            d->backend = 1;
             return 0x100u + i;
         }
     }
@@ -6005,34 +6172,16 @@ static uint32_t h_IoDread(CpuState *s) {
         if (r <= 0) return r < 0 ? 0x80010005u : 0;
         d->index++;
     } else {
-        for (;;) {
-            if (!d->first && !FindNextFileW(d->find, &d->data)) {
-                DWORD error = GetLastError();
-                if (error == ERROR_NO_MORE_FILES) return 0;
-                fprintf(stderr, "sceIoDread: enumeration failed (error=%lu)\n", error);
-                return 0x80010005u;
-            }
-            d->first = 0;
-            if (!(d->data.cFileName[0] == L'.' &&
-                  (d->data.cFileName[1] == L'\0' ||
-                   (d->data.cFileName[1] == L'.' && d->data.cFileName[2] == L'\0')))) break;
-        }
+        /* The listing was materialized and bounded at Dopen: every name fits
+         * e.name and every size fits the guest's 32-bit field, so this walk
+         * has no failure mode of its own and simply runs out of entries. */
+        if (d->index >= d->list.count) return 0;
+        const SrVfsDirEntry *ve = &d->list.entries[d->index++];
         memset(&e, 0, sizeof(e));
-        char *name = NULL;
-        if (!sr_wide_to_utf8_alloc(d->data.cFileName, &name)) return 0x80010005u;
-        if (strlen(name) >= sizeof(e.name)) {
-            free(name);
-            fprintf(stderr, "sceIoDread: directory entry name exceeds guest buffer\n");
-            return 0x80010005u;
-        }
-        memcpy(e.name, name, strlen(name) + 1u);
-        free(name);
-        e.is_dir = (d->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (!e.is_dir && d->data.nFileSizeHigh != 0u) {
-            fprintf(stderr, "sceIoDread: file exceeds guest size limit\n");
-            return 0x80010005u;
-        }
-        e.size = d->data.nFileSizeLow;
+        memcpy(e.name, ve->name, strlen(ve->name) + 1u);
+        e.is_dir = ve->is_dir;
+        e.size = (uint32_t)ve->size;
+        e.lba = ve->lba;
     }
     for (uint32_t i = 0; i < 0x15cu; i++) MEM_W8(de + i, 0);
     MEM_W32(de + 0x00, (e.is_dir ? 0x1000u : 0x2000u) | 0x0124u);
@@ -6048,7 +6197,7 @@ static uint32_t h_IoDclose(CpuState *s) {
     if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     DirFd *d = &s_dirfds[fd - 0x100u];
     if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    if (d->backend == 1 && d->find != NULL && d->find != INVALID_HANDLE_VALUE) FindClose(d->find);
+    if (d->backend == 1) sr_vfs_dirlist_destroy(&d->list);
     free(d->path);
     memset(d, 0, sizeof(*d)); return 0;
 }
@@ -6112,6 +6261,9 @@ uint32_t sr_hle_test_io_lseek32(CpuState *s) { return h_IoLseek32(s); }
 uint32_t sr_hle_test_io_dopen(CpuState *s) { return h_IoDopen(s); }
 uint32_t sr_hle_test_io_dread(CpuState *s) { return h_IoDread(s); }
 uint32_t sr_hle_test_io_dclose(CpuState *s) { return h_IoDclose(s); }
+uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
+    return vfs_overlay_initial_find_error(error, found);
+}
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
@@ -7075,6 +7227,26 @@ int sr_route_test_sample(uint8_t *out);
 /* sceCtrl: sticks centred. To drive past the skippable intro movie and confirmation prompts
  * without a human, pulse START/CROSS/CIRCLE for a few frames on a periodic cadence (edge presses,
  * so the game sees press+release). Disable with SR_NOINPUT for a truly neutral pad. */
+/* Sticky live-input latch for the auto-START pulse gate below. File-scope (rather than
+ * function-static) so the selftest can reset and query it; production semantics are the
+ * same either way. */
+static int s_live_input_seen = 0;
+/* One-directional evidence gate: any nonzero live key mask proves a human is driving,
+ * while a quiet frame proves nothing. Returns nonzero when the synthetic pulse must be
+ * suppressed. Reads SR_NOINPUT and gui_pad_present() on every call so hotplug and
+ * keyboard-first/gamepad-later sequences need no extra state. */
+static int ctrl_pulse_suppressed(uint32_t keys) {
+    if (keys) s_live_input_seen = 1;
+    if (getenv("SR_NOINPUT") || gui_pad_present() || s_live_input_seen) return 1;
+    return 0;
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_ctrl_test_reset_live_input(void) { s_live_input_seen = 0; }
+int sr_ctrl_test_live_input_seen(void) { return s_live_input_seen; }
+/* Exercise the exact production gate with synthetic key masks (the harness stubs
+ * gui_on()/gui_buttons() to neutral, so production keys are always 0 there). */
+int sr_ctrl_test_pulse_suppressed(uint32_t keys) { return ctrl_pulse_suppressed(keys); }
+#endif
 static uint32_t h_CtrlButtons(void) {
     /* Live keyboard (windowed mode) is OR'd with the auto-input pulse below -- in this headless
      * window environment no key is ever pressed, so without the pulse the intro movie never gets
@@ -7097,8 +7269,28 @@ static uint32_t h_CtrlButtons(void) {
     }
     /* The auto-START pulse below only exists to advance the intro/attract in headless or no-input
      * runs. When a real controller is connected the player drives input themselves, so suppress the
-     * pulse (otherwise a phantom START every few seconds would keep opening the pause menu). */
-    if (getenv("SR_NOINPUT") || gui_pad_present()) return keys;
+     * pulse (otherwise a phantom START every few seconds would keep opening the pause menu).
+     *
+     * A connected pad is not the only way a human drives this runtime: the keyboard path is
+     * equally live, and gui_pad_present() is false for it (it reports gamepad presence only;
+     * the GDI fallback sets it to 0 unconditionally while read_keys() still delivers live
+     * keyboard state, and the SDL3 path likewise ORs keyboard state into the buttons while
+     * s_pad_present tracks the gamepad alone). A keyboard player therefore used to get a
+     * synthesised START for `width` vblanks every `period` -- 4.00 s on the defaults --
+     * which opens the pause menu over and over and makes the session unplayable. So latch
+     * the first live input from ANY source and stop synthesising from then on. The latch
+     * is sticky because the evidence is one-directional: a press proves a human is present,
+     * while a quiet frame proves nothing (players pause, read menus, and watch cutscenes
+     * without touching anything, and that is exactly when a phantom START does the most
+     * damage). Headless runs never set it (keys stays 0 there), so bootstrap pulsing is
+     * preserved exactly where it is needed.
+     *
+     * `keys` cannot contain the pulse itself here -- the pulse is OR'd into the return
+     * value below this point and never feeds back in -- so the latch cannot be
+     * self-triggering. Route-script keys likewise never reach it: both route branches
+     * return above, so synthetic route playback neither sets the latch nor is gated by
+     * it. */
+    if (ctrl_pulse_suppressed(keys)) return keys;
     /* Pulse START only, briefly, on a slow cadence to skip the (minutes-long) intro movie and the
      * "press start" prompt. Pressing CROSS/CIRCLE as well drove the menus into bad states (it
      * confirmed things the game was not ready for); START alone advances the intro without that.
@@ -8011,39 +8203,68 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
     FILE *f = fopen(path, "wb");
     if (!f) return;
     if (!stride) stride = 512;
-    fprintf(f, "P6\n480 272\n255\n");
-    for (int y = 0; y < 272; y++)
-        for (int x = 0; x < 480; x++) {
-            unsigned char rgb[3];
-            fb_decode_px(fbaddr, fmt, stride, x, y, rgb);
-            fwrite(rgb, 1, 3, f);
+    /* One buffered write instead of 480*272 three-byte fwrite calls (130,560 stdio
+     * round-trips per capture). Byte-for-byte the same file: same header, same pixel
+     * order, same three bytes per pixel -- fb_decode_px writes all three on every
+     * branch, so no byte of the buffer is left stale from a previous capture.
+     * The extents are named once so the buffer and the loops cannot drift apart. */
+    enum { FB_CAP_W = 480, FB_CAP_H = 272 };
+    static unsigned char ppm_buf[FB_CAP_W * FB_CAP_H * 3];
+    _Static_assert(sizeof(ppm_buf) == (size_t)FB_CAP_W * FB_CAP_H * 3,
+                   "PPM buffer must hold exactly one RGB frame");
+    unsigned char *dst = ppm_buf;
+    for (int y = 0; y < FB_CAP_H; y++) {
+        for (int x = 0; x < FB_CAP_W; x++) {
+            fb_decode_px(fbaddr, fmt, stride, x, y, dst);
+            dst += 3;
         }
+    }
+    /* The loops filled exactly the buffer; nothing short-writes a partial frame. */
+    if (dst != ppm_buf + sizeof(ppm_buf)) { fclose(f); return; }
+    fprintf(f, "P6\n%d %d\n255\n", FB_CAP_W, FB_CAP_H);
+    fwrite(ppm_buf, 1, sizeof(ppm_buf), f);
     fclose(f);
     fprintf(stderr, "dumped framebuffer 0x%08x fmt=%d stride=%u -> %s\n", fbaddr, fmt, stride, path);
 }
 /* (dump_fb wrapper dropped -- dump_fb_fmt handles all paths.) */
 
-/* Block until the scheduler delivers the next vblank. The old behaviour (delay one tick) let the
- * render loop wake while worker threads were still runnable and redraw the same frame dozens of
- * times per vblank -- the loading screen burned ~50s/60 frames in the rasterizer that way. */
+/* The two display waits, split according to what hardware actually does.
+ *
+ * Measured on PSP-3001/6.61-ARK (probe case `display-wait-late`, record
+ * PSP-DISPLAY-002). At every phase OUTSIDE the vblank interval -- including
+ * 1.25, 1.75 and 2.5 periods late, so with whole edges already missed -- the two
+ * calls are indistinguishable: 240/240 trials each blocked to the next start
+ * edge, advanced VCOUNT by exactly 1, and returned 0. They differ in exactly one
+ * cell: called from INSIDE the vblank interval, sceDisplayWaitVblank returns in
+ * 3..5 us (syscall overhead, no block) with the value 1, while
+ * sceDisplayWaitVblankStart waits a full 16.669..16.693 ms period and returns 0.
+ *
+ * The interrupt/dispatch-disabled rejection is unchanged and still precedes
+ * everything: both NIDs return CAN_NOT_WAIT there (matrix L26/L27 and L34/L35,
+ * both CONFORMS). Nothing downstream runs on that path -- no thread blocks on
+ * VBLANK_WAIT_OBJ and scheduler virtual time is untouched.
+ *
+ * Still NOT modelled, and deliberately so: the interrupt-context split, where
+ * sceDisplayWaitVblank succeeds with 1 (L323) while sceDisplayWaitVblankStart
+ * returns ILLEGAL_CONTEXT (L325). Those cells are `NOT RUN` against this runtime
+ * in docs/PSP_INTR_WAITS_MATRIX.md and belong to the interrupt-context work.
+ * The CB variants (0x46f186c3, 0xdba6c4c4's neighbours) remain unregistered
+ * until the callback-aware wait transaction lands; splitting these two handlers
+ * does not change that. */
+static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
+    (void)s;
+    if (ge_log_on()) fprintf(stderr, "HLE: WaitVblankStart (vcount=%u)\n", s_vcount);
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    sched_wait_vblank_start();
+    return 0;
+}
+
 static uint32_t h_DisplayWaitVblank(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblank (vcount=%u)\n", s_vcount);
-    /* Both sceDisplayWaitVblank (L26/L27) and sceDisplayWaitVblankStart (L34/L35)
-     * return CAN_NOT_WAIT here. On hardware these always wait for the NEXT vblank;
-     * the per-thread vbl_seen latch that sched_wait_vblank() consults first is a
-     * Nakagawa pacing artifact, so the rejection precedes it deliberately. Nothing
-     * downstream runs: the latch is not consumed, vbl_seen is not advanced, no
-     * thread blocks on VBLANK_WAIT_OBJ, and scheduler virtual time is untouched.
-     *
-     * The two NIDs share this handler, which is correct for PR-B because both
-     * hardware cells agree. They diverge only from interrupt context, where
-     * sceDisplayWaitVblank uniquely SUCCEEDS with 1 (L323) while
-     * sceDisplayWaitVblankStart returns ILLEGAL_CONTEXT (L325) -- that split needs
-     * two handlers and belongs to the interrupt-context work, not here. */
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    sched_wait_vblank();
-    return 0;
+    /* 1 when the caller was already inside the interval and did not block. */
+    return (uint32_t)sched_wait_vblank();
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */
@@ -10860,7 +11081,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
     sr_hle_register(0x82826f70, "sceKernelSleepThreadCB", h_SleepThreadCB);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_DisplayWaitVblank);
-    sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblank);
+    sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblankStart);
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);

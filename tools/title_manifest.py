@@ -44,6 +44,7 @@ ROOT_KEYS = {
     "modules", "filesystem", "hle_profile", "feature_requirements",
     "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
     "runtime_contract", "profile_zero", "runtime_bindings", "game_name",
+    "required_runtime_bindings",
 }
 
 #: Optional title bindings the compiled runtime may consume. Every field is
@@ -77,6 +78,22 @@ RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
 #: title-qualified compatibility capability with its own validated shape.
 #: Atomic: either fully configured or absent, never half-configured.
 RUNTIME_BINDING_OBJECTS = ("display_bringup", "runtime_sync")
+
+#: Every binding family a title may DECLARE that it requires.
+#:
+#: Individual optionality is what keeps this schema generic -- a title that
+#: needs none of these is a legal title, and no family is globally mandatory.
+#: But optionality alone cannot distinguish "this title does not use display
+#: bring-up" from "this title's display bring-up was lost", and the runtime
+#: reads both as the same disabled binding. ``required_runtime_bindings`` is
+#: how a title says which of these it cannot function without, so the loss is
+#: a validation failure instead of a silent behavior change at run time.
+DECLARABLE_BINDING_FAMILIES = (
+    *RUNTIME_BINDING_FIELDS,
+    *RUNTIME_BINDING_COUNTS,
+    *RUNTIME_BINDING_COLLECTIONS,
+    *RUNTIME_BINDING_OBJECTS,
+)
 
 DISPLAY_BRINGUP_FIELDS = (
     "malloc_entry",
@@ -912,6 +929,46 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
     return result
 
 
+def validate_required_runtime_bindings(value: Any, path: str) -> list[str]:
+    """Validate the families a title declares it cannot run without.
+
+    Names are checked against the schema's own family list rather than accepted
+    freely: a typo that silently declared nothing would reinstate exactly the
+    failure this block exists to prevent.
+    """
+    declared: set[str] = set()
+    for index, name in enumerate(array(value, path, len(DECLARABLE_BINDING_FAMILIES))):
+        name = identifier(name, f"{path}[{index}]")
+        if name not in DECLARABLE_BINDING_FAMILIES:
+            fail(f"{path}[{index}]",
+                 f"is not a runtime binding family (known: {', '.join(sorted(DECLARABLE_BINDING_FAMILIES))})")
+        if name in declared:
+            fail(f"{path}[{index}]", "duplicate required binding family")
+        declared.add(name)
+    return sorted(declared)
+
+
+def enforce_required_runtime_bindings(required: list[str], bindings: dict[str, Any] | None) -> None:
+    """Refuse a configuration that drops a family the title says it requires.
+
+    The per-family validators already reject a half-configured family and an
+    explicitly zero address. This closes the remaining hole: an entire family
+    -- or the whole ``runtime_bindings`` block -- simply not being there. That
+    shape validates cleanly, generates a header full of disabled bindings, and
+    changes runtime behavior with nothing to show for it.
+    """
+    if not required:
+        return
+    present = set(bindings or {})
+    missing = [name for name in required if name not in present]
+    if not missing:
+        return
+    fail("$.required_runtime_bindings",
+         "declares binding families the manifest does not configure: "
+         + ", ".join(missing)
+         + " (configure them under $.runtime_bindings, or drop the requirement)")
+
+
 def validate_manifest(value: Any) -> dict[str, Any]:
     value = obj(value, "$", ROOT_KEYS)
     required = {
@@ -966,6 +1023,11 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         result["runtime_contract"] = validate_runtime_contract(value["runtime_contract"], "$.runtime_contract")
     if "runtime_bindings" in value:
         result["runtime_bindings"] = validate_runtime_bindings(value["runtime_bindings"], "$.runtime_bindings")
+    if "required_runtime_bindings" in value:
+        result["required_runtime_bindings"] = validate_required_runtime_bindings(
+            value["required_runtime_bindings"], "$.required_runtime_bindings")
+        enforce_required_runtime_bindings(result["required_runtime_bindings"],
+                                          result.get("runtime_bindings"))
     if "profile_zero" in value:
         if kind != "synthetic":
             fail("$.profile_zero", "is permitted only for synthetic manifests")

@@ -76,6 +76,27 @@
     "runtime_bindings": {
       "$ref": "#/$defs/runtimeBindings"
     },
+    "required_runtime_bindings": {
+      "type": "array",
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "callback_terminators",
+          "dispatch_aliases",
+          "display_bringup",
+          "expected_data_file_count",
+          "fallback_entry",
+          "frame_ready_latch_addr",
+          "launcher_thread_entry",
+          "libfont_ready_flag_addr",
+          "runtime_sync",
+          "vblank_frame_counter_addr",
+          "vblank_vsync_counter_addr",
+          "worker_thread_entry"
+        ]
+      }
+    },
     "notes": {
       "type": "string",
       "maxLength": 2048

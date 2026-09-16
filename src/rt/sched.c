@@ -94,7 +94,6 @@ typedef struct {
     int      wakeups;            /* pending sceKernelWakeupThread count (sleep/wakeup semantics) */
     int      sleeping;           /* 1 while blocked in sceKernelSleepThread[CB] */
     int32_t  exit_status;        /* value passed to sceKernelExitThread */
-    uint64_t vbl_seen;           /* s_vbl_count this thread last consumed (vblank latch) */
     uint32_t sp_init, k0_init;   /* initial sp/k0 (to re-seed registers on a restart) */
     CpuState saved;              /* register file while not running */
     jmp_buf  unwind_jmp;         /* unwind point for clean fiber exit */
@@ -636,23 +635,67 @@ void sched_dump_threads(void) {
  * when no thread is runnable (i.e. once per simulated frame). */
 uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_arg(void);
-static uint64_t s_vbl_count = 0;     /* vblanks delivered so far (latch reference) */
+/* The deadline a thread carries when nothing but a signal can release it.
+ * Named so the "infinite waits never expire" rule in
+ * sched_promote_expired_waits() is checkable rather than a bare -1. */
+#define SCHED_WAIT_FOREVER ((uint64_t)-1)
 
-/* The vblank is an interrupt: it can fire WHILE a thread runs (from the yield path, or while a
- * host call like a vsynced swapchain present blocks). A thread that then calls
- * sceDisplayWaitVblankStart must not sleep a whole extra period for the NEXT one -- that
- * hard-quantizes any frame whose work+present crosses the period to 30/20 fps. Latch it
- * instead: if a vblank was delivered since this thread last consumed one, return immediately
- * (consume the pending vblank); only block when none is pending. */
-void sched_wait_vblank(void) {
-    if (s_cur >= 0) {
-        TCB *t = &s_tcb[s_cur];
-        if (t->vbl_seen != s_vbl_count) { t->vbl_seen = s_vbl_count; return; }
-        sched_block_on(VBLANK_WAIT_OBJ);
-        t->vbl_seen = s_vbl_count;
-        return;
-    }
+/* Consecutive idle scheduler iterations that may deliver no VBLANK and ready no
+ * thread before the runtime declares no-progress. The unit is scheduler
+ * iterations over a source that is supposed to fire once per iteration, so this
+ * is a delivered-event contract rather than a wall-clock timeout: a healthy
+ * paced idle loop resets it every iteration and can never approach it. */
+#define SCHED_IDLE_NO_PROGRESS_LIMIT 64
+
+static uint64_t s_vbl_count = 0;     /* vblanks delivered so far */
+/* Guest-time stamp of the most recent delivered VBLANK. The guest-visible vblank
+ * interval is measured from this edge (see sched_display_is_vblank), so it has to
+ * track real delivery rather than a free-running phase. */
+static uint64_t s_vbl_last_us = 0;
+
+/* PSP display waits, as measured on PSP-3001/6.61-ARK (probe cases
+ * `display-wait-late`, `display-vblank-window`; records PSP-DISPLAY-002 and
+ * PSP-DISPLAY-004).
+ *
+ * There is no missed-edge memory. The scheduler used to carry a per-thread
+ * `vbl_seen` latch: if a VBLANK had been delivered since this thread last
+ * completed a display wait, the wait returned immediately and consumed the
+ * missed edge, on the theory that blocking would hard-quantize a frame whose
+ * work crossed the period. Hardware says otherwise, and says it without
+ * ambiguity. With 0.25, 0.75, 1.25, 1.75 and 2.5 periods of un-yielded CPU spin
+ * since the last edge, sceDisplayWaitVblankStart blocked on all 240 trials,
+ * waited exactly the remainder of the period in progress, and advanced VCOUNT by
+ * exactly 1 -- never 0, and never 2 even when two whole edges had been missed.
+ * A late caller is not owed the edges it slept through. The latch is therefore
+ * gone, along with the TCB field that backed it.
+ *
+ * The two NIDs differ in exactly one place. At every phase OUTSIDE the vblank
+ * interval the two calls are indistinguishable (240/240 trials each: blocked,
+ * VCOUNT +1, returned 0). Called from INSIDE the interval, sceDisplayWaitVblank
+ * returns immediately -- 3..5 us, i.e. syscall overhead -- and returns 1, while
+ * sceDisplayWaitVblankStart waits a full period (16.669..16.693 ms) and returns
+ * 0. That single cell is the whole difference between them.
+ *
+ * Neither call consults any other thread's state. Making the block/return
+ * decision depend on whether some unrelated thread is TH_READY is not a PSP
+ * semantic and is not expressible on hardware; see the D2 record
+ * (PSP-DISPLAY-003) quoted above sched_run's idle handling. */
+static void sched_vblank_block(void) {
     sched_block_on(VBLANK_WAIT_OBJ);
+}
+
+/* sceDisplayWaitVblankStart: block until the NEXT vblank start edge, always. */
+void sched_wait_vblank_start(void) {
+    sched_vblank_block();
+}
+
+/* sceDisplayWaitVblank: identical, except that a caller already inside the
+ * vblank interval returns without blocking. Returns 1 in that case (the value
+ * hardware returns), 0 when it blocked to the next edge. */
+int sched_wait_vblank(void) {
+    if (sched_display_is_vblank()) return 1;
+    sched_vblank_block();
+    return 0;
 }
 
 /* ---- virtual time ------------------------------------------------------------------------
@@ -956,6 +999,7 @@ static void deliver_vblank(void) {
     vblank_pace_quantum_init();
     vblank_clock_reset();
     s_vbl_count++;
+    s_vbl_last_us = s_vtime_us;   /* start edge: the vblank interval runs from here */
     sr_perf_vblank();
 
     /* Increment the guest-side frame/vsync counter words when -- and only when -- the
@@ -1057,6 +1101,58 @@ static void deliver_vblank(void) {
 /* Service only sources whose delivery semantics are implemented. Unknown
  * source bits deliberately remain pending rather than being silently dropped;
  * adding a source handler later cannot lose an event raised today. */
+/* Can the runtime still produce AND deliver a VBLANK?
+ *
+ * A thread parked on VBLANK_WAIT_OBJ carries no finite deadline, so no guest
+ * timer can wake it -- but the runtime itself is the event source, and
+ * deliver_vblank() wakes every VBLANK waiter unconditionally. "No guest timer
+ * can wake this" is therefore not the same claim as "nothing can wake this",
+ * and the idle path has to test the second one.
+ *
+ * Both halves of the chain are required:
+ *   - production: scheduler_latch_due_events() raises nothing once the source
+ *     deadline has saturated, so a saturated deadline means no further edges;
+ *   - delivery: scheduler_service_pending() is a no-op while interrupts are
+ *     disabled, so a raised source is never turned into a wake either.
+ *
+ * With either half missing the wait is genuinely unsatisfiable and must be
+ * reported, not waited on. Dispatch state is deliberately NOT part of this:
+ * suspended dispatch stops thread switching, not interrupt service, and VBLANK
+ * delivery continues across it. */
+static int vblank_event_producible(void) {
+    return s_interrupts_enabled && s_vbl_next_us != UINT64_MAX;
+}
+
+/* The scheduler's idle classification, as a pure read of scheduler state.
+ *
+ * Factored out of sched_run so the policy is directly testable: the loop it used
+ * to live in is only reachable from driver.c, which is why the previous version
+ * of this decision shipped with no executable coverage at all. */
+typedef struct {
+    uint64_t soonest;        /* earliest finite wake deadline, else SCHED_WAIT_FOREVER */
+    int waiting_on_vblank;   /* a live thread is parked on VBLANK_WAIT_OBJ */
+    int vblank_can_wake;     /* ...and the source can still fire AND be serviced */
+    int unwakeable;          /* nothing the runtime can do will ready anyone */
+} SchedIdleState;
+
+static SchedIdleState sched_classify_idle(void) {
+    SchedIdleState st;
+    st.soonest = SCHED_WAIT_FOREVER;
+    st.waiting_on_vblank = 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        if (s_tcb[i].state != TH_WAIT_DELAY && s_tcb[i].state != TH_WAIT_OBJ) continue;
+        if (s_tcb[i].wake < st.soonest) st.soonest = s_tcb[i].wake;
+        if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ &&
+            s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
+            st.waiting_on_vblank = 1;
+    }
+    /* Object identity alone is not a licence to keep spinning: the source has to
+     * still be able to fire and to be serviced. */
+    st.vblank_can_wake = st.waiting_on_vblank && vblank_event_producible();
+    st.unwakeable = (st.soonest == SCHED_WAIT_FOREVER) && !st.vblank_can_wake;
+    return st;
+}
+
 static void scheduler_service_pending(void) {
     if (!s_interrupts_enabled || s_servicing_interrupts) return;
     s_servicing_interrupts = 1;
@@ -1065,6 +1161,20 @@ static void scheduler_service_pending(void) {
         deliver_vblank();
     }
     s_servicing_interrupts = 0;
+}
+
+/* Turbo (SR_NOVBPACE=1): jump the virtual clock to the VBLANK source boundary
+ * and then actually RUN the source.
+ *
+ * Moving the clock alone is not enough and is the specific shape of a defect
+ * worth naming: a thread parked on VBLANK_WAIT_OBJ carries SCHED_WAIT_FOREVER,
+ * so no amount of elapsed virtual time can promote it -- only a delivered edge
+ * releases it. Latching and servicing here is what turns the time jump into an
+ * event. */
+static void sched_turbo_advance_to_vblank(void) {
+    if (s_vbl_next_us > s_vtime_us) s_vtime_us = s_vbl_next_us;
+    scheduler_latch_due_events();
+    scheduler_service_pending();
 }
 
 static void coro_body(void *param) {
@@ -1692,6 +1802,13 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
 static void sched_promote_expired_waits(void) {
     for (int i = 0; i < s_ntcb; i++)
         if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
+            /* An infinite wait has no deadline and can only be released by a
+             * signal. Without this guard a virtual clock that reached the
+             * sentinel would "expire" every untimed wait at once -- a thread
+             * parked in a display wait could resume having been delivered no
+             * VBLANK at all. The clock must never satisfy a wait nothing
+             * signalled. */
+            s_tcb[i].wake != SCHED_WAIT_FOREVER &&
             s_vtime_us >= s_tcb[i].wake)
             s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
 }
@@ -2589,7 +2706,7 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
-    t->wake = (uint64_t)-1;     /* infinite: only sched_wake releases it */
+    t->wake = SCHED_WAIT_FOREVER;     /* infinite: only sched_wake releases it */
     switch_to_scheduler();
 }
 
@@ -2690,7 +2807,10 @@ void sched_vtime_refresh(void) {
  * the intermediate or make the display clock query-dependent. */
 #define SCHED_DISPLAY_HCOUNT_PER_FRAME 286u
 #define SCHED_DISPLAY_FRAME_NUMERATOR 1001000ull /* 1001/60000 s, expressed with denominator 60 */
-#define SCHED_DISPLAY_VBLANK_WINDOW_US 1500u
+/* Measured vblank interval width, not a guess: 721..734 us (mean 728) over 48
+ * trials on PSP-3001/6.61-ARK (record PSP-DISPLAY-004). 729 sits inside the
+ * measured band. See sched_display_is_vblank(). */
+#define SCHED_DISPLAY_VBLANK_WINDOW_US 729u
 
 static uint64_t scheduler_display_hcount_total(void) {
     __uint128_t numerator = (__uint128_t)s_vtime_us * 60u *
@@ -2708,11 +2828,41 @@ uint32_t sched_display_accumulated_hcount(void) {
     return (uint32_t)scheduler_display_hcount_total();
 }
 
+/* The vblank interval BEGINS at the vblank start edge; it does not end there.
+ *
+ * Measured on PSP-3001/6.61-ARK (probe case `display-vblank-window`, record
+ * PSP-DISPLAY-004): immediately after sceDisplayWaitVblankStart returned,
+ * sceDisplayIsVblank() was true on 48 of 48 trials, and stayed true for
+ * 721..734 us (mean 729) before falling. In the display's own units the
+ * interval was entered at hcount 1 and left at hcount 14, i.e. it occupies the
+ * first ~13 of the 286 lines in a frame. The same placement follows
+ * independently from PSP-DISPLAY-002: a sceDisplayWaitVblankStart issued while
+ * IsVblank() was true waited a FULL period, which is only possible if the caller
+ * had just crossed a start edge rather than being about to reach one.
+ *
+ * This previously tested the LAST 1500 us before the next edge -- the opposite
+ * end of the period, and roughly twice too wide. Anchor it to the delivery the
+ * scheduler actually made, not to a free-running phase: the guest-visible
+ * interval is the window immediately following the VBLANK the runtime
+ * delivered, which is what a guest polling IsVblank() after a display wait
+ * observes on hardware. Before the first delivery there is no interval to be
+ * inside of.
+ *
+ * Scope, stated rather than implied. Delivery-anchoring makes the measured
+ * primary invariant exact -- a caller that just returned from a display wait is
+ * inside the interval, which is what the WaitVblank fast return depends on --
+ * and it stays exact when the runtime falls behind and the source coalesces,
+ * where a free-running phase would report `false` immediately after a late
+ * delivery. The cost is the interrupt-masked regime: real scanout keeps running
+ * under a CPU interrupt mask (the #88 measurements show AccumulatedHcount
+ * free-running through one), so hardware's IsVblank keeps toggling there while
+ * this predicate holds still until service resumes. Masks were measured at ~0.1%
+ * of wall time with no guest execution inside them, so that regime is left to
+ * the interrupt-context work rather than modelled by guessing here. */
 int sched_display_is_vblank(void) {
-    __uint128_t phase = ((__uint128_t)s_vtime_us * 60u) %
-                        SCHED_DISPLAY_FRAME_NUMERATOR;
-    const uint64_t window = (uint64_t)SCHED_DISPLAY_VBLANK_WINDOW_US * 60u;
-    return phase >= SCHED_DISPLAY_FRAME_NUMERATOR - window;
+    if (!s_vbl_count) return 0;          /* no edge delivered yet */
+    if (s_vtime_us < s_vbl_last_us) return 0;
+    return (s_vtime_us - s_vbl_last_us) < (uint64_t)SCHED_DISPLAY_VBLANK_WINDOW_US;
 }
 
 void sched_set_current_cb_wait(int cb_wait) {
@@ -2742,7 +2892,7 @@ void sched_thread_sleep(void) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = t->uid;       /* sleep marker: woken only by sched_thread_wakeup(uid) */
-    t->wake = (uint64_t)-1;
+    t->wake = SCHED_WAIT_FOREVER;
     switch_to_scheduler();
 }
 
@@ -2778,7 +2928,7 @@ void sched_thread_sleep_cb(void) {
         memcpy(&t->saved, s_cpu, sizeof(CpuState));
         t->state = TH_WAIT_OBJ;
         t->wait_obj = t->uid;
-        t->wake = (uint64_t)-1;
+        t->wake = SCHED_WAIT_FOREVER;
         t->is_cb_wait = 1;
         switch_to_scheduler();
         t->is_cb_wait = 0;
@@ -3031,6 +3181,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
     unsigned long long iters = 0;
+    /* Idle no-progress accounting; see the guard in the idle path below. */
+    uint64_t idle_vbl_mark = s_vbl_count;
+    int idle_no_progress = 0;
     for (;;) {
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
@@ -3060,38 +3213,53 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             idx = pick_next();
         }
         if (idx < 0) {
-            /* Still nothing. Stop only when nothing is even waiting on a deadline.
-             *
-             * A vblank wait is an OBJECT wait, so sched_block_on leaves its t->wake
-             * infinite and the per-thread scan below cannot see it. The display source
-             * will nevertheless wake it as soon as the next period is due, so counting
-             * only per-thread deadlines declares a guest whose sole outstanding wait is
-             * sceDisplayWaitVblankStart deadlocked whenever the next vblank is merely
-             * not due YET -- which is the steady state of any app that fills a
-             * framebuffer, flips it and waits, i.e. the ordinary PSP frame loop. The
-             * source's own deadline IS that thread's deadline; the loop then paces to it
-             * exactly as it does for a timed wait. Titles with timers or several threads
-             * hid this because some other thread almost always carried a finite
-             * deadline. */
-            uint64_t soonest = (uint64_t)-1;
-            int vblank_waiter = 0;
-            for (int i = 0; i < s_ntcb; i++) {
-                if (s_tcb[i].state != TH_WAIT_DELAY && s_tcb[i].state != TH_WAIT_OBJ)
-                    continue;
-                if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
-                if (s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
-                    vblank_waiter = 1;
-            }
-            if (vblank_waiter && s_vbl_next_us != (uint64_t)-1 && s_vbl_next_us < soonest)
-                soonest = s_vbl_next_us;
-            if (soonest == (uint64_t)-1) {
-                fprintf(stderr, "SCHED: no runnable threads left (deadlock/infinite wait). Dumping thread states:\n");
+            /* Still nothing. Stop only when nothing can be woken at all -- by a
+             * deadline, or by the runtime's own VBLANK source. */
+            const SchedIdleState idle = sched_classify_idle();
+            const uint64_t soonest = idle.soonest;
+
+            if (idle.unwakeable) {
+                if (idle.waiting_on_vblank)
+                    fprintf(stderr, "SCHED: threads wait on VBLANK but the source cannot fire "
+                                    "(interrupts_enabled=%d vbl_next_us=%s). Dumping thread states:\n",
+                            s_interrupts_enabled,
+                            s_vbl_next_us == UINT64_MAX ? "saturated" : "live");
+                else
+                    fprintf(stderr, "SCHED: no runnable threads left (deadlock/infinite wait). Dumping thread states:\n");
                 sched_dump_threads();
                 if (s_t111_on && s_t111_n) sr_t111_dump();
-                break;   /* truly nothing runnable (all infinite waits) */
+                break;   /* nothing the runtime can still wake */
             }
+
+            /* Bounded final guard. Not a timeout: the unit is delivered VBLANKs.
+             * A healthy idle iteration delivers exactly one edge and wakes its
+             * waiters, so a run of iterations that delivers none and readies
+             * nobody means the source stopped for a reason not enumerated
+             * above. Report it with the same dump rather than looping forever. */
+            /* A finite deadline is its own progress source.  It may be longer than
+             * the VBLANK watchdog window when the display source is masked or
+             * saturated, but the scheduler must still advance to and honor it. */
+            if (soonest == SCHED_WAIT_FOREVER &&
+                s_vbl_count == idle_vbl_mark) {
+                if (++idle_no_progress >= SCHED_IDLE_NO_PROGRESS_LIMIT) {
+                    fprintf(stderr, "SCHED: %d idle iterations delivered no VBLANK and readied "
+                                    "no thread. Dumping thread states:\n",
+                            SCHED_IDLE_NO_PROGRESS_LIMIT);
+                    sched_dump_threads();
+                    if (s_t111_on && s_t111_n) sr_t111_dump();
+                    break;
+                }
+            } else {
+                idle_vbl_mark = s_vbl_count;
+                idle_no_progress = 0;
+            }
+
             if (!s_pace_on) {                     /* turbo: jump the clock over the wait */
-                if (soonest > s_vtime_us) s_vtime_us = soonest;
+                if (soonest == SCHED_WAIT_FOREVER && idle.vblank_can_wake) {
+                    sched_turbo_advance_to_vblank();
+                } else if (soonest > s_vtime_us) {
+                    s_vtime_us = soonest;
+                }
                 idx = pick_next();
                 if (idx < 0) {
                     fprintf(stderr, "SCHED: no runnable threads left after time jump. Dumping thread states:\n");
@@ -3101,6 +3269,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             } else {
                 continue;   /* paced: keep delivering vblanks; real time reaches the deadline */
             }
+        } else {
+            idle_no_progress = 0;
+            idle_vbl_mark = s_vbl_count;
         }
         TCB *t = &s_tcb[idx];
         s_cur = idx;

@@ -1,275 +1,356 @@
 {
-  "schema": 1,
-  "scope": "source-owned synthetic PSP probes only",
-  "fixture_root": "fixtures/psp_oracle",
-  "result_protocol": "tools/psp_oracle/protocol.py",
-  "tests": [
-    {
-      "id": "PSP-SMOKE-001",
-      "status": "implemented",
-      "group": "transport",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "module_start",
-        "sceKernelExitGame"
-      ],
-      "invariant": "sum(1..100)=5050 and one PASS scalar record is emitted",
-      "issues": [
-        35,
-        76,
-        181
-      ],
-      "risk": "low; scalar output only",
-      "reset": "return to PSPLINK after the process exits",
-      "implementation_note": "Fresh PSP-3001/6.61-ARK PSPLINK capture at source commit 570600e9dcbe7ecc8693974647accea5a9b3bfb5 compared the source-owned PRX SHA-256 e5ff23ff5ad3312072386aa7fcefaa079719b11c8a8b38e439b6651330b26833 with the generated-code Nakagawa stream. The guest symbol nakagawa_psp_oracle_sum_u32 at 0x000003cc came from ELF SHA-256 fce91db26f0889696e1a00d9c529ad339d005bf5d605d341cb69ea3f4fb9ed96; the running host smoke executable that emitted the record self-reported SHA-256 655f57d589d96412e07b0a58109816d7276cf619dbaed640c1b7082fbaf057f9. Both records returned result=0x000013ba and out0=0x00000001; report oracle/hardware-results/psp-smoke-570600e-report.json is MATCH with acceptance_eligible=true and no blockers. The generated guest body is entered through the existing production selftest path; the adapter does not reimplement the sum. Captures from the removed host-only emitter remain invalid."
+ "schema": 1,
+ "scope": "source-owned synthetic PSP probes only",
+ "fixture_root": "fixtures/psp_oracle",
+ "result_protocol": "tools/psp_oracle/protocol.py",
+ "tests": [
+  {
+   "id": "PSP-SMOKE-001",
+   "status": "implemented",
+   "group": "transport",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "module_start",
+    "sceKernelExitGame"
+   ],
+   "invariant": "sum(1..100)=5050 and one PASS scalar record is emitted",
+   "issues": [
+    35,
+    76,
+    181
+   ],
+   "risk": "low; scalar output only",
+   "reset": "return to PSPLINK after the process exits",
+   "implementation_note": "Fresh PSP-3001/6.61-ARK PSPLINK capture at source commit 570600e9dcbe7ecc8693974647accea5a9b3bfb5 compared the source-owned PRX SHA-256 e5ff23ff5ad3312072386aa7fcefaa079719b11c8a8b38e439b6651330b26833 with the generated-code Nakagawa stream. The guest symbol nakagawa_psp_oracle_sum_u32 at 0x000003cc came from ELF SHA-256 fce91db26f0889696e1a00d9c529ad339d005bf5d605d341cb69ea3f4fb9ed96; the running host smoke executable that emitted the record self-reported SHA-256 655f57d589d96412e07b0a58109816d7276cf619dbaed640c1b7082fbaf057f9. Both records returned result=0x000013ba and out0=0x00000001; report oracle/hardware-results/psp-smoke-570600e-report.json is MATCH with acceptance_eligible=true and no blockers. The generated guest body is entered through the existing production selftest path; the adapter does not reimplement the sum. Captures from the removed host-only emitter remain invalid."
+  },
+  {
+   "id": "PSP-KERNEL-001",
+   "status": "implemented",
+   "group": "kernel",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "callback registration",
+    "wait/cancel",
+    "thread lifecycle"
+   ],
+   "case_ids": [
+    "callback-notify-check",
+    "wait-cancel",
+    "thread-lifecycle"
+   ],
+   "diagnostic_case_ids": [
+    "thread-delete-lifecycle",
+    "thread-delete-followup",
+    "thread-delete-explicit",
+    "thread-delete-boundary"
+   ],
+   "invariant": "return codes, wake ordering, and cancellation are deterministic",
+   "issues": [
+    1,
+    2,
+    13,
+    14,
+    16,
+    26,
+    61,
+    74,
+    79,
+    84,
+    88,
+    92,
+    93,
+    116
+   ],
+   "risk": "medium; isolate one case per launch",
+   "reset": "reset to PSPLINK on timeout; power-cycle only by human decision",
+   "implementation_note": "Fresh exact-head PSP-3001/6.61-ARK PSPLINK session at source commit 6a8bc30796686e5194e369c35e80870f988b36a8 captured all three required cases with acceptance_eligible=true. The Nakagawa selftest artifact was SHA-256 7d7efe835e5fbe36185fea48fc031d5b3ce95a57d7805e440afebf766171d084 for each run. callback-notify-check PRX SHA-256 b9b3e577175b742f8bf2ae9c529ee974d6870a15b690fd65ee698244ebc6dfc8 -> MATCH (out0=0x000001ff, out1=0x00011234, out2=0x00000000, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/callback-notify-check.report.json); wait-cancel PRX SHA-256 df6cf7ff669ce5aeed8ba7d14b2603b3b84b5fd42ad778b5ddebd2c340450794 -> MATCH (out0=0x0000001f, out1=0x00000000, out2=0x800201ad, out3=0x800201ad; report oracle/hardware-results/psp-kernel-current-6a8bc30/wait-cancel.report.json); thread-lifecycle PRX SHA-256 42cab43532c095ed97994b67d9283e4af89bbd66002683f71de7cb2da3747bfc -> MATCH (out0=0x0000000f, out1=0x00420042, out2=0x80020198, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-lifecycle.report.json). The raw error scalars are compared, not only sign bits. An additional diagnostic thread-delete-lifecycle PRX SHA-256 82d6ae3f01bdb088d11548bc7dff3a0be5bb1615eb8a8d7418bb2a5785759a35 is acceptance-eligible but DIFFERENCE (Nakagawa PASS out0=0x00001fff versus PSP FAIL out0=0x00001fdf; out1..out8 otherwise match; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-delete-lifecycle.report.json), so the broader delete issue remains open. The source-owned thread-delete-followup is now synchronized and measured: at source commit daf9868a62b612749e2e0a92d7058f0f02c186d5, PSP-3001/6.61-ARK PRX SHA-256 375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220 and the production-HLE stream MATCH on out0=0x000fffff, out1=0x800201ac, out2=0x800200d2, out4=0x10, out7=0x800200d2, out8=0x800201ac, out9=0x77, out11=0x10, out14=0x77. The explicit sibling at source commit 454e530658998fb23ba2c1912c7fe26afaefd8ff also MATCHes after canonicalization: PRX SHA-256 b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef, explicit error out2=out7=0x800200d2, explicit positive out9=out14=0x78, and out0=0x003fffff. The raw fixture metadata remains placeholder until the current-session model/firmware is explicitly confirmed; canonicalized comparator eligibility is recorded separately in explicit_measurement. This probe-group acceptance does not close the routed issues until their individual criteria are met.",
+   "followup_measurement": {
+    "source_commit": "daf9868a62b612749e2e0a92d7058f0f02c186d5",
+    "model": "PSP-3001",
+    "firmware": "6.61-ARK",
+    "prx_sha256": "375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220",
+    "classification": "MATCH",
+    "acceptance_eligible": false,
+    "acceptance_blockers": [
+     "current-session model/firmware metadata was not emitted by the fixture"
+    ],
+    "raw": "out0=0x000fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000077 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000077"
+   },
+   "explicit_measurement": {
+    "source_commit": "454e530658998fb23ba2c1912c7fe26afaefd8ff",
+    "model": "PSP-3001",
+    "firmware": "6.61-ARK",
+    "fixture": "nakagawa-psp-oracle-v1",
+    "prx_sha256": "b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef",
+    "initial_probe": {
+     "prx_sha256": "8276e83801f88d438c9cb237d42481901d3397c7b2f738a055219e6f3c04de7a",
+     "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-precaseb.stdout.txt",
+     "status": "FAIL fixture expectation only; raw values already showed Case B"
     },
-    {
-      "id": "PSP-KERNEL-001",
-      "status": "implemented",
-      "group": "kernel",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "callback registration",
-        "wait/cancel",
-        "thread lifecycle"
-      ],
-      "case_ids": [
-        "callback-notify-check",
-        "wait-cancel",
-        "thread-lifecycle"
-      ],
-      "diagnostic_case_ids": [
-        "thread-delete-lifecycle",
-        "thread-delete-followup",
-        "thread-delete-explicit",
-        "thread-delete-boundary"
-      ],
-      "invariant": "return codes, wake ordering, and cancellation are deterministic",
-      "issues": [
-        1,
-        2,
-        13,
-        14,
-        16,
-        26,
-        61,
-        74,
-        79,
-        84,
-        88,
-        92,
-        93,
-        116
-      ],
-      "risk": "medium; isolate one case per launch",
-      "reset": "reset to PSPLINK on timeout; power-cycle only by human decision",
-      "implementation_note": "Fresh exact-head PSP-3001/6.61-ARK PSPLINK session at source commit 6a8bc30796686e5194e369c35e80870f988b36a8 captured all three required cases with acceptance_eligible=true. The Nakagawa selftest artifact was SHA-256 7d7efe835e5fbe36185fea48fc031d5b3ce95a57d7805e440afebf766171d084 for each run. callback-notify-check PRX SHA-256 b9b3e577175b742f8bf2ae9c529ee974d6870a15b690fd65ee698244ebc6dfc8 -> MATCH (out0=0x000001ff, out1=0x00011234, out2=0x00000000, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/callback-notify-check.report.json); wait-cancel PRX SHA-256 df6cf7ff669ce5aeed8ba7d14b2603b3b84b5fd42ad778b5ddebd2c340450794 -> MATCH (out0=0x0000001f, out1=0x00000000, out2=0x800201ad, out3=0x800201ad; report oracle/hardware-results/psp-kernel-current-6a8bc30/wait-cancel.report.json); thread-lifecycle PRX SHA-256 42cab43532c095ed97994b67d9283e4af89bbd66002683f71de7cb2da3747bfc -> MATCH (out0=0x0000000f, out1=0x00420042, out2=0x80020198, out3=0x00000000; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-lifecycle.report.json). The raw error scalars are compared, not only sign bits. An additional diagnostic thread-delete-lifecycle PRX SHA-256 82d6ae3f01bdb088d11548bc7dff3a0be5bb1615eb8a8d7418bb2a5785759a35 is acceptance-eligible but DIFFERENCE (Nakagawa PASS out0=0x00001fff versus PSP FAIL out0=0x00001fdf; out1..out8 otherwise match; report oracle/hardware-results/psp-kernel-current-6a8bc30/thread-delete-lifecycle.report.json), so the broader delete issue remains open. The source-owned thread-delete-followup is now synchronized and measured: at source commit daf9868a62b612749e2e0a92d7058f0f02c186d5, PSP-3001/6.61-ARK PRX SHA-256 375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220 and the production-HLE stream MATCH on out0=0x000fffff, out1=0x800201ac, out2=0x800200d2, out4=0x10, out7=0x800200d2, out8=0x800201ac, out9=0x77, out11=0x10, out14=0x77. The explicit sibling at source commit 454e530658998fb23ba2c1912c7fe26afaefd8ff also MATCHes after canonicalization: PRX SHA-256 b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef, explicit error out2=out7=0x800200d2, explicit positive out9=out14=0x78, and out0=0x003fffff. The raw fixture metadata remains placeholder until the current-session model/firmware is explicitly confirmed; canonicalized comparator eligibility is recorded separately in explicit_measurement. This probe-group acceptance does not close the routed issues until their individual criteria are met.",
-      "followup_measurement": {
-        "source_commit": "daf9868a62b612749e2e0a92d7058f0f02c186d5",
-        "model": "PSP-3001",
-        "firmware": "6.61-ARK",
-        "prx_sha256": "375a951d06527832c263ee029f1cecd203082473e550c05854d234be65754220",
-        "classification": "MATCH",
-        "acceptance_eligible": false,
-        "acceptance_blockers": [
-          "current-session model/firmware metadata was not emitted by the fixture"
-        ],
-        "raw": "out0=0x000fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000077 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000077"
-      },
-      "explicit_measurement": {
-        "source_commit": "454e530658998fb23ba2c1912c7fe26afaefd8ff",
-        "model": "PSP-3001",
-        "firmware": "6.61-ARK",
-        "fixture": "nakagawa-psp-oracle-v1",
-        "prx_sha256": "b5927c717b18579d9607aa36f09b0d7d2491c0e099915feae6015991edbb08ef",
-        "initial_probe": {
-          "prx_sha256": "8276e83801f88d438c9cb237d42481901d3397c7b2f738a055219e6f3c04de7a",
-          "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-precaseb.stdout.txt",
-          "status": "FAIL fixture expectation only; raw values already showed Case B"
-        },
-        "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-synchronized.stdout.txt",
-        "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-nakagawa.stdout.txt",
-        "comparator": "build/audit/psplink-followup-explicit-454e530.json",
-        "raw_fixture_metadata_placeholder": true,
-        "classification": "MATCH",
-        "acceptance_eligible": true,
-        "acceptance_blockers": [],
-        "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000078 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000078"
-      },
-      "boundary_measurement": {
-        "source_commit": "88cc5ea709f65bf4e219fa56e51c704181070167",
-        "model": "PSP-3001",
-        "firmware": "6.61-ARK",
-        "fixture": "nakagawa-psp-oracle-v1",
-        "prx_sha256": "826a97e79c0770c6aba30077dd9b4a2927c88cf45cac622a22088e5de78a31d5",
-        "initial_probe": {
-          "prx_sha256": "4afe7b4b8f90de81e10a74d5231a474064217f84e45a29c1e2ae8d809fc1cf52",
-          "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized.stdout.txt",
-          "status": "FAIL under the old -17 propagation expectation; outer/exit scalars already showed 0x800200d2; diagnostic argument field was corrected in the final rerun"
-        },
-        "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized-corrected.stdout.txt",
-        "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-nakagawa-corrected.stdout.txt",
-        "comparator": "build/audit/psplink-boundary-88cc5ea.json",
-        "raw_fixture_metadata_placeholder": true,
-        "classification": "MATCH",
-        "acceptance_eligible": true,
-        "acceptance_blockers": [],
-        "semantic_boundary": "signed-negative non-delete exit status -> SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT; measured 0x800201a8, 0x800201ac, and -17; positive controls remain unchanged",
-        "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x800200d2 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x800200d2 out15=0x800201a8 out16=0xffffffef"
-      }
+    "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-synchronized.stdout.txt",
+    "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-explicit-nakagawa.stdout.txt",
+    "comparator": "build/audit/psplink-followup-explicit-454e530.json",
+    "raw_fixture_metadata_placeholder": true,
+    "classification": "MATCH",
+    "acceptance_eligible": true,
+    "acceptance_blockers": [],
+    "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x00000078 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x00000078"
+   },
+   "boundary_measurement": {
+    "source_commit": "88cc5ea709f65bf4e219fa56e51c704181070167",
+    "model": "PSP-3001",
+    "firmware": "6.61-ARK",
+    "fixture": "nakagawa-psp-oracle-v1",
+    "prx_sha256": "826a97e79c0770c6aba30077dd9b4a2927c88cf45cac622a22088e5de78a31d5",
+    "initial_probe": {
+     "prx_sha256": "4afe7b4b8f90de81e10a74d5231a474064217f84e45a29c1e2ae8d809fc1cf52",
+     "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized.stdout.txt",
+     "status": "FAIL under the old -17 propagation expectation; outer/exit scalars already showed 0x800200d2; diagnostic argument field was corrected in the final rerun"
     },
-    {
-      "id": "PSP-DMAC-001",
-      "status": "implemented",
-      "group": "dmac",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "sceDmacMemcpy",
-        "sceDmacTryMemcpy",
-        "thread scheduling",
-        "system-memory allocation"
-      ],
-      "case_ids": [
-        "concurrent-memcpy-try",
-        "concurrent-try-try",
-        "concurrent-try-memcpy",
-        "invalid-tail-memcpy-dst",
-        "invalid-tail-memcpy-src",
-        "invalid-tail-try-dst",
-        "invalid-tail-try-src"
-      ],
-      "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, while invalid-tail records prove the valid prefix allocation and rejected tail boundary before reporting return and mutation counts",
-      "issues": [
-        23
-      ],
-      "risk": "medium; run concurrency first, then isolate each one-byte invalid-tail case per launch",
-      "reset": "return to PSPLINK after each case; a missing record is never PASS",
-      "outcome_contract": {
-        "result": "expected scalar record count is present",
-        "skip": "an explicit status=SKIP record proves the pre-call safety gate stopped the case",
-        "hang": "no test record, host timeout, and human-observed stall without reboot",
-        "reset": "no test record and human-observed device reset plus PSPLink session loss; never inferred from process exit",
-        "inconclusive": "no test record and neither physical terminal observation is established"
-      },
-      "public_references": [
-        "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.c",
-        "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.expected",
-        "https://github.com/pspdev/pspsdk/blob/314b2083f2e1eaf145fc5de342736336fe1f0148/src/dmac/pspdmac.h",
-        "https://github.com/hrydgard/ppsspp/blob/06d5847da382336dc93a73b5e5adcd23de2f305d/Core/HLE/sceDmac.cpp",
-        "https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/include/common/memory.h"
-      ],
-      "implementation_note": "All five build variants compile warning-free with the pinned public PSPDEV route. No current-session PSP result is recorded: the local PSPLink endpoint was absent, so issue #23 remains hardware-blocked and runtime semantics are unchanged."
-    },
-    {
-      "id": "PSP-IO-001",
-      "status": "planned",
-      "group": "io",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "open",
-        "seek",
-        "async I/O",
-        "devctl",
-        "filesystem mutation"
-      ],
-      "invariant": "typed descriptors, offsets, callbacks, and errors are recorded without payloads",
-      "issues": [
-        55,
-        68,
-        72,
-        91
-      ],
-      "risk": "medium; use a disposable Memory Stick path",
-      "reset": "close descriptors, reset to PSPLINK, and remove only the probe-owned files",
-      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
-    },
-    {
-      "id": "PSP-DISPLAY-001",
-      "status": "implemented",
-      "group": "display",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "sceDisplayGetVcount",
-        "sceDisplayGetAccumulatedHcount",
-        "sceDisplayWaitVblankStart",
-        "sceKernelCpuSuspendIntr",
-        "sceKernelCpuResumeIntr",
-        "sceGeListEnQueue",
-        "sceGeListUpdateStallAddr",
-        "sceGeSetCallback"
-      ],
-      "invariant": "VCOUNT is credited once per delivered VBLANK interrupt and never by elapsed period count; GE execution is independent of the CPU interrupt mask while GE completion notification is not",
-      "issues": [
-        24,
-        44,
-        64,
-        70,
-        83,
-        87,
-        89
-      ],
-      "risk": "low to medium; the masked windows are bounded by elapsed system time AND an iteration cap",
-      "reset": "return to PSPLINK after each case. Never send the PSPLink shell command `exit` from the capture driver -- it terminates PSPLink and drops the device to the XMB.",
-      "implementation_note": "Source-owned PSP-3001 / 6.61-ARK capture at source commit 1de746672f9f7a30b2c0c7c02cadef76980187a2, CPU clock 222 MHz. display-mask-vcount (PRX SHA-256 04605e5db32b958672a8f30626df0255b1121fdea0970b984f62c79d7fd9239f, capture SHA-256 eef815fa2504c04716d5a763925d6322e09d97c55920b28e3e14a52230ff36d7) ran 12 trials at each of 4000/16700/30000/50000 us of held CpuSuspendIntr and measured: VCOUNT frozen during every mask (48/48); resume credits +0 when no source period crossed (12/12 at 4 ms), +1 when one crossed (12/12 at 16.7 ms and 12/12 at 30 ms), and still +1 when two crossed (12/12 at 50 ms, where 24 periods elapsed across the bucket and 12 were credited); zero trials showed full or partial N-period catch-up. sceDisplayGetAccumulatedHcount advanced at the full display rate through every mask (+69/+286/+514/+857 scanlines, matching 286 lines per period), so the display source does not stop. The device's own vblank period was calibrated in-run over 60 WaitVblankStart intervals at 16682850 ns = 59.9418 Hz, 0.003% from the 60000/1001 model. display-ge-mask (PRX SHA-256 d15a48f5192aaba36e8b0772651a76663f09326a84ed4fbcb1c1f5d17f31adfd, capture SHA-256 7a9f90e6d3eeb79fcb9e1f61dd75c96a7d0e079576054bcc7ab5996e2dcc2da6) released a stall-gated 16-transfer 1 MiB list while interrupts were masked and observed all 16 destination tiles change before resume in 12/12 trials (7029-7095 us, versus 7071-7175 us for the interrupts-enabled control), while the interrupt-context finish handler ran 0/12 during the mask and 12/12 immediately after resume. The stall-held control changed 0 tiles across a full 40 ms masked window in 12/12, which is what rules out 'the GE finished before the mask opened'. Accepted record: oracle/hardware-results/display-mask-accepted.json. display-mask-duty is built and warning-free but was not captured in this session; no duty-cycle result is claimed.",
-      "case_ids": [
-        "display-mask-vcount",
-        "display-mask-duty",
-        "display-ge-mask"
-      ]
-    },
-    {
-      "id": "PSP-SYSTEM-001",
-      "status": "planned",
-      "group": "system",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "controller",
-        "RTC",
-        "system parameters",
-        "power",
-        "registry"
-      ],
-      "invariant": "model/firmware metadata accompanies each scalar result",
-      "issues": [
-        34,
-        62,
-        77,
-        78,
-        80,
-        86,
-        94
-      ],
-      "risk": "low to medium; avoid timing claims until clock is pinned",
-      "reset": "return to PSPLINK; do not alter persistent settings",
-      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
-    },
-    {
-      "id": "PSP-AUDIO-001",
-      "status": "planned",
-      "group": "audio",
-      "source": "fixtures/psp_oracle/probe.c",
-      "prx": "nakagawa_psp_oracle.prx",
-      "apis": [
-        "audio channel",
-        "SAS",
-        "ATRAC query"
-      ],
-      "invariant": "scalar configuration/query state matches the local comparison; no acoustic claim",
-      "issues": [
-        38,
-        69,
-        70,
-        75
-      ],
-      "risk": "medium; scalar probes precede any audio recording",
-      "reset": "stop channels and return to PSPLINK",
-      "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
-    }
-  ]
+    "raw_capture": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-synchronized-corrected.stdout.txt",
+    "nakagawa_stream": "oracle/hardware-results/psplink-20260805-thread-delete-boundary-nakagawa-corrected.stdout.txt",
+    "comparator": "build/audit/psplink-boundary-88cc5ea.json",
+    "raw_fixture_metadata_placeholder": true,
+    "classification": "MATCH",
+    "acceptance_eligible": true,
+    "acceptance_blockers": [],
+    "semantic_boundary": "signed-negative non-delete exit status -> SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT; measured 0x800201a8, 0x800201ac, and -17; positive controls remain unchanged",
+    "raw": "out0=0x003fffff out1=0x800201ac out2=0x800200d2 out3=0x00000000 out4=0x00000010 out5=0x00000000 out6=0x00000000 out7=0x800200d2 out8=0x800201ac out9=0x800200d2 out10=0x00000000 out11=0x00000010 out12=0x00000000 out13=0x00000000 out14=0x800200d2 out15=0x800201a8 out16=0xffffffef"
+   }
+  },
+  {
+   "id": "PSP-DMAC-001",
+   "status": "implemented",
+   "group": "dmac",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "sceDmacMemcpy",
+    "sceDmacTryMemcpy",
+    "thread scheduling",
+    "system-memory allocation"
+   ],
+   "case_ids": [
+    "concurrent-memcpy-try",
+    "concurrent-try-try",
+    "concurrent-try-memcpy",
+    "invalid-tail-memcpy-dst",
+    "invalid-tail-memcpy-src",
+    "invalid-tail-try-dst",
+    "invalid-tail-try-src"
+   ],
+   "invariant": "concurrency records correlate BUSY with first-caller pending and returned states, while invalid-tail records prove the valid prefix allocation and rejected tail boundary before reporting return and mutation counts",
+   "issues": [
+    23
+   ],
+   "risk": "medium; run concurrency first, then isolate each one-byte invalid-tail case per launch",
+   "reset": "return to PSPLINK after each case; a missing record is never PASS",
+   "outcome_contract": {
+    "result": "expected scalar record count is present",
+    "skip": "an explicit status=SKIP record proves the pre-call safety gate stopped the case",
+    "hang": "no test record, host timeout, and human-observed stall without reboot",
+    "reset": "no test record and human-observed device reset plus PSPLink session loss; never inferred from process exit",
+    "inconclusive": "no test record and neither physical terminal observation is established"
+   },
+   "public_references": [
+    "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.c",
+    "https://github.com/hrydgard/pspautotests/blob/ea71108f00933712c4662276261b39cd42249b1e/tests/dmac/dmactest.expected",
+    "https://github.com/pspdev/pspsdk/blob/314b2083f2e1eaf145fc5de342736336fe1f0148/src/dmac/pspdmac.h",
+    "https://github.com/hrydgard/ppsspp/blob/06d5847da382336dc93a73b5e5adcd23de2f305d/Core/HLE/sceDmac.cpp",
+    "https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/include/common/memory.h"
+   ],
+   "implementation_note": "All five build variants compile warning-free with the pinned public PSPDEV route. No current-session PSP result is recorded: the local PSPLink endpoint was absent, so issue #23 remains hardware-blocked and runtime semantics are unchanged."
+  },
+  {
+   "id": "PSP-IO-001",
+   "status": "planned",
+   "group": "io",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "open",
+    "seek",
+    "async I/O",
+    "devctl",
+    "filesystem mutation"
+   ],
+   "invariant": "typed descriptors, offsets, callbacks, and errors are recorded without payloads",
+   "issues": [
+    55,
+    68,
+    72,
+    91
+   ],
+   "risk": "medium; use a disposable Memory Stick path",
+   "reset": "close descriptors, reset to PSPLINK, and remove only the probe-owned files",
+   "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+  },
+  {
+   "id": "PSP-DISPLAY-001",
+   "status": "implemented",
+   "group": "display",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "sceDisplayGetVcount",
+    "sceDisplayGetAccumulatedHcount",
+    "sceDisplayWaitVblankStart",
+    "sceKernelCpuSuspendIntr",
+    "sceKernelCpuResumeIntr",
+    "sceGeListEnQueue",
+    "sceGeListUpdateStallAddr",
+    "sceGeSetCallback"
+   ],
+   "invariant": "VCOUNT is credited once per delivered VBLANK interrupt and never by elapsed period count; GE execution is independent of the CPU interrupt mask while GE completion notification is not",
+   "issues": [
+    24,
+    44,
+    64,
+    70,
+    83,
+    87,
+    89
+   ],
+   "risk": "low to medium; the masked windows are bounded by elapsed system time AND an iteration cap",
+   "reset": "return to PSPLINK after each case. Never send the PSPLink shell command `exit` from the capture driver -- it terminates PSPLink and drops the device to the XMB.",
+   "implementation_note": "Source-owned PSP-3001 / 6.61-ARK capture at source commit 1de746672f9f7a30b2c0c7c02cadef76980187a2, CPU clock 222 MHz. display-mask-vcount (PRX SHA-256 04605e5db32b958672a8f30626df0255b1121fdea0970b984f62c79d7fd9239f, capture SHA-256 eef815fa2504c04716d5a763925d6322e09d97c55920b28e3e14a52230ff36d7) ran 12 trials at each of 4000/16700/30000/50000 us of held CpuSuspendIntr and measured: VCOUNT frozen during every mask (48/48); resume credits +0 when no source period crossed (12/12 at 4 ms), +1 when one crossed (12/12 at 16.7 ms and 12/12 at 30 ms), and still +1 when two crossed (12/12 at 50 ms, where 24 periods elapsed across the bucket and 12 were credited); zero trials showed full or partial N-period catch-up. sceDisplayGetAccumulatedHcount advanced at the full display rate through every mask (+69/+286/+514/+857 scanlines, matching 286 lines per period), so the display source does not stop. The device's own vblank period was calibrated in-run over 60 WaitVblankStart intervals at 16682850 ns = 59.9418 Hz, 0.003% from the 60000/1001 model. display-ge-mask (PRX SHA-256 d15a48f5192aaba36e8b0772651a76663f09326a84ed4fbcb1c1f5d17f31adfd, capture SHA-256 7a9f90e6d3eeb79fcb9e1f61dd75c96a7d0e079576054bcc7ab5996e2dcc2da6) released a stall-gated 16-transfer 1 MiB list while interrupts were masked and observed all 16 destination tiles change before resume in 12/12 trials (7029-7095 us, versus 7071-7175 us for the interrupts-enabled control), while the interrupt-context finish handler ran 0/12 during the mask and 12/12 immediately after resume. The stall-held control changed 0 tiles across a full 40 ms masked window in 12/12, which is what rules out 'the GE finished before the mask opened'. Accepted record: oracle/hardware-results/display-mask-accepted.json. display-mask-duty is built and warning-free but was not captured in this session; no duty-cycle result is claimed.",
+   "case_ids": [
+    "display-mask-vcount",
+    "display-mask-duty",
+    "display-ge-mask"
+   ]
+  },
+  {
+   "id": "PSP-DISPLAY-002",
+   "status": "implemented",
+   "group": "display",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "sceDisplayWaitVblankStart",
+    "sceDisplayWaitVblank",
+    "sceDisplayGetVcount",
+    "sceDisplayIsVblank",
+    "sceKernelGetSystemTimeLow",
+    "scePowerGetCpuClockFrequencyInt"
+   ],
+   "invariant": "a display wait issued after 0.25/0.75/1.25/1.75/2.5 periods of un-yielded CPU blocks to the next start edge and advances VCOUNT by exactly 1; the only divergence between the two NIDs is the in-vblank fast return",
+   "issues": [
+    70,
+    83
+   ],
+   "risk": "low; scalar output only, no game content and no firmware operation",
+   "reset": "return to PSPLINK after the process exits",
+   "implementation_note": "PSP-3001/6.61-ARK, 48 trials per cell, period calibrated in-run at 16,682,816 ns (59.941 Hz). Both NIDs blocked on 240/240 late trials each, waiting exactly the remainder of the period in progress and advancing VCOUNT by exactly 1 -- never 0, and never 2 even at 2.5 periods late, so no missed edge is remembered or credited. Inside the vblank interval the NIDs diverge: sceDisplayWaitVblank returned in 3..5 us with value 1 on 48/48 trials, sceDisplayWaitVblankStart waited 16.669..16.693 ms and returned 0. This retires the `hardware = unknown / WOULD_BLOCK control` normal-context cells for both NIDs in docs/PSP_INTR_WAITS_MATRIX.md.",
+   "case_ids": [
+    "late-waitvblankstart-{2,6,10,14,20}eighths",
+    "late-waitvblank-{2,6,10,14,20}eighths",
+    "invblank-waitvblankstart",
+    "invblank-waitvblank",
+    "calibration"
+   ]
+  },
+  {
+   "id": "PSP-DISPLAY-003",
+   "status": "implemented",
+   "group": "display",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "sceDisplayWaitVblankStart",
+    "sceDisplayGetVcount",
+    "sceKernelCreateThread",
+    "sceKernelStartThread",
+    "sceKernelWaitThreadEnd",
+    "sceKernelGetSystemTimeLow"
+   ],
+   "invariant": "the display wait's blocking behaviour does not depend on whether an unrelated lower-priority thread is runnable, and a runnable stronger thread starves a weaker one with no aging",
+   "issues": [
+    70
+   ],
+   "risk": "low; scalar output only, no game content and no firmware operation",
+   "reset": "return to PSPLINK after the process exits",
+   "implementation_note": "PSP-3001/6.61-ARK, priority 0x30 caller and priority 0x50 always-runnable peer, 120 iterations each. Control vs experiment: wall 2,006,149 us vs 2,006,151 us, summed wait 1,505,865 us vs 1,506,085 us, identical maximum wait and identical VCOUNT progression (120 both) -- the syscall does not read the ready queue. The peer accumulated 23,650,375 increments of which 23,472,701 (99.25%) fell inside the display-wait window and EXACTLY ZERO fell in the caller's pure-CPU spin segments (0 of 120 iterations). Blocked hands the CPU over; merely runnable never does.",
+   "case_ids": [
+    "calibration",
+    "priority-control",
+    "priority-experiment"
+   ]
+  },
+  {
+   "id": "PSP-DISPLAY-004",
+   "status": "implemented",
+   "group": "display",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "sceDisplayWaitVblankStart",
+    "sceDisplayIsVblank",
+    "sceDisplayGetCurrentHcount",
+    "sceKernelGetSystemTimeLow"
+   ],
+   "invariant": "the vblank interval begins at the start edge and is ~729 us wide",
+   "issues": [
+    70,
+    83
+   ],
+   "risk": "low; scalar output only, no game content and no firmware operation",
+   "reset": "return to PSPLINK after the process exits",
+   "implementation_note": "PSP-3001/6.61-ARK, 48 trials. sceDisplayIsVblank() was true immediately after sceDisplayWaitVblankStart returned on 48/48 trials and fell 721..734 us later (mean 729), entering at hcount 1 and leaving at hcount 14 of 286. The interval therefore BEGINS at the start edge rather than ending at it, which independently confirms the PSP-DISPLAY-002 in-vblank cell. Nakagawa previously modelled it as the last 1500 us before the next edge -- the opposite end of the period and roughly twice too wide.",
+   "case_ids": [
+    "vblank-window"
+   ]
+  },
+  {
+   "id": "PSP-SYSTEM-001",
+   "status": "planned",
+   "group": "system",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "controller",
+    "RTC",
+    "system parameters",
+    "power",
+    "registry"
+   ],
+   "invariant": "model/firmware metadata accompanies each scalar result",
+   "issues": [
+    34,
+    62,
+    77,
+    78,
+    80,
+    86,
+    94
+   ],
+   "risk": "low to medium; avoid timing claims until clock is pinned",
+   "reset": "return to PSPLINK; do not alter persistent settings",
+   "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+  },
+  {
+   "id": "PSP-AUDIO-001",
+   "status": "planned",
+   "group": "audio",
+   "source": "fixtures/psp_oracle/probe.c",
+   "prx": "nakagawa_psp_oracle.prx",
+   "apis": [
+    "audio channel",
+    "SAS",
+    "ATRAC query"
+   ],
+   "invariant": "scalar configuration/query state matches the local comparison; no acoustic claim",
+   "issues": [
+    38,
+    69,
+    70,
+    75
+   ],
+   "risk": "medium; scalar probes precede any audio recording",
+   "reset": "stop channels and return to PSPLINK",
+   "implementation_note": "extend probe.c with the named API cases before recording acceptance evidence"
+  }
+ ]
 }

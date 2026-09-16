@@ -51,6 +51,10 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
+/* Live-input latch hooks (defined in hle.c under SR_HLE_THREAD_SELFTEST). */
+extern void sr_ctrl_test_reset_live_input(void);
+extern int sr_ctrl_test_live_input_seen(void);
+extern int sr_ctrl_test_pulse_suppressed(uint32_t keys);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
 /* Selftest-only entry into the real route_tick path (defined in hle.c under
@@ -104,6 +108,7 @@ extern uint32_t sr_hle_test_io_lseek32(CpuState *s);
 extern uint32_t sr_hle_test_io_dopen(CpuState *s);
 extern uint32_t sr_hle_test_io_dread(CpuState *s);
 extern uint32_t sr_hle_test_io_dclose(CpuState *s);
+extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
@@ -373,8 +378,18 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     return -1;
 }
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
-    (void)guest_path; (void)index; (void)out;
-    return 0;
+    if (guest_path && strcmp(guest_path, "disc0:/data/menu/text") == 0) {
+        if (index > 0u) return 0;
+        memset(out, 0, sizeof(*out));
+        strcpy(out->name, "iso_only.to");
+        out->lba = 0x1234u;
+        out->size = 11u;
+        return 1;
+    }
+    (void)index; (void)out;
+    /* Keep one known ISO directory for the descriptor baseline.  Other paths
+     * model an ISO miss so the extracted-data VFS fallback is exercised. */
+    return guest_path && strcmp(guest_path, "disc0:/") == 0 ? 0 : -1;
 }
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
@@ -793,6 +808,16 @@ static void test_fd_namespace(void) {
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
+    int initial_find_found = 0;
+    expect(sr_hle_test_vfs_initial_find_error(ERROR_FILE_NOT_FOUND,
+                                               &initial_find_found) == 0u &&
+               initial_find_found,
+           "an empty contained overlay directory remains an existing directory");
+    initial_find_found = 0;
+    expect(sr_hle_test_vfs_initial_find_error(ERROR_ACCESS_DENIED,
+                                               &initial_find_found) == 0x80010005u &&
+               !initial_find_found,
+           "an initial overlay enumeration failure stays a loud I/O error");
     expect(sr_hle_test_fd_kind(0) == FD_KIND_STD &&
            sr_hle_test_fd_kind(1) == FD_KIND_STD &&
            sr_hle_test_fd_kind(2) == FD_KIND_STD,
@@ -973,6 +998,27 @@ static void test_fd_namespace(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u, "dclose on valid dir fd succeeds");
+
+    /* An actual empty overlay directory is successful and immediately at end
+     * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
+     * directory. */
+    CreateDirectoryA("build/hle_fd_namespace_fs/empty", NULL);
+    memset(&cpu, 0, sizeof cpu);
+    fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
+    cpu.r[4] = path_addr;
+    uint32_t empty_dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(empty_dir_fd == 0x100u,
+           "dopen on an empty overlay directory succeeds");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = empty_dir_fd;
+    cpu.r[5] = payload_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 0u,
+           "dread on an empty overlay directory reaches end-of-directory");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = empty_dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u,
+           "the empty overlay directory descriptor closes cleanly");
+    RemoveDirectoryA("build/hle_fd_namespace_fs/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -1602,17 +1648,47 @@ static void test_display_clock_reads_are_observational(void) {
     expect(current1 > current0 && accumulated1 > accumulated0,
            "elapsed scheduler time advances current and accumulated HCOUNT");
 
-    /* 16,670 us is still inside the rational 59.94-Hz frame.  The previous
-     * 16,667-us modulo made this read look like the next frame and cleared the
-     * VBLANK bit three microseconds early. */
+    /* The vblank interval BEGINS at the delivered start edge and lasts ~729 us;
+     * it does not occupy the tail of the period. Measured on PSP-3001/6.61-ARK,
+     * record PSP-DISPLAY-004: IsVblank() was true immediately after
+     * sceDisplayWaitVblankStart returned on 48/48 trials and fell 721..734 us
+     * later, at hcount 14 of 286. This block previously asserted the opposite
+     * placement -- that a read 13 us BEFORE the next frame boundary was inside
+     * vblank -- which is the shape hardware disproved.
+     *
+     * With no edge delivered yet there is no interval to be inside of. */
+    s_vbl_count = 0;
     s_vtime_us = 16670u;
     cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
+           "display VBLANK is clear before any edge has been delivered");
+
+    /* Deliver an edge at a known stamp, then walk the interval. */
+    s_vbl_count = 1;
+    s_vbl_last_us = 16683u;
+
+    s_vtime_us = 16683u;
+    cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 1u,
-           "display VBLANK uses the rational scheduler frame phase");
-    s_vtime_us = 16684u;
+           "display VBLANK is set at the delivered start edge");
+
+    s_vtime_us = 16683u + 700u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 1u,
+           "display VBLANK is still set 700 us into the measured interval");
+
+    s_vtime_us = 16683u + 729u;
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
-           "display VBLANK clears at the next rational frame");
+           "display VBLANK clears at the end of the measured 729 us interval");
+
+    /* The cell that pins the placement: late in the period, just before the
+     * NEXT edge, hardware is not in vblank. The superseded end-of-period model
+     * asserted 1 here. */
+    s_vtime_us = 16683u + 16670u;
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_IS_VBLANK) == 0u,
+           "display VBLANK is clear just before the next edge, not set");
 }
 
 static int s_delay_done;      /* set when the delay guest body returned */
@@ -2606,6 +2682,52 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     cpu.r[4] = fd;
     expect(sr_hle_test_io_close(&cpu) == 0u, "the served descriptor closes cleanly");
 
+    /* A full device-qualified path whose ISO lookup misses must still reach the
+     * prepared extracted-data index.  The ISO stub retains only disc0:/ as an
+     * actual directory, so this enters the production VFS fallback. */
+    const char *old_fs_value = getenv("SR_FSDIR");
+    char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
+    if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
+    SetEnvironmentVariableA("SR_FSDIR", "build/hle_dopen_vfs_fs");
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA("build/hle_dopen_vfs_fs", NULL);
+    static const uint32_t dir_path_addr = 0x09101000u;
+    static const uint32_t dirent_addr = 0x09102000u;
+    static const char dir_path[] = "disc0:/data/menu/text";
+    memset(&cpu, 0, sizeof cpu);
+    fd_guest_copy(dir_path_addr, dir_path, sizeof dir_path);
+    cpu.r[4] = dir_path_addr;
+    uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
+    expect(dir_fd == 0x100u,
+           "an indexed directory remains discoverable through a full disc0 path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 1u &&
+               MEM_R32(dirent_addr + 8u) == 6u &&
+               MEM_R8(dirent_addr + 0x58u) == 'c',
+           "full disc0 directory enumeration returns the indexed child");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 1u &&
+               MEM_R32(dirent_addr + 8u) == 11u &&
+               MEM_R32(dirent_addr + 0x40u) == 0x1234u &&
+               MEM_R8(dirent_addr + 0x58u) == 'i',
+           "full disc0 directory enumeration retains the ISO child metadata");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    cpu.r[5] = dirent_addr;
+    expect(sr_hle_test_io_dread(&cpu) == 0u,
+           "full disc0 directory enumeration terminates after both sources");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = dir_fd;
+    expect(sr_hle_test_io_dclose(&cpu) == 0u,
+           "the full disc0 indexed directory descriptor closes cleanly");
+    SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
+    RemoveDirectoryA("build/hle_dopen_vfs_fs");
+    free(old_fs);
+
     prewarm_env_restore();
     sr_hle_test_data_reset(0);
 }
@@ -3300,23 +3422,29 @@ static void test_can_not_wait_semantics(void) {
         cnw_end(0, token);
     }
 
-    /* ---- 4. vblank: the latch is not consumed -------------------------------- */
+    /* ---- 4. vblank: the context gate precedes the in-vblank fast return ------- */
     for (int i = 0; i < 2; i++) {
         const uint32_t nid = i ? NID_CNW_WAIT_VBLANK_START : NID_CNW_WAIT_VBLANK;
         const char *who = i ? "sceDisplayWaitVblankStart" : "sceDisplayWaitVblank";
         TCB *self = cnw_begin(0, &token);
-        /* Arrange an UNSEEN vblank: without the gate, sched_wait_vblank() would
-         * take this latch and return 0 without blocking at all. */
+        /* Put the display INSIDE the vblank interval. That is the one state in
+         * which sceDisplayWaitVblank is entitled to return 1 without blocking
+         * (measured: PSP-DISPLAY-002 `invblank-waitvblank`), so it is the state
+         * that proves the context rejection is evaluated first. Hardware agrees
+         * on both NIDs here: L26/L27 and L34/L35 are CAN_NOT_WAIT. */
         s_vbl_count = 7;
-        self->vbl_seen = 3;
+        s_vbl_last_us = s_vtime_us;
+        expect(sched_display_is_vblank(),
+               "fixture places the display inside the vblank interval");
         memset(&cpu, 0, sizeof cpu);
         uint32_t rc = sr_syscall(&cpu, nid);
 
         char msg[192];
         snprintf(msg, sizeof msg, "%s returns CAN_NOT_WAIT with dispatch disabled", who);
         expect(rc == CNW_ERR, msg);
-        snprintf(msg, sizeof msg, "%s: rejected call did not consume the vblank latch", who);
-        expect(self->vbl_seen == 3, msg);
+        snprintf(msg, sizeof msg,
+                 "%s: rejected call did not take the in-vblank fast return", who);
+        expect(rc != 1u, msg);
         snprintf(msg, sizeof msg, "%s: rejected call did not block on VBLANK_WAIT_OBJ", who);
         expect(self->state == TH_RUNNING && self->wait_obj == 0, msg);
         cnw_end(0, token);
@@ -4893,12 +5021,62 @@ static void ctrl_env(const char *noinput, const char *pad,
     _putenv("SR_INLOG=");
 }
 
+/* The auto-START bootstrap pulse must stop once a human is seen driving on ANY
+ * input source, keyboard included (gui_pad_present() reports gamepads only).
+ * The latch is sticky: a press proves presence, a quiet frame proves nothing.
+ * Driven through the exact production gate (sr_ctrl_test_pulse_suppressed),
+ * plus one end-to-end pass proving the emitted pulse cannot latch itself. */
+static void test_ctrl_live_input_latch_suppresses_phantom_start(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();   /* no route program: the env pulse below is the only input source */
+    ctrl_env("", "", "", "");   /* neutral: no SR_NOINPUT, default START pulse cadence */
+    sr_ctrl_test_reset_live_input();
+
+    /* --- quiet frames never latch -------------------------------------- */
+    for (int i = 0; i < 300; i++)
+        expect(!sr_ctrl_test_pulse_suppressed(0u),
+               "quiet frames with no live input keep the bootstrap pulse enabled");
+    expect(!sr_ctrl_test_live_input_seen(),
+           "quiet frames leave the live-input latch unset");
+
+    /* --- first live press latches -------------------------------------- *
+     * The very vblank that carries the press already suppresses: a human is
+     * provably driving on that vblank, so no synthetic START is needed. */
+    expect(sr_ctrl_test_pulse_suppressed(CTRL_BTN_START),
+           "the vblank carrying the first live press already suppresses the pulse");
+    expect(sr_ctrl_test_live_input_seen(),
+           "the first nonzero live key mask sets the sticky latch");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "once latched, even a quiet frame suppresses the phantom pulse");
+    expect(sr_ctrl_test_pulse_suppressed(CTRL_BTN_START),
+           "latched suppression holds while input continues");
+
+    /* --- the emitted pulse cannot latch itself -------------------------- *
+     * Run the production sampler with the default START pulse active and no
+     * live keys (the harness stubs gui_buttons() to 0). If the pulse fed back
+     * into the latch, it would set it within one period (240 vblanks). */
+    sr_ctrl_test_reset_live_input();
+    ctrl_drain(&cpu);
+    ctrl_tick(480u);
+    expect(!sr_ctrl_test_live_input_seen(),
+           "two full pulse periods of emitted START set no latch: the pulse is not self-triggering");
+
+    /* --- existing pulse contract still holds after reset ---------------- */
+    sr_ctrl_test_reset_live_input();
+    expect(!sr_ctrl_test_live_input_seen(),
+           "the test reset clears the latch for subsequent cases");
+}
+
 static void test_ctrl_read_buffer_contract(void) {
     CpuState cpu;
 
     reset_fixture();
     sr_hle_init();
     sr_route_reset();   /* no route program: the env pulse below is the only input source */
+    sr_ctrl_test_reset_live_input();   /* the latch is process-sticky: never leak it across cases */
 
     expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_POSITIVE),
            "sceCtrlReadBufferPositive is a registered NID in this build");
@@ -9880,6 +10058,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
