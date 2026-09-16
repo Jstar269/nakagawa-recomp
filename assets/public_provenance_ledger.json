@@ -8100,7 +8100,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "045441bf5f2490f532fc80b62d13c4258b2091c00fae196715ecd8eca848167e"
+      "sha256": "27951ccfc80a59b371f687c4e347d5236a697600cdf8446d9bc60381ed9b1c7f"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
