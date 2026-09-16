@@ -80,6 +80,55 @@ Important reference behavior found during the audit:
 - the package documents title presets, not `.xb`/`.xb0`/`.xb2`/`.xb3` locale or
   mount semantics. Those semantics belong to the game/runtime investigation.
 
+A later hostile review verified the pinned dependency directly (commit
+`ce6df78e5ca99241dd2bbbd68ca485e34003d760`, tree
+`8f252e33ce8937cfe230232bf7c68bff7da34f9c`) and reduced its extraction path to
+four steps: rewrite `/` to `\`, remove the literal substring `..\`, `makedirs`,
+`open(..., "wb+")`. There is no containment check and no overwrite protection
+inside libxb.
+
+### Why libxb is no longer the extraction back end
+
+An intermediate design kept libxb as the writer and put a repository-owned
+preflight in front of it. That arrangement was reviewed and found defective in
+two structural ways, both of which follow from splitting validation away from
+the code that produces bytes and paths:
+
+- **Nested expansion escaped every repository budget** (severity medium,
+  confidence high). Validating member names and outer archive structure says
+  nothing about a nested compression layer. An entry whose FST expanded size is
+  1 byte can carry a DEFLATE payload whose inner LZS stream declares 1 MiB; the
+  preflight accepted it, libxb decoded the nested layer independently, and about
+  1,049,599 bytes were written. No oversized payload was needed to demonstrate
+  it.
+- **The validated name was not the written name.** libxb rewrites forward
+  slashes to backslashes before writing. On Windows a backslash is still a
+  separator, so the effective path matched; on POSIX it is an ordinary filename
+  character, so the path proven contained and the path written were not the
+  same string.
+
+`tools/extract_xb.py` now owns the whole pipeline — parse, bounded decode,
+normalization, write — using the reader in `tools/xb_probe.py`. That reader
+already binds a nested LZS stream to the FST expanded size of its entry, so the
+hostile fixture above is rejected during decode and never reaches the
+filesystem; the extractor adds explicit per-entry and per-archive decoded-byte
+budgets on top. Member names are normalized once and the resulting components
+are what the writer receives, which is what makes the validated identity and the
+written identity the same object rather than two strings that happen to agree.
+Archives are built in a staging directory and promoted only on full success, and
+the produced tree is still re-verified against reparse points afterwards as
+defense in depth — a post-write scan can detect a wrong tree, it cannot undo an
+escaped write. Hostile concurrent mutation of the destination during extraction
+remains outside the threat model.
+
+None of this establishes that libxb is unsafe as a library. It establishes that
+its extraction path makes no containment or resource guarantee, that this
+repository cannot audit it at run time because it is not vendored, and that a
+split between the validator and the writer cannot be made sound by adding checks
+to the validating half. libxb remains a useful independent reference for the
+container format. See `tools/test_extract_xb_security.py` for the synthetic
+hostile fixtures, including the nested `DEFLATE → LZS` family.
+
 ## Variants and locale evidence
 
 `tools/extract_xb.py` currently discovers `.xb`, `.xb0`, `.xb2`, and `.xb3` and

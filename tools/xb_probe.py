@@ -22,6 +22,7 @@ import argparse
 from dataclasses import dataclass
 from enum import IntEnum
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -287,13 +288,29 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
     bit_count = 0
     try:
         while len(output) < expanded_size:
-            if bit_count < _HUF_MAX_DEPTH:
-                word = reader.u16("Huffman bitstream") if reader.remaining() >= 2 else 0
+            if bit_count == 0:
+                if reader.remaining() < 2:
+                    raise XBProbeError("Huffman bitstream is truncated")
+                word = reader.u16("Huffman bitstream")
                 bit_buffer |= word << bit_count
                 bit_count += 16
             entry = table[bit_buffer & (_HUF_TABLE_SIZE - 1)]
+            if entry is None and bit_count < _HUF_MAX_DEPTH:
+                if reader.remaining() < 2:
+                    raise XBProbeError("Huffman bitstream is truncated")
+                word = reader.u16("Huffman bitstream")
+                bit_buffer |= word << bit_count
+                bit_count += 16
+                entry = table[bit_buffer & (_HUF_TABLE_SIZE - 1)]
             if entry is None:
                 raise XBProbeError("Huffman code has no table entry")
+            if entry.length > bit_count:
+                if reader.remaining() < 2:
+                    raise XBProbeError("Huffman bitstream is truncated")
+                word = reader.u16("Huffman bitstream")
+                bit_buffer |= word << bit_count
+                bit_count += 16
+                continue
             if entry.length <= _HUF_MAX_DEPTH:
                 output.append(entry.symbol & 0xFF)
                 bit_buffer >>= entry.length
@@ -301,8 +318,10 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
             else:
                 bit_buffer >>= _HUF_MAX_DEPTH
                 bit_count -= _HUF_MAX_DEPTH
-                if bit_count < 16:
-                    word = reader.u16("Huffman literal") if reader.remaining() >= 2 else 0
+                if bit_count < 8:
+                    if reader.remaining() < 2:
+                        raise XBProbeError("Huffman literal is truncated")
+                    word = reader.u16("Huffman literal")
                     bit_buffer |= word << bit_count
                     bit_count += 16
                 output.append(bit_buffer & 0xFF)
@@ -383,17 +402,25 @@ class XBArchiveReader:
         self.endian = endian
         self.limits = limits or XBLimits()
         try:
-            size = self.path.stat().st_size
-        except OSError as exc:
-            raise XBProbeError(f"cannot stat archive: {self.path}") from exc
-        if size > self.limits.max_archive_bytes:
-            raise XBProbeError("archive exceeds the configured byte limit")
-        try:
-            self._data = self.path.read_bytes()
+            with self.path.open("rb") as handle:
+                try:
+                    size = os.fstat(handle.fileno()).st_size
+                except OSError as exc:
+                    raise XBProbeError(f"cannot stat archive: {self.path}") from exc
+                if size > self.limits.max_archive_bytes:
+                    raise XBProbeError("archive exceeds the configured byte limit")
+                data = handle.read(self.limits.max_archive_bytes + 1)
+                try:
+                    final_size = os.fstat(handle.fileno()).st_size
+                except OSError as exc:
+                    raise XBProbeError(f"cannot stat archive: {self.path}") from exc
         except OSError as exc:
             raise XBProbeError(f"cannot read archive: {self.path}") from exc
-        if len(self._data) != size:
+        if len(data) > self.limits.max_archive_bytes:
+            raise XBProbeError("archive exceeds the configured byte limit")
+        if final_size != size or len(data) != size:
             raise XBProbeError("archive changed while it was being read")
+        self._data = data
 
         self.variant = variant_from_path(self.path)
         self._entries, self._data_start = self._parse()
