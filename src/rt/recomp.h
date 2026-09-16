@@ -73,6 +73,10 @@ static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
     return &s->cop0[SR_CP0_STATUS];
 }
 
+/* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
+ * here so generated code and the interpreter share one declaration site. */
+#include "cpu_lle.h"
+
 #ifndef __cplusplus
 _Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
 _Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
