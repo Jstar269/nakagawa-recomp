@@ -77,6 +77,11 @@ static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
 
+/* LLE Phase 1 (PR 3): per-domain HLE/LLE selection and the import-call seam.
+ * Included here so generated import stubs share one declaration site. The
+ * header only forward-declares struct CpuState, so include order is free. */
+#include "domain_mode.h"
+
 #ifndef __cplusplus
 _Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
 _Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
