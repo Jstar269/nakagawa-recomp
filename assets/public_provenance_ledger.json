@@ -267,7 +267,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c37a20ca71043cdb225fe075761f54fee34dee857a2f805826dce76b9501b707"
+      "sha256": "dc04785466209f3e16d873df8105d62af182f856d982ea2d6db9ee5ef6c2b489"
     },
     {
       "path": "LICENSE",
@@ -311,7 +311,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ef1f3e3e8b2b93ad5e9435ae8b4ab8c9b5a7fcecf9fa4353a0707772644f6690"
+      "sha256": "bc0bf764b2620c8bbeb60c17629190ec5b9f7b9171328be06eaaad7ec28443dc"
     },
     {
       "path": "SECURITY.md",
@@ -738,7 +738,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a3b4aa7c797712fc02077862806ff18cf25ec3ac07a227a26778fb6d5e785ef2"
+      "sha256": "f4eb70bfc9c89557f195fd21f62fbf532ae84b1b01881732a5c5b93eea779dff"
     },
     {
       "path": "docs/CI.md",
@@ -765,7 +765,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2eea8a446e1e946eeff42540e598f26d67e30df19376fc09d5c2d83bd75ce294"
+      "sha256": "e8f360d51f0dc611a58572f4265b51f140def9f05b9385e533f35cd14f54b035"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b6169335c4cf7d208b1de476a1c814cc42e9d49e802c0b09ad3c83477a512d6f"
+      "sha256": "7f9c73ab30cc1eaa6b344271bf940b1ca34bdd3024827cf669cf6badf94801ab"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -882,7 +882,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "29e4ac1cd28808401cf64f42133347172c3c8cd90c9a45c0f6700ecf37166cb8"
+      "sha256": "a0f000a69e4b18e4b2c507badca166c1a07f1ec91753add8283e37bf695b8b1c"
     },
     {
       "path": "docs/PORTING.md",
@@ -891,7 +891,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fec2e2ad7c956488414418c64adaec108ac008177b153b637a7d268bbb66eab3"
+      "sha256": "a8fa1dab934a1c167aae9e3c37f55a5ddf0b6d7580cda03705de94e4bba4ae89"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -900,7 +900,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd6a56b97597365011527dcd2301aea7dcee708d02ceff18ab82ccca77273ccb"
+      "sha256": "19813c6c919dc2c9ddb6b53ac23d7a195b6a53f067e675336e19456cb67af41f"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -909,7 +909,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8572f6d25be57983016c978c816c05bbd6cadd7e537c2a70a4a3b5b39195b9ed"
+      "sha256": "688645adace0e327f9180dca46cb2cda978daaa3a31b895a58bb9fcf3ecd7035"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "63b86843197a7f7ce38f935aa425fe8e7714255d5516d9c8070c2d1183bc8c7a"
+      "sha256": "241dcc597ddf8d384dcf84ebab9901f29a70942c40a5f26e2452a8014582b939"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -990,7 +990,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f00c277d0963d28ec1b5d002fbf661cac329d132a1bd5228ed8f98c71e119099"
+      "sha256": "589aad48813fb1ef54c5d65681bd8815bad5da3929cff7c9621fe308dcc3f7a9"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1008,7 +1008,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e7f064123a2f1f7c4371fbf932615daf96ca36e2fd44068a53a7d15de311f38"
+      "sha256": "a4a09a7125287abd7116d2f6e563f306f4a2911f47f0a57b49b831bd82ffdfb1"
     },
     {
       "path": "docs/TITLE_CODEGEN_PLAN.md",
@@ -1017,7 +1017,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7b08a3b505be0e733f11e9f010e48c97eaf4164fc5cea0ec1f2981677f8022af"
+      "sha256": "e4f9119fda1a04ec05cace78595a515073963e25f70e3d2091330433ba224299"
     },
     {
       "path": "docs/TITLE_MANAGER_DECOUPLING.md",
@@ -1026,7 +1026,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "108048dec80028ec8f7684af7dcac3f35eb0c87893a6b980ffd364a99a9f414e"
+      "sha256": "ad117bd0bed9c4b07312781b50e351c4ae4c19c3c4fb213ef716ee1966c10a72"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -1062,7 +1062,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d6cd42cdc63ba8dfd32668c61cecac9c7ea462644496f7515e2782f1735cb517"
+      "sha256": "0ad0f69fcbe9bb523d08c0540718b6e20a5e8b93ede077e78dede7d264ce37aa"
     },
     {
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
