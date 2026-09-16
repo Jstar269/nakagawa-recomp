@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "be97a376ea096ead2feeaecc54e9711743d3db14d62727d7f69c61934923732f"
+      "sha256": "d9c7a89ebc114e113efdf5e7de1c8aa551ca1ce6fc7f09928a50fa0cd9c70b36"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fdd52ba90dfc834da5694cf757b6510e9919f4d59b0ee9bc492a30c82cb501ab"
+      "sha256": "6c55648264a83674b09e1d961f3b871044951504a0763dc924e76b9c51e41d55"
     },
     {
       "path": "NOTICE.md",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "56a767a2b1c1e001d5f5fc573c4c873c2d8be273ecd56089ff969c854155897b"
+      "sha256": "44a64ddbe437ba180bdc138cba53d7f913e4a46307b9aba8c9b18bc38764e502"
     },
     {
       "path": "assets/release_manifest.json",
@@ -738,7 +738,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a3b4aa7c797712fc02077862806ff18cf25ec3ac07a227a26778fb6d5e785ef2"
+      "sha256": "e9d787a0fd96c25f1e47d770dab0c4513cf079d18a911657af04a4e729accafc"
     },
     {
       "path": "docs/CI.md",
@@ -1170,7 +1170,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ddfe87a518718b29f7c0935013d18c5a019772bbe0fece70f1600c113bc166bb"
+      "sha256": "1bbe87a86f040b26fb41b85fbe5525a9e7d739b16671e1870db56a191db0369d"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -1179,7 +1179,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7ce4cae9a1817d2429d5778c924b4f400cbc97d2143e374dd47ce64f0e444ef5"
+      "sha256": "68a046accde70d8871532119f2f8f7d648c29e103f04f8095efae36dfd6aad83"
     },
     {
       "path": "fixtures/cosim/generate.py",
@@ -2781,7 +2781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fac6f53a7d1f27e4151c1d718342c0c83c559a8a6db6bf58de07ba8d845aecae"
+      "sha256": "358589a814a56e41599ad99ee5b34be40d57bb8074f832f3fa8cebeb5febff78"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.test.mjs",
@@ -2793,7 +2793,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b4449a33953d19d957085999b77d227c63f9efe158d45c895538c085042e0d2"
+      "sha256": "7b54734c082ca0bba464d9d75b45ab74f720e8d4e4efbee34f3a0bbbfc63281f"
     },
     {
       "path": "interface/src/lib/recompiler/defaults.ts",
@@ -3696,7 +3696,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "63a4d99666306f449583e969a7cc8f1067df8d58f8436755515dc3d0ba5da679"
+      "sha256": "3ec6b3bedc5978b2e0f8785a3448b9c5f5d645badf48456f0889b497ca3b0693"
     },
     {
       "path": "src/ref/interp.cpp",
@@ -5002,6 +5002,42 @@
       "sha256": "f0bc76b0d868ea79c46e812d49569acd521e4db65c2e320100ef5153547d55e7"
     },
     {
+      "path": "src/rt/cpu_lle.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a575b34aeec9acc4c12a295d7beda04cebc9f39101057ad37d842bc3d469b1a5"
+    },
+    {
+      "path": "src/rt/cpu_lle.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6c6592f7b362c0823ca788155031fcbe797b8bbe40d35590ebc0d5b1d72910cc"
+    },
+    {
+      "path": "src/rt/cpu_lle_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "50e57b4de289aeeffe7ca3cc71256e93be056b58747c0efa4b17d2fba2ba3c7b"
+    },
+    {
       "path": "src/rt/debug.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5479,7 +5515,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "1e40b7627b60e435e5fec8fc12200d5fe4c010ecad702c0095743db1dcd99019"
+      "sha256": "7dae3c3f15a419f571d7295f2b269b4f644b3a02a5537f2fd80c842025c82788"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -5491,7 +5527,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "9ae21d305f8ad7e741843da58a476af41fd6270989f0832d5117b1b24596de2d"
+      "sha256": "1cb56b44d469d76ada276f3f231bc5a63512925b4ed125a9d56f05b6627abdd7"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5618,7 +5654,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b53a7157cbf2db6305ae467391e8872660c6d098fa6d8f69ae889fed8d4eab7"
+      "sha256": "e10e464f3ee14cbceb80b9c161894a623e0408fc43492e35b952a4554b7e3354"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5829,7 +5865,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "73431d9954eee8bec9ad55064f3007b134229cbf66ca9881cf116667bff00352"
+      "sha256": "6167f449e3f280473c8f2b320a6c8bf6ff40495ee536e6b6048c78fba1d2362c"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5849,7 +5885,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "74e6a0badab771f9f8606f7cb556c1b7951dbf0b06545ed7b2e3148c0a0bb5c3"
+      "sha256": "9f98e15035f26fbfa6727245b107a992444f1a4b16a4e3033a1f99dfadc35e17"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5894,7 +5930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19ac0bea4c04b3c6c255cdd852572e61bb660ebc17197df5fbbdbe530fdb4eeb"
+      "sha256": "f64fada4cf91f30ef5c34939a09baf23c49c551a6ff4abe4ea188f475e015773"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -6418,7 +6454,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7b193317ec7f7d6cd891821cf0cf66dc5ecf8c75ce0ce3375542ed16d536f39"
+      "sha256": "66f5f2fd330c97833b8e674b2fec9496e90e65aaa332f91471594ab64132c42f"
     },
     {
       "path": "tools/build_public_export.py",
@@ -6483,7 +6519,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "1a2daf850ccfe26d510c1c17d5370662286f7d8f4efdf2fd2cac68cb848731b5"
+      "sha256": "8fd5185c64dbf3fc889b3ae93d6b99d08ea91d0e2e48e23098bdb5cd42b01592"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6500,7 +6536,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3f9204bedcb5fadbd07f19011c96dc13adf323e24be7ccf55fc3bb7cbbd49c26"
+      "sha256": "18dbee5f09c60d53beeeb7018b97160fd7eac749e30cc49856b1e4480d023c02"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -6956,7 +6992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8078f1f31666eceed62bc4a581a6d12200f1a03323ff9643177e798adb86db8c"
+      "sha256": "47b9eb3ee120e568a0940b718853857a16bfdc146f49ae6d662782af9b31ffdc"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -7701,7 +7737,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ff0a4698030ee2da6d123de2f237d41ddfef57090de70d6f9d05f3a82e9911ed"
+      "sha256": "3b8ce7f995637f6a60d1080c1693b4cdd5475594c3764f911aef3b5edd64690c"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7746,7 +7782,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "dfbcb4eb2c5c8c529a1ef63a48de35c1ad55cdf4e216da70bb31cd394253681d"
+      "sha256": "99488f2e8143d55318e838d3ec626a77aa044380f01f5222ada614825209e2df"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
@@ -7755,7 +7791,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "73f4b7d6f7591c80ff67687d7d95a45c660c2cdee9a4325426b267e0724d37a7"
+      "sha256": "9bdf5070a0078abddfbc29691d71a7500b3e01af60e6d0b3c454b141b0e2741b"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -7848,6 +7884,18 @@
       "sha256": "fe3a42f04aca4d51fed2e46bbcd385aac23c570d54fb7bf55f36c522d53a8947"
     },
     {
+      "path": "tools/test_cpu_lle.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9afdf2ff73a635fff7917f8498e96198e1a87567445ad21d5243217b647beee4"
+    },
+    {
       "path": "tools/test_dco_policy.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -7881,7 +7929,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "92f2ff068b6b93f92dfbd6f080a5c850724e0515e0a378fd0c3473f90b60ed51"
+      "sha256": "1d21b552c42cdcff53aab098de9e25dd4e93a063174b5759e66b2383b31fb984"
     },
     {
       "path": "tools/test_discovery_contract.py",
@@ -7908,7 +7956,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ff9fcc8b754e8e221e7182fa0fa330ba1654eb2b70ff8df0225bc6bfba540d40"
+      "sha256": "fbb5c4b0d6ac20b6853de8f3fb718769a9634e840d006c171e876ad3f6ecd575"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -8307,7 +8355,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3948143c0ea173b3887dcc69e02330017fc1d317e3d5c65d61e9c6b1a212a778"
+      "sha256": "b7a73dbfae9abe2efd0f2bb058cdf77632772be86998554a256d4deba179187a"
     },
     {
       "path": "tools/test_modified_file_notice_audit.py",
@@ -8343,7 +8391,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "84d795b7aacd8ddb49762d81ed39c88202fffb04770ad64878e06f9296aeb9a1"
+      "sha256": "bbeda523ebd23c4012fda3f26200d9b8cb0381205003382904ccbd8c12ff7746"
     },
     {
       "path": "tools/test_native_host_backends.py",
