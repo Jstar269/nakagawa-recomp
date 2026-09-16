@@ -1,5 +1,7 @@
 # AOT Productization Architecture: End-User Recompilation Without Developer Toolchains
 
+> **Status: CURRENT — maintained architecture decision record.** This document evaluates productization routes and records target choices. The public tree still requires developer tooling, and no end-user ISO-to-AOT preparation pipeline is connected.
+
 ## 1. The Core Problem
 
 In developer environments, static recompilation uses:
@@ -27,7 +29,7 @@ Nakagawa Program + User's Game ISO → Play
 | --- | --- | :---: | :---: | :---: | :---: | --- |
 | **Option A** | **Bundled Lightweight C Compiler (TCC / MinGW-w64 Clang)** | YES | High (Pure C chunks) | Moderate (10–30s on first run) | Small (+15–30 MB) | **Viable Short-Term Native Route** |
 | **Option B** | **Embedded MIPS JIT Engine** | YES | Medium (JIT vs AOT optimization gap) | Instant (<1s) | Minimal (<5 MB) | **Secondary/Fallback Engine** |
-| **Option C** | **Build-Time AOT + End-User Asset Binding** | YES | **Maximum (100% genuine AOT)** | **Instant (<1s)** | Moderate (+20–40 MB per title) | **Recommended Primary Architecture** |
+| **Option C** | **Build-Time AOT + End-User Asset Binding** | YES | **Maximum (target)** | **Instant (target)** | Moderate (+20–40 MB per title) | **Recommended target; NOT IMPLEMENTED** |
 | **Option D** | **Pre-Generated Static Stems + Interpreter Floor (#118)** | YES | High (fail-closed interpreter floor) | Instant (<1s) | Minimal (<10 MB) | **Transitional / Development Proving** |
 | **Option E** | **Embedded Cranelift / LLVM Backend** | YES | High | Fast (3–8s first run) | Moderate (+35 MB) | **Strategic Long-Term AOT Engine** |
 | **Option F** | **Cloud-Based Recompilation Service** | YES | Zero (Severe Privacy/Legal Breach) | Poor (Network transfer of multi-GB ISOs) | Minimal | **REJECTED (Illegal & Hostile to Privacy)** |
@@ -38,6 +40,11 @@ Nakagawa Program + User's Game ISO → Play
 ## 3. In-Depth Analysis of Viable Options
 
 ### Option C: Build-Time AOT Engine + End-User Asset Extraction (Recommended Primary)
+
+> **Implementation status: UNBUILT.** The following describes the proposed packaging
+> route. The current player does not validate a retail disc hash or launch a newly
+> generated runtime from an arbitrary ISO. It does perform bounded asset extraction for
+> supported ISO/XB inputs; that landed staging capability is separate from end-user AOT.
 
 In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into clean-room release packages.
 
@@ -69,7 +76,10 @@ For titles requiring dynamic or local recompilation from novel ISO revisions:
 
 ---
 
-## 4. Immediate Architectural Decisions for the ux-investigation Lane
+## 4. Decisions to Preserve for Future Implementation
+
+The following are design constraints, not a claim that the ux-investigation product
+route is currently implemented:
 
 1. **Retain Isolated Child Process Launch Contract:** `NkLaunchSession` handles both pre-compiled executables (Option C) and locally compiled binaries (Option A) identically via environment parameters.
 2. **Deterministic Manifest-Driven Metadata:** Title configurations (`assets/titles/*.json`) dictate whether an executable is pre-packaged or locally derived.

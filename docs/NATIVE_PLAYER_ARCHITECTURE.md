@@ -1,5 +1,11 @@
 # Native Cross-Platform Player UI Architecture
 
+> **Status: CURRENT — maintained architecture record.** The native SDL3 player,
+> launch/session core, and bounded ISO/XB staging pipeline exist in the public
+> source. Module decryption, complete retail preparation, progress reporting for
+> every preparation route, and end-user productization remain unbuilt and are
+> marked as targets below.
+>
 > **Current build boundary:** The native player connects a bounded ISO/XB
 > staging pipeline for the first-time setup wizard. It records the extracted
 > asset/audio/visual/layout counts, promotes the transaction, registers the
@@ -60,24 +66,29 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 | **Executable Footprint** | **~2 MB overhead** (Single `.exe`) | 50–100 MB of shared DLLs | ~15 MB | ~10–15 MB |
 | **Runtime Dependencies** | **None** (Self-contained) | Extensive shared libraries | Rust runtime | OS Webview (WebKitGTK on Linux) |
 | **Couch / Controller Navigation** | **First-Class** (SDL3 Gamepad API) | Complex focus management | Moderate | Web Gamepad API limits |
-| **Unified Game Window** | **Yes** (Launcher & Game in 1 window) | No (Separate launcher & render window) | No | No |
-| **In-Game Overlay Capable** | **Yes** (Draws over Vulkan swapchain) | No | No | No |
-| **Linux / Steam Deck Parity** | **Flawless** (Standard SDL3/Vulkan) | Good | Good | WebKitGTK packaging fragmentation |
-| **macOS (Metal/MoltenVK)** | **Supported** | Supported | Supported | Supported |
-| **Build-System Burden** | **Zero** (Compiles cleanly with Makefile) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
-| **Startup Latency** | **< 50 milliseconds** | ~300–600 ms | ~100 ms | ~400–800 ms |
+| **Unified Game Window** | **Target** (launcher and title currently run as separate processes) | No (Separate launcher & render window) | No | No |
+| **In-Game Overlay Capable** | **Target** (overlay parity is not built) | No | No | No |
+| **Linux / Steam Deck Parity** | **Target** (SDL3/Vulkan; platform acceptance not run) | Good | Good | WebKitGTK packaging fragmentation |
+| **macOS (Metal/MoltenVK)** | **Target** (framework path; project acceptance not run) | Framework capability; project acceptance not run | Framework capability; project acceptance not run | Framework capability; project acceptance not run |
+| **Build-System Burden** | **Target: native Makefile path** (developer toolchain still required today) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
+| **Startup Latency** | **Target estimate; not acceptance evidence** | ~300–600 ms | ~100 ms | ~400–800 ms |
 
 ### Selection Rationale
 
 **SDL3 with an in-engine retained/immediate UI layer** was decisively chosen because:
 
-1. **Single Unified Binary**: The exact same executable (`nakagawa.exe`) serves as the Game Library/Launcher upon startup and seamlessly transitions into the recompiled Vulkan game upon clicking "Play".
-2. **Dual Outside/Inside Presence**: The same UI system drives the launcher outside the game and renders the in-game settings pause overlay (`F1` / Gamepad `Guide`) over the running game.
+1. **Unified Installation Experience (Target)**: The product goal is one install with a coherent launcher and game experience. The current source starts a prepared title as a separate child through `nk_launch_start`; it does not make the launcher and game a single executable.
+2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an eventual in-game settings pause overlay (`F1` / Gamepad `Guide`). In-game overlay parity is not implemented in the current native slice.
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
 ---
 
 ## 3. Architecture & Separation of Concerns
+
+The diagram below is the target separation. The implemented public slice currently reaches
+title lookup, bounded ISO inspection and ISO/XB staging, launch-session validation, and
+child-process lifecycle. Preparation beyond bounded staging, complete archive/decryption
+work, and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -115,9 +126,14 @@ capability layers rather than being reimplemented in the launcher.
 
 ## 4. First-Run & Onboarding Flow
 
+The flow below is the complete productization target, not a description of the current
+executable. Today the player opens a native SDL file picker, inspects a selected ISO, and
+runs bounded ISO/XB staging for supported inputs. Retail hash validation, encrypted-module
+decryption, generated-runtime provisioning, and arbitrary-ISO one-click play remain unbuilt.
+
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
-3. **Native File Selection**: Clicking *"Add Game"* invokes the native platform file picker (`IFileDialog` on Windows, native portal/Zenity on Linux).
+3. **Native File Selection**: Clicking *"Add Game"* invokes SDL3's native file-dialog API; the platform backend supplies the operating-system picker behavior.
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
 5. **Transactional Preparation**:
    - Staging directory created under `.staging_<disc_id>/` in local application data.
@@ -139,14 +155,18 @@ capability layers rather than being reimplemented in the launcher.
 
 ### Progress Contracts
 
-The native staging worker emits structured progress events through SDL user
-events; it does not use a timer or poll the worker:
+The native staging worker emits progress notifications through SDL user events; it does
+not use a timer or poll the worker. For the connected bounded ISO/XB path, each progress
+update carries only:
 
-- **Stage**: `INSPECTING_ISO`, `EXTRACTING_CONTAINERS`, `DECRYPTING_MODULES`, `VALIDATING_ELFS`, `PREPARING_VFS`, `READY`.
-- **Metrics**: Completed count, total count, elapsed time in milliseconds, current processing item, and the final asset/audio/visual/layout census.
-- **Truthfulness**: Percentages are derived from the bounded ISO byte/file
-  walk and XB entry completion. Decryption and other unimplemented phases do
-  not fabricate readiness.
+- **Metrics**: Percent, completed file count, total file count, and the current processing path.
+- **Transport**: The SDL event identifies progress or completion and carries the worker
+  context; the payload above is read from that context on the UI thread.
+- **Completion**: The asset/audio/visual/layout census is recorded by the completed
+  staging transaction, not emitted as per-event progress data.
+- **Truthfulness**: Percentages are derived from the bounded ISO byte/file walk and XB
+  entry completion. Stage labels such as `DECRYPTING_MODULES`, elapsed time, and richer
+  preparation-route metrics are a future contract, not fields populated by this worker.
 
 ### Transactional Integrity
 

@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b1f18ebc0f017e0a6b8ceddeb7a7d83c7a740ee6c7659fca73299534413bb620"
+      "sha256": "9056dc1afec5ec06bc1c34a95b5ec46740d4d5fd00f44fcedb304abd2bf7184d"
     },
     {
       "path": "assets/release_manifest.json",
@@ -729,7 +729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "47d472eeab4cf6a1a4c2b124683f86f3f1da89239d4f241fe9a38fe28dda39de"
+      "sha256": "378ec872d2ed37380caddf3b8f4110f367928f5884bceafc5b7422e6dc09c526"
     },
     {
       "path": "docs/ARCHITECTURE.md",
@@ -810,7 +810,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7faa69474501dc02889ca7c7a9cb9f611f7a9755e00f5ec29525734c803299d4"
+      "sha256": "775e119df50d7b8c9986d29a93074b8ca8b906de4741ed321e30a45f84f187ac"
     },
     {
       "path": "docs/ISSUE196_DIRECT_XB.md",
@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "73aa63a8da4eb9df2e04645869e93dbfced9a487699d42ac773cb04105850271"
+      "sha256": "61220f33919968deb14c8f5c1ed43c383abb693335f761078130b171145d31b0"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -963,7 +963,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe62a7b3d38a1c6dfbd5a105864039e2e13ebd352f07995c5e1468639d5fa438"
+      "sha256": "dab689b2125a044e700ae32863107b8a3845975d29130673f413ed9e40e235de"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -972,7 +972,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "57c374bb8f03612891b08c262bd190638a786ae81b82c03732501569a5c0a9e1"
+      "sha256": "0ecfdd4749b24b96151651f4a2332ddad0e6aa67461b7025ddaf9428e23d0708"
     },
     {
       "path": "docs/SETUP.md",
@@ -1044,7 +1044,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "df7b80de41cc2b9ac9101456fd1de79f30d0a39646cf155636c7328896c33f08"
+      "sha256": "4f84670f43a0744f4e6e1152ccaa1604dc8738f8a2147e4b0b2d38866dcc8ec9"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1135,6 +1135,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e7cd5bb6f0413e58092a174f73fb6c29f16def8fdce9394260b9b336b1f9d631"
+    },
+    {
+      "path": "docs/research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "c53190a856e761919b9c70f5107ecb80a19022dfd5d315d18d0ec9091a1c756f"
     },
     {
       "path": "docs/ui-baseline/README.md",

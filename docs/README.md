@@ -51,7 +51,8 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 ## Doctrine, player, and productization
 
 These were reachable only by knowing their filenames until now. Doctrine binds
-current work; the productization documents are design, not built state.
+current work; the productization documents are maintained decision and gap records
+with explicit target and unbuilt boundaries.
 
 - [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) — the
   fidelity-over-convenience doctrine and why original guest execution outranks
@@ -71,10 +72,11 @@ current work; the productization documents are design, not built state.
   [`AOT_PRODUCTIZATION_ARCHITECTURE.md`](AOT_PRODUCTIZATION_ARCHITECTURE.md),
   [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md),
   [`ISO_ONLY_GAP_ANALYSIS.md`](ISO_ONLY_GAP_ANALYSIS.md) — the "program + ISO"
-  productization target and the routes evaluated for it. All four are DRAFT:
-  they describe work that is not built, so do not cite them as capability.
-- [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — dated inventory of the
-  `interface/` prototype and the native migration plan derived from it.
+  productization target and the routes evaluated for it. All four are CURRENT
+  maintained records; each marks unbuilt behavior inline, so CURRENT does not mean
+  the target pipeline exists.
+- [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — CURRENT inventory and migration
+  record for the `interface/` prototype and the native migration derived from it.
 - [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
   [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
   copy for an early preview. Both are proposals: creating a tag or release is a
@@ -132,11 +134,11 @@ in this slice; classification comes first, directory moves separately.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
-| `NATIVE_PLAYER_ARCHITECTURE.md` | DRAFT | Productization vision; the preparation pipeline it assumes is not connected in this build |
-| `AOT_PRODUCTIZATION_ARCHITECTURE.md` | DRAFT | Evaluation of end-user recompilation routes A-G; none is implemented |
-| `RUNTIME_PACKAGING_ARCHITECTURE.md` | DRAFT | Packaging target for an end-user build that does not exist yet |
-| `ISO_ONLY_GAP_ANALYSIS.md` | DRAFT | LLE gap analysis and proposed resolution path; carries its own inline SUPERSEDED note for the HLE-bridge recommendations it withdrew |
-| `WEB_UI_MIGRATION.md` | REFERENCE | Dated `interface/` prototype inventory and migration plan; the native player has since landed |
+| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202), while module decryption and full retail preparation remain unbuilt and are marked inline |
+| `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; recommended routes remain unimplemented |
+| `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and distributable title packages remain unbuilt |
+| `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and absent retail-preparation stages are distinguished inline |
+| `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
@@ -145,7 +147,8 @@ in this slice; classification comes first, directory moves separately.
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle NOT_RUN |
 | `research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md` | REFERENCE | Dated cross-project comparison; cites other repositories, not this one |
 | `research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md` | REFERENCE | Dated action register derived from that audit; live issues authoritative |
-| `research/project-truth/` | REFERENCE (reserved) | Reserved for frozen audit snapshots admitted via [issue #155](https://github.com/Jstar269/nakagawa-recomp/issues/155); no snapshot ships in this change |
+| `research/project-truth/` | REFERENCE (dated snapshots) | Frozen public-source truth snapshots; each carries its own base, evidence class, and admission boundary |
+| `research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md` | REFERENCE | Dated public-source truth snapshot at its recorded base; captured before PR #202, so some player claims there are superseded; not a provenance or release approval |
 | `OSPS_BASELINE.md` | HISTORICAL | Pre-republication snapshot; do not cite as status |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
