@@ -1293,7 +1293,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1633e87577d862d2bf50f5f3742184e8c805515616c52b5d2ed961c0a08c5079"
+      "sha256": "7854a168fdadb540cf871d7540f55b317c3e9f0163fb51b821a54b5dd063e542"
     },
     {
       "path": "hst_manager.ps1",
@@ -3168,7 +3168,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "655b1b4a67abb7761a121189f343fa590dfbc2c19f28a134743a99f1b5c7de0d"
+      "sha256": "48cc53cfe44d5c4e5d6fca5d7b6fc80ac61635e463f90274fb75a76587e9d85f"
     },
     {
       "path": "pyproject.toml",
@@ -6073,7 +6073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "baabe445231084d0c1a01e98ed81dece134f6aa73f40c78e8e0b3215cb7d6cee"
+      "sha256": "f970672c0713505ded923ac5a585b75b99173c8e8efb981f24cee3dacd82785c"
     },
     {
       "path": "tools/hst_doctor_checks.py",
@@ -6085,7 +6085,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7d5e2d34d6acaa92666b5dac5e0b570a0b99803e8a79d2392c107f858453d9c"
+      "sha256": "3113b2fa1c12f6999be989a7fc29a75384b2e5040d5af0d5b9dc7eb020e41912"
     },
     {
       "path": "tools/hst_doctor_core.py",
@@ -6097,7 +6097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce8ddaf8e0d7129734c02a475eb565287499f14d4f5ca4c70adc038c30a29c99"
+      "sha256": "fa78407568880bbbbbd63cccfddddd387fe15271c6bb36c43b98d2fd7742315a"
     },
     {
       "path": "tools/hst_run_support.ps1",
@@ -6121,7 +6121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c2d9e70dd047c06b49d0b1608ff988104988a8eb2cabbc0bef736bff1a2ba7b"
+      "sha256": "cc6468dd182f5ce365e2ad087e65428392ce8fdc60ed70a6b7771f4d5bd74bb2"
     },
     {
       "path": "tools/hst_test_fixtures.py",
@@ -7299,7 +7299,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "1c9b961f359281a9e322bfb675ea9e333969453c93d9ceb83f4fd163ad0b9747"
+      "sha256": "862e614f5a8313548fd856c2ff9abf898ccabc11269118950a090beb150e4f44"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -7307,7 +7307,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "7c73cc785aed9f0d0ad41469cd48c31e9b84b2417fd42eebcc9f8370f429fcf4"
+      "sha256": "d9beec467cbc59a7dbc4b47f9fee6d6de7efce1ba51e4053b4db07764fa96ceb"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -7399,7 +7399,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "9e82130534ddf6d73dfb98563ba2169a7369972b17cf0ea68689cf2bd89a7e23"
+      "sha256": "efedeacd76bee15952a1cac38f35f86c571781de9fece7a87b8d29ff421a5639"
     },
     {
       "path": "tools/test_manager_safety.py",
@@ -7407,7 +7407,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "4228c2ec502212024b8b7de0578958a6e5e59f0adb62dd585d11d618ff368fe4"
+      "sha256": "b7bf2f80458719300bdfc694af9df88bf64e96da4f4a8783ba744732c8e9da8a"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -8240,17 +8240,21 @@
       "sha256": "d9b8852429cabbe9adf1c73278af285fee7a52924a4db07051385452320b031e"
     }
   ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "ef2ae8b677814dd989055964a7b1ff154a8288cd",
-    "candidate_tree": "e49893b056a8e1a5398ccf857afd9fed20325380",
-    "admitted_paths": [
-      "nk.ps1",
-      "tools/nk_doctor.py",
-      "tools/nk_doctor_checks.py",
-      "tools/nk_doctor_core.py",
-      "tools/nk_safety.ps1"
-    ],
-    "authority_sha256": "6f8d3e8d41b6189c75580af8823ff85a54a4da584d37d7a35b184e3560e017fd"
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "886c33117f01de9735a143a3cbe558ba477b3ace",
+    "candidate_tree": "d2a948b31203382a1091ff3be6d43f34998e8847",
+    "refreshed_paths": [
+      "hst.ps1",
+      "nk_manager.ps1",
+      "tools/hst_doctor.py",
+      "tools/hst_doctor_checks.py",
+      "tools/hst_doctor_core.py",
+      "tools/hst_safety.ps1",
+      "tools/test_hst_doctor.py",
+      "tools/test_hst_doctor_hardening.py",
+      "tools/test_manager_safety.ps1",
+      "tools/test_manager_safety.py"
+    ]
   }
 }
