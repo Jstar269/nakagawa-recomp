@@ -32,6 +32,10 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 #include "debug.h"
 #include "perf.h"
 
+#ifndef SR_CPUSTATE_ABI_VERSION
+#define SR_CPUSTATE_ABI_VERSION 2u
+#endif
+
 typedef struct CpuState {
     uint32_t r[32];     /* r[0] reads 0; the codegen never emits a write to r[0]. */
     uint32_t hi, lo;
@@ -56,10 +60,30 @@ typedef struct CpuState {
         uint32_t vi[128];
     };
     uint32_t vfpuCtrl[16];  /* VFPU control: prefixes (S/T/D), cc, etc. */
-    uint32_t status;        /* COP0 status register */
+    uint32_t cop0[32];      /* COP0 register bank; status is cop0[SR_CP0_STATUS] */
     uint32_t next_pc;       /* Branch/delay-slot bookkeeping for reference parity */
     uint32_t in_delay_slot;  /* Parity with ref::CpuState */
+    uint32_t flow_kind;      /* Runtime transfer metadata, not architectural state */
+    uint32_t flow_target;    /* Runtime transfer metadata, not architectural state */
 } CpuState;
+
+#define SR_CP0_STATUS 12u
+
+static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
+    return &s->cop0[SR_CP0_STATUS];
+}
+
+#ifndef __cplusplus
+_Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+_Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
+_Static_assert(offsetof(CpuState, next_pc) == 980u, "CpuState next_pc offset drift");
+_Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
+               "CpuState in_delay_slot offset drift");
+_Static_assert(offsetof(CpuState, flow_kind) == 988u, "CpuState flow_kind offset drift");
+_Static_assert(offsetof(CpuState, flow_target) == 992u,
+               "CpuState flow_target offset drift");
+_Static_assert(sizeof(CpuState) == 996u, "CpuState size drift");
+#endif
 
 /* Guest memory: a single host region. g_mem points at guest 0x08000000, and the underlying
  * allocation also extends 0x04000000 bytes *below* g_mem so the same arena covers VRAM/eDRAM
@@ -776,6 +800,7 @@ extern jmp_buf g_hle_jmp;
 
 #ifdef __cplusplus
 #include "cpu.h"
+static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
 static_assert(sizeof(::CpuState) == sizeof(ref::CpuState), "CpuState structural layout drift detected!");
 #define SR_CPUSTATE_OFFSET_ASSERT(field) \
     static_assert(offsetof(::CpuState, field) == offsetof(ref::CpuState, field), \
@@ -791,9 +816,11 @@ SR_CPUSTATE_OFFSET_ASSERT(fpcond);
 SR_CPUSTATE_OFFSET_ASSERT(v);
 SR_CPUSTATE_OFFSET_ASSERT(vi);
 SR_CPUSTATE_OFFSET_ASSERT(vfpuCtrl);
-SR_CPUSTATE_OFFSET_ASSERT(status);
+SR_CPUSTATE_OFFSET_ASSERT(cop0);
 SR_CPUSTATE_OFFSET_ASSERT(next_pc);
 SR_CPUSTATE_OFFSET_ASSERT(in_delay_slot);
+SR_CPUSTATE_OFFSET_ASSERT(flow_kind);
+SR_CPUSTATE_OFFSET_ASSERT(flow_target);
 #undef SR_CPUSTATE_OFFSET_ASSERT
 #endif
 

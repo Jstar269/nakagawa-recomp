@@ -82,11 +82,25 @@ def compiler_identity(command: str) -> dict[str, str]:
     }
 
 
-def profile_payload(compiler: str, entries: list[str]) -> dict:
+def file_content_identity(path: str) -> dict[str, str]:
+    """Return a stable, content-based identity for a profile source file."""
+    source = Path(path)
     return {
+        "path": source.as_posix(),
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+
+
+def profile_payload(
+    compiler: str, entries: list[str], files: list[str] | None = None
+) -> dict:
+    payload = {
         "compiler": compiler_identity(compiler),
         "entries": entries,
     }
+    if files:
+        payload["files"] = [file_content_identity(path) for path in files]
+    return payload
 
 
 def profile_hash(payload: dict) -> str:
@@ -305,6 +319,7 @@ def parse_args() -> argparse.Namespace:
         command = subparsers.add_parser(action)
         command.add_argument("--compiler", required=True)
         command.add_argument("--entry", action="append", default=[])
+        command.add_argument("--file", action="append", default=[], metavar="PATH")
         if action == "record":
             command.add_argument("--output", type=Path, required=True)
             command.add_argument("--section", required=True)
@@ -345,7 +360,7 @@ def main() -> int:
     if args.action == "stamp":
         activate_stamp(args.output, args.stale_glob, args.value, invalidate=args.invalidate)
         return 0
-    payload = profile_payload(args.compiler, args.entry)
+    payload = profile_payload(args.compiler, args.entry, args.file)
     digest = profile_hash(payload)
     if args.action == "hash":
         print(digest)
