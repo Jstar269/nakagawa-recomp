@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "be97a376ea096ead2feeaecc54e9711743d3db14d62727d7f69c61934923732f"
+      "sha256": "d9c7a89ebc114e113efdf5e7de1c8aa551ca1ce6fc7f09928a50fa0cd9c70b36"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "17ac2dc67a6ed8a09fff956ad0c6778379cf664c74d73e5cb1cd06117afa3d09"
+      "sha256": "6c55648264a83674b09e1d961f3b871044951504a0763dc924e76b9c51e41d55"
     },
     {
       "path": "NOTICE.md",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "56a767a2b1c1e001d5f5fc573c4c873c2d8be273ecd56089ff969c854155897b"
+      "sha256": "44a64ddbe437ba180bdc138cba53d7f913e4a46307b9aba8c9b18bc38764e502"
     },
     {
       "path": "assets/release_manifest.json",
@@ -5002,6 +5002,42 @@
       "sha256": "f0bc76b0d868ea79c46e812d49569acd521e4db65c2e320100ef5153547d55e7"
     },
     {
+      "path": "src/rt/cpu_lle.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a575b34aeec9acc4c12a295d7beda04cebc9f39101057ad37d842bc3d469b1a5"
+    },
+    {
+      "path": "src/rt/cpu_lle.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6c6592f7b362c0823ca788155031fcbe797b8bbe40d35590ebc0d5b1d72910cc"
+    },
+    {
+      "path": "src/rt/cpu_lle_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "50e57b4de289aeeffe7ca3cc71256e93be056b58747c0efa4b17d2fba2ba3c7b"
+    },
+    {
       "path": "src/rt/debug.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5479,7 +5515,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "1e40b7627b60e435e5fec8fc12200d5fe4c010ecad702c0095743db1dcd99019"
+      "sha256": "7dae3c3f15a419f571d7295f2b269b4f644b3a02a5537f2fd80c842025c82788"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -5491,7 +5527,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "9ae21d305f8ad7e741843da58a476af41fd6270989f0832d5117b1b24596de2d"
+      "sha256": "1cb56b44d469d76ada276f3f231bc5a63512925b4ed125a9d56f05b6627abdd7"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5849,7 +5885,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4ca242fe5f5933664c6f31eac4cf6a925292af9ce1ab18a676621a683f35816c"
+      "sha256": "9f98e15035f26fbfa6727245b107a992444f1a4b16a4e3033a1f99dfadc35e17"
     },
     {
       "path": "src/rt/savedata.c",
@@ -6483,7 +6519,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "89e01dabed724c00304810df06e2e13d7b94358414393a075fa747d62fdbdb92"
+      "sha256": "8fd5185c64dbf3fc889b3ae93d6b99d08ea91d0e2e48e23098bdb5cd42b01592"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6500,7 +6536,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3f9204bedcb5fadbd07f19011c96dc13adf323e24be7ccf55fc3bb7cbbd49c26"
+      "sha256": "18dbee5f09c60d53beeeb7018b97160fd7eac749e30cc49856b1e4480d023c02"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -7848,6 +7884,18 @@
       "sha256": "fe3a42f04aca4d51fed2e46bbcd385aac23c570d54fb7bf55f36c522d53a8947"
     },
     {
+      "path": "tools/test_cpu_lle.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "fd4a10f8a1206cfd7db322dd4db30cfa467800d606922f48ba1c05eab732c2e6"
+    },
+    {
       "path": "tools/test_dco_policy.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -7908,7 +7956,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ff9fcc8b754e8e221e7182fa0fa330ba1654eb2b70ff8df0225bc6bfba540d40"
+      "sha256": "fbb5c4b0d6ac20b6853de8f3fb718769a9634e840d006c171e876ad3f6ecd575"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -8343,7 +8391,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "84d795b7aacd8ddb49762d81ed39c88202fffb04770ad64878e06f9296aeb9a1"
+      "sha256": "bbeda523ebd23c4012fda3f26200d9b8cb0381205003382904ccbd8c12ff7746"
     },
     {
       "path": "tools/test_native_host_backends.py",
