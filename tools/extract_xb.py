@@ -57,9 +57,10 @@ Containment is resolved against the canonical destination root, and the
 produced tree is re-verified by :func:`verify_extracted_tree` afterwards.  That
 verification is defense in depth only: it can detect a tree that is wrong, it
 cannot undo a write that already escaped.  Prevention is the normalization and
-root resolution that run before each write.  Hostile concurrent mutation of the
-destination while extraction runs is outside the current threat model; nothing
-here claims a handle-safe host abstraction.
+root resolution that run before each write.  The bounded whole-file reads use
+one open handle for their size check and data, while hostile concurrent
+mutation of the destination during the multi-step extraction remains outside
+the current threat model.
 
 Resource limits are repository-owned throughout -- see the budget contract
 below.  Whole files are never read without a size gate, worker parallelism is
@@ -537,19 +538,35 @@ def extract_archive(archive_path, dest_dir, overwrite=False, endian="<", limits=
 
 
 def read_bounded(path, max_bytes):
-    """Read a whole file only after its size is known to fit ``max_bytes``.
+    """Read a whole file through one handle under ``max_bytes``.
 
-    The stat gate runs first so an oversized file is never paged into memory,
-    and the read is still capped in case the file grows between the two.
+    ``fstat`` and the bounded read operate on the same open handle, so a
+    replacement or growth race cannot make a different file bypass the size
+    gate.  The extra byte detects growth while the handle is being read.
     """
 
-    size = os.path.getsize(path)
-    if size > max_bytes:
-        raise OversizedInputError(
-            f"{path} is {size} bytes, over the {max_bytes}-byte budget"
-        )
-    with open(path, "rb") as f:
-        data = f.read(max_bytes + 1)
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be non-negative")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        size = os.fstat(fd).st_size
+        if size > max_bytes:
+            raise OversizedInputError(
+                f"{path} is {size} bytes, over the {max_bytes}-byte budget"
+            )
+        chunks = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
     if len(data) > max_bytes:
         raise OversizedInputError(f"{path} grew past the {max_bytes}-byte budget")
     return data
@@ -866,9 +883,9 @@ def process_extracted_directory(dest_dir, overwrite=False, max_gim_bytes=MAX_GIM
                 png_path = os.path.join(dirpath, png_fn)
                 rel_png_path = os.path.relpath(png_path, dest_dir)
                 try:
-                    # read_bounded rejects from stat() before the file is
-                    # opened, so an oversized candidate never reaches the
-                    # decoder and its bytes are never paged in.
+                    # read_bounded checks the size on the same handle used for
+                    # the bounded read, so an oversized candidate never reaches
+                    # the decoder and its bytes are never paged in.
                     gim_data = read_bounded(fpath, max_gim_bytes)
                     decoded = decode_gim_data(gim_data)
                     if decoded:

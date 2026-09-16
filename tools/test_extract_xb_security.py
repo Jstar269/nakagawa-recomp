@@ -913,27 +913,47 @@ class ResourceLimitTests(unittest.TestCase):
             with self.assertRaises(OversizedInputError):
                 read_bounded(path, 63)
 
-    def test_oversized_gim_is_rejected_before_the_file_is_opened(self) -> None:
+    def test_oversized_gim_is_rejected_before_any_data_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as dest:
             path = os.path.join(dest, "big.gim")
             with open(path, "wb") as handle:
                 handle.write(_gim_bytes(256))
 
-            # Any read of the candidate would go through this module's `open`.
-            # If the size gate ran after the read, this fixture would explode.
-            def exploding_open(*args, **kwargs):
-                raise AssertionError("candidate was opened before the size gate")
+            # The candidate must be opened for fstat(), but an oversized file
+            # must be rejected before any bytes are read from that handle.
+            original_read = extract_xb.os.read
 
-            extract_xb.open = exploding_open  # type: ignore[attr-defined]
+            def exploding_read(*args, **kwargs):
+                raise AssertionError("candidate bytes were read before the size gate")
+
+            extract_xb.os.read = exploding_read
             try:
                 inventory = process_extracted_directory(dest, max_gim_bytes=16)
             finally:
-                del extract_xb.open  # type: ignore[attr-defined]
+                extract_xb.os.read = original_read
 
             self.assertEqual(inventory["textures"], [])
             self.assertEqual(len(inventory["rejected"]), 1)
             self.assertEqual(inventory["rejected"][0]["name"], "big.gim")
             self.assertIn("budget", inventory["rejected"][0]["reason"])
+
+    def test_read_bounded_uses_the_open_handle_for_size_and_data(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            path = os.path.join(base, "blob.bin")
+            payload = b"synthetic bounded bytes"
+            with open(path, "wb") as handle:
+                handle.write(payload)
+
+            original_getsize = extract_xb.os.path.getsize
+
+            def exploding_getsize(*args, **kwargs):
+                raise AssertionError("path-based stat bypassed the open handle")
+
+            extract_xb.os.path.getsize = exploding_getsize
+            try:
+                self.assertEqual(read_bounded(path, len(payload)), payload)
+            finally:
+                extract_xb.os.path.getsize = original_getsize
 
     def test_gim_within_budget_is_still_decoded(self) -> None:
         with tempfile.TemporaryDirectory() as dest:
