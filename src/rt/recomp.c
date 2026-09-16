@@ -958,7 +958,12 @@ uint32_t sr_bitrev(uint32_t x) {
     return (x >> 16) | (x << 16);
 }
 
-/* ---- VFPU transcendental kernels (exact ports of PPSSPP's table-based kernels) ---- */
+/* ---- VFPU transcendental kernels ----
+ * Derived from PPSSPP's table-based kernels: the kernel structure and the
+ * assets/vfpu/ tables originate upstream (assets/vfpu/PROVENANCE.json). The
+ * expressions below are not claimed to be verbatim ports; bit-level behaviour is
+ * judged against the hardware oracle (fixtures/vfpu_oracle,
+ * docs/HARDWARE_ORACLE.md), not against upstream. */
 
 #include <math.h>
 

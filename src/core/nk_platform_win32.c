@@ -25,7 +25,7 @@ char nk_platform_path_separator(void) {
 /* Bounded UTF-8 -> UTF-16 conversion */
 static bool utf8_to_wide(const char *utf8, WCHAR *out_wide, size_t max_wide_chars) {
     if (!utf8 || !out_wide || max_wide_chars == 0) return false;
-    int res = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out_wide, (int)max_wide_chars);
+    int res = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, out_wide, (int)max_wide_chars);
     if (res <= 0) {
         out_wide[0] = L'\0';
         return false;

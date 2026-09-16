@@ -53,10 +53,17 @@ static inline uint32_t read_be32(const uint8_t *p) {
 
 static FILE *nk_iso_fopen(const char *path, const char *mode) {
 #if defined(_WIN32) || defined(_WIN64)
+    if (!path || !mode) return NULL;
     WCHAR wpath[32768];
     WCHAR wmode[32];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 32768);
-    MultiByteToWideChar(CP_UTF8, 0, mode, -1, wmode, 32);
+    /* Strict conversion: invalid UTF-8 must fail rather than open a path in
+       which the bad bytes became U+FFFD. */
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
+                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
+        return NULL;
+    }
     return _wfopen(wpath, wmode);
 #else
     return fopen(path, mode);

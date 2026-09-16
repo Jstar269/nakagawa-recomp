@@ -224,9 +224,9 @@ static bool promote_staging_root(const char *staging_root, const char *final_roo
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR w_staging[32768];
     WCHAR w_final[32768];
-    if (MultiByteToWideChar(CP_UTF8, 0, staging_root, -1, w_staging,
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, staging_root, -1, w_staging,
                             (int)(sizeof(w_staging) / sizeof(w_staging[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, 0, final_root, -1, w_final,
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, final_root, -1, w_final,
                             (int)(sizeof(w_final) / sizeof(w_final[0]))) <= 0) return false;
     return MoveFileExW(w_staging, w_final, MOVEFILE_WRITE_THROUGH) != 0;
 #else
@@ -815,8 +815,9 @@ int main(int argc, char *argv[]) {
                                  "Nakagawa could not locate the source ISO file on disk.",
                                  "Locate Game ISO", VIEW_LIBRARY);
         } else if (strcmp(test_view, "focus") == 0) {
-            app.focus_index = 1;
+            /* set_view resets focus, so the focused card is chosen after it. */
             player_app_set_view(&app, VIEW_LIBRARY);
+            app.focus_index = 1;
         } else if (strcmp(test_view, "wizard") == 0 || strcmp(test_view, "wizard1") == 0) {
             player_app_start_setup_wizard(&app);
         } else if (strcmp(test_view, "wizard2") == 0) {
