@@ -263,6 +263,7 @@
     "fixtures/production_smoke/generate.py",
     "fixtures/psp_oracle/Makefile",
     "fixtures/psp_oracle/README.md",
+    "fixtures/psp_oracle/mutex_imports.S",
     "fixtures/psp_oracle/probe.c",
     "fixtures/pspdev_phase5/Makefile",
     "fixtures/pspdev_phase5/main.c",

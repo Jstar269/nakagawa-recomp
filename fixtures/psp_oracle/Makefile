@@ -3,7 +3,7 @@
 
 BUILD_DIR ?= build
 TARGET = $(BUILD_DIR)/nakagawa_psp_oracle
-OBJS = $(BUILD_DIR)/probe.o
+OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o
 PSP_EBOOT = $(BUILD_DIR)/EBOOT.PBP
 PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 
@@ -54,6 +54,14 @@ else ifeq ($(CASE),display-wait-priority)
 CASE_ID = 17
 else ifeq ($(CASE),display-vblank-window)
 CASE_ID = 18
+else ifeq ($(CASE),mutex-refer-unlocked)
+CASE_ID = 19
+else ifeq ($(CASE),mutex-timeout-quanta)
+CASE_ID = 20
+else ifeq ($(CASE),mutex-priority-inheritance)
+CASE_ID = 21
+else ifeq ($(CASE),mutex-interrupt-context)
+CASE_ID = 22
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -74,6 +82,11 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge
+# Case 22 (mutex-interrupt-context) uses sceKernelIsIntrContext() from the
+# kernel interrupt manager library for independent ISR execution proof.
+ifeq ($(CASE),mutex-interrupt-context)
+LIBS += -lpspinterruptmanager_kernel_660
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -86,6 +99,9 @@ include $(PSPSDK)/lib/build.mak
 # objects under the ignored build directory.
 $(BUILD_DIR)/probe.o: probe.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/mutex_imports.o: mutex_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
 # under the ignored build directory.
