@@ -265,8 +265,10 @@ class MakefileWiringTests(unittest.TestCase):
         self.assertIn("$(BUILD_DIR)/cpu_lle_selftest.exe", recipe)
 
     def test_cpu_lle_selftest_is_phony(self):
-        phony = [line for line in MAKEFILE.splitlines() if line.startswith(".PHONY:")]
-        self.assertTrue(any("cpu-lle-selftest" in line for line in phony))
+        block = re.search(r"(?ms)^PUBLIC_TARGETS := \\\n(.*?)(?=^INTERNAL_TARGETS :=)", MAKEFILE)
+        self.assertIsNotNone(block)
+        self.assertIn("cpu-lle-selftest", block.group(1).split())
+        self.assertIn(".PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)", MAKEFILE)
 
     def test_runtime_source_lists_carry_cpu_lle(self):
         for var in ("RT_SRCS", "PORTABLE_CORE_SRCS"):
