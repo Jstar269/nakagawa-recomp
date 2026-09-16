@@ -66,8 +66,8 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 | **Executable Footprint** | **~2 MB overhead** (Single `.exe`) | 50–100 MB of shared DLLs | ~15 MB | ~10–15 MB |
 | **Runtime Dependencies** | **None** (Self-contained) | Extensive shared libraries | Rust runtime | OS Webview (WebKitGTK on Linux) |
 | **Couch / Controller Navigation** | **First-Class** (SDL3 Gamepad API) | Complex focus management | Moderate | Web Gamepad API limits |
-| **Unified Game Window** | **Yes** (Launcher & Game in 1 window) | No (Separate launcher & render window) | No | No |
-| **In-Game Overlay Capable** | **Yes** (Draws over Vulkan swapchain) | No | No | No |
+| **Unified Game Window** | **Target** (launcher and title currently run as separate processes) | No (Separate launcher & render window) | No | No |
+| **In-Game Overlay Capable** | **Target** (overlay parity is not built) | No | No | No |
 | **Linux / Steam Deck Parity** | **Target** (SDL3/Vulkan; platform acceptance not run) | Good | Good | WebKitGTK packaging fragmentation |
 | **macOS (Metal/MoltenVK)** | **Supported** | Supported | Supported | Supported |
 | **Build-System Burden** | **Target: native Makefile path** (developer toolchain still required today) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
@@ -77,8 +77,8 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 
 **SDL3 with an in-engine retained/immediate UI layer** was decisively chosen because:
 
-1. **Single Unified Binary**: The exact same executable (`nakagawa.exe`) serves as the Game Library/Launcher upon startup and seamlessly transitions into the recompiled Vulkan game upon clicking "Play".
-2. **Dual Outside/Inside Presence**: The same UI system drives the launcher outside the game and renders the in-game settings pause overlay (`F1` / Gamepad `Guide`) over the running game.
+1. **Unified Installation Experience (Target)**: The product goal is one install with a coherent launcher and game experience. The current source starts a prepared title as a separate child through `nk_launch_start`; it does not make the launcher and game a single executable.
+2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an eventual in-game settings pause overlay (`F1` / Gamepad `Guide`). In-game overlay parity is not implemented in the current native slice.
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
 ---
@@ -125,13 +125,14 @@ capability layers rather than being reimplemented in the launcher.
 
 ## 4. First-Run & Onboarding Flow
 
-The flow below is the productization target, not a description of the current executable.
-Today the player can inspect a selected ISO and launch an already-prepared runtime; the
-native file-picker, preparation, and one-click-play stages still require implementation.
+The flow below is the complete productization target, not a description of the current
+executable. Today the player opens a native SDL file picker, inspects a selected ISO, and
+runs bounded ISO/XB staging for supported inputs. Retail hash validation, encrypted-module
+decryption, generated-runtime provisioning, and arbitrary-ISO one-click play remain unbuilt.
 
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
-3. **Native File Selection**: Clicking *"Add Game"* invokes the native platform file picker (`IFileDialog` on Windows, native portal/Zenity on Linux).
+3. **Native File Selection**: Clicking *"Add Game"* invokes SDL3's native file-dialog API; the platform backend supplies the operating-system picker behavior.
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
 5. **Transactional Preparation**:
    - Staging directory created under `.staging_<disc_id>/` in local application data.

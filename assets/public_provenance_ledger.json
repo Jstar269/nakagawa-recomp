@@ -729,7 +729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "29688c68f24f3c3370ad37484f119679a2fd981d9df4b7b8d8820a2cb3a99a20"
+      "sha256": "378ec872d2ed37380caddf3b8f4110f367928f5884bceafc5b7422e6dc09c526"
     },
     {
       "path": "docs/ARCHITECTURE.md",
@@ -837,7 +837,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "126eb1156b22f6de120b5d23ee7de6accbe9ad4ab82667c878b5d278af96aa50"
+      "sha256": "e8afb893d9cf5770b18de65dd11dcd052a49a60639ba60789218808722423731"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1044,7 +1044,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f16bdf7d329cc9ac4ec61c3304e869b8acb3e2c2ff3f0ac321421f26d2e9856e"
+      "sha256": "def26d90b143134badf33de8888dcd9791eec7f2f019f399888d8ec104f35769"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",

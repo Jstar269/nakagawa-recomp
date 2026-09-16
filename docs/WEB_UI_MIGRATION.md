@@ -6,19 +6,20 @@
 
 ## 1. Inventory of Current Web UI Components
 
-The existing prototype UI is located under [`interface/`](../interface/). The player flow lives in the native player; the web prototype has no player hero launcher today. Rows below are source-anchored to the current `interface/` tree; a function with no current row is a target, not a hidden component.
+The existing prototype UI is located under [`interface/`](../interface/). The player flow lives in the native player; the web prototype has no player hero launcher today. Rows below enumerate representative and routed source components in the current `interface/` tree; omission from this summary does not imply that a function is a target or unimplemented.
 
 | Subsystem | Location | Technologies | Function / Scope |
 | :--- | :--- | :--- | :--- |
 | **Frontend Shell** | `src/app/page.tsx`, `src/app/layout.tsx` | Next.js 16, React 19, Tailwind CSS 4 | Studio container with topbar, sidebar, and panel routing |
+| **Studio Panel Router** | `src/app/page.tsx` | React | Routes Graphics, Controllers, Limitations, Patches, Assets, Progress, Porting, Troubleshooting, Build Health, and related studio panels |
 | **ISO Loader** | `components/studio/iso-loader.tsx` | Client-side ISO9660 reader (`lib/recompiler/iso.ts`) | Inspects ISO9660 PVD/directory in-browser (read-only, no disk write) |
 | **Build Pipeline Panel** | `components/studio/build-panel.tsx` | React, SSE | Triggers root `hst_manager.ps1` manager actions (build/test flows) over the manager API |
 | **Process Manager** | `lib/recompiler/manager-process.ts` | Node.js `child_process.spawn`, `taskkill.exe` | Background process registry, log ring buffer, clean process cancellation |
 | **Process API** | `app/api/recompiler/manager/route.ts` | Next.js API route | Streams stdout/stderr over SSE; validates `ManagerLaunchRequest` |
 | **Preflight Doctor** | `app/api/recompiler/doctor/route.ts` | Node.js, `tools/hst_doctor.py` | Runs workspace diagnostics and returns structured JSON report |
-| **Internals Panel** | `components/studio/internals-panel.tsx` | React | Guest internals: threads, semaphores, loaded modules, and memory partitions |
+| **Internals Panel** | `components/studio/internals-panel.tsx` | React | Streams manager logs, parses crash-register snapshots, and renders static pipeline, subsystem, function, and thread-map views; no live semaphore, module, or memory-partition inspector |
 | **VRAM Viewer** | `components/studio/vram-viewer.tsx` | React canvas | Fetches VRAM buffers over the debug console API and renders them in-browser |
-| **Performance/Profiler Panels** | `components/studio/performance-panel.tsx`, `components/studio/profiler-panel.tsx` | React, SVG visualizer | FPS/frame-time telemetry and generated-PC profiling views |
+| **Performance/Profiler Panels** | `components/studio/performance-panel.tsx`, `components/studio/profiler-panel.tsx` | React, SVG visualizer | Performance configuration plus generated-function/basic-block counts, durations, and watchpoint statistics; no FPS/frame-time telemetry view |
 | **Visual Regression** | `components/studio/visual-regression-panel.tsx` | Node.js comparison routes | Compares GPU render output against software reference frames |
 | **Fuzz Lab** | `components/studio/test-lab-panel.tsx` | Next.js API, Python harness | Triggers instruction fuzzing and cosimulation suites |
 | **Execution Console** | `components/studio/execution-console.tsx` | React | Live console for build and engine output |

@@ -42,8 +42,9 @@ Nakagawa Program + User's Game ISO → Play
 ### Option C: Build-Time AOT Engine + End-User Asset Extraction (Recommended Primary)
 
 > **Implementation status: UNBUILT.** The following describes the proposed packaging
-> route. The current player does not validate a retail disc hash, extract title assets,
-> or launch a newly generated runtime from an arbitrary ISO.
+> route. The current player does not validate a retail disc hash or launch a newly
+> generated runtime from an arbitrary ISO. It does perform bounded asset extraction for
+> supported ISO/XB inputs; that landed staging capability is separate from end-user AOT.
 
 In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into clean-room release packages.
 
