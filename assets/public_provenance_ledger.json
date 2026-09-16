@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d9c7a89ebc114e113efdf5e7de1c8aa551ca1ce6fc7f09928a50fa0cd9c70b36"
+      "sha256": "7f6934953da11ef15ca2052fb9bda03920ed066594ef42468babe120be03e257"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6c55648264a83674b09e1d961f3b871044951504a0763dc924e76b9c51e41d55"
+      "sha256": "622bead2617a4368ac1571159a232564164f094606f59216183ad9d661064f37"
     },
     {
       "path": "NOTICE.md",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "44a64ddbe437ba180bdc138cba53d7f913e4a46307b9aba8c9b18bc38764e502"
+      "sha256": "42ee8247572bab28dd8c1aeeefcd7ebe029a704f88765cfd11de38519c202209"
     },
     {
       "path": "assets/release_manifest.json",
@@ -5110,6 +5110,42 @@
       "sha256": "eafeb95c4fedf1d9ada9448a6da39d80a4d395314115c36e85936b7e8e6ff199"
     },
     {
+      "path": "src/rt/domain_mode.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "db72d6cf664f1e34f812cfcfd6cf1c794b99a655cb18b656e26c0d56ba46cbc9"
+    },
+    {
+      "path": "src/rt/domain_mode.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3784bd3f20b1e4d3d54a0c5137be003a66326c20cc196661a400f380744502bf"
+    },
+    {
+      "path": "src/rt/domain_mode_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cfdd251c07bc11af4c246b2178241acf93e9b7e784bb8c2072698f6521f94115"
+    },
+    {
       "path": "src/rt/driver.c",
       "classification": "upstream_derived",
       "evidence": {
@@ -5885,7 +5921,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9f98e15035f26fbfa6727245b107a992444f1a4b16a4e3033a1f99dfadc35e17"
+      "sha256": "029173e270926e9cb36369803a607a23a75e9592258150d7d8a6ff914c8853db"
     },
     {
       "path": "src/rt/savedata.c",
@@ -6519,7 +6555,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8fd5185c64dbf3fc889b3ae93d6b99d08ea91d0e2e48e23098bdb5cd42b01592"
+      "sha256": "dfd5ba94429342511e47fd16a2003126ed459e03996795bf9ace0decf6bfbf2e"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6536,7 +6572,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "18dbee5f09c60d53beeeb7018b97160fd7eac749e30cc49856b1e4480d023c02"
+      "sha256": "c52b861aa51999b7c4d4d54de879d525dea59ade4e444254226081e0f3cf8967"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -7956,7 +7992,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "fbb5c4b0d6ac20b6853de8f3fb718769a9634e840d006c171e876ad3f6ecd575"
+      "sha256": "75fbdf7a01ee3bbf856985707e2a13c8e122213610ac82a0cc5e8cafb3afb24f"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -7978,6 +8014,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "2dc8553a36b8088f02bbee8f3149306f7f87365373687e2527ed8316b1e6158b"
+    },
+    {
+      "path": "tools/test_domain_mode.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "lle-phase1-cpu-exceptions-domain-seam-20260916",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "01133564f37b63972eeb2aaf5b08633e4fe983092382258aec5b18aadd0cd7c7"
     },
     {
       "path": "tools/test_elf_bounds.py",
@@ -8391,7 +8439,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bbeda523ebd23c4012fda3f26200d9b8cb0381205003382904ccbd8c12ff7746"
+      "sha256": "193abfc4a0eb5490ca7e921aa152fa9b7660ab3a4b9e8055b744c30154dbee7b"
     },
     {
       "path": "tools/test_native_host_backends.py",
