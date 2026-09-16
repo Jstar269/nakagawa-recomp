@@ -1,5 +1,9 @@
 # Runtime Packaging Architecture
 
+> **Status: CURRENT — maintained packaging decision record.** The process-isolation
+> boundary is implemented in the native launch/session slice. Installers,
+> distributable title packages, and complete end-user preparation remain unbuilt.
+
 ## 1. Context and Goals
 
 Nakagawa Recomp is evolving from developer-centric tooling into an authentic cross-platform PSP recompilation platform.
@@ -44,6 +48,10 @@ The native player loads a generic runtime engine, which dynamically loads a titl
 
 ### Option C: Isolated Process per Title + Native Host Launcher (Adopted Architecture)
 
+> **Implementation boundary:** the public source validates and launches a prepared
+> runtime as a child process. It does not create that runtime from an arbitrary ISO;
+> the packaging and preparation steps below remain target work.
+
 The native player (`nakagawa_player`) acts as an authentic front-end and library manager. When a game is launched, it constructs a typed `NkLaunchSession` and spawns the title's standalone recompiled runtime as an isolated child process via `nk_platform_spawn_process`.
 Communication and handoff occur via:
 
@@ -54,13 +62,15 @@ Communication and handoff occur via:
   * **Total Fault Isolation:** A crash or abort in guest execution never brings down the launcher UI. The launcher detects child process exit, captures the exit code, and reports diagnostic facts cleanly to the user.
   * **Independent Optimization:** Each title binary is compiled with its exact manifest tuning (`RUNTIME_OPT`, `RECOMP_OPT`, custom span definitions) without polluting other titles.
   * **Sandboxing & OS Portability:** Native child processes follow standard OS process lifecycles on Windows, Linux (SteamOS/Steam Deck), and macOS.
-  * **Zero Regression Risk:** Preserves 100% of the battle-tested runtime and graphics behavior of Hot Shots Tennis while adding multi-title scalability.
+  * **Boundary benefit:** Keeps the launcher and title runtime in separate processes;
+    regression risk and title acceptance still require focused testing.
 
 ---
 
 ## 3. Concrete Implementation in `src/core/`
 
-The adopted architecture is implemented in:
+The adopted process boundary is implemented in the following public source slice; this
+list is not evidence that a distributable installer or title package exists:
 
 * `src/core/nk_types.h`: `NkGameEntry`, `NkResult`.
 * `src/core/nk_platform.h`: `NkProcessHandle`, `nk_platform_spawn_process`, `nk_platform_is_process_running`, `nk_platform_wait_process`.
@@ -71,7 +81,7 @@ The adopted architecture is implemented in:
 
 ---
 
-## 4. Packaging and Distribution Roadmap
+## 4. Packaging and Distribution Roadmap (UNBUILT)
 
 | Target Environment | Packaging Strategy | Binary Artifacts |
 | --- | --- | --- |
