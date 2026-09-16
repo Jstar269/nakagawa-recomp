@@ -3399,7 +3399,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7bc1a84f9ddb56dad9b19a682a89cf48ead13ddcc9b8759711029b17ac0d8f15"
+      "sha256": "bfdced28e6d514050ed03ebbace7fb21ca3e92ff484a5e1989f6726795f13478"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -3447,7 +3447,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b9bb0d6eef672fb67658253cfe53c1fa183a074a9ee45661385326fdcb3de2fc"
+      "sha256": "ac9145d32d209bf2452b94abc29e73049eb14ee8c6f8264813d0f357d29afa40"
     },
     {
       "path": "src/core/nk_library.h",
@@ -3495,7 +3495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc71d4e3a7b811ef742d5f8207441639cc39e16355b78c9face431424af08d6b"
+      "sha256": "7d51a86ef7fd74be4327cc2535c4cdbe9fd4cb404a66433df44785c6663e4c48"
     },
     {
       "path": "src/core/nk_title_manifest.c",
@@ -3543,7 +3543,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dcf9fdfd7c9456bba6007156aa7280b8cf86b0d13e01aa308dade742a5fd93a3"
+      "sha256": "0251e3faf5950be62b7eaa2ea739f523ae3713582df8902dcae8da81faff1173"
     },
     {
       "path": "src/core/nk_xb.h",
@@ -3591,7 +3591,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56befe9f61f560b864f9c8176d6fc08e222b579a19be5b4b534329988e78dd73"
+      "sha256": "14aa7d38833596747b00be24cc66ef81f690ac05cf6fb62ac5fe505f92189c4b"
     },
     {
       "path": "src/player/player_state.c",
@@ -3627,7 +3627,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a85c1a3c1d5859d8fb4d58a8cd2f52c4b94b8ec899eecd374092748a0f66b02a"
+      "sha256": "b83344e8c0a1ccc7a16830dc209ae0c84676f0f408b52d809c630bfede0ccbc9"
     },
     {
       "path": "src/player/setup_staging.h",
@@ -5811,7 +5811,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2a1b28fe95188383fba91e2f79d35e258e6276807645bfc6f72a38acac25ded3"
+      "sha256": "73431d9954eee8bec9ad55064f3007b134229cbf66ca9881cf116667bff00352"
     },
     {
       "path": "src/rt/recomp.h",
@@ -6125,7 +6125,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "291aa7ac9c5c9da022766b557a8978a9334a609a95adba6105f8bf6492704fd6"
+      "sha256": "dedc44e54609227bcdbe2131f0fe993edb3919b253f9e228e18d29c9c962c4c4"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -6137,7 +6137,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8a74afc9294f4f37b91d07300e7b81ec9350105a980487d58b2e781f267381f"
+      "sha256": "31ed2ce9640a1e140fff94a61782862bd00f638b9f9b91b695069389b7fa7d5f"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -6245,7 +6245,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "afdde301c6c2fe8ff6e2a0a611ad10232bf07b0eb5642d99389cf7c291aa4cdb"
+      "sha256": "ec1bd5af5ea37dd037fdbf46803c1f474ed275b033747f855bf6e0fc34f4dd01"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -6281,7 +6281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c97a84729ffdd835ba4ff4cb80ba25847e77f9797e9db7ef6aafcd97c151fddc"
+      "sha256": "ceb8357fc9996175cee221f5ec5ea725ed55040c14ca9b1ab59f853557beac97"
     },
     {
       "path": "tests/native/test_xb_parser.c",
@@ -8838,7 +8838,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "502a5f5c081552e5dc36a15b274677aafc54426f931e708e3b2baae0a3680736"
+      "sha256": "486114627271f97c8a85849ea526203c33acbbd457ec12f925de417f1f9e908e"
     },
     {
       "path": "tools/test_visual_oracle.ps1",

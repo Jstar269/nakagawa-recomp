@@ -19,10 +19,17 @@
 
 static FILE *nk_lib_fopen(const char *path, const char *mode) {
 #if defined(_WIN32) || defined(_WIN64)
+    if (!path || !mode) return NULL;
     WCHAR wpath[32768];
     WCHAR wmode[32];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 32768);
-    MultiByteToWideChar(CP_UTF8, 0, mode, -1, wmode, 32);
+    /* Strict conversion: invalid UTF-8 must fail rather than open a path in
+       which the bad bytes became U+FFFD. */
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
+                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
+        return NULL;
+    }
     return _wfopen(wpath, wmode);
 #else
     return fopen(path, mode);
@@ -169,8 +176,9 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fclose(f);
 #if defined(_WIN32) || defined(_WIN64)
         WCHAR wtmp[32768];
-        MultiByteToWideChar(CP_UTF8, 0, tmp_path, -1, wtmp, 32768);
-        DeleteFileW(wtmp);
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) > 0) {
+            DeleteFileW(wtmp);
+        }
 #else
         remove(tmp_path);
 #endif
@@ -201,9 +209,11 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     WCHAR wtmp[32768];
     WCHAR wtarget[32768];
     WCHAR wbak[32768];
-    MultiByteToWideChar(CP_UTF8, 0, tmp_path, -1, wtmp, 32768);
-    MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 32768);
-    MultiByteToWideChar(CP_UTF8, 0, bak_path, -1, wbak, 32768);
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, target, -1, wtarget, 32768) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bak_path, -1, wbak, 32768) <= 0) {
+        return NK_ERROR_IO;
+    }
 
     if (nk_platform_file_exists(target)) {
         CopyFileW(wtarget, wbak, FALSE);

@@ -118,6 +118,50 @@ int main(int argc, char *argv[]) {
 
     printf("[PROCESS_TEST] All 12 argv roundtrip cases verified exactly!\n");
     printf("[PROCESS_TEST] Controlled Unicode environment & SystemRoot inheritance verified!\n");
+    /* Malformed UTF-8 must fail the spawn, never be dropped: a dropped working
+     * directory launches in the parent's directory, and a dropped variable
+     * inherits the parent's value. */
+    const char bad_utf8[] = {(char)0xC3, (char)0x28, '\0'};
+    char bad_env_item[32];
+    snprintf(bad_env_item, sizeof(bad_env_item), "TEST_ENV_KEY=%s", bad_utf8);
+    const char *bad_env[] = {bad_env_item, NULL};
+    const char *quiet_argv[] = {helper_exe, out_arg, NULL};
+    NkProcessHandle refused;
+    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, NULL, bad_utf8, &refused));
+    assert(!refused.is_active);
+    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, bad_env, NULL, &refused));
+    assert(!refused.is_active);
+    printf("[PROCESS_TEST] Invalid UTF-8 working directory and environment refused.\n");
+
+    /* Profile directories are read through the wide API: a LOCALAPPDATA outside
+     * the active code page must round-trip as UTF-8, not as '?' bytes. */
+    static WCHAR saved_lad[32768];
+    DWORD saved_len = GetEnvironmentVariableW(L"LOCALAPPDATA", saved_lad, 32768);
+    WCHAR wcwd[1024];
+    DWORD cwd_len = GetCurrentDirectoryW(1024, wcwd);
+    assert(cwd_len > 0 && cwd_len < 1024);
+    WCHAR wbase[1200];
+    /* Separators are passed as arguments so no literal reads as a UNC path. */
+    const WCHAR *wsep = L"\\";
+    _snwprintf(wbase, 1200, L"%ls%lsbuild%lsnk_env_\x65E5\x672C\x00E9", wcwd, wsep, wsep);
+    wbase[1199] = L'\0';
+    assert(_wputenv_s(L"LOCALAPPDATA", wbase) == 0);
+    char expected[4096];
+    assert(WideCharToMultiByte(CP_UTF8, 0, wbase, -1, expected, sizeof(expected), NULL, NULL) > 0);
+    const char *sep = "\\";
+    size_t exp_len = strlen(expected);
+    snprintf(expected + exp_len, sizeof(expected) - exp_len, "%sNakagawa%scache", sep, sep);
+    char got[4096];
+    assert(nk_platform_get_path(NK_PATH_CACHE, got, sizeof(got)));
+    if (strcmp(got, expected) != 0) {
+        fprintf(stderr, "[PROCESS_TEST] profile path mismatch: expected '%s', got '%s'\n", expected, got);
+        assert(strcmp(got, expected) == 0);
+    }
+    assert(nk_platform_dir_exists(got));
+    assert(_wputenv_s(L"LOCALAPPDATA",
+                      saved_len > 0 && saved_len < 32768 ? saved_lad : L"") == 0);
+    printf("[PROCESS_TEST] Non-code-page profile directory resolved as UTF-8.\n");
+
     printf("[PROCESS_TEST] Process & quoting test PASSED successfully!\n");
 #else
     printf("[PROCESS_TEST] Skipping Windows-specific tests on non-Windows host.\n");

@@ -75,7 +75,7 @@ class TestContainedDeleteSelftest(unittest.TestCase):
         # A run that quietly skipped every hostile case would look like a pass.
         # Report what actually executed so a skipped matrix stays visible.
         if "backend=windows-verified-handle" in out:
-            expected_checks = 233
+            expected_checks = 239  # +6: invalid UTF-8 leaf refusal (Windows only)
         elif "backend=posix-descriptor-relative" in out:
             expected_checks = 237
         else:
