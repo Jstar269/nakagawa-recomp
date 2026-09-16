@@ -143,6 +143,9 @@ static uint32_t s_pending_interrupts;
 static int      s_servicing_interrupts;
 static SrCoro  *s_sched_coro = NULL;
 CpuState *s_cpu = NULL;
+/* Read by tools/mem_debug.py: a live debugger refuses CpuState access unless the
+ * attached image reports the ABI it was compiled against. */
+const uint32_t sr_cpustate_abi_version __attribute__((used)) = SR_CPUSTATE_ABI_VERSION;
 static uint64_t s_tick = 0;
 static uint32_t s_gp = 0x002d0000;        /* module global pointer, inherited by created threads */
 static uint32_t s_stack_top = SR_STACK_ARENA_CEIL;  /* sibling thread stacks grow down from here */

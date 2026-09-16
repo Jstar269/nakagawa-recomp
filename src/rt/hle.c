@@ -1488,10 +1488,17 @@ static uint32_t h_ExitGame(CpuState *s) {
     snprintf(sr_flag_path, sizeof sr_flag_path, "%s/exited.flag", SR_BUILD_DIR);
     FILE *f_dump = fopen(sr_dump_path, "wb");
     if (f_dump) {
-        fwrite(s, 1, sizeof(CpuState), f_dump);
+        /* Versioned header so tools/mem_debug.py can reject dumps written by a
+         * different CpuState ABI instead of misreading them:
+         * "SRCD", format, ABI version, sizeof(CpuState), stack base, stack bytes. */
         uint32_t sp_base = s->r[29] & 0xFFFF0000u;
-        if (sr_inrange(sp_base)) {
-            fwrite(SR_HOST(sp_base), 1, 0x10000, f_dump);
+        uint32_t stack_len = sr_inrange(sp_base) ? 0x10000u : 0u;
+        uint32_t hdr[6] = { 0x44435253u, 1u, SR_CPUSTATE_ABI_VERSION,
+                            (uint32_t)sizeof(CpuState), sp_base, stack_len };
+        fwrite(hdr, 1, sizeof hdr, f_dump);
+        fwrite(s, 1, sizeof(CpuState), f_dump);
+        if (stack_len) {
+            fwrite(SR_HOST(sp_base), 1, stack_len, f_dump);
         }
         fclose(f_dump);
     }
