@@ -220,11 +220,11 @@ static inline int sr_vfs_host_flat_path(const char *root, const char *guest, cha
  */
 static inline int sr_vfs_canonical_root(const char *root_utf8, wchar_t *out, size_t cap) {
     if (!root_utf8 || !out || cap == 0) return 0;
-    int need = MultiByteToWideChar(CP_UTF8, 0, root_utf8, -1, NULL, 0);
+    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, root_utf8, -1, NULL, 0);
     if (need <= 0 || (size_t)need > cap) return 0;
     wchar_t *wroot = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
     if (!wroot) return 0;
-    MultiByteToWideChar(CP_UTF8, 0, root_utf8, -1, wroot, need);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, root_utf8, -1, wroot, need);
     for (wchar_t *p = wroot; *p; p++) if (*p == L'/') *p = L'\\';
 
     CreateDirectoryW(wroot, NULL);   /* documented F114-4 side effect: bare root only */
@@ -284,11 +284,11 @@ static inline int sr_vfs_dir_is_contained_wide(const wchar_t *dir, const wchar_t
 /* UTF-8 convenience wrapper around sr_vfs_dir_is_contained_wide. */
 static inline int sr_vfs_dir_is_contained(const char *dir_utf8, const wchar_t *canonical_root) {
     if (!dir_utf8 || !canonical_root) return 0;
-    int need = MultiByteToWideChar(CP_UTF8, 0, dir_utf8, -1, NULL, 0);
+    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_utf8, -1, NULL, 0);
     if (need <= 0) return 0;
     wchar_t *wdir = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
     if (!wdir) return 0;
-    MultiByteToWideChar(CP_UTF8, 0, dir_utf8, -1, wdir, need);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_utf8, -1, wdir, need);
     for (wchar_t *p = wdir; *p; p++) if (*p == L'/') *p = L'\\';
 
     int ok = sr_vfs_dir_is_contained_wide(wdir, canonical_root);
@@ -309,11 +309,11 @@ static inline int sr_vfs_open_contained_utf8(const char *path_utf8, DWORD desire
                                              const wchar_t *canonical_root, HANDLE *out) {
     if (!path_utf8 || !canonical_root || !out) return 0;
     *out = NULL;
-    int need = MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, NULL, 0);
+    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path_utf8, -1, NULL, 0);
     if (need <= 0) return 0;
     wchar_t *wpath = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
     if (!wpath) return 0;
-    MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, wpath, need);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path_utf8, -1, wpath, need);
     for (wchar_t *p = wpath; *p; p++) if (*p == L'/') *p = L'\\';
 
     HANDLE h = CreateFileW(wpath, desired_access,
@@ -426,7 +426,7 @@ static inline int sr_vfs_mkdirs_contained(const char *owned_rel_utf8,
         narrow[comp_len] = '\0';
         if (!sr_vfs_is_safe_component(narrow, comp_len)) return 0;
 
-        int need = MultiByteToWideChar(CP_UTF8, 0, narrow, -1, NULL, 0);
+        int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, narrow, -1, NULL, 0);
         if (need <= 0) return 0;
         size_t cap_w = sizeof(partial)/sizeof(partial[0]);
         /* The root buffer already ends with a separator; keep exactly one. */
@@ -434,7 +434,7 @@ static inline int sr_vfs_mkdirs_contained(const char *owned_rel_utf8,
         if (plen == 0 || partial[plen - 1] != L'\\') {
             partial[plen++] = L'\\';
         }
-        MultiByteToWideChar(CP_UTF8, 0, narrow, -1, partial + plen, need);
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, narrow, -1, partial + plen, need);
         plen += (size_t)need - 1u;
 
         DWORD attrs = GetFileAttributesW(partial);

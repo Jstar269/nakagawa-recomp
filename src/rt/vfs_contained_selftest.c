@@ -1003,6 +1003,36 @@ static void case_name_discipline(void) {
     nuke(root);
 }
 
+#ifdef _WIN32
+/* An invalid UTF-8 leaf must never be "repaired" into U+FFFD: that would delete
+ * a different, existing object whose name happens to be U+FFFD. */
+static void case_invalid_utf8_leaf_is_refused(void) {
+    char root[1100], dir[1300];
+    CHECK(build_save("t_utf8", "ULUS00001DATA", SAVE_FILES, 3, root, sizeof(root)),
+          "fixture t_utf8");
+    fp(dir, sizeof(dir), "%s/PSP/SAVEDATA/ULUS00001DATA", root);
+    wchar_t wdir[1300], wdecoy[1400];
+    CHECK(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir, -1, wdir,
+                              (int)(sizeof(wdir) / sizeof(wdir[0]))) > 0,
+          "fixture dir converts");
+    _snwprintf(wdecoy, sizeof(wdecoy) / sizeof(wdecoy[0]), L"%ls\\\xFFFD", wdir);
+    wdecoy[(sizeof(wdecoy) / sizeof(wdecoy[0])) - 1] = L'\0';
+    FILE *f = _wfopen(wdecoy, L"wb");
+    CHECK(f != NULL, "decoy created");
+    if (f) { fputs("decoy", f); fclose(f); }
+
+    sr_cd_root r;
+    CHECK_ST(sr_cd_root_open(root, &r), SR_CD_OK);
+    CHECK(sr_cd_delete_leaf(&r, "PSP/SAVEDATA/ULUS00001DATA", "\xff") != SR_CD_OK,
+          "an invalid UTF-8 leaf must not delete anything");
+    CHECK(GetFileAttributesW(wdecoy) != INVALID_FILE_ATTRIBUTES,
+          "the U+FFFD decoy must survive");
+    sr_cd_root_close(&r);
+    DeleteFileW(wdecoy);
+    nuke(root);
+}
+#endif
+
 static void case_rel_split_unit(void) {
     char parent[64], last[64];
     CHECK(sr_cd_rel_split("PSP/SAVEDATA/X", parent, sizeof(parent), last, sizeof(last)),
@@ -1068,6 +1098,9 @@ int main(void) {
     case_large_directory_delete();
     case_partial_failure();
     case_name_discipline();
+#ifdef _WIN32
+    case_invalid_utf8_leaf_is_refused();
+#endif
     case_final_symlink_entry(&skipped);
     case_leaf_replacement(&skipped);
     case_parent_replacement();
