@@ -1,5 +1,36 @@
 # Credits and Third-Party Attribution
 
+> Nakagawa amendment (2026-09-17): the text below is sal063's `CREDITS.md`
+> verbatim at sal063/PSP-recompilation-project revision
+> `da17b0e1db209206a407d097d132201e516e3855` (line endings normalized),
+> preserved as the upstream attribution document. Four of its statements
+> describe sal063's tree, not this one, and are corrected here:
+>
+> - **Combined-work licence.** The text below says the combined work is
+>   GPL-2.0-or-later. In *this* tree the combined work is conveyed under
+>   **GPL-3.0-or-later** per the repository-root [LICENSE](../LICENSE) and
+>   [NOTICE.md](../NOTICE.md). That upgrade is what sal063's "or any later
+>   version" clause permits, and it is required here because this tree also
+>   contains project-authored files identified GPL-3.0-or-later; per-file
+>   GPL-2.0-or-later identifiers on sal063/PPSSPP-derived files are retained
+>   unchanged. The `[LICENSE](LICENSE)` link in the text below means the
+>   repository-root LICENSE file.
+> - **No bundled PPSSPP copy.** There is no `third_party/ppsspp` directory in
+>   the public tree; the `third_party/ppsspp/LICENSE.TXT` path cited below
+>   exists only in sal063's tree. PPSSPP remains a derivation lineage
+>   (NOTICE.md), not a vendored copy.
+> - **No font payloads.** `font/` in the public tree carries only
+>   `font/README.md`; the replacement PGF binaries are excluded by
+>   `assets/public_source_profile.json` (see
+>   `docs/provenance/FONT_ORIGINS.md`).
+> - **No SDL3.dll / PPSSPPHeadless.exe in-tree.** Those binaries are absent
+>   from the public tree; an external PPSSPP headless build may be used
+>   locally as an optional oracle (`tools/psp_readiness.py`) but is never
+>   bundled or required.
+>
+> Modified by Nakagawa Recomp contributors, 2026-09-17.
+> See NOTICE.md for upstream lineage and modification provenance.
+
 This project is **not** built from scratch. Large parts of it are derived from,
 or directly reuse, other people's work. This file documents what was used, where
 it lives, and under which license — and what your obligations are if you
