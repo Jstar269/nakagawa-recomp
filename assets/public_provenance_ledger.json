@@ -302,7 +302,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f91da1b4e2fb80e621949875e8c281c3cd14005385faab67043615fa3520344f"
+      "sha256": "5ec931e02e97b6ec962f7e8a451e2a4fd5083ae63e583aa54b6d4926d7442dbe"
     },
     {
       "path": "SECURITY.md",
@@ -747,7 +747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4157b5578d55b3f0c4317bf2cc32aaddb415def467181f5fe16d870ed4c4d492"
+      "sha256": "9671cff407e91c350a7a970afb9d1ee5ef958e9473157cf6eddd152231e28bb3"
     },
     {
       "path": "docs/DEBUGGING.md",
@@ -819,7 +819,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e08a0df9add15a741ebd6a1122b1b3a70b12f12fb713ffb286fccd29ca73b9"
+      "sha256": "44dca62f32a7e70f6eccb7af13954d4d06e6047c71d606d5bf5689bd9275264c"
     },
     {
       "path": "docs/ISSUE196_DIRECT_XB.md",
@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d444b0c30ba2eb21268880d1a452dad05f3a4f3b6dfb277e313320e0258657ff"
+      "sha256": "15ce32cc05f21a083fded1a0c713d501b68e5557fdd9763aa11ffcec7067d2e6"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -855,7 +855,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "de7340df494014aa92aac9e1eff0f4a66bc22f96741cd8d215ecbc2f77716dd4"
+      "sha256": "49c592201d8b1789ee1950eb0febfb330020ef51a54b57a57b002848192dc30e"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -864,7 +864,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fd139fc8c767a657b292edd7252a026c5508ff94bfdf93b89dca159464dc6285"
+      "sha256": "677ab6a620b987d76f944d66529319254304730e3b142c665edd3af6971db79a"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
