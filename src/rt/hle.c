@@ -10177,7 +10177,13 @@ static uint32_t h_WaitSema(CpuState *s) {
     while (m->count < need) {
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
-            if (sched_block_on_timeout(uid, usec)) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            if (sched_block_on_timeout(uid, usec)) {
+                /* PSP-B2-01 (psp-hw-20260917): an expired timed wait writes the
+                 * remaining time (0 at the deadline) to *timeout and answers
+                 * WAIT_TIMEOUT. */
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
         } else {
             sched_block_on(uid);
         }
@@ -10215,13 +10221,23 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
         }
         if (toptr) {
             sched_vtime_refresh();
-            if (sched_vtime_us() >= end) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            if (sched_vtime_us() >= end) {
+                /* PSP-B2-01 (psp-hw-20260917): the expired wait reports its
+                 * remaining timeout (0), it does not leave the caller's word. */
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
             uint32_t remaining = (uint32_t)(end - sched_vtime_us());
             MEM_W32(toptr, remaining);
             sched_set_current_cb_wait(1);
             int timed_out = sched_block_on_timeout(uid, remaining);
             sched_set_current_cb_wait(0);
-            if (timed_out) return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            if (timed_out) {
+                /* PSP-B2-01 (psp-hw-20260917): same remaining-0 contract after
+                 * a real timed block. */
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
         } else {
             sched_set_current_cb_wait(1);
             sched_block_on(uid);

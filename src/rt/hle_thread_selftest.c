@@ -4170,6 +4170,8 @@ static void test_expired_timed_sema_wait_enters_strict_priority(uint32_t nid,
     snprintf(msg, sizeof msg,
              "%s slice C (C): the guest receives SCE_KERNEL_ERROR_WAIT_TIMEOUT (0x800201a8)", who);
     expect(s_slc_ret == SLC_WAIT_TIMEOUT, msg);
+    expect(MEM_R32(SLC_TIMEOUT_PTR) == 0u,
+           "PSP-B2-01 (psp-hw-20260917): timed semaphore wait clears timeout");
     snprintf(msg, sizeof msg,
              "%s slice C (F): earlier promotion manufactured no success result", who);
     expect(s_slc_ret != 0u, msg);
