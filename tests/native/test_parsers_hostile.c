@@ -550,8 +550,44 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
     NkResult res = nk_iso_inspect(bad_path, &meta);
     assert(res == NK_ERROR_FILE_NOT_FOUND);
 
-    DeleteFileW(wdecoy);
-    printf("[HOSTILE_TEST] Invalid UTF-8 path refused.\n");
+    assert(DeleteFileW(wdecoy));
+
+    const char library_json[] =
+        "{\"schema_version\":1,\"games\":[{\"disc_id\":\"TEST00001\"}]}";
+    const WCHAR *suffixes[] = {L"", L".tmp", L".bak"};
+    WCHAR library_decoys[3][1100];
+    for (int i = 0; i < 3; i++) {
+        int written = _snwprintf(library_decoys[i], 1100,
+                                L"%ls\\\xFFFD.json%ls", wdir, suffixes[i]);
+        assert(written > 0 && written < 1100);
+        decoy = _wfopen(library_decoys[i], L"wb");
+        assert(decoy != NULL);
+        assert(fwrite(library_json, 1, sizeof(library_json) - 1, decoy) == sizeof(library_json) - 1);
+        assert(fclose(decoy) == 0);
+    }
+
+    char valid_path[600];
+    snprintf(valid_path, sizeof(valid_path), "%s\\\xef\xbf\xbd.json", test_dir);
+    NkLibrary lib;
+    assert(nk_library_load(&lib, valid_path) == NK_OK);
+    assert(nk_library_count(&lib) == 1);
+    snprintf(bad_path, sizeof(bad_path), "%s\\\xff.json", test_dir);
+    assert(nk_library_load(&lib, bad_path) == NK_OK);
+    assert(nk_library_count(&lib) == 0);
+    assert(nk_library_save(&lib, bad_path) == NK_ERROR_IO);
+    assert(nk_library_save(&lib, NULL) == NK_ERROR_IO);
+
+    for (int i = 0; i < 3; i++) {
+        char contents[sizeof(library_json)];
+        decoy = _wfopen(library_decoys[i], L"rb");
+        assert(decoy != NULL);
+        size_t count = fread(contents, 1, sizeof(contents), decoy);
+        assert(count == sizeof(library_json) - 1);
+        assert(memcmp(contents, library_json, count) == 0);
+        assert(fclose(decoy) == 0);
+        assert(DeleteFileW(library_decoys[i]));
+    }
+    printf("[HOSTILE_TEST] Invalid UTF-8 ISO and library paths refused.\n");
 }
 #endif
 
