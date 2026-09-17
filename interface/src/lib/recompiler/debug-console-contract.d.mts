@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export const DEBUG_CONSOLE_ACTIONS: readonly [
   "status",
   "pause",

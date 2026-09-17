@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import type { NormalizedWatchpoint } from "./watchpoint-schema.mjs";
 
 export const WATCHPOINTS_FILE_FORMAT: string;
