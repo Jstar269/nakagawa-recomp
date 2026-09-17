@@ -155,7 +155,13 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
         self.assertIn("No usable Vulkan SDK found", blob)
         self.assertIn("VULKAN_SDK=", blob)
 
-    def test_explicit_vulkan_sdk_override_builds_the_player(self) -> None:
+    def test_explicit_vulkan_sdk_override_reaches_the_player_compile_flags(self) -> None:
+        # Deliberately a dry run (`make -n`). What is under test is that an explicit
+        # VULKAN_SDK reaches the player's include and library flags -- not that a player
+        # binary links, which additionally needs SDL3 and so fails on a bare CI runner for
+        # reasons that have nothing to do with SDK resolution. Asserting on the printed
+        # recipe tests the actual unit and is portable; skipping when SDL3 is absent would
+        # leave this asserting nothing exactly where it matters.
         make = shutil.which("mingw32-make") or shutil.which("make")
         if not make:
             self.skipTest("GNU Make is required")
@@ -167,13 +173,15 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
                 [r"C:\Program Files\Python314", r"C:\msys64\ucrt64\bin", env.get("PATH", "")]
             )
             proc = subprocess.run(
-                [make, "--no-print-directory", "CC=gcc", "player",
+                [make, "--no-print-directory", "-n", "CC=gcc", "player",
                  "PLAYER_EXE=build/td33-override-player.exe"],
                 capture_output=True, text=True, env=env, check=False, cwd=os.getcwd(),
             )
             blob = proc.stdout + proc.stderr
             self.assertEqual(proc.returncode, 0, blob)
-            self.assertIn(str(sdk).replace("\\", "/"), blob)
+            root = str(sdk).replace("\\", "/")
+            self.assertIn(f"-I{root}", blob)
+            self.assertIn(f"-L{root}", blob)
 
 
 if __name__ == "__main__":
