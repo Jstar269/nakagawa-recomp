@@ -342,8 +342,19 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
     def test_every_user_of_the_backend_also_supplies_the_capture_policy(self) -> None:
         backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
         referenced = sorted(set(re.findall(r"\bsr_fbcap_\w+\s*\(", backend)))
-        if not referenced:
-            self.skipTest("sdl3vk.c no longer calls the fbcap policy; guard retired")
+        # Deliberately an assertion, not a skipTest. Skipping here would let the
+        # guard retire itself: whoever removed the last sr_fbcap_* call would see
+        # green, and the Makefile coupling this test protects would stop being
+        # checked with nothing to say so. If the coupling really is gone, that is
+        # a decision worth making explicitly -- delete this test in the same
+        # commit that removes the calls.
+        self.assertNotEqual(
+            referenced,
+            [],
+            "sdl3vk.c no longer calls the fbcap policy, so this guard now "
+            "protects nothing. Retire it deliberately (delete this test) rather "
+            "than leaving it to pass vacuously.",
+        )
 
         offenders = []
         for number, text in self.lines:

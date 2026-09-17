@@ -332,6 +332,7 @@ def unwaived_and_stale(findings: list[dict]) -> tuple[list[dict], list[dict]]:
 def build_manifest(source: str | None = None) -> dict:
     if source is None:
         source = HLE_C.read_text(encoding="utf-8")
+        source += "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
     regs = extract_registrations(source)
     validate_meta(regs)
     entries = []

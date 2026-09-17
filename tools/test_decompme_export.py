@@ -100,6 +100,41 @@ class TestContextAndExtent(unittest.TestCase):
     def test_func_extent_out_of_range(self):
         self.assertIsNone(dx.func_extent(0x500, {0x1000}, [(0x1000, 0x2000)]))
 
+    def test_context_emits_known_and_unknown_nid_names(self):
+        # sceIoOpen is in the corpus without library restriction (pspsdk-sourced) -> 0x109f50bc
+        # 0xdeadbeef is an unknown NID
+        nids = [
+            ("IoFileMgrForUser", 0x109f50bc),
+            ("sceDisplay", 0xdeadbeef),
+        ]
+        ctx = dx.gen_context_c(nids)
+        self.assertIn("/*   IoFileMgrForUser  0x109f50bc  sceIoOpen */", ctx)
+        self.assertIn("/*   sceDisplay  0xdeadbeef */", ctx)
+        self.assertIn("/* Imported NIDs referenced nearby", ctx)
+
+    def test_context_library_attribution_matching(self):
+        # IoFileMgrForKernel_76DA16E3 is attributed to IoFileMgrForKernel in the corpus
+        nid = 0x76da16e3
+        ctx_match = dx.gen_context_c([("IoFileMgrForKernel", nid)])
+        self.assertIn("/*   IoFileMgrForKernel  0x76da16e3  IoFileMgrForKernel_76DA16E3 */", ctx_match)
+        # Must not match the name when imported under a different library
+        ctx_mismatch = dx.gen_context_c([("IoFileMgrForUser", nid)])
+        self.assertIn("/*   IoFileMgrForUser  0x76da16e3 */", ctx_mismatch)
+        self.assertNotIn("IoFileMgrForKernel_76DA16E3", ctx_mismatch)
+
+    def test_context_missing_corpus_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_corpus = Path(tmp) / "nonexistent.json"
+            ctx = dx.gen_context_c([("IoFileMgrForUser", 0x109f50bc)], corpus_path=missing_corpus)
+            self.assertIn("/*   IoFileMgrForUser  0x109f50bc */", ctx)
+            self.assertNotIn("sceIoOpen", ctx)
+
+            corrupt_corpus = Path(tmp) / "corrupt.json"
+            corrupt_corpus.write_text("{invalid json", encoding="utf-8")
+            ctx_corrupt = dx.gen_context_c([("IoFileMgrForUser", 0x109f50bc)], corpus_path=corrupt_corpus)
+            self.assertIn("/*   IoFileMgrForUser  0x109f50bc */", ctx_corrupt)
+            self.assertNotIn("sceIoOpen", ctx_corrupt)
+
 
 @unittest.skipUnless(EBOOT.exists(), "private place_game_here/EBOOT.elf not present")
 class TestExportAgainstRealEboot(unittest.TestCase):

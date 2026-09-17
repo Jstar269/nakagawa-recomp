@@ -44,10 +44,17 @@ permissions:
 
 jobs:
   attest:
-    # This job name is the required status-check context. tools/provenance_
-    # attest_verify.py reserves the string: a candidate workflow declaring a job
-    # under the same name is refused. See docs/PROVENANCE_MERGE_GATE.md for why
-    # a context name alone is not sufficient anti-spoof protection.
+    # This job name is RESERVED, not required. tools/provenance_attest_verify.py
+    # reserves the string: a candidate workflow declaring a job under the same
+    # name is refused.
+    #
+    # It is deliberately NOT in the branch ruleset's required status checks,
+    # which are: CI required, OSV Vulnerability Scan, dependency-review,
+    # Hygiene and security, CodeQL. Until an identity-bound check producer
+    # exists, merge-time provenance authority rests on maintainer review, and
+    # docs/PROVENANCE_MERGE_GATE.md explains why requiring this context first
+    # would give a false assurance: a context name alone is not sufficient
+    # anti-spoof protection.
     name: Trusted provenance attestation
     # Only the default branch is ruleset-protected, and only its content is
     # trusted. A pull request targeting any other branch gets no verdict rather

@@ -589,6 +589,8 @@
     "src/rt/h264_null.c",
     "src/rt/heap_selftest.c",
     "src/rt/hle.c",
+    "src/rt/hle_power.c",
+    "src/rt/hle_power.h",
     "src/rt/hle_thread_selftest.c",
     "src/rt/intr_conformance.h",
     "src/rt/iso.h",

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export const PPM_MAX_DIMENSION: number;
 export const PPM_MAX_PIXEL_BYTES: number;
 
