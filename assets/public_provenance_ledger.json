@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1805ea87340474c4693681e1c49a189b7845bc0cd38a8360291cf0ea5b44e150"
+      "sha256": "e7920b9904f45d3cbd5b6f313d0f4c058b6dd0470b90ed774ac769766589267d"
     },
     {
       "path": "assets/release_manifest.json",
@@ -783,7 +783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "52635bae46f38daf8fa2f9aa6d81470bee4e397e809890895a5f168870644853"
+      "sha256": "bee472d7c5073e6c589019459ebfd0fb207adbfdcfa804dedb9b74a49b8683a2"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "067efc8833f8a42817fe52033166522020457527d0eb871637dfaa609f65ff53"
+      "sha256": "d886ac33d6b7c3dedd2eeacc6021456ba2ea6fe73e87cca7a8a1c46918a34a8a"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1293,7 +1293,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "70da4d487bcd0c2e4d581b3733b09fb223bc7369140731f5c8e631f644f75c57"
+      "sha256": "2c6cafa74bcfe336510727f552209fc0629a3016f16cde653be4520ee8f7f289"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1302,7 +1302,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cb574b86c085626a26971810f39c5fe86a7776cdf6d796d1ec5d6efdff3fa8cc"
+      "sha256": "28c9af915cf9d8e3c9bb9516acfdd86c207ac24dbf98ea7565948d045d25f425"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1320,7 +1320,70 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a545bf258d659c0f2da47263ffa14db589ded3c96f8f95d68548db6fd5296954"
+      "sha256": "aa7315a2255890cfced8ba05b7e757f63878867816ef73727915b4e6fe9bc3a0"
+    },
+    {
+      "path": "fixtures/psp_oracle/probe_exception_a1.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "c9e642ba455a6b2747bfe95b54281be1c7fe82e15797c1496d3a16ef55416ee0"
+    },
+    {
+      "path": "fixtures/psp_oracle/probe_exception_a2.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "2a5ad741d5f97aa27b29e402cd5253b21aecdf214e08ba334b47a1dde26a7b40"
+    },
+    {
+      "path": "fixtures/psp_oracle/probe_exception_a3.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "ccb0f0a5dea74f7b619c3266b02cdb1dca98e89a0db83392a0f8d94b7ebce546"
+    },
+    {
+      "path": "fixtures/psp_oracle/psp_b1.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "55ac59ee864a9f14d87701cd43b7fc497b00537aa3388d16689a7b06993e2bdd"
+    },
+    {
+      "path": "fixtures/psp_oracle/psp_b2.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "cfc208c57a09b1765cca82277aff5d27606855d5fbaaaadb3602bd3ad4825a59"
+    },
+    {
+      "path": "fixtures/psp_oracle/psp_b3.c",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "d4070a1981cd86a91091c18c1eed0bd1c3e6a0888c1a0fe2f62cad2a9ff039e3"
+    },
+    {
+      "path": "fixtures/psp_oracle/threadman_user_imports.S",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "02584dfe9154c5f534ff44d5a21f9b59128d48c1c24d6ea0fee8c1b9de6a1ae0"
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
