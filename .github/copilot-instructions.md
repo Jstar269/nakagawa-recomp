@@ -17,3 +17,5 @@ Start with [Where to start](../AGENTS.md#where-to-start) to select the checkout 
 Use [`docs/README.md`](../docs/README.md) for maintained contracts,
 [`docs/SETUP.md`](../docs/SETUP.md) for host requirements, and
 [`docs/CI.md`](../docs/CI.md) for current gates.
+
+Reviewers: see [`REVIEW.md`](../REVIEW.md) for what to flag and what not to flag.

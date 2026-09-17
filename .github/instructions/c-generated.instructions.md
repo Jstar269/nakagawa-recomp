@@ -1,9 +1,8 @@
 ---
 applyTo: "build/**/*.c"
 ---
-# Generated recompiler code
+# Generated recompiler code — never hand-edit
 
-Read [`AGENTS.md`](../../AGENTS.md), starting with
-[Where to start](../../AGENTS.md#where-to-start).
-The [correctness and evidence rules](../../AGENTS.md#6-correctness-and-evidence)
-cover generated translation units, source-level fixes, and regeneration for every title.
+These translation units are produced by `tools/codegen.py` and are overwritten on the next
+pipeline run. For different output, change the generator, analysis, or runtime source and
+regenerate. See the [correctness and evidence rules](../../AGENTS.md#6-correctness-and-evidence).

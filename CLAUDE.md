@@ -17,3 +17,5 @@ Start with [Where to start](AGENTS.md#where-to-start) to select the checkout and
 Use [`docs/README.md`](docs/README.md) for maintained contracts, including
 [`docs/SETUP.md`](docs/SETUP.md) for current build and manager commands and
 [`docs/CI.md`](docs/CI.md) for local/hosted validation.
+
+Reviewers: see [`REVIEW.md`](REVIEW.md) for what to flag and what not to flag.
