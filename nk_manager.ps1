@@ -500,19 +500,49 @@ try {
         }
     }
 
-    function Stop-WorkspaceTarget {
+    function Get-WorkspaceTargetProcesses {
         $exeFull = $null
         try {
             $targetPath = Join-Path $script:RepoRoot $ExePath
             $rp = Resolve-Path -LiteralPath $targetPath -ErrorAction SilentlyContinue
-            if ($rp) { $exeFull = [IO.Path]::GetFullPath($rp.Path) }
+            if ($rp) {
+                $exeFull = Get-CanonicalPath -Path $rp.Path
+            } elseif (Test-Path -LiteralPath $targetPath) {
+                $exeFull = Get-CanonicalPath -Path $targetPath
+            }
         } catch { }
-        if (-not $exeFull) { return }
-        Get-Process -Name $script:ActiveGameName -ErrorAction SilentlyContinue | Where-Object {
-            $ppath = $null
-            try { $ppath = [IO.Path]::GetFullPath($_.Path) } catch { $ppath = $null }
-            $ppath -and ($ppath -ieq $exeFull)
-        } | Stop-Process -Force -ErrorAction SilentlyContinue
+        if (-not $exeFull) { return @() }
+
+        $targetName = [System.IO.Path]::GetFileNameWithoutExtension($exeFull)
+        $processNames = @($targetName)
+        if ($script:ActiveGameName -and ($processNames -notcontains $script:ActiveGameName)) {
+            $processNames += $script:ActiveGameName
+        }
+
+        $running = @()
+        $candidates = Get-Process -Name $processNames -ErrorAction SilentlyContinue
+        $cmp = Get-PathComparison
+        foreach ($proc in $candidates) {
+            try {
+                $rec = Get-ProcessIdentityRecord -Id $proc.Id
+                if ($null -ne $rec -and -not [string]::IsNullOrWhiteSpace($rec.exe)) {
+                    $procExe = Get-CanonicalPath -Path $rec.exe
+                    if ([string]::Equals($procExe.TrimEnd('\', '/'), $exeFull.TrimEnd('\', '/'), $cmp)) {
+                        $running += $rec
+                    }
+                }
+            } catch { }
+        }
+        return $running
+    }
+
+    function Stop-WorkspaceTarget {
+        $running = @(Get-WorkspaceTargetProcesses)
+        foreach ($rec in $running) {
+            try {
+                Stop-Process -Id $rec.pid -Force -ErrorAction SilentlyContinue
+            } catch { }
+        }
     }
 
     # Backward compatibility alias
@@ -1201,9 +1231,12 @@ try {
                 return
             }
         }
-
-        Stop-WorkspaceTarget
-        Start-Sleep -Milliseconds 150
+        $runningTargets = @(Get-WorkspaceTargetProcesses)
+        if ($runningTargets.Count -gt 0) {
+            $pids = ($runningTargets | ForEach-Object { $_.pid }) -join ", "
+            Write-Host "[!] Target executable is already running (PID $pids); close it or use -Action Clean." -ForegroundColor Red
+            return
+        }
 
         Remove-Item "$LogDir/stdout_run.log", "$LogDir/stderr_run.log" -ErrorAction SilentlyContinue
 
