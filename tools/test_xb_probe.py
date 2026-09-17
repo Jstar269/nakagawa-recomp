@@ -56,7 +56,7 @@ def _huffman_codes() -> dict[int, tuple[int, int]]:
 
     result: dict[int, tuple[int, int]] = {}
     code = 0
-    for width, count in ((8, 254), (9, 4)):
+    for width, _count in ((8, 254), (9, 4)):
         for symbol in range(256) if width == 8 else range(254, 258):
             if len(result) >= 254 and width == 8:
                 break

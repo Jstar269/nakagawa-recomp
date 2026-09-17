@@ -103,10 +103,6 @@ class FixturePinTests(unittest.TestCase):
             with self.subTest(workload=workload):
                 with tempfile.TemporaryDirectory() as tmp:
                     out_dir = Path(tmp)
-                    before = {
-                        p.name: p.read_bytes()
-                        for p in sorted(out_dir.glob("*"))
-                    } if out_dir.exists() else {}
                     self.assertEqual(generator.generate(out_dir, workload), 0)
                     prx = (out_dir / "guest.prx").read_bytes()
                     self.assertEqual(generator.hashlib.sha256(prx).hexdigest(), expected)
@@ -407,7 +403,6 @@ class Title2ContractTests(unittest.TestCase):
         self.assertEqual(generator.hashlib.sha256(generator.build_prx(plan)[0]).hexdigest(), EXPECTED_PRX_SHA256[plan.name])
 
     def test_memory_cell_mutation_is_oracle(self):
-        plan = generator.PLANS["ladder-title2"]
         self.assertEqual(generator.TITLE2_MEM_CELL_INIT, 7)
         self.assertEqual(generator.TITLE2_MEM_CELL_EXPECTED, 14)
         env = dict(os.environ)

@@ -92,7 +92,7 @@ def parse_matrix(header_text: str):
     walks braces rather than pattern-matching a whole row at once."""
     body_start = header_text.index("static const IcProbe kIcMatrix[] = {")
     body_start = header_text.index("{", body_start + len("static const IcProbe kIcMatrix[]"))
-    depth, rows, cur, start = 0, [], None, 0
+    depth, rows, start = 0, [], 0
     for i in range(body_start, len(header_text)):
         ch = header_text[i]
         if ch == "{":
@@ -175,7 +175,7 @@ class TestMatrixTranscription(unittest.TestCase):
         checked = 0
         for row in self.rows:
             label = f"{row['api']} / {row['scenario'] or '(no argument)'}"
-            for ctx, (line_tok, hw_tok) in enumerate(zip(row["ev_line"], row["hw"])):
+            for ctx, (line_tok, hw_tok) in enumerate(zip(row["ev_line"], row["hw"], strict=True)):
                 line = int(line_tok, 0)
                 hw = resolve(hw_tok)
                 if line == 0:

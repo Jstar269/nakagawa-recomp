@@ -55,7 +55,7 @@ def main(argv):
     print(f"stub range: 0x{s0:08x}..0x{s1:08x} ({len(imp)} imports)")
     mine = nid_seq(argv[2], imp, s0, s1)
     print(f"{argv[2]}: {len(mine)} imports")
-    for i, (pc, (lib, nid)) in enumerate(mine[:40]):
+    for i, (_pc, (lib, nid)) in enumerate(mine[:40]):
         print(f"  {i:3} {lib}.0x{nid:08x}")
     if len(argv) > 3:
         orac = nid_seq(argv[3], imp, s0, s1, limit=len(mine) + 5)

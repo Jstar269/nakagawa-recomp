@@ -5,11 +5,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "tools"))

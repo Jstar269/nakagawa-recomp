@@ -623,10 +623,7 @@ _HISTORICAL_MALFORMED_VFPU12_5BIT_WORDS: frozenset[int] = frozenset(
 
 def generate_malformed_corpus() -> list[int]:
     out: list[int] = []
-    # Need _encode for correct word; size codes 2=T,3=Q
-    correct = (0x3C << 26) | (5 << 23) | (0 << 16) | (0 << 8) | 0 | (0 << 7) | (1 << 15)  # vcrsp.t with vd=vs=vt=0, size 2 (T)
     # Use _encode to get correct for malformed test
-    from typing import cast
     # Create via _encode
     correct2 = _encode(0x3C, 5, 0, 0, 0, 2)
     correct3 = _encode(0x3C, 5, 0, 0, 0, 3)
