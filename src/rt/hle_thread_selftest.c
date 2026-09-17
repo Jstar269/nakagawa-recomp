@@ -4217,6 +4217,561 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): the cancel/release wake family.
+ * -------------------------------------------------------------------------
+ * Hardware cells, entered through the production NIDs:
+ *
+ *   CancelSema(uid, -1, &numWait)   wakes the waiter with 0x800201A9,
+ *                                   resets the count and reports numWait = 1.
+ *   CancelEventFlag(uid, 0x10, &n)  wakes the waiter with 0x800201A9, sets the
+ *                                   pattern to 0x10 and reports n = 1.
+ *   ReleaseWaitThread(waiter)       wakes the waiter with 0x800201AA and
+ *                                   returns 0; on the running caller (0) it
+ *                                   returns 0x80020197.
+ *
+ * Before this campaign the three NIDs were unregistered entirely (a guest call
+ * stopped at the HLE boundary), and the waiter side had no way to observe a
+ * non-satisfaction wake. The waiter runs on its own coroutine exactly like the
+ * strict-priority fixture above; the main fixture thread plays the canceller.
+ * ------------------------------------------------------------------------- */
+#define WCR_NAMEBUF     0x00250500u
+#define WCR_NUMWAIT     0x00250540u
+#define WCR_WAIT_CANCEL 0x800201a9u
+#define WCR_WAIT_RELEASE 0x800201aau
+#define NID_WCR_CANCEL_SEMA     0x8ffdf9a2u
+#define NID_WCR_CANCEL_EVF      0xcd203292u
+#define NID_WCR_RELEASE_WAIT    0x2c34e053u
+
+static uint32_t s_wcr_obj;
+static uint32_t s_wcr_ret;
+static int      s_wcr_returned;
+
+/* The blocked waiter: an untimed WaitSema (or WaitEventFlag) that only returns
+ * once something cancels it. Records the result it was handed on resume. */
+static void wcr_waiter_body_sema(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_wcr_obj; cpu.r[5] = 1u; cpu.r[6] = 0u;   /* infinite wait */
+    s_wcr_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_wcr_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void wcr_waiter_body_evf(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_wcr_obj; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = WCR_NUMWAIT; cpu.r[8] = 0u;
+    s_wcr_ret = sr_syscall(&cpu, NID_CNW_WAIT_EVF);
+    s_wcr_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+/* One waiter blocked on `obj` (created through `create_nid`), waiting via
+ * `body`. The fixture thread holds the CPU. */
+static TCB *wcr_begin_waiter(void (*body)(void *), uint32_t *obj, uint32_t create_nid) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+    s_cur = (int)(main_t - s_tcb);
+    main_t->started = 1;
+    s_wcr_returned = 0;
+    s_wcr_ret = 0xFFFFFFFFu;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = WCR_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 1u;
+    *obj = sr_syscall(&cpu, create_nid);
+    expect((int32_t)*obj > 0, "cancel/release fixture: object created");
+    if ((int32_t)*obj <= 0) { s_cur = -1; return NULL; }
+    TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "cancel/release fixture: waiter coroutine created");
+    if (!waiter->coro) { s_cur = -1; return NULL; }
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    return waiter;
+}
+
+static void wcr_finish(TCB *waiter, uint32_t obj) {
+    if (waiter && waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    if (obj) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = obj;
+        (void)sr_syscall(&cpu, NID_WSV_DELETE_SEMA);
+        (void)sr_syscall(&cpu, NID_B1_DELETE_EVF);
+    }
+    s_cur = -1;
+}
+
+static void test_cancel_release_wake_results(void) {
+    char msg[192];
+    CpuState cpu;
+
+    /* ---- CancelSema: WAIT_CANCEL to the waiter, count reset, numWait out ---- */
+    TCB *waiter = wcr_begin_waiter(wcr_waiter_body_sema, &s_wcr_obj, NID_CNW_CREATE_SEMA);
+    if (waiter) {
+        snprintf(msg, sizeof msg, "CancelSema: the wait blocked on the semaphore");
+        expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == s_wcr_obj, msg);
+        /* PSP-B3-01: the canceller is the main fixture thread, not the waiter.
+         * wcr_begin_waiter leaves s_cur on the waiter; without this the Release
+         * cell below would observe the caller as itself. */
+        s_cur = (int)(waiter - s_tcb) - 1;
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = s_wcr_obj; cpu.r[5] = 0xFFFFFFFFu; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        uint32_t rc = sr_syscall(&cpu, NID_WCR_CANCEL_SEMA);
+        expect(rc == 0u, "PSP-B2-01: CancelSema succeeds");
+        expect(MEM_R32(WCR_NUMWAIT) == 1u,
+               "PSP-B2-01: CancelSema reports the number of woken waiters");
+        expect(wsv_count(s_wcr_obj) == 0,
+               "PSP-B2-01: CancelSema(-1) resets the count to the initial count");
+        s_cur = (int)(waiter - s_tcb);
+        waiter->state = TH_RUNNING;
+        sr_coro_switch(waiter->coro);
+        expect(s_wcr_returned == 1, "CancelSema: the cancelled waiter resumed");
+        expect(s_wcr_ret == WCR_WAIT_CANCEL,
+               "PSP-B2-01: the cancelled semaphore waiter receives 0x800201A9");
+        wcr_finish(waiter, s_wcr_obj);
+    }
+
+    /* ---- CancelSema n > max: ILLEGAL_COUNT, no wake, count untouched ------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        uint32_t sema = wsv_create(1, 3);
+        MEM_W32(WCR_NUMWAIT, 0x1234u);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 4u; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0x800201bdu,
+               "PSP-B2-01: CancelSema with newCount above max returns 0x800201BD");
+        expect(MEM_R32(WCR_NUMWAIT) == 0x1234u,
+               "PSP-B2-01: a rejected CancelSema does not write numWait");
+        expect(wsv_count(sema) == 1,
+               "PSP-B2-01: a rejected CancelSema leaves the count unchanged");
+        wsv_delete(sema);
+        s_cur = -1;
+    }
+
+    /* ---- CancelEventFlag: WAIT_CANCEL, pattern set, numWait out ------------ */
+    waiter = wcr_begin_waiter(wcr_waiter_body_evf, &s_wcr_obj, NID_B1_CREATE_EVF);
+    if (waiter) {
+        snprintf(msg, sizeof msg, "CancelEventFlag: the wait blocked on the flag");
+        expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == s_wcr_obj, msg);
+        s_cur = (int)(waiter - s_tcb) - 1;
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = s_wcr_obj; cpu.r[5] = 0x10u; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        uint32_t rc = sr_syscall(&cpu, NID_WCR_CANCEL_EVF);
+        expect(rc == 0u, "PSP-B2-01: CancelEventFlag succeeds");
+        expect(MEM_R32(WCR_NUMWAIT) == 1u,
+               "PSP-B2-01: CancelEventFlag reports the number of woken waiters");
+        s_cur = (int)(waiter - s_tcb);
+        waiter->state = TH_RUNNING;
+        sr_coro_switch(waiter->coro);
+        expect(s_wcr_returned == 1, "CancelEventFlag: the cancelled waiter resumed");
+        expect(s_wcr_ret == WCR_WAIT_CANCEL,
+               "PSP-B2-01: the cancelled event-flag waiter receives 0x800201A9");
+        expect(MEM_R32(WCR_NUMWAIT) == 0x10u,
+               "PSP-B2-01: the cancelled waiter observes outBits = the new pattern");
+        wcr_finish(waiter, s_wcr_obj);
+    }
+
+    /* ---- ReleaseWaitThread: WAIT_RELEASE to the waiter, 0 to the caller ---- */
+    waiter = wcr_begin_waiter(wcr_waiter_body_sema, &s_wcr_obj, NID_CNW_CREATE_SEMA);
+    if (waiter) {
+        uint32_t waiter_uid = waiter->uid;
+        s_cur = (int)(waiter - s_tcb) - 1;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = waiter_uid;
+        expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0u,
+               "PSP-B3-01: ReleaseWaitThread returns 0");
+        s_cur = (int)(waiter - s_tcb);
+        waiter->state = TH_RUNNING;
+        sr_coro_switch(waiter->coro);
+        expect(s_wcr_returned == 1, "ReleaseWaitThread: the released waiter resumed");
+        expect(s_wcr_ret == WCR_WAIT_RELEASE,
+               "PSP-B3-01: the released waiter receives 0x800201AA");
+        wcr_finish(waiter, s_wcr_obj);
+    }
+
+    /* ---- ReleaseWaitThread(0): ILLEGAL_THID for the running caller --------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e3u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0x80020197u,
+               "PSP-B3-01: ReleaseWaitThread(0) on the running caller returns 0x80020197");
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917) second round: init restore, delete,
+ * single-wait rejection, LwMutex handoff/timeout, msgpipe modes, dormant
+ * threads and waitType. Each cell enters through the production NID.
+ * ------------------------------------------------------------------------- */
+#define B23_LW_WA       0x00250600u
+#define B23_LW_TIMEOUT  0x00250640u
+#define B23_EVF_OUT     0x00250680u
+#define B23_EVF_TMO     0x00250684u
+#define B23_MPP_NAME    0x08030000u
+#define B23_MPP_BUF     0x08010000u
+#define B23_MPP_OUT     0x08020000u
+#define B23_MPP_RES     0x08040000u
+#define NID_B23_WAKEUP_THREAD 0xd59ead2fu
+#define NID_B23_CHANGE_PRIO   0x71bc9871u
+#define NID_B23_GET_EXIT      0x3b183e26u
+
+static uint32_t s_b23_obj;
+static uint32_t s_b23_ret;
+static int      s_b23_returned;
+static uint32_t s_b23_lw_wa;
+static int      s_b23_lw_count;
+static uint32_t s_b23_lw_toptr;
+
+static void b23_waiter_sema_delete(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_b23_obj; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    s_b23_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_b23_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void b23_waiter_lw_lock(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_b23_lw_wa; cpu.r[5] = (uint32_t)s_b23_lw_count; cpu.r[6] = s_b23_lw_toptr;
+    s_b23_ret = sr_syscall(&cpu, NID_B1_LOCK_LWMUTEX);
+    s_b23_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_b23_second_round(void) {
+    CpuState cpu;
+    char msg[192];
+
+    /* ---- CancelSema(-1) with a non-zero initial count restores init ----- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        uint32_t sema = wsv_create(2, 3);
+        expect(wsv_count(sema) == 2, "PSP-B2-01: fixture sema starts at init 2");
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 0xFFFFFFFFu; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0u,
+               "PSP-B2-01: CancelSema(-1) with init 2 succeeds");
+        expect(wsv_count(sema) == 2,
+               "PSP-B2-01: CancelSema(-1) restores the initial count (2), not zero");
+        wsv_delete(sema);
+        s_cur = -1;
+    }
+
+    /* ---- DeleteSema with a waiter: delete 0, waiter WAIT_DELETE --------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        s_b23_obj = wsv_create(0, 1);
+        s_b23_ret = 0xFFFFFFFFu; s_b23_returned = 0;
+        TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+        waiter->started = 1;
+        waiter->coro = sr_coro_create(b23_waiter_sema_delete, NULL, (size_t)4 << 20);
+        expect(waiter->coro != NULL, "PSP-B2-01: delete-waiter coroutine created");
+        if (waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(waiter->state == TH_WAIT_OBJ, "PSP-B2-01: waiter blocked before delete");
+            s_cur = (int)(main_t - s_tcb);
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = s_b23_obj;
+            expect(sr_syscall(&cpu, NID_WSV_DELETE_SEMA) == 0u,
+                   "PSP-B2-01: DeleteSema with a waiter returns 0");
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(s_b23_returned == 1, "PSP-B2-01: the deleted waiter resumed");
+            expect(s_b23_ret == 0x800201b5u,
+                   "PSP-B2-01: the deleted semaphore waiter receives 0x800201B5");
+            sr_coro_destroy(waiter->coro); waiter->coro = NULL;
+        }
+        s_cur = -1;
+    }
+
+    /* ---- Second waiter on a single-wait flag: 0x800201B0, no touch ------ */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = WCR_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+        uint32_t evf = sr_syscall(&cpu, NID_B1_CREATE_EVF);
+        expect((int32_t)evf > 0, "PSP-B2-01: single-wait flag created");
+        s_wcr_obj = evf; s_wcr_ret = 0xFFFFFFFFu; s_wcr_returned = 0;
+        TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+        waiter->started = 1;
+        waiter->coro = sr_coro_create(wcr_waiter_body_evf, NULL, (size_t)4 << 20);
+        if (waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(waiter->state == TH_WAIT_OBJ, "PSP-B2-01: first waiter blocked");
+            s_cur = (int)(main_t - s_tcb);
+            MEM_W32(B23_EVF_TMO, 50000u);
+            MEM_W32(B23_EVF_OUT, 0xdeadbeefu);
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = evf; cpu.r[5] = 0x02u; cpu.r[6] = 1u; cpu.r[7] = B23_EVF_OUT;
+            cpu.r[8] = 0u; cpu.r[9] = 0u; cpu.r[10] = 0u; cpu.r[11] = 0u;
+            /* timeout ptr goes in stack_arg(0) = r8; outBits already in r7 */
+            cpu.r[8] = B23_EVF_TMO;
+            /* WaitEventFlag uid,bits,mode,outBits,timeout: second waiter must be
+             * rejected immediately without blocking. */
+            uint32_t rc = sr_syscall(&cpu, NID_CNW_WAIT_EVF);
+            expect(rc == 0x800201b0u,
+                   "PSP-B2-01: second waiter on a single-wait flag returns 0x800201B0");
+            expect(MEM_R32(B23_EVF_TMO) == 50000u,
+                   "PSP-B2-01: rejected second waiter leaves its timeout untouched");
+            expect(MEM_R32(B23_EVF_OUT) == 0xdeadbeefu,
+                   "PSP-B2-01: rejected second waiter leaves outBits untouched");
+            /* waitType of the first waiter is event flag (4) with waitId = uid */
+            {
+                SrThreadRunStatus rs;
+                expect(sched_thread_run_status(waiter->uid, &rs) == 0,
+                       "PSP-B3-01: Refer status of evf waiter succeeds");
+                expect(rs.waitType == 4u, "PSP-B3-01: evf wait reports waitType 4");
+                expect(rs.waitId == evf, "PSP-B3-01: evf waitId is the object UID");
+            }
+            if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+        }
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = evf;
+        (void)sr_syscall(&cpu, NID_B1_DELETE_EVF);
+        s_cur = -1;
+    }
+
+    /* ---- LwMutex: direct handoff, timed timeout, numWait --------------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        uint32_t me = main_t->uid;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = B23_LW_WA; cpu.r[5] = WCR_NAMEBUF; cpu.r[6] = 0u; cpu.r[7] = 0u;
+        expect(sr_syscall(&cpu, NID_B1_CREATE_LWMUTEX) == 0u,
+               "PSP-B2-01: LwMutex created for handoff");
+        uint32_t muid = MEM_R32(B23_LW_WA + 0x10u);
+        expect(muid != 0u && muid != 0xffffffffu, "PSP-B2-01: LwMutex workarea holds a UID");
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = B23_LW_WA; cpu.r[5] = 1u; cpu.r[6] = 0u;
+        expect(sr_syscall(&cpu, NID_B1_TRYLOCK_LWMUTEX) == 0u,
+               "PSP-B2-01: main takes the LwMutex");
+        s_b23_lw_wa = B23_LW_WA; s_b23_lw_count = 2; s_b23_lw_toptr = 0u;
+        s_b23_ret = 0xFFFFFFFFu; s_b23_returned = 0;
+        TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+        waiter->started = 1;
+        waiter->coro = sr_coro_create(b23_waiter_lw_lock, NULL, (size_t)4 << 20);
+        if (waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(waiter->state == TH_WAIT_OBJ, "PSP-B2-01: LwMutex waiter blocked");
+            expect(MEM_R32(B23_LW_WA + 0x0cu) == 1u,
+                   "PSP-B2-01: numWaitThreads counts the waiter");
+            {
+                SrThreadRunStatus rs;
+                expect(sched_thread_run_status(waiter->uid, &rs) == 0,
+                       "PSP-B3-01: Refer status of LwMutex waiter succeeds");
+                expect(rs.waitType == 13u, "PSP-B3-01: LwMutex wait reports waitType 13");
+                expect(rs.waitId == muid, "PSP-B3-01: LwMutex waitId is the workarea UID");
+            }
+            s_cur = (int)(main_t - s_tcb);
+            (void)me;
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = B23_LW_WA; cpu.r[5] = 1u;
+            expect(sr_syscall(&cpu, NID_B1_UNLOCK_LWMUTEX) == 0u,
+                   "PSP-B2-01: main unlocks to zero");
+            snprintf(msg, sizeof msg, "PSP-B2-01: unlock hands lockThread directly to waiter 0x%x", waiter->uid);
+            expect(MEM_R32(B23_LW_WA + 0x04u) == waiter->uid, msg);
+            expect(MEM_R32(B23_LW_WA + 0x00u) == 2u,
+                   "PSP-B2-01: unlock hands level = the waiter's count before it runs");
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(s_b23_returned == 1 && s_b23_ret == 0u,
+                   "PSP-B2-01: the handed-off waiter acquires and returns 0");
+            if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+        }
+        /* contended timed lock with timeout 0 answers WAIT_TIMEOUT at once */
+        {
+            /* waiter still owns (level 2); a second waiter times out immediately
+             * in its own coroutine so the old blocking-forever behaviour fails
+             * cleanly (no return) instead of hanging the fixture thread. */
+            s_b23_lw_wa = B23_LW_WA; s_b23_lw_count = 1;
+            MEM_W32(B23_LW_TIMEOUT, 0u);
+            s_b23_lw_toptr = B23_LW_TIMEOUT;
+            s_b23_ret = 0xFFFFFFFFu; s_b23_returned = 0;
+            TCB *waiter2 = fixture_thread(0x1e3u, TH_READY, 17);
+            waiter2->started = 1;
+            waiter2->coro = sr_coro_create(b23_waiter_lw_lock, NULL, (size_t)4 << 20);
+            if (waiter2->coro) {
+                s_cur = (int)(waiter2 - s_tcb);
+                waiter2->state = TH_RUNNING;
+                sr_coro_switch(waiter2->coro);
+                expect(s_b23_returned == 1,
+                       "PSP-B2-01: contended timed lock returned at once");
+                expect(s_b23_ret == 0x800201a8u,
+                       "PSP-B2-01: contended timed LwMutex lock returns 0x800201A8");
+                expect(MEM_R32(B23_LW_TIMEOUT) == 0u,
+                       "PSP-B2-01: expired LwMutex wait reports remaining timeout 0");
+                if (waiter2->coro) { sr_coro_destroy(waiter2->coro); waiter2->coro = NULL; }
+                /* Immediate timeout never enqueued, so the owner is untouched. */
+                expect(MEM_R32(B23_LW_WA + 0x04u) == waiter->uid,
+                       "PSP-B2-01: a timed-out lock leaves the owner unchanged");
+            }
+            s_cur = (int)(main_t - s_tcb);
+        }
+        s_cur = -1;
+    }
+
+    /* ---- MsgPipe: mode 2 illegal, FULL leaves result -------------------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        CpuState c2;
+        memset(&c2, 0, sizeof c2);
+        c2.r[4] = B23_MPP_NAME; c2.r[7] = 64u;
+        for (int i = 0; i < 3; i++) MEM_W8(B23_MPP_NAME + (uint32_t)i, (uint8_t)"mp"[i]);
+        MEM_W8(B23_MPP_NAME + 2u, 0u);
+        uint32_t pipe = sr_syscall(&c2, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+        expect((int32_t)pipe > 0, "PSP-B3-01: msgpipe created for mode cells");
+        if ((int32_t)pipe > 0) {
+            for (uint32_t i = 0; i < 8; i++) MEM_W8(B23_MPP_BUF + i, (uint8_t)(0xA0u + i));
+#define B23_MPP_SEND(uid_, buf_, size_, mode_, res_) \
+    do { memset(&cpu, 0, sizeof cpu); \
+         cpu.r[4] = (uid_); cpu.r[5] = (buf_); cpu.r[6] = (size_); cpu.r[7] = (mode_); cpu.r[8] = (res_); } while (0)
+            B23_MPP_SEND(pipe, B23_MPP_BUF, 4u, 2u, B23_MPP_RES);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x80020195u,
+                   "PSP-B3-01: TrySend wait mode 2 returns 0x80020195");
+            B23_MPP_SEND(pipe, B23_MPP_BUF, 4u, 2u, B23_MPP_RES);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0x80020195u,
+                   "PSP-B3-01: TryReceive wait mode 2 returns 0x80020195");
+            /* fill the pipe, then an all-or-nothing send without room */
+            B23_MPP_SEND(pipe, B23_MPP_BUF, 64u, 0u, B23_MPP_RES);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                   "PSP-B3-01: fill send succeeds");
+            MEM_W32(B23_MPP_RES, 0x12345678u);
+            B23_MPP_SEND(pipe, B23_MPP_BUF, 1u, 0u, B23_MPP_RES);
+            MEM_W32(B23_MPP_RES, 0x12345678u);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201b3u,
+                   "PSP-B3-01: all-or-nothing send without room returns 0x800201B3");
+            expect(MEM_R32(B23_MPP_RES) == 0x12345678u,
+                   "PSP-B3-01: a FULL send does not write the result");
+            /* oversize and unknown-id cells (already correct, pinned here) */
+            B23_MPP_SEND(pipe, B23_MPP_BUF, 100u, 0u, B23_MPP_RES);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201bcu,
+                   "PSP-B3-01: oversize send returns 0x800201BC");
+            B23_MPP_SEND(0xdeadbeefu, B23_MPP_BUF, 4u, 0u, B23_MPP_RES);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x8002019eu,
+                   "PSP-B3-01: unknown pipe returns 0x8002019E");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = pipe;
+            (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+        }
+        s_cur = -1;
+    }
+
+    /* ---- Threads: dormant targets answer DORMANT ------------------------ */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        uint32_t dormant = sched_create_thread(0x08001000u, 32, 0x1000u);
+        expect(dormant != 0u, "PSP-B3-01: dormant thread created");
+        if (dormant) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = dormant;
+            expect(sr_syscall(&cpu, NID_B23_WAKEUP_THREAD) == 0x800201a2u,
+                   "PSP-B3-01: Wakeup of a dormant thread returns 0x800201A2");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = dormant;
+            expect(sr_syscall(&cpu, NID_B23_GET_EXIT) == 0x800201a2u,
+                   "PSP-B3-01: GetThreadExitStatus of a never-started thread returns 0x800201A2");
+            /* CONFLICT: PSP-B3-01 reports Terminate on dormant as 0x800201A2, but
+             * sched_selftest's lifecycle contract pins terminate-then-delete on a
+             * synthetic DORMANT as success. sched_terminate_thread keeps the
+             * contract; see FINAL REPORT. */
+            expect(sched_terminate_thread(dormant) == 0u,
+                   "contract: Terminate of a dormant target succeeds for TerminateDelete");
+            expect(sched_set_priority(dormant, 0x20) == 0x800201a2u,
+                   "PSP-B3-01: ChangePriority of a dormant thread returns 0x800201A2");
+            (void)sched_delete_thread(dormant);
+        }
+        s_cur = -1;
+    }
+
+    /* ---- Sema waiter waitType 3 ---------------------------------------- */
+    {
+        reset_fixture();
+        sr_hle_init();
+        TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+        s_cur = (int)(main_t - s_tcb);
+        main_t->started = 1;
+        s_b23_obj = wsv_create(0, 1);
+        s_b23_ret = 0xFFFFFFFFu; s_b23_returned = 0;
+        TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+        waiter->started = 1;
+        waiter->coro = sr_coro_create(b23_waiter_sema_delete, NULL, (size_t)4 << 20);
+        if (waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            waiter->state = TH_RUNNING;
+            sr_coro_switch(waiter->coro);
+            expect(waiter->state == TH_WAIT_OBJ, "PSP-B3-01: sema waiter blocked");
+            {
+                SrThreadRunStatus rs;
+                expect(sched_thread_run_status(waiter->uid, &rs) == 0,
+                       "PSP-B3-01: Refer status of sema waiter succeeds");
+                expect(rs.waitType == 3u, "PSP-B3-01: sema wait reports waitType 3");
+                expect(rs.waitId == s_b23_obj, "PSP-B3-01: sema waitId is the object UID");
+            }
+            /* Unblock without latching a wake result: the delete below must see
+             * no waiters, otherwise its WAIT_DELETE would pollute the next test. */
+            waiter->state = TH_READY;
+            if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+        }
+        wsv_delete(s_b23_obj);
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
  * PR-C1: the blocking FPL allocate forms and the context rule
  * -------------------------------------------------------------------------
  * sceKernelAllocateFpl / ...CB used to BE sceKernelTryAllocateFpl -- one handler
@@ -8636,12 +9191,12 @@ static void check_coroutine_lifecycle(void) {
      * coroutine layer rather than a tautology. */
     {
         extern int s_mtx_parks;
-        int expected_parks = 8 + ic_expected_parks() + s_mtx_parks;
+        int expected_parks = 8 + 3 + 3 + ic_expected_parks() + s_mtx_parks;
         char msg[224];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ %d returned conformance legs + %d mutex legs = %d, observed %lu)",
+                 "+ 3 cancel/release waiters + 3 second-round waiters + %d returned conformance legs + %d mutex legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -10350,6 +10905,8 @@ int main(int argc, char **argv) {
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
+    test_cancel_release_wake_results();
+    test_b23_second_round();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_atrac_stream_ring_wrap();
