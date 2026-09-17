@@ -79,7 +79,9 @@ def load_nid_corpus(path: Path | str | None = None) -> dict[int, list[tuple[str 
             lib = entry.get("library")
             table.setdefault(nid, []).append((lib, name))
     except Exception:
-        return table
+        # Predictable failure: fall back to bare NIDs rather than to a
+        # half-parsed table whose gaps would look like unknown NIDs.
+        return {}
     return table
 
 
