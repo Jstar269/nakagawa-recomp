@@ -70,7 +70,6 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
-    "docs/OSPS_BASELINE.md",
     "docs/ISSUE196_DIRECT_XB.md",
     "docs/provenance/MODIFIED_FILE_NOTICES.md",
 }

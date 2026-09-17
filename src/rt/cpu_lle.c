@@ -1,0 +1,339 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 the Nakagawa Recomp authors
+//
+// LLE Phase 1 (PR 2): COP0 access, mode checks, exception entry, and eret.
+//
+// Return contract for every helper below: 0 means "no transfer, keep
+// executing"; any negative value means flow metadata was set and the caller
+// (generated code or the interpreter) must leave the native body at once and
+// let the guest dispatcher consume flow_kind/flow_target. Helpers never
+// return into a native caller past a guest transfer.
+
+#include "cpu_lle.h"
+
+#include "recomp.h"
+
+/* Synthetic defaults (spec 3.3/3.7): fixture contracts, not PSP claims. */
+#define SR_LLE_VECTOR_GENERAL_DEFAULT   0x80000180u
+#define SR_LLE_VECTOR_INTERRUPT_DEFAULT 0x80000180u
+#define SR_LLE_VECTOR_BOOTSTRAP_DEFAULT 0xBFC00200u
+
+static uint32_t s_vector_general = SR_LLE_VECTOR_GENERAL_DEFAULT;
+static uint32_t s_vector_interrupt = SR_LLE_VECTOR_INTERRUPT_DEFAULT;
+static uint32_t s_vector_bootstrap = SR_LLE_VECTOR_BOOTSTRAP_DEFAULT;
+static uint32_t s_prid_value;
+static uint32_t s_config_value;
+static int s_lle_enabled;
+
+void sr_cpu_lle_set_enabled(int enabled) {
+    s_lle_enabled = enabled != 0;
+}
+
+int sr_cpu_lle_enabled(void) {
+    return s_lle_enabled;
+}
+
+void sr_cpu_lle_set_vectors(
+    uint32_t general,
+    uint32_t interrupt,
+    uint32_t bootstrap) {
+    s_vector_general = general;
+    s_vector_interrupt = interrupt;
+    s_vector_bootstrap = bootstrap;
+}
+
+void sr_cpu_lle_get_vectors(
+    uint32_t *general,
+    uint32_t *interrupt,
+    uint32_t *bootstrap) {
+    if (general) *general = s_vector_general;
+    if (interrupt) *interrupt = s_vector_interrupt;
+    if (bootstrap) *bootstrap = s_vector_bootstrap;
+}
+
+void sr_cpu_lle_set_prid(uint32_t prid) {
+    s_prid_value = prid;
+}
+
+void sr_cpu_lle_set_config(uint32_t config) {
+    s_config_value = config;
+}
+
+void sr_cpu_lle_reset_config(void) {
+    s_vector_general = SR_LLE_VECTOR_GENERAL_DEFAULT;
+    s_vector_interrupt = SR_LLE_VECTOR_INTERRUPT_DEFAULT;
+    s_vector_bootstrap = SR_LLE_VECTOR_BOOTSTRAP_DEFAULT;
+    s_prid_value = 0u;
+    s_config_value = 0u;
+    s_lle_enabled = 0;
+}
+
+int sr_cpu_in_kernel(const CpuState *s) {
+    uint32_t status = s->cop0[SR_CP0_STATUS];
+    /* EXL/ERL pin kernel mode regardless of KSU (spec 3.2). */
+    if (status & (SR_STATUS_EXL | SR_STATUS_ERL)) {
+        return 1;
+    }
+    return (status & SR_STATUS_KSU_MASK) == 0u;
+}
+
+void sr_cpu_clear_flow(CpuState *s) {
+    s->flow_kind = SR_FLOW_NONE;
+    s->flow_target = 0u;
+}
+
+int sr_cpu_poll(CpuState *s, uint32_t resume_pc) {
+    /* No device model yet: INTC pending bits, timer advancement, and Cause.IP
+     * synchronization land in PR 5; safe-point delivery lands in PR 6. A stub
+     * that fabricated an interrupt here would invent timer behavior the timer
+     * oracle questions (spec 6.3) leave BLOCKED, so report none. */
+    (void)s;
+    (void)resume_pc;
+    return 0;
+}
+
+/* Only sel 0 registers modeled in Phase 1 read or write architectural state.
+ * Anything else is an unsupported encoding (spec 3.2: never answer zero). */
+static int sr_cp0_rd_supported(unsigned rd) {
+    switch (rd) {
+    case SR_CP0_BADVADDR:
+    case SR_CP0_COUNT:
+    case SR_CP0_COMPARE:
+    case SR_CP0_STATUS:
+    case SR_CP0_CAUSE:
+    case SR_CP0_EPC:
+    case SR_CP0_PRID:
+    case SR_CP0_CONFIG:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* Delay context for COP0 faults comes from the caller's in_delay_slot/next_pc
+ * fields: straight-line callers clear in_delay_slot first (generated code
+ * emits the clear; the interpreter maintains it around delay slots), and
+ * delay-slot callers set in_delay_slot=1 with next_pc holding the branch PC. */
+static void sr_cp0_delay_context(
+    const CpuState *s,
+    uint32_t instr_pc,
+    uint32_t *fault_pc,
+    uint32_t *exception_pc,
+    unsigned *in_delay_slot) {
+    *fault_pc = instr_pc;
+    if (s->in_delay_slot != 0u) {
+        *exception_pc = s->next_pc;
+        *in_delay_slot = 1u;
+    } else {
+        *exception_pc = instr_pc;
+        *in_delay_slot = 0u;
+    }
+}
+
+int sr_cpu_raise_exception(
+    CpuState *s,
+    unsigned exception_code,
+    uint32_t fault_pc,
+    uint32_t exception_pc,
+    uint32_t badvaddr,
+    unsigned in_delay_slot,
+    unsigned coprocessor) {
+    uint32_t cause;
+    uint32_t status;
+    uint32_t vector;
+
+    if (!s) {
+        return -2;
+    }
+    exception_code &= 0x1Fu;
+    in_delay_slot = in_delay_slot != 0u;
+
+    uint32_t pre_status = s->cop0[SR_CP0_STATUS];
+    int nested = (pre_status & SR_STATUS_EXL) != 0;
+
+    /* Delay-slot faults report the branch address in EPC (spec 3.3).
+     * MIPS32 Architecture For Programmers, Vol. III: The MIPS32 Privileged
+     * Resource Architecture (Section 5.1 / 6.1): when Status.EXL is already 1
+     * at exception entry (nested exception), EPC and Cause.BD are preserved,
+     * while Cause.ExcCode is still updated to the new exception. */
+    if (!nested) {
+        s->cop0[SR_CP0_EPC] = in_delay_slot ? exception_pc : fault_pc;
+    }
+
+    cause = s->cop0[SR_CP0_CAUSE];
+    if (!nested) {
+        cause &= (uint32_t)~(SR_CAUSE_BD | SR_CAUSE_CE_MASK | SR_CAUSE_EXCCODE_MASK);
+        if (in_delay_slot) {
+            cause |= SR_CAUSE_BD;
+        }
+    } else {
+        cause &= (uint32_t)~(SR_CAUSE_CE_MASK | SR_CAUSE_EXCCODE_MASK);
+    }
+    cause |= (uint32_t)((exception_code << 2) & SR_CAUSE_EXCCODE_MASK);
+    if (exception_code == SR_EXC_CPU) {
+        cause |= (uint32_t)(((coprocessor & 3u) << 28) & SR_CAUSE_CE_MASK);
+    }
+    s->cop0[SR_CP0_CAUSE] = cause;
+
+    if (exception_code == SR_EXC_ADEL || exception_code == SR_EXC_ADES) {
+        s->cop0[SR_CP0_BADVADDR] = badvaddr;
+    }
+
+    s->cop0[SR_CP0_STATUS] |= SR_STATUS_EXL;
+    status = s->cop0[SR_CP0_STATUS];
+
+    /* BEV selects the bootstrap vector; hardware interrupts use the interrupt
+     * vector; everything else uses the general vector (spec 3.3). */
+    if (status & SR_STATUS_BEV) {
+        vector = s_vector_bootstrap;
+    } else if (exception_code == SR_EXC_INT) {
+        vector = s_vector_interrupt;
+    } else {
+        vector = s_vector_general;
+    }
+
+    /* Vectors must be owned, aligned guest spans (spec 3.3). Readable-byte
+     * validation is deferred until the dispatcher selects the interpreter tier. */
+    if ((vector & 3u) != 0u || !sr_exec_span_owns_fetch(vector)) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = vector;
+        return -2;
+    }
+
+    s->pc = vector;
+    s->flow_kind = SR_FLOW_EXCEPTION;
+    s->flow_target = vector;
+    return -1;
+}
+
+int sr_cp0_mfc0(
+    CpuState *s,
+    unsigned rt,
+    unsigned rd,
+    unsigned sel,
+    uint32_t instr_pc) {
+    uint32_t fault_pc;
+    uint32_t exception_pc;
+    unsigned in_delay_slot;
+    uint32_t value;
+
+    if (!s || rt >= 32u || rd >= 32u) {
+        return -2;
+    }
+    sr_cp0_delay_context(s, instr_pc, &fault_pc, &exception_pc, &in_delay_slot);
+    if (!sr_cpu_in_kernel(s)) {
+        return sr_cpu_raise_exception(
+            s, SR_EXC_CPU, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    }
+    if (sel != 0u || !sr_cp0_rd_supported(rd)) {
+        return sr_cpu_raise_exception(
+            s, SR_EXC_RI, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    }
+    switch (rd) {
+    case SR_CP0_PRID:
+        value = s_prid_value;
+        break;
+    case SR_CP0_CONFIG:
+        value = s_config_value;
+        break;
+    default:
+        value = s->cop0[rd];
+        break;
+    }
+    /* $zero discards the move (spec 3.2). */
+    if (rt != 0u) {
+        s->r[rt] = value;
+        s->r[0] = 0u;
+    }
+    return 0;
+}
+
+int sr_cp0_mtc0(
+    CpuState *s,
+    unsigned rt,
+    unsigned rd,
+    unsigned sel,
+    uint32_t instr_pc) {
+    uint32_t fault_pc;
+    uint32_t exception_pc;
+    unsigned in_delay_slot;
+    uint32_t value;
+
+    if (!s || rt >= 32u || rd >= 32u) {
+        return -2;
+    }
+    sr_cp0_delay_context(s, instr_pc, &fault_pc, &exception_pc, &in_delay_slot);
+    if (!sr_cpu_in_kernel(s)) {
+        return sr_cpu_raise_exception(
+            s, SR_EXC_CPU, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    }
+    if (sel != 0u || !sr_cp0_rd_supported(rd)) {
+        return sr_cpu_raise_exception(
+            s, SR_EXC_RI, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    }
+    /* $zero reads as zero (spec 3.2). */
+    value = rt == 0u ? 0u : s->r[rt];
+    switch (rd) {
+    case SR_CP0_STATUS:
+        /* Reserved bits are preserved (spec 3.2). */
+        s->cop0[SR_CP0_STATUS] =
+            (s->cop0[SR_CP0_STATUS] & (uint32_t)~SR_STATUS_WRITABLE_MASK) |
+            (value & SR_STATUS_WRITABLE_MASK);
+        break;
+    case SR_CP0_CAUSE:
+        /* Hardware pending bits are INTC-owned; guest writes can only set the
+         * software pair (spec 3.2). */
+        s->cop0[SR_CP0_CAUSE] =
+            (s->cop0[SR_CP0_CAUSE] & (uint32_t)~SR_CAUSE_IP_SW_MASK) |
+            (value & SR_CAUSE_IP_SW_MASK);
+        break;
+    case SR_CP0_COUNT:
+    case SR_CP0_COMPARE:
+        /* Stored plainly: PR 5 (spec 6.2) connects these to the virtual-time
+         * timer model. No frequency is fabricated here. */
+        s->cop0[rd] = value;
+        break;
+    case SR_CP0_PRID:
+    case SR_CP0_CONFIG:
+        /* Read-only identities (spec 3.2). */
+        return sr_cpu_raise_exception(
+            s, SR_EXC_RI, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    default:
+        s->cop0[rd] = value;
+        break;
+    }
+    return 0;
+}
+
+int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
+    uint32_t target;
+
+    (void)instr_pc;
+    if (!s) {
+        return -2;
+    }
+    /* eret requires kernel/exception context; a user-mode eret traps with a
+     * coprocessor exception carrying the faulting PC (spec 3.3). */
+    if (!sr_cpu_in_kernel(s)) {
+        uint32_t fault_pc;
+        uint32_t exception_pc;
+        unsigned in_delay_slot;
+        sr_cp0_delay_context(s, instr_pc, &fault_pc, &exception_pc, &in_delay_slot);
+        return sr_cpu_raise_exception(
+            s, SR_EXC_CPU, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
+    }
+    target = s->cop0[SR_CP0_EPC];
+    /* Fail closed on an invalid target rather than jumping blind (spec 3.3).
+     * Executable authority is validated here; readable-byte validation is
+     * deferred until the dispatcher selects the interpreter tier. */
+    if ((target & 3u) != 0u || !sr_exec_span_owns_fetch(target)) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = target;
+        return -2;
+    }
+    s->cop0[SR_CP0_STATUS] &= (uint32_t)~SR_STATUS_EXL;
+    s->pc = target;
+    s->flow_kind = SR_FLOW_ERET;
+    s->flow_target = target;
+    return -1;
+}

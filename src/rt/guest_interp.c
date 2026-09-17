@@ -102,6 +102,26 @@ static void set_fault(
     fault->opcode_valid = opcode_valid;
 }
 
+/* Translate a cpu_lle helper return (<0, flow metadata set) into an
+ * interpreter result. Only called when the helper reported a transfer. */
+static SrGuestInterpResult map_flow_result(
+    CpuState *s,
+    int helper_rc,
+    SrGuestInterpFault *fault,
+    uint32_t pc,
+    uint32_t opcode) {
+    (void)helper_rc;
+    switch (s->flow_kind) {
+    case SR_FLOW_EXCEPTION:
+        return SR_GUEST_INTERP_EXCEPTION;
+    case SR_FLOW_ERET:
+        return SR_GUEST_INTERP_ERET;
+    default:
+        set_fault(fault, pc, opcode, s->flow_target, 1);
+        return SR_GUEST_INTERP_FLOW_FATAL;
+    }
+}
+
 /* Fetch tier: interpretation needs the actual instruction word, so this is the
  * only place that couples executable authority with arena-backed readability.
  * An owned but unbacked PC fails closed here as a precise memory fault instead
@@ -164,7 +184,14 @@ static int is_control_opcode(uint32_t opcode) {
     const uint32_t primary = opcode >> 26;
     if (primary == 0u) {
         const uint32_t funct = opcode & 0x3fu;
-        return funct == 0x08u || funct == 0x09u;   /* jr, jalr */
+        /* syscall/break trap without a delay slot; they still classify as
+         * control so the straight-line executor cannot misread them as
+         * arithmetic (spec 3.5). eret is recognized by its exact encoding. */
+        return funct == 0x08u || funct == 0x09u ||
+               funct == 0x0cu || funct == 0x0du;
+    }
+    if (opcode == SR_OPCODE_ERET) {
+        return 1;
     }
     switch (primary) {
     case 0x01u:                                     /* REGIMM b*z / b*zal */
@@ -215,14 +242,36 @@ static SrGuestInterpResult execute_noncontrol(
 
     /* A transfer reaching the straight-line executor -- a branch in a delay
      * slot, or a form this file does not implement -- is rejected as itself,
-     * never decoded as arithmetic. */
-    if (is_control_opcode(opcode)) {
+     * never decoded as arithmetic. The two trap forms are exempt: they are
+     * classified as control for fetch ordering, but a delay-slot occurrence
+     * still executes here under the caller's delay context (spec 3.5). */
+    if (is_control_opcode(opcode) &&
+        !(primary == 0x00u &&
+          (((opcode & 0x3fu) == 0x0cu) || ((opcode & 0x3fu) == 0x0du)))) {
         set_fault(fault, pc, opcode, pc, 1);
         return SR_GUEST_INTERP_UNSUPPORTED;
     }
 
     if (primary == 0x00u) { /* SPECIAL */
         const uint32_t funct = opcode & 0x3fu;
+        if (funct == 0x0cu || funct == 0x0du) {
+            /* Delay-slot trap (straight-line traps classify as control and
+             * never arrive here). EPC/BD come from the delay context the
+             * branch path installed; with the LLE gate off this keeps the
+             * historical UNSUPPORTED result. */
+            if (!sr_cpu_lle_enabled()) {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            {
+                uint32_t exception_pc = s->in_delay_slot != 0u ? s->next_pc : pc;
+                unsigned delay = s->in_delay_slot != 0u ? 1u : 0u;
+                unsigned code = funct == 0x0cu ? SR_EXC_SYS : SR_EXC_BP;
+                int rc = sr_cpu_raise_exception(
+                    s, code, pc, exception_pc, 0u, delay, 0u);
+                return map_flow_result(s, rc, fault, pc, opcode);
+            }
+        }
         switch (funct) {
         case 0x00u: write_gpr(s, rd, read_gpr(s, rt) << shift); break;   /* sll */
         case 0x02u: write_gpr(s, rd, read_gpr(s, rt) >> shift); break;   /* srl */
@@ -263,6 +312,41 @@ static SrGuestInterpResult execute_noncontrol(
         }
         s->r[0] = 0u;
         return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+
+    if (primary == 0x10u) { /* COP0 (spec 3.5) */
+        /* With the LLE gate off every COP0 shape keeps the historical
+         * UNSUPPORTED result. ERET never executes here: it classifies as
+         * control, so reaching this path means a delay-slot occurrence,
+         * which is unpredictable on MIPS hardware and fails closed. */
+        if (!sr_cpu_lle_enabled() || opcode == SR_OPCODE_ERET) {
+            set_fault(fault, pc, opcode, pc, 1);
+            return SR_GUEST_INTERP_UNSUPPORTED;
+        }
+        {
+            const uint32_t cop_rs = (opcode >> 21) & 31u;
+            const uint32_t cop_rt = (opcode >> 16) & 31u;
+            const uint32_t cop_rd = (opcode >> 11) & 31u;
+            const uint32_t sel = opcode & 7u;
+            int rc;
+            /* Like the COP1 move-shape check above, MFC0/MTC0 require their
+             * reserved bits (10:3) to be zero; anything else is not a move. */
+            if ((cop_rs != 0x00u && cop_rs != 0x04u) ||
+                (opcode & 0x000007F8u) != 0u) {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            if (cop_rs == 0x00u) {
+                rc = sr_cp0_mfc0(s, cop_rt, cop_rd, sel, pc);
+            } else {
+                rc = sr_cp0_mtc0(s, cop_rt, cop_rd, sel, pc);
+            }
+            if (rc == 0) {
+                s->r[0] = 0u;
+                return SR_GUEST_INTERP_AOT_HANDOFF;
+            }
+            return map_flow_result(s, rc, fault, pc, opcode);
+        }
     }
 
     if (primary == 0x11u) { /* COP1 -- scalar FPU */
@@ -402,12 +486,15 @@ typedef struct SrGuestInterpTransfer {
     uint32_t target;
     int link_register;   /* -1 when the form does not link */
     int taken;
+    unsigned exc_code;   /* valid only for SR_CTL_EXCEPTION */
 } SrGuestInterpTransfer;
 
 typedef enum SrGuestInterpCtl {
     SR_CTL_NONE     = 0,   /* straight-line instruction */
     SR_CTL_TRANSFER = 1,   /* decoded, with or without the branch taken */
     SR_CTL_REJECT   = 2,   /* a control form this file does not implement */
+    SR_CTL_EXCEPTION = 3,  /* trap: raises without a delay slot (spec 3.5) */
+    SR_CTL_ERET     = 4,   /* eret: returns without a delay slot (spec 3.5) */
 } SrGuestInterpCtl;
 
 static SrGuestInterpCtl classify_control(
@@ -423,9 +510,29 @@ static SrGuestInterpCtl classify_control(
     out->target = 0u;
     out->link_register = -1;
     out->taken = 0;
+    out->exc_code = 0u;
 
     if (!is_control_opcode(opcode)) {
         return SR_CTL_NONE;
+    }
+
+    /* LLE traps (spec 3.5). With the gate off they stay rejected, preserving
+     * the historical UNSUPPORTED result and the cosim form census. Traps
+     * have no delay slot: the run loop raises before fetching pc+4. */
+    if (primary == 0x00u && ((opcode & 0x3fu) == 0x0cu || (opcode & 0x3fu) == 0x0du)) {
+        if (!sr_cpu_lle_enabled()) {
+            return SR_CTL_REJECT;
+        }
+        out->exc_code = ((opcode & 0x3fu) == 0x0cu) ? SR_EXC_SYS : SR_EXC_BP;
+        out->taken = 1;
+        return SR_CTL_EXCEPTION;
+    }
+    if (opcode == SR_OPCODE_ERET) {
+        if (!sr_cpu_lle_enabled()) {
+            return SR_CTL_REJECT;
+        }
+        out->taken = 1;
+        return SR_CTL_ERET;
     }
 
     if (primary == 0x00u) {
@@ -473,6 +580,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
     unsigned long long instruction_count = 0u;
     const int log_dispatch = getenv("SR_DISPLOG") != NULL;
     set_fault(fault, entry, 0u, entry, 0);
+    /* Establish the COP0 delay-slot contract (spec 3.5): straight-line code
+     * runs with in_delay_slot clear; the branch path below sets it around
+     * the slot. Seeded states already hold zero, so this is a no-op there. */
+    s->in_delay_slot = 0u;
 
     if (boundary && (boundary->resume_pc & 3u) != 0u) {
         set_fault(fault, boundary->resume_pc, 0u, boundary->resume_pc, 0);
@@ -506,6 +617,14 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             return SR_GUEST_INTERP_MISALIGNED_PC;
         }
 
+        /* Safe-point poll (spec 3.5): before each instruction, never between
+         * a branch and its delay slot (the slot below runs without polling).
+         * The Phase 1 poll never reports an interrupt; the call and its flow
+         * propagation stay so later phases cannot skip the site. */
+        if (sr_cpu_poll(s, pc) < 0) {
+            return map_flow_result(s, -1, fault, pc, 0u);
+        }
+
         /* Tier selection precedes byte fetching. sr_lookup() requires complete
          * executable ownership, so a registered native body may be entered even
          * when no arena bytes back the PC: the translation itself embodies those
@@ -533,6 +652,28 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         if (control == SR_CTL_REJECT) {
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
+        }
+
+        if (control == SR_CTL_EXCEPTION || control == SR_CTL_ERET) {
+            /* Traps and eret have no delay slot: transfer at once. The
+             * helpers own EPC/Cause/flow updates; the loop only maps the
+             * resulting flow to a result (spec 3.5). */
+            int rc;
+            sr_begin(s, pc, opcode);
+            if (control == SR_CTL_EXCEPTION) {
+                rc = sr_cpu_raise_exception(
+                    s, transfer.exc_code, pc, pc, 0u, 0u, 0u);
+            } else {
+                rc = sr_cpu_eret(s, pc);
+            }
+            if (rc == 0) {
+                /* Helpers always transfer; a zero return would mean the
+                 * instruction completed inline, which traps never do. */
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            sr_end(s, 0u, 0);
+            return map_flow_result(s, rc, fault, pc, opcode);
         }
 
         if (control == SR_CTL_TRANSFER) {
@@ -569,9 +710,22 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             uint32_t delay_store_address = 0u;
             int delay_store_size = 0;
             sr_begin(s, pc + 4u, delay_opcode);
+            /* Delay context for COP0/trap faults: EPC names this branch on a
+             * slot fault (spec 3.3). Both fields are restored once the slot
+             * completes or unwinds: they are a calling convention into the
+             * fault helpers, not lane state the AOT side maintains. */
+            uint32_t saved_next_pc = s->next_pc;
+            s->in_delay_slot = 1u;
+            s->next_pc = pc;
             SrGuestInterpResult delay_result = execute_noncontrol(
                 s, pc + 4u, delay_opcode, &delay_store_address, &delay_store_size, fault);
-            if (delay_result < 0) {
+            s->in_delay_slot = 0u;
+            s->next_pc = saved_next_pc;
+            if (delay_result != SR_GUEST_INTERP_AOT_HANDOFF) {
+                if (delay_result == SR_GUEST_INTERP_EXCEPTION ||
+                    delay_result == SR_GUEST_INTERP_ERET) {
+                    sr_end(s, delay_store_address, delay_store_size);
+                }
                 return delay_result;
             }
             sr_end(s, delay_store_address, delay_store_size);
@@ -587,7 +741,11 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         sr_begin(s, pc, opcode);
         SrGuestInterpResult result = execute_noncontrol(
             s, pc, opcode, &store_address, &store_size, fault);
-        if (result < 0) {
+        if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
+            if (result == SR_GUEST_INTERP_EXCEPTION ||
+                result == SR_GUEST_INTERP_ERET) {
+                sr_end(s, store_address, store_size);
+            }
             return result;
         }
         sr_end(s, store_address, store_size);
@@ -616,12 +774,15 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     switch (result) {
     case SR_GUEST_INTERP_AOT_HANDOFF: return "aot-handoff";
     case SR_GUEST_INTERP_CALL_RETURN: return "call-return";
+    case SR_GUEST_INTERP_EXCEPTION: return "exception";
+    case SR_GUEST_INTERP_ERET: return "eret";
     case SR_GUEST_INTERP_NOT_EXECUTABLE: return "not-executable";
     case SR_GUEST_INTERP_MISALIGNED_PC: return "misaligned-pc";
     case SR_GUEST_INTERP_FETCH_BOUNDARY: return "fetch-boundary";
     case SR_GUEST_INTERP_UNSUPPORTED: return "unsupported-opcode";
     case SR_GUEST_INTERP_MEMORY_FAULT: return "memory-fault";
     case SR_GUEST_INTERP_MISALIGNED_DATA: return "misaligned-data";
+    case SR_GUEST_INTERP_FLOW_FATAL: return "flow-fatal";
     default: return "unknown";
     }
 }

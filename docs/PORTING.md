@@ -69,9 +69,8 @@ with it rather than define it. Without `-TitleManifest`, `nk_manager.ps1` select
 `assets/titles/synthetic.json`. The deprecated `hst_manager.ps1` wrapper retains
 the legacy HST manifest and target defaults for compatibility.
 
-`assets/titles/pspdev-phase5.json` is one of three materially different
-source-owned fixtures (with `synthetic.json` and `synthetic-title2.json`, the
-latter added for the generic-title planning proof)
+`assets/titles/pspdev-phase5.json` is one of four materially different
+source-owned fixtures (with `synthetic.json`, `synthetic-title2.json`, and `display-smoke.json`)
 (`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
 It proves the planner is genuinely multi-title: a different load base, no guest
 modules, and a different feature surface flow through the same manifest → plan →
@@ -417,6 +416,6 @@ expecting no HST divergence at this address.
 
 ## Reference
 
-- `AGENTS.md` — project conventions and file reference
-- `docs/ARCHITECTURE.md` — module-level breakdown of what lives where
-- `tools/README.md` — tool-specific documentation
+- [`AGENTS.md`](../AGENTS.md) — project conventions and file reference
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — module-level breakdown of what lives where
+- [`tools/README.md`](../tools/README.md) — tool-specific documentation

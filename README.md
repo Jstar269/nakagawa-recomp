@@ -1,46 +1,37 @@
 # Nakagawa Recomp
 
-> **Independent research/compatibility project.** The repository-level project declaration is GPL-3.0-or-later, while many source files retain GPL-2.0-or-later or upstream-specific terms. Inherited PGF/font and PGD/amctrl questions remain under explicit review. See [NOTICE.md](NOTICE.md) and [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md); do not treat the project declaration as final clearance for every combined configuration.
+Nakagawa Recomp is an experimental static recompiler that translates user-supplied decrypted PlayStation Portable (PSP) executables into C, links them with a native C runtime, and runs the resulting binary on Windows via SDL3 and Vulkan. Named after the in-game Nakagawa Tennis Club from its flagship test title, *Hot Shots Tennis: Get a Grip*, the project investigates ahead-of-time (AOT) binary translation, low-level hardware fidelity, and high-performance native execution for PSP software.
 
-Nakagawa Recomp is an experimental static recompiler for the PSP release of *Hot Shots Tennis: Get a Grip*. Its name comes from the in-game Nakagawa Tennis Club. It translates a user-supplied decrypted PRX/ELF into C, links it with a native C runtime, and runs the result on Windows through SDL3 and Vulkan.
+## Goals
 
-**Project lineage:** Nakagawa Recomp began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project), a GPL-2.0-or-later PSP static-recompiler toolkit, and still contains substantial code inherited from that project. Nakagawa has since substantially extended and modified that codebase. See [NOTICE.md](NOTICE.md) for the public attribution boundary and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json) for the path-hashed public provenance ledger.
+The project has three long-term goals, defined in [`docs/PROJECT_MODEL.md`](docs/PROJECT_MODEL.md):
 
-`Jstar269/nakagawa-recomp` is the active sanitized public source repository. Its
-public history deliberately begins with the sanitized restoration lineage; the
-former development history is not ordinary `main` ancestry and must not be
-reconnected. Publication gates are engineering and provenance controls, not
-legal clearance.
+1. **Recompilation:** run *Hot Shots Tennis: Get a Grip* (UCUS-98701) natively through original code generation and a runtime that emulates the PSP at the lowest level that is practical (LLE).
+2. **Full decompilation:** reconstruct 100% of the game as source code that compiles back to machine code identical to the retail executable, function by function. Recovered game source is kept private; the public repository carries only the tools and the interoperability facts behind it.
+3. **Platform:** turn the work into a general PSP recompilation and decompilation toolkit that does not depend on this one title.
 
-The project is not a game download or a general-purpose PSP emulator. It does not include the game, firmware modules, private keys, or private oracle traces. Development requires files from the user's own lawfully obtained copy.
+These are targets, not claims about current progress.
 
-This is an unofficial compatibility/research project. **"Independent" describes its relationship to Sony Interactive Entertainment, Clap Hanz, and the game rights-holders; it does not mean the recompiler codebase is clean-room or independently originated.** Nakagawa is not affiliated with or endorsed by Sony Interactive Entertainment, Clap Hanz, PPSSPP, sal063, or other upstream toolkit authors; names and marks are used only to identify compatibility and source lineage.
+## Current status
 
-## Project status
+This repository is an experimental research and compatibility project, **not an end-user release** or a game distribution. It does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces.
 
-This source is an experimental compatibility/research project and **not an end-user release**. The public-source boundary deliberately makes no claim about title playability, private runtime routes, or hardware acceptance. See [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md) for the evidence boundary and public GitHub Issues for curated engineering work.
+Public development and automated continuous integration verify the recompiler through source-owned synthetic guests:
 
-The recompiler is experimental, and active development focuses on fidelity, timing, HLE completeness, and graphics/audio rendering. Current known open areas include:
+- The **differential cosimulation harness** (`mingw32-make cosim-selftest`) verifies semantic parity between AOT-generated code and the fail-closed interpreter floor.
+- The **platform ladder** (`mingw32-make platform-ladder`) exercises relocations, scheduler threading, scalar FPU, and filesystem semantics across synthetic workloads.
+- The **production smoke fixtures** (`mingw32-make production-smoke`, `mingw32-make display-smoke`) test the complete two-phase build pipeline and display bring-up without proprietary inputs; `mingw32-make display-smoke-player` also launches the fixture through the native player.
 
-- PSP HLE and scheduler edge cases tracked by the public issue tracker;
-- source-owned ATRAC3+ decoder/bridge behavior ([`src/rt/atrac3p/PROVENANCE.md`](src/rt/atrac3p/PROVENANCE.md));
-- full PSMF integration and other title-specific behavior, which are outside
-  this public repository's public-safe acceptance boundary.
+The public source boundary deliberately makes no claim of retail title playability. Active development focuses on HLE completeness, timing, scheduler edge cases, and graphics/audio fidelity. Active defect tracking is maintained on [GitHub Issues](https://github.com/Jstar269/nakagawa-recomp/issues); see [`ISSUES.md`](ISSUES.md) for the project status dashboard.
 
-**Public GitHub Issues are canonical for active defects and acceptance criteria where a curated public issue exists.** [`ISSUES.md`](ISSUES.md) provides the concise status map across public issues and reference evidence. Hosted GitHub Actions workflows define automated verification gates on public commits.
+## Quick start
 
-## Requirements
+### Prerequisites
 
-- Windows 11 x64
-- PowerShell 7.6+ (`pwsh`)
-- MSYS2 UCRT64 packages: GCC/G++, GNU Make, SDL3, and the Vulkan loader
-- Python 3.14.x
-- A current Vulkan SDK (the manager prefers `-VulkanSdk`, then `VULKAN_SDK`, then the newest valid `C:\VulkanSDK\<version>` installation)
-- A Vulkan-capable GPU for the default renderer
-
-The authoritative development baseline, discovery rules, and doctor checks are maintained in
-[docs/SETUP.md](docs/SETUP.md). Use `pwsh` for PowerShell entrypoints; Windows PowerShell 5.1 is
-not a supported host.
+- Windows 11 x64 with PowerShell 7.6+ (`pwsh`)
+- CPython 3.14.x
+- MSYS2 UCRT64 toolchain (GCC/G++, GNU Make, SDL3, Vulkan headers & loader)
+- A current Vulkan SDK and a Vulkan-capable GPU
 
 Install the MSYS2 packages from a UCRT64 terminal:
 
@@ -48,125 +39,90 @@ Install the MSYS2 packages from a UCRT64 terminal:
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
 ```
 
-For exact input layout, dependency setup, and troubleshooting, read [docs/SETUP.md](docs/SETUP.md).
+### Build public synthetic smoke routes
 
-## Required local game files
+Verify the toolchain and pipeline without proprietary game inputs. Run these from a shell whose `PATH` includes the MSYS2 UCRT64 tools: a UCRT64 terminal, or PowerShell after `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`.
 
-These paths are intentionally ignored by Git:
+```powershell
+.\nk_manager.ps1 -Action Test                 # C++ reference-runtime selftest (make selftest)
+python -m unittest discover -s tools -p "test_*.py"  # Python tooling suite
+mingw32-make production-smoke                 # Two-phase pipeline smoke test
+mingw32-make platform-ladder                  # Multi-workload synthetic platform ladder
+mingw32-make cosim-selftest                   # Differential AOT vs. interpreter cosimulation
+```
+
+### Local game inputs
+
+To build with a lawfully obtained copy of *Hot Shots Tennis: Get a Grip*, place private inputs into the Git-ignored `place_game_here/` layout below. This layout, including the named middleware PRXs and the `xbdata_extracted` tree, is specific to the HST route; other titles take their filesystem and module paths from their own title manifest.
 
 ```text
-place_game_here/                 # canonical private runtime/build input
-├── EBOOT.elf                    # decrypted flat build input
-├── ISO/<your lawfully obtained game>.iso
+place_game_here/
+├── EBOOT.elf                     # Decrypted game executable
+├── ISO/<game>.iso                # Lawfully obtained game ISO
 └── EXTRACTED/
-    ├── decrypted/
-    │   ├── libfont.prx
-    │   ├── scePsmf_library.prx
-    │   └── scePsmfP_library.prx
+    ├── decrypted/                # Decrypted PRXs (libfont.prx, scePsmf_library.prx, scePsmfP_library.prx)
     └── PSP_GAME/
-        ├── SYSDIR/EBOOT.BIN     # PSP header/BSS metadata
-        └── USRDIR/xbdata_extracted/
+        ├── SYSDIR/EBOOT.BIN      # PSP header/BSS metadata
+        └── USRDIR/xbdata_extracted/ # Extracted game data (via python tools/extract_xb.py)
 ```
 
-The manager resolves this layout directly. Legacy root links named `eboot.elf` and `game.iso` still work but are optional. A source `EBOOT.PBP` and `DOCUMENT.DAT` may be retained as private archival inputs, but neither is read by the current manager/build/runtime once the layout above exists.
-
-`python tools/extract_xb.py` can regenerate `xbdata_extracted/`. It has no third-party dependency: this repository parses the archive, decodes every member under its own budgets, normalizes each member name once, and writes it itself, so the name that is validated is the name that is written. Unsafe, over-budget, and unparsable archives are refused rather than extracted. [libxb](https://github.com/kiwi515/libxb) was the previous extraction back end and is now optional reference-only tooling. Direct-archive containment and runtime semantics are investigated in [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md) and [`assets/release_manifest.json`](assets/release_manifest.json).
-
-The private `place_game_here/` layout is Git-ignored. A complete ISO-only bootstrap is not automated yet: the runtime still needs the three decrypted PRXs and the plain extracted XB tree. Do not publish files from this folder.
-
-## Build and run
-
-Use the canonical manager from the repository root with the local HST manifest and explicit `-GameName hst`. It supplies HST's required `GAME_BASE=0 GAME_ENTRY=0` values and private-input paths; without a manifest it selects the public synthetic title.
+Building a retail title requires a local title manifest (for HST: `assets/titles/hst-ucus98701.json`, which is intentionally never checked in and publication-excluded):
 
 ```powershell
-.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # pipeline + compile
-.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # incremental/runtime build
-.\nk_manager.ps1 -Action Test       # configured project test route
-.\nk_manager.ps1 -Action Run -TitleManifest assets/titles/hst-ucus98701.json -GameName hst # launch with the GUI
+.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
+.\nk_manager.ps1 -Action Run -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
-> [!CAUTION]
-> Compiler/codegen profile invalidation, shader-source/embed freshness, and transitive-header dependency tracking are enforced by content-addressed manifests, deterministic shader verification, and `-MMD -MP` metadata (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). Performance/profile experiments should still explicitly rebuild all affected runtime objects, and high-confidence verification after broad build-system changes should use a true clean/known-complete rebuild.
+See [`docs/SETUP.md`](docs/SETUP.md) for authoritative toolchain details, input layout requirements, and troubleshooting.
 
-Build duration depends heavily on host CPU, storage, compiler version, and whether generated chunks already exist; historical timings are not a build contract.
+## How it works
 
-Equivalent direct Make invocation for the canonical HST ELF path:
+The build system operates in two phases:
 
-```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
-    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
-```
+1. **Offline translation:** Host-side Python tools analyze the decrypted ELF/PRX (`tools/prxload.py`, `tools/analyze.py`), resolve import NIDs to native HLE functions (`tools/imports.py`), and translate MIPS machine code into chunks of portable C (`tools/codegen.py`).
+2. **Native compilation:** GNU Make and GCC compile the generated C translation units alongside the native runtime (`src/rt/`), which provides guest memory management, cooperative thread scheduling, HLE syscall emulation, an AOT-gap interpreter fallback floor, audio decoding, and an SDL3 + Vulkan hardware renderer (`src/rt/gpu_sdl3vk/`).
 
-Direct Make invocations must export `VULKAN_SDK` (or pass it on the command line); the manager is
-the canonical path that discovers and validates the current SDK automatically.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for subsystem structure, execution models, and data-flow diagrams.
 
-`assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](assets/titles/README.md).
+## Project direction
 
-The Makefile selects PATH-resolved MSYS2 UCRT64 `gcc` when `CC` is otherwise only GNU Make's built-in `cc` default. Environment and command-line overrides remain supported:
+Nakagawa Recomp's long-term goal is to evolve into a definitive, multi-title PSP recompilation and preservation platform built from original code wherever possible.
 
-```bash
-mingw32-make --no-print-directory compiler-info
-mingw32-make CC=clang --no-print-directory compiler-info
-```
+While initial development began by adapting upstream open-source toolkits, the architectural direction systematically replaces convenience shortcuts and high-level approximations with maximal sensible low-level emulation (LLE), precise hardware-measured semantics, and original implementations. Core initiatives include:
 
-Do not combine the Makefile's two-phase `all` target into a single dependency line. Generated chunk discovery happens in the second Make process.
+- Driving title-specific HLE overrides toward zero in generic runtime code
+- Prioritizing guest execution fidelity over host reimplementations
+- Expanding data-driven multi-title manifest planning
+- Delivering a standalone native player interface
 
-## Repository map
+See [`docs/LLE_FIDELITY_ARCHITECTURE.md`](docs/LLE_FIDELITY_ARCHITECTURE.md) and [`docs/PROJECT_MODEL.md`](docs/PROJECT_MODEL.md) for the project's engineering principles.
 
-| Path | Purpose |
-| --- | --- |
-| `tools/` | Offline ELF analysis, code generation, extraction, verification, and publication-audit tools |
-| `src/rt/` | Native C runtime, HLE, scheduler, audio/video, filesystem, and renderers |
-| `src/ref/` | C++ reference interpreter used by selftests and differential gates |
-| `assets/vfpu/` | Pinned PPSSPP-derived VFPU lookup tables with upstream provenance |
-| `font/` | Replacement-font provenance/review material; the public profile excludes unresolved PGF/font payloads |
-| `interface/` | Separate local-only Next.js dashboard/prototype; not part of `hst.exe` |
-| `docs/` | Architecture, setup, debugging, porting, governance, verification, and legal/provenance engineering records |
-| `build/` | Fully generated local output; ignored by Git |
+## Legal and lineage summary
 
-Generated `build/<game>/<game>_recomp_*.c` files must never be edited. Change generator/runtime source and regenerate them. The number of generated translation units is controlled by `FUNCS_PER_CHUNK`; it is dynamic and not a fixed HST chunk count.
+- **Project license declaration:** The repository-level project declaration is **GPL-3.0-or-later** ([LICENSE](LICENSE)). Many source files and inherited components retain GPL-2.0-or-later or upstream-specific terms; this declaration does not establish that every combined distribution configuration is legally cleared.
+- **Open licensing questions:** Inherited PGF/font and PGD/amctrl questions remain under explicit review; the affected components are excluded from the public source profile. See [NOTICE.md](NOTICE.md) and [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md).
+- **Lineage and upstreams:** The project began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project) (GPL-2.0-or-later) and retains substantial modified code from that lineage. Portions of the HLE, GE, and VFPU subsystems adapt or derive from [PPSSPP](https://github.com/hrydgard/ppsspp) (GPL-2.0-or-later). See [CREDITS.md](CREDITS.md), [NOTICE.md](NOTICE.md), and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json).
+- **"Independent" disclaimer:** Nakagawa Recomp is an independent research and compatibility project. "Independent" describes its relationship to Sony Interactive Entertainment, Clap Hanz, and game rights-holders; it does not mean the recompiler codebase is clean-room or independently originated. Nakagawa Recomp is not affiliated with, authorized by, or endorsed by Sony Interactive Entertainment, Clap Hanz, PPSSPP, sal063, or other upstream authors.
+- **No proprietary content:** This repository does not distribute game executables, assets, firmware modules, decryption keys, or private oracle traces. Users must supply their own lawfully obtained game files.
+- **Publication controls:** `Jstar269/nakagawa-recomp` is the active sanitized public source repository. Its history begins with the sanitized restoration lineage; former development history is not ordinary `main` ancestry and must not be reconnected. Publication gates, source profiles ([`assets/public_source_profile.json`](assets/public_source_profile.json)), and provenance audits are engineering controls, not legal clearance.
 
-## Verification
+## Contributing
 
-```powershell
-.\nk_manager.ps1 -Action Test
-python -m unittest discover -s tools -p "test_*.py" -v
-python tools/publish_audit.py --tracked-only --worktree --public-scope
-```
+Contributions are welcome. Before submitting changes, review:
 
-`--worktree` audits the bytes on disk. Without it the audit reads staged Git blobs, which is
-what the pre-commit hook wants but means an unstaged edit goes unexamined. `--public-scope` applies
-the explicit exclusions in `assets/public_source_profile.json`.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution workflow, coding standards, and verification expectations
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community standards and pledge
+- [`SECURITY.md`](SECURITY.md) — vulnerability reporting and security scope
+- [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md) — Developer Certificate of Origin (DCO 1.1) sign-off policy (`git commit -s`)
+- [`docs/AI_USAGE.md`](docs/AI_USAGE.md) — boundaries and disclosures for AI-assisted development
+- [`CREDITS.md`](CREDITS.md) — upstream attribution and project lineage
 
-The checked-in GitHub Actions workflow defines path-gated public/synthetic Python, lint, native-object, reference-interpreter, translation, renderer-comparison, and dashboard gates without proprietary game inputs. [`docs/CI.md`](docs/CI.md) documents the applicability matrix and the stable `CI required` aggregate status.
+## Dedication
 
-The full `make verify` path additionally requires external oracle traces and a microtest module and intentionally reports blocked when they are absent. See [`docs/STATIC_VERIFY.md`](docs/STATIC_VERIFY.md).
+Nakagawa Recomp is part of **Project Blitzen**, a broader long-term effort dedicated to Blitzen, my German Shepherd and companion for 13½ years. The best dog you could ever have.
 
-## Documentation and work tracking
+Blitzen's loyalty, strength, and constant presence are remembered through the patience, care, and persistence behind this work.
 
-Start at [`docs/README.md`](docs/README.md).
+The name **Nakagawa Recomp** remains the technical identity of this repository. **Project Blitzen** is intended as an umbrella name for this project and possible future PSP recompilation, decompilation, compatibility, and preservation-research work.
 
-- **GitHub Wiki:** [Nakagawa Recomp project manual](https://github.com/Jstar269/nakagawa-recomp/wiki).
-- **Broader PSP research/reference:** [recomp.jaycast.net](https://recomp.jaycast.net/) covers generalized PSP recompilation and hardware research.
-- **GitHub Issues:** canonical actionable work items and acceptance criteria where curated public issues exist.
-- [`ISSUES.md`](ISSUES.md): concise current-status dashboard.
-- [`AGENTS.md`](AGENTS.md): the operating contract every automated contributor must follow before changing anything here.
-
-## Legal and provenance
-
-The repository-level project declaration is **GPL-3.0-or-later**, as reflected by [LICENSE](LICENSE), `assets/release_manifest.json`, and the dashboard package metadata. Many source files and inherited components retain GPL-2.0-or-later or other upstream-specific terms; that does **not** establish that every possible combined public distribution is cleared. The explicit source boundary and machine-readable provenance are in [NOTICE.md](NOTICE.md), [assets/public_source_profile.json](assets/public_source_profile.json), and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json). The public source profile excludes unresolved PGF/font and PGD/amctrl surfaces.
-
-The active public repository can also be used to construct a fresh candidate or
-release export under the explicit public-source profile. Such an export must
-exclude proprietary game content, generated retail output, private
-traces/captures, keys, saves, private routes, private repository metadata, and
-unresolved PGF/PGD/audio/ISO components. [NOTICE.md](NOTICE.md),
-[docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md), and
-[docs/PUBLIC_SOURCE_PROFILE.md](docs/PUBLIC_SOURCE_PROFILE.md) describe the
-boundary; none is legal clearance.
-
-This is an independent compatibility/research project. Product and game names are used only to identify compatibility; no affiliation or endorsement is claimed.
-
-## Contributing and security
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before submitting changes. Automated contributors must also read [AGENTS.md](AGENTS.md). Attribution for inherited work is recorded in [CREDITS.md](CREDITS.md) and [DEDICATION.md](DEDICATION.md). The repository does not yet claim a release-grade security posture; arbitrary PSP/game inputs should be treated as untrusted until the parser/span hardening campaign is complete.
+This dedication is personal. It does not imply affiliation with any other project, organization, product, or prior use of the name “Project Blitzen.”

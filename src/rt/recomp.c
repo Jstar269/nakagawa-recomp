@@ -2101,6 +2101,11 @@ static int dispatch_try_with_boundary(
                 wlog_n++;
             }
         }
+        if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
+            uint32_t flow_target = s->flow_target;
+            sr_cpu_clear_flow(s);
+            return dispatch_try_with_boundary(s, flow_target, call_boundary);
+        }
     } else {
         {
             static int miss_dump_registered = 0;
@@ -2226,6 +2231,12 @@ static int dispatch_try_with_boundary(
         if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF ||
             interp_result == SR_GUEST_INTERP_CALL_RETURN) {
             return (int)interp_result;
+        }
+        if (interp_result == SR_GUEST_INTERP_EXCEPTION ||
+            interp_result == SR_GUEST_INTERP_ERET) {
+            uint32_t flow_target = s->flow_target;
+            sr_cpu_clear_flow(s);
+            return dispatch_try_with_boundary(s, flow_target, call_boundary);
         }
         fprintf(stderr,
                 "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "

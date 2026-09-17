@@ -69,10 +69,10 @@ To accept untouched, encrypted `EBOOT.BIN` and PRX files directly from a user's 
 
 #### Provenance and Key Material Discipline
 
-- **Legal Reality:** The mathematical algorithms of KIRK (AES-128-CBC, SHA-1, ECDSA Curve-160, pseudo-random generators) are clean-room, uncopyrightable mathematical operations. Open-source implementations exist across the emulation ecosystem (`libkirk`, ProCFW `kirk.c`, PPSSPP `Kirk.cpp`, JPCSP `CryptoEngine.java`).
+- **Algorithm Implementation:** The underlying cryptographic algorithms used by KIRK (AES-128-CBC, SHA-1, ECDSA Curve-160, pseudo-random generators) are standard mathematical operations. Independent open-source implementations exist across the emulation ecosystem (`libkirk`, ProCFW `kirk.c`, PPSSPP `Kirk.cpp`, JPCSP `CryptoEngine.java`).
 - **Cryptographic Keys:** Proprietary Sony master keys (Keys `0x01` through `0x7F`) cannot be stored in the public Nakagawa repository (`PUBLIC_EXPORT.json`, `KEY_HISTORY_SCRUB.md`).
 - **Architectural Solution:**
-  1. Nakagawa implements the generic KIRK cryptographic engine in pure, clean-room C.
+  1. Nakagawa implements the generic KIRK cryptographic engine in pure C.
   2. The key store is completely externalized: keys are loaded from an external, user-supplied keyring file (`%LOCALAPPDATA%/nakagawa/keys/kirk_keys.bin`) or derived locally on the user's machine during setup.
   3. Decryption occurs entirely on the user's local machine; no decrypted retail binaries or proprietary keys are ever distributed by the project.
 
@@ -143,7 +143,7 @@ Executing guest PSMF middleware does not require software-emulating an H.264 vid
 3. Therefore, the **correct, natural HLE boundary** is at the `sceMpeg` / `sceVideocodec` interface:
    - Guest PSMF middleware handles demuxing, buffering, and state transitions.
    - Nakagawa's runtime intercepts raw compressed NAL packets at the `sceMpeg` boundary and dispatches them to host hardware decoders (Vulkan Video, DXVA2/Media Foundation, or ffmpeg/libavcodec).
-   - Audio packets (ATRAC3plus) are decoded via clean-room host audio libraries and fed back into guest ring buffers.
+   - Audio packets (ATRAC3plus) are decoded via host audio libraries and fed back into guest ring buffers.
 
 ---
 

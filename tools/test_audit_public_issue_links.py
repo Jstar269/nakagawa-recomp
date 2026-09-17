@@ -231,13 +231,11 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertFalse(findings[0][4])
         self.assertIn("DEAD / UNRESOLVED SHORTHAND", findings[0][3])
 
-    def test_osps_baseline_and_dated_records_are_historical_evidence(self) -> None:
-        # Self-declared pre-republication snapshots and dated audit records keep
-        # their pre-export tracker numbers as plain historical evidence; a 404 on
-        # the public tracker must be reported as preserved historical evidence, not
-        # as a dead current reference.
+    def test_dated_records_are_historical_evidence(self) -> None:
+        # Dated audit records keep their pre-export tracker numbers as plain
+        # historical evidence; a 404 on the public tracker must be reported as
+        # preserved historical evidence, not as a dead current reference.
         cases = (
-            "docs/OSPS_BASELINE.md",
             "docs/ISSUE196_DIRECT_XB.md",
             "docs/provenance/MODIFIED_FILE_NOTICES.md",
         )

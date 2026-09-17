@@ -33,7 +33,7 @@ Nakagawa Program + User's Game ISO → Play
 | **Option D** | **Pre-Generated Static Stems + Interpreter Floor (#118)** | YES | High (fail-closed interpreter floor) | Instant (<1s) | Minimal (<10 MB) | **Transitional / Development Proving** |
 | **Option E** | **Embedded Cranelift / LLVM Backend** | YES | High | Fast (3–8s first run) | Moderate (+35 MB) | **Strategic Long-Term AOT Engine** |
 | **Option F** | **Cloud-Based Recompilation Service** | YES | Zero (Severe Privacy/Legal Breach) | Poor (Network transfer of multi-GB ISOs) | Minimal | **REJECTED (Illegal & Hostile to Privacy)** |
-| **Option G** | **Clean-Room Standalone Title Releases** | YES | High | Instant | Minimal | **Viable for Specific Public Domain / Homebrew Titles** |
+| **Option G** | **Independent Standalone Title Releases** | YES | High | Instant | Minimal | **Viable for Specific Public Domain / Homebrew Titles** |
 
 ---
 
@@ -46,7 +46,7 @@ Nakagawa Program + User's Game ISO → Play
 > generated runtime from an arbitrary ISO. It does perform bounded asset extraction for
 > supported ISO/XB inputs; that landed staging capability is separate from end-user AOT.
 
-In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into clean-room release packages.
+In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into standalone release packages.
 
 * **How It Works:**
   1. The distributed binary contains the recompiled code structure without proprietary game assets, textures, sounds, or movies.
@@ -56,7 +56,7 @@ In this model, Nakagawa maintainers/packagers compile the verified title executa
   * Zero compilation latency for the user.
   * Zero compiler required on user machine.
   * 100% reproducible optimization (`-O2` runtime, `-O1` recomp chunks).
-  * Completely clean legally: no proprietary game bytes are distributed.
+  * Avoids distributing proprietary game bytes; lawful user-supplied inputs remain required.
 
 ### Option A: Bundled Embedded Host Compiler (The "Compile-on-Import" Route)
 

@@ -31,25 +31,56 @@ Upstream path: assets/flash0/font/
 
 ## Current evidence summary
 
-- jpn0.pgf's current blob descends from the Source Han Sans header line
-  introduced on 2020-11-23. The earlier October Ume Gothic S5/Hy Gothic
-  replacement is a superseded intermediate.
-- kr0.pgf's immediately preceding revisions identify Source Han Sans.
-- ltn0.pgf and ltn8.pgf are the even Latin family and identify Ume Hy Gothic
-  in the material revisions. The Ume P Mincho history applies to odd
-  ltn1/3/5/7, not ltn0.
-- PPSSPP later changed the metadata to compatibility names such as
-  FTT-NewRodin Pro DB, AsiaKNHH-SONY-uni, and FTT-NewRodin Pro Latin. Those
-  names are not evidence of Sony or Fontworks outlines.
+Determined facts (full evidence in
+[docs/provenance/FONT_ORIGINS.md](../docs/provenance/FONT_ORIGINS.md); PGF
+headers parsed per PPSSPP `Core/Font/PGF.h` from exact upstream bytes):
 
-The exact Source Han Sans or Ume TTF filename/release used for the current
-blobs, the complete manual-edit chain, and the required accompanying notices
-remain unknown. Do not assign a blanket GPL or proprietary label. The
-repository-level GPL-3.0-or-later declaration is not component clearance.
+- jpn0.pgf descends from a **Source Han Sans** (SIL OFL 1.1, Adobe, Reserved
+  Font Name 'Source') conversion: header `Source Han Sans / Regular` at
+  `388ac3c` (2020-11-23, "Update jpn0.pgf … Fixes #13702"). The October 2020
+  predecessors named Ume Gothic S5 (`77c1e96`) and Ume Hy Gothic (`f68e0fe`,
+  PR #13588, "fixed manually all of JIS Kanji-Level1 (2946 character)").
+- kr0.pgf descends from a **Source Han Sans** conversion: header
+  `Source Han Sans / Regular` at `75bdb5f` (2020-11-30, "Switch to
+  nassau-tk's latest Korean font. See issue #13190").
+- ltn0.pgf and ltn8.pgf descend from **Ume Hy Gothic** (Ume-family licence,
+  modified BSD) conversions: header `Ume Hy Gothic / Regular` at `b5e2300`
+  (2020-11-29, PR #13721) and `737e0d5` (2020-11-23). The Ume P Mincho
+  history applies to odd ltn1/3/5/7, not ltn0.
+- Conversion chain (contributor's own notes, PPSSPP #13718/#13589): TTF → PGF
+  via tpunix pgftool / ttf2pgfj.exe, glyph shaping in a font editor, and
+  hex-editor metric patching (ascender/descender in 26.6 fixed point).
+- On 2021-01-20 (`dc34bea`, "PGF Fixed Bold & Italic property and
+  **camouflage the Font name**") the headers were rewritten to compatibility
+  names: jpn0 → `FTT-NewRodin Pro DB`, kr0 → `AsiaKNHH-SONY-uni`, ltn0/ltn8 →
+  `FTT-NewRodin Pro Latin` (all `Regular`). Those names are admitted
+  camouflage, not evidence of Sony or Fontworks outlines; redistributing the
+  payloads under those names would misattribute Adobe/Ume outlines.
+
+Residual unknowns: the exact Source Han Sans release/variant file (never named
+by the contributor and not narrowed by any byte comparison), the exact Ume Hy
+Gothic release, and the converter tools' licence terms (pgftool ships no
+licence file). See FONT_ORIGINS.md §7.
+
+## Chosen route
+
+(2) Generate our own PGF payloads from pinned OFL sources with a
+project-owned, reproducible converter (a planned clean-room item, not yet
+written) — with (3) as the interim: payloads stay excluded until a
+converter-produced payload with pinned inputs, shipped OFL/Ume notices, an
+honest non-RFN name, qualified review, and a path-specific provenance record
+lands. (1) Redistributing the PPSSPP payloads is rejected: notices alone
+cannot cure the false Sony/Fontworks designation, and the exact inputs are
+unrecoverable. OFL/Ume licence texts will be added under
+`THIRD_PARTY_LICENSES/` only when a payload is actually shipped.
 
 ## Runtime lookup
 
 font_load() in ../src/rt/hle.c honors an absolute SR_FONTDIR or the executable's
 sibling font directory. A missing or invalid root is reported as an error.
-Users who cannot redistribute these optional binaries may supply a separately
-licensed compatible PGF directory.
+
+The public source tree excludes the PGF reader as well as the payloads: its
+build links `src/rt/pgf_unavailable.c`, which rejects every font, so a
+public-source build reports fonts as unavailable even when SR_FONTDIR points at
+a compatible directory. A separately licensed PGF directory only loads in a
+private checkout that contains the excluded backend.

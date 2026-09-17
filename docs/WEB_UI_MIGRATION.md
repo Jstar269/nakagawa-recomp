@@ -1,6 +1,6 @@
 # Web UI Inventory, Evaluation, and Native Migration Record
 
-> **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, including the first-time setup wizard with its bounded ISO/XB staging pipeline (PR #202), but the module-decryption backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability. The dated reconciliation of the player-slice claims lives in [`research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md`](research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md).
+> **Status: CURRENT — maintained migration record.** The interface/ tree remains a developer-facing web prototype. The native player slice has landed, including the first-time setup wizard with its bounded ISO/XB staging pipeline (PR #202), but the module-decryption backend, full diagnostic parity, and web retirement are not built. References to future native behavior below are targets, not current capability.
 >
 > **Boundary:** ISO/PARAM.SFO inspection in the current native player is bounded, and the wizard's staged extraction writes only into its own staging area; no runtime guest reads over archives, module decryption, or end-user AOT pipeline is connected. See NATIVE_PLAYER_ARCHITECTURE.md and ISO_ONLY_GAP_ANALYSIS.md.
 
