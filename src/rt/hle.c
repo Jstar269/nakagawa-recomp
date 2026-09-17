@@ -9968,7 +9968,10 @@ uint32_t sr_hle_test_dmac_effective_max(void) { return SCE_DMAC_EFFECTIVE_MAX; }
 
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
-typedef struct { int used; uint32_t uid; int count, maxc; uint32_t pattern; } Sync;
+typedef struct {
+    int used; uint32_t uid; int count, maxc; uint32_t pattern;
+    uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
+} Sync;
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
     for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
@@ -10307,12 +10310,19 @@ int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
  *     +0x10 SceUID uid             kernel object id
  *     +0x14 int   pad[3]
  *
- * Error returns for the abusive cases (unlocking something you do not own,
- * non-recursive relock) are deliberately NOT invented here.  Those codes are
- * unverified, and returning a wrong error where hardware returns success would
- * be a worse defect than the permissive behaviour this replaces.  They are
- * left permissive-but-state-coherent, log under SR_HLELOG, and are the subject
- * of the lwmutex-semantics oracle case.  Do not "tidy" them into guesses.
+ * Error returns for the abusive cases are the physical-PSP measurements of
+ * runs PSP-B1-01 and PSP-B2-01 (campaign psp-hw-20260917, PSP-3000 / 6.61):
+ *   - TryLock that cannot own (another owner, a self-held non-recursive
+ *     mutex, or count 0): 0x800201C4.
+ *   - Timed Lock of a self-held non-recursive mutex: 0x800201CF at once,
+ *     without waiting or consuming the timeout.
+ *   - Unlock by a non-owner, or of an unlocked mutex: 0x800201CC, state
+ *     untouched. Unlock count 0: 0x800201BD.
+ *   - Delete writes 0xFFFFFFFF to lockThread and uid; a second Delete
+ *     returns 0x800201CA.
+ *   - Create of a non-recursive mutex with initialCount > 1: 0x800201BD.
+ * Cases those runs did not measure (a negative count, an owner unlocking more
+ * than it holds, Lock with count 0) keep their previous behaviour.
  * ------------------------------------------------------------------------- */
 #define LWMUTEX_WORKAREA_SIZE 0x20u
 #define LWMUTEX_LOCK_LEVEL    0x00u
@@ -10321,6 +10331,11 @@ int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
 #define LWMUTEX_NUM_WAIT      0x0cu
 #define LWMUTEX_UID           0x10u
 #define LWMUTEX_ATTR_RECURSIVE 0x0200u
+#define LWMUTEX_DELETED_WORD   0xffffffffu
+#define SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND           0x800201cau
+#define SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN       0x800201c4u
+#define SCE_KERNEL_ERROR_LWMUTEX_UNLOCK_UNDERFLOW    0x800201ccu
+#define SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED 0x800201cfu
 
 /* The guest hands us a pointer; validate the entire struct, not just its first
  * word, before any access.  A partially-mapped workarea must be refused. */
@@ -10333,6 +10348,8 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     uint32_t wa = A0, attr = A2;
     int initial = (int)A3;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
+    if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
     Sync *m = sync_new(); if (!m) return 0x80020000;
     MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)initial);
     MEM_W32(wa + LWMUTEX_LOCK_THREAD, initial > 0 ? sched_current_uid() : 0u);
@@ -10350,38 +10367,46 @@ static uint32_t h_DeleteLwMutex(CpuState *s) {
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
     uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
     Sync *m = sync_find(uid);
-    if (m) m->used = 0;
+    /* PSP-B1-01: deleting an already-deleted workarea is NOT_FOUND. */
+    if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
+    m->used = 0;
     /* Anything still blocked here would wait forever otherwise. */
     sched_wake(uid);
+    /* PSP-B1-01: delete (even while held) leaves level 0 and poisons the
+     * owner and uid words with 0xFFFFFFFF; attr is kept. */
     MEM_W32(wa + LWMUTEX_LOCK_LEVEL, 0u);
-    MEM_W32(wa + LWMUTEX_LOCK_THREAD, 0u);
-    MEM_W32(wa + LWMUTEX_UID, 0u);
+    MEM_W32(wa + LWMUTEX_LOCK_THREAD, LWMUTEX_DELETED_WORD);
+    MEM_W32(wa + LWMUTEX_UID, LWMUTEX_DELETED_WORD);
     return 0;
 }
 
-/* Shared by Lock/TryLock/LockCB. `blocking` selects whether contention waits.
- * Returns 0 when the lock was taken, 1 when it was not (TryLock only). */
+/* Shared by Lock/TryLock/LockCB. `blocking` selects whether contention waits. */
+enum {
+    LWMUTEX_TAKEN = 0,
+    LWMUTEX_BUSY,            /* contended and not blocking (TryLock) */
+    LWMUTEX_NOT_RECURSIVE,   /* self-held without the RECURSIVE attribute */
+    LWMUTEX_GONE,            /* deleted before or while waiting */
+};
 static int lwmutex_acquire(uint32_t wa, int count, int blocking) {
     uint32_t cur = sched_current_uid();
     for (;;) {
+        if (!sync_find(MEM_R32(wa + LWMUTEX_UID))) return LWMUTEX_GONE;
         int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
         uint32_t owner = MEM_R32(wa + LWMUTEX_LOCK_THREAD);
         if (level == 0) {
             MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)count);
             MEM_W32(wa + LWMUTEX_LOCK_THREAD, cur);
-            return 0;
+            return LWMUTEX_TAKEN;
         }
         if (owner == cur) {
-            /* Recursive relock. Without the RECURSIVE attribute this is a
-             * caller error on hardware; the exact code is unverified, so we
-             * stay permissive and keep the count coherent rather than guess. */
-            if (!(MEM_R32(wa + LWMUTEX_ATTR) & LWMUTEX_ATTR_RECURSIVE) && hle_log_on())
-                fprintf(stderr, "HLE: LockLwMutex wa=0x%08x recursive relock without "
-                                "PSP_LW_MUTEX_ATTR_RECURSIVE (uid=0x%x)\n", wa, cur);
+            /* PSP-B1-01: a self-held non-recursive mutex fails at once, for
+             * TryLock and for a timed Lock alike. */
+            if (!(MEM_R32(wa + LWMUTEX_ATTR) & LWMUTEX_ATTR_RECURSIVE))
+                return LWMUTEX_NOT_RECURSIVE;
             MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)(level + count));
-            return 0;
+            return LWMUTEX_TAKEN;
         }
-        if (!blocking) return 1;
+        if (!blocking) return LWMUTEX_BUSY;
         /* Contention accounting. Under the previous no-op registration every one
          * of these was a silently unserialised critical section, so the count is
          * the direct measure of what the no-op was costing. Bounded logging: the
@@ -10398,7 +10423,7 @@ static int lwmutex_acquire(uint32_t wa, int count, int blocking) {
         sched_block_on(uid);
         uint32_t waiters = MEM_R32(wa + LWMUTEX_NUM_WAIT);
         if (waiters) MEM_W32(wa + LWMUTEX_NUM_WAIT, waiters - 1u);
-        if (!sync_find(uid)) return 1;   /* deleted while we waited */
+        if (!sync_find(uid)) return LWMUTEX_GONE;   /* deleted while we waited */
     }
 }
 
@@ -10407,34 +10432,40 @@ static uint32_t h_LockLwMutex(CpuState *s) {
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
     int count = (int)A1; if (count <= 0) return 0x800200d2u;  /* ILLEGAL_ARGUMENT */
-    return lwmutex_acquire(wa, count, 1) ? 0x800201b5u /* WAIT_DELETE */ : 0u;
+    switch (lwmutex_acquire(wa, count, 1)) {
+    case LWMUTEX_TAKEN: return 0u;
+    case LWMUTEX_NOT_RECURSIVE: return SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED;
+    default: return 0x800201b5u;   /* WAIT_DELETE */
+    }
 }
 
 static uint32_t h_TryLockLwMutex(CpuState *s) {
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
-    int count = (int)A1; if (count <= 0) return 0x800200d2u;
-    /* Contended TryLock must report failure. The precise code is unverified;
-     * ILLEGAL_ARGUMENT is not it, so report the generic thread-man failure and
-     * let the oracle case replace this with the measured value. */
-    return lwmutex_acquire(wa, count, 0) ? 0x80020000u : 0u;
+    /* PSP-B1-01 / PSP-B2-01: count 0, a deleted mutex, another owner and a
+     * self-held non-recursive mutex all report FAILED_TO_OWN. */
+    int count = (int)A1; if (count <= 0) return SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN;
+    return lwmutex_acquire(wa, count, 0) == LWMUTEX_TAKEN
+        ? 0u : SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN;
 }
 
 static uint32_t h_UnlockLwMutex(CpuState *s) {
     /* a0=workarea, a1=unlockCount. */
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
-    int count = (int)A1; if (count <= 0) return 0x800200d2u;
+    int count = (int)A1;
+    if (count == 0) return 0x800201bdu;   /* PSP-B1-01: ILLEGAL_COUNT */
+    if (count < 0) return 0x800200d2u;    /* unmeasured; previous behaviour */
     int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
     uint32_t owner = MEM_R32(wa + LWMUTEX_LOCK_THREAD);
     uint32_t cur = sched_current_uid();
     if (level <= 0 || owner != cur) {
-        /* Not ours to release. Leave the state alone so the real owner's
-         * bookkeeping survives; the hardware error code is unverified. */
+        /* PSP-B1-01 (unlocked) and PSP-B2-01 (non-owner): UNLOCK_UNDERFLOW,
+         * leaving the real owner's bookkeeping untouched. */
         if (hle_log_on())
             fprintf(stderr, "HLE: UnlockLwMutex wa=0x%08x from uid=0x%x but level=%d owner=0x%x\n",
                     wa, cur, level, owner);
-        return 0;
+        return SCE_KERNEL_ERROR_LWMUTEX_UNLOCK_UNDERFLOW;
     }
     level -= count;
     if (level < 0) level = 0;
@@ -10983,11 +11014,18 @@ static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
     Sync *m = sync_new(); if (!m) return 0x80020000;
     m->pattern = A2;
+    m->attr = A1;
+    m->init_pattern = A2;
     return m->uid;
 }
-static uint32_t h_DeleteEventFlag(CpuState *s) { Sync *m = sync_find(A0); if (m) m->used = 0; return 0; }
+/* PSP-B1-01: unknown or deleted event-flag ids are UNKNOWN_EVFID. */
+#define SCE_KERNEL_ERROR_UNKNOWN_EVFID 0x8002019au
+static uint32_t h_DeleteEventFlag(CpuState *s) {
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    m->used = 0; return 0;
+}
 static uint32_t h_SetEventFlag(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     m->pattern |= A1; sched_wake(A0); sched_preempt(); return 0;
 }
 static uint32_t h_ClearEventFlag(CpuState *s) {
@@ -11076,7 +11114,7 @@ static uint32_t h_PollEventFlag(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3;
     uint32_t rc = sr_evf_check_poll_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = sync_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (!sr_evf_matches(m->pattern, bits, mode)) {
         if (outp) MEM_W32(outp, m->pattern);
         return SR_EVF_ERR_COND;
@@ -11087,13 +11125,14 @@ static uint32_t h_PollEventFlag(CpuState *s) {
 }
 /* sceKernelReferEventFlagStatus(uid, SceKernelEventFlagInfo *info): size(0), name[32](4),
  * attr(36), initPattern(40), currentPattern(44), numWaitThreads(48). Size stays as the caller
- * wrote it; we don't track init pattern or waiters separately. */
+ * wrote it. PSP-B1-01: attr and initPattern are the create-time values; waiters are not
+ * tracked here. */
 static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     Sync *m = sync_find(A0); if (!m) return 0x80020000;
     uint32_t info = A1; if (!info) return 0x80020000;
     for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
-    MEM_W32(info + 36, 0x200);          /* PSP_EVENT_WAITMULTIPLE */
-    MEM_W32(info + 40, m->pattern);
+    MEM_W32(info + 36, m->attr);
+    MEM_W32(info + 40, m->init_pattern);
     MEM_W32(info + 44, m->pattern);
     MEM_W32(info + 48, 0);
     return 0;
