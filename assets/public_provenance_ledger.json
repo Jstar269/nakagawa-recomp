@@ -774,7 +774,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "500c4d23fb823e1706536529c3dc7f47aee7d58855c2020abe61f7982baaec1a"
+      "sha256": "c823209b86a95f80fe0c54792178624cbefccfa877914fbb70a801107128e4e1"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -6659,7 +6659,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "10cfebf754d8aac699d7cc5f17968fa98983ab6b8adbb2dfd3472d16182d5436"
+      "sha256": "125fd22f9a6cf1f395b0b56bc14392a9b39d9adb045101449981bef616d35338"
     },
     {
       "path": "tools/discovery_contract.py",
@@ -8019,7 +8019,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "3d073c3ca48492f0726e52960d1e739b92c3af26745d23d692a5fe44e862f21f"
+      "sha256": "0cd9688ddf26b5afa8c7ccded25180a36f618a84a158e09740830a3621e28f10"
     },
     {
       "path": "tools/test_direct_j_omission_mutation.py",
