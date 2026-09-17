@@ -15,6 +15,7 @@ Two layers:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,54 @@ PS_TESTS = ROOT / "tools" / "test_manager_safety.ps1"
 
 def _powershell() -> str | None:
     return shutil.which("pwsh")
+
+
+class ManagerHelpTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = MANAGER.read_text(encoding="utf-8-sig")
+        match = re.search(r'\[ValidateSet\(([^)]+)\)\]\s*\[string\]\$Action', self.source)
+        self.assertIsNotNone(match)
+        self.actions = re.findall(r'"([^"]+)"', match.group(1))
+
+    def test_help_and_wrapper_actions_match_validateset(self) -> None:
+        for path in (MANAGER, ROOT / "hst_manager.ps1"):
+            with self.subTest(path=path.name):
+                source = path.read_text(encoding="utf-8-sig")
+                match = re.search(r'\[ValidateSet\(([^)]+)\)\]\s*\[string\]\$Action', source)
+                self.assertCountEqual(re.findall(r'"([^"]+)"', match.group(1)), self.actions)
+                help_text = source.split("<#", 1)[1].split("#>", 1)[0]
+                self.assertIn(".PARAMETER Action", help_text)
+                entries = re.findall(r"^    (\w+) - (.+)$", help_text, re.MULTILINE)
+                self.assertCountEqual([name for name, _ in entries], self.actions)
+                self.assertIn("Makefile selftest target (C++ reference-runtime selftest)", dict(entries)["Test"])
+
+    def test_setup_actions_match_validateset(self) -> None:
+        setup = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
+        entries = re.findall(r"^\| `(\w+)` \| (.+) \|$", setup, re.MULTILINE)
+        self.assertCountEqual([name for name, _ in entries], self.actions)
+        self.assertIn("C++ reference-runtime selftest", dict(entries)["Test"])
+
+    def test_no_action_output_matches_validateset(self) -> None:
+        shell = _powershell()
+        if shell is None:
+            self.skipTest("no PowerShell interpreter on PATH")
+        for script in (MANAGER, ROOT / "hst_manager.ps1"):
+            with self.subTest(script=script.name):
+                proc = subprocess.run(
+                    [shell, "-NoProfile", "-File", str(script)],
+                    cwd=ROOT, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                entries = re.findall(r"^  (\w+) - (.+)$", proc.stdout, re.MULTILINE)
+                self.assertCountEqual([name for name, _ in entries], self.actions)
+                self.assertIn("Makefile selftest target (C++ reference-runtime selftest)", dict(entries)["Test"])
+                self.assertIn("Usage: pwsh -NoProfile -File nk_manager.ps1 -Action <action>", proc.stdout)
+                self.assertIn("pwsh -NoProfile -File nk_manager.ps1 -Action BuildFast", proc.stdout)
+                self.assertIn("pwsh -NoProfile -File nk_manager.ps1 -Action Run", proc.stdout)
+                self.assertNotIn("[FATAL SCRIPT ERROR]", proc.stdout)
+        self.assertIn("$MyInvocation.MyCommand.Parameters['Action'].Attributes", self.source)
+        self.assertIn("[System.Management.Automation.ValidateSetAttribute]", self.source)
+        self.assertIn("$actionChoices.ValidValues", self.source)
 
 
 class ManagerSafetyBehaviorTests(unittest.TestCase):
@@ -118,7 +167,7 @@ class ManagerSafetyContractTests(unittest.TestCase):
 
     def test_duration_rejects_negative_values(self) -> None:
         self.assertIn("[ValidateRange(0, 2000000000)]\n    [int]$Duration = 0", self.manager)
-        self.assertIn("ConvertTo-SafeTimeoutSeconds", self.manager)
+        self.assertIn("ConvertTo-SafeTimeoutSeconds", self.safety)
 
     def test_caller_location_is_restored_on_every_exit_path(self) -> None:
         self.assertIn("finally {", self.manager)
