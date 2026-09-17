@@ -328,7 +328,7 @@ contributor hook. These tools are not core runtime dependencies.
   headers, NID names, documented error constants, PRX structure, and PBP utilities. Keep a local
   checkout outside the repository or fetch a pinned revision in a reproducible tooling step.
 - [PSPLink USB](https://github.com/pspdev/psplinkusb) is useful only when a development-capable
-  physical PSP is available to collect clean-room behavior traces. It is not required to build
+  physical PSP is available to collect independent behavior traces. It is not required to build
   or run the recompiler.
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) can independently inspect MIPS
   control flow and shared entries when the Python analyzer is ambiguous. Export only scripts,

@@ -64,7 +64,7 @@ switched to the new adapter wholesale in this wave.
 
 **Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
 reachable from the production pipeline. Nothing in `tools/codegen.py`,
-`tools/imports.py`, the `Makefile`, or `hst_manager.ps1` imports or constructs
+`tools/imports.py`, the `Makefile`, or `nk_manager.ps1` imports or constructs
 either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
 their unit tests. That is a checkable property, not an intention, and it is the
 reason this wave makes no production-wiring claim.
@@ -398,7 +398,7 @@ inputs.
 
 HST defaults to `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`, while generic/unqualified titles remain
 conservative `-O0/-O0`. Explicit overrides (e.g. `RUNTIME_OPT=-O0 RECOMP_OPT=-O0`) remain fully
-supported on both direct Make and `hst_manager.ps1`. Generated `-O2` is not being adopted; `-O1`'s
+supported on both direct Make and `nk_manager.ps1` (and `hst_manager.ps1`). Generated `-O2` is not being adopted; `-O1`'s
 measured build cost is higher but acceptable for HST.
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
@@ -528,7 +528,7 @@ read is the RTC epoch init.
 ## Environment Variables
 
 The runtime has many diagnostic and behavior switches. This table is intentionally a selected
-architecture-level subset; `docs/DEBUGGING.md`, `hst_manager.ps1`, and the implementing source are
+architecture-level subset; `docs/DEBUGGING.md`, `nk_manager.ps1`, and the implementing source are
 the maintained references for exact behavior.
 
 | Variable | Values | Purpose |

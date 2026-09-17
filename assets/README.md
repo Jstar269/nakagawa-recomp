@@ -41,5 +41,6 @@ python tools/verify_vfpu_provenance.py --upstream-checkout third_party/ppsspp-sr
 
 All 15 assets were confirmed byte-for-byte identical to PPSSPP
 `f0baf3ade7bcb6c86f0835962b36eb4e51559d8f` via `--upstream-api`; the four
-`font/*.pgf` files match the same commit's `assets/flash0/font/` tree. See
-[../NOTICE.md](../NOTICE.md) for licensing and attribution.
+evaluated `font/*.pgf` replacement payloads documented in [`font/README.md`](../font/README.md)
+match the same commit's `assets/flash0/font/` tree (the font binaries themselves
+remain publication-excluded). See [../NOTICE.md](../NOTICE.md) for licensing and attribution.

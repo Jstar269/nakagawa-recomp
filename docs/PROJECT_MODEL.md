@@ -24,8 +24,11 @@ a mechanically translated distribution of its implementation.
 
 ## Product 2 — Hot Shots Tennis decompilation/reconstruction
 
-**Purpose:** support a private, evidence-driven source reconstruction effort for understanding and
-maintaining the title.
+**Purpose:** a complete (100%) decompilation of the title: source code for every function that
+compiles back to machine code identical to the retail executable, with each function marked
+matched only after a byte-for-byte comparison (see [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md)).
+The reconstruction is private and evidence-driven, and it exists to understand and maintain the
+title.
 
 Product 2 may consume private analysis aids such as function maps, decompiler output, local symbols,
 and comparison notes, but those materials are not automatically suitable for the Product 1 public

@@ -13,14 +13,14 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 ### Key Accomplishments
 
 1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
-2. **Clean-Room Native Player Implemented (`src/player/`)**:
+2. **Standalone Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
    - The optional local bridge discovers named already-decrypted support PRXs in the standard PPSSPP dump locations and stages them under `EXTRACTED/decrypted/`; it never performs decryption.
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
-   - `nk_xb.c` / `nk_xb.h`: Clean-room bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
+   - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
    - `nk_iso_extract_game`: ISO directory-record walk that stages `EBOOT.BIN` and `USRDIR/xbdata` without shelling out or requiring Python.
 3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
@@ -84,14 +84,14 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 The matrix distinguishes between architectural staging, implementation completeness, and verified execution:
 
 - `PIPELINE_STAGE_EXISTS`: A state/step is declared in UI/data structures, but backend execution is not yet integrated.
-- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. clean-room KIRK decryption) does not yet exist.
+- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. project-authored KIRK decryption) does not yet exist.
 - `PLAN_VERIFIED`: Launch session data/environment parameters construct correctly in unit tests.
 - `EXECUTED_VERIFIED`: Real process spawned, child landmarks observed on host.
 
 | # | Capability | Web Studio Baseline | Native Player Status | Real Evidence Tier |
 | :- | :--- | :--- | :--- | :--- |
 | 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
-| 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Clean-room C PVD parser) |
+| 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Project-authored C PVD parser) |
 | 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
 | 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; decryption/VFS integration pending) |
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |

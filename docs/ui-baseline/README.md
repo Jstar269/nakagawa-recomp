@@ -45,7 +45,7 @@ This directory records the visual and functional baseline of Nakagawa Recomp's u
 
 ## 4. Native Player UI Screenshot Matrix (SDL3 Standalone Executable)
 
-The native player (`build/nakagawa_player.exe`) has been implemented in clean-room C using SDL3. It runs headlessly or interactively with zero web dependencies.
+The native player (`build/nakagawa_player.exe`) has been implemented as a standalone C executable using SDL3. It runs headlessly or interactively with zero web dependencies.
 
 The complete visual matrix was captured via `python tools/capture_native_screenshots.py`:
 
