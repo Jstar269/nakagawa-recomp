@@ -222,7 +222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e90e659f55c809e579ea3e1991c89ccc6bc3202f8332add8d014072ee2ce700"
+      "sha256": "c2ccb8eb931f25cefe504e5056d42527ea077e9d93a9634b7a7ae6857d0739e2"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b8cb3c7a114f7664f68e028b50713d6f8168bfb0c1c1b7c302210fced3b23de4"
+      "sha256": "f0a57610ebcd69da8706c799f10bdefdd35b64a83c155f8189f2106386fe79f3"
     },
     {
       "path": "NOTICE.md",
@@ -7827,7 +7827,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e3d9f7caca9fd93918563e08d8ae53ac8fd4a198fd3457d84f8054529883ed46"
+      "sha256": "3f1ebd7af79752b4a46d7f3e1902c1d0cfb4d0e5a97943337b6c7f3c3dbf42e8"
     },
     {
       "path": "tools/test_build_truth.py",
