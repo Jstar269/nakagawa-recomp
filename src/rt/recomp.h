@@ -650,6 +650,10 @@ void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
+void     sched_wake_with_result(uint32_t obj, uint32_t result); /* sched_wake + a wait result */
+int      sched_take_wake_result(void);              /* consumed by a resumed waiter; -1 = none */
+int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
+int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
 int      sched_is_intr_context(void);               /* 1 if running in interrupt context, 0 otherwise */
 void     sr_hle_release_thread_resources(uint32_t thread_uid); /* release HLE resources on thread teardown */

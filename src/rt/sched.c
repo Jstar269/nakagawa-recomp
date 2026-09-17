@@ -2782,9 +2782,58 @@ void sched_wake(uint32_t obj) {
             s_tcb[i].state = TH_READY;
 }
 
+/* Result value the interrupted waiter must observe on resume (0 = the object
+ * actually signalled). Written by sched_wake_with_result, consumed by
+ * sched_take_wake_result(). */
+static uint32_t s_wake_result;
+
+/* PSP-B2-01 (psp-hw-20260917): a cancelled waiter leaves its wait with a kernel
+ * result instead of the object being satisfied -- WAIT_CANCEL (0x800201A9) from
+ * CancelSema/CancelEventFlag/CancelReceiveMbx, WAIT_DELETE (0x800201B5) from
+ * deleting the waited object, WAIT_RELEASE (0x800201AA) from ReleaseWaitThread.
+ * The waiters themselves poll this after sched_block_on(); an untimed block has
+ * no other way to distinguish "woken" from "cancelled". */
+static int s_wake_result_valid;
+
+void sched_wake_with_result(uint32_t obj, uint32_t result) {
+    s_wake_result = result;
+    s_wake_result_valid = 1;
+    sched_wake(obj);
+}
+
+int sched_take_wake_result(void) {
+    int valid = s_wake_result_valid;
+    s_wake_result_valid = 0;
+    return valid ? (int)s_wake_result : -1;
+}
+
 int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
+        t->state = TH_READY;
+        return 1;
+    }
+    return 0;
+}
+
+/* Number of threads currently blocked on obj. PSP-B2-01 (psp-hw-20260917):
+ * CancelSema / CancelEventFlag report this count to the caller. */
+int sched_count_waiters(uint32_t obj) {
+    int n = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj)
+            n++;
+    return n;
+}
+
+/* PSP-B3-01 (psp-hw-20260917): ReleaseWaitThread readies one blocked thread and
+ * hands it WAIT_RELEASE as its wait result. The target must be in an object
+ * wait; anything else (running, dormant, deleted, delay) reports no waiter. */
+int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result) {
+    TCB *t = tcb_by_uid(thread_uid);
+    if (t && !t->deleted && t->state == TH_WAIT_OBJ) {
+        s_wake_result = result;
+        s_wake_result_valid = 1;
         t->state = TH_READY;
         return 1;
     }

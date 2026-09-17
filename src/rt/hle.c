@@ -10187,6 +10187,10 @@ static uint32_t h_WaitSema(CpuState *s) {
         } else {
             sched_block_on(uid);
         }
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
+         * (0x800201A9) rather than resuming into a satisfied count. */
+        int woken = sched_take_wake_result();
+        if (woken >= 0) return (uint32_t)woken;
         /* Deleted out from under an ALREADY-BLOCKED waiter is a different cell
          * from the entry lookup above: wait.expected L20 measures 800201B5
          * (WAIT_DELETE), not UNKNOWN_SEMID. Producing it needs h_DeleteSema to
@@ -10494,6 +10498,72 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
     return 0;
 }
 
+/* ---- CancelSema / CancelEventFlag / ReleaseWaitThread (PSP-B2-01 / PSP-B3-01,
+ * campaign psp-hw-20260917).  These wake blocked waiters with an explicit
+ * result instead of a satisfaction, which is why h_WaitSema / h_WaitEventFlag
+ * consult sched_take_wake_result() right after each sched_block_on(). ---- */
+
+#define SCE_KERNEL_ERROR_WAIT_RELEASE  0x800201aau
+#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
+#define SCE_KERNEL_ERROR_WAIT_CANCEL   0x800201a9u
+#endif
+
+static uint32_t h_CancelSema(CpuState *s) {
+    /* a0=semaid, a1=newCount, a2=numWaitThreads out (stack_arg 0).
+     * PSP-B2-01 (psp-hw-20260917): newCount -1 resets the count to the initial
+     * count, n <= max sets it, n > max rejects with ILLEGAL_COUNT (and numWait
+     * stays untouched). Wake waiters with WAIT_CANCEL and report their number;
+     * a NULL numWait is allowed. */
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    int new_count = (int32_t)A1;
+    if (new_count > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    if (hle_log_on())
+        fprintf(stderr, "HLE: CancelSema uid=0x%x newCount=%d (from 0x%x)\n", A0, new_count, sched_current_uid());
+    int waiters = sched_count_waiters(A0);
+    m->count = (new_count == -1) ? 0 : new_count;   /* -1 = back to the initial count */
+    uint32_t nump = stack_arg(s, 0);
+    if (nump) MEM_W32(nump, (uint32_t)waiters);
+    sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+    if (waiters) sched_preempt();
+    return 0;
+}
+
+static uint32_t h_CancelEventFlag(CpuState *s) {
+    /* a0=evid, a1=newPattern, a2=numWaitThreads out (stack_arg 0).
+     * PSP-B2-01 (psp-hw-20260917): Cancel sets the pattern, reports the waiter
+     * count and wakes every waiter with WAIT_CANCEL. */
+    Sync *m = sync_find(A0); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
+    int waiters = sched_count_waiters(A0);
+    m->pattern = A1;
+    uint32_t nump = stack_arg(s, 0);
+    if (nump) MEM_W32(nump, (uint32_t)waiters);
+    sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+    if (waiters) sched_preempt();
+    return 0;
+}
+
+static uint32_t h_ReleaseWaitThread(CpuState *s) {
+    /* a0=thid. PSP-B3-01 (psp-hw-20260917): a waiter is released with
+     * WAIT_RELEASE; the running caller (by uid or 0) answers ILLEGAL_THID and a
+     * deleted thread answers UNKNOWN_THID. */
+    uint32_t uid = A0;
+    uint32_t self = sched_current_uid();
+    if (uid == 0u || uid == self) return 0x80020197u;
+    if (!sched_wake_one_object_waiter_with_result(uid, SCE_KERNEL_ERROR_WAIT_RELEASE))
+        return 0x80020198u;
+    sched_preempt();
+    return 0;
+}
+
+/* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): cancel/release family, measured by
+ * fixtures wait-b2 and kernel-b3. One definition for the production registry
+ * and the executable selftest (same rule as the msgpipe helpers above). */
+static void hle_register_cancel_release_handlers(void) {
+    sr_hle_register(0x8ffdf9a2, "sceKernelCancelSema", h_CancelSema);
+    sr_hle_register(0xcd203292, "sceKernelCancelEventFlag", h_CancelEventFlag);
+    sr_hle_register(0x2c34e053, "sceKernelReleaseWaitThread", h_ReleaseWaitThread);
+}
+
 /* sceKernelReferLwMutexStatus / ...ByID stay registered as h_ok. Their
  * SceKernelLwMutexInfo layout is not in pspthreadman.h and this project has no
  * measured record of it, so writing a struct here would be invention, not
@@ -10508,7 +10578,9 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
 #define PSP_MUTEX_ATTR_ALLOW_RECURSIVE 0x0200u
 #define PSP_MUTEX_LEGAL_ATTR_MASK      0x0BFFu
 
+#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
 #define SCE_KERNEL_ERROR_WAIT_CANCEL                0x800201A9u
+#endif
 #define SCE_KERNEL_ERROR_WAIT_DELETE                0x800201B5u
 /* WAIT_TIMEOUT, CAN_NOT_WAIT and ILLEGAL_COUNT are already defined above, next to
  * the PSPAutotests oracle citations that establish their values. Re-defining them
@@ -10517,7 +10589,6 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
 #ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR               0x80000103u
 #endif
-#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT            0x80020064u
 #define SCE_KERNEL_ERROR_NO_MEMORY                  0x80020190u
 #define SCE_KERNEL_ERROR_UNKNOWN_MUTEXID            0x800201C3u
 #define SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN        0x800201C4u
@@ -11074,6 +11145,10 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
         } else {
             sched_block_on(uid);
         }
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled event-flag wait answers
+         * WAIT_CANCEL (0x800201A9) and leaves outBits unwritten. */
+        int woken = sched_take_wake_result();
+        if (woken >= 0) return (uint32_t)woken;
         m = sync_find(uid); if (!m) return 0x80020000;
     }
     if (outp) MEM_W32(outp, m->pattern);         /* outBits = pre-consume pattern */
@@ -11107,18 +11182,34 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         }
         if (toptr) {
             sched_vtime_refresh();
-            if (sched_vtime_us() >= end) { if (outp) MEM_W32(outp, m->pattern); return 0x800201A8; }
+            if (sched_vtime_us() >= end) {
+                /* PSP-B2-01 (psp-hw-20260917): the expired wait reports its
+                 * remaining timeout (0), it does not leave the caller's word. */
+                MEM_W32(toptr, 0u);
+                if (outp) MEM_W32(outp, m->pattern);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
             uint32_t remaining = (uint32_t)(end - sched_vtime_us());
             MEM_W32(toptr, remaining);
             sched_set_current_cb_wait(1);
             int timed_out = sched_block_on_timeout(uid, remaining);
             sched_set_current_cb_wait(0);
-            if (timed_out) { if (outp) MEM_W32(outp, m->pattern); return 0x800201A8; }
+            if (timed_out) {
+                /* PSP-B2-01 (psp-hw-20260917): same remaining-0 contract after
+                 * a real timed block. */
+                MEM_W32(toptr, 0u);
+                if (outp) MEM_W32(outp, m->pattern);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
         } else {
             sched_set_current_cb_wait(1);
             sched_block_on(uid);
             sched_set_current_cb_wait(0);
         }
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled event-flag wait answers
+         * WAIT_CANCEL (0x800201A9) and leaves outBits unwritten. */
+        int woken = sched_take_wake_result();
+        if (woken >= 0) return (uint32_t)woken;
         m = sync_find(uid); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
@@ -11479,6 +11570,9 @@ void sr_hle_init(void) {
      * test mapping from becoming a duplicate implementation. */
     hle_register_utility_module_handlers();
     hle_register_msgpipe_handlers();
+    /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
+     * branches so the selftest exercises the production mapping. */
+    hle_register_cancel_release_handlers();
     /* Wait/blocking APIs the issue #88 conformance matrix enters -- the same
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
@@ -11490,6 +11584,7 @@ void sr_hle_init(void) {
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
      * registry the game build uses. */
+    hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
