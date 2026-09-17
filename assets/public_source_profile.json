@@ -236,6 +236,7 @@
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
     "docs/WEB_UI_MIGRATION.md",
     "docs/WORKSPACE_DOCTOR.md",
+    "docs/provenance/FONT_ORIGINS.md",
     "docs/provenance/GENERICITY_CENSUS_20260826.md",
     "docs/provenance/GUEST_INTERP_ATTESTATION.md",
     "docs/provenance/HST_PUBLIC_CENSUS.md",

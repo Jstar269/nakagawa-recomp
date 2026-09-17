@@ -109,11 +109,11 @@ From nassau-tk's notes in PPSSPP #13718 (2020-11-26) and #13589:
 Tool licence status: pgftool carries **no licence file** (single-merge repo,
 HEAD `a9b3114`; verified by clone 2026-09-17), so its terms are UNKNOWN —
 all-rights-reserved by default. Tool licensing does not automatically
-encumber output files, but this project must not adopt pgftool code; the
-project-owned converter (`tools/pgf_build.py`) is written from the public
-`Core/Font/PGF.h` layout and carries its own GPL-2.0-or-later header with a
-PPSSPP-format-knowledge derivation line. `ttf2pgfj.exe` provenance/licence:
-UNKNOWN (flagged, not used).
+encumber output files, but this project must not adopt pgftool code. The
+planned project-owned converter is a clean-room item in
+`docs/INDEPENDENCE_CAMPAIGN.md`: it must be written from a behaviour
+specification, not from any emulator or tool source. `ttf2pgfj.exe`
+provenance/licence: UNKNOWN (flagged, not used).
 
 ## 5. Licence analysis (licence texts verified, conclusions need counsel)
 
@@ -195,14 +195,15 @@ PGFs from pinned OFL sources with a project-owned reproducible converter,
   binaries whose inputs we cannot pin contradicts the project's
   byte-provenance standard (cf. `src/rt/atrac3p/PROVENANCE.md`,
   `assets/vfpu/PROVENANCE.json`).
-- **(2) is the target.** `tools/pgf_build.py` (new, project-owned,
-  GPL-2.0-or-later, format knowledge derived from PPSSPP `Core/Font/PGF.h`)
-  emits deterministic PGFs (rev 2 / ver 6 header layout) from caller-supplied
-  glyph tables, refuses Sony/Fontworks camouflage names, and records input
-  SHA-256 + OFL/Ume notice obligations in its manifest output. It is a
-  scaffold, not a production font pipeline: CJK-scale coverage, metric tuning
-  (ascender/descender targets per #13718), and raster quality remain open
-  engineering work. No payload is produced or committed by this change.
+- **(2) is the target.** A project-owned, deterministic converter that builds
+  PGF payloads from pinned OFL/Ume inputs. Requirements: fixed field order and
+  no timestamps (byte-identical rebuilds); refusal of Sony/Fontworks
+  camouflage names and of the Adobe Reserved Font Name "Source" in the output
+  name; a manifest recording input SHA-256, codepoint coverage, output SHA-256
+  and the licence texts that must ship with the payload; CJK-scale coverage and
+  the metric targets discussed upstream. The converter is a clean-room item in
+  `docs/INDEPENDENCE_CAMPAIGN.md` so that it carries no emulator-derived code.
+  No converter or payload is added by this change.
 - **(3) is the interim.** Payloads stay excluded; users supply fonts locally
   (`SR_FONTDIR`), exactly as `font/README.md` documents. A converter-produced
   payload may only enter the tree after: pinned OFL inputs with SHA-256, OFL

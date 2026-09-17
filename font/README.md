@@ -64,8 +64,9 @@ licence file). See FONT_ORIGINS.md §7.
 
 ## Chosen route
 
-(2) Generate our own PGF payloads from pinned OFL sources with the
-project-owned, reproducible converter at `tools/pgf_build.py` — with (3) as
+(2) Generate our own PGF payloads from pinned OFL sources with a
+project-owned, reproducible converter (planned as a clean-room item, not yet
+written) — with (3) as
 the interim: payloads stay excluded and users supply fonts locally until a
 converter-produced payload with pinned inputs, shipped OFL/Ume notices, an
 honest non-RFN name, qualified review, and a path-specific provenance record
