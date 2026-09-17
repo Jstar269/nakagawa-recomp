@@ -391,8 +391,16 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
     uint64_t bit_buffer = 0;
     unsigned bit_count = 0;
     size_t produced = 0;
+    /* This mirrors _decode_huffman_body in tools/xb_probe.py, the decoder the
+     * Python extraction path uses, step for step. The refill rule is the whole
+     * point: a word is pulled only when the buffer is empty, when the prefix
+     * currently buffered maps to no table entry, or when the matched code is
+     * longer than the bits in hand. Refilling eagerly instead reports a
+     * truncated stream for a well-formed archive whose last code ends inside
+     * the final stored word. Every refill that finds no word left, an unmapped
+     * prefix, or a literal without its 8 bits still fails closed. */
     while (produced < expanded_size) {
-        if (bit_count < NK_XB_HUFFMAN_LOOKAHEAD_BITS) {
+        if (bit_count == 0) {
             uint16_t word = 0;
             if (!reader_u16(&reader, &word)) {
                 return xb_fail(error_message, error_message_size,
@@ -403,9 +411,29 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
         }
 
         XbHuffmanSymbol symbol = table[bit_buffer & (NK_XB_HUFFMAN_TABLE_SIZE - 1u)];
+        if (!symbol.valid && bit_count < NK_XB_HUFFMAN_LOOKAHEAD_BITS) {
+            uint16_t word = 0;
+            if (!reader_u16(&reader, &word)) {
+                return xb_fail(error_message, error_message_size,
+                               "truncated Huffman bitstream");
+            }
+            bit_buffer |= (uint64_t)word << bit_count;
+            bit_count += 16;
+            symbol = table[bit_buffer & (NK_XB_HUFFMAN_TABLE_SIZE - 1u)];
+        }
         if (!symbol.valid) {
             return xb_fail(error_message, error_message_size,
                            "Huffman code has no table entry");
+        }
+        if (symbol.length > bit_count) {
+            uint16_t word = 0;
+            if (!reader_u16(&reader, &word)) {
+                return xb_fail(error_message, error_message_size,
+                               "truncated Huffman bitstream");
+            }
+            bit_buffer |= (uint64_t)word << bit_count;
+            bit_count += 16;
+            continue;
         }
         if (symbol.length <= NK_XB_HUFFMAN_LOOKAHEAD_BITS) {
             output[produced++] = symbol.symbol;
@@ -414,11 +442,11 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
         } else {
             bit_buffer >>= NK_XB_HUFFMAN_LOOKAHEAD_BITS;
             bit_count -= NK_XB_HUFFMAN_LOOKAHEAD_BITS;
-            if (bit_count < 16) {
+            if (bit_count < 8) {
                 uint16_t word = 0;
                 if (!reader_u16(&reader, &word)) {
                     return xb_fail(error_message, error_message_size,
-                                   "truncated Huffman bitstream");
+                                   "truncated Huffman literal");
                 }
                 bit_buffer |= (uint64_t)word << bit_count;
                 bit_count += 16;
@@ -428,7 +456,6 @@ static NkResult decode_huffman_body(const uint8_t *payload, size_t payload_size,
             bit_count -= 8;
         }
     }
-
     return NK_OK;
 }
 

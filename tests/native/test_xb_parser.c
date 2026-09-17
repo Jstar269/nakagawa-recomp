@@ -316,6 +316,38 @@ static void test_roundtrip_all_compression_modes(void) {
     printf("[XB_TEST] RAW/LZS/HUFFMAN/DEFLATE in-memory roundtrip PASSED\n");
 }
 
+static void test_huffman_final_buffered_bits(void) {
+    uint8_t data[32];
+    for (size_t i = 0; i < sizeof(data); i++) data[i] = (uint8_t)(i + 32);
+    for (unsigned endian = 0; endian < 2; endian++) {
+        for (unsigned nested = 0; nested < 2; nested++) {
+            for (size_t size = 1; size <= sizeof(data); size++) {
+                FixtureEntry entry = { "data/tail.bin", data, size,
+                    nested ? NK_XB_COMPRESSION_DEFLATE : NK_XB_COMPRESSION_HUFFMAN };
+                ByteBuffer bytes = make_archive(&entry, 1, endian != 0);
+                NkXbArchive archive;
+                char error[256];
+                assert(nk_xb_open_memory(bytes.data, bytes.size, "tail.xb", endian != 0,
+                                         NULL, &archive, error, sizeof(error)) == NK_OK);
+                uint8_t output[32];
+                size_t output_size = 0;
+                NkResult result = nk_xb_read_entry(&archive, 0, output, sizeof(output),
+                                                   &output_size, error, sizeof(error));
+                if (result != NK_OK) {
+                    fprintf(stderr, "tail endian=%u nested=%u size=%zu: %s\n",
+                            endian, nested, size, error);
+                }
+                assert(result == NK_OK);
+                assert(output_size == size);
+                assert(memcmp(output, data, size) == 0);
+                nk_xb_close(&archive);
+                free(bytes.data);
+            }
+        }
+    }
+    printf("[XB_TEST] Huffman buffered tails and nested LZS, both endians PASSED\n");
+}
+
 static void test_big_endian_fields(void) {
     static const uint8_t data[] = "big endian";
     const FixtureEntry entry = { "data/be.bin", data, sizeof(data) - 1, NK_XB_COMPRESSION_LZS };
@@ -893,6 +925,7 @@ static void test_iso_to_native_staging_pipeline(void) {
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
+    test_huffman_final_buffered_bits();
     test_big_endian_fields();
     test_truncated_header();
     test_path_traversal();

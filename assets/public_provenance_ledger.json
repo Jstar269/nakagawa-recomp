@@ -3624,7 +3624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0251e3faf5950be62b7eaa2ea739f523ae3713582df8902dcae8da81faff1173"
+      "sha256": "d55206a8719e44a482e3ebba13d6f0e82f0b3e52c1a968b5086aeb0e95c31c83"
     },
     {
       "path": "src/core/nk_xb.h",
@@ -6446,7 +6446,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3504f651108cf0f261ae28be708fe6d50bc15e2b4af9a0569b98166f8c98821f"
+      "sha256": "0b2cf9bda7622e3d1571537db8561cc879bb3558f7e9e5611f92b21b7b2dda8f"
     },
     {
       "path": "tools/README.md",
