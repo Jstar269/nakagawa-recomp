@@ -382,5 +382,89 @@ class MakefileWiringTests(unittest.TestCase):
         self.assertRegex(MAKEFILE, r"(?m)^native-core-tests:\s*cpu-lle-selftest\b")
 
 
+def _mem(op, base, rt, imm):
+    return (op << 26) | (base << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+LW = _mem(0x23, 13, 14, 4)
+SW = _mem(0x2B, 13, 14, 4)
+LB = _mem(0x20, 13, 14, 1)
+LWL = _mem(0x22, 13, 14, 1)
+LWR = _mem(0x26, 13, 14, 1)
+SWL = _mem(0x2A, 13, 14, 1)
+SWR = _mem(0x2E, 13, 14, 1)
+
+
+class LleDataAccessGuardTests(unittest.TestCase):
+    """Loads and stores are address-checked under --lle-cpu (spec 3.3).
+
+    Failing-before evidence: on the base tree LLE_ACCESS and
+    _lle_access_stmt do not exist, and effect(..., lle_cpu=True) emits the
+    same bare MEM_* access as the default lane, so a user-mode kernel-segment
+    load is masked into RAM and silently succeeds.
+    """
+
+    def test_lw_is_guarded(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, LW, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _ea, 4u, 0, 0x00001000u", stmt)
+        self.assertIn("MEM_R32(_ea)", stmt)
+        self.assertIsNone(saddr)
+        self.assertEqual(ssize, 0)
+
+    def test_sw_is_guarded_and_keeps_store_metadata(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, SW, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _ea, 4u, 1, 0x00001000u", stmt)
+        self.assertIn("MEM_W32_PC(_ea,", stmt)
+        self.assertEqual(saddr, "(s->r[13] + 0x00000004u)")
+        self.assertEqual(ssize, 4)
+
+    def test_byte_access_is_guarded_at_width_one(self):
+        # A byte has no alignment constraint, but the segment check still applies.
+        stmt, _, _ = codegen.effect(0x1000, LB, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _ea, 1u, 0,", stmt)
+
+    def test_guarded_access_leaves_the_body_on_fault(self):
+        stmt, _, _ = codegen.effect(0x1000, LW, lle_cpu=True)
+        self.assertIn("{ sr_end(s, 0u, 0); return; }", stmt)
+
+    def test_effective_address_is_evaluated_once(self):
+        stmt, _, _ = codegen.effect(0x1000, LW, lle_cpu=True)
+        self.assertEqual(stmt.count("uint32_t _ea ="), 1)
+
+    def test_unaligned_access_forms_are_never_guarded(self):
+        # lwl/lwr/swl/swr exist to cross an alignment boundary; a misaligned
+        # effective address is their normal case, not an address error.
+        for name, word in (("lwl", LWL), ("lwr", LWR), ("swl", SWL), ("swr", SWR)):
+            with self.subTest(form=name):
+                lle, _, _ = codegen.effect(0x1000, word, lle_cpu=True)
+                default, _, _ = codegen.effect(0x1000, word)
+                self.assertNotIn("sr_cpu_guard_access", lle)
+                self.assertEqual(lle, default)
+
+    def test_delay_slot_access_carries_the_branch_pc(self):
+        lines = codegen.delay_slot_lines(0x1004, LW, 0x1000, lle_cpu=True)
+        body = "\n".join(lines)
+        # instr_pc is the load, branch_pc is the branch, in_delay is set.
+        self.assertIn("0x00001004u, 0x00001000u, 1u)", body)
+
+    def test_default_lane_access_is_unchanged(self):
+        for name, word in (("lw", LW), ("sw", SW), ("lb", LB)):
+            with self.subTest(form=name):
+                stmt, _, _ = codegen.effect(0x1000, word)
+                self.assertNotIn("sr_cpu_guard_access", stmt)
+                self.assertNotIn("_ea", stmt)
+
+    def test_default_delay_slot_access_is_unchanged(self):
+        lines = codegen.delay_slot_lines(0x1004, LW, 0x1000)
+        self.assertNotIn("sr_cpu_guard_access", "\n".join(lines))
+
+    def test_guard_helper_exists_in_the_runtime(self):
+        header = CPU_LLE_H.read_text(encoding="utf-8")
+        source = CPU_LLE_C.read_text(encoding="utf-8")
+        self.assertIn("sr_cpu_guard_access", header)
+        self.assertIn("sr_cpu_data_access_fault", header)
+        self.assertIn("int sr_cpu_guard_access(", source)
+
+
 if __name__ == "__main__":
     unittest.main()
