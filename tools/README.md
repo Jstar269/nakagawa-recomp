@@ -1,8 +1,7 @@
 # `tools/` — Host-side recompiler scripts
 
 These scripts require Python 3.14.x. PowerShell entrypoints require PowerShell 7.6+ (`pwsh`); they
-run on the development host and are never executed by `hst.exe` at runtime. For HST, prefer `hst_manager.ps1`; it supplies the required
-zero base/entry values and preserves the Makefile's two-phase build.
+run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build (`hst_manager.ps1` is retained as a deprecated forwarding wrapper).
 
 ## Pipeline (in order)
 
@@ -25,7 +24,7 @@ zero base/entry values and preserves the Makefile's two-phase build.
    Drives the two-phase pipeline and compile. Set `VULKAN_SDK` for direct Make invocations; the
    manager discovers and validates it automatically. Do not replace `all` with a single dependency
    line: generated chunk discovery occurs in the second Make process. For HST, use
-   `.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json` from the repository root.
+   `.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` from the repository root.
 
 ## Gates
 

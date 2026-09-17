@@ -108,8 +108,7 @@ generic titles must use `TITLE_EXTRA_SPANS` only. See [`docs/TITLE_CODEGEN_PLAN.
 `hst-ucus98701.json` is intentionally not checked in: it contains title-specific
 identity, module addresses, and private-route filesystem configuration. It is
 publication-excluded via `assets/public_source_profile.json`, with an explicit
-`.gitignore` accident guard. The
-opt-in `hst_manager.ps1 -TitleManifest` path may consume a local copy of that
-manifest;
+`.gitignore` accident guard. The opt-in `nk_manager.ps1 -TitleManifest` path
+(or legacy `hst_manager.ps1` wrapper) may consume a local copy of that manifest;
 that does not make the runtime generic or prove portability/correctness for
 another title.
