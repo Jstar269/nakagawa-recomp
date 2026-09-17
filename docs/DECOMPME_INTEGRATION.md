@@ -59,9 +59,9 @@ python tools/decompme_export.py place_game_here/EBOOT.elf --function 0x0005A648
   This is the robust path: decomp.me disassembles it server-side, so a local MIPS
   objdump is not required (this host ships none). Pass `--objdump <mips-objdump>` to
   additionally emit GNU-syntax `target.s`.
-- **`context.c`** currently supplies base PSP typedefs; it grows as the PSP API
-  database (NID → prototype) and recovered game structs come online — better context
-  yields better automatic decompilation.
+- **`context.c`** currently supplies base PSP typedefs and known names for nearby
+  imported NIDs; it grows as the PSP API database (NID → prototype) and recovered
+  game structs come online — better context yields better automatic decompilation.
 - **`metadata.json`** records provenance (address, size, byte sha256, source-input
   sha256, commit) so a match can later be re-verified independently.
 
