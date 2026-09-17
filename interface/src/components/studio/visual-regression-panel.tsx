@@ -1,7 +1,7 @@
 "use client";
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Eye,
   Activity,
@@ -77,60 +77,73 @@ export function VisualRegressionPanel() {
     A: true
   });
 
-  const fetchVariance = useCallback(async (filename: string) => {
-    try {
-      const res = await fetch(`/api/recompiler/visual-regression/variance?file=${filename}`);
-      if (res.ok) {
-        const data = await res.json();
-        setVarianceData(data);
-      } else {
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    const fetchVariance = async () => {
+      if (!selectedFrame) {
         setVarianceData(null);
+        return;
       }
-    } catch {
-      console.error("Failed to load variance details");
-      setVarianceData(null);
-    }
+      try {
+        const res = await fetch(`/api/recompiler/visual-regression/variance?file=${selectedFrame.filename}`, { signal });
+        const data: VarianceData | null = res.ok ? await res.json() : null;
+        if (!signal.aborted) setVarianceData(data);
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          console.error("Failed to load variance details");
+          setVarianceData(null);
+        }
+      }
+    };
+    void fetchVariance();
+    return () => controller.abort();
+  }, [selectedFrame]);
+
+  const fetchReport = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve();
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/recompiler/visual-regression/report", { signal });
+        if (res.ok) {
+          const data: RegressionReport = await res.json();
+          if (signal.aborted) return;
+          setReport(data);
+          setSelectedFrame(previous => previous
+            ? data.frames.find(f => f.filename === previous.filename) ?? previous
+            : data.frames[0] ?? null);
+        }
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          console.error("Failed to load visual regression report");
+        }
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
   }, []);
 
   useEffect(() => {
-    if (selectedFrame) {
-      fetchVariance(selectedFrame.filename);
-    } else {
-      setVarianceData(null);
-    }
-  }, [selectedFrame, fetchVariance]);
-
-  const fetchReport = useCallback(async () => {
-    try {
-      const res = await fetch("/api/recompiler/visual-regression/report");
-      if (res.ok) {
-        const data: RegressionReport = await res.json();
-        setReport(data);
-
-        // Auto-select first frame if none is selected
-        if (data.frames.length > 0 && !selectedFrame) {
-          setSelectedFrame(data.frames[0]);
-        } else if (data.frames.length > 0 && selectedFrame) {
-          // Update selected frame data from fresh report
-          const updated = data.frames.find(f => f.filename === selectedFrame.filename);
-          if (updated) setSelectedFrame(updated);
-        }
-      }
-    } catch {
-      console.error("Failed to load visual regression report");
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedFrame]);
-
-  useEffect(() => {
-    fetchReport();
-
-    // Poll the report file while a capture run may be writing new frames.
-    const interval = setInterval(fetchReport, 2000);
-
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchReport();
+      if (!controller.signal.aborted) timer = setTimeout(poll, 2000);
+    };
+    timer = setTimeout(poll, 0);
     return () => {
-      clearInterval(interval);
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
     };
   }, [fetchReport]);
 

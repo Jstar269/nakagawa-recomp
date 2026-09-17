@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export const CONFIG_SCHEMA_VERSION: number;
 export const PROFILE_NAME_MAX_BYTES: number;
 export const MAX_CONFIG_DEPTH: number;
