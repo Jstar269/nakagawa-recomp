@@ -558,7 +558,7 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
     WCHAR library_decoys[3][1100];
     for (int i = 0; i < 3; i++) {
         int written = _snwprintf(library_decoys[i], 1100,
-                                L"%ls\\\xFFFD.json%ls", wdir, suffixes[i]);
+                                L"%ls%lc\xFFFD.json%ls", wdir, (wint_t)nk_platform_path_separator(), suffixes[i]);
         assert(written > 0 && written < 1100);
         decoy = _wfopen(library_decoys[i], L"wb");
         assert(decoy != NULL);
@@ -567,11 +567,11 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
     }
 
     char valid_path[600];
-    snprintf(valid_path, sizeof(valid_path), "%s\\\xef\xbf\xbd.json", test_dir);
+    snprintf(valid_path, sizeof(valid_path), "%s%c\xef\xbf\xbd.json", test_dir, nk_platform_path_separator());
     NkLibrary lib;
     assert(nk_library_load(&lib, valid_path) == NK_OK);
     assert(nk_library_count(&lib) == 1);
-    snprintf(bad_path, sizeof(bad_path), "%s\\\xff.json", test_dir);
+    snprintf(bad_path, sizeof(bad_path), "%s%c\xff.json", test_dir, nk_platform_path_separator());
     assert(nk_library_load(&lib, bad_path) == NK_OK);
     assert(nk_library_count(&lib) == 0);
     assert(nk_library_save(&lib, bad_path) == NK_ERROR_IO);

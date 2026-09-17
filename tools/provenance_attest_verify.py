@@ -157,7 +157,7 @@ from pathlib import Path, PurePosixPath
 try:
     from .provenance_ledger import (
         ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
-        _class_for, _classify_policy_delta, _read_policy_delta_authority,
+        _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from .public_export import build_document as _build_export_document
@@ -165,7 +165,7 @@ try:
 except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
-        _class_for, _classify_policy_delta, _read_policy_delta_authority,
+        _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from public_export import build_document as _build_export_document
@@ -753,12 +753,6 @@ def _external_input(path: Path, *, repo: Path, label: str) -> Path:
     if not resolved.is_file():
         raise VerifyError("TRUSTED_INPUT_MISSING", f"{label} is unavailable")
     return resolved
-
-
-def _canonical_json_bytes(document: dict) -> bytes:
-    """Encode generated control JSON with the repository's canonical bytes."""
-
-    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _validate_public_baseline(
