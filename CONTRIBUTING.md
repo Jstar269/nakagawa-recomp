@@ -54,7 +54,7 @@ auto-detected Vulkan SDK/loader. The separate dashboard uses npm and Next.js.
 Run checks proportional to the change:
 
 ```powershell
-.\nk_manager.ps1 -Action Test -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
+.\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
 .\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # runtime-only change
 .\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # codegen/pipeline change
 python -m unittest discover -s tools -p "test_*.py" -v
