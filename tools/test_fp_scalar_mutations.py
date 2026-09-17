@@ -336,7 +336,7 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
             # Stage 2: generated C must COMPILE under normal test flags.
             chunks = sorted(gen_dir.glob("m_*.c"))
             (gen_dir / "recomp.h").write_text(fixture.ISOLATED_RECOMP_H, encoding="ascii")
-            harness = (f'#include "m_funcs.h"\n'
+            harness = ('#include "m_funcs.h"\n'
                        + fixture.ISOLATED_STUBS_C + fixture._CELL_INFZERO_MAIN)
             (gen_dir / "harness.c").write_text(harness, encoding="ascii")
             exe = gen_dir / "mutant_test.exe"

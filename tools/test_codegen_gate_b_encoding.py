@@ -11,8 +11,6 @@ madd-family and clz/clo. This module verifies that the synthetic Gate B design
 uses explicit raw .word encodings and that the compiled ELF matches.
 """
 
-import os
-import re
 import shutil
 import subprocess
 import sys
@@ -283,12 +281,12 @@ class TestAllegrexSemantics(unittest.TestCase):
     """Semantic verification of generated Allegrex instruction C code via host GCC."""
 
     def _run_snippet(self, stmt, init_regs, opt="-O0"):
-        src = f"""
+        src = """
 #include <stdint.h>
 #include <stdio.h>
-struct CpuState {{ uint32_t r[32]; }};
-int main(void) {{
-    struct CpuState state = {{0}};
+struct CpuState { uint32_t r[32]; };
+int main(void) {
+    struct CpuState state = {0};
 """
         for reg, val in init_regs.items():
             src += f"    state.r[{reg}] = 0x{val:08x}u;\n"
@@ -305,12 +303,12 @@ int main(void) {{
             subprocess.run([str(exe_path)], check=True, capture_output=True, text=True)
 
     def _run_snippet_printf(self, stmt, init_regs, fmt_expr, opt="-O0", print_reg=10):
-        src = f"""
+        src = """
 #include <stdint.h>
 #include <stdio.h>
-struct CpuState {{ uint32_t r[32]; }};
-int main(void) {{
-    struct CpuState state = {{0}};
+struct CpuState { uint32_t r[32]; };
+int main(void) {
+    struct CpuState state = {0};
     struct CpuState *s = &state;
 """
         for reg, val in init_regs.items():

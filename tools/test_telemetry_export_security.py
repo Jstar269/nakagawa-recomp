@@ -2,7 +2,6 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 from pathlib import Path
-import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent

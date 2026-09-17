@@ -26,9 +26,7 @@ import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from publication_policy import (  # noqa: E402
-    EXCLUDED,
     INCLUDED,
-    UNCLASSIFIED,
     Policy,
     PolicyError,
     Resolution,
@@ -1289,11 +1287,11 @@ def check_collisions(paths: list[str]) -> list[Finding]:
         nfc_p = unicodedata.normalize("NFC", p).lower()
         nfc_map.setdefault(nfc_p, []).append(p)
 
-    for lower_p, matches in case_map.items():
+    for matches in case_map.values():
         if len(matches) > 1:
             findings.append(Finding("COLLISION_CASE", matches[0], f"case-insensitive collision between {matches}"))
 
-    for nfc_p, matches in nfc_map.items():
+    for matches in nfc_map.values():
         if len(matches) > 1 and matches not in case_map.values():
             findings.append(Finding("COLLISION_UNICODE", matches[0], f"Unicode normalization collision between {matches}"))
 
@@ -2380,7 +2378,6 @@ def export_csv_manifest_report(
     if isinstance(output_path_or_none, Path):
         # Called with (entries, findings, output_path)
         entries = entries_or_semantics  # type: ignore
-        findings = findings_or_output  # type: ignore
         output_path = output_path_or_none
         _, semantics = audit_entries_with_semantics(
             entries,

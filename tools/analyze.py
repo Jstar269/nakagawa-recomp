@@ -79,7 +79,7 @@ class Elf:
         self.sections = []
         if self.shnum > 0 and self.shentsize > 0:
             for section in envelope["shdrs"]:
-                name, typ, flags, addr, off, size, link, info, align, entsz = (
+                name, typ, flags, addr, off, size, link, info, _align, entsz = (
                     section["name"], section["typ"], section["flags"], section["addr"],
                     section["off"], section["size"], section["link"], section["info"],
                     section["align"], section["entsz"],
@@ -1567,7 +1567,7 @@ def verify_canonical_cfg_state(state):
             continue
         if target != _CFG_NONE and target not in node_index and kind not in allowed_external:
             findings.append({"code": "edge-target-invalid", "message": repr(target)})
-    for index, extra in state.multi_owner_masks.items():
+    for index, _extra in state.multi_owner_masks.items():
         owners = state._owners_for_index(index)
         if index >= state.node_count or len(owners) < 2:
             findings.append({"code": "conflict-invalid", "message": repr(index)})
@@ -1895,7 +1895,7 @@ def verify_canonical_cfg_report(report):
     )
     if sorted(actual_conflict_addresses) != expected_conflict_addresses:
         finding("conflict-projection-mismatch", actual_conflict_addresses)
-    for address, node in node_by_address.items():
+    for _address, node in node_by_address.items():
         owners = node.get("owners")
         if not isinstance(owners, list) or any(type(owner) is not int for owner in owners):
             finding("node-owners-invalid", node)
@@ -2008,7 +2008,6 @@ def code_pointer_evidence(elf, ranges):
 
 def analyze(elf, extra_spans=None):
     ranges = exec_ranges(elf, extra_spans=extra_spans)
-    text = elf.sec(".text")
 
     def in_text(a):
         return in_ranges(a, ranges) and (a & 3) == 0
@@ -2322,7 +2321,6 @@ def analyze(elf, extra_spans=None):
 # ---- TOML model: a function inventory the codegen reads and a human can correct ----------
 
 def build_model(elf, starts):
-    text = elf.sec(".text")
     stub = elf.sec(".sceStub.text")
 
     def kind(a):

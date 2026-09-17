@@ -921,7 +921,7 @@ class GuestInputTransportTests(unittest.TestCase):
         """M1: restoring raw $(GAME_ELF) in the recipe must make the above test fail."""
         if sys.platform != "win32":
             self.skipTest("cmd.exe command splitting is the Windows failure mode")
-        build = self._build_dir("test_gi_m1")
+        self._build_dir("test_gi_m1")
         elf_rel = f"build/test_gi_m1/{self.SPLIT_NAME}"
         self._write_minimal_elf(ROOT / elf_rel)
 
@@ -931,7 +931,7 @@ class GuestInputTransportTests(unittest.TestCase):
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
              "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
-        blob = self._blob(proc := self._make("test_gi_m1", elf_rel, makefile=mutant))
+        blob = self._blob(self._make("test_gi_m1", elf_rel, makefile=mutant))
         self.assertTrue(
             self._injection_evidence(blob),
             "mutation did not reproduce the pre-fix command execution; this "
@@ -940,7 +940,7 @@ class GuestInputTransportTests(unittest.TestCase):
 
     def test_M1b_sibling_inputs_are_transported_too(self) -> None:
         """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
-        build = self._build_dir("test_gi_hdr")
+        self._build_dir("test_gi_hdr")
         elf_rel = "build/test_gi_hdr/plain.elf"
         self._write_minimal_elf(ROOT / elf_rel)
         hdr_rel = "build/test_gi_hdr/hdr&ver&tail.BIN"
@@ -1057,7 +1057,7 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_invalid_values_fail_closed(self) -> None:
         """Empty, whitespace-only, and directory values must not build."""
         game = "test_gi_invalid"
-        build = self._build_dir(game)
+        self._build_dir(game)
         elf_rel = f"build/{game}/plain.elf"
         self._first_build(game, elf_rel)
 

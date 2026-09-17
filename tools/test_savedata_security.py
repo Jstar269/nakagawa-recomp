@@ -11,7 +11,6 @@ confined to a temporary directory; no title input or private asset is used.
 
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile

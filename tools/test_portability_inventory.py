@@ -12,7 +12,6 @@ Vulkan object handles (VK_NULL_HANDLE) or produce nondeterministic output.
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 from pathlib import Path
 

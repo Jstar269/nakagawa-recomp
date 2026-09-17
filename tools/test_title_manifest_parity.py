@@ -42,15 +42,6 @@ class TitleManifestParityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Ensure native parser binary is compiled and up-to-date with sources
-        srcs = [
-            ROOT / "src/core/nk_iso.c",
-            ROOT / "src/core/nk_library.c",
-            ROOT / "src/core/nk_launch.c",
-            ROOT / "src/core/nk_title_manifest.c",
-            ROOT / "src/core/generated/nk_title_catalog.c",
-            ROOT / PLATFORM_SRC,
-            ROOT / "tests/native/test_manifest_parser.c",
-        ]
         if shutil.which("gcc") is None:
             raise unittest.SkipTest(
                 "gcc is unavailable, so the native parser cannot be built; "

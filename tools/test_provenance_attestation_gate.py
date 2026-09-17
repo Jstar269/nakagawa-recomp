@@ -50,7 +50,7 @@ AUDIT = TOOLS / "publish_audit.py"
 
 sys.path.insert(0, str(TOOLS))
 import publication_policy  # noqa: E402
-from public_export import build_document, write_document  # noqa: E402
+from public_export import build_document  # noqa: E402
 
 REQUIRED_FILES = {
     "LICENSE": "synthetic fixture license placeholder\n",

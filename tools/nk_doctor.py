@@ -26,7 +26,7 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
-from nk_doctor_core import Report, _parse_elf, _validate_iso, _validate_pe_x64
+from nk_doctor_core import Report
 from nk_doctor_checks import (
     check_agent_identity,
     check_build_products,

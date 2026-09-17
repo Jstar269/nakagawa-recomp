@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import shutil
@@ -19,7 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.iso_inspect import inspect_iso
-from nk_core.title_registry import get_default_registry
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
