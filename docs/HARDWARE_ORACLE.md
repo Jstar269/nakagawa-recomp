@@ -37,50 +37,117 @@ proposals. Each claim covers only the exact fixture named:
   HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
   12/12 per delay); enabled-starved behavior stays CORROBORATIVE_ONLY and the
   software/hardware renderers stay non-oracles.
-- **CPU exception entry** (runs PSP-A1-01 and PSP-A2-01): on the qualified
-  PSP-3000 / 6.61 / ARK CFW route, campaign `psp-hw-20260917` (2026-09-17),
-  via user-mode PRX probes loaded through PSPLink using project-authored
-  synthetic fixtures `fixtures/psp_oracle/probe_exception_a1.c` and
-  `probe_exception_a2.c` (unlinked; not on main yet):
-  - **PSP-A1-01**: a user-mode `break` (code `0x5a5a`) reports EPC equal to the
-    break instruction's own address (not +4); Cause `0x10000024` (ExcCode 9
-    breakpoint, BD 0); Status in the frame `0x00088613` (EXL 1, user mode,
-    IE 1, IM `0x86`); loaded `$a0`-$a3 and `$t0`-$t3 are preserved in the
-    reported frame.
-  - **PSP-A2-01**: the same `break` placed in the delay slot of an
-    always-taken branch reports EPC = the branch address and Cause `0x90000024`
-    (BD 1, ExcCode 9); neither the fall-through nor the branch target executed.
-  - Cause bit 28 read as 1 in both runs, so treat the CE field as undefined for
-    non-coprocessor-unusable exceptions.
-- **Kernel-object semantics** (run PSP-B1-01): single wait-free launch on the
-  same qualified PSP-3000 / 6.61 / ARK CFW route and campaign (`psp-hw-20260917`,
-  2026-09-17) via user-mode PRX probe loaded through PSPLink with
-  project-authored synthetic fixture `fixtures/psp_oracle/psp_b1.c` (unlinked;
-  not on main yet). Contended waits with a second thread and the heavyweight
-  mutex were not part of this run:
-  - *Callbacks*: two notifies coalesce into one handler call with count 2 and
-    arg2 = the last notify argument; `CheckCallback` returns 1 if a handler
-    ran, else 0.
-  - *Semaphores*: signal past max returns `0x800201AE` and leaves the count
-    unchanged; `Signal(0)` returns 0; `Signal(-1)` returns 0 and decrements the
-    count; `Create` accepts init > max and max 0; attr `0xFFFFFFFF` returns
-    `0x80020191`.
-  - *Event flags*: `ClearEventFlag(mask)` keeps only the bits in mask; an unmet
-    poll writes the current pattern to outBits; bits 0 returns `0x800201B1`;
-    wait-mode flag `0x10` cleared the whole pattern on a successful poll.
-  - *FPL*: blocks are exactly blockSize apart; `Delete` succeeds while blocks
-    are held.
-  - *VPL*: a 1024-byte pool reports 992 bytes; each allocation costs
-    `roundup(size, 8) + 8`, and allocations run from high addresses downward.
-  - *VTimer*: `Start` returns 1 if already running; `Stop` returns 1 if it was
-    running; the stopped time is frozen.
-  - *LwMutex*: the workarea is `lockLevel`, `lockThread`, `attr`,
-    `numWaitThreads`, `uid`; `Delete` sets `lockThread` and `uid` to
-    `0xFFFFFFFF`; `TryLock` when not ownable, or with count 0, returns
-    `0x800201C4`; `Unlock` underflow returns `0x800201CC`; a self-held
-    non-recursive timed `Lock` fails immediately with `0x800201CF`.
-  - *Unknown-ID codes*: sema `0x80020199`, event flag `0x8002019A`, VPL
-    `0x8002019C`, FPL `0x8002019D`, callback `0x800201A1`, VTimer `0x800201BE`.
+- **CPU exception entry** (runs PSP-A1-01, PSP-A2-01, PSP-A3-01; campaign
+  `psp-hw-20260917`, 2026-09-17, PSP-3000 / 6.61 / ARK CFW, user-mode PRX
+  probes loaded through PSPLink; fixtures `exception-a1`..`exception-a3` in
+  [`fixtures/psp_oracle/`](../fixtures/psp_oracle/README.md)):
+  - A user-mode `break` reports EPC = the `break` address (not +4) and Cause
+    `0x10000024` (ExcCode 9, BD 0). The frame's Status is `0x00088613` (EXL 1,
+    user mode, IE 1, IM `0x86`), and the loaded argument and temporary
+    registers are preserved.
+  - The same `break` in the delay slot of an always-taken branch reports
+    EPC = the branch address and Cause `0x90000024` (BD 1). Neither successor
+    path executed.
+  - A user-mode `lw` from a kernel-segment address raises AdEL (ExcCode 4):
+    EPC = the load instruction, BadVAddr = the effective address, and the
+    destination register is unchanged.
+  - Cause bit 28 read as 1 in all three runs, so treat the CE field as
+    undefined for non-coprocessor-unusable exceptions.
+- **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
+  route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
+  - *Error codes for unknown IDs:*
+
+    | Object | Code |
+    | --- | --- |
+    | Semaphore | `0x80020199` |
+    | Event flag | `0x8002019A` |
+    | Mailbox | `0x8002019B` |
+    | VPL | `0x8002019C` |
+    | FPL | `0x8002019D` |
+    | Message pipe | `0x8002019E` |
+    | Alarm | `0x8002019F` |
+    | Callback | `0x800201A1` |
+    | VTimer | `0x800201BE` |
+    | Thread | `0x80020198` |
+
+  - *Wait outcomes:*
+    - A timeout returns `0x800201A8` and writes the remaining timeout (0).
+    - A cancel returns `0x800201A9`, from CancelSema, CancelEventFlag or
+      CancelReceiveMbx.
+    - ReleaseWaitThread returns `0x800201AA`.
+    - Deleting the object being waited on (semaphore, FPL) returns
+      `0x800201B5` to the waiter while the delete itself succeeds.
+  - *Semaphores:*
+    - Signalling past max returns `0x800201AE` and leaves the count unchanged.
+      `Signal(0)` returns 0. `Signal(-1)` returns 0 and decrements the count.
+    - Create accepts init > max and max 0. Attr `0xFFFFFFFF` returns
+      `0x80020191`.
+    - `CancelSema(-1)` resets the count to the initial count.
+  - *Event flags:*
+    - `ClearEventFlag(mask)` keeps only the bits in mask.
+    - Wait mode `0x20` clears only the matched bits; `0x10` clears the whole
+      pattern.
+    - An unmet poll writes the current pattern to outBits. Bits 0 returns
+      `0x800201B1`.
+    - A second waiter on a single-wait flag returns `0x800201B0` immediately.
+  - *FPL and VPL:*
+    - FPL blocks are exactly blockSize apart.
+    - A 1024-byte VPL reports 992 bytes. Each VPL allocation costs
+      `roundup(size, 8) + 8`, and allocations run from high addresses
+      downward.
+    - Both pool types can be deleted while blocks are held, and a freed block
+      is handed directly to a waiter.
+  - *LwMutex:*
+    - The workarea is `lockLevel`, `lockThread`, `attr`, `numWaitThreads`,
+      `uid`.
+    - An owner's unlock hands ownership directly to the waiter.
+    - A TryLock that cannot own, or has count 0, returns `0x800201C4`.
+    - A non-owner or underflowing unlock returns `0x800201CC`.
+    - A self-held non-recursive timed Lock fails immediately with
+      `0x800201CF`.
+    - Delete writes `0xFFFFFFFF` to `lockThread` and `uid`.
+  - *Message pipes:*
+    - An all-or-nothing send without room returns `0x800201B3`; mode 1 sends
+      what fits.
+    - A size larger than the buffer returns `0x800201BC`.
+    - A blocked receiver is served directly by a sender.
+  - *Mailboxes:*
+    - FIFO mailboxes link packets circularly.
+    - Attr `0x400` delivers by ascending `msgPriority` (FIFO among equals).
+    - An empty poll returns `0x800201B2`.
+  - *Threads:*
+    - Status codes:
+
+      | Condition | Code |
+      | --- | --- |
+      | Dormant target | `0x800201A2` |
+      | Double suspend | `0x800201A3` |
+      | Resume of a thread that is not suspended | `0x800201A5` |
+      | Exit status of a live thread | `0x800201A4` |
+      | Exit status of a terminated thread | `0x800201AC` |
+
+    - Wakeups accumulate in `wakeupCount` while the target is not sleeping.
+    - ReferThreadStatus waitType values:
+
+      | Wait | waitType |
+      | --- | --- |
+      | Sleep | 1 |
+      | Delay | 2 |
+      | Semaphore | 3 |
+      | Event flag | 4 |
+      | Mailbox | 5 |
+      | FPL | 7 |
+      | Message pipe | 8 |
+      | LwMutex | 13 |
+
+  - *Callbacks, VTimer, alarms and delays:*
+    - Two notifies coalesce into one handler call with count 2.
+    - StartVTimer returns 1 if the timer is already running.
+    - StopVTimer returns 1 if the timer was running, otherwise 0.
+    - An alarm handler's non-zero return reschedules it.
+    - `DelayThread(n)` takes about n + 30-40 µs, with a floor near 236 µs for
+      1-100 µs requests.
+  - Heavyweight mutexes are covered by the plain-mutex cases, not these runs.
 
 One console is one data point; see §11. Nothing here closes issue #70
 (residual VBLANK delivery/coalescing) or generalizes to unmeasured cells.
