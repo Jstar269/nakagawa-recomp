@@ -279,7 +279,7 @@ The canonical manager accepts these actions; `hst_manager.ps1` forwards the same
 For normal Vulkan runs, an explicit runtime profile can isolate the intended task:
 
 ```powershell
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Performance # log-free visual/audio smoke test
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Performance # log-free smoke test (public-safe build is silent by design)
 .\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
 .\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
 ```
