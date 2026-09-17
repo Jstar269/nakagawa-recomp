@@ -34,7 +34,7 @@ The following claims are separate:
 
 - `origin/main` was fetched before the documentation branch was created. The truth-pass
   branch starts at base `ffb9381c35e29be04e7b0d0399ab9913277d3aa5`, which already
-  contained the merged first-time setup wizard and clean-room XB staging (PR #202), so
+  contained the merged first-time setup wizard and independent XB staging (PR #202), so
   it is a later public commit than `PUBLIC_BASE`.
 - This snapshot was captured from `PUBLIC_BASE` before PR #202 landed, so its native
   player claims describe the pre-wizard slice and are superseded on this branch. The
@@ -90,7 +90,7 @@ boundary. It does not mean every design step it describes has been implemented.
 The following stages remain outside the proven public source route:
 
 1. Lawful user-input preparation for encrypted retail EBOOT/PRX containers.
-2. Clean-room KIRK/module-decryption integration and validation of resulting ELFs.
+2. Independent KIRK/module-decryption integration and validation of resulting ELFs.
 3. Generic, title-specific, provenance-approved AOT generation from a selected ISO.
 4. Complete archive/VFS preparation and firmware-resource handling for a supported title.
 5. Native UI progress, cancellation, installation promotion, and recovery for those

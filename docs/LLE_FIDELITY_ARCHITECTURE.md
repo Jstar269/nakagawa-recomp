@@ -69,7 +69,7 @@ To accept untouched, encrypted `EBOOT.BIN` and PRX files directly from a user's 
 
 #### Provenance and Key Material Discipline
 
-- **Legal Reality:** The mathematical algorithms of KIRK (AES-128-CBC, SHA-1, ECDSA Curve-160, pseudo-random generators) are clean-room, uncopyrightable mathematical operations. Open-source implementations exist across the emulation ecosystem (`libkirk`, ProCFW `kirk.c`, PPSSPP `Kirk.cpp`, JPCSP `CryptoEngine.java`).
+- **Algorithm Implementation:** The underlying cryptographic algorithms used by KIRK (AES-128-CBC, SHA-1, ECDSA Curve-160, pseudo-random generators) are standard mathematical operations. Independent open-source implementations exist across the emulation ecosystem (`libkirk`, ProCFW `kirk.c`, PPSSPP `Kirk.cpp`, JPCSP `CryptoEngine.java`).
 - **Cryptographic Keys:** Proprietary Sony master keys (Keys `0x01` through `0x7F`) cannot be stored in the public Nakagawa repository (`PUBLIC_EXPORT.json`, `KEY_HISTORY_SCRUB.md`).
 - **Architectural Solution:**
   1. Nakagawa implements the generic KIRK cryptographic engine in pure C.

@@ -33,7 +33,7 @@ Nakagawa Program + User's Game ISO → Play
 | **Option D** | **Pre-Generated Static Stems + Interpreter Floor (#118)** | YES | High (fail-closed interpreter floor) | Instant (<1s) | Minimal (<10 MB) | **Transitional / Development Proving** |
 | **Option E** | **Embedded Cranelift / LLVM Backend** | YES | High | Fast (3–8s first run) | Moderate (+35 MB) | **Strategic Long-Term AOT Engine** |
 | **Option F** | **Cloud-Based Recompilation Service** | YES | Zero (Severe Privacy/Legal Breach) | Poor (Network transfer of multi-GB ISOs) | Minimal | **REJECTED (Illegal & Hostile to Privacy)** |
-| **Option G** | **Clean-Room Standalone Title Releases** | YES | High | Instant | Minimal | **Viable for Specific Public Domain / Homebrew Titles** |
+| **Option G** | **Independent Standalone Title Releases** | YES | High | Instant | Minimal | **Viable for Specific Public Domain / Homebrew Titles** |
 
 ---
 

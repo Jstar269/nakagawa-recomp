@@ -39,8 +39,8 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`research/PSP_THREADING_SEMANTICS.md`](research/PSP_THREADING_SEMANTICS.md) —
   frozen CreateThread and StartThread research, bounded evidence classes,
   corrected 28/5 hardware-oracle design, and local Nakagawa/general Wiki draft
-  text; the frozen CT/ST oracle campaign itself remains `HARDWARE_NOT_RUN`
-  while reused lifecycle/callback/ABI facts are separately measured.
+  text; the CT/ST oracle campaign is completed (`HARDWARE_MEASURED`) while
+  reused lifecycle/callback/ABI facts are separately measured.
 - [`research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md`](research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md)
   and [`research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md`](research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md)
   — dated architecture comparison against other recompilation projects, and the
@@ -145,7 +145,7 @@ in this slice; classification comes first, directory moves separately.
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/GENERICITY_CENSUS_20260826.md` | REFERENCE | Dated evidence; live source authoritative |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
-| `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle NOT_RUN |
+| `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md` | REFERENCE | Dated cross-project comparison; cites other repositories, not this one |
 | `research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md` | REFERENCE | Dated action register derived from that audit; live issues authoritative |
 | `research/project-truth/` | REFERENCE (dated snapshots) | Frozen public-source truth snapshots; each carries its own base, evidence class, and admission boundary |
