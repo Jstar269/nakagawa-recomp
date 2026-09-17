@@ -43,7 +43,7 @@ record the inventory with SHA-256):
   `src/rt/intr_conformance.h` (conformance contract, read-only);
 - landing LLE headers for seam positions only (read-only, may move before
   admission — re-check at build time): `src/rt/cpu_lle.h`,
-  `src/rt/domain_mode.h` from branch `origin/lle/pr3-domain-seam`;
+  `src/rt/domain_mode.h` on `main` (landed with #219 and #223);
 - black-box tests (§8);
 - minimum build files to compile the above.
 
@@ -420,8 +420,8 @@ blocking test; a test that needs a wall-clock wait uses the turbo
   Volume II — cf. the precedent citation of revision 2.62 in
   `src/rt/fp_convert.h`): argument registers, return register, link
   register, callee-saved discipline for nested guest calls.
-- [C12] LLE Phase 1 landing headers (`cpu_lle.h`, `domain_mode.h` on branch
-  `origin/lle/pr3-domain-seam`): flow kinds, COP0-adjacent transfer
+- [C12] LLE Phase 1 headers (`cpu_lle.h`, `domain_mode.h`, on `main` since
+  #219 and #223): flow kinds, COP0-adjacent transfer
   metadata positions, domain table lock and HLE-default rule — seam
   positions only.
 - [C13] `docs/TITLE_PROFILE_ARCHITECTURE.md` — title profiles describe,

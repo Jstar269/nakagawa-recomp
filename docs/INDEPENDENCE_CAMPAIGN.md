@@ -14,9 +14,9 @@ changing a classification live in
 Base of this plan: public `main` at `6a4f359` (the mission statement named
 `a36c296`; `origin/main` has since advanced past it through the LLE Phase 1
 PR 1 landing and two follow-ups — all three are present in this checkout).
-The LLE Phase 1 stack was read from `origin/lle/pr3-domain-seam`
-(`CpuState` ABI v2, COP0/exceptions, domain modes + import seam); at the time
-of writing only PR 1 (`0a61b91`, lle/pr1) has landed on `origin/main`.
+The LLE Phase 1 stack (`CpuState` ABI v2, COP0/exceptions, domain modes +
+import seam) was read from its PR branch while PR 1 alone had landed. PR 1
+(#217), PR 2 (#219) and PR 3 (#223) have all since landed on `main`.
 
 Companion: `docs/cleanroom/SCHED_SPEC.md` is the first clean-room behaviour
 specification produced under this plan's protocol (scheduler, ranked first
