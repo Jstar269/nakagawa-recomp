@@ -29,7 +29,7 @@ decryption, complete archive mounting, and title acceptance remain open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Main Executable** | Decrypted flat MIPS ELF (`place_game_here/EBOOT.elf`) | `EBOOT.BIN` is encrypted with Kirk tag `0x08000000` | Implement independent KIRK CMD 1/7 engine in runtime; decouple key store to user-supplied keyring | **REQUIRES_NEW_IMPLEMENTATION** (Independent KIRK) |
+| **Main Executable** | Decrypted flat MIPS ELF (`place_game_here/EBOOT.elf`) | `EBOOT.BIN` is encrypted with Kirk tag `0x08000000` | Implement a project-authored KIRK CMD 1/7 engine in runtime; decouple key store to user-supplied keyring | **REQUIRES_NEW_IMPLEMENTATION** (Independent KIRK) |
 | **Encrypted PRXs** | Decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx` | Modules are encrypted `~PSP`/`~SCE` containers; `module_start` previously hung on `WaitSema` | Decrypt modules via local KIRK engine; fix kernel semaphore/scheduler contracts to execute original `module_start` | **REQUIRES_NEW_IMPLEMENTATION** (Kernel synchronization) |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` with StartModule bypass | PSMF SDK requires kernel memory heaps and hardware MPEG decoding | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **REQUIRES_NEW_IMPLEMENTATION** (Hardware codec bridge) |
@@ -48,7 +48,7 @@ are not evidence that the paths have landed in the current player.
 * **The Blocker:** Physical UMDs and PSN packages store executables in `~SCE` and `~PSP` encrypted containers. `tools/codegen.py` disassembles standard MIPS ELF sections and fails closed on encrypted headers.
 * **Why External Decryptors Fall Short:** Standalone tools like `pspdecrypt` only handle standard Kirk Command 1 games and reject dynamic library PRXs signed with secondary Kirk tags (`0x01` / `0x0D`).
 * **The LLE Solution:**
-  1. Implement an independent KIRK hardware engine in Nakagawa covering `KIRK_CMD_DECRYPT_PRX` (CMD 1), ECDSA verification (CMD 2/3), and AES-128-CBC (CMD 7).
+  1. Implement a project-authored KIRK hardware engine in Nakagawa covering `KIRK_CMD_DECRYPT_PRX` (CMD 1), ECDSA verification (CMD 2/3), and AES-128-CBC (CMD 7).
   2. To comply with copyright and provenance rules (`PUBLIC_EXPORT.json`, `KEY_HISTORY_SCRUB.md`), the public repository never distributes proprietary Sony console master keys.
   3. The key material is loaded from the user's local configuration directory (`%LOCALAPPDATA%/nakagawa/keys/kirk_keys.bin`) or extracted locally from a connected PSP via PSPLink.
   4. The ingestion pipeline decrypts the executables locally into a secure temporary staging folder, validates the ELF32 envelope, and passes the clean MIPS ELFs to the recompiler.

@@ -14,13 +14,13 @@ These are targets, not claims about current progress.
 
 ## Current status
 
-This repository is an experimental research and compatibility project, **not an end-user release** or a game distribution. It does not include game binaries, copyrighted assets, firmware modules, decryption keys, or private oracle traces.
+This repository is an experimental research and compatibility project, **not an end-user release** or a game distribution. It does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces.
 
 Public development and automated continuous integration verify the recompiler through source-owned synthetic guests:
 
 - The **differential cosimulation harness** (`mingw32-make cosim-selftest`) verifies semantic parity between AOT-generated code and the fail-closed interpreter floor.
 - The **platform ladder** (`mingw32-make platform-ladder`) exercises relocations, scheduler threading, scalar FPU, and filesystem semantics across synthetic workloads.
-- The **production smoke fixtures** (`mingw32-make production-smoke`, `mingw32-make display-smoke`) test the complete two-phase build pipeline, display bring-up, and native player launch without proprietary inputs.
+- The **production smoke fixtures** (`mingw32-make production-smoke`, `mingw32-make display-smoke`) test the complete two-phase build pipeline and display bring-up without proprietary inputs; `mingw32-make display-smoke-player` also launches the fixture through the native player.
 
 The public source boundary deliberately makes no claim of retail title playability. Active development focuses on HLE completeness, timing, scheduler edge cases, and graphics/audio fidelity. Active defect tracking is maintained on [GitHub Issues](https://github.com/Jstar269/nakagawa-recomp/issues); see [`ISSUES.md`](ISSUES.md) for the project status dashboard.
 
@@ -41,10 +41,11 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w6
 
 ### Build public synthetic smoke routes
 
-Verify the toolchain and pipeline without proprietary game inputs:
+Verify the toolchain and pipeline without proprietary game inputs. Run these from a shell whose `PATH` includes the MSYS2 UCRT64 tools: a UCRT64 terminal, or PowerShell after `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`.
 
 ```powershell
-.\nk_manager.ps1 -Action Test                 # Python tooling suite and synthetic doctor
+.\nk_manager.ps1 -Action Test                 # C++ reference-runtime selftest (make selftest)
+python -m unittest discover -s tools -p "test_*.py"  # Python tooling suite
 mingw32-make production-smoke                 # Two-phase pipeline smoke test
 mingw32-make platform-ladder                  # Multi-workload synthetic platform ladder
 mingw32-make cosim-selftest                   # Differential AOT vs. interpreter cosimulation
@@ -52,7 +53,7 @@ mingw32-make cosim-selftest                   # Differential AOT vs. interpreter
 
 ### Local game inputs
 
-To build with a lawfully obtained copy of a game, place private inputs into the Git-ignored `place_game_here/` layout:
+To build with a lawfully obtained copy of *Hot Shots Tennis: Get a Grip*, place private inputs into the Git-ignored `place_game_here/` layout below. This layout, including the named middleware PRXs and the `xbdata_extracted` tree, is specific to the HST route; other titles take their filesystem and module paths from their own title manifest.
 
 ```text
 place_game_here/
