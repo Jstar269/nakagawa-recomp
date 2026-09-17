@@ -82,6 +82,12 @@ static int g_failed = 0;
 #define TEST_VECTOR 0x80000180u
 #define TEST_VSPAN_END 0x80001000u
 
+/* Measured pre-exception Status for campaign psp-hw-20260917 (PSP-A1-01,
+ * PSP-A2-01, PSP-A3-01): KSU user, IE 1, IM 0x86, EXL 0 before entry. The
+ * model preserves every pre-exception bit and sets only EXL, so the measured
+ * frame 0x00088613 = 0x00088611 | SR_STATUS_EXL is reproduced exactly. */
+#define TEST_PRE_STATUS 0x00088611u
+
 static void fresh_state(CpuState *s) {
     memset(s, 0, sizeof *s);
     sr_cpu_lle_reset_config();
@@ -146,6 +152,114 @@ static void test_exception_ce_badvaddr(void) {
     CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x08810000u, 0x08810000u, 0xDEAD0001u, 0u, 0u) < 0,
           "ADEL raise must transfer");
     CHECK(s.cop0[SR_CP0_BADVADDR] == 0xDEAD0001u, "BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+}
+
+/* Hardware-measured exception-entry cells (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, user-mode PRX probes via PSPLink; fixtures
+ * fixtures/psp_oracle/probe_exception_a1.c..a3.c, cells in
+ * docs/HARDWARE_ORACLE.md "CPU exception entry"). These checks pin the
+ * measured fields only: EPC, Cause.BD/ExcCode for Bp/AdEL, BadVAddr, and the
+ * preserved general registers. Cause.CE is a single-console observation for
+ * these non-CpU codes (bit 28 read 1 in all three runs), so the CE field is
+ * treated as undefined and asserted neither way. Vector base/EBase, BEV/ERL,
+ * syscall/CpU exceptions, interrupts, and handler entry/return stay
+ * unmeasured and are not pinned here. */
+
+/* PSP-A1-01: a non-delay-slot user-mode `break` reports EPC = the break
+ * address (not +4), Cause 0x10000024 (ExcCode 9, BD 0), the measured
+ * post-entry Status, and preserved a0-a3/t0-t3. */
+static void test_hw_psp_a1_01_break_plain(void) {
+    CpuState s;
+    int rc;
+    static const uint32_t pre[4] = {
+        0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u  /* a0-a3 */
+    };
+    static const uint32_t tmp[4] = {
+        0xAAAAAAAAu, 0xBBBBBBBBu, 0xCCCCCCCCu, 0xDDDDDDDDu  /* t0-t3 */
+    };
+    unsigned i;
+    fresh_state(&s);
+    for (i = 0; i < 4; i++) {
+        s.r[4 + i] = pre[i];
+        s.r[8 + i] = tmp[i];
+    }
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    rc = sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08810000u, 0x08810000u, 0u, 0u, 0u);
+    CHECK(rc < 0, "PSP-A1-01 raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "PSP-A1-01 EPC=0x%08x, want the break pc",
+          s.cop0[SR_CP0_EPC]);
+    /* The measured Cause cells name BD/ExcCode exactly; bit 28 (CE) read 1 in
+     * this single-console campaign but is undefined for non-CpU exceptions, so
+     * only BD and ExcCode are asserted. */
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK)) == 0x00000024u,
+          "PSP-A1-01 Cause=0x%08x, want BD 0 + ExcCode 9 (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "PSP-A1-01 ExcCode must be 9");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A1-01 BD must be 0");
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A1-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+    for (i = 0; i < 4; i++) {
+        CHECK(s.r[4 + i] == pre[i], "PSP-A1-01 r[%u] clobbered", 4u + i);
+        CHECK(s.r[8 + i] == tmp[i], "PSP-A1-01 r[%u] clobbered", 8u + i);
+    }
+}
+
+/* PSP-A2-01: the same `break` in the delay slot of an always-taken branch
+ * reports EPC = the branch address, Cause 0x90000024 (BD 1, ExcCode 9);
+ * neither successor executed, which the single-entry raise models by the
+ * transfer itself. */
+static void test_hw_psp_a2_01_break_delay_slot(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.in_delay_slot = 1u;
+    s.next_pc = 0x08810004u;  /* PSP-A2-01 branch pc */
+    rc = sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08810008u, 0x08810004u, 0u, 1u, 0u);
+    CHECK(rc < 0, "PSP-A2-01 raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810004u, "PSP-A2-01 EPC=0x%08x, want the branch pc",
+          s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK)) == 0x80000024u,
+          "PSP-A2-01 Cause=0x%08x, want BD 1 + ExcCode 9 (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A2-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+}
+
+/* PSP-A3-01: a user-mode `lw $t6, 4($t5)` with t5 = 0x88000010 raises AdEL:
+ * EPC = the load address, Cause 0x10000010 (ExcCode 4, BD 0), BadVAddr =
+ * the effective address 0x88000014, the same Status, destination t6
+ * unchanged, and execution did not continue. */
+static void test_hw_psp_a3_01_adel_load(void) {
+    CpuState s;
+    int rc;
+    unsigned i;
+    fresh_state(&s);
+    for (i = 0; i < 4; i++) {
+        s.r[4 + i] = 0x11111111u + i;      /* a0-a3, A3 probe values */
+    }
+    s.r[13] = 0x88000010u;                 /* t5 */
+    s.r[14] = 0x0BADBABEu;                 /* t6: sentinel destination */
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    rc = sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x08810020u, 0x08810020u,
+                                0x88000014u, 0u, 0u);
+    CHECK(rc < 0, "PSP-A3-01 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-01 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810020u, "PSP-A3-01 EPC=0x%08x, want the lw address",
+          s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x88000014u,
+          "PSP-A3-01 BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A3-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+    CHECK(s.r[14] == 0x0BADBABEu, "PSP-A3-01 t6 must be unchanged");
+    CHECK(s.r[13] == 0x88000010u, "PSP-A3-01 t5 must be unchanged");
+    for (i = 0; i < 4; i++) {
+        CHECK(s.r[4 + i] == 0x11111111u + i, "PSP-A3-01 r[%u] clobbered", 4u + i);
+    }
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-01 must transfer to the vector, not continue");
 }
 
 /* BEV selects the bootstrap vector; an unowned vector fails closed. */
@@ -530,6 +644,9 @@ int main(void) {
     test_exception_entry_plain();
     test_exception_delay_slot();
     test_exception_ce_badvaddr();
+    test_hw_psp_a1_01_break_plain();
+    test_hw_psp_a2_01_break_delay_slot();
+    test_hw_psp_a3_01_adel_load();
     test_nested_exceptions();
     test_vector_selection();
     test_unbacked_aot_target();
