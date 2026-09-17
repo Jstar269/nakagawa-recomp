@@ -4,6 +4,18 @@ This is the repository's canonical operating contract for automated agents. It i
 short and enduring; live source, tests, Makefiles, and the maintained documents remain the source
 of truth for implementation details.
 
+## Where to start
+
+Work only inside the canonical checkout or a registered worktree, never at the non-repository
+workspace root. If the session opened at a parent directory, select the tree and change the
+session's working directory before repository work:
+
+- Read-only integration checks: the canonical public checkout.
+- Any change: the existing task worktree, or one new registered worktree under Section 8.
+- Private-authority work: the private authority checkout, never a public tree.
+
+Read this contract in the selected tree before acting; tool-specific guidance files only route here.
+
 ## 1. Sources and live preflight
 
 - Resolve disagreements in this order: live source/tests/Makefiles, live GitHub Issues, `ISSUES.md`,
@@ -25,10 +37,9 @@ of truth for implementation details.
 
 - A mutating mission may use at most one dedicated temporary worktree and branch. Reuse the current
   temporary worktree when it already starts at the required exact base; do not create a second one.
-- Persistent agent lanes are `ai/claude`, `ai/codex`, `ai/antigravity`, `ai/opencode`, and
-  `ai/freebuff`. Do not commit to a persistent lane unless it is assigned to the mission.
-- One active mission PR is allowed per persistent lane. Keep a mission coherent, avoid stacked PRs,
-  and do not discard another agent's unmerged work.
+- Name a mission branch for its topic (`docs/...`, `fix/...`, `lle/...`, `oracle/...`) with a date
+  or issue suffix. There are no persistent per-agent lanes.
+- Keep a mission coherent, avoid stacked PRs, and do not discard another agent's unmerged work.
 - Default autonomy is STOP/REPORT after a bounded implementation, tests, or draft PR. An explicit
   mission may authorize autonomous integration only after all of these hold: the exact head has
   required hosted CI green, no unresolved review/change request remains, provenance/publication
@@ -48,7 +59,7 @@ integration mission is otherwise autonomous:
 - firmware, flash, NAND, idStorage, PSPLink, physical PSP, or other hardware actions;
 - disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.
 
-"Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation."
+Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation.
 
 No agent may create, edit, publish, unpublish, or attach assets to a release as a workaround for a
 blocked PR. Normal code, documentation, and configuration integration remains subject to Section 2.
@@ -68,6 +79,16 @@ blocked PR. Normal code, documentation, and configuration integration remains su
   identity or add `Signed-off-by:` on anyone's behalf.
 - Keep public source correctness, provenance/publication readiness, private title acceptance,
   physical PSP correctness, visual evidence, and release readiness as separate claims.
+- Write new implementation from specifications, public architecture references, and project-owned
+  measurements. Never copy or line-by-line translate emulator or other upstream source (PPSSPP,
+  JPCSP, sal063 or similar) into a new path.
+- Do not call code "clean-room" or "independent" unless its trusted provenance record carries
+  evidence that supports the label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer
+  "project-authored".
+- When a public path is added or removed: add or drop it in `assets/public_source_profile.json`,
+  have the maintainer admit the matching policy delta and any trusted record in the private
+  authority repository, then run `mingw32-make provenance-refresh` against the trusted ledger and
+  commit the regenerated `PUBLIC_EXPORT.json` and public ledger. Never hand-edit those outputs.
 
 ## 5. Private and public boundaries
 
@@ -95,11 +116,6 @@ blocked PR. Normal code, documentation, and configuration integration remains su
   syscall proof; software/Vulkan agreement is not a PSP hardware oracle.
 - Mutations count as behavioral evidence only when they generate, compile, execute, and fail for the
   intended semantic reason. Build-only or in-place tracked-file mutations are invalid kills.
-- **UI decisions and typography selection**: Selecting open-source fonts for nakagawa-recomp depends on the surface:
-  - *In-Game UI & Arcade HUD (Clap Hanz / Sports Aesthetic)*: [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL, closest match to Hot Shots Tennis, rounded terminals, full JP/Latin), [Rubik](https://fonts.google.com/specimen/Rubik) (match results, power gauges), [Nunito](https://fonts.google.com/specimen/Nunito) (handheld/low-res legibility), [Teko](https://fonts.google.com/specimen/Teko) / [Bebas Neue](https://fonts.google.com/specimen/Bebas+Neue) (scoreboards, serve speed).
-  - *Launcher & Settings UI (Dear ImGui / SDL3 Dialogs)*: [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL, screen-optimized, sharp at 10px–14px), [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (variable weight/width/optical size).
-  - *Debug Overlays & Telemetry (FPS, Frame Times, Memory Viewers)*: [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) (tall x-height, rapid telemetry), [Intel One Mono](https://github.com/intel/intel-one-mono) (high glyph distinction: 0/O, 1/l/I, address viewers).
-  - *Japanese CJK Support*: [Kosugi Maru](https://fonts.google.com/specimen/Kosugi+Maru) (Apache 2.0, rounded Japanese gothic matching original PSP system fonts), [Zen Maru Gothic](https://fonts.google.com/specimen/Zen+Maru+Gothic) (dialogue boxes, audio/text toggles).
 
 ## 7. Current execution contract
 
@@ -118,6 +134,11 @@ the issue numbers are navigation, not a substitute for source evidence:
   a build-only mutant is an invalid semantic kill.
 - Nested interpreted calls outside the documented floor are not implied to be supported. Do not
   claim broader coverage without a new source-owned contract and regression.
+- **LLE Phase 1** (`src/rt/cpu_lle.*`, `src/rt/domain_mode.*`): `CpuState` ABI v2 carries COP0 and
+  transfer metadata. Exception entry, `eret`, and the domain-mode import seam are opt-in through
+  `tools/codegen.py --lle-cpu` and `--lle-import-seam` (the seam implies `--lle-cpu`); default
+  builds stay byte-identical to the pre-LLE output. Values that are not hardware-measured stay
+  behind fail-closed paths and are labelled synthetic until a physical-PSP measurement exists.
 
 ## 8. Workspace, branch, and worktree lifecycle
 
@@ -133,7 +154,7 @@ the issue numbers are navigation, not a substitute for source evidence:
   then prune stale administrative records when safe; do not introduce a routine
   `git worktree remove --force` rule.
 - Delete a temporary merged/superseded branch only after verifying it is not checked out elsewhere,
-  has no unpushed commits, and contains no retained evidence. Never delete an active persistent lane.
+  has no unpushed commits, and contains no retained evidence.
 - Never write a repository-local git identity. A `[user]` block in the checkout silently
   re-authors every later commit here and in every worktree sharing it, including other
   agents' and the maintainer's. Use the host's existing identity or stop and report.
@@ -154,6 +175,10 @@ not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or `NO
 | publication/provenance | `tools/policy_sync.py`, both publication-audit legs, and modified-file notice audit |
 | docs and agent policy | `tools/lint_docs.py`, Markdown lint, focused policy tests, and public-link audit |
 | workflow/configuration | `tools/test_ci_paths.py`, pre-commit, and the full applicable hosted matrix |
+| LLE CPU / domain modes | `tools/test_cpu_lle.py`, `tools/test_domain_mode.py`, then `mingw32-make native-core-tests` |
+
+`native-core-tests` also runs on the hosted Linux leg, so native selftests must build and link
+there without Windows-only libraries; check with a Linux shell (for example WSL) before pushing.
 
 At minimum, when applicable, run:
 
@@ -164,8 +189,8 @@ python -m pre_commit run --all-files
 ```
 
 The workflow's `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full
-matrix for a manual run, and `allow_substantive` is true there; draft pull requests suppress
-substantive jobs until ready. Verify those facts against the live workflow before documenting them.
+matrix for a manual run, and `allow_substantive` is true there; draft status does not suppress
+substantive gates. Verify those facts against the live workflow before documenting them.
 
 ## 10. PR and integration authorization
 
@@ -174,9 +199,10 @@ substantive jobs until ready. Verify those facts against the live workflow befor
   private/hardware status, and blockers.
 - Do not mark Ready or merge unless Section 2's explicit autonomous-integration conditions hold.
   Never call a Draft locally CI-green merely because cheap gates passed.
-- Before readiness, fetch `origin/main`, rebase once if needed, resolve conflicts preserving newer
-  main behavior, regenerate only required canonical metadata, rerun affected gates, and freeze the
-  exact validated head. Do not continuously rebase a healthy Draft.
+- Before readiness, fetch `origin/main` and merge it into the branch when needed; never rebase or
+  force-push a pushed branch. Resolve conflicts preserving newer main behavior, regenerate only
+  required canonical metadata (provenance refresh), rerun affected gates, and freeze the exact
+  validated head.
 - Do not merge, enable auto-merge, close other PRs, or bypass required checks without the authority
   described above. A substantive correction after Ready returns the PR to Draft and needs fresh
   exact-head validation.

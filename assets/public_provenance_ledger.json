@@ -111,7 +111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ba876393539561dedbf1511bb532f91383870f9e9be86c1635856b3b786e7015"
+      "sha256": "c943400c8faf48b16e5f9ee98bb614245a48c05099a7ad594a8bc45dad2eda16"
     },
     {
       "path": ".github/dependabot.yml",
@@ -129,7 +129,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "844b3b8e1d7d708abbfdc1a6d2c31642243ab32bc1b12c186d7765a2a1b0f60c"
+      "sha256": "8507983071b612722408b12bcb32152335fbe64e3e16a21b3298739761d5ed06"
     },
     {
       "path": ".github/workflows/ci.yml",
@@ -201,7 +201,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e6adeef3f8d44ce23f848681565366f2c0fe20c970352cecb5841a9e1c0d9466"
+      "sha256": "b8cd4350abd5bfe8afab25ffdc6a6333020ebf07957bba4147dfc3dc6e494fa4"
     },
     {
       "path": "CLAUDE.md",
@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96929cdda244e50a3b5396735be05b827d49820c9373e4f47c7ed4b6dd15e772"
+      "sha256": "94e4906b344e3b80ea2e153c4ff4524c95a46f12e24c9b08caeb892cd524c4cc"
     },
     {
       "path": "CMakeLists.txt",
@@ -305,6 +305,15 @@
       "sha256": "5ec931e02e97b6ec962f7e8a451e2a4fd5083ae63e583aa54b6d4926d7442dbe"
     },
     {
+      "path": "REVIEW.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "9795fcf5c42beb4af944878c4d11a32d8c8048db7e8c42fbeec533aa9a2196d6"
+    },
+    {
       "path": "SECURITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -393,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3f8ae49bafe9f8595d5a928f40ed5593b0022d10071c69b78d9c4b03c1f7d7b3"
+      "sha256": "1805ea87340474c4693681e1c49a189b7845bc0cd38a8360291cf0ea5b44e150"
     },
     {
       "path": "assets/release_manifest.json",
