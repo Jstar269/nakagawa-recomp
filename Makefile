@@ -1197,8 +1197,14 @@ ifeq ($(OS),Windows_NT)
 PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
 PLAYER_EXTRA_LIBS   := -lshell32
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-PLAYER_VULKAN_INC   := -IC:/VulkanSDK/1.4.357.0/Include -IC:/VulkanSDK/1.4.357.0/include
-PLAYER_VULKAN_LIB   := -LC:/VulkanSDK/1.4.357.0/Lib -LC:/VulkanSDK/1.4.357.0/lib
+# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
+# must derive from the shared VULKAN_SDK resolution above (explicit override,
+# environment, then tools/vulkan_sdk.py discovery) rather than naming one
+# machine's SDK install. The VULKAN_ERROR_HINT append below fails closed with
+# the one variable to set when discovery found nothing, instead of a hardcoded
+# fallback or a confusing compiler error.
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   := $(VULKAN_ERROR_HINT)
 EXE_EXT             := .exe
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
@@ -1208,6 +1214,10 @@ PLAYER_VULKAN_INC   :=
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             :=
 endif
+
+# A clear player-target failure when no usable SDK resolved (see the Windows
+# branch above). Expands to nothing when VULKAN_SDK is set.
+VULKAN_ERROR_HINT   := $(if $(VULKAN_SDK),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. VULKAN_SDK=C:/VulkanSDK/<version> mingw32-make player) or install one under C:/VulkanSDK))
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
