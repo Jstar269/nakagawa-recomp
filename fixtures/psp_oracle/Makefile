@@ -62,11 +62,54 @@ else ifeq ($(CASE),mutex-priority-inheritance)
 CASE_ID = 21
 else ifeq ($(CASE),mutex-interrupt-context)
 CASE_ID = 22
+else ifeq ($(CASE),exception-a1)
+CASE_ID = 23
+else ifeq ($(CASE),exception-a2)
+CASE_ID = 24
+else ifeq ($(CASE),exception-a3)
+CASE_ID = 25
+else ifeq ($(CASE),kobj-b1)
+CASE_ID = 26
+else ifeq ($(CASE),wait-b2)
+CASE_ID = 27
+else ifeq ($(CASE),kernel-b3)
+CASE_ID = 28
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
+
+# Cases 23-28 are standalone probes, each in its own source file, that record
+# the build commit in their output. The exception probes raise exactly one
+# exception and never return; the kernel-object probes use their own complete
+# ThreadManForUser import block (threadman_user_imports.S).
+PROBE_BUILD_COMMIT ?= $(shell git rev-parse --short HEAD)
+ifeq ($(CASE),exception-a1)
+TARGET = $(BUILD_DIR)/psp_a1
+OBJS = $(BUILD_DIR)/probe_exception_a1.o
+CFLAGS += -DA1_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),exception-a2)
+TARGET = $(BUILD_DIR)/psp_a2
+OBJS = $(BUILD_DIR)/probe_exception_a2.o
+CFLAGS += -DA2_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),exception-a3)
+TARGET = $(BUILD_DIR)/psp_a3
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),kobj-b1)
+TARGET = $(BUILD_DIR)/psp_b1
+OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/threadman_user_imports.o
+CFLAGS += -DB1_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),wait-b2)
+TARGET = $(BUILD_DIR)/psp_b2
+OBJS = $(BUILD_DIR)/psp_b2.o $(BUILD_DIR)/threadman_user_imports.o
+CFLAGS += -DB2_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),kernel-b3)
+TARGET = $(BUILD_DIR)/psp_b3
+OBJS = $(BUILD_DIR)/psp_b3.o $(BUILD_DIR)/threadman_user_imports.o
+CFLAGS += -DB3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
 BUILD_PRX = 1
@@ -102,6 +145,27 @@ $(BUILD_DIR)/probe.o: probe.c
 
 $(BUILD_DIR)/mutex_imports.o: mutex_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/threadman_user_imports.o: threadman_user_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exception_a2.o: probe_exception_a2.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exception_a3.o: probe_exception_a3.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b1.o: psp_b1.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b2.o: psp_b2.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b3.o: psp_b3.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
 # under the ignored build directory.

@@ -12,6 +12,8 @@ Nakagawa Recomp is not a high-level API emulator that mimics game behavior by re
 
 Every component of the guest title—including executables, dynamic PRX libraries, vendor middleware, and math routines—should execute as compiled MIPS/Allegrex instructions wherever technically feasible.
 
+> **Note (CPU exception semantics):** EPC, Cause (BD and ExcCode) and BadVAddr are now hardware-measured for a user-mode `break`, a `break` in a branch delay slot, and a user-mode load from a kernel address (runs PSP-A1-01..PSP-A3-01; see [HARDWARE_ORACLE.md](HARDWARE_ORACLE.md)). Exception vector base, BEV/ERL behaviour, syscall and coprocessor-unusable exceptions, and handler entry/return remain unmeasured.
+
 ### 1.2 The Role of HLE
 
 High-Level Emulation (HLE) is **not** an architectural goal; it is a pragmatic boundary condition:
