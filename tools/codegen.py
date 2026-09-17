@@ -26,10 +26,53 @@ CPU_STATE_ABI_VERSION = 2
 # (they were untranslatable) and emit helper calls in both modes.
 LLE_CPU = False
 
+# LLE import seam (PR 3): when True, generated import stubs route through
+# sr_import_call(s, nid, stub_pc) instead of calling sr_syscall(s, nid)
+# directly, so the stub honors the per-domain HLE/LLE selection in
+# src/rt/domain_mode.h. Set by --lle-import-seam; default False preserves
+# byte-for-byte HLE stubs. In HLE mode the seam tail-calls sr_syscall with
+# identical effects; the stub keys off s->flow_kind (the PR 2 pattern),
+# never off the seam return, because legitimate HLE errors are nonzero.
+LLE_IMPORT_SEAM = False
+
+
+def enable_lle_import_seam():
+    """Turn on the import seam and the PR 2 flow machinery it relies on.
+
+    A seam stub that fails closed returns with flow metadata set; only
+    --lle-cpu output makes the native caller check flow_kind after a direct
+    call and enables the runtime LLE lane. Without it an LLE miss would be
+    ignored by the caller, so the seam implies --lle-cpu.
+    """
+    global LLE_IMPORT_SEAM, LLE_CPU
+    LLE_IMPORT_SEAM = True
+    LLE_CPU = True
+
 
 def is_eret(w):
     """True only for the exact ERET encoding (spec 3.4)."""
     return w == 0x42000018
+
+
+def import_stub_text(addr, lib, nid, lle_import_seam=False):
+    """Generated body for one import stub (spec section 4, PR 3).
+
+    Default (False) emits the historical sr_syscall stub byte-for-byte.
+    With the seam enabled the stub calls sr_import_call(s, nid, stub_pc)
+    and unwinds when the seam leaves flow metadata set -- the same
+    flow-propagation shape PR 2 emits for COP0/eret -- so an LLE miss
+    never falls through as if the import had succeeded.
+    """
+    if lle_import_seam is False:
+        lle_import_seam = LLE_IMPORT_SEAM
+    if lle_import_seam:
+        return (f"void f_{addr:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
+                f"    sr_import_call(s, 0x{nid:08x}u, 0x{addr:08x}u);\n"
+                f"    if (s->flow_kind != 0u) {{ sr_end(s, 0u, 0); return; }}\n"
+                f"    sr_end(s, 0u, 0);\n}}")
+    return (f"void f_{addr:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
+            f"    sr_syscall(s, 0x{nid:08x}u);\n"
+            f"    sr_end(s, 0u, 0);\n}}")
 
 
 @dataclass(frozen=True)
@@ -2068,6 +2111,11 @@ def main(argv):
             # Default (absent) preserves the HLE sr_raw_syscall/sr_break path.
             global LLE_CPU
             LLE_CPU = True
+        elif o == "--lle-import-seam":
+            # LLE import seam (PR 3): import stubs route through
+            # sr_import_call instead of sr_syscall. Default (absent)
+            # preserves byte-identical HLE stubs.
+            enable_lle_import_seam()
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):
@@ -2414,9 +2462,7 @@ def main(argv):
             lib_nid = impmap.get(a)
             if lib_nid is not None:
                 lib, nid = lib_nid
-                text = f"void f_{a:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
-                text += f"    sr_syscall(s, 0x{nid:08x}u);\n"
-                text += f"    sr_end(s, 0u, 0);\n}}"
+                text = import_stub_text(a, lib, nid)
             else:
                 text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
                 text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
@@ -2466,9 +2512,7 @@ def main(argv):
                 lib_nid = extra_impmap.get(a)
                 if lib_nid is not None:
                     lib, nid = lib_nid
-                    text = f"void f_{a:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
-                    text += f"    sr_syscall(s, 0x{nid:08x}u);\n"
-                    text += f"    sr_end(s, 0u, 0);\n}}"
+                    text = import_stub_text(a, lib, nid)
                 else:
                     text = f"void f_{a:08x}(CpuState *s) {{  /* import stub -> HLE boundary */\n"
                     text += f"    sr_hle_call(s, 0u);\n}}"
