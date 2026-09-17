@@ -3735,6 +3735,61 @@ static void wsv_cb_coro_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
+/* PSP-B1-01 (psp-hw-20260917), project-authored synthetic probe on PSP-3000, firmware 6.61. */
+static void b1_expect(uint32_t actual, uint32_t expected, const char *scenario) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "B1 %s: expected 0x%08x, actual 0x%08x",
+             scenario, expected, actual);
+    expect(actual == expected, msg);
+}
+
+static uint32_t b1_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_sema_hardware_codes(void) {
+    (void)wsv_begin();
+    uint32_t sema = wsv_create(1, 2);
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 2u, 0u), 0x800201aeu,
+              "SignalSema overflow returns 800201AE");
+    expect(wsv_count(sema) == 1, "B1 SignalSema overflow leaves count unchanged");
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 0u, 0u), 0u,
+              "SignalSema zero succeeds");
+    expect(wsv_count(sema) == 1, "B1 SignalSema zero preserves count");
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 0xffffffffu, 0u), 0u,
+              "SignalSema negative one succeeds");
+    expect(wsv_count(sema) == 0, "B1 SignalSema negative one decrements count");
+    b1_expect(wsv_wait(0x58b1f937u, sema, 1u, 0u), 0x800201adu,
+              "PollSema empty returns 800201AD");
+    const uint32_t invalid_counts[] = {0u, 0xffffffffu, 3u};
+    for (unsigned i = 0; i < sizeof invalid_counts / sizeof invalid_counts[0]; i++) {
+        b1_expect(wsv_wait(0x58b1f937u, sema, invalid_counts[i], 0u), 0x800201bdu,
+                  "PollSema invalid count returns 800201BD");
+        expect(wsv_count(sema) == 0, "B1 rejected PollSema preserves count");
+    }
+    wsv_delete(sema);
+    const uint32_t nids[] = {NID_WSV_SIGNAL_SEMA, NID_WSV_DELETE_SEMA, 0x58b1f937u};
+    for (unsigned i = 0; i < sizeof nids / sizeof nids[0]; i++) {
+        b1_expect(wsv_wait(nids[i], sema, 1u, 0u), 0x80020199u,
+                  "semaphore deleted ID returns 80020199");
+        b1_expect(wsv_wait(nids[i], 0xdeadbeefu, 1u, 0u), 0x80020199u,
+                  "semaphore unknown ID returns 80020199");
+    }
+    b1_expect(b1_call(NID_CNW_CREATE_SEMA, WSV_NAMEBUF, 0xffffffffu, 0u, 2u),
+              0x80020191u, "CreateSema invalid attr returns 80020191");
+    uint32_t created = wsv_create(3, 2);
+    expect((int32_t)created > 0 && wsv_count(created) == 3,
+           "B1 CreateSema accepts initial count above maximum");
+    wsv_delete(created);
+    created = wsv_create(0, 0);
+    expect((int32_t)created > 0 && wsv_count(created) == 0,
+           "B1 CreateSema accepts maximum zero");
+    wsv_delete(created);
+    s_cur = -1;
+}
+
 static void test_wait_sema_count_validation(void) {
     char msg[256];
 
@@ -10126,6 +10181,13 @@ int main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--b1-kobj") == 0) {
+        test_sema_hardware_codes();
+        fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_utility_av_module_state();
@@ -10183,6 +10245,7 @@ int main(int argc, char **argv) {
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
+    test_sema_hardware_codes();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_allocate_fpl_context_precedence();

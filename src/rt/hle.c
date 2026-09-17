@@ -9980,7 +9980,12 @@ static Sync *sync_new(void) {
 }
 
 static uint32_t h_CreateSema(CpuState *s) {
-    /* a0=name, a1=attr, a2=initCount, a3=maxCount. */
+    /* a0=name, a1=attr, a2=initCount, a3=maxCount.
+     * PSP-B1-01 (psp-hw-20260917): attr bits outside the documented set
+     * (anything beyond 0x3FF) reject with 80020191. initCount > maxCount and
+     * maxCount == 0 are accepted on hardware, so no validation is added for
+     * either. */
+    if (A1 & ~0x3ffu) return 0x80020191u;
     Sync *m = sync_new(); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
     if (hle_log_on())
@@ -10086,7 +10091,12 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
             "DISPLAY_SET_MODE: runtime sync callbacks mode=%u enter=0x%08x leave=0x%08x (title %s)\n",
             mode, enter, leave, sr_title_config()->source_id);
 }
-static uint32_t h_DeleteSema(CpuState *s) { Sync *m = sync_find(A0); if (m) m->used = 0; return 0; }
+static uint32_t h_DeleteSema(CpuState *s) {
+    /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
+     * UNKNOWN_SEMID. */
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    m->used = 0; return 0;
+}
 /* Entry contract shared by sceKernelWaitSema and sceKernelWaitSemaCB.
  *
  * The order below is not a style choice; each step is placed where a measured
@@ -10224,14 +10234,15 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
     return 0;
 }
 static uint32_t h_SignalSema(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
+     * UNKNOWN_SEMID, replacing the generic 0x80020000 seam. */
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int signals = (int)A1;
-    int new_count = m->count + signals;
-    if (new_count > m->maxc) {
-        if (hle_log_on()) fprintf(stderr, "HLE: SignalSema uid=0x%x would exceed maxc (%d -> %d capped at %d)\n", A0, m->count, new_count, m->maxc);
-        new_count = m->maxc;
-    }
-    m->count = new_count;
+    int64_t new_count = (int64_t)m->count + signals;
+    /* PSP-B1-01 (psp-hw-20260917): an overflow past maxCount rejects with
+     * 800201AE and leaves the count unchanged; it does not cap. */
+    if (new_count > m->maxc) return 0x800201aeu;
+    m->count = (int32_t)(uint32_t)new_count;
     sched_wake(A0);
     sched_preempt();    /* a woken higher-priority waiter runs immediately */
     return 0;
@@ -10242,6 +10253,9 @@ static uint32_t h_SignalSema(CpuState *s) {
 static uint32_t h_PollSema(CpuState *s) {
     Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int need = (int)A1;
+    /* PSP-B1-01 (psp-hw-20260917): count validation answers ILLEGAL_COUNT even
+     * on an empty semaphore; SEMA_ZERO is only for a valid count it cannot
+     * satisfy. */
     if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
@@ -11145,6 +11159,18 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);
+    sr_hle_register(0xef9e4c70, "sceKernelDeleteEventFlag", h_DeleteEventFlag);
+    sr_hle_register(0x812346e4, "sceKernelClearEventFlag", h_ClearEventFlag);
+    sr_hle_register(0x30fd48f0, "sceKernelPollEventFlag", h_PollEventFlag);
+    sr_hle_register(0xa66b0120, "sceKernelReferEventFlagStatus", h_ReferEventFlagStatus);
+    sr_hle_register(0x60107536, "sceKernelDeleteLwMutex", h_DeleteLwMutex);
+    sr_hle_register(0x7cff8cf3, "_sceKernelLockLwMutex", h_LockLwMutex);
+    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0xdc692ee3, "sceKernelTryLockLwMutex", h_TryLockLwMutex);
+    sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex);
+    sr_hle_register(0x71040d5c, "_sceKernelTryLockLwMutex", h_TryLockLwMutex);
+    sr_hle_register(0x15b6446b, "sceKernelUnlockLwMutex", h_UnlockLwMutex);
+    sr_hle_register(0xbeed3a47, "_sceKernelUnlockLwMutex", h_UnlockLwMutex);
     sr_hle_register(0x1fb15a32, "sceKernelSetEventFlag", h_SetEventFlag);
     sr_hle_register(0x402fcf22, "sceKernelWaitEventFlag", h_WaitEventFlag);
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlagCB);
@@ -11434,7 +11460,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
     sr_hle_register(0xfccfad26, "sceKernelCancelWakeupThread", h_CancelWakeupThread);
     sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
-    sr_hle_register(0xa66b0120, "sceKernelReferEventFlagStatus", h_ReferEventFlagStatus);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* Boot setup batch (return success / reference value). */
@@ -11627,22 +11652,11 @@ void sr_hle_init(void) {
     sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_ok);
     hle_register_msgpipe_handlers();
     /* semaphores */
-    /* event flags */
-    sr_hle_register(0xef9e4c70, "sceKernelDeleteEventFlag", h_DeleteEventFlag);
-    sr_hle_register(0x812346e4, "sceKernelClearEventFlag", h_ClearEventFlag);
-    sr_hle_register(0x30fd48f0, "sceKernelPollEventFlag", h_PollEventFlag);
+    /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes. See the h_CreateLwMutex block above for why these
      * are no longer no-ops and which entries remain deliberately unimplemented.
      * The CB variants share the plain handler: a blocking lock here parks on
      * sched_block_on, which is already a callback-safe yield point. */
-    sr_hle_register(0x60107536, "sceKernelDeleteLwMutex", h_DeleteLwMutex);
-    sr_hle_register(0x7cff8cf3, "_sceKernelLockLwMutex", h_LockLwMutex);
-    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutex);
-    sr_hle_register(0xdc692ee3, "sceKernelTryLockLwMutex", h_TryLockLwMutex);
-    sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex);
-    sr_hle_register(0x71040d5c, "_sceKernelTryLockLwMutex", h_TryLockLwMutex);
-    sr_hle_register(0x15b6446b, "sceKernelUnlockLwMutex", h_UnlockLwMutex);
-    sr_hle_register(0xbeed3a47, "_sceKernelUnlockLwMutex", h_UnlockLwMutex);
     /* Status layout unmeasured -- see the note above h_CreateEventFlag. */
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ok);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ok);
