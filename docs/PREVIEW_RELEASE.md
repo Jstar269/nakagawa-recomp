@@ -69,6 +69,7 @@ This is the limitations section, not a footnote:
   evidence. The final publication still requires the maintainer-controlled
   provenance refresh and the hosted gates described in
   [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md).
+- The public-safe build has no host audio backend and is silent by design.
 
 ## Supported host contract
 
