@@ -22,78 +22,22 @@ import sys
 import os
 
 
-def find_exit_syscall_pc(elf_path):
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    from analyze import Elf
-    import struct
-    elf = Elf(elf_path)
-    symtab = elf.sec(".symtab")
-    strtab = elf.sec(".strtab")
-    if not symtab or not strtab:
-        raise ValueError("ELF is missing .symtab or .strtab section")
-    d = elf.data
-    exit_stub_addr = None
-    exit_stub_size = None
-    for i in range(symtab["size"] // symtab["entsz"]):
-        o = symtab["off"] + i * symtab["entsz"]
-        st_name, st_value, st_size, st_info, st_other, st_shndx = struct.unpack("<IIIBBH", d[o:o + 16])
-        e = strtab["off"] + st_name
-        name = d[e:d.find(b"\x00", e)].decode("ascii", "replace")
-        if name == "exit_stub":
-            exit_stub_addr = st_value
-            exit_stub_size = st_size
-            break
-    if exit_stub_addr is None:
-        raise ValueError("missing exit_stub symbol")
-    if exit_stub_size is None or exit_stub_size == 0:
-        exit_stub_size = 16
-    resolved_pc = None
-    expected_word = 0x0008430C  # syscall 0x210c
-    for offset in range(0, exit_stub_size, 4):
-        addr = exit_stub_addr + offset
-        w_bytes = elf.read_at_vaddr(addr, 4)
-        if w_bytes and len(w_bytes) == 4:
-            w = struct.unpack("<I", w_bytes)[0]
-            if w == expected_word:
-                resolved_pc = addr
-                break
-    if resolved_pc is None:
-        raise ValueError("synthetic syscall 0x210c not found within exit_stub range")
-    return resolved_pc
+try:
+    from .codegen_gate import find_exit_syscall_pc
+    from .codegen_gate import first_syscall_step as _first_syscall_step
+    from .codegen_gate import truncate as _truncate
+except ImportError:
+    from codegen_gate import find_exit_syscall_pc
+    from codegen_gate import first_syscall_step as _first_syscall_step
+    from codegen_gate import truncate as _truncate
 
 
 def first_syscall_step(oracle_path, exit_pc):
-    with open(oracle_path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.rstrip("\r\n")
-            if not line or line[0] == "#":
-                continue
-            parts = line.split()
-            if len(parts) < 2 or not parts[1].startswith("pc="):
-                continue
-            pc = int(parts[1][3:], 16)
-            if pc == exit_pc:
-                if len(parts) >= 3 and parts[2].startswith("op="):
-                    op = int(parts[2][3:], 16)
-                    if op == 0x0008430C:
-                        return int(parts[0], 10)
-    return None
+    return _first_syscall_step(oracle_path, exit_pc)
 
 
 def write_truncated(oracle_path, out_path, count):
-    with open(oracle_path, "r", encoding="utf-8") as src, \
-         open(out_path, "w", encoding="utf-8", newline="\n") as dst:
-        for line in src:
-            line_stripped = line.rstrip("\r\n")
-            if line_stripped and line_stripped[0] == "#":
-                dst.write(line_stripped + "\n")
-                continue
-            parts = line_stripped.split()
-            if not parts:
-                continue
-            if int(parts[0], 10) >= count:
-                break
-            dst.write(line_stripped + "\n")
+    return _truncate(oracle_path, out_path, count)
 
 
 def main(argv):
