@@ -8,8 +8,44 @@ import sys
 # Ensure tools directory is on path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import codegen_gate
+import microtest_gate
 
 class TestGateExitResolution(unittest.TestCase):
+    def test_shared_exit_discovery(self):
+        self.assertIs(microtest_gate.find_exit_syscall_pc, codegen_gate.find_exit_syscall_pc)
+
+    def test_shared_trace_helpers(self):
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "oracle.trace"
+            trace.write_bytes(
+                b"# trace\r\n\r\n0 pc=0x08900000 op=0x00000000\r\n"
+                b"1 pc=0x08900004 op=0x0000000C\r\n"
+                b"2 pc=0x08900008 op=0x0008430C\r\n"
+                b"3 pc=0x08900008 op=0x0008430C\r\n"
+            )
+            for gate in (codegen_gate, microtest_gate):
+                with self.subTest(gate=gate.__name__):
+                    self.assertEqual(gate.first_syscall_step(trace, 0x08900008), 2)
+                    self.assertIsNone(gate.first_syscall_step(trace, 0x08900004))
+                    self.assertIsNone(gate.first_syscall_step(trace, 0x0890000C))
+            for truncate in (codegen_gate.truncate, microtest_gate.write_truncated):
+                with self.subTest(truncate=truncate.__name__):
+                    output = Path(directory) / "truncated.trace"
+                    truncate(trace, output, 2)
+                    self.assertEqual(
+                        output.read_bytes(),
+                        b"# trace\n0 pc=0x08900000 op=0x00000000\n"
+                        b"1 pc=0x08900004 op=0x0000000C\n",
+                    )
+            self.assertEqual(
+                microtest_gate.first_syscall_step(oracle_path=trace, exit_pc=0x08900008), 2
+            )
+            microtest_gate.write_truncated(oracle_path=trace, out_path=output, count=0)
+            self.assertEqual(output.read_bytes(), b"# trace\n")
+
     @patch("analyze.Elf")
     def test_missing_exit_stub(self, MockElf):
         elf = MagicMock()
