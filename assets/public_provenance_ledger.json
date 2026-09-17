@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bae8a0d1323900e3ff6b2b067ac8b0bfc0287545efae1d0aac480d74dfc533b0"
+      "sha256": "695618f3d5b3aabb6702550431990c01e8cc48ffa6460452df9665d65607ad07"
     },
     {
       "path": ".gitignore",
@@ -2115,7 +2115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be03105ed8eb7c4d0ebef4421df07461d0099757326a984ba99a7af728fe5943"
+      "sha256": "7cd19382a3541b81874865d8c0514b9bc1667d8ad984b589376f5450fb461234"
     },
     {
       "path": "interface/src/components/studio/footer.tsx",
@@ -2211,7 +2211,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f74817be2223ed218d2c97fbeb9138001400c62dde1e0028bb1c01aa6bc476f"
+      "sha256": "d5af55c069d9218d1ea12c6e3a655e787bf2b44cfbbb65d28669f8a80dea3a6b"
     },
     {
       "path": "interface/src/components/studio/onboarding-tour.tsx",
@@ -2307,7 +2307,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f44b8779c986d026668c5b0fb16e046278216023a02361245cb1a3f35cb5c063"
+      "sha256": "f066ac6cba1c39316986913ce808ed6b8c0ca02ef02cdbca7ff0e22f18c5987a"
     },
     {
       "path": "interface/src/components/studio/progress-panel.tsx",
@@ -2379,7 +2379,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "824699ae06984e1eacc334d2495c79247a9adf9b342dd3959037228d420c1a8d"
+      "sha256": "66d5dff3104957479512a87b39c6ad42d2ac0b190a77da38062ea1c975b31304"
     },
     {
       "path": "interface/src/components/studio/topbar.tsx",
@@ -2427,7 +2427,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a953d5f9d6a91f18d2d04a1d93b0f3ac2413db9a2b6b80a823dfedf19b5a2ca8"
+      "sha256": "edd4aa5700e9cacac022018d238b6ec98eacbf0964e671793376d80855908f4a"
     },
     {
       "path": "interface/src/components/studio/vram-viewer.tsx",
@@ -2439,7 +2439,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca2de397f0e79d63152eea27030cee1deb418e138791c2782df0bf5eedbdb7a1"
+      "sha256": "895eebc4a73752eda3eac210772067e9d802b45a78b2bff677359b04d918cb9c"
     },
     {
       "path": "interface/src/components/ui/alert-dialog.tsx",
@@ -2796,7 +2796,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ed0ff34338be416da6266627294169916d76fe0cb6e59691c1f2b00efcfc3e47"
+      "sha256": "539e72697b24c6f60600cf6ecbaeb11dfbaabb94eccdf4333180f70e159845d0"
     },
     {
       "path": "interface/src/lib/recompiler/config-schema.mjs",
@@ -2832,7 +2832,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8abf65176fb9e4d5ed4469029711302e3a9180a13511729c52ea4f3ea73483c5"
+      "sha256": "1634d7a8b335707c3c9358108df211961fce2e5d57ba7870899970f4120254fa"
     },
     {
       "path": "interface/src/lib/recompiler/debug-console-contract.mjs",
@@ -3012,7 +3012,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57888d4353915e4b260fe2faea4202726d29e450757b3ea99625e837ae96479d"
+      "sha256": "7da1751cdeb90cb3e7feccd97b0757d9a9765376466788bce50f19ff0104a696"
     },
     {
       "path": "interface/src/lib/recompiler/powershell-args.mjs",
@@ -3048,7 +3048,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a030a1248dc3fed59496b8a68f6bc2f5f41afc75729de0b0ccfe66b877c0b0f"
+      "sha256": "df3bffb98c41e4d1bfae71d08df3907c3c0a10ee0b2d2aad0488424e0e9140f0"
     },
     {
       "path": "interface/src/lib/recompiler/ppm.mjs",
@@ -3132,7 +3132,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1741b4d54648371deb11aef403a53d97c99da7a77b3b365154fd1b5663b48de"
+      "sha256": "996f814da101c70cb65daf76bd0d0fb8f3f3d7949fd7df58bde1183fba617cad"
     },
     {
       "path": "interface/src/lib/recompiler/progress-snapshot.mjs",
@@ -3252,7 +3252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "66bb3fd186ccb7589e3a5826848cd8249eb8b19be4f562ea0200deb2d30bbf6f"
+      "sha256": "93d8945c43b37de1cb232fd764c73507174ece6e600e403badf39aa99130f02b"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
@@ -3300,7 +3300,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aed5cbda4d8bbd864d0dcb4ba818fdee001535b3a9c1a01b68f22d835bde19e6"
+      "sha256": "9d823ea3147ba76004c727a861df97717cfeb3508e26b8827deae17f8bf5adaf"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.mjs",
@@ -3402,7 +3402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "5b33362acc059a3384ae610a73f11cdb34aa04f6f09773c91c10b24e14c004b3"
+      "sha256": "a2b826a177e7b5d4000b22e7914cf94a12250fc39c3c7458ed8784cd2523386b"
     },
     {
       "path": "mk/build_common.mk",
@@ -7836,7 +7836,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ed0d93447f153e64bcba3007efc3f51859daab6f5ab5f813452acb452c140b5b"
+      "sha256": "eba176cb9b72c18a23c665c88dc9d96fda5dcab73b01f714455020b5efb17126"
     },
     {
       "path": "tools/test_callback_correctness.py",

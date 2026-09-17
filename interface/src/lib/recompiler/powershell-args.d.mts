@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export type PowerShellParameterValue = string | number | boolean | null | undefined;
 
 export function buildPowerShellArgs(

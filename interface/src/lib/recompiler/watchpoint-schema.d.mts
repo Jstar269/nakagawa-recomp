@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 export const WATCHPOINT_SCHEMA_VERSION: number;
 export const MAX_WATCHPOINTS: number;
 export const MAX_WATCHPOINT_SPAN: number;
