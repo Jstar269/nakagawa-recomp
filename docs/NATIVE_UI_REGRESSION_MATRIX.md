@@ -4,7 +4,7 @@ This document establishes the authoritative functional regression checklist for 
 
 The portable preparation engine referenced below remains a standalone
 `nk_core` prototype. The first-time setup wizard has a separate native,
-clean-room ISO/XB staging path: it copies only `EBOOT.BIN` and
+independent ISO/XB staging path: it copies only `EBOOT.BIN` and
 `PSP_GAME/USRDIR/xbdata`, decodes validated `.xb` members into runtime-compatible
 `<archive>.xb.d/` directories, records the
 asset/audio/visual/layout census, and promotes the isolated staging tree

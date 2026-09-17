@@ -138,7 +138,7 @@ decryption, generated-runtime provisioning, and arbitrary-ISO one-click play rem
 5. **Transactional Preparation**:
    - Staging directory created under `.staging_<disc_id>/` in local application data.
    - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
-   - Native clean-room XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
+   - Native independent XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
    - If present, named already-decrypted support PRXs are copied from standard PPSSPP dump locations into `EXTRACTED/decrypted/`.
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
