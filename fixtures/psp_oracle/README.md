@@ -271,6 +271,33 @@ implementation matches until the comparison protocol runs on the capture.
 > which looks exactly like a probe-induced reset and is not one. Close the
 > client's stdin instead.
 
+## Exception and kernel-object probes (campaign psp-hw-20260917)
+
+These cases are standalone probes, each in its own source file. Unlike
+`probe.c`, they do not print protocol records. Each probe writes its header and
+results to a file on `host0:` (the PSPLink host share) and records the
+`PROBE_BUILD_COMMIT` value (default: the short `HEAD` hash). Build one case per
+launch and power-cycle between launches.
+
+| Case | Source | What it measures | Ends by |
+| --- | --- | --- | --- |
+| `exception-a1` | `probe_exception_a1.c` | A user-mode `break`: EPC, Cause and Status in PSPLink's exception frame. | Raising the exception. |
+| `exception-a2` | `probe_exception_a2.c` | The same `break` in the delay slot of an always-taken branch (the Cause BD bit). | Raising the exception. |
+| `exception-a3` | `probe_exception_a3.c` | A user-mode load from a kernel-segment address (AdEL and BadVAddr). | Raising the exception. |
+| `kobj-b1` | `psp_b1.c` | Wait-free callback, semaphore, event-flag, FPL, VPL, VTimer and LwMutex return codes and status layouts. | Returning from `main`. |
+| `wait-b2` | `psp_b2.c` | Contended waits with one bounded helper thread: wake, delete, cancel and LwMutex hand-off. | Returning from `main`. |
+| `kernel-b3` | `psp_b3.c` | Message pipes, mailboxes, sleep/wakeup/suspend/terminate, release-wait, alarms and delay timing. | Parking in `sceKernelSleepThread()`. |
+
+After an exception probe, read the frame with `pspsh -e "exprint"`, one
+command at a time. On the measured PSPLink setup, a probe that returned from
+`main` after creating threads (`wait-b2`) left PSPLink and exited to the XMB,
+which is why `kernel-b3` parks instead.
+
+The kernel-object probes link `threadman_user_imports.S`, one complete
+ThreadManForUser import block: PSPSDK ships heavyweight-mutex stubs only for
+the kernel library, and a second partial block would split the library's stub
+run. Add any newly used ThreadManForUser NID there.
+
 ## Build and hardware handoff
 
 Build when PSPDEV is installed:

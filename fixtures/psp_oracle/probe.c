@@ -2070,6 +2070,9 @@ static void run_display_vblank_window(int emulated) {
     emit_record_extended(emulated, "PSP-DISPLAY-004", "vblank-window",
                          clean ? "PASS" : "FAIL", clean,
                          out, sizeof(out) / sizeof(out[0]));
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
 static uint32_t run_mutex_refer_unlocked_case(uint32_t *out0, uint32_t *out1,
                                               uint32_t *out2, uint32_t *out3,
