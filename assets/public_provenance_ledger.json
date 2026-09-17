@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9d8502e49644d253b122a6add90a08df732234ea9f62e8590b1d26e48282b978"
+      "sha256": "0261db3d30012b8492c6757cce700a3b659d041b4cc2bb9721befff087fde81e"
     },
     {
       "path": "NOTICE.md",
