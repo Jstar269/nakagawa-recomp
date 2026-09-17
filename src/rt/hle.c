@@ -746,7 +746,10 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
     }
     return 0;
 }
-static uint32_t h_ChangeThreadPriority(CpuState *s) { sched_set_priority(A0, (int)A1); return 0; }
+static uint32_t h_ChangeThreadPriority(CpuState *s) {
+    /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
+    return sched_set_priority(A0, (int)A1);
+}
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -9842,9 +9845,12 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
      * its span has been validated. */
     if (resultp && !sr_guest_span_writable(resultp, 4u))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t saved_result = resultp ? MEM_R32(resultp) : 0u;
     if (resultp) MEM_W32(resultp, 0);
     MsgPipe *p = msg_pipe_find(A0);
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
+    if (A3 > 1u) return 0x80020195u;
     if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
     p->send_calls++;
     uint32_t free_bytes = p->capacity - p->count;
@@ -9854,6 +9860,9 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
             if (msg_pipe_trace_call(p->send_calls))
                 fprintf(stderr, "MSGPIPE: send uid=0x%x thread=0x%x call=%u requested=%u queued=%u -> FULL\n",
                         p->uid, sched_current_uid(), p->send_calls, A2, p->count);
+            /* PSP-B3-01 (psp-hw-20260917): an all-or-nothing send without room
+             * answers MPP_FULL without writing the result. */
+            if (resultp) MEM_W32(resultp, saved_result);
             return SCE_KERNEL_ERROR_MPP_FULL;
         }
         amount = free_bytes;
@@ -9894,6 +9903,8 @@ static uint32_t h_TryReceiveMsgPipe(CpuState *s) {
     if (resultp) MEM_W32(resultp, 0);
     MsgPipe *p = msg_pipe_find(A0);
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
+    if (A3 > 1u) return 0x80020195u;
     if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
     p->receive_calls++;
     uint32_t amount = A2;
@@ -9971,6 +9982,7 @@ uint32_t sr_hle_test_dmac_effective_max(void) { return SCE_DMAC_EFFECTIVE_MAX; }
 typedef struct {
     int used; uint32_t uid; int count, maxc; uint32_t pattern;
     uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
+    int initc;                     /* semaphores: create-time count for CancelSema(-1) */
 } Sync;
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
@@ -9991,6 +10003,9 @@ static uint32_t h_CreateSema(CpuState *s) {
     if (A1 & ~0x3ffu) return 0x80020191u;
     Sync *m = sync_new(); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
+    /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
+     * create-time initial count, not to zero. */
+    m->initc = (int)A2;
     if (hle_log_on())
         fprintf(stderr, "HLE: CreateSema uid=0x%x init=%d max=%d (from uid=0x%x)\n", m->uid, (int)A2, (int)A3, sched_current_uid());
     return m->uid;
@@ -10098,7 +10113,17 @@ static uint32_t h_DeleteSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID. */
     Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
-    m->used = 0; return 0;
+    /* PSP-B2-01 (psp-hw-20260917): deleting a semaphore with a waiter succeeds
+     * and the waiter leaves with WAIT_DELETE (0x800201B5). With no waiter there
+     * is nothing to wake and no wake result to latch (a stale result would be
+     * misattributed to the next waiter). */
+    int waiters = sched_count_waiters(A0);
+    m->used = 0;
+    if (waiters) {
+        sched_wake_with_result(A0, 0x800201b5u);
+        sched_preempt();
+    }
+    return 0;
 }
 /* Entry contract shared by sceKernelWaitSema and sceKernelWaitSemaCB.
  *
@@ -10175,6 +10200,9 @@ static uint32_t h_WaitSema(CpuState *s) {
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSema uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
     while (m->count < need) {
+        /* PSP-B3-01 (psp-hw-20260917): ReferThreadStatus reports sema waits as
+         * waitType 3 with waitId = the semaphore UID. */
+        sched_set_current_wait_kind(3);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
             if (sched_block_on_timeout(uid, usec)) {
@@ -10187,16 +10215,12 @@ static uint32_t h_WaitSema(CpuState *s) {
         } else {
             sched_block_on(uid);
         }
-        /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
-         * (0x800201A9) rather than resuming into a satisfied count. */
-        int woken = sched_take_wake_result();
-        if (woken >= 0) return (uint32_t)woken;
-        /* Deleted out from under an ALREADY-BLOCKED waiter is a different cell
-         * from the entry lookup above: wait.expected L20 measures 800201B5
-         * (WAIT_DELETE), not UNKNOWN_SEMID. Producing it needs h_DeleteSema to
-         * wake its waiters, which it does not do, so this arm is unreachable
-         * today and its seam is left untouched rather than replaced with a value
-         * that would be newly wrong. Out of scope for issue #43. */
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled/deleted/released wait answers
+         * its wake result instead of resuming into a satisfied count. */
+        {
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+        }
         m = sync_find(uid); if (!m) return 0x80020000;
     }
     m->count -= need;
@@ -10234,6 +10258,8 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
             uint32_t remaining = (uint32_t)(end - sched_vtime_us());
             MEM_W32(toptr, remaining);
             sched_set_current_cb_wait(1);
+            /* PSP-B3-01 (psp-hw-20260917): sema CB waits report waitType 3. */
+            sched_set_current_wait_kind(3);
             int timed_out = sched_block_on_timeout(uid, remaining);
             sched_set_current_cb_wait(0);
             if (timed_out) {
@@ -10244,12 +10270,16 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
             }
         } else {
             sched_set_current_cb_wait(1);
+            sched_set_current_wait_kind(3);
             sched_block_on(uid);
             sched_set_current_cb_wait(0);
         }
-        /* See h_WaitSema: hardware's delete-during-wait answer is 800201B5
-         * (wait.expected L20), which needs h_DeleteSema to wake waiters. Out of
-         * scope for issue #43; seam left as it was. */
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled/deleted/released wait answers
+         * its wake result instead of resuming into a satisfied count. */
+        {
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+        }
         m = sync_find(uid); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
@@ -10357,6 +10387,39 @@ int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
 #define SCE_KERNEL_ERROR_LWMUTEX_UNLOCK_UNDERFLOW    0x800201ccu
 #define SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED 0x800201cfu
 
+/* PSP-B2-01 (psp-hw-20260917): an unlock to level 0 with a waiter hands
+ * ownership directly to the waiter (lockThread = waiter, level = the waiter's
+ * count) before the waiter runs. The waiter's requested count lives on its own
+ * host stack while blocked, so a small FIFO queue carries it to the unlocker. */
+#define LWWAIT_MAX 64
+typedef struct { uint32_t muid, thread; int count; int active; } LwWait;
+static LwWait s_lwwait[LWWAIT_MAX];
+static void lww_enqueue(uint32_t muid, uint32_t thread, int count) {
+    for (int i = 0; i < LWWAIT_MAX; i++)
+        if (!s_lwwait[i].active) {
+            s_lwwait[i] = (LwWait){muid, thread, count, 1};
+            return;
+        }
+}
+static void lww_remove_thread(uint32_t thread) {
+    for (int i = 0; i < LWWAIT_MAX; i++)
+        if (s_lwwait[i].active && s_lwwait[i].thread == thread) s_lwwait[i].active = 0;
+}
+static void lww_remove_mutex(uint32_t muid) {
+    for (int i = 0; i < LWWAIT_MAX; i++)
+        if (s_lwwait[i].active && s_lwwait[i].muid == muid) s_lwwait[i].active = 0;
+}
+static int lww_pop_first(uint32_t muid, uint32_t *thread_out, int *count_out) {
+    for (int i = 0; i < LWWAIT_MAX; i++)
+        if (s_lwwait[i].active && s_lwwait[i].muid == muid) {
+            *thread_out = s_lwwait[i].thread;
+            *count_out = s_lwwait[i].count;
+            s_lwwait[i].active = 0;
+            return 1;
+        }
+    return 0;
+}
+
 /* The guest hands us a pointer; validate the entire struct, not just its first
  * word, before any access.  A partially-mapped workarea must be refused. */
 static int lwmutex_workarea_ok(uint32_t wa) {
@@ -10391,6 +10454,7 @@ static uint32_t h_DeleteLwMutex(CpuState *s) {
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     m->used = 0;
     /* Anything still blocked here would wait forever otherwise. */
+    lww_remove_mutex(uid);
     sched_wake(uid);
     /* PSP-B1-01: delete (even while held) leaves level 0 and poisons the
      * owner and uid words with 0xFFFFFFFF; attr is kept. */
@@ -10406,9 +10470,24 @@ enum {
     LWMUTEX_BUSY,            /* contended and not blocking (TryLock) */
     LWMUTEX_NOT_RECURSIVE,   /* self-held without the RECURSIVE attribute */
     LWMUTEX_GONE,            /* deleted before or while waiting */
+    LWMUTEX_TIMEOUT,         /* contended timed wait expired */
 };
+static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_t toptr);
 static int lwmutex_acquire(uint32_t wa, int count, int blocking) {
+    return lwmutex_acquire_timeout(wa, count, blocking, 0u);
+}
+static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_t toptr) {
     uint32_t cur = sched_current_uid();
+    uint64_t end = 0;
+    int has_timeout = 0;
+    if (blocking && toptr) {
+        if (!sr_guest_span_writable(toptr, 4)) return LWMUTEX_GONE;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) return LWMUTEX_TIMEOUT;
+        sched_vtime_refresh();
+        end = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
     for (;;) {
         if (!sync_find(MEM_R32(wa + LWMUTEX_UID))) return LWMUTEX_GONE;
         int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
@@ -10440,10 +10519,44 @@ static int lwmutex_acquire(uint32_t wa, int count, int blocking) {
         }
         uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
         MEM_W32(wa + LWMUTEX_NUM_WAIT, MEM_R32(wa + LWMUTEX_NUM_WAIT) + 1u);
-        sched_block_on(uid);
+        lww_enqueue(uid, cur, count);
+        /* PSP-B3-01 (psp-hw-20260917): LwMutex waits report waitType 13 with
+         * waitId = the workarea's uid. */
+        sched_set_current_wait_kind(13);
+        int timed_out = 0;
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end) {
+                timed_out = 1;
+            } else {
+                uint32_t remaining = (uint32_t)(end - now);
+                MEM_W32(toptr, remaining);
+                timed_out = sched_block_on_timeout(uid, remaining);
+            }
+        } else {
+            sched_block_on(uid);
+        }
         uint32_t waiters = MEM_R32(wa + LWMUTEX_NUM_WAIT);
         if (waiters) MEM_W32(wa + LWMUTEX_NUM_WAIT, waiters - 1u);
-        if (!sync_find(uid)) return LWMUTEX_GONE;   /* deleted while we waited */
+        if (!sync_find(uid)) { lww_remove_thread(cur); return LWMUTEX_GONE; }
+        /* PSP-B2-01 (psp-hw-20260917): the unlocker hands ownership directly to
+         * the waiter, so a woken waiter that now owns the mutex takes it. */
+        if (MEM_R32(wa + LWMUTEX_LOCK_THREAD) == cur) {
+            if (has_timeout) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                MEM_W32(toptr, now < end ? (uint32_t)(end - now) : 0u);
+            }
+            return LWMUTEX_TAKEN;
+        }
+        if (timed_out || (has_timeout && ({ sched_vtime_refresh(); sched_vtime_us() >= end; }))) {
+            /* PSP-B2-01 (psp-hw-20260917): a contended timed lock answers
+             * WAIT_TIMEOUT (0x800201A8) and reports the remaining timeout (0). */
+            lww_remove_thread(cur);
+            if (toptr) MEM_W32(toptr, 0u);
+            return LWMUTEX_TIMEOUT;
+        }
     }
 }
 
@@ -10452,9 +10565,14 @@ static uint32_t h_LockLwMutex(CpuState *s) {
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
     int count = (int)A1; if (count <= 0) return 0x800200d2u;  /* ILLEGAL_ARGUMENT */
-    switch (lwmutex_acquire(wa, count, 1)) {
+    uint32_t toptr = A2;
+    if (toptr && !sr_guest_span_writable(toptr, 4)) return 0x80000103u;
+    int rc = (toptr ? lwmutex_acquire_timeout(wa, count, 1, toptr)
+                    : lwmutex_acquire(wa, count, 1));
+    switch (rc) {
     case LWMUTEX_TAKEN: return 0u;
     case LWMUTEX_NOT_RECURSIVE: return SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED;
+    case LWMUTEX_TIMEOUT: return 0x800201a8u;
     default: return 0x800201b5u;   /* WAIT_DELETE */
     }
 }
@@ -10491,9 +10609,21 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
     if (level < 0) level = 0;
     MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)level);
     if (level == 0) {
-        MEM_W32(wa + LWMUTEX_LOCK_THREAD, 0u);
-        sched_wake(MEM_R32(wa + LWMUTEX_UID));
-        sched_preempt();
+        uint32_t muid = MEM_R32(wa + LWMUTEX_UID);
+        /* PSP-B2-01 (psp-hw-20260917): ownership passes directly to the waiter
+         * before it runs; only then does the waiter become runnable. */
+        uint32_t next_thread = 0;
+        int next_count = 0;
+        if (lww_pop_first(muid, &next_thread, &next_count)) {
+            MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)next_count);
+            MEM_W32(wa + LWMUTEX_LOCK_THREAD, next_thread);
+            sched_wake_one_object_waiter(muid, next_thread);
+            sched_preempt();
+        } else {
+            MEM_W32(wa + LWMUTEX_LOCK_THREAD, 0u);
+            sched_wake(muid);
+            sched_preempt();
+        }
     }
     return 0;
 }
@@ -10520,11 +10650,16 @@ static uint32_t h_CancelSema(CpuState *s) {
     if (hle_log_on())
         fprintf(stderr, "HLE: CancelSema uid=0x%x newCount=%d (from 0x%x)\n", A0, new_count, sched_current_uid());
     int waiters = sched_count_waiters(A0);
-    m->count = (new_count == -1) ? 0 : new_count;   /* -1 = back to the initial count */
+    /* PSP-B2-01 (psp-hw-20260917): -1 restores the create-time initial count. */
+    m->count = (new_count == -1) ? m->initc : new_count;
     uint32_t nump = stack_arg(s, 0);
     if (nump) MEM_W32(nump, (uint32_t)waiters);
-    sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
-    if (waiters) sched_preempt();
+    /* No waiter: no wake result to latch (a stale result would be
+     * misattributed to the next waiter). */
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
     return 0;
 }
 
@@ -10537,8 +10672,10 @@ static uint32_t h_CancelEventFlag(CpuState *s) {
     m->pattern = A1;
     uint32_t nump = stack_arg(s, 0);
     if (nump) MEM_W32(nump, (uint32_t)waiters);
-    sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
-    if (waiters) sched_preempt();
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
     return 0;
 }
 
@@ -11138,17 +11275,37 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
      * A rejected call writes no outBits and consumes no pattern. (L74/L75) */
     if (!sr_evf_matches(m->pattern, bits, mode) && !sched_wait_permitted())
         return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    /* PSP-B2-01 (psp-hw-20260917): a second waiter on a single-wait flag
+     * (attr without 0x200) is rejected at once with 0x800201B0, leaving its
+     * timeout and outBits untouched. */
+    if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
+        sched_count_waiters(uid) > 0)
+        return 0x800201b0u;
     while (!sr_evf_matches(m->pattern, bits, mode)) {
+        /* PSP-B3-01 (psp-hw-20260917): evf waits report waitType 4. */
+        sched_set_current_wait_kind(4);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
-            if (sched_block_on_timeout(uid, usec)) { if (outp) MEM_W32(outp, m->pattern); return 0x800201A8; }
+            if (sched_block_on_timeout(uid, usec)) {
+                /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
+                 * remaining timeout (0) and reports the current pattern. */
+                MEM_W32(toptr, 0u);
+                if (outp) MEM_W32(outp, m->pattern);
+                return 0x800201A8;
+            }
         } else {
             sched_block_on(uid);
         }
-        /* PSP-B2-01 (psp-hw-20260917): a cancelled event-flag wait answers
-         * WAIT_CANCEL (0x800201A9) and leaves outBits unwritten. */
-        int woken = sched_take_wake_result();
-        if (woken >= 0) return (uint32_t)woken;
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
+         * (0x800201A9) with outBits = the canceller's new pattern. */
+        {
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = sync_find(uid);
+                if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
+                return woken;
+            }
+        }
         m = sync_find(uid); if (!m) return 0x80020000;
     }
     if (outp) MEM_W32(outp, m->pattern);         /* outBits = pre-consume pattern */
@@ -11168,6 +11325,11 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
      * an already-set pattern still returns 0. (L84/L85) */
     if (!sr_evf_matches(m->pattern, bits, mode) && !sched_wait_permitted())
         return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    /* PSP-B2-01 (psp-hw-20260917): same single-wait rejection as the non-CB
+     * form; a rejected call touches neither the timeout nor outBits. */
+    if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
+        sched_count_waiters(uid) > 0)
+        return 0x800201b0u;
 
     sched_vtime_refresh();
     uint64_t start = sched_vtime_us();
@@ -11192,6 +11354,8 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
             uint32_t remaining = (uint32_t)(end - sched_vtime_us());
             MEM_W32(toptr, remaining);
             sched_set_current_cb_wait(1);
+            /* PSP-B3-01 (psp-hw-20260917): evf CB waits report waitType 4. */
+            sched_set_current_wait_kind(4);
             int timed_out = sched_block_on_timeout(uid, remaining);
             sched_set_current_cb_wait(0);
             if (timed_out) {
@@ -11203,13 +11367,20 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
             }
         } else {
             sched_set_current_cb_wait(1);
+            sched_set_current_wait_kind(4);
             sched_block_on(uid);
             sched_set_current_cb_wait(0);
         }
-        /* PSP-B2-01 (psp-hw-20260917): a cancelled event-flag wait answers
-         * WAIT_CANCEL (0x800201A9) and leaves outBits unwritten. */
-        int woken = sched_take_wake_result();
-        if (woken >= 0) return (uint32_t)woken;
+        /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
+         * (0x800201A9) with outBits = the canceller's new pattern. */
+        {
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = sync_find(uid);
+                if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
+                return woken;
+            }
+        }
         m = sync_find(uid); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
