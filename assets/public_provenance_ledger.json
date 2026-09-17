@@ -222,7 +222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e90e659f55c809e579ea3e1991c89ccc6bc3202f8332add8d014072ee2ce700"
+      "sha256": "c2ccb8eb931f25cefe504e5056d42527ea077e9d93a9634b7a7ae6857d0739e2"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "dd6d682196d9289ee899ea6dd2169cfed2f6cf2f932e23bfc87068936b5e4801"
+      "sha256": "0e42a85dde88054e994c05ab588520c8121de0a1765f3aa92c3191fded0eed08"
     },
     {
       "path": "NOTICE.md",
@@ -7877,7 +7877,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e3d9f7caca9fd93918563e08d8ae53ac8fd4a198fd3457d84f8054529883ed46"
+      "sha256": "3f1ebd7af79752b4a46d7f3e1902c1d0cfb4d0e5a97943337b6c7f3c3dbf42e8"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -9152,7 +9152,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "41062ed5dabd9bf0a8c62f400df1c724a3c58b7bc0c0ff6bd9e9c0f991812ad7"
+      "sha256": "297efaebd4c22ca969c1d0c2430fd55a6a74a637c3f8c48e9bec4631030ea3d2"
     },
     {
       "path": "tools/test_xb_probe.py",
