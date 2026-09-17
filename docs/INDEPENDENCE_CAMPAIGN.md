@@ -326,11 +326,12 @@ typed it).
 
 ### 5.2 Clean workspace construction (exact)
 
-On a host with the repository checked out at the pinned base:
+On a host with the repository checked out at the pinned base, with
+`CLEANROOM_DIR` set to a new, empty directory outside any checkout:
 
 ```text
 git archive <base> <spec> <abi-headers...> <tests...> <build-files...> \
-  | tar -x -C /tmp/cleanroom-<item>/
+  | tar -x -C "$CLEANROOM_DIR"/
 ```
 
 i.e. export *only* the allow-listed paths (spec, named headers, named
