@@ -1,0 +1,29 @@
+#include "../psp_phaseb/mutex_imports.S"
+
+    IMPORT_FUNC "ThreadManForUser", 0x2A3D44FF, sceKernelGetCallbackCount
+    IMPORT_FUNC "ThreadManForUser", 0x58B1F937, sceKernelPollSema
+    IMPORT_FUNC "ThreadManForUser", 0xBC6FEBC5, sceKernelReferSemaStatus
+    IMPORT_FUNC "ThreadManForUser", 0x55C20A00, sceKernelCreateEventFlag
+    IMPORT_FUNC "ThreadManForUser", 0x1FB15A32, sceKernelSetEventFlag
+    IMPORT_FUNC "ThreadManForUser", 0x812346E4, sceKernelClearEventFlag
+    IMPORT_FUNC "ThreadManForUser", 0x30FD48F0, sceKernelPollEventFlag
+    IMPORT_FUNC "ThreadManForUser", 0xA66B0120, sceKernelReferEventFlagStatus
+    IMPORT_FUNC "ThreadManForUser", 0xEF9E4C70, sceKernelDeleteEventFlag
+    IMPORT_FUNC "ThreadManForUser", 0xC07BB470, sceKernelCreateFpl
+    IMPORT_FUNC "ThreadManForUser", 0xD979E9BF, sceKernelAllocateFpl
+    IMPORT_FUNC "ThreadManForUser", 0x623AE665, sceKernelTryAllocateFpl
+    IMPORT_FUNC "ThreadManForUser", 0xF6414A71, sceKernelFreeFpl
+    IMPORT_FUNC "ThreadManForUser", 0xD8199E4C, sceKernelReferFplStatus
+    IMPORT_FUNC "ThreadManForUser", 0xED1410E0, sceKernelDeleteFpl
+    IMPORT_FUNC "ThreadManForUser", 0x56C039B5, sceKernelCreateVpl
+    IMPORT_FUNC "ThreadManForUser", 0xBED27435, sceKernelAllocateVpl
+    IMPORT_FUNC "ThreadManForUser", 0xAF36D708, sceKernelTryAllocateVpl
+    IMPORT_FUNC "ThreadManForUser", 0xB736E9FF, sceKernelFreeVpl
+    IMPORT_FUNC "ThreadManForUser", 0x39810265, sceKernelReferVplStatus
+    IMPORT_FUNC "ThreadManForUser", 0x89B3D48C, sceKernelDeleteVpl
+    IMPORT_FUNC "ThreadManForUser", 0x20FFF560, sceKernelCreateVTimer
+    IMPORT_FUNC "ThreadManForUser", 0xC68D9437, sceKernelStartVTimer
+    IMPORT_FUNC "ThreadManForUser", 0xD0AEEE87, sceKernelStopVTimer
+    IMPORT_FUNC "ThreadManForUser", 0x5F32BEAA, sceKernelReferVTimerStatus
+    IMPORT_FUNC "ThreadManForUser", 0x328F9E52, sceKernelDeleteVTimer
+    IMPORT_FUNC "ThreadManForUser", 0x383F7BCC, sceKernelTerminateDeleteThread

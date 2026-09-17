@@ -72,6 +72,8 @@ else ifeq ($(CASE),model-profile)
 CASE_ID = 26
 else ifeq ($(CASE),exception-a1)
 CASE_ID = 27
+else ifeq ($(CASE),kobj-b1)
+CASE_ID = 28
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -82,6 +84,12 @@ TARGET = $(BUILD_DIR)/psp_a1
 OBJS = $(BUILD_DIR)/probe_exception_a1.o
 A1_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
 CFLAGS += -DA1_BUILD_COMMIT=\"$(A1_BUILD_COMMIT)\"
+endif
+ifeq ($(CASE),kobj-b1)
+TARGET = $(BUILD_DIR)/psp_b1
+OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/psp_b1_imports.o
+B1_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
+CFLAGS += -DB1_BUILD_COMMIT=\"$(B1_BUILD_COMMIT)\"
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -116,6 +124,12 @@ $(BUILD_DIR)/probe.o: probe.c
 
 $(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b1.o: psp_b1.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b1_imports.o: psp_b1_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
 # under the ignored build directory.
