@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bae8a0d1323900e3ff6b2b067ac8b0bfc0287545efae1d0aac480d74dfc533b0"
+      "sha256": "695618f3d5b3aabb6702550431990c01e8cc48ffa6460452df9665d65607ad07"
     },
     {
       "path": ".gitignore",
@@ -7836,7 +7836,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ed0d93447f153e64bcba3007efc3f51859daab6f5ab5f813452acb452c140b5b"
+      "sha256": "eba176cb9b72c18a23c665c88dc9d96fda5dcab73b01f714455020b5efb17126"
     },
     {
       "path": "tools/test_callback_correctness.py",
