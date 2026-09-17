@@ -108,6 +108,26 @@ int sr_cpu_raise_exception(
     unsigned in_delay_slot,
     unsigned coprocessor);
 
+/* Data-access address check for loads and stores (spec 3.3). Returns 0 when the
+ * access may proceed, or the exception code (SR_EXC_ADEL for a load, SR_EXC_ADES
+ * for a store) that hardware would raise instead. Callers consult this only
+ * while sr_cpu_lle_enabled(); see the implementation for what is measured and
+ * what is still architectural. */
+unsigned sr_cpu_data_access_fault(
+    const struct CpuState *s,
+    uint32_t address,
+    unsigned width,
+    int is_store);
+
+/* Raise the address error sr_cpu_data_access_fault() reported. Resolves EPC and
+ * Cause.BD from the caller's delay context and records the effective address in
+ * BadVAddr, the same way a COP0 fault does. */
+int sr_cpu_raise_data_fault(
+    struct CpuState *s,
+    unsigned exception_code,
+    uint32_t address,
+    uint32_t instr_pc);
+
 int sr_cpu_eret(struct CpuState *s, uint32_t instr_pc);
 
 /* Phase 1 stub: no INTC/timer model yet (PR 5/PR 6 own device time and Cause.IP
