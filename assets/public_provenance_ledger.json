@@ -900,7 +900,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cc6c0e9c257951b26858d7a69bb6f35dae0019c1a0059f35ad16218261153244"
+      "sha256": "22c569c79d10fcedfc47ed3e1565b52aa47541a146dbaafc9cecff0d31e8d70c"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -909,7 +909,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ffe4666fb7c261df66a963d52bed7f4134583d8d7c03bd9a0003dedf408298cb"
+      "sha256": "9b9e807d05c8732656de09846defb754559dae7452d019fd047129cd2db12755"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -990,7 +990,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3358ff2b0330b0fc6b10f51e951f5e9715b141fe63416bed9cb18c6f99cc019a"
+      "sha256": "3dba4f4b898159f4cdff0e64df84e6777eed372b86d70084ce4e903958415f86"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -3435,7 +3435,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c5069c1fdf638bca5e122e6dd1c0ec03d6bb7dd859ca94dd588e914a68d1352"
+      "sha256": "ed7c7fdcc74eb6e2c526876b5c91cbea5e14895c1ac8cc3207050439a1afef38"
     },
     {
       "path": "pyproject.toml",
@@ -8427,7 +8427,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "174a8ec8a72dcc017be1ef7a377d20bdc01cdf6f3c8d62211c68bc975667dd72"
+      "sha256": "334fb210fa38425119c094d286c2528a35a092a12f7f00ba4fbbab643cf3ebdc"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
