@@ -422,6 +422,30 @@ static SrGuestInterpResult execute_noncontrol(
         }
         if (width != 0u) {
             const uint32_t address = read_gpr(s, rs) + sign_extend_16(opcode);
+            /* With the LLE gate on, an address error is the guest's to handle:
+             * it enters the exception vector with BadVAddr set, exactly as the
+             * hardware oracle measured (PSP-A3-01). With the gate off this stays
+             * the historical fail-closed abort, so default behaviour is
+             * unchanged. The gate also covers user-mode kernel-segment access,
+             * which the range check below cannot see: sr_inrange_n() masks the
+             * address into RAM and would accept it. */
+            if (sr_cpu_lle_enabled()) {
+                const unsigned access_fault =
+                    sr_cpu_data_access_fault(s, address, width, is_store);
+                if (access_fault != 0u) {
+                    int rc;
+                    sr_begin(s, pc, opcode);
+                    rc = sr_cpu_raise_data_fault(s, access_fault, address, pc);
+                    if (rc == 0) {
+                        /* An address error always transfers; a zero return
+                         * would mean the load or store completed inline. */
+                        set_fault(fault, pc, opcode, address, 1);
+                        return SR_GUEST_INTERP_UNSUPPORTED;
+                    }
+                    sr_end(s, 0u, 0);
+                    return map_flow_result(s, rc, fault, pc, opcode);
+                }
+            }
             if (!aligned_for(address, width)) {
                 set_fault(fault, pc, opcode, address, 1);
                 return SR_GUEST_INTERP_MISALIGNED_DATA;

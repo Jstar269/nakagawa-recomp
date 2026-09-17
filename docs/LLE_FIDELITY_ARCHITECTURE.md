@@ -13,6 +13,8 @@ Nakagawa Recomp is not a high-level API emulator that mimics game behavior by re
 Every component of the guest title—including executables, dynamic PRX libraries, vendor middleware, and math routines—should execute as compiled MIPS/Allegrex instructions wherever technically feasible.
 
 > **Note (CPU exception semantics):** EPC, Cause (BD and ExcCode) and BadVAddr are now hardware-measured for a user-mode `break`, a `break` in a branch delay slot, and a user-mode load from a kernel address (runs PSP-A1-01..PSP-A3-01; see [HARDWARE_ORACLE.md](HARDWARE_ORACLE.md)). Exception vector base, BEV/ERL behaviour, syscall and coprocessor-unusable exceptions, and handler entry/return remain unmeasured.
+>
+> **Note (data-access address errors):** the measured kernel-address AdEL is now raised by an actual load, not only by a direct call into the exception helper. Under the LLE gate, `sr_cpu_data_access_fault()` rejects a user-mode access at or above `0x80000000` and the interpreter enters the exception vector with BadVAddr set. This matters because the default accessors cannot express that outcome: `SR_PHYS()` masks every guest address with `0x1FFFFFFF`, so a kernel-segment address aliases onto the same host byte as its user-segment counterpart and the access silently succeeds. With the gate off that masking behaviour is unchanged. Alignment-driven AdEL/AdES is **synthetic**: it follows the MIPS32 architectural rule, and no probe has yet measured the PSP's EPC/BadVAddr for a misaligned access or for a store. Generated code does not yet consult this check — only the interpreter does.
 
 ### 1.2 The Role of HLE
 
