@@ -110,8 +110,8 @@ Tool licence status: pgftool carries **no licence file** (single-merge repo,
 HEAD `a9b3114`; verified by clone 2026-09-17), so its terms are UNKNOWN —
 all-rights-reserved by default. Tool licensing does not automatically
 encumber output files, but this project must not adopt pgftool code. The
-planned project-owned converter is a clean-room item in
-`docs/INDEPENDENCE_CAMPAIGN.md`: it must be written from a behaviour
+planned project-owned converter is a planned clean-room item whose
+contract is not yet published: it must be written from a behaviour
 specification, not from any emulator or tool source. `ttf2pgfj.exe`
 provenance/licence: UNKNOWN (flagged, not used).
 
@@ -144,13 +144,11 @@ Operative conditions for a converted/redistributed PGF:
    and the OFL payloads would sit alongside as a separately-licenced
    aggregate element with their own texts. Whether that aggregation reading
    holds for a PGF the HLE loads at runtime is a counsel question (§6).
-5. Source Han Sans input version: UNKNOWN. Bounded, not identified: the jpn0
-   conversion (Oct–Nov 2020) postdates release 2.001 (2019-04-09) and overlaps
-   release 2.002 (2020-11-04) per
-   <https://github.com/adobe-fonts/source-han-sans/releases> tag dates; the
-   kr0 conversion (Nov 30, 2020) postdates 2.002. Candidate set {2.001,
-   2.002}, variant file (Super OTC vs JP/KR subset, weight file) UNKNOWN —
-   nassau-tk never named the input file.
+5. Source Han Sans input version, variant file (Super OTC vs JP/KR subset)
+   and weight file: UNKNOWN. nassau-tk never named the input file and no byte
+   or glyph comparison has been made, so conversion dates do not narrow the
+   candidates: any release published before the conversion, an intermediate
+   checkout, or another variant remains possible.
 
 ### 5.2 Ume Hy Gothic (ltn0, ltn8) — Ume-family licence (modified BSD)
 
@@ -201,11 +199,15 @@ PGFs from pinned OFL sources with a project-owned reproducible converter,
   camouflage names and of the Adobe Reserved Font Name "Source" in the output
   name; a manifest recording input SHA-256, codepoint coverage, output SHA-256
   and the licence texts that must ship with the payload; CJK-scale coverage and
-  the metric targets discussed upstream. The converter is a clean-room item in
-  `docs/INDEPENDENCE_CAMPAIGN.md` so that it carries no emulator-derived code.
+  the metric targets discussed upstream. The converter is a planned clean-room item (its independence contract is
+  not yet published) so that it carries no emulator-derived code.
   No converter or payload is added by this change.
-- **(3) is the interim.** Payloads stay excluded; users supply fonts locally
-  (`SR_FONTDIR`), exactly as `font/README.md` documents. A converter-produced
+- **(3) is the interim.** Payloads stay excluded. The public source tree also
+  excludes the PGF reader: its build links `src/rt/pgf_unavailable.c`, whose
+  open functions always fail, so supplying fonts through `SR_FONTDIR` has no
+  effect there and font-dependent guest UI stays unavailable. Locally supplied
+  fonts only load in a private checkout that contains the excluded backend.
+  A public PGF reader is part of the same clean-room plan. A converter-produced
   payload may only enter the tree after: pinned OFL inputs with SHA-256, OFL
   §2 texts shipped alongside, an honest non-RFN name, qualified review, and a
   path-specific provenance record.
@@ -217,7 +219,7 @@ in the public tree. Nothing is shipped today, so no text is added today.
 ## 7. Residual unknowns (all marked; none block the chosen route)
 
 1. Exact Source Han Sans release/variant/weight file for jpn0 and kr0
-   (bounded to {2.001, 2.002}, §5.1).
+   (unknown and unbounded, §5.1).
 2. Exact Ume Hy Gothic release/version for ltn0/ltn8.
 3. pgftool licence terms; `ttf2pgfj.exe` provenance/licence (neither is used
    by this project).

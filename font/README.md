@@ -57,17 +57,16 @@ headers parsed per PPSSPP `Core/Font/PGF.h` from exact upstream bytes):
   camouflage, not evidence of Sony or Fontworks outlines; redistributing the
   payloads under those names would misattribute Adobe/Ume outlines.
 
-Residual unknowns: the exact Source Han Sans release/variant file (bounded to
-releases {2.001, 2.002}, never named by the contributor), the exact Ume Hy
+Residual unknowns: the exact Source Han Sans release/variant file (never named
+by the contributor and not narrowed by any byte comparison), the exact Ume Hy
 Gothic release, and the converter tools' licence terms (pgftool ships no
 licence file). See FONT_ORIGINS.md §7.
 
 ## Chosen route
 
 (2) Generate our own PGF payloads from pinned OFL sources with a
-project-owned, reproducible converter (planned as a clean-room item, not yet
-written) — with (3) as
-the interim: payloads stay excluded and users supply fonts locally until a
+project-owned, reproducible converter (a planned clean-room item, not yet
+written) — with (3) as the interim: payloads stay excluded until a
 converter-produced payload with pinned inputs, shipped OFL/Ume notices, an
 honest non-RFN name, qualified review, and a path-specific provenance record
 lands. (1) Redistributing the PPSSPP payloads is rejected: notices alone
@@ -79,5 +78,9 @@ unrecoverable. OFL/Ume licence texts will be added under
 
 font_load() in ../src/rt/hle.c honors an absolute SR_FONTDIR or the executable's
 sibling font directory. A missing or invalid root is reported as an error.
-Users who cannot redistribute these optional binaries may supply a separately
-licensed compatible PGF directory.
+
+The public source tree excludes the PGF reader as well as the payloads: its
+build links `src/rt/pgf_unavailable.c`, which rejects every font, so a
+public-source build reports fonts as unavailable even when SR_FONTDIR points at
+a compatible directory. A separately licensed PGF directory only loads in a
+private checkout that contains the excluded backend.
