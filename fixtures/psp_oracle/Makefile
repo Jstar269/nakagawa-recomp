@@ -70,11 +70,19 @@ else ifeq ($(CASE),dma-size-matrix)
 CASE_ID = 25
 else ifeq ($(CASE),model-profile)
 CASE_ID = 26
+else ifeq ($(CASE),exception-a1)
+CASE_ID = 27
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
+ifeq ($(CASE),exception-a1)
+TARGET = $(BUILD_DIR)/psp_a1
+OBJS = $(BUILD_DIR)/probe_exception_a1.o
+A1_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
+CFLAGS += -DA1_BUILD_COMMIT=\"$(A1_BUILD_COMMIT)\"
+endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
 BUILD_PRX = 1
@@ -104,6 +112,9 @@ include $(PSPSDK)/lib/build.mak
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
 $(BUILD_DIR)/probe.o: probe.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
