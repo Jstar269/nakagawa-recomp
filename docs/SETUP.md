@@ -252,6 +252,23 @@ that build left behind.
 
 ## 4. Run and test
 
+Run `pwsh -NoProfile -File nk_manager.ps1` without an action for usage (exit code 0).
+The canonical manager accepts these actions; `hst_manager.ps1` forwards the same set:
+
+| Action | Description |
+| --- | --- |
+| `BuildFull` | Clean and rebuild the selected title through the full pipeline. |
+| `BuildFast` | Incrementally build the selected title without cleaning. |
+| `Run` | Launch the selected title with the chosen runtime profile. |
+| `Inspect` | Locate a generated C function using `-InspectFunc`. |
+| `Clean` | Stop tracked build processes and clear local tracking logs. |
+| `Test` | Run the Makefile `selftest` target (C++ reference-runtime selftest), not the Python suite. |
+| `Verify` | Run Python tests, native selftests, and import/publication audits. |
+| `DiffFunc` | Compare a function against a reference trace using `-DiffTarget` and `-DiffOracle`. |
+| `FindSymbol` | Search the optional symbol reference using `-FindName`. |
+| `Fuzz` | Run the Makefile `vfpu_fuzz` target. |
+| `VisualOracle` | Replay a route and archive visual regression captures. |
+
 ```powershell
 .\nk_manager.ps1 -Action Test
 .\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run
