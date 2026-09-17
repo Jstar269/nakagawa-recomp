@@ -22,7 +22,6 @@ from .types import (
     PreparationResult,
     PrepStage,
     ProgressEvent,
-    TitleProfile,
 )
 
 

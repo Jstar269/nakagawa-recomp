@@ -15,7 +15,6 @@ from nk_core import (
     PreparationEngine,
     ProgressEvent,
     RuntimeLauncher,
-    get_default_registry,
     inspect_iso,
 )
 

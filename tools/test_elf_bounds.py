@@ -54,7 +54,7 @@ def make_elf(loads, *, entry=0):
         "<HHIIIIIHHHHHH", blob, 16,
         2, 8, 1, entry, phoff, 0, 0, 52, 32, len(loads), 0, 0, 0,
     )
-    for index, ((vaddr, words, memsz, flags, align), offset) in enumerate(zip(loads, offsets)):
+    for index, ((vaddr, words, memsz, flags, align), offset) in enumerate(zip(loads, offsets, strict=True)):
         struct.pack_into(
             "<8I", blob, phoff + index * 32,
             1, offset, vaddr, vaddr, len(words) * 4, memsz, flags, align,

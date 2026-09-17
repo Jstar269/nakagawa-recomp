@@ -75,7 +75,6 @@ def _load(path: pathlib.Path) -> dict:
 class GenericTitleProofFixtures(unittest.TestCase):
     def test_synthetic_title2_fixture_is_valid_and_deterministic(self) -> None:
         """Synthetic-title2 validates, canonicalizes stably, and is publication-safe."""
-        raw = SYNTHETIC2.read_text(encoding="utf-8")
         manifest = _load(SYNTHETIC2)
         normalized = title_manifest.validate_manifest(manifest)
         first = title_manifest.canonical_json(manifest)
@@ -236,7 +235,7 @@ class HstProfileIsolation(unittest.TestCase):
             self.skipTest("pwsh required for adapter isolation checks")
 
     def _run_adapter_reject(self, plan: dict, expected_fragment: str) -> None:
-        import json as _json, tempfile
+        import json as _json
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = pathlib.Path(tmp) / "plan.json"
             plan_path.write_text(_json.dumps(plan), encoding="utf-8")
@@ -351,7 +350,7 @@ class InvalidManifestsFailClosed(unittest.TestCase):
     def test_malformed_manifests_are_rejected_by_validator(self) -> None:
         base = _load(SYNTHETIC2)
         cases = [
-            ("duplicate_key", lambda m: m.update({"id": "synthetic-title2-v1", "id": "dup"}), "duplicate"),  # handled via loads
+            ("duplicate_key", lambda m: None, "duplicate"),  # handled via loads
             ("unknown_field", lambda m: m.update({"unexpected": True}), "unknown field"),
             ("bad_kind", lambda m: m.update({"kind": "arcade"}), "unsupported title kind"),
             ("retail_without_disc", lambda m: (m.update({"kind": "retail"}), m.pop("disc", None)), "require disc"),
@@ -547,7 +546,6 @@ class MakeSpanPrecedenceTests(unittest.TestCase):
 
     def test_origin_cmd_generic_overrides_env(self):
         # env generic, cmd generic overrides
-        env = {"TITLE_EXTRA_SPANS": "env-generic"}
         # Use helper with env_overrides
         # For this test, set env generic and cmd generic
         # Our helper's env_overrides already handles env, but we need to combine

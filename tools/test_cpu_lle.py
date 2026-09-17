@@ -167,7 +167,6 @@ class LleCodegenTests(unittest.TestCase):
         self.assertIn("return;", text)
 
     def test_delay_slot_syscall_carries_branch_pc_in_lle(self):
-        beq = 0x10000000 | (1 << 21) | (2 << 16) | 1
         lines = codegen.delay_slot_lines(
             0x1004, SYSCALL, 0x1000, lle_cpu=True, resumable=False)
         text = "\n".join(lines)

@@ -7,7 +7,6 @@ SQLite databases only.  No live dashboard, database, or HST process is touched.
 """
 
 import io
-import json
 import os
 import sqlite3
 import sys

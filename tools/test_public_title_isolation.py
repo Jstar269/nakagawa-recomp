@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import publication_policy
 import title_catalog_codegen
+import title_manifest
 from nk_core.title_registry import TitleRegistry
 
 
@@ -217,7 +218,7 @@ class PublicTitleIsolationTests(unittest.TestCase):
             # Must raise when attempting to collect public manifests
             # policy_dir keeps this exercising manifest VALIDATION rejection
             # rather than the new out-of-repository refusal.
-            with self.assertRaises(Exception):
+            with self.assertRaises(title_manifest.TitleManifestError):
                 title_catalog_codegen.collect_public_manifests(
                     tmp_titles, policy=self.policy, policy_dir=self.titles_dir
                 )
@@ -266,7 +267,7 @@ class PublicTitleIsolationTests(unittest.TestCase):
 
             # policy_dir keeps this exercising manifest VALIDATION rejection
             # rather than the new out-of-repository refusal.
-            with self.assertRaises(Exception):
+            with self.assertRaises(title_manifest.TitleManifestError):
                 title_catalog_codegen.collect_public_manifests(
                     tmp_titles, policy=self.policy, policy_dir=self.titles_dir
                 )
