@@ -1619,7 +1619,7 @@ dispatch-selftest:
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
-		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
