@@ -407,6 +407,12 @@
     "name": "scePsmfPlayerBreak",
     "status": "unreviewed"
   },
+  "0x2c34e053": {
+    "classification": "dedicated",
+    "handler": "h_ReleaseWaitThread",
+    "name": "sceKernelReleaseWaitThread",
+    "status": "unreviewed"
+  },
   "0x2c8e6ab3": {
     "classification": "dedicated",
     "handler": "h_SasGetPauseFlag",
@@ -1307,6 +1313,12 @@
     "name": "sceKernelStopUnloadSelfModuleWithStatus",
     "status": "unreviewed"
   },
+  "0x8ffdf9a2": {
+    "classification": "dedicated",
+    "handler": "h_CancelSema",
+    "name": "sceKernelCancelSema",
+    "status": "unreviewed"
+  },
   "0x91e4f6a7": {
     "classification": "dedicated",
     "handler": "h_LibcClock",
@@ -1797,6 +1809,12 @@
     "classification": "dedicated",
     "handler": "h_SasSetSimpleADSR",
     "name": "__sceSasSetSimpleADSR",
+    "status": "unreviewed"
+  },
+  "0xcd203292": {
+    "classification": "dedicated",
+    "handler": "h_CancelEventFlag",
+    "name": "sceKernelCancelEventFlag",
     "status": "unreviewed"
   },
   "0xceadeb47": {

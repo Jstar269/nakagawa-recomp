@@ -650,7 +650,12 @@ void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
+void     sched_wake_with_result(uint32_t obj, uint32_t result); /* sched_wake + a wait result */
+int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake result is pending, else 0 */
+int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
+int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+void     sched_set_current_wait_kind(int kind); /* latch Refer waitType before blocking */
 int      sched_is_intr_context(void);               /* 1 if running in interrupt context, 0 otherwise */
 void     sr_hle_release_thread_resources(uint32_t thread_uid); /* release HLE resources on thread teardown */
 /* Wait-object ids shared between hle.c (wait side) and sched.c (thread-dump side). */
@@ -674,7 +679,7 @@ void     sched_wake_callbacks(uint32_t thread_uid); /* wake thread waiting in CB
 void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wakeup-count) */
 void     sched_thread_sleep_cb(void);               /* sceKernelSleepThreadCB (wakeup-count) */
 uint32_t sched_thread_wakeup(uint32_t uid);         /* sceKernelWakeupThread (banks if not asleep) */
-void     sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
+uint32_t sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
 uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */

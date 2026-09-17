@@ -91,6 +91,10 @@ typedef struct {
     int      started;            /* coroutine has begun running its body */
     uint64_t wake;               /* scheduler tick to wake at (TH_WAIT_DELAY) */
     uint32_t wait_obj;           /* object uid this thread waits on (TH_WAIT_OBJ) */
+    int      wait_kind;           /* PSP waitType while in TH_WAIT_OBJ (3=sema,4=evf,13=lwmutex) */
+    int      pending_wait_kind;   /* latched by sched_set_current_wait_kind for the next block */
+    uint32_t wake_result;         /* cancel/delete/release code for this waiter */
+    int      wake_result_valid;   /* wake_result is pending for this thread */
     int      wakeups;            /* pending sceKernelWakeupThread count (sleep/wakeup semantics) */
     int      sleeping;           /* 1 while blocked in sceKernelSleepThread[CB] */
     int32_t  exit_status;        /* value passed to sceKernelExitThread */
@@ -2709,6 +2713,9 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
+    t->wait_kind = t->pending_wait_kind;
+    t->pending_wait_kind = 0;
+    t->wake_result_valid = 0;
     t->wake = SCHED_WAIT_FOREVER;     /* infinite: only sched_wake releases it */
     switch_to_scheduler();
 }
@@ -2723,6 +2730,9 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
+    t->wait_kind = t->pending_wait_kind;
+    t->pending_wait_kind = 0;
+    t->wake_result_valid = 0;
     t->wake = deadline;
     switch_to_scheduler();
     vtime_refresh();
@@ -2782,9 +2792,66 @@ void sched_wake(uint32_t obj) {
             s_tcb[i].state = TH_READY;
 }
 
+/* PSP-B2-01 (psp-hw-20260917): a cancelled waiter leaves its wait with a kernel
+ * result instead of the object being satisfied -- WAIT_CANCEL (0x800201A9) from
+ * CancelSema/CancelEventFlag/CancelReceiveMbx, WAIT_DELETE (0x800201B5) from
+ * deleting the waited object, WAIT_RELEASE (0x800201AA) from ReleaseWaitThread.
+ * The waiters themselves poll this after sched_block_on(); an untimed block has
+ * no other way to distinguish "woken" from "cancelled". The result is stored
+ * on each readied waiter, so several waiters all observe it and no other
+ * thread can consume it. */
+void sched_wake_with_result(uint32_t obj, uint32_t result) {
+    for (int i = 0; i < s_ntcb; i++) {
+        TCB *w = &s_tcb[i];
+        if (!w->deleted && w->state == TH_WAIT_OBJ && w->wait_obj == obj) {
+            w->wake_result = result;
+            w->wake_result_valid = 1;
+            w->state = TH_READY;
+        }
+    }
+}
+
+int sched_take_wake_result(uint32_t *result_out) {
+    /* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): wake results are kernel error
+     * codes (0x800201A9/0x800201AA/0x800201B5) whose high bit is set, so they
+     * are negative as a signed int. Returning the code directly with a -1
+     * sentinel misclassifies every real wake as "none". Report presence
+     * separately and hand the code out-of-band. */
+    if (s_cur < 0) return 0;
+    TCB *self = &s_tcb[s_cur];
+    int valid = self->wake_result_valid;
+    self->wake_result_valid = 0;
+    if (valid && result_out) *result_out = self->wake_result;
+    return valid;
+}
+
 int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
+        t->state = TH_READY;
+        return 1;
+    }
+    return 0;
+}
+
+/* Number of threads currently blocked on obj. PSP-B2-01 (psp-hw-20260917):
+ * CancelSema / CancelEventFlag report this count to the caller. */
+int sched_count_waiters(uint32_t obj) {
+    int n = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj)
+            n++;
+    return n;
+}
+
+/* PSP-B3-01 (psp-hw-20260917): ReleaseWaitThread readies one blocked thread and
+ * hands it WAIT_RELEASE as its wait result. The target must be in an object
+ * wait; anything else (running, dormant, deleted, delay) reports no waiter. */
+int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result) {
+    TCB *t = tcb_by_uid(thread_uid);
+    if (t && !t->deleted && t->state == TH_WAIT_OBJ) {
+        t->wake_result = result;
+        t->wake_result_valid = 1;
         t->state = TH_READY;
         return 1;
     }
@@ -2944,6 +3011,9 @@ uint32_t sched_thread_wakeup(uint32_t uid) {
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
     if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
+    /* PSP-B3-01 (psp-hw-20260917): a dormant (never-started or terminated)
+     * target answers DORMANT (0x800201A2), it does not bank a wakeup. */
+    if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
     {
         fprintf(stderr, "DEBUG_WAKEUP: target=0x%x sleeping=%d state=%d wait_obj=0x%x wakeups=%d\n",
                 uid, t->sleeping, t->state, t->wait_obj, t->wakeups);
@@ -2984,8 +3054,17 @@ static uint32_t psp_thread_status(const TCB *t) {
 static uint32_t psp_wait_type(const TCB *t) {
     if (t->state == TH_WAIT_DELAY) return PSP_WAIT_DELAY;
     if (t->state == TH_WAIT_OBJ && t->sleeping && t->wait_obj == t->uid) return PSP_WAIT_SLEEP;
-    if (t->state == TH_WAIT_OBJ) return PSP_WAIT_OBJECT;
+    /* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): ReferThreadStatus distinguishes
+     * object waits (sema 3, evf 4, lwmutex 13); the kind is latched at block
+     * time because the waited UID alone does not identify its type. */
+    if (t->state == TH_WAIT_OBJ) return t->wait_kind ? (uint32_t)t->wait_kind : PSP_WAIT_OBJECT;
     return PSP_WAIT_NONE;
+}
+
+/* Latch the PSP waitType for the current thread's next object block; the
+ * block consumes it, so a later wait of another kind never reports it. */
+void sched_set_current_wait_kind(int kind) {
+    if (s_cur >= 0) s_tcb[s_cur].pending_wait_kind = kind;
 }
 
 int sched_thread_run_status(uint32_t uid, SrThreadRunStatus *out) {
@@ -3090,10 +3169,16 @@ void sched_unwind_current(void) {
 int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 32; }
 
 /* sceKernelChangeThreadPriority: uid 0 = current thread. */
-void sched_set_priority(uint32_t uid, int priority) {
+uint32_t sched_set_priority(uint32_t uid, int priority) {
     if (uid == 0 && s_cur >= 0) uid = s_tcb[s_cur].uid;
+    else uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
-    if (t) t->priority = priority;
+    if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
+    /* PSP-B3-01 (psp-hw-20260917): a dormant (never-started or terminated)
+     * target answers DORMANT (0x800201A2). */
+    if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
+    t->priority = priority;
+    return 0;
 }
 
 /* Termination and deletion are separate scheduler operations.  The HLE
@@ -3106,6 +3191,12 @@ uint32_t sched_terminate_thread(uint32_t uid) {
     if (s_cur >= 0 && s_tcb[s_cur].uid == uid) {
         return SCE_KERNEL_ERROR_ILLEGAL_THID;
     }
+    /* CONFLICT (PSP-B3-01 vs sched_selftest lifecycle contract): hardware
+     * reports DORMANT (0x800201A2) for Terminate on a never-started or
+     * terminated target, but test_delete_and_terminate_delete_contract pins
+     * terminate-then-delete on a synthetic DORMANT target as success (0) so
+     * TerminateDelete can proceed. Keep the contract; report HW as conflicting.
+     * See FINAL REPORT. */
     sched_release_thread_resources(t);
     if (getenv("SR_SYSLOG")) fprintf(stderr, "thr 0x%x TERMINATED (entry 0x%08x)\n", uid, t->entry);
     /* A target stopped by another thread is no longer running, so its host
