@@ -644,7 +644,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE
+INTERNAL_TARGETS := FORCE player-vulkan-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1200,11 +1200,11 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
 # must derive from the shared VULKAN_SDK resolution above (explicit override,
 # environment, then tools/vulkan_sdk.py discovery) rather than naming one
-# machine's SDK install. The VULKAN_ERROR_HINT append below fails closed with
-# the one variable to set when discovery found nothing, instead of a hardcoded
-# fallback or a confusing compiler error.
+# machine's SDK install. The player-vulkan-check order-only prerequisite below
+# fails closed with the one variable to set when discovery found nothing,
+# instead of a hardcoded fallback or a confusing compiler error.
 PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   := $(VULKAN_ERROR_HINT)
+PLAYER_VULKAN_LIB   :=
 EXE_EXT             := .exe
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
@@ -1216,14 +1216,18 @@ EXE_EXT             :=
 endif
 
 # A clear player-target failure when no usable SDK resolved (see the Windows
-# branch above). Expands to nothing when VULKAN_SDK is set.
-VULKAN_ERROR_HINT   := $(if $(VULKAN_SDK),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. VULKAN_SDK=C:/VulkanSDK/<version> mingw32-make player) or install one under C:/VulkanSDK))
+# branch above). A no-op recipe when VULKAN_SDK is set.
+.PHONY: player-vulkan-check
+player-vulkan-check:
+	$(if $(strip $(VULKAN_SDK)),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. mingw32-make player VULKAN_SDK=C:/path/to/VulkanSDK/<version>) or install a current SDK))
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+
+$(PLAYER_EXE): | player-vulkan-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"

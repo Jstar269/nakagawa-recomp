@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "716e47cfb7cfb4cd5f93bafaa9a4671c7f7d2aaede89714bc922d599c47973fe"
+      "sha256": "b8cb3c7a114f7664f68e028b50713d6f8168bfb0c1c1b7c302210fced3b23de4"
     },
     {
       "path": "NOTICE.md",
@@ -9102,7 +9102,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "41062ed5dabd9bf0a8c62f400df1c724a3c58b7bc0c0ff6bd9e9c0f991812ad7"
+      "sha256": "297efaebd4c22ca969c1d0c2430fd55a6a74a637c3f8c48e9bec4631030ea3d2"
     },
     {
       "path": "tools/test_xb_probe.py",
