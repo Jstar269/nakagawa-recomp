@@ -48,6 +48,7 @@
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
+#include "hle_power.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,8 +65,6 @@ uint32_t sr_last_nid = 0;
 
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
-int sr_callback_is_valid(uint32_t uid);
-uint32_t sr_callback_notify(uint32_t uid, uint32_t notify_arg);
 void sr_callback_unregister_owner(uint32_t thread_uid);
 
 /* Issue #143 diagnostic hooks.  Definitions live beside the display vblank
@@ -971,46 +970,6 @@ static uint32_t h_ReferThreadRunStatus(CpuState *s) {
     }
     return 0;
 }
-/* scePower */
-static uint32_t h_PowerGetBatteryLifePercent(CpuState *s) { (void)s; return 100; }
-static uint32_t h_PowerIsBatteryCharging(CpuState *s) { (void)s; return 1; }
-static uint32_t h_PowerIsBatteryExist(CpuState *s) { (void)s; return 1; }
-static uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return 1; }
-static uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return 333; }
-static uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return 166; }
-
-static uint32_t s_power_cb_slots[16];
-
-static uint32_t h_PowerRegisterCallback(CpuState *s) {
-    int32_t slot = (int32_t)A0;
-    uint32_t cb_uid = A1;
-
-    if (slot < -1 || slot >= 32) return 0x80000102u;
-    if (slot >= 16) return 0x80000023u;
-    if (!sr_callback_is_valid(cb_uid)) return 0x80000100u;
-
-    int32_t result = 0;
-    if (slot == -1) {
-        result = -1;
-        for (int i = 0; i < 16; i++) {
-            if (s_power_cb_slots[i] == 0) {
-                s_power_cb_slots[i] = cb_uid;
-                result = i;
-                break;
-            }
-        }
-        if (result < 0) return 0x80000022u;
-    } else {
-        if (s_power_cb_slots[slot] != 0) return 0x80000020u;
-        s_power_cb_slots[slot] = cb_uid;
-    }
-
-    /* PSP hardware immediately notifies a newly registered callback. Re-registering
-     * the same callback in another slot therefore increments its pending count. */
-    (void)sr_callback_notify(cb_uid, 0x000010E4u);
-    return (uint32_t)result;
-}
-
 /* The extra PRXs are compiled into the native dispatch table, but their data segments are not
  * part of hst_image.bin. Read the PSP ELF module/export headers at load time and publish the
  * relocated guest entry points. PSP resident-library entries contain one combined table:
