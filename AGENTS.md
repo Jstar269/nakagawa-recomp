@@ -176,8 +176,8 @@ python -m pre_commit run --all-files
 ```
 
 The workflow's `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full
-matrix for a manual run, and `allow_substantive` is true there; draft pull requests suppress
-substantive jobs until ready. Verify those facts against the live workflow before documenting them.
+matrix for a manual run, and `allow_substantive` is true there; draft status does not suppress
+substantive gates. Verify those facts against the live workflow before documenting them.
 
 ## 10. PR and integration authorization
 
