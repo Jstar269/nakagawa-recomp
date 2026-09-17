@@ -38,6 +38,7 @@ The public, game-input-free production smoke is the headline:
   are not part of the package.
 - Local verification is not hosted-CI evidence, a hardware pass, legal
   clearance, DCO attestation, or permission to publish.
+- The public-safe build has no host audio backend and is silent by design.
 
 ## Reproduce the centerpiece
 
