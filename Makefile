@@ -1618,7 +1618,7 @@ dispatch-selftest:
 # Cause write masking, vector selection/validation, and the LLE gate that
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
 		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
@@ -1833,7 +1833,7 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
-native-core-tests:
+native-core-tests: cpu-lle-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)
