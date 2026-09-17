@@ -10,7 +10,20 @@
     Authoritative orchestration layer for Nakagawa Recomp (nk). Wraps compilation
     tasks, interactive environment controls, visual regression oracle, and deep
     trace parsing. All title bindings and targets derive dynamically from validated
-    title manifests.
+    title manifests. See -Action help for all supported operations; omit -Action
+    to display usage without configuring a title or toolchain.
+.PARAMETER Action
+    BuildFull - Clean and rebuild the selected title through the full pipeline.
+    BuildFast - Incrementally build the selected title without cleaning.
+    Run - Launch the selected title with the chosen runtime profile.
+    Inspect - Locate a generated C function using -InspectFunc.
+    Clean - Stop tracked build processes and clear local tracking logs.
+    Test - Run the Makefile selftest target (C++ reference-runtime selftest), not the Python suite.
+    Verify - Run Python tests, native selftests, and import/publication audits.
+    DiffFunc - Compare a function against a reference trace using -DiffTarget and -DiffOracle.
+    FindSymbol - Search the optional symbol reference using -FindName.
+    Fuzz - Run the Makefile vfpu_fuzz target.
+    VisualOracle - Replay a route and archive visual regression captures.
 #>
 
 Param(
@@ -153,6 +166,25 @@ function Safe-ClearHost {
     } catch {
         Write-Host "`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n`n"
     }
+}
+
+if (-not $Action) {
+    $actionChoices = $MyInvocation.MyCommand.Parameters['Action'].Attributes |
+        Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+    $actionHelp = (Get-Help -Name $PSCommandPath -Parameter Action).Description.Text -join "`n"
+    $descriptions = @{}
+    foreach ($entry in [regex]::Matches($actionHelp, '(?m)^\s*(\w+) - (.+)$')) {
+        $descriptions[$entry.Groups[1].Value] = $entry.Groups[2].Value.Trim()
+    }
+    Write-Host "Usage: pwsh -NoProfile -File nk_manager.ps1 -Action <action> [parameters]"
+    Write-Host "Actions:"
+    foreach ($choice in $actionChoices.ValidValues) {
+        Write-Host "  $choice - $($descriptions[$choice])"
+    }
+    Write-Host "Most common invocations (select your title with -TitleManifest <path> -GameName <name>):"
+    Write-Host "  pwsh -NoProfile -File nk_manager.ps1 -Action BuildFast"
+    Write-Host "  pwsh -NoProfile -File nk_manager.ps1 -Action Run"
+    exit 0
 }
 
 try {
@@ -1417,18 +1449,6 @@ try {
                 else { Write-Host "[!] -FindName required (e.g. -FindName Camera_Update)" -ForegroundColor Red }
             }
         }
-    } else {
-        Safe-ClearHost
-        Write-Host "=========================================================" -ForegroundColor Green
-        Write-Host "             Nakagawa Recomp CLI Manager              " -ForegroundColor Green
-        Write-Host "=========================================================" -ForegroundColor Green
-        Write-Host "Target Title: $script:ActiveGameName (Manifest: $script:ManifestId)" -ForegroundColor Cyan
-        Write-Host "Run with -Action <BuildFast|BuildFull|Run|Verify|Test|Inspect|Clean>" -ForegroundColor Gray
-        Write-Host "========================================================="
-        [int]$durVal = 0
-        $tSelection = "0"
-        $parsed = ConvertTo-SafeTimeoutSeconds -Text $tSelection
-        if ($null -ne $parsed) { $durVal = [int]$parsed }
     }
 } catch {
     Write-Host "`n[FATAL SCRIPT ERROR] Execution halted abruptly." -ForegroundColor Red
