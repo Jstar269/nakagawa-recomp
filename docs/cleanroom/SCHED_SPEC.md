@@ -59,13 +59,13 @@ enter the clean directory — the admission similarity check runs outside it.
 The scheduler multiplexes PSP threads onto host execution contexts. Guest
 code is straight-line translated C that cannot suspend mid-call-stack, so
 each guest thread runs on its own host context and the single shared
-`CpuState` register file follows whichever thread is running [C1][C2].
+`CpuState` register file follows whichever thread is running [C1], [C2].
 Preemption is cooperative at yield points the code generator emits at
 function entries and loop back-edges; when the scheduler is inactive those
 yield points are inert no-ops that change nothing observable [C1].
 
 The scheduler never invents PSP semantics: unknown operations fail closed
-and missing behaviour stays visible [C3][C4].
+and missing behaviour stays visible [C3], [C4].
 
 ## 2. Normative interface (`SEAM:` identifiers)
 
@@ -165,25 +165,25 @@ resources when a thread object goes away; ordering pinned by [C5]).
 A thread is dormant after creation until started; only ready threads are
 eligible; exactly one thread is running; blocked/sleeping threads are
 excluded from selection until their wake condition fires; exited threads
-stay queryable for exit status until deleted [C6][C5]. Creating outside
+stay queryable for exit status until deleted [C6], [C5]. Creating outside
 table or stack-arena capacity fails with a zero UID, never a partial
 thread [C5]. Entry-function return is thread exit (the guest has no other
 way out of its root call) [C5]. Terminate removes eligibility without
 deleting the object; delete removes the object; double-delete and
-terminate-after-delete fail closed [C3][C5].
+terminate-after-delete fail closed [C3], [C5].
 
 ### 3.2 Priority selection and preemption
 
 Strict priority wins; equal priority rotates fairly; a sleeping, blocked,
 or dormant thread never wins over a ready one; a running thread that
-becomes non-runnable loses the CPU at the next boundary [C5][C7]. An
+becomes non-runnable loses the CPU at the next boundary [C5], [C7]. An
 expired timed wait promotes its thread into strict-priority contention
 rather than granting the CPU directly [C5]. Retail firmware's allocator
 mutations assume interrupt suspension also suppresses preemption on the
 single CPU [C1]. The timeslice quantum itself is a project decision
 (internal pacing, not PSP truth); what is normative is fairness (no ready
 thread starves while a lower-or-equal peer spins) and the inert-when-off
-rule from §1 [C1][C5].
+rule from §1 [C1], [C5].
 
 ### 3.3 UIDs
 
@@ -215,7 +215,7 @@ deterministic at scheduler boundaries and never host-dependent [C1].
 
 Wake-before-sleep is not lost: a wakeup against a non-sleeping thread banks
 exactly one count, a subsequent sleep consumes it instead of blocking, and
-cancel clears the bank (UID zero addresses the current thread) [C6][C5].
+cancel clears the bank (UID zero addresses the current thread) [C6], [C5].
 Exiting records the status for joiners; the take operation consumes once;
 the peek operation never consumes [C5]. Waking an unrelated sleeping thread
 as a side effect of an exit path is forbidden — exits wake only their
@@ -224,26 +224,26 @@ joiners [C5].
 ### 3.6 Interrupts, dispatch suspension, wait permission
 
 Suspend returns prior state; resume restores exactly that state (nestable
-by construction) [C6][C5]. While masked, the display source keeps running
+by construction) [C6], [C5]. While masked, the display source keeps running
 but the interrupt-gated counter stops (see §3.7); elapsed periods collapse
 into one coalesced pending indication rather than replaying [C9]. Clearing
 the mask is itself a timeline boundary: periods already due before the
 clear are consumed first, so a period that elapsed while enabled is never
 misclassified as masked [C1]. Raising a source latches it; servicing
 happens at scheduler boundaries in interrupt context; handler execution
-preserves the interrupted frame and restores it afterwards [C10][C5].
+preserves the interrupted frame and restores it afterwards [C10], [C5].
 Suspending thread dispatch (the `sceKernelSuspendDispatchThread` pair) is
 independent of interrupt masking; blocking handlers consult the combined
 state-only query at their own point after their own validation, and a
 universal pre-handler gate is explicitly ruled out [C1]. Blocking where
 waits are not permitted returns PSP's cannot-wait error, never a silent
-park and never fabricated success [C6][C3].
+park and never fabricated success [C6], [C3].
 
 ### 3.7 Vblank waits and display observations
 
 Wait-for-vblank-start always blocks to the next start edge, even inside the
 interval; wait-for-vblank returns immediately (true) inside the interval and
-blocks (returning false) outside it [C6][C5]. The display source and the
+blocks (returning false) outside it [C6], [C5]. The display source and the
 delivered counter are different quantities: the HCOUNT source runs at the
 rational 60000/1001 Hz model regardless of masking, while the guest-visible
 VCOUNT advances only when the scheduler latches elapsed source periods —
@@ -263,7 +263,7 @@ file touching only what a real branch-and-link sets; the full pre-call
 snapshot is restored on return; callee-saved state and the guest stack are
 the callback's own prologue/epilogue responsibility per the MIPS calling
 convention [C11]. A callback returning nonzero is automatically deleted
-[C6][C5]. A sleeping callback-wait consumes a wake banked during dispatch;
+[C6], [C5]. A sleeping callback-wait consumes a wake banked during dispatch;
 dispatch reports the total serviced count; notifying a non-waiting thread
 is a no-op [C5]. The existing header comment cites an emulator
 implementation for the argument order — this spec replaces that citation
@@ -294,7 +294,7 @@ landed versions and records the exact base in the provenance record.
 Invalid UIDs, double teardown, waits in non-waitable context, unmapped
 interrupt sources, and vblank waits with no display owner all fail closed
 with the PSP error or handler-level rejection the black-box tests assert —
-never success, never a hang, never a latch that hides the gap [C3][C4][C5].
+never success, never a hang, never a latch that hides the gap [C3], [C4], [C5].
 
 ## 4. Non-requirements (explicitly not specified)
 
@@ -365,9 +365,9 @@ Existing (all source-owned, game-input-free; all must pass unmodified):
 
 To author at implementation time (from sources, not from the old code):
 
-7. A timeout-remaining arithmetic test derived from §3.4 (deadline
+1. A timeout-remaining arithmetic test derived from §3.4 (deadline
    construction + refresh-only advancement), citing [C1].
-8. Any Loop C kernel cells measured by admission time (banked-wakeup
+2. Any Loop C kernel cells measured by admission time (banked-wakeup
    races, callback ordering, pending-state visibility), citing envelope
    IDs; unmeasured cells stay project-decision with the test asserting the
    specified behaviour, never the hardware's.
