@@ -74,6 +74,8 @@ else ifeq ($(CASE),exception-a1)
 CASE_ID = 27
 else ifeq ($(CASE),kobj-b1)
 CASE_ID = 28
+else ifeq ($(CASE),exception-a2)
+CASE_ID = 29
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -84,6 +86,12 @@ TARGET = $(BUILD_DIR)/psp_a1
 OBJS = $(BUILD_DIR)/probe_exception_a1.o
 A1_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
 CFLAGS += -DA1_BUILD_COMMIT=\"$(A1_BUILD_COMMIT)\"
+endif
+ifeq ($(CASE),exception-a2)
+TARGET = $(BUILD_DIR)/psp_a2
+OBJS = $(BUILD_DIR)/probe_exception_a2.o
+A2_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
+CFLAGS += -DA2_BUILD_COMMIT=\"$(A2_BUILD_COMMIT)\"
 endif
 ifeq ($(CASE),kobj-b1)
 TARGET = $(BUILD_DIR)/psp_b1
@@ -123,6 +131,9 @@ $(BUILD_DIR)/probe.o: probe.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exception_a2.o: probe_exception_a2.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/psp_b1.o: psp_b1.c
