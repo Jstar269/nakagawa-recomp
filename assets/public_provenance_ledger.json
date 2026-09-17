@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d886ac33d6b7c3dedd2eeacc6021456ba2ea6fe73e87cca7a8a1c46918a34a8a"
+      "sha256": "484fabda24ee0a086835cac0972a32d9627a8393f3f76c5e50660c2205a26004"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -5074,7 +5074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "079dbe3e1a7acb9c015b5d55f6d937ad8c118b14f183f6efe4e464c5a8e0e33f"
+      "sha256": "386e648cda6e1171dd0baefbd4920d3583c575aa7a87c3b9d02ea8fc0bf4c5dc"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5086,7 +5086,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e86e06d56d8cdf21bc9403439416648d665b4b41d6f299994515aa890f4e85b1"
+      "sha256": "a340398bda61ddc670f276de72c601532efacfbd92b3fb77086ca3558aac0702"
     },
     {
       "path": "src/rt/cpu_lle_selftest.c",
@@ -5098,7 +5098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "289e51e426da7dca2b9dcdee41ae539768441a129c1aabdb76e966acabfc182c"
+      "sha256": "1f0eabcdeba708d3bdf60b41f4fe238a91704f3034872792be4244e65a4fb053"
     },
     {
       "path": "src/rt/debug.c",
@@ -5614,7 +5614,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "0b2a4d86be714648d5ce2c67f77a4ef16a0f9e2211e493a236dbe30b95406338"
+      "sha256": "6e174664afb98c302a7cd95e1dc2cdc4aea8feefb3591f5bd2fd6b15f6ac2035"
     },
     {
       "path": "src/rt/guest_interp.h",

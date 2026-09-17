@@ -130,6 +130,64 @@ static void sr_cp0_delay_context(
     }
 }
 
+/* Data-access address checks (spec 3.3).
+ *
+ * MEASURED (run PSP-A3-01, campaign psp-hw-20260917, PSP-3000/6.61): a
+ * user-mode `lw` from a kernel-segment address raises AdEL with EPC at the load
+ * instruction, BadVAddr holding the effective address, and the destination
+ * register unchanged. See docs/HARDWARE_ORACLE.md.
+ *
+ * The default accessors in recomp.h cannot express that result: SR_PHYS() masks
+ * every guest address with 0x1FFFFFFF, so a kernel-segment address aliases onto
+ * the same host byte as its user-segment counterpart and the access silently
+ * succeeds. This helper is the LLE replacement for that decision. It is
+ * consulted only while sr_cpu_lle_enabled(), so default builds keep the masking
+ * behaviour and stay byte-identical.
+ *
+ * SYNTHETIC, not measured: the alignment rule below, and AdES for stores.
+ * Raising an address error for a misaligned access is the MIPS32 architectural
+ * rule (MIPS32 Vol. III), and the Allegrex is a MIPS32 core, but no probe has
+ * confirmed the PSP's EPC/BadVAddr for either case. Both stay labelled
+ * synthetic until a probe measures them. */
+unsigned sr_cpu_data_access_fault(
+    const CpuState *s,
+    uint32_t address,
+    unsigned width,
+    int is_store) {
+    const unsigned code = is_store ? (unsigned)SR_EXC_ADES : (unsigned)SR_EXC_ADEL;
+
+    if (!s || width == 0u) {
+        return 0u;
+    }
+    /* Synthetic: architectural alignment rule, unmeasured on PSP. */
+    if (width > 1u && (address & (width - 1u)) != 0u) {
+        return code;
+    }
+    /* Measured (PSP-A3-01): kuseg ends at 0x7FFFFFFF; a user-mode access at or
+     * above 0x80000000 is an address error, never a masked alias into RAM. */
+    if (address >= 0x80000000u && !sr_cpu_in_kernel(s)) {
+        return code;
+    }
+    return 0u;
+}
+
+int sr_cpu_raise_data_fault(
+    CpuState *s,
+    unsigned exception_code,
+    uint32_t address,
+    uint32_t instr_pc) {
+    uint32_t fault_pc;
+    uint32_t exception_pc;
+    unsigned in_delay_slot;
+
+    if (!s) {
+        return -2;
+    }
+    sr_cp0_delay_context(s, instr_pc, &fault_pc, &exception_pc, &in_delay_slot);
+    return sr_cpu_raise_exception(
+        s, exception_code, fault_pc, exception_pc, address, in_delay_slot, 0u);
+}
+
 int sr_cpu_raise_exception(
     CpuState *s,
     unsigned exception_code,
