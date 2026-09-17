@@ -254,6 +254,34 @@ class ManagerSafetyContractTests(unittest.TestCase):
                 f"legacy-layout reference not inside a retail/legacy guard (line {index + 1}): {line.strip()}",
             )
 
+    def test_run_action_guards_against_killing_live_target_session(self) -> None:
+        # P-005: Run must not kill a live session. It discovers running target processes
+        # using full process identity (Get-ProcessIdentityRecord, canonical path), prints
+        # a clear message with PID and advice to use -Action Clean, and exits non-zero
+        # without launching.
+        self.assertIn("Get-WorkspaceTargetProcesses", self.manager)
+        self.assertIn("already running (PID", self.manager)
+        self.assertIn("close it or use -Action Clean", self.manager)
+
+        # Run-NkEngine must not call Stop-WorkspaceTarget before launching
+        run_engine_body = self.manager[
+            self.manager.index("function Run-NkEngine") : self.manager.index("function Run-HstEngine")
+        ]
+        self.assertNotIn("Stop-WorkspaceTarget", run_engine_body)
+        self.assertIn("Get-WorkspaceTargetProcesses", run_engine_body)
+
+        # Stop-WorkspaceTarget retains its clean-up capability using full process identity
+        stop_target_body = self.manager[
+            self.manager.index("function Stop-WorkspaceTarget") : self.manager.index("function Stop-WorkspaceHst")
+        ]
+        self.assertIn("Get-WorkspaceTargetProcesses", stop_target_body)
+
+        get_processes_body = self.manager[
+            self.manager.index("function Get-WorkspaceTargetProcesses") : self.manager.index("function Stop-WorkspaceTarget")
+        ]
+        self.assertIn("Get-ProcessIdentityRecord", get_processes_body)
+        self.assertIn("Get-CanonicalPath", get_processes_body)
+
 
 if __name__ == "__main__":
     unittest.main()
