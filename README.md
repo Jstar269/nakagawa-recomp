@@ -2,6 +2,16 @@
 
 Nakagawa Recomp is an experimental static recompiler that translates user-supplied decrypted PlayStation Portable (PSP) executables into C, links them with a native C runtime, and runs the resulting binary on Windows via SDL3 and Vulkan. Named after the in-game Nakagawa Tennis Club from its flagship test title, *Hot Shots Tennis: Get a Grip*, the project investigates ahead-of-time (AOT) binary translation, low-level hardware fidelity, and high-performance native execution for PSP software.
 
+## Goals
+
+The project has three long-term goals, defined in [`docs/PROJECT_MODEL.md`](docs/PROJECT_MODEL.md):
+
+1. **Recompilation:** run *Hot Shots Tennis: Get a Grip* (UCUS-98701) natively through original code generation and a runtime that emulates the PSP at the lowest level that is practical (LLE).
+2. **Full decompilation:** reconstruct 100% of the game as source code that compiles back to machine code identical to the retail executable, function by function. Recovered game source is kept private; the public repository carries only the tools and the interoperability facts behind it.
+3. **Platform:** turn the work into a general PSP recompilation and decompilation toolkit that does not depend on this one title.
+
+These are targets, not claims about current progress.
+
 ## Current status
 
 This repository is an experimental research and compatibility project, **not an end-user release** or a game distribution. It does not include game binaries, copyrighted assets, firmware modules, decryption keys, or private oracle traces.
