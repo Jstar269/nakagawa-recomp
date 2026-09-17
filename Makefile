@@ -466,6 +466,7 @@ endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/cpu_lle.c \
               src/rt/nested_frames.c \
               src/rt/guest_interp.c \
               src/rt/title_config.c \
@@ -529,6 +530,7 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/cpu_lle.c \
                       src/rt/nested_frames.c \
                       src/rt/guest_interp.c \
                       src/rt/title_config.c \
@@ -609,6 +611,7 @@ PUBLIC_TARGETS := \
 	hle-title-selftest \
 	hle-title-selftest-one \
 	dispatch-selftest \
+	cpu-lle-selftest \
 	dispatch-isolation-selftest \
 	dispatch-isolation-selftest-one \
 	asset-index-selftest \
@@ -698,6 +701,7 @@ HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
 HELP_DESCRIPTION_hle-title-selftest := run title-configured HLE selftests
 HELP_DESCRIPTION_hle-title-selftest-one := run one title-configured HLE selftest
 HELP_DESCRIPTION_dispatch-selftest := run the production dispatch selftest
+HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter selftest
 HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
 HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
@@ -1273,7 +1277,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c -lm
+		$(COSIM_INTERP_SRC) src/rt/cpu_lle.c src/rt/title_config.c src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
@@ -1371,7 +1375,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -1381,7 +1385,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -1467,8 +1471,8 @@ atrac3p-title-accept:
 # recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern); only
 # scheduler/driver plumbing is stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) 		-o $(BUILD_DIR)/vfpu_interp_selftest.exe \
+		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
@@ -1594,8 +1598,7 @@ psp-oracle-nakagawa-smoke-build: $(PSP_ORACLE_SMOKE_EXE)
 psp-oracle-nakagawa-smoke: psp-oracle-nakagawa-smoke-build
 	$(PYTHON) tools/psp_oracle/run_nakagawa.py --executable "$(PSP_ORACLE_SMOKE_EXE)" --output "$(PSP_ORACLE_SMOKE_OUTPUT)" -- --psp-oracle --case sum-1-to-100 --artifact "$(PSP_ORACLE_SMOKE_EXE)" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
 
-# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).
-# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
+# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
 # dispatch_table.h. Asserts that guest address 0 is a first-class key (register/look up,
 # hash collisions involving 0 in both orders, L1 caching, re-registration), that a real
 # function at address 0 executes while an unregistered lookup does not, and that occupancy
@@ -1604,6 +1607,20 @@ dispatch-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/dispatch_selftest.exe src/rt/dispatch_selftest.c
 	$(BUILD_DIR)/dispatch_selftest.exe
+
+# cpu-lle-selftest — host-neutral unit tests for the LLE Phase 1 COP0,
+# exception, and eret helpers (spec 3.2/3.3) plus the interpreter lane
+# (spec 3.5). No game inputs needed; #includes recomp.c/cpu_lle.c for direct
+# access to the exact helpers the generated code calls and links the real
+# guest_interp.c, proving helper and interpreter behavior from one binary.
+# Asserts exception EPC/Cause/EXL/BD (including delay-slot faults), eret
+# return + EXL clear, user-mode traps, RI on unsupported encodings, Status /
+# Cause write masking, vector selection/validation, and the LLE gate that
+# keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
+cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
+		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
+	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
 # title configuration owns (dispatch aliases, callback terminators) act only where that
@@ -1635,7 +1652,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/guest_interp.c src/rt/title_config.c src/rt/vfpu_tables.c \
+		src/rt/dispatch_isolation_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/vfpu_tables.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
@@ -1816,7 +1833,7 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
-native-core-tests:
+native-core-tests: cpu-lle-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)

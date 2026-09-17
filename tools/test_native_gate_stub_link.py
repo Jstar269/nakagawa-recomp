@@ -98,6 +98,9 @@ class TestGateStubLink(unittest.TestCase):
                 # runtime, so the real guest_interp implementation belongs in
                 # the link surface exactly as production requires.
                 str(RT / "guest_interp.c"),
+                # guest_interp.c calls the COP0/exception helpers; they link
+                # from the real TU, not from gate_stub.c dead symbols.
+                str(RT / "cpu_lle.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "title_config.c"),
