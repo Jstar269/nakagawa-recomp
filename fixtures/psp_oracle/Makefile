@@ -80,6 +80,8 @@ else ifeq ($(CASE),wait-b2)
 CASE_ID = 30
 else ifeq ($(CASE),exception-a3)
 CASE_ID = 31
+else ifeq ($(CASE),kernel-b3)
+CASE_ID = 32
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -96,6 +98,12 @@ TARGET = $(BUILD_DIR)/psp_a2
 OBJS = $(BUILD_DIR)/probe_exception_a2.o
 A2_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
 CFLAGS += -DA2_BUILD_COMMIT=\"$(A2_BUILD_COMMIT)\"
+endif
+ifeq ($(CASE),kernel-b3)
+TARGET = $(BUILD_DIR)/psp_b3
+OBJS = $(BUILD_DIR)/psp_b3.o $(BUILD_DIR)/psp_b3_imports.o
+B3_BUILD_COMMIT ?= $(shell git rev-parse HEAD)
+CFLAGS += -DB3_BUILD_COMMIT=\"$(B3_BUILD_COMMIT)\"
 endif
 ifeq ($(CASE),exception-a3)
 TARGET = $(BUILD_DIR)/psp_a3
@@ -154,6 +162,12 @@ $(BUILD_DIR)/probe_exception_a2.o: probe_exception_a2.c
 
 $(BUILD_DIR)/probe_exception_a3.o: probe_exception_a3.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b3.o: psp_b3.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b3_imports.o: psp_b3_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/psp_b2.o: psp_b2.c
 	$(CC) $(CFLAGS) -c $< -o $@
