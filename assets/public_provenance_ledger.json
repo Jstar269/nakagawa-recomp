@@ -5074,7 +5074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "386e648cda6e1171dd0baefbd4920d3583c575aa7a87c3b9d02ea8fc0bf4c5dc"
+      "sha256": "c1910a2f52eadf68283d378c2fdc8fbc3098b6a8308a4dce3da385febfa14b62"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5086,7 +5086,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a340398bda61ddc670f276de72c601532efacfbd92b3fb77086ca3558aac0702"
+      "sha256": "e3c17b3b530b7d42691cec58ebdccc2c18f102c719b95ce3256286e48b013a82"
     },
     {
       "path": "src/rt/cpu_lle_selftest.c",
@@ -6618,7 +6618,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "bfc2947609a8164af03fc8ab4a448e78601890111cf713260833c80270ade5d6"
+      "sha256": "86bc40f82855fbbe38f2ed140e611b883f33467b237e9ea82dfdaea54a571d8e"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7992,7 +7992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d34ba80de2da6e3c4dbe532aa20530c91434895edc47269c560fd3e68d4ba687"
+      "sha256": "757077ee878d7d220d3635882f2dec329d8fa8b876625149c5e6f04872879532"
     },
     {
       "path": "tools/test_dco_policy.py",
