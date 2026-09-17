@@ -7672,6 +7672,7 @@ static void test_msgpipe_safety(void) {
     const uint32_t GUEST_RES  = 0x08040000u; /* distinct resultSize slot */
     const uint32_t ARENA_END  = 0x0c000000u;
     g_mem[0x010000] = 'p'; g_mem[0x010001] = '0'; g_mem[0x010002] = 0;   /* pipe name */
+    g_mem[0x030000] = 'p'; g_mem[0x030001] = '0'; g_mem[0x030002] = 0;
 
     uint32_t max_cap = sr_hle_test_msgpipe_max_capacity();
     expect(max_cap > 0u && max_cap <= 0x1000000u,
@@ -7694,6 +7695,7 @@ static void test_msgpipe_safety(void) {
 
     /* A rejected create must not consume a UID or slot: a follow-up valid
      * create must succeed and be the FIRST pipe (state probe finds it). */
+    cpu.r[4] = GUEST_NAME;
     cpu.r[7] = 64u;
     uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect(uid != 0u && uid < 0x80000000u, "valid CreateMsgPipe returns a kernel UID");
@@ -7813,6 +7815,81 @@ static void test_msgpipe_safety(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = big_uid;
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
+}
+
+static void test_td23_guest_pointer_validation(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    const uint32_t ARENA_END = 0x0c000000u;
+    const uint32_t NID_ALLOC_PARTITION = 0x237dbd4fu;
+    const uint32_t NID_SAVEDATA_INIT = 0x50c4cd57u;
+
+    /* 1. Unmapped name pointer rejected (not treated as "") */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xDEADBEEFu; /* unmapped address */
+    cpu.r[7] = 64u;         /* bufferSize */
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "CreateMsgPipe rejects unmapped name pointer");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;          /* NULL name pointer */
+    cpu.r[7] = 64u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == 0x80020190u,
+           "CreateMsgPipe rejects NULL name pointer with NO_MEMORY");
+
+    /* 2. Unterminated string rejected (not truncated and accepted) */
+    const uint32_t unterminated_buf = 0x08050000u;
+    memset((char *)SR_HOST(unterminated_buf), 'A', 64);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = unterminated_buf;
+    cpu.r[7] = 64u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "CreateMsgPipe rejects unterminated name string");
+
+    /* 3. NULL-allowed case preserved: AllocPartitionMemory legitimately accepts NULL (0) as 'no name' */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;   /* user partition */
+    cpu.r[5] = 0u;   /* name = NULL (allowed) */
+    cpu.r[6] = 0u;   /* type = 0 (low) */
+    cpu.r[7] = 256u; /* size */
+    uint32_t uid_null = sr_syscall(&cpu, NID_ALLOC_PARTITION);
+    expect(uid_null != 0u && uid_null < 0x80000000u,
+           "AllocPartitionMemory preserves NULL-allowed name behaviour");
+
+    /* Non-NULL unmapped name in AllocPartitionMemory is rejected */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    cpu.r[5] = 0xDEADBEEFu;
+    cpu.r[6] = 0u;
+    cpu.r[7] = 256u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PARTITION) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "AllocPartitionMemory rejects unmapped name pointer");
+
+    /* Non-NULL unterminated name in AllocPartitionMemory is rejected */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    cpu.r[5] = unterminated_buf;
+    cpu.r[6] = 0u;
+    cpu.r[7] = 256u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PARTITION) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "AllocPartitionMemory rejects unterminated name string");
+
+    /* 4. Struct whose tail crosses the end of guest RAM rejected for items 2 and 4 */
+    /* Item 2: sceGeSetCallback (16-byte struct) */
+    uint32_t cb_tail = ARENA_END - 8u; /* 8 bytes inside, 8 bytes outside */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb_tail;
+    expect(sr_syscall(&cpu, NID_SCE_GE_SET_CALLBACK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "sceGeSetCallback rejects callback struct crossing arena boundary");
+
+    /* Item 4: sceUtilitySavedataInitStart (0x600-byte struct) */
+    uint32_t sd_tail = ARENA_END - 0x100u; /* crosses arena boundary */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = sd_tail;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_INIT) == 0x80110004u,
+           "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
 /* =========================================================================
@@ -10114,6 +10191,7 @@ int main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();
+    test_td23_guest_pointer_validation();
     test_intr_context_conformance();
     test_psp_mutex();
 
