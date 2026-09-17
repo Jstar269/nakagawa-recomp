@@ -71,14 +71,23 @@ export function ExecutionConsole() {
   const hasPrintedTrace = useRef(false);
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
-  const fetchStatus = useCallback(async () => {
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<DebugConsoleResponse | null> | null>(null);
+
+  const fetchStatus = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve(null);
+    const request = (async () => {
     try {
       const res = await fetch("/api/recompiler/debug/console", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "status" }),
+        signal,
       });
       const data = (await res.json()) as DebugConsoleResponse;
+      if (signal.aborted) return null;
       if (!res.ok) throw new Error(responseError(data, `Status request failed (${res.status})`));
       setStatus(data);
 
@@ -88,8 +97,13 @@ export function ExecutionConsole() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "trace_exit" }),
+          signal,
         });
         const traceData = (await traceRes.json()) as DebugConsoleResponse;
+        if (signal.aborted) {
+          hasPrintedTrace.current = false;
+          return null;
+        }
 
         if (traceRes.ok && traceData.success && traceData.frames) {
           const frameLines = traceData.frames.map((frame) =>
@@ -106,22 +120,29 @@ export function ExecutionConsole() {
       }
 
       return data;
-    } catch {
-      setStatus(null);
+    } catch (e) {
+      if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) setStatus(null);
       return null;
     }
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
   }, []);
 
   useEffect(() => {
-    const initial = window.setTimeout(() => {
-      void fetchStatus();
-    }, 0);
-    const interval = window.setInterval(() => {
-      void fetchStatus();
-    }, 3000);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchStatus();
+      if (!controller.signal.aborted) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 0);
     return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
     };
   }, [fetchStatus]);
 

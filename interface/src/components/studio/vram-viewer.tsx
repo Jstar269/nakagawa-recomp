@@ -1,7 +1,7 @@
 "use client";
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Monitor, RefreshCw, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Panel } from "./ui-bits";
@@ -18,33 +18,10 @@ export function VramViewerPanel() {
   const width = 512;
   const height = format === "RGBA8888" ? 1024 : 2048;
 
-  const fetchVram = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/recompiler/debug/console", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "read_vram" }),
-      });
-      const data = await res.json();
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<void> | null>(null);
 
-      if (data.error) {
-        setError(data.error);
-        return;
-      }
-
-      if (data.base64) {
-        renderVram(data.base64);
-      }
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const renderVram = (b64: string) => {
+  const renderVram = useCallback((b64: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -110,23 +87,61 @@ export function VramViewerPanel() {
     }
 
     ctx.putImageData(imgData, 0, 0);
-  };
+  }, [format, width, height]);
+
+  const fetchVram = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve();
+    setLoading(true);
+    setError(null);
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/recompiler/debug/console", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "read_vram" }),
+          signal,
+        });
+        const data: { error?: string; base64?: string } = await res.json();
+        if (signal.aborted) return;
+
+        if (data.error) {
+          setError(data.error);
+          return;
+        }
+
+        if (data.base64) {
+          renderVram(data.base64);
+        }
+      } catch (e: unknown) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
+  }, [renderVram]);
 
   useEffect(() => {
-    let initial: ReturnType<typeof setTimeout> | undefined;
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (autoRefresh) {
-      initial = setTimeout(fetchVram, 0);
-      interval = setInterval(fetchVram, 2000);
-    }
-    return () => {
-      if (initial) clearTimeout(initial);
-      if (interval) clearInterval(interval);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchVram();
+      if (!controller.signal.aborted && autoRefresh) timer = setTimeout(poll, 2000);
     };
-    // fetchVram is stable in practice (reads no reactive values); refresh is
-    // driven by autoRefresh and the pixel format via the manual controls.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, format]);
+    timer = setTimeout(poll, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
+    };
+  }, [fetchVram, autoRefresh]);
 
   return (
     <Panel

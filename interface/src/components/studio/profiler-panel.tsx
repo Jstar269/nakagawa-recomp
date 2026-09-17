@@ -1,7 +1,7 @@
 "use client";
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   Flame,
   RefreshCw,
@@ -76,24 +76,47 @@ export function ProfilerPanel() {
   const [blockSearch, setBlockSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"functions" | "latency" | "blocks" | "trend">("functions");
 
-  const fetchProfiler = useCallback(async () => {
-    try {
-      const res = await fetch("/api/recompiler/telemetry/profiler");
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<void> | null>(null);
+
+  const fetchProfiler = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve();
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/recompiler/telemetry/profiler", { signal });
+        if (res.ok) {
+          const json: ProfilerResponse = await res.json();
+          if (!signal.aborted) setData(json);
+        }
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          console.error("Failed to fetch profiler stats", e);
+        }
+      } finally {
+        if (!signal.aborted) setLoading(false);
       }
-    } catch (e) {
-      console.error("Failed to fetch profiler stats", e);
-    } finally {
-      setLoading(false);
-    }
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
   }, []);
 
   useEffect(() => {
-    fetchProfiler();
-    const interval = setInterval(fetchProfiler, 3000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchProfiler();
+      if (!controller.signal.aborted) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
+    };
   }, [fetchProfiler]);
 
   // Derived metrics
