@@ -150,6 +150,7 @@ def main(argv):
             "-o", drv, gen, *chunk_srcs, os.path.join(rt, "recomp.c"),
             os.path.join(rt, "guest_interp.c"),
             os.path.join(rt, "cpu_lle.c"),
+            os.path.join(rt, "domain_mode.c"),
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
             os.path.join(rt, "title_config.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
