@@ -41,11 +41,6 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   corrected 28/5 hardware-oracle design, and local Nakagawa/general Wiki draft
   text; the CT/ST oracle campaign is completed (`HARDWARE_MEASURED`) while
   reused lifecycle/callback/ABI facts are separately measured.
-- [`research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md`](research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md)
-  and [`research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md`](research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md)
-  — dated architecture comparison against other recompilation projects, and the
-  action register derived from it. Both cite files in *other* repositories; treat
-  them as a snapshot of that comparison, not as this project's status.
 - [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
 
 ## Doctrine, player, and productization
@@ -143,14 +138,8 @@ in this slice; classification comes first, directory moves separately.
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
-| `provenance/GENERICITY_CENSUS_20260826.md` | REFERENCE | Dated evidence; live source authoritative |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
-| `research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md` | REFERENCE | Dated cross-project comparison; cites other repositories, not this one |
-| `research/competitive/COMPETITIVE_ACTION_REGISTER_2026-09-05.md` | REFERENCE | Dated action register derived from that audit; live issues authoritative |
-| `research/project-truth/` | REFERENCE (dated snapshots) | Frozen public-source truth snapshots; each carries its own base, evidence class, and admission boundary |
-| `research/project-truth/DOC_TRUTH_SNAPSHOT_2026-09-14.md` | REFERENCE | Dated public-source truth snapshot at its recorded base; captured before PR #202, so some player claims there are superseded; not a provenance or release approval |
-| `OSPS_BASELINE.md` | HISTORICAL | Pre-republication snapshot; do not cite as status |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
 | `ISSUE196_DIRECT_XB.md` | HISTORICAL | Superseded hypothesis preserved with scope banner |

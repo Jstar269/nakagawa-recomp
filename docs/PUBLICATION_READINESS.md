@@ -469,7 +469,7 @@ SHA-256 of the bytes the reviewer approved, and names the public classification:
   "schema_version": 1,
   "kind": "admission-authority",
   "reviewed_new_paths": [
-    {"path": "docs/research/competitive/COMPETITIVE_GAP_AUDIT_2026-09-05.md",
+    {"path": "docs/research/NEW_RESEARCH_NOTE.md",
      "sha256": "<64 lowercase hex>",
      "classification": "reviewed_documentation",
      "origin": "newly authored Nakagawa research documentation reviewed against public sources"}
