@@ -424,5 +424,103 @@ class ResolverFailureTest(unittest.TestCase):
         self.assertIn("g_mem", err)
 
 
+class CpuStateAbiUpgradeTest(unittest.TestCase):
+    """ABI v2 must never be applied to state produced by a pre-v2 build."""
+
+    def _header(self, abi=md.CPU_STATE_ABI_VERSION, size=md.CPU_STATE_SIZE,
+                stack_len=8, fmt=md.CRASH_DUMP_FORMAT):
+        words = (fmt, abi, size, 0x09FF0000, stack_len)
+        return md.CRASH_DUMP_MAGIC + b"".join(w.to_bytes(4, "little") for w in words)
+
+    def test_versioned_dump_is_split_at_the_header_sizes(self):
+        cpu = bytes(range(256)) * 3 + bytes(md.CPU_STATE_SIZE - 768)
+        blob = self._header() + cpu + b""
+        parsed, err = md.parse_crash_dump(blob)
+        self.assertIsNone(err)
+        cpu_bytes, base, stack = parsed
+        self.assertEqual(cpu_bytes, cpu)
+        self.assertEqual(base, 0x09FF0000)
+        self.assertEqual(stack, b"")
+
+    def test_headerless_v1_dump_is_rejected(self):
+        # ABI v1: 864-byte CpuState followed by the 64 KiB stack snapshot.
+        parsed, err = md.parse_crash_dump(bytes(864 + 0x10000))
+        self.assertIsNone(parsed)
+        self.assertIn("pre-ABI-v2", err)
+
+    def test_other_abi_or_size_is_rejected(self):
+        for header in (self._header(abi=1), self._header(size=864)):
+            parsed, err = md.parse_crash_dump(header + bytes(md.CPU_STATE_SIZE + 8))
+            self.assertIsNone(parsed)
+            self.assertIn("ABI", err)
+
+    def test_truncated_body_is_rejected(self):
+        parsed, err = md.parse_crash_dump(self._header() + bytes(md.CPU_STATE_SIZE))
+        self.assertIsNone(parsed)
+        self.assertIn("size", err)
+
+    def test_pre_v2_mock_state_is_migrated(self):
+        old = {"status": "running", "memory": {},
+               "cpu": {"r": [0] * 32, "pc": 0x08804000, "cop0": [7]}}
+        mock = md._migrate_mock_state(old)
+        self.assertEqual(len(mock["cpu"]["cop0"]), md.CPU_STATE_COP0_COUNT)
+        self.assertEqual(mock["cpu"]["cop0"][0], 7)
+        self.assertEqual(mock["cpu"]["next_pc"], 0x08804004)
+        for field in ("in_delay_slot", "flow_kind", "flow_target"):
+            self.assertEqual(mock["cpu"][field], 0)
+
+    def test_migrated_mock_accepts_new_cop0_writes(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"status": "running", "memory": {}, "cpu": {"r": [0], "pc": 0}}')
+            orig = md.get_mock_state_path
+            md.get_mock_state_path = lambda: path
+            try:
+                dbg = md.MemoryDebugger(simulate=True, mutate=True)
+                res = dbg.write_cpu("cop0[12]", 0x10)
+            finally:
+                md.get_mock_state_path = orig
+            self.assertTrue(res["success"], res)
+            self.assertEqual(dbg.mock["cpu"]["cop0"][12], 0x10)
+        finally:
+            os.unlink(path)
+
+    def _live(self, **overrides):
+        dbg = md.MemoryDebugger(simulate=True, mutate=True)
+        attrs = {
+            "is_simulated": False,
+            "is_offline": False,
+            "candidate": {"pid": 1, "exe_path": "x", "base_address": 0x140000000},
+            "base_address": 0x140000000,
+            "image_verified": True,
+            "rva_provenance": "nm",
+            "rvas": {"g_mem": 1, "s_cpu": 2},
+        }
+        attrs.update(overrides)
+        for k, v in attrs.items():
+            setattr(dbg, k, v)
+        return dbg
+
+    def test_live_cpu_access_requires_exported_abi_marker(self):
+        dbg = self._live()
+        for res in (dbg.read_cpu(), dbg.write_cpu("cop0[12]", 1)):
+            self.assertFalse(res["success"])
+            self.assertIn(md.ABI_SYMBOL, res["error"])
+
+    def test_live_cpu_access_rejects_other_abi_version(self):
+        dbg = self._live(rvas={"g_mem": 1, "s_cpu": 2, md.ABI_SYMBOL: 3})
+        dbg._read_process_bytes = lambda addr, size: (1).to_bytes(4, "little")
+        res = dbg.write_cpu("cop0[12]", 1)
+        self.assertFalse(res["success"])
+        self.assertIn("ABI 1", res["error"])
+
+    def test_live_cpu_abi_check_passes_for_v2(self):
+        dbg = self._live(rvas={"g_mem": 1, "s_cpu": 2, md.ABI_SYMBOL: 3})
+        dbg._read_process_bytes = lambda addr, size: (2).to_bytes(4, "little")
+        self.assertIsNone(dbg._cpu_abi_check())
+
+
 if __name__ == "__main__":
     unittest.main()

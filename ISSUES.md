@@ -9,28 +9,15 @@ claim.
 
 **Live GitHub Issues are the authority for work-item state.** This dashboard
 describes work areas and records what past closures established. It deliberately
-carries no Open/Closed labels and no frozen counts: verify current state on the
+carries no frozen counts: verify current state on the
 linked live issue, and read counts from the generator cited beside each area.
 
 ## Live work areas
 
 - Public-source safeguards: exact-tree, provenance, history, security, and
   export gates remain required for proposed changes and release candidates.
-- PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23)
-  remains an implementation lane. Concurrent BUSY/blocking behavior was measured
-  on PSP-3000 (ARK-5) silicon; invalid-tail precedence remains NOT_MEASURED and
-  main keeps its conservative behavior until a safe probe establishes otherwise.
-- Title-#2 readiness debt: [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98).
-  The machine-enforced inventory is `tools/compat_overrides.py`, checked by
-  `tools/test_compat_manifest.py`; the readiness record is
-  [`docs/PORTING.md`](docs/PORTING.md). Run the gate for current counts —
-  this file does not restate them.
-- Build orchestrator decoupling: [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196).
-  De-coupling generic build, execution, and verification orchestration from
-  legacy HST defaults (`hst_manager.ps1` -> `nk_manager.ps1`, retiring hardcoded
-  `build/hst`, `0x0029a060`, and `place_game_here` layout assumptions in favor of
-  validated title manifests). Architectural roadmap is documented in
-  [`docs/TITLE_MANAGER_DECOUPLING.md`](docs/TITLE_MANAGER_DECOUPLING.md).
+- Purge force-pushed commits: [issue #166](https://github.com/Jstar269/nakagawa-recomp/issues/166).
+  Unreachable commits after a history rewrite require GitHub-side garbage collection.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in
@@ -43,27 +30,22 @@ linked live issue, and read counts from the generator cited beside each area.
   ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)).
 - PGF/font and PGD/amctrl surfaces remain excluded pending qualified
   provenance and distribution review.
-- Guest virtual/vblank rate drift against host real time:
-  [issue #70](https://github.com/Jstar269/nakagawa-recomp/issues/70). Route
-  sampling now keys on elapsed VCOUNT cadence rather than wall time, which
-  removes a measurement artefact; the underlying rate question is unchanged.
 - Transient model corruption entering the main menu:
   [issue #69](https://github.com/Jstar269/nakagawa-recomp/issues/69). No
   public-scope reproduction exists; the public repository holds no
   private-title route evidence.
-- Audio stuttering during qualified gameplay:
-  [issue #67](https://github.com/Jstar269/nakagawa-recomp/issues/67). No
-  public-scope reproduction exists.
-- Post-save prize-ceremony progression:
-  [issue #63](https://github.com/Jstar269/nakagawa-recomp/issues/63).
-  Private-title route behaviour; outside the public-safe acceptance boundary
-  and not reproducible from public inputs.
 
 ## Records of past closures
 
 Each entry states what the closure established and its limits. Current state
 remains on the linked live issue.
 
+- PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) is closed; see the live issue.
+- Post-save prize-ceremony progression: [issue #63](https://github.com/Jstar269/nakagawa-recomp/issues/63) is closed; see the live issue.
+- Audio stuttering during qualified gameplay: [issue #67](https://github.com/Jstar269/nakagawa-recomp/issues/67) is closed; see the live issue.
+- Guest virtual/vblank rate drift: [issue #70](https://github.com/Jstar269/nakagawa-recomp/issues/70) is closed; see the live issue.
+- Title-#2 readiness debt: [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98) is closed; see the live issue.
+- Build orchestrator decoupling: [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196) is closed; see the live issue.
 - Trusted refresh path for modified source hashes in the public provenance
   ledger: established through [issue #132](https://github.com/Jstar269/nakagawa-recomp/issues/132)
   and documented under "Reviewed refresh of an existing public path" in

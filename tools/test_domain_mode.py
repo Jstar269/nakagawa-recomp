@@ -87,7 +87,20 @@ class ImportSeamCodegenTests(unittest.TestCase):
     def test_seam_cli_flag_exists(self):
         source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
         self.assertIn('"--lle-import-seam"', source)
-        self.assertIn("LLE_IMPORT_SEAM = True", source)
+        self.assertIn("enable_lle_import_seam()", source)
+
+    def test_seam_flag_also_enables_caller_flow_propagation(self):
+        # A fail-closed seam stub returns with flow_kind set; only --lle-cpu
+        # output checks flow_kind after direct calls, so the seam implies it.
+        previous = (codegen.LLE_IMPORT_SEAM, codegen.LLE_CPU)
+        try:
+            codegen.LLE_IMPORT_SEAM = False
+            codegen.LLE_CPU = False
+            codegen.enable_lle_import_seam()
+            self.assertTrue(codegen.LLE_IMPORT_SEAM)
+            self.assertTrue(codegen.LLE_CPU)
+        finally:
+            codegen.LLE_IMPORT_SEAM, codegen.LLE_CPU = previous
 
 
 class DomainSourcesTests(unittest.TestCase):

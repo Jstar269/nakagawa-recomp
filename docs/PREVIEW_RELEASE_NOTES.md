@@ -27,9 +27,10 @@ The public, game-input-free production smoke is the headline:
 - **No preparation pipeline is connected in this build.** This preview cannot
   run a retail PSP game. Do not read the synthetic executables, the dashboard,
   or the ISO inspector as gameplay evidence.
-- No player binary is shipped. The base carries a `player` make target but
-  none of the `src/player` sources it compiles, so `mingw32-make player`
-  cannot succeed on this base. The sources land separately.
+- No player binary is shipped in the dated preview candidate at base `a699000`,
+  which had neither `src/player/` nor a `player` Make target. The current tree
+  includes both, with the target building `build/nakagawa_player.exe`;
+  that later source availability does not change this candidate's contents.
 - The preview is verified on Windows 11 x64 only. It makes no Linux or macOS
   support claim.
 - Retail executables, ISOs, assets, decrypted modules, generated retail C,
@@ -65,5 +66,5 @@ nakagawa-recomp-0.1.0-preview.1-windows-x64/
 └── SHA256SUMS.txt
 ```
 
-There is no `player.exe` in this package. The exact package command and its
+There is no `nakagawa_player.exe` (or any other player binary) in this package. The exact package command and its
 fail-closed scan are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).

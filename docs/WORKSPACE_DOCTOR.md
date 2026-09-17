@@ -1,31 +1,37 @@
 # Workspace Doctor
 
-`tools/hst_doctor.py` is the fail-closed preflight for Nakagawa Recomp. It checks the supported
+`tools/nk_doctor.py` is the fail-closed preflight for Nakagawa Recomp. It checks the supported
 Windows 11 x64 / PowerShell 7.6+ / CPython 3.14.x host contract, current MSYS2 UCRT64 tools,
 Vulkan SDK discovery, the repository, private game-input layout, runtime dependencies, and build
 products without copying, decrypting, extracting, modifying, or uploading private material.
 
-The simplified `hst.ps1` front end exposes it directly:
+The simplified `nk.ps1` front end exposes it directly:
 
 ```powershell
-.\hst.ps1 Doctor
+.\nk.ps1 Doctor
 ```
 
 Use a narrower scope when diagnosing one layer:
 
 ```powershell
-.\hst.ps1 Doctor -Scope repo
-.\hst.ps1 Doctor -Scope inputs
-.\hst.ps1 Doctor -Scope build
-.\hst.ps1 Doctor -Scope products
-.\hst.ps1 Doctor -Scope run
+.\nk.ps1 Doctor -Scope repo
+.\nk.ps1 Doctor -Scope inputs
+.\nk.ps1 Doctor -Scope build
+.\nk.ps1 Doctor -Scope products
+.\nk.ps1 Doctor -Scope run
 ```
 
 For automation or the optional local dashboard:
 
 ```powershell
-.\hst.ps1 Doctor -Scope all -Json
+.\nk.ps1 Doctor -Scope all -Json
 ```
+
+Without a title selection, the canonical doctor uses `assets/titles/synthetic.json`.
+Pass `-TitleManifest` and, when needed, `-GameName` to `nk.ps1` (or `--title-manifest`
+and `--game-name` to `tools/nk_doctor.py`) to diagnose another title. `<game>` below
+is the selected build target name, not necessarily the manifest ID; private-input
+checks depend on the selected manifest.
 
 `-Strict` makes warnings produce a nonzero result. Without it, warnings remain visible but only
 `FAIL` results make the action fail.
@@ -37,8 +43,8 @@ For automation or the optional local dashboard:
 | `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, and tracked-private-path hygiene when a local Git checkout is available |
 | `inputs` | Decrypted MIPS ELF/PRXs, original `~PSP` header, ISO selection/format/disc-ID signal, populated XB extraction tree or configured `SR_DATAROOT`, and save/memstick storage (`SAVE_ROOT`) |
 | `build` | Windows 11/x64, PowerShell/Python, UCRT64 compiler and Make tools, SDL3/Vulkan link inputs, and private code-generation inputs |
-| `products` | Built `hst.exe`, `hst_image.bin`, and recorded build profile (`BUILD_PROFILE`) |
-| `run` | Windows/x64/Python, ISO and XB assets (`SR_DATAROOT`), save directory (`SAVE_ROOT`), VFPU tables, runtime DLLs, `hst.exe`, and `hst_image.bin` |
+| `products` | Built `<game>.exe`, `<game>_image.bin`, and recorded build profile (`BUILD_PROFILE`) |
+| `run` | Windows/x64/Python, ISO and XB assets (`SR_DATAROOT`), save directory (`SAVE_ROOT`), VFPU tables, runtime DLLs, `<game>.exe`, and `<game>_image.bin` |
 | `all` | Every check above |
 
 ## What it validates
@@ -88,8 +94,8 @@ The run scope verifies:
 - all 15 required VFPU table names and exact byte sizes;
 - an x86-64 `SDL3.dll` from the build directory, repository root, or configured UCRT64 bin path;
 - an x86-64 Vulkan loader;
-- an x86-64 `build/hst/hst.exe`;
-- a nonempty `build/hst/hst_image.bin`;
+- an x86-64 `build/<game>/<game>.exe`;
+- a nonempty `build/<game>/<game>_image.bin`;
 - recorded runtime build profile (`BUILD_PROFILE`).
 
 The doctor's VFPU check remains a name/size baseline for workspace diagnosis; content

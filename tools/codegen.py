@@ -36,6 +36,19 @@ LLE_CPU = False
 LLE_IMPORT_SEAM = False
 
 
+def enable_lle_import_seam():
+    """Turn on the import seam and the PR 2 flow machinery it relies on.
+
+    A seam stub that fails closed returns with flow metadata set; only
+    --lle-cpu output makes the native caller check flow_kind after a direct
+    call and enables the runtime LLE lane. Without it an LLE miss would be
+    ignored by the caller, so the seam implies --lle-cpu.
+    """
+    global LLE_IMPORT_SEAM, LLE_CPU
+    LLE_IMPORT_SEAM = True
+    LLE_CPU = True
+
+
 def is_eret(w):
     """True only for the exact ERET encoding (spec 3.4)."""
     return w == 0x42000018
@@ -1301,11 +1314,9 @@ def _is_cop0_move(w):
     cop_rs, _, _, _ = _cop0_fields(w)
     return cop_rs in (0x00, 0x04) and (w & 0x000007F8) == 0
 
-def _flow_return(resumable):
+def _flow_return(resumable=False):
     """Leave the native body when a helper set flow metadata (spec 3.4)."""
-    if resumable:
-        return "if (s->flow_kind != 0u) { return; }"
-    return "if (s->flow_kind != 0u) { s->r[29] = _sp_entry; return; }"
+    return "if (s->flow_kind != 0u) { return; }"
 
 def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
                      resumable=False, indent="    "):
@@ -1330,7 +1341,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
         return [
             f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
             f"{indent}if (sr_cpu_raise_exception(s, 8u, 0x{ds:08x}u, 0x{branch_pc:08x}u, 0u, 1u, 0u) < 0) "
-            f"{{ sr_end(s, 0u, 0); {emit_host_return(resumable)} }}",
+            f"{{ sr_end(s, 0u, 0); return; }}",
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
@@ -1342,7 +1353,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
         return [
             f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
             f"{indent}if (sr_cpu_raise_exception(s, 9u, 0x{ds:08x}u, 0x{branch_pc:08x}u, 0u, 1u, 0u) < 0) "
-            f"{{ sr_end(s, 0u, 0); {emit_host_return(resumable)} }}",
+            f"{{ sr_end(s, 0u, 0); return; }}",
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
@@ -1351,11 +1362,12 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
         helper = "sr_cp0_mfc0" if ((dsw >> 21) & 0x1F) == 0x00 else "sr_cp0_mtc0"
         return [
             f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
-            f"{indent}s->in_delay_slot = 1u; s->next_pc = 0x{branch_pc:08x}u;",
-            f"{indent}if ({helper}(s, {cop_rt}u, {cop_rd}u, {sel}u, 0x{ds:08x}u) < 0) "
-            f"{{ sr_end(s, 0u, 0); {emit_host_return(resumable)} }}",
+            f"{indent}{{ uint32_t _prev_npc = s->next_pc; uint32_t _prev_ids = s->in_delay_slot;",
+            f"{indent}  s->in_delay_slot = 1u; s->next_pc = 0x{branch_pc:08x}u;",
+            f"{indent}  if ({helper}(s, {cop_rt}u, {cop_rd}u, {sel}u, 0x{ds:08x}u) < 0) "
+            f"{{ s->in_delay_slot = _prev_ids; s->next_pc = _prev_npc; sr_end(s, 0u, 0); return; }}",
+            f"{indent}  s->in_delay_slot = _prev_ids; s->next_pc = _prev_npc; }}",
             f"{indent}sr_end(s, 0u, 0);",
-            f"{indent}s->in_delay_slot = 0u;",
             f"{indent}{_flow_return(resumable)}",
         ]
     return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu)]
@@ -1891,7 +1903,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u);")
             out.append(f"    (void)sr_cpu_eret(s, 0x{addr:08x}u);")
             out.append(f"    sr_end(s, 0u, 0);")
-            out.append(f"    {emit_host_return(resumable)}")
+            out.append(f"    return;")
             continue
 
         ds = addr + 4
@@ -1906,6 +1918,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in host_entries:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
+                if lle_cpu:
+                    out.append(f"    {_flow_return(resumable)}")
             else:
                 out.append(
                     f"    dispatch_call(s, 0x{target:08x}u, "
@@ -2101,8 +2115,7 @@ def main(argv):
             # LLE import seam (PR 3): import stubs route through
             # sr_import_call instead of sr_syscall. Default (absent)
             # preserves byte-identical HLE stubs.
-            global LLE_IMPORT_SEAM
-            LLE_IMPORT_SEAM = True
+            enable_lle_import_seam()
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):
@@ -2578,6 +2591,8 @@ def main(argv):
     for i in range(num_files):
         main_out.append(f"void sr_register_chunk_{i}(void);")
     main_out.append("\nvoid sr_register_all(void) {")
+    if LLE_CPU:
+        main_out.append("    sr_cpu_lle_set_enabled(1);")
     main_out.append("    sr_exec_span_reset();")
     for lo, hi in exec_spans:
         main_out.append(

@@ -1622,8 +1622,8 @@ dispatch-selftest:
 # Cause write masking, vector selection/validation, and the LLE gate that
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
-		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
+		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
@@ -1637,7 +1637,7 @@ cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 # hit/miss/dispatch-reject, and fallback hit/miss/reject. Exit code 0 = all.
 domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
-		src/rt/domain_mode_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/domain_mode_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
@@ -1851,7 +1851,7 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
-native-core-tests:
+native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)

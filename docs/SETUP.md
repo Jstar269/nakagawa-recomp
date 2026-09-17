@@ -17,7 +17,7 @@ The supported and tested core development environment is:
 The environment doctor is the executable form of this contract:
 
 ```powershell
-python tools/hst_doctor.py --scope build
+python tools/nk_doctor.py --scope build
 ```
 
 For the Vulkan SDK, discovery is explicit and fail-closed: `-VulkanSdk` wins first, then
@@ -219,7 +219,7 @@ and never copy game or firmware material into Git history.
 From the repository root:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json
+.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
 This runs the complete pipeline and compilation. Generated C is split into a dynamic number of
@@ -229,7 +229,7 @@ intentionally conservative flags to avoid excessive compiler memory use.
 For runtime-only changes:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json
+.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
 For a direct Make build:
@@ -253,18 +253,18 @@ that build left behind.
 ## 4. Run and test
 
 ```powershell
-.\hst_manager.ps1 -Action Test
-.\hst_manager.ps1 -Action Run
-.\hst_manager.ps1 -Action Run -SoftwareRender
-.\hst_manager.ps1 -Action Run -NoGui -Duration 30
+.\nk_manager.ps1 -Action Test
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -SoftwareRender
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -NoGui -Duration 30
 ```
 
 For normal Vulkan runs, an explicit runtime profile can isolate the intended task:
 
 ```powershell
-.\hst_manager.ps1 -Action Run -Profile Performance # log-free visual/audio smoke test
-.\hst_manager.ps1 -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
-.\hst_manager.ps1 -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Performance # log-free visual/audio smoke test
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
 ```
 
 `Performance` redirects the runtime's stdout and stderr to the null device; it is not a
@@ -356,7 +356,7 @@ feature must report that honestly rather than creating a placeholder artifact; s
 
 ## Troubleshooting
 
-- **Preflight diagnostics:** run `.\hst.ps1 Doctor` (or `python tools/hst_doctor.py`) to validate your toolchain, build dependencies, and private game inputs.
+- **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` (or `python tools/nk_doctor.py --title-manifest assets/titles/hst-ucus98701.json --game-name hst`) to validate your toolchain, build dependencies, and private HST inputs. Without a title selection, the canonical doctor uses the public synthetic title.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** ensure the UCRT64 SDL3 `bin` directory is on `PATH`, or place a compatible `SDL3.dll` at the repository root so the manager copies it beside `hst.exe`.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where capability-excluded backends are stubbed, the runtime compiles with `PUBLIC_SAFE=1`. In this mode, UMD/ISO lookups return `-1` and retail disc routes fail closed.

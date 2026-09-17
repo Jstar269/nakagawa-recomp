@@ -495,12 +495,22 @@ static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
     return 0;
 }
 
-static void guest_cstr(uint32_t addr, char *out, int max);
+#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
+#define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
+#endif
+
+static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
 static uint32_t h_AllocPartitionMemory(CpuState *s) {
     /* a0=partition, a1=name, a2=type, a3=size, [sp+16]=addr. Returns a block UID. */
-    char name[64]; guest_cstr(A1, name, sizeof(name));
+    char name[64];
+    if (A1) {
+        if (!guest_cstr(A1, name, sizeof(name)))
+            return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    } else {
+        name[0] = '\0';
+    }
     uint32_t size = A3;
     uint32_t uid = alloc_block(size ? size : 16);
     fprintf(stderr, "  -> uid=0x%x addr=0x%08x (heap_bump_now=0x%08x)\n",
@@ -1412,15 +1422,15 @@ static int psmf_parse_header(SrPsmfPlayer *p, const uint8_t *h, uint32_t n) {
     return 1;
 }
 static uint32_t h_PsmfCreate(CpuState *s) {
-    SrPsmfPlayer *p=psmf_find(A0,1); if(!p||!A1)return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
+    SrPsmfPlayer *p=psmf_find(A0,1); if(!p||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
     p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
 }
 static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;memset(p,0,sizeof(*p));MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
-static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];guest_cstr(A1,path,sizeof(path));uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);sched_delay_current(3100);return 0;}
+static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);sched_delay_current(3100);return 0;}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
-static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)stack_arg(s,0);if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams&&as>=p->audioStreams))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_flush(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)stack_arg(s,0);if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams&&as>=p->audioStreams))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_flush(p);p->status=PSMF_STATUS_PLAYING;return 0;}
 static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);sched_delay_current(3000);return 0;}
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);return 0;}
@@ -1432,7 +1442,8 @@ static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSM
 
 static uint32_t h_IoDevctl(CpuState *s) {
     char dev[64];
-    guest_cstr(A0, dev, sizeof(dev));
+    if (!guest_cstr(A0, dev, sizeof(dev)))
+        return 0x80010016u;
     uint32_t cmd = A1;
     if (hle_log_on())
         fprintf(stderr, "sceIoDevctl: dev='%s', cmd=0x%08x\n", dev, cmd);
@@ -1488,10 +1499,17 @@ static uint32_t h_ExitGame(CpuState *s) {
     snprintf(sr_flag_path, sizeof sr_flag_path, "%s/exited.flag", SR_BUILD_DIR);
     FILE *f_dump = fopen(sr_dump_path, "wb");
     if (f_dump) {
-        fwrite(s, 1, sizeof(CpuState), f_dump);
+        /* Versioned header so tools/mem_debug.py can reject dumps written by a
+         * different CpuState ABI instead of misreading them:
+         * "SRCD", format, ABI version, sizeof(CpuState), stack base, stack bytes. */
         uint32_t sp_base = s->r[29] & 0xFFFF0000u;
-        if (sr_inrange(sp_base)) {
-            fwrite(SR_HOST(sp_base), 1, 0x10000, f_dump);
+        uint32_t stack_len = sr_inrange(sp_base) ? 0x10000u : 0u;
+        uint32_t hdr[6] = { 0x44435253u, 1u, SR_CPUSTATE_ABI_VERSION,
+                            (uint32_t)sizeof(CpuState), sp_base, stack_len };
+        fwrite(hdr, 1, sizeof hdr, f_dump);
+        fwrite(s, 1, sizeof(CpuState), f_dump);
+        if (stack_len) {
+            fwrite(SR_HOST(sp_base), 1, stack_len, f_dump);
         }
         fclose(f_dump);
     }
@@ -3834,7 +3852,7 @@ static uint32_t h_AtracResetPlayPosition(CpuState *s) {
  * earlier guess jumped straight to RUNNING and to NONE, skipping INITIALIZE(1) and SHUTDOWN(4),
  * which a game that waits to observe those states would hang on. result is the common-header
  * field at param+0x1c. */
-static void guest_cstr(uint32_t addr, char *out, int max);
+static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
 uint32_t sr_savedata_execute(uint32_t param);
@@ -3854,7 +3872,7 @@ static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
 static int s_osk_current_clear(void);   /* fwd: savedata/msg dialogs take the slot from the OSK */
 static uint32_t h_SavedataInitStart(CpuState *s) {
-    if (!A0) return 0x80110004u;
+    if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
     dialog_lock();
     s_dlg_param = A0; s_dlg_status = 1; s_dlg_tick = 0;
     s_dlg_work_started = s_dlg_work_done = 0;
@@ -3865,7 +3883,9 @@ static uint32_t h_SavedataInitStart(CpuState *s) {
     dialog_unlock();
     if (getenv("SR_DLGLOG")) { static int n=0; fprintf(stderr, "** SavedataInitStart #%d **\n", ++n);
         uint32_t p = A0;
-        char gn[16], sn[24]; guest_cstr(p+0x3c, gn, sizeof(gn)); guest_cstr(p+0x4c, sn, sizeof(sn));
+        char gn[16], sn[24];
+        if (!guest_cstr(p+0x3c, gn, sizeof(gn))) gn[0] = '\0';
+        if (!guest_cstr(p+0x4c, sn, sizeof(sn))) sn[0] = '\0';
         fprintf(stderr, "SavedataInitStart param=0x%08x size=%u mode=%d gameName='%s' saveName='%s' result=0x%08x\n",
             p, MEM_R32(p+0), (int)MEM_R32(p+0x30), gn, sn, s_dlg_result);
     }
@@ -4843,10 +4863,27 @@ static uint32_t h_StdFd(CpuState *s) { (void)s; return 1; }
 
 /* ---- IoFileMgrForUser: file IO from the game ISO (src/rt/iso.c) ---- */
 
-static void guest_cstr(uint32_t addr, char *out, int max) {
-    int i = 0;
-    for (; i < max - 1; i++) { uint8_t c = MEM_R8(addr + (uint32_t)i); if (!c) break; out[i] = (char)c; }
-    out[i] = 0;
+static int guest_cstr(uint32_t addr, char *out, int max) {
+    if (!out || max <= 0) return 0;
+    out[0] = '\0';
+    if (!addr) return 0;
+    for (int i = 0; i < max; i++) {
+        uint32_t cur = 0;
+        if (!sr_size_add_ok(addr, (uint32_t)i, &cur) || !sr_guest_span_readable(cur, 1u)) {
+            out[0] = '\0';
+            return 0;
+        }
+        uint8_t c = MEM_R8(cur);
+        if (!c) {
+            out[i] = '\0';
+            return 1;
+        }
+        if (i < max - 1) {
+            out[i] = (char)c;
+        }
+    }
+    out[max - 1] = '\0';
+    return 0;
 }
 
 extern void f_32200000(CpuState *s);
@@ -4862,7 +4899,9 @@ static LoadedModule s_loaded_modules[16];
 static int s_nloaded_modules = 0;
 
 static uint32_t h_LoadModule(CpuState *s) {
-    char path[256]; guest_cstr(A0, path, sizeof(path));
+    char path[256];
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
     populate_known_module(path);
@@ -4951,14 +4990,17 @@ static uint32_t h_StartModule(CpuState *s) {
 }
 
 static uint32_t h_KernelPrintf(CpuState *s) {
-    char msg[512]; guest_cstr(A0, msg, sizeof(msg));
+    char msg[512];
+    if (!guest_cstr(A0, msg, sizeof(msg)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     char arg[256] = "";
     /* PSP user-space pointers reside at 0x08000000..0x0BFFFFFF. The old check
      * `s->r[5] < 0x08000000u` was perfectly inverted: it accepted kernel/low
      * addresses and rejected real user strings. Only log the format argument if
      * it points into mapped guest user RAM. */
     if (s->r[5] && s->r[5] >= 0x08000000u && s->r[5] < 0x0C000000u && sr_inrange(s->r[5])) {
-        guest_cstr(s->r[5], arg, sizeof(arg));
+        if (!guest_cstr(s->r[5], arg, sizeof(arg)))
+            arg[0] = '\0';
     }
     fprintf(stderr, "GAMELOG: format='%s' a1=0x%08x a2=0x%08x a3=0x%08x arg='%s'\n", msg, A1, A2, A3, arg);
     if (strstr(msg, "should be called from main thread")) {
@@ -5534,7 +5576,8 @@ static uint32_t h_IoOpen(CpuState *s) {
     /* a0=path, a1=flags, a2=mode. Returns an fd (>=0) or a negative error.
      * PSP flags: WRONLY=2, RDWR=3, APPEND=0x100, CREAT=0x200, TRUNC=0x400. */
     char path[256];
-    guest_cstr(A0, path, sizeof(path));
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return 0x80010016u;
     uint32_t flags = A1;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
@@ -6047,7 +6090,9 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
 }
 
 static uint32_t h_IoDopen(CpuState *s) {
-    char path[512]; guest_cstr(A0, path, sizeof(path));
+    char path[512];
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return 0x80010016u;
     if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
     for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
         if (!s_dirfds[i].used) {
@@ -6278,7 +6323,9 @@ static uint32_t h_IoGetstat(CpuState *s) {
      * fills st_private[0] (+0x40) with the file's starting LBN; the game reads that to build
      * a raw "sce_lbn0x<LBN>" path. Omitting it made the game read garbage and fetch the wrong
      * sector (e.g. REGFILE.CDI at LBN 0x5f20 was read as 0x80). */
-    char path[256]; guest_cstr(A0, path, sizeof(path));
+    char path[256];
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return 0x80010016u;
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
         /* Not on the ISO -- try the extracted-XB data-root (graphical/text data the game
@@ -8987,13 +9034,15 @@ static uint32_t h_GeDrawSync(CpuState *s) { (void)s; return 0; }
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
 static uint32_t h_GeSetCallback(CpuState *s) {
     uint32_t info = A0;
+    if (!info || !sr_guest_span_readable(info, 16u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     for (uint32_t i = 0; i < (uint32_t)(sizeof(s_ge_cb) / sizeof(s_ge_cb[0])); i++) {
         if (!s_ge_cb[i].used) {
             s_ge_cb[i].used = 1;
-            s_ge_cb[i].signal_func = info ? MEM_R32(info + 0) : 0;
-            s_ge_cb[i].signal_arg  = info ? MEM_R32(info + 4) : 0;
-            s_ge_cb[i].finish_func = info ? MEM_R32(info + 8) : 0;
-            s_ge_cb[i].finish_arg  = info ? MEM_R32(info + 12) : 0;
+            s_ge_cb[i].signal_func = MEM_R32(info + 0);
+            s_ge_cb[i].signal_arg  = MEM_R32(info + 4);
+            s_ge_cb[i].finish_func = MEM_R32(info + 8);
+            s_ge_cb[i].finish_arg  = MEM_R32(info + 12);
             if (ge_log_on())
                 fprintf(stderr, "GE_SET_CB: cbid=%u sig=0x%08x/0x%08x fin=0x%08x/0x%08x\n",
                         i, s_ge_cb[i].signal_func, s_ge_cb[i].signal_arg,
@@ -9710,7 +9759,9 @@ static uint32_t h_SasUnsupportedVoice(CpuState *s) {
 #define SCE_KERNEL_ERROR_MPP_FULL      0x800201b3u
 #define SCE_KERNEL_ERROR_MPP_EMPTY     0x800201b4u
 #define SCE_KERNEL_ERROR_ILLEGAL_SIZE  0x800201bcu
+#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR  0x80000103u
+#endif
 typedef struct {
     int used;
     uint32_t uid, attr, capacity, read_pos, write_pos, count;
@@ -9738,7 +9789,14 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
      * outside the modeled range.  Both fail before malloc, before a UID is
      * handed out, and before a slot is reserved, so a rejected create leaves
      * no observable state behind. */
+    /* A NULL name is rejected first with NO_MEMORY, matching PPSSPP's
+     * sceKernelCreateMsgPipe (emulator consensus, not measured here). A non-NULL
+     * name that is unmapped or unterminated fails closed with ILLEGAL_ADDR
+     * (project choice) instead of silently becoming "". */
+    if (!A0) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
     if (A3 == 0 || A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    char name[32];
+    if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* A3 <= MSG_PIPE_MAX_CAPACITY (1 MiB), so the allocation is bounded and
      * size_t conversion cannot truncate. */
     size_t capacity = (size_t)A3;
@@ -9753,7 +9811,7 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
         p->attr = A2;
         p->capacity = A3;
         p->data = data;
-        guest_cstr(A0, p->name, sizeof(p->name));
+        memcpy(p->name, name, sizeof(p->name));
         if (hle_log_on() || getenv("SR_MSGLOG"))
             fprintf(stderr, "HLE: CreateMsgPipe uid=0x%x name='%s' attr=0x%x size=%u\n",
                     p->uid, p->name, p->attr, p->capacity);
@@ -10395,7 +10453,9 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
  * the PSPAutotests oracle citations that establish their values. Re-defining them
  * here produced three -Wmacro-redefined warnings on every build of this file. */
 #define SCE_KERNEL_ERROR_ILLEGAL_ATTR               0x80020191u
+#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR               0x80000103u
+#endif
 #define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT            0x80020064u
 #define SCE_KERNEL_ERROR_NO_MEMORY                  0x80020190u
 #define SCE_KERNEL_ERROR_UNKNOWN_MUTEXID            0x800201C3u
@@ -11310,6 +11370,11 @@ static void hle_register_bulk_memory_handlers(void) {
  * regression dispatches the exact production sceKernelExitGame registration.
  * Terminating the host process is what stops the guest libc reentrancy guard
  * from looping. */
+static void hle_register_partition_savedata_handlers(void) {
+    sr_hle_register(0x237dbd4f, "sceKernelAllocPartitionMemory", h_AllocPartitionMemory);
+    sr_hle_register(0x50c4cd57, "sceUtilitySavedataInitStart", h_SavedataInitStart);
+}
+
 static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
@@ -11339,11 +11404,13 @@ void sr_hle_init(void) {
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
+    hle_register_partition_savedata_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
      * registry the game build uses. */
     hle_register_wait_conformance_handlers();
+    hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
     /* NID audit 2026-06: every entry below verified against PPSSPP's HLE tables. A handler on
@@ -11353,7 +11420,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x7591c7db, "sceKernelSetCompiledSdkVersion", h_SetCompiledSdkVersion);
     sr_hle_register(0x35669d4c, "sceKernelSetCompiledSdkVersion600_602", h_SetCompiledSdkVersion);
     sr_hle_register(0xf77d77cb, "sceKernelSetCompilerVersion", h_SetCompiledSdkVersion);
-    sr_hle_register(0x237dbd4f, "sceKernelAllocPartitionMemory", h_AllocPartitionMemory);
+    /* sceKernelAllocPartitionMemory registered via hle_register_partition_savedata_handlers() */
     sr_hle_register(0x9d9a5ba1, "sceKernelGetBlockHeadAddr", h_GetBlockHeadAddr);
     sr_hle_register(0xb6d61d02, "sceKernelFreePartitionMemory", h_FreePartitionMemory);
     sr_hle_register(0xf919f628, "sceKernelTotalFreeMemSize", h_TotalFreeMemSize);
@@ -11382,7 +11449,7 @@ void sr_hle_init(void) {
     /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
      * A2 bytes through A1, both garbage for this signature. */
     sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
-    sr_hle_register(0x50c4cd57, "sceUtilitySavedataInitStart", h_SavedataInitStart);
+    /* sceUtilitySavedataInitStart registered via hle_register_partition_savedata_handlers() */
     sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
     sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
     sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);

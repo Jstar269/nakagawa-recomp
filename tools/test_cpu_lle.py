@@ -183,6 +183,77 @@ class LleCodegenTests(unittest.TestCase):
         with self.assertRaises(codegen.Unsupported):
             codegen.delay_slot_lines(0x1004, beq, 0x1000)
 
+    def test_emit_eret_preserves_guest_sp(self):
+        text = "\n".join(
+            codegen.emit_function(
+                FakeElf({0x1000: ERET, 0x1004: NOP}),
+                0x1000, [(0x1000, 0x100C)], {0x1000},
+                resumable=False,
+            )
+        )
+        self.assertIn("sr_cpu_eret(s, 0x00001000u);", text)
+        self.assertIn("sr_end(s, 0u, 0);\n    return;", text)
+        self.assertNotIn("sr_end(s, 0u, 0);\n    s->r[29] = _sp_entry;", text)
+
+    def test_delay_slot_exception_unwind_preserves_guest_sp(self):
+        lines_sys = codegen.delay_slot_lines(
+            0x1004, SYSCALL, 0x1000, lle_cpu=True, resumable=False)
+        text_sys = "\n".join(lines_sys)
+        self.assertNotIn("s->r[29] = _sp_entry", text_sys)
+        self.assertIn("{ sr_end(s, 0u, 0); return; }", text_sys)
+
+        lines_brk = codegen.delay_slot_lines(
+            0x1004, BREAK, 0x1000, lle_cpu=True, resumable=False)
+        text_brk = "\n".join(lines_brk)
+        self.assertNotIn("s->r[29] = _sp_entry", text_brk)
+        self.assertIn("{ sr_end(s, 0u, 0); return; }", text_brk)
+
+        lines_mfc0 = codegen.delay_slot_lines(
+            0x1004, mfc0(8, 12), 0x1000, lle_cpu=True, resumable=False)
+        text_mfc0 = "\n".join(lines_mfc0)
+        self.assertNotIn("s->r[29] = _sp_entry", text_mfc0)
+
+    def test_delay_slot_cop0_saves_and_restores_context(self):
+        lines = codegen.delay_slot_lines(
+            0x1004, mfc0(8, 12), 0x1000, lle_cpu=True, resumable=False)
+        text = "\n".join(lines)
+        self.assertIn("_prev_npc = s->next_pc", text)
+        self.assertIn("_prev_ids = s->in_delay_slot", text)
+        self.assertIn("s->in_delay_slot = 1u; s->next_pc = 0x00001000u;", text)
+        self.assertRegex(
+            text,
+            r"if \(sr_cp0_mfc0\(.*?\)\s*<\s*0\)\s*\{\s*s->in_delay_slot = _prev_ids;\s*s->next_pc = _prev_npc;\s*sr_end\(s, 0u, 0\);\s*return;\s*\}"
+        )
+        self.assertIn("s->in_delay_slot = _prev_ids; s->next_pc = _prev_npc; }", text)
+
+    def test_direct_jal_caller_propagates_lle_flow(self):
+        jal_target = 0x00001008
+        jal_insn = 0x0C000000 | ((jal_target >> 2) & 0x03FFFFFF)
+        text_lle = "\n".join(
+            codegen.emit_function(
+                FakeElf({0x1000: jal_insn, 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP}),
+                0x1000, [(0x1000, 0x1008)], {0x1000, 0x1008},
+                lle_cpu=True,
+            )
+        )
+        self.assertIn("f_00001008(s);", text_lle)
+        self.assertIn("if (s->flow_kind != 0u) { return; }", text_lle)
+
+        text_default = "\n".join(
+            codegen.emit_function(
+                FakeElf({0x1000: jal_insn, 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP}),
+                0x1000, [(0x1000, 0x1008)], {0x1000, 0x1008},
+                lle_cpu=False,
+            )
+        )
+        self.assertIn("f_00001008(s);", text_default)
+        self.assertNotIn("flow_kind", text_default)
+
+    def test_sr_register_all_enables_lle_runtime_when_lle_cpu(self):
+        source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
+        self.assertIn("if LLE_CPU:", source)
+        self.assertIn("sr_cpu_lle_set_enabled(1);", source)
+
     def test_lle_cli_flag_drives_the_module_default(self):
         source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
         self.assertIn('"--lle-cpu"', source)
@@ -241,12 +312,16 @@ class CpuLleSourcesTests(unittest.TestCase):
         self.assertIn("SR_STATUS_EXL", text)
         self.assertIn("SR_FLOW_EXCEPTION", text)
         self.assertIn("sr_exec_span_owns_fetch", text)
-        self.assertIn("sr_guest_span_readable", text)
+        self.assertNotIn("sr_guest_span_readable", text)
 
     def test_status_cause_writes_are_masked(self):
         text = CPU_LLE_C.read_text(encoding="utf-8")
         self.assertIn("SR_STATUS_WRITABLE_MASK", text)
         self.assertIn("SR_CAUSE_IP_SW_MASK", text)
+        header = CPU_LLE_H.read_text(encoding="utf-8")
+        mask_def = re.search(r"#define SR_STATUS_WRITABLE_MASK.*?\)", header, re.DOTALL)
+        self.assertIsNotNone(mask_def)
+        self.assertNotIn("SR_STATUS_ERL", mask_def.group(0))
 
     def test_interp_results_cover_exception_flows(self):
         text = GUEST_INTERP_H.read_text(encoding="utf-8")
@@ -302,6 +377,9 @@ class MakefileWiringTests(unittest.TestCase):
                 if "cpu_lle.c" not in text:
                     offenders.append(path.name)
         self.assertEqual(offenders, [])
+
+    def test_native_core_tests_depends_on_cpu_lle_selftest(self):
+        self.assertRegex(MAKEFILE, r"(?m)^native-core-tests:\s*cpu-lle-selftest\b")
 
 
 if __name__ == "__main__":

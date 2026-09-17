@@ -16,8 +16,8 @@ The preview is a Windows public-source and reproducibility package built from
 the sanitized source tree. Its centerpiece is the synthetic production smoke
 workload:
 
-- `mingw32-make production-smoke` creates a checked-in synthetic PSP PRX
-  fixture, statically translates MIPS to C, compiles native code, and verifies
+- `mingw32-make production-smoke` generates a synthetic PSP PRX fixture from
+  checked-in generator source into `build/`, statically translates MIPS to C, compiles native code, and verifies
   and runs the AOT result.
 - `mingw32-make production-smoke-gap` runs the same kind of synthetic workload
   with one function deliberately omitted from AOT emission, exercising the
@@ -51,10 +51,10 @@ This is the limitations section, not a footnote:
 
 - **No preparation pipeline is connected in this build.** The preview cannot
   prepare or run a retail PSP game and provides no gameplay evidence.
-- The exact base `a699000` has no `src/player` tree and no `player` Make target;
-  `mingw32-make player` therefore fails with “No rule to make target 'player'.”
-  No player binary is part of this candidate. Player work on other lanes is not
-  imported by this release-preparation branch.
+- The dated preview candidate at base `a699000` had no `src/player` tree and
+  no `player` Make target. No player binary is part of that candidate.
+  The current tree includes `src/player/` and a `player` Make target for
+  `build/nakagawa_player.exe`; this does not change the dated candidate's scope.
 - The synthetic executables prove the named synthetic contracts only. They do
   not prove retail-title compatibility, complete Allegrex interpreter coverage,
   software/Vulkan agreement with a PSP, or physical PSP correctness.

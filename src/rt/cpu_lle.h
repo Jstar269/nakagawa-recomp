@@ -67,9 +67,10 @@ enum {
 };
 
 /* Guest-writable Status bits (spec 3.2). Reserved bits are preserved, never
- * cleared or set by an mtc0. */
+ * cleared or set by an mtc0. Status.ERL is unsupported in Phase 1 (ErrorEPC
+ * register 30 is not modeled) and excluded from the writable mask. */
 #define SR_STATUS_WRITABLE_MASK \
-    (SR_STATUS_IE | SR_STATUS_EXL | SR_STATUS_ERL | \
+    (SR_STATUS_IE | SR_STATUS_EXL | \
      SR_STATUS_KSU_MASK | SR_STATUS_IM_MASK | SR_STATUS_BEV)
 
 /* Cause field layout (generic MIPS32 positions; PSP specifics per spec 6.3). */

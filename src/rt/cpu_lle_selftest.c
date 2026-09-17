@@ -236,6 +236,7 @@ static void test_cop0_roundtrip(void) {
     CHECK(sr_cp0_mtc0(&s, 7u, SR_CP0_STATUS, 0u, TEST_BASE + 8u) == 0, "status write must succeed");
     CHECK(s.cop0[SR_CP0_STATUS] == (SR_STATUS_WRITABLE_MASK & 0xFFFFFFFFu),
           "status must be masked to writable bits (got 0x%08x)", s.cop0[SR_CP0_STATUS]);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_ERL) == 0u, "Status.ERL must not be writable");
 
     s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;  /* hardware-pending bits, INTC-owned */
     s.r[8] = 0xFFFFFFFFu;
@@ -402,13 +403,136 @@ static void test_config(void) {
     }
 }
 
+static void test_nested_exceptions(void) {
+    CpuState s;
+    fresh_state(&s);
+    /* First exception establishes EPC and Cause.BD. */
+    s.cop0[SR_CP0_STATUS] = 0u;
+    s.cop0[SR_CP0_EPC] = 0u;
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08801004u, 0x08801000u, 0u, 1u, 0u) < 0,
+          "first exception must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08801000u, "first EPC must be branch pc");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "first exception must set Cause.BD");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u, "first exception must set EXL");
+
+    /* Second exception while Status.EXL is 1: nested exception.
+     * MIPS32 spec Vol. III: EPC and Cause.BD must be preserved; Cause.ExcCode updated. */
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08802000u, 0x08802000u, 0u, 0u, 0u) < 0,
+          "nested exception must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08801000u, "nested exception must preserve EPC (got 0x%08x)", s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "nested exception must preserve Cause.BD");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "nested exception must update Cause.ExcCode to BP");
+}
+
+static void test_unbacked_aot_target(void) {
+    CpuState s;
+    fresh_state(&s);
+    /* 0x32200000 is an AOT module address outside guest RAM (not readable). */
+    CHECK(!sr_guest_span_readable(0x32200000u, 4u), "0x32200000 must not be readable in RAM arena");
+    sr_exec_span_register(0x32200000u, 0x32210000u);
+    CHECK(sr_exec_span_owns_fetch(0x32200000u), "registered AOT span must own fetch");
+
+    /* Exception vector pointing to unbacked AOT span must succeed, not SR_FLOW_FATAL. */
+    sr_cpu_lle_set_vectors(0x32200000u, 0x32200000u, 0x32200000u);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "raise exception to unbacked AOT vector must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "unbacked AOT vector must be EXCEPTION, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x32200000u, "flow_target must be vector");
+
+    /* eret targeting unbacked AOT span must succeed, not SR_FLOW_FATAL. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = 0x32200000u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "eret to unbacked AOT target must unwind");
+    CHECK(s.flow_kind == SR_FLOW_ERET, "unbacked AOT eret must be ERET, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x32200000u, "flow_target must be EPC");
+}
+
+static void test_dispatch_interpreter_flow(void) {
+    CpuState s;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+
+    /* TEST_BASE contains a syscall */
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);  /* syscall */
+    MEM_W32_PC(TEST_BASE + 4u, 0x00000000u, TEST_BASE);  /* nop */
+
+    /* TEST_VECTOR contains handler code: v0 = 42; jr $ra; nop */
+    MEM_W32_PC(TEST_VECTOR + 0u, 0x2402002Au, TEST_VECTOR);      /* addiu $v0, $zero, 42 */
+    MEM_W32_PC(TEST_VECTOR + 4u, 0x03E00008u, TEST_VECTOR + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_VECTOR + 8u, 0x00000000u, TEST_VECTOR + 8u);  /* nop */
+
+    uint32_t resume_pc = TEST_BASE + 0x20u;
+    MEM_W32_PC(resume_pc, 0x00000000u, resume_pc);
+
+    s.pc = TEST_BASE;
+    s.r[2] = 0u;
+    s.r[31] = resume_pc;
+
+    int r = dispatch_call_try(&s, TEST_BASE, resume_pc);
+    CHECK(r == SR_GUEST_INTERP_CALL_RETURN, "dispatch_call_try must report CALL_RETURN (got %d)", r);
+    CHECK(s.r[2] == 42u, "exception vector must execute and set v0=42 (got %u)", s.r[2]);
+    CHECK(s.flow_kind == SR_FLOW_NONE, "flow metadata must be consumed/cleared (got %u)", s.flow_kind);
+    CHECK(s.flow_target == 0u, "flow_target must be cleared");
+}
+
+static void test_interp_flow_trace(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+
+    /* User mode: mtc0 will raise CPU exception */
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
+    s.pc = TEST_BASE;
+
+    const char *trace_path = "build/mygame/test_interp_trace.txt";
+    CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
+    SrGuestInterpResult r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    sr_trace_close();
+
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "user mtc0 must raise exception");
+
+    /* Read trace file to verify that sr_end was called for the faulting instruction */
+    FILE *f = fopen(trace_path, "rb");
+    CHECK(f != NULL, "trace file must exist");
+    char buf[1024] = {0};
+    size_t bytes = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    CHECK(bytes > 0, "trace file must not be empty");
+    /* The trace must contain the step record for the mtc0 instruction */
+    CHECK(strstr(buf, "\n0 pc=0x08810000") != NULL, "trace must record the faulting instruction");
+
+    /* Now test that a genuinely rejected opcode does NOT finish a trace record */
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, 0x00000005u, TEST_BASE);  /* unsupported opcode */
+    s.pc = TEST_BASE;
+    CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    sr_trace_close();
+    CHECK(r == SR_GUEST_INTERP_UNSUPPORTED, "unsupported opcode must return UNSUPPORTED");
+
+    f = fopen(trace_path, "rb");
+    CHECK(f != NULL, "trace file must exist");
+    memset(buf, 0, sizeof(buf));
+    bytes = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    CHECK(strstr(buf, "\n0 pc=0x08810000") == NULL, "rejected opcode must NOT record trace step");
+}
+
 int main(void) {
     sr_mem_init();
     setup_spans();
+    test_dispatch_interpreter_flow();
+    test_interp_flow_trace();
     test_exception_entry_plain();
     test_exception_delay_slot();
     test_exception_ce_badvaddr();
+    test_nested_exceptions();
     test_vector_selection();
+    test_unbacked_aot_target();
     test_eret();
     test_mode_checks();
     test_cop0_roundtrip();

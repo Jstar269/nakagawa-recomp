@@ -21,7 +21,9 @@ For every existing or proposed HLE routine, developers and agents must answer:
 
 ## 2. Quantitative Census of the Current Codebase
 
-Based on the static audit of `af5c4f4` / `1c672f5` and current worktree status:
+Import and hook totals below retain the static audit of `af5c4f4` / `1c672f5`;
+the title-configuration and walker descriptions were checked against `faa43e6`.
+Run `tools/test_compat_manifest.py` for the current compatibility inventory gate:
 
 ```text
 ================================================================================
@@ -35,14 +37,14 @@ Import Registrations Audited (import_audit_gate):   377 NIDs
 Dispatch Hooks & Walkers (src/rt/recomp.c):
   - Exact-Match Dispatch Hooks:                     17 sites (Tiers 4 & 5)
   - Address-Range Hooks:                             1 site  (Tier 4)
-  - Register Clobber Guards (INIT_WALKER_GUARD):     1 site  (Tier 5)
-  - Loop Iteration Caps (WALKER_CAP):                1 site  (Tier 5)
+  - Inline Dispatch Guard (INIT_WALKER_GUARD):        1 site  (Tier 5)
+  - WALKER_CAP:                                      historical comment, not an active cap
 
 Title Configuration Overrides (src/rt/title_config.c):
-  - Hardcoded Entry Points & Addresses:             14 fields (Tier 4)
-  - Dispatch Aliases:                                0 configured
-  - Callback Terminators:                            0 configured
-  - Runtime Sync Wrappers:                           0 configured
+  - Hardcoded Entry Points & Addresses:              0 (generated header/manifest bindings)
+  - Dispatch Aliases:                                generated X-macro list (0 in generic build)
+  - Callback Terminators:                            generated X-macro list (0 in generic build)
+  - Runtime Sync Wrappers:                           generated X-macro list (0 in generic build)
 ================================================================================
 ```
 
@@ -54,8 +56,8 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 #### 1. `libfont.prx` Initialization Bypass & Compat Flag
 
-- **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and `src/rt/title_config.c` (`libfont_ready_flag_addr`).
-- **Mechanism:** When the game loads `libfont.prx`, `hle.c` intercepts the path, refuses to execute `module_start` (`f_32200000`), and writes `1u` into guest address `0x00304290` (`libfont_ready_flag_addr`).
+- **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and `src/rt/title_config.c:74` (`SR_TITLE_CONFIG_LIBFONT_READY_FLAG_ADDR`; accessor at lines 190–194).
+- **Mechanism:** The title-specific libfont bypass uses `libfont_ready_flag_addr` from the title manifest via generated `sr_title_config.h`, not a hardcoded address in `title_config.c`. That file consumes the generated header at line 20, collection X-macros at lines 26–65, and configuration bindings at lines 67–94.
 - **Root Cause:** When `f_32200000` was previously executed, it blocked indefinitely on an unconditional `sceKernelWaitSema`.
 - **Lower-Level Solution:** Fix the semaphore initial count and thread scheduling in `src/rt/sched.c` so `libfont.prx` initializes naturally, then remove the hardcoded memory poke.
 
@@ -86,17 +88,17 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 #### 1. `INIT_WALKER_GUARD` (Callee-Saved `$s0` / `$r16` Preservation)
 
-- **Location:** `src/rt/recomp.c` (lines 2040–2075).
-- **Mechanism:** Saves `s->r[16]` before dispatching to address `0x00000fdc` and forcefully restores it upon return if modified.
+- **Location:** `src/rt/recomp.c:2063–2075`, inline in `dispatch()`, not a dispatch hook-table entry.
+- **Mechanism:** When the caller's `s->pc` is `0x00000f98` or `0x00000fdc`, saves `s->r[16]` around `fn(s)` and unconditionally restores it on return. These PCs select the guard; they are not the dispatch target.
 - **Root Cause:** A MIPS ABI violation in recompiled code or compiler optimization where a callee corrupted callee-saved register `$s0`.
 - **Lower-Level Solution:** Audit the recompiled functions called by `0x00000fdc` in `tools/codegen.py` to ensure standard MIPS calling conventions preserve `$s0`–`$s7` across function boundaries.
 
-#### 2. `WALKER_CAP` Iteration Limit
+#### 2. `WALKER_CAP` Historical Comment
 
-- **Location:** `src/rt/recomp.c` (around line 1593).
-- **Mechanism:** Counts iterations in the initialization loop at `L_00000940` and forcefully breaks the loop after 2048 cycles.
-- **Root Cause:** The loop iterates across a table expecting a null sentinel that was uninitialized or laid out differently in guest memory.
-- **Lower-Level Solution:** Ensure BSS sections and static tables are properly zero-initialized during ELF/PRX loading in `tools/prxload.py`.
+- **Location:** `src/rt/recomp.c:1586–1607` (comment only; `WALKER_CAP` mentions at lines 1593 and 1601).
+- **Mechanism:** The comment describes a former 2048-iteration cap and the rationale for bypassing `f_000008d8` by returning `r[2]=0` directly (`WALKER_SKIP`, lines 1605–1606). It is not an active cap or executable function at those lines.
+- **Root Cause:** The historical comment describes recursive walker dispatch and repeated yields starving frame-present progress; it is not current behavioral proof.
+- **Lower-Level Solution:** Verify current walker execution and guest table initialization before treating the historical bypass rationale as an active workaround.
 
 ---
 
@@ -129,11 +131,11 @@ Title Configuration Overrides (src/rt/title_config.c):
 ```mermaid
 timeline
     title Workaround Elimination & LLE Convergence
-    Phase 1 : Zero-Initialize BSS & Segment Extents : Audit tools/codegen.py for $s0 register preservation : Eliminate INIT_WALKER_GUARD and WALKER_CAP
+    Phase 1 : Zero-Initialize BSS & Segment Extents : Audit tools/codegen.py for $s0 register preservation : Eliminate INIT_WALKER_GUARD : Revalidate historical walker bypass rationale
     Phase 2 : Implement clean-room ATRAC3+ decoder : Eliminate high-risk fake_success audio NIDs : Implement sceReg virtual system registry
     Phase 3 : Complete kernel semaphore & thread synchronization : Execute libfont.prx module_start : Eliminate libfont_ready_flag_addr hardcoded poke
     Phase 4 : Execute scePsmf_library.prx & psmf.prx module_start : Bridge low-level sceMpeg to host hardware decoders : Eliminate StartModule bypasses
-    Phase 5 : Eliminate remaining fake_success stubs : Purge all hardcoded game addresses from src/rt/title_config.c : Reach Zero-Workaround State
+    Phase 5 : Eliminate remaining fake_success stubs : Retire title-specific manifest overrides : Reach Zero-Workaround State
 ```
 
 ### The Invariant for Future Work

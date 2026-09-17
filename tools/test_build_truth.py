@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -175,9 +176,17 @@ class CpuStateAbiTests(unittest.TestCase):
     """The native and generated sides must agree on the versioned CpuState ABI."""
 
     def setUp(self) -> None:
-        self.cc = os.environ.get("CC") or shutil.which("gcc") or shutil.which("cc")
-        if not self.cc:
+        # An explicit CC may be a compound command (e.g. "ccache gcc"), as Make
+        # accepts; a PATH-resolved compiler is a single path and is not split.
+        configured = os.environ.get("CC")
+        if configured:
+            self.cc_command = shlex.split(configured)
+        else:
+            found = shutil.which("gcc") or shutil.which("cc")
+            self.cc_command = [found] if found else []
+        if not self.cc_command:
             self.skipTest("a C compiler is required")
+        self.cc = " ".join(self.cc_command)
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-cpustate-abi-")
         self.work = Path(self.temp.name)
 
@@ -186,7 +195,8 @@ class CpuStateAbiTests(unittest.TestCase):
 
     def _compile(self, source: Path, include_dir: Path, output: Path) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [self.cc, "-std=c11", "-I", str(include_dir), "-c", str(source), "-o", str(output)],
+            [*self.cc_command, "-std=c11", "-I", str(include_dir), "-c", str(source),
+             "-o", str(output)],
             cwd=ROOT,
             capture_output=True,
             text=True,
