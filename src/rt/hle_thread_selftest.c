@@ -3735,6 +3735,157 @@ static void wsv_cb_coro_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
+/* PSP-B1-01 (psp-hw-20260917), project-authored synthetic probe on PSP-3000, firmware 6.61. */
+static void b1_expect(uint32_t actual, uint32_t expected, const char *scenario) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "B1 %s: expected 0x%08x, actual 0x%08x",
+             scenario, expected, actual);
+    expect(actual == expected, msg);
+}
+
+static uint32_t b1_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_sema_hardware_codes(void) {
+    (void)wsv_begin();
+    uint32_t sema = wsv_create(1, 2);
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 2u, 0u), 0x800201aeu,
+              "SignalSema overflow returns 800201AE");
+    expect(wsv_count(sema) == 1, "B1 SignalSema overflow leaves count unchanged");
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 0u, 0u), 0u,
+              "SignalSema zero succeeds");
+    expect(wsv_count(sema) == 1, "B1 SignalSema zero preserves count");
+    b1_expect(wsv_wait(NID_WSV_SIGNAL_SEMA, sema, 0xffffffffu, 0u), 0u,
+              "SignalSema negative one succeeds");
+    expect(wsv_count(sema) == 0, "B1 SignalSema negative one decrements count");
+    b1_expect(wsv_wait(0x58b1f937u, sema, 1u, 0u), 0x800201adu,
+              "PollSema empty returns 800201AD");
+    const uint32_t invalid_counts[] = {0u, 0xffffffffu, 3u};
+    for (unsigned i = 0; i < sizeof invalid_counts / sizeof invalid_counts[0]; i++) {
+        b1_expect(wsv_wait(0x58b1f937u, sema, invalid_counts[i], 0u), 0x800201bdu,
+                  "PollSema invalid count returns 800201BD");
+        expect(wsv_count(sema) == 0, "B1 rejected PollSema preserves count");
+    }
+    wsv_delete(sema);
+    const uint32_t nids[] = {NID_WSV_SIGNAL_SEMA, NID_WSV_DELETE_SEMA, 0x58b1f937u};
+    for (unsigned i = 0; i < sizeof nids / sizeof nids[0]; i++) {
+        b1_expect(wsv_wait(nids[i], sema, 1u, 0u), 0x80020199u,
+                  "semaphore deleted ID returns 80020199");
+        b1_expect(wsv_wait(nids[i], 0xdeadbeefu, 1u, 0u), 0x80020199u,
+                  "semaphore unknown ID returns 80020199");
+    }
+    b1_expect(b1_call(NID_CNW_CREATE_SEMA, WSV_NAMEBUF, 0xffffffffu, 0u, 2u),
+              0x80020191u, "CreateSema invalid attr returns 80020191");
+    uint32_t created = wsv_create(3, 2);
+    expect((int32_t)created > 0 && wsv_count(created) == 3,
+           "B1 CreateSema accepts initial count above maximum");
+    wsv_delete(created);
+    created = wsv_create(0, 0);
+    expect((int32_t)created > 0 && wsv_count(created) == 0,
+           "B1 CreateSema accepts maximum zero");
+    wsv_delete(created);
+    s_cur = -1;
+}
+
+/* PSP-B1-01 / PSP-B2-01 (psp-hw-20260917): LwMutex return codes and workarea
+ * writes. The workarea lives at a fixed guest address; the fixture thread is the
+ * owner, and "another owner" is simulated by writing a foreign uid. */
+#define B1_LW_WORKAREA 0x00250300u
+#define NID_B1_CREATE_LWMUTEX 0x19cff145u
+#define NID_B1_DELETE_LWMUTEX 0x60107536u
+#define NID_B1_LOCK_LWMUTEX   0xbea46419u
+#define NID_B1_TRYLOCK_LWMUTEX 0xdc692ee3u
+#define NID_B1_UNLOCK_LWMUTEX 0x15b6446bu
+
+static void test_lwmutex_hardware_codes(void) {
+    TCB *self = wsv_begin();
+    const uint32_t wa = B1_LW_WORKAREA;
+    const uint32_t me = self->uid;
+
+    b1_expect(b1_call(NID_B1_CREATE_LWMUTEX, wa, WSV_NAMEBUF, 0x200u, 0u), 0u,
+              "CreateLwMutex recursive succeeds");
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0u, "TryLock free succeeds");
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 2u, 0u, 0u), 0u, "recursive TryLock succeeds");
+    expect(MEM_R32(wa) == 3u && MEM_R32(wa + 4u) == me, "B1 recursive TryLock adds to lockLevel");
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 0u, 0u, 0u), 0x800201c4u,
+              "TryLock count 0 returns 800201C4");
+    b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 3u, 0u, 0u), 0u, "Unlock to zero succeeds");
+    b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201ccu,
+              "Unlock of an unlocked mutex returns 800201CC");
+    b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 0u, 0u, 0u), 0x800201bdu,
+              "Unlock count 0 returns 800201BD");
+
+    /* Another owner (PSP-B2-01). */
+    MEM_W32(wa, 1u);
+    MEM_W32(wa + 4u, me + 0x100u);
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201c4u,
+              "TryLock held by another thread returns 800201C4");
+    b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201ccu,
+              "Unlock by a non-owner returns 800201CC");
+    expect(MEM_R32(wa) == 1u && MEM_R32(wa + 4u) == me + 0x100u,
+           "B1 non-owner unlock leaves the workarea untouched");
+
+    /* Delete while held, then again. */
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0u, "Delete while held succeeds");
+    expect(MEM_R32(wa) == 0u && MEM_R32(wa + 4u) == 0xffffffffu && MEM_R32(wa + 8u) == 0x200u
+           && MEM_R32(wa + 16u) == 0xffffffffu,
+           "B1 Delete writes 0xFFFFFFFF to lockThread and uid and keeps attr");
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201c4u,
+              "TryLock of a deleted mutex returns 800201C4");
+    expect(MEM_R32(wa) == 0u, "B1 TryLock of a deleted mutex does not take it");
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0x800201cau,
+              "second Delete returns 800201CA");
+
+    /* Non-recursive mutex created held by the caller. */
+    b1_expect(b1_call(NID_B1_CREATE_LWMUTEX, wa, WSV_NAMEBUF, 0u, 2u), 0x800201bdu,
+              "non-recursive Create with initialCount 2 returns 800201BD");
+    b1_expect(b1_call(NID_B1_CREATE_LWMUTEX, wa, WSV_NAMEBUF, 0u, 1u), 0u,
+              "non-recursive Create held succeeds");
+    expect(MEM_R32(wa) == 1u && MEM_R32(wa + 4u) == me, "B1 initialCount 1 makes the caller the owner");
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201c4u,
+              "self-held non-recursive TryLock returns 800201C4");
+    MEM_W32(WSV_TIMEOUT_PTR, 10000u);
+    b1_expect(b1_call(NID_B1_LOCK_LWMUTEX, wa, 1u, WSV_TIMEOUT_PTR, 0u), 0x800201cfu,
+              "self-held non-recursive timed Lock returns 800201CF");
+    expect(MEM_R32(WSV_TIMEOUT_PTR) == 10000u && self->state == TH_RUNNING,
+           "B1 self-held non-recursive Lock neither waits nor consumes the timeout");
+    expect(MEM_R32(wa) == 1u, "B1 rejected relock leaves lockLevel unchanged");
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0u, "Delete succeeds");
+    s_cur = -1;
+}
+
+/* PSP-B1-01: event-flag Refer reports create-time attr and initial pattern, and
+ * unknown ids are 8002019A. */
+#define NID_B1_CREATE_EVF 0x55c20a00u
+#define NID_B1_DELETE_EVF 0xef9e4c70u
+#define NID_B1_SET_EVF    0x1fb15a32u
+#define NID_B1_POLL_EVF   0x30fd48f0u
+#define NID_B1_REFER_EVF  0xa66b0120u
+#define B1_EVF_INFO       0x00250400u
+
+static void test_evf_hardware_codes(void) {
+    (void)wsv_begin();
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, WSV_NAMEBUF, 0u, 0x0fu, 0u);
+    expect((int32_t)evf > 0, "B1 CreateEventFlag succeeds");
+    b1_expect(b1_call(NID_B1_SET_EVF, evf, 0xf0u, 0u, 0u), 0u, "SetEventFlag succeeds");
+    MEM_W32(B1_EVF_INFO, 52u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, evf, B1_EVF_INFO, 0u, 0u), 0u, "ReferEventFlagStatus succeeds");
+    expect(MEM_R32(B1_EVF_INFO + 36u) == 0u, "B1 Refer reports the create-time attr");
+    expect(MEM_R32(B1_EVF_INFO + 40u) == 0x0fu, "B1 Refer reports the initial pattern");
+    expect(MEM_R32(B1_EVF_INFO + 44u) == 0xffu, "B1 Refer reports the current pattern");
+    b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, "DeleteEventFlag succeeds");
+    b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0x8002019au,
+              "DeleteEventFlag deleted id returns 8002019A");
+    b1_expect(b1_call(NID_B1_SET_EVF, evf, 1u, 0u, 0u), 0x8002019au,
+              "SetEventFlag deleted id returns 8002019A");
+    b1_expect(b1_call(NID_B1_POLL_EVF, evf, 1u, 1u, 0u), 0x8002019au,
+              "PollEventFlag deleted id returns 8002019A");
+    s_cur = -1;
+}
+
 static void test_wait_sema_count_validation(void) {
     char msg[256];
 
@@ -10126,6 +10277,15 @@ int main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--b1-kobj") == 0) {
+        test_sema_hardware_codes();
+        test_lwmutex_hardware_codes();
+        test_evf_hardware_codes();
+        fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_utility_av_module_state();
@@ -10183,6 +10343,9 @@ int main(int argc, char **argv) {
     test_is_cpu_intr_suspended_is_token_predicate();
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
+    test_sema_hardware_codes();
+    test_lwmutex_hardware_codes();
+    test_evf_hardware_codes();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_allocate_fpl_context_precedence();
