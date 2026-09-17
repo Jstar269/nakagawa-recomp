@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -105,11 +103,11 @@ def collect_public_manifests(
     if policy_dir is not None:
         try:
             staged_under = policy_dir.resolve().relative_to(ROOT).as_posix()
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
                 f"policy_dir {policy_dir} is not inside the repository root {ROOT}; "
                 "an out-of-repository directory carries no publication policy to lend."
-            )
+            ) from exc
 
     all_json = sorted(manifest_dir.glob("*.json"))
     public_files: List[Path] = []
@@ -117,14 +115,14 @@ def collect_public_manifests(
     for mf in all_json:
         try:
             rel = mf.resolve().relative_to(ROOT).as_posix()
-        except ValueError:
+        except ValueError as exc:
             if staged_under is None:
                 raise ValueError(
                     f"manifest {mf} lies outside the repository root {ROOT}; "
                     "publication policy is decided per tracked path and must not be "
                     "inferred from a file name. Point --manifest-dir at a directory "
                     "inside the repository, or pass an explicit policy_dir."
-                )
+                ) from exc
             rel = f"{staged_under}/{mf.name}"
 
         res = policy.resolve(rel)

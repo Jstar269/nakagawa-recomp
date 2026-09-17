@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
-import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -307,7 +305,7 @@ def audit_history_commit_metadata(repo_root: Path = ROOT) -> list[HistoryFinding
                 code="COMMIT_LOG_LOCAL_PATH",
                 commit=commit_sha[:8],
                 path="<commit_message>",
-                detail=f"Commit message contains local path or directory fragment",
+                detail="Commit message contains local path or directory fragment",
             ))
 
         # Check for direct key or secret patterns in commit message

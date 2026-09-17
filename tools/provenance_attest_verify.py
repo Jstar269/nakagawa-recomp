@@ -152,11 +152,11 @@ import tempfile
 import threading
 import unicodedata
 from fnmatch import fnmatchcase
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 try:
     from .provenance_ledger import (
-        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
@@ -164,7 +164,7 @@ try:
     from .publication_policy import PolicyError, load_policy
 except ImportError:
     from provenance_ledger import (
-        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )

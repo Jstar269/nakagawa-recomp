@@ -430,7 +430,6 @@ class VcrspVqmulActualSub5Tests(unittest.TestCase):
         self.assertEqual(len(actual),6, f"actual 0x3C/sub5 must be 6 (3*2), got {len(actual)}")
         for w in actual:
             self.assertIn(_size_independent(w),(3,4), f"0x{w:08x} size T/Q")
-        from vfpu_synth_gen import _malformed_vfpu12_5bit_field
         for w in actual:
             self.assertEqual(_sub3(w),5)
     def test_no_old_5bit_field_words_in_corpus(self):

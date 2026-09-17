@@ -26,10 +26,16 @@ extend-exclude = ["build", "third_party", "interface", "__pycache__"]
 # incrementally as touched files are cleaned instead of mass-rewriting codegen.
 select = [
     "E9",   # syntax/runtime parser failures
-    "F63",  # invalid comparisons and assertions
-    "F7",   # invalid control flow and definitions
-    "F82",  # undefined names
+    "F",    # Pyflakes (undefined names, unused imports/variables, duplicate keys)
+    "B",    # flake8-bugbear (common bugs and design issues)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy codegen and fixture generators are kept on baseline correctness checks
+# to avoid mass rewrites on untouched/generated files.
+"tools/codegen.py" = ["F541", "B023"]
+"fixtures/**" = ["F401", "F841", "B007"]
+
 
 [tool.mypy]
 python_version = "3.14"
