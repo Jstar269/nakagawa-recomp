@@ -92,6 +92,9 @@ typedef struct {
     uint64_t wake;               /* scheduler tick to wake at (TH_WAIT_DELAY) */
     uint32_t wait_obj;           /* object uid this thread waits on (TH_WAIT_OBJ) */
     int      wait_kind;           /* PSP waitType while in TH_WAIT_OBJ (3=sema,4=evf,13=lwmutex) */
+    int      pending_wait_kind;   /* latched by sched_set_current_wait_kind for the next block */
+    uint32_t wake_result;         /* cancel/delete/release code for this waiter */
+    int      wake_result_valid;   /* wake_result is pending for this thread */
     int      wakeups;            /* pending sceKernelWakeupThread count (sleep/wakeup semantics) */
     int      sleeping;           /* 1 while blocked in sceKernelSleepThread[CB] */
     int32_t  exit_status;        /* value passed to sceKernelExitThread */
@@ -2710,6 +2713,9 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
+    t->wait_kind = t->pending_wait_kind;
+    t->pending_wait_kind = 0;
+    t->wake_result_valid = 0;
     t->wake = SCHED_WAIT_FOREVER;     /* infinite: only sched_wake releases it */
     switch_to_scheduler();
 }
@@ -2724,6 +2730,9 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
+    t->wait_kind = t->pending_wait_kind;
+    t->pending_wait_kind = 0;
+    t->wake_result_valid = 0;
     t->wake = deadline;
     switch_to_scheduler();
     vtime_refresh();
@@ -2783,23 +2792,23 @@ void sched_wake(uint32_t obj) {
             s_tcb[i].state = TH_READY;
 }
 
-/* Result value the interrupted waiter must observe on resume (0 = the object
- * actually signalled). Written by sched_wake_with_result, consumed by
- * sched_take_wake_result(). */
-static uint32_t s_wake_result;
-
 /* PSP-B2-01 (psp-hw-20260917): a cancelled waiter leaves its wait with a kernel
  * result instead of the object being satisfied -- WAIT_CANCEL (0x800201A9) from
  * CancelSema/CancelEventFlag/CancelReceiveMbx, WAIT_DELETE (0x800201B5) from
  * deleting the waited object, WAIT_RELEASE (0x800201AA) from ReleaseWaitThread.
  * The waiters themselves poll this after sched_block_on(); an untimed block has
- * no other way to distinguish "woken" from "cancelled". */
-static int s_wake_result_valid;
-
+ * no other way to distinguish "woken" from "cancelled". The result is stored
+ * on each readied waiter, so several waiters all observe it and no other
+ * thread can consume it. */
 void sched_wake_with_result(uint32_t obj, uint32_t result) {
-    s_wake_result = result;
-    s_wake_result_valid = 1;
-    sched_wake(obj);
+    for (int i = 0; i < s_ntcb; i++) {
+        TCB *w = &s_tcb[i];
+        if (!w->deleted && w->state == TH_WAIT_OBJ && w->wait_obj == obj) {
+            w->wake_result = result;
+            w->wake_result_valid = 1;
+            w->state = TH_READY;
+        }
+    }
 }
 
 int sched_take_wake_result(uint32_t *result_out) {
@@ -2808,9 +2817,11 @@ int sched_take_wake_result(uint32_t *result_out) {
      * are negative as a signed int. Returning the code directly with a -1
      * sentinel misclassifies every real wake as "none". Report presence
      * separately and hand the code out-of-band. */
-    int valid = s_wake_result_valid;
-    s_wake_result_valid = 0;
-    if (valid && result_out) *result_out = s_wake_result;
+    if (s_cur < 0) return 0;
+    TCB *self = &s_tcb[s_cur];
+    int valid = self->wake_result_valid;
+    self->wake_result_valid = 0;
+    if (valid && result_out) *result_out = self->wake_result;
     return valid;
 }
 
@@ -2839,8 +2850,8 @@ int sched_count_waiters(uint32_t obj) {
 int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ) {
-        s_wake_result = result;
-        s_wake_result_valid = 1;
+        t->wake_result = result;
+        t->wake_result_valid = 1;
         t->state = TH_READY;
         return 1;
     }
@@ -3050,8 +3061,10 @@ static uint32_t psp_wait_type(const TCB *t) {
     return PSP_WAIT_NONE;
 }
 
+/* Latch the PSP waitType for the current thread's next object block; the
+ * block consumes it, so a later wait of another kind never reports it. */
 void sched_set_current_wait_kind(int kind) {
-    if (s_cur >= 0) s_tcb[s_cur].wait_kind = kind;
+    if (s_cur >= 0) s_tcb[s_cur].pending_wait_kind = kind;
 }
 
 int sched_thread_run_status(uint32_t uid, SrThreadRunStatus *out) {

@@ -4307,6 +4307,33 @@ static void wcr_finish(TCB *waiter, uint32_t obj) {
     s_cur = -1;
 }
 
+/* Wake results belong to each waiter: one cancel readies every thread blocked on
+ * the object with the same code, and a thread that was not waiting never sees
+ * it (a single global slot would hand it to whichever thread resumed first). */
+static void test_wake_result_is_per_thread(void) {
+    reset_fixture();
+    TCB *a = fixture_thread(0x2a1u, TH_WAIT_OBJ, 32);
+    TCB *b = fixture_thread(0x2a2u, TH_WAIT_OBJ, 32);
+    TCB *other = fixture_thread(0x2a3u, TH_WAIT_OBJ, 32);
+    a->wait_obj = 0x5150u;
+    b->wait_obj = 0x5150u;
+    other->wait_obj = 0x5151u;
+    sched_wake_with_result(0x5150u, 0x800201a9u);
+    expect(a->state == TH_READY && b->state == TH_READY && other->state == TH_WAIT_OBJ,
+           "wake-with-result readies exactly the waiters on the object");
+    uint32_t code = 0;
+    s_cur = (int)(a - s_tcb);
+    expect(sched_take_wake_result(&code) && code == 0x800201a9u, "first waiter observes WAIT_CANCEL");
+    s_cur = (int)(b - s_tcb);
+    code = 0;
+    expect(sched_take_wake_result(&code) && code == 0x800201a9u, "second waiter also observes WAIT_CANCEL");
+    s_cur = (int)(a - s_tcb);
+    expect(!sched_take_wake_result(&code), "a wake result is consumed once");
+    s_cur = (int)(other - s_tcb);
+    expect(!sched_take_wake_result(&code), "a thread on another object has no wake result");
+    s_cur = -1;
+}
+
 static void test_cancel_release_wake_results(void) {
     char msg[192];
     CpuState cpu;
@@ -10906,6 +10933,7 @@ int main(int argc, char **argv) {
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_cancel_release_wake_results();
+    test_wake_result_is_per_thread();
     test_b23_second_round();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
