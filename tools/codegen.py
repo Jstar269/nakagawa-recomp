@@ -19,6 +19,61 @@ import entry_frame_balance
 
 CPU_STATE_ABI_VERSION = 2
 
+# LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
+# exceptions via sr_cpu_raise_exception instead of the default HLE path
+# (sr_raw_syscall/sr_break). Set by --lle-cpu; default False preserves
+# byte-for-byte HLE behavior. MFC0/MTC0/ERET have no prior HLE behavior
+# (they were untranslatable) and emit helper calls in both modes.
+LLE_CPU = False
+
+# LLE import seam (PR 3): when True, generated import stubs route through
+# sr_import_call(s, nid, stub_pc) instead of calling sr_syscall(s, nid)
+# directly, so the stub honors the per-domain HLE/LLE selection in
+# src/rt/domain_mode.h. Set by --lle-import-seam; default False preserves
+# byte-for-byte HLE stubs. In HLE mode the seam tail-calls sr_syscall with
+# identical effects; the stub keys off s->flow_kind (the PR 2 pattern),
+# never off the seam return, because legitimate HLE errors are nonzero.
+LLE_IMPORT_SEAM = False
+
+
+def enable_lle_import_seam():
+    """Turn on the import seam and the PR 2 flow machinery it relies on.
+
+    A seam stub that fails closed returns with flow metadata set; only
+    --lle-cpu output makes the native caller check flow_kind after a direct
+    call and enables the runtime LLE lane. Without it an LLE miss would be
+    ignored by the caller, so the seam implies --lle-cpu.
+    """
+    global LLE_IMPORT_SEAM, LLE_CPU
+    LLE_IMPORT_SEAM = True
+    LLE_CPU = True
+
+
+def is_eret(w):
+    """True only for the exact ERET encoding (spec 3.4)."""
+    return w == 0x42000018
+
+
+def import_stub_text(addr, lib, nid, lle_import_seam=False):
+    """Generated body for one import stub (spec section 4, PR 3).
+
+    Default (False) emits the historical sr_syscall stub byte-for-byte.
+    With the seam enabled the stub calls sr_import_call(s, nid, stub_pc)
+    and unwinds when the seam leaves flow metadata set -- the same
+    flow-propagation shape PR 2 emits for COP0/eret -- so an LLE miss
+    never falls through as if the import had succeeded.
+    """
+    if lle_import_seam is False:
+        lle_import_seam = LLE_IMPORT_SEAM
+    if lle_import_seam:
+        return (f"void f_{addr:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
+                f"    sr_import_call(s, 0x{nid:08x}u, 0x{addr:08x}u);\n"
+                f"    if (s->flow_kind != 0u) {{ sr_end(s, 0u, 0); return; }}\n"
+                f"    sr_end(s, 0u, 0);\n}}")
+    return (f"void f_{addr:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
+            f"    sr_syscall(s, 0x{nid:08x}u);\n"
+            f"    sr_end(s, 0u, 0);\n}}")
+
 
 @dataclass(frozen=True)
 class EntryInfo:
@@ -376,8 +431,26 @@ NULL_BASE_WORD_LOADS = {
 }
 
 # Effect of a non-control instruction -> (c_statement, store_addr_expr_or_None, store_size).
-def effect(addr, w, hst_profile=False):
+def effect(addr, w, hst_profile=False, lle_cpu=False):
     op = w >> 26
+    if op == 0x10:  # COP0 (spec 3.4)
+        cop_rs = (w >> 21) & 0x1F
+        cop_rt = (w >> 16) & 0x1F
+        cop_rd = (w >> 11) & 0x1F
+        sel = w & 0x7
+        if is_eret(w):
+            return f"(void)sr_cpu_eret(s, 0x{addr:08x}u); sr_end(s, 0u, 0); return;", None, 0  # eret
+        if cop_rs in (0x00, 0x04):
+            # MFC0/MTC0 carry the select in bits 2:0; bits 10:3 are defined
+            # zero. A nonzero reserved field is not a move (fail closed).
+            if (w & 0x000007F8) != 0:
+                raise Unsupported(f"COP0 reserved bits set at 0x{addr:08x}")
+            if cop_rs == 0x00:
+                return (f"s->in_delay_slot = 0u; if (sr_cp0_mfc0(s, {cop_rt}u, {cop_rd}u, {sel}u, 0x{addr:08x}u) < 0) "
+                        f"{{ sr_end(s, 0u, 0); return; }}"), None, 0  # mfc0
+            return (f"s->in_delay_slot = 0u; if (sr_cp0_mtc0(s, {cop_rt}u, {cop_rd}u, {sel}u, 0x{addr:08x}u) < 0) "
+                    f"{{ sr_end(s, 0u, 0); return; }}"), None, 0  # mtc0
+        raise Unsupported(f"COP0 rs 0x{cop_rs:02x} at 0x{addr:08x}")
     if op == 0:
         fn = funct(w)
         a, b, d, sh = rs(w), rt(w), rd(w), sa(w)
@@ -391,9 +464,15 @@ def effect(addr, w, hst_profile=False):
         if fn == 0x0B: return f"if ({R(b)} != 0) {wr(d, R(a))}", None, 0    # movn
         if fn == 0x0C:
             code = (w >> 6) & 0xFFFFF
+            if lle_cpu:
+                return (f"if (sr_cpu_raise_exception(s, 8u, 0x{addr:08x}u, 0x{addr:08x}u, 0u, 0u, 0u) < 0) "
+                        f"{{ sr_end(s, 0u, 0); return; }} sr_end(s, 0u, 0); return;"), None, 0  # syscall (LLE)
             return f"sr_raw_syscall(s, {code}u, 0x{addr:08x}u); return;", None, 0        # syscall
         if fn == 0x0D:
             code = (w >> 6) & 0xFFFFF
+            if lle_cpu:
+                return (f"if (sr_cpu_raise_exception(s, 9u, 0x{addr:08x}u, 0x{addr:08x}u, 0u, 0u, 0u) < 0) "
+                        f"{{ sr_end(s, 0u, 0); return; }} sr_end(s, 0u, 0); return;"), None, 0  # break (LLE)
             return f"sr_break(s, {code}u, 0x{addr:08x}u);", None, 0
         if fn == 0x10: return wr(d, "s->hi"), None, 0                       # mfhi
         if fn == 0x11: return f"s->hi = {R(a)};", None, 0                   # mthi
@@ -1095,6 +1174,8 @@ def read32(elf, addr):
 def is_control(w):
     op = w >> 26
     fn = w & 0x3F
+    if is_eret(w):
+        return True
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
 def function_flow(elf, start, ranges, known, resume_owners=None,
@@ -1185,6 +1266,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 break
             if op == 0 and fn == 0x0C:  # syscall: HLE boundary
                 break
+            if is_eret(w):  # eret: LLE transfer, no delay slot, no fall-through
+                break
             if is_cond_branch(w):
                 t = branch_target(pc, w)
                 # A conditional target is a native label only when it remains
@@ -1207,9 +1290,9 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False):
+def normal_line(addr, w, hst_profile=False, lle_cpu=False):
     try:
-        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile)
+        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
     except Unsupported:
         # Keep the owning function translatable when the static emitter does not know a
         # VFPU form. Invoke the single-step interpreter with the ELF opcode literal;
@@ -1219,6 +1302,75 @@ def normal_line(addr, w, hst_profile=False):
         eff = f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u);"
         saddr, ssize = None, 0
     return f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+
+def _cop0_fields(w):
+    """Split a COP0 word into (rs, rt, rd, sel)."""
+    return (w >> 21) & 0x1F, (w >> 16) & 0x1F, (w >> 11) & 0x1F, w & 0x7
+
+def _is_cop0_move(w):
+    """True for an MFC0/MTC0-shaped word with defined-zero reserved bits."""
+    if (w >> 26) != 0x10:
+        return False
+    cop_rs, _, _, _ = _cop0_fields(w)
+    return cop_rs in (0x00, 0x04) and (w & 0x000007F8) == 0
+
+def _flow_return(resumable=False):
+    """Leave the native body when a helper set flow metadata (spec 3.4)."""
+    return "if (s->flow_kind != 0u) { return; }"
+
+def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
+                     resumable=False, indent="    "):
+    """Emission for one branch delay slot (spec 3.4).
+
+    Ordinary words emit exactly as before. A delay-slot SYSCALL/BREAK in LLE
+    mode raises with the branch PC as the exception PC so EPC/BD stay exact;
+    a delay-slot MFC0/MTC0 runs under an explicit delay context for the same
+    reason. A control word in a delay slot is unpredictable on MIPS hardware
+    and fails closed here, matching the interpreter. Returns a list of lines.
+    """
+    if dsw is None:
+        raise Unsupported(f"unreadable delay slot at 0x{ds:08x}")
+    if is_control(dsw):
+        raise Unsupported(f"control in delay slot at 0x{ds:08x}")
+    dop, dfn = dsw >> 26, dsw & 0x3F
+    if dop == 0 and dfn == 0x0C:  # syscall in delay slot
+        if not lle_cpu:
+            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+        code = (dsw >> 6) & 0xFFFFF
+        _ = code
+        return [
+            f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
+            f"{indent}if (sr_cpu_raise_exception(s, 8u, 0x{ds:08x}u, 0x{branch_pc:08x}u, 0u, 1u, 0u) < 0) "
+            f"{{ sr_end(s, 0u, 0); return; }}",
+            f"{indent}sr_end(s, 0u, 0);",
+            f"{indent}{_flow_return(resumable)}",
+        ]
+    if dop == 0 and dfn == 0x0D:  # break in delay slot
+        if not lle_cpu:
+            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+        code = (dsw >> 6) & 0xFFFFF
+        _ = code
+        return [
+            f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
+            f"{indent}if (sr_cpu_raise_exception(s, 9u, 0x{ds:08x}u, 0x{branch_pc:08x}u, 0u, 1u, 0u) < 0) "
+            f"{{ sr_end(s, 0u, 0); return; }}",
+            f"{indent}sr_end(s, 0u, 0);",
+            f"{indent}{_flow_return(resumable)}",
+        ]
+    if _is_cop0_move(dsw):
+        _, cop_rt, cop_rd, sel = _cop0_fields(dsw)
+        helper = "sr_cp0_mfc0" if ((dsw >> 21) & 0x1F) == 0x00 else "sr_cp0_mtc0"
+        return [
+            f"{indent}sr_begin(s, 0x{ds:08x}u, 0x{dsw:08x}u);",
+            f"{indent}{{ uint32_t _prev_npc = s->next_pc; uint32_t _prev_ids = s->in_delay_slot;",
+            f"{indent}  s->in_delay_slot = 1u; s->next_pc = 0x{branch_pc:08x}u;",
+            f"{indent}  if ({helper}(s, {cop_rt}u, {cop_rd}u, {sel}u, 0x{ds:08x}u) < 0) "
+            f"{{ s->in_delay_slot = _prev_ids; s->next_pc = _prev_npc; sr_end(s, 0u, 0); return; }}",
+            f"{indent}  s->in_delay_slot = _prev_ids; s->next_pc = _prev_npc; }}",
+            f"{indent}sr_end(s, 0u, 0);",
+            f"{indent}{_flow_return(resumable)}",
+        ]
+    return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu)]
 
 # ---------------------------------------------------------------------------
 # Offline static verification trace simulation (--static-verify).
@@ -1350,6 +1502,12 @@ def _sv_step(w, regs, written):
     elif op == 0x0E: W(b, regs[a] ^ (w & 0xFFFF) if regs[a] is not None else None); return    # xori
     elif op == 0x0F: W(b, (w & 0xFFFF) << 16); return                                         # lui
     elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads: runtime-dependent
+    elif op == 0x10:   # COP0 (spec 3.4): MFC0 destinations are unknown; MTC0,
+        if ((w >> 21) & 0x1F) == 0x00: W(b, None)    # syscall/break/eret may
+        else:                                        # mutate anything: flush.
+            for i in range(1, 32):
+                regs[i] = None
+        return
     elif op in (0x11, 0x12):   # cop1/cop2 move group: mfc/cfc write rt, mtc/ctc none
         W(b, None); return     # (marking rt Unknown for mtc too is sound)
     elif op in (0x1C, 0x1F):   # Allegrex special2/special3 (max/min, ext/ins/seb/seh/wsbw)
@@ -1429,8 +1587,10 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
 }"""
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
-                  profile=None, dispatch_boundaries=None):
+                  profile=None, dispatch_boundaries=None, lle_cpu=False):
     hst_profile = profile == "hst"
+    if lle_cpu is False:
+        lle_cpu = LLE_CPU
     resume_owners = resume_owners or {}
     host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
@@ -1453,8 +1613,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if _w is None or not is_control(_w):
             continue
         _op, _fn = _w >> 26, _w & 0x3F
-        if _op == 2 or (_op == 0 and _fn == 0x08):
-            continue  # j / jr never fall through past their slot
+        if _op == 2 or (_op == 0 and _fn == 0x08) or is_eret(_w):
+            continue  # j / jr / eret never fall through past their slot
         _ds = _a + 4
         if _ds in labels and _ds + 4 in insns:
             dup_slot_skips[_a] = _ds + 4
@@ -1727,12 +1887,23 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, hst_profile=hst_profile))
+            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu))
+            if _is_cop0_move(w):
+                # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
+                # the resulting flow before any native continuation (spec 3.4).
+                out.append(f"    {_flow_return(resumable)}")
             if addr in sv_points:
                 for _sv_r, _sv_v in sv_points[addr]:
                     out.append(f"    sr_sv_check(s, 0x{addr:08x}u, {_sv_r}, 0x{_sv_v:08x}u);")
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            continue
+
+        if is_eret(w):  # eret: no delay slot; leave the native body (spec 3.4)
+            out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u);")
+            out.append(f"    (void)sr_cpu_eret(s, 0x{addr:08x}u);")
+            out.append(f"    sr_end(s, 0u, 0);")
+            out.append(f"    return;")
             continue
 
         ds = addr + 4
@@ -1744,9 +1915,11 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); s->r[31] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in host_entries:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
+                if lle_cpu:
+                    out.append(f"    {_flow_return(resumable)}")
             else:
                 out.append(
                     f"    dispatch_call(s, 0x{target:08x}u, "
@@ -1766,7 +1939,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             # production interpreter by the `jrslot` cosim cell.
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+                                        indent="      "))
             if d != 0:
                 out.append(
                     f"      dispatch_call(s, _t, 0x{(addr + 8) & 0xFFFFFFFF:08x}u); }}"
@@ -1782,29 +1956,39 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             continue
         if op == 0 and fn == 0x08:  # jr rs
             a = rs(w)
-            if ds_is_syscall and dsw is not None:
+            if ds_is_syscall and dsw is not None and not lle_cpu:
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
                 out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable)}")
+            elif ds_is_syscall and dsw is not None:
+                # LLE: the delay-slot syscall raises with BD set (spec 3.4).
+                out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
+                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+                if a == 31:
+                    out.append(f"    {emit_host_return(resumable)}")
+                else:
+                    out.append(f"    {{ uint32_t _t = {R(a)};")
+                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
             elif a == 31:
                 # `jr $ra` IS the host return; $ra is read at the transfer by
                 # construction, so a slot that rewrites it cannot redirect this.
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
                 out.append(f"    {emit_host_return(resumable)}")
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
                 out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+                                            indent="      "))
                 out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.append(normal_line(ds, dsw, hst_profile=hst_profile))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in host_entries and not (target in resume_owners and target in labels):
                 out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable)}")
             elif target in labels:
@@ -1830,17 +2014,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
+        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
+        _delay_inline = " ".join(line.strip() for line in _delay)
         if target in labels:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {normal_line(ds, dsw, hst_profile=hst_profile).strip()} {y}goto L_{target:08x}; }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
             else:
-                out.append(f"   {normal_line(ds, dsw, hst_profile=hst_profile)}")
+                out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {normal_line(ds, dsw, hst_profile=hst_profile).strip()} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
             else:
-                out.append(f"   {normal_line(ds, dsw, hst_profile=hst_profile)}")
+                out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
@@ -1920,6 +2106,16 @@ def main(argv):
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
+        elif o == "--lle-cpu":
+            # LLE CPU mode (PR 2): SYSCALL/BREAK raise guest exceptions.
+            # Default (absent) preserves the HLE sr_raw_syscall/sr_break path.
+            global LLE_CPU
+            LLE_CPU = True
+        elif o == "--lle-import-seam":
+            # LLE import seam (PR 3): import stubs route through
+            # sr_import_call instead of sr_syscall. Default (absent)
+            # preserves byte-identical HLE stubs.
+            enable_lle_import_seam()
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):
@@ -2266,9 +2462,7 @@ def main(argv):
             lib_nid = impmap.get(a)
             if lib_nid is not None:
                 lib, nid = lib_nid
-                text = f"void f_{a:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
-                text += f"    sr_syscall(s, 0x{nid:08x}u);\n"
-                text += f"    sr_end(s, 0u, 0);\n}}"
+                text = import_stub_text(a, lib, nid)
             else:
                 text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
                 text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
@@ -2318,9 +2512,7 @@ def main(argv):
                 lib_nid = extra_impmap.get(a)
                 if lib_nid is not None:
                     lib, nid = lib_nid
-                    text = f"void f_{a:08x}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
-                    text += f"    sr_syscall(s, 0x{nid:08x}u);\n"
-                    text += f"    sr_end(s, 0u, 0);\n}}"
+                    text = import_stub_text(a, lib, nid)
                 else:
                     text = f"void f_{a:08x}(CpuState *s) {{  /* import stub -> HLE boundary */\n"
                     text += f"    sr_hle_call(s, 0u);\n}}"
@@ -2399,6 +2591,8 @@ def main(argv):
     for i in range(num_files):
         main_out.append(f"void sr_register_chunk_{i}(void);")
     main_out.append("\nvoid sr_register_all(void) {")
+    if LLE_CPU:
+        main_out.append("    sr_cpu_lle_set_enabled(1);")
     main_out.append("    sr_exec_span_reset();")
     for lo, hi in exec_spans:
         main_out.append(

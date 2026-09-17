@@ -83,6 +83,12 @@ with explicit target and unbuilt boundaries.
   policy, provenance, history, SBOM, build, documentation and governance gates.
 - [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) explains the explicit
   include/exclude policy and fail-closed candidate construction.
+- [`INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md) plans the route from
+  derived code to original code and LLE replacement. A plan only — nothing in
+  it is implemented unless marked.
+- [`cleanroom/SCHED_SPEC.md`](cleanroom/SCHED_SPEC.md) specifies scheduler
+  behaviour for a future clean-room implementation. A spec only — the derived
+  scheduler it describes replacing is still the shipped code.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -137,7 +143,10 @@ in this slice; classification comes first, directory moves separately.
 | `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
+| `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |
+| `cleanroom/SCHED_SPEC.md` | DRAFT | Scheduler clean-room behaviour spec; read for intent, never cite as shipped behaviour |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
+| `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
