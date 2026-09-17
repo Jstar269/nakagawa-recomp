@@ -72,13 +72,15 @@ else ifeq ($(CASE),kobj-b1)
 CASE_ID = 26
 else ifeq ($(CASE),wait-b2)
 CASE_ID = 27
+else ifeq ($(CASE),kernel-b3)
+CASE_ID = 28
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
 
-# Cases 23-27 are standalone probes, each in its own source file, that record
+# Cases 23-28 are standalone probes, each in its own source file, that record
 # the build commit in their output. The exception probes raise exactly one
 # exception and never return; the kernel-object probes use their own complete
 # ThreadManForUser import block (threadman_user_imports.S).
@@ -103,6 +105,10 @@ else ifeq ($(CASE),wait-b2)
 TARGET = $(BUILD_DIR)/psp_b2
 OBJS = $(BUILD_DIR)/psp_b2.o $(BUILD_DIR)/threadman_user_imports.o
 CFLAGS += -DB2_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),kernel-b3)
+TARGET = $(BUILD_DIR)/psp_b3
+OBJS = $(BUILD_DIR)/psp_b3.o $(BUILD_DIR)/threadman_user_imports.o
+CFLAGS += -DB3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -156,6 +162,9 @@ $(BUILD_DIR)/psp_b1.o: psp_b1.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/psp_b2.o: psp_b2.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/psp_b3.o: psp_b3.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
