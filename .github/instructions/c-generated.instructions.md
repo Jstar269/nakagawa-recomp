@@ -1,8 +1,9 @@
 ---
-applyTo: "build/hst/*.c"
+applyTo: "build/**/*.c"
 ---
-# Generated recompiler code — NEVER HAND-EDIT
+# Generated recompiler code
 
-These files are produced by `tools/codegen.py`.
-Any changes will be overwritten on the next pipeline run.
-If you need different output, modify `tools/codegen.py` instead.
+Read [`AGENTS.md`](../../AGENTS.md), starting with
+[Where to start](../../AGENTS.md#where-to-start).
+The [correctness and evidence rules](../../AGENTS.md#6-correctness-and-evidence)
+cover generated translation units, source-level fixes, and regeneration for every title.

@@ -4,6 +4,18 @@ This is the repository's canonical operating contract for automated agents. It i
 short and enduring; live source, tests, Makefiles, and the maintained documents remain the source
 of truth for implementation details.
 
+## Where to start
+
+Work only inside the canonical checkout or a registered worktree, never at the non-repository
+workspace root. If the session opened at a parent directory, select the tree and change the
+session's working directory before repository work:
+
+- Read-only integration checks: the canonical public checkout.
+- Any change: the existing task worktree, or one new registered worktree under Section 8.
+- Private-authority work: the private authority checkout, never a public tree.
+
+Read this contract in the selected tree before acting; tool-specific guidance files only route here.
+
 ## 1. Sources and live preflight
 
 - Resolve disagreements in this order: live source/tests/Makefiles, live GitHub Issues, `ISSUES.md`,
