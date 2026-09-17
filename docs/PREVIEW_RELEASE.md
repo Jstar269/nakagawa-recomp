@@ -16,8 +16,8 @@ The preview is a Windows public-source and reproducibility package built from
 the sanitized source tree. Its centerpiece is the synthetic production smoke
 workload:
 
-- `mingw32-make production-smoke` creates a checked-in synthetic PSP PRX
-  fixture, statically translates MIPS to C, compiles native code, and verifies
+- `mingw32-make production-smoke` generates a synthetic PSP PRX fixture from
+  checked-in generator source into `build/`, statically translates MIPS to C, compiles native code, and verifies
   and runs the AOT result.
 - `mingw32-make production-smoke-gap` runs the same kind of synthetic workload
   with one function deliberately omitted from AOT emission, exercising the
