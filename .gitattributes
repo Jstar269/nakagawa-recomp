@@ -28,6 +28,7 @@ Makefile          text eol=lf
 *.elf             binary
 *.iso             binary
 *.cso             binary
+*.zso             binary
 *.chd             binary
 *.dax             binary
 *.jso             binary
@@ -47,3 +48,12 @@ Makefile          text eol=lf
 *.webp            binary
 *.ogg             binary
 *.dat             binary
+*.pgm             binary
+*.gim             binary
+*.pmf             binary
+*.psar            binary
+*.edat            binary
+*.sfo             binary
+*.spv             binary
+*.o               binary
+*.obj             binary

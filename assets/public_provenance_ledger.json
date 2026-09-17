@@ -39,7 +39,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ad82d1edce2f42f5587f01140812d4379bfcbca5d4554e3a26783493c856d13e"
+      "sha256": "4a82a2ea9f3fb0a2d137420397d881f4076b420d8d4e3058f43dc995c10d737b"
     },
     {
       "path": ".editorconfig",
@@ -48,7 +48,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "39f1362a9f03d0baf6a485c92b16c1ac73189e26068d5f62f610d7000b35cfd5"
+      "sha256": "55071f73c1de1c82665190e37afed0e55171d1e7126dd084e7f98c067bb72c38"
     },
     {
       "path": ".gitattributes",
@@ -57,7 +57,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e158f0e82141bb9994cc3512a1f0a082919eb1a8fecc72223fc8d821a2c6084e"
+      "sha256": "7de66ac19426782e760365a9b84f936e6febb6a275d79a7cdada3dc35bd88669"
     },
     {
       "path": ".github/CODEOWNERS",
@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "da17c7e4d395c1ffa2094de72c4d523c013aab24ed5c42a6a7e6e25b45eb70b0"
+      "sha256": "9b9d51cbf36b6bb452b7b0e676e369e68180d533767378f959b0ee350e652a87"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -192,7 +192,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "4f1f25e998569217a28324ccb2005592434de6ee57bd9a6a16c492d13ae2dc33"
+      "sha256": "4ae4dc5b575561591699ff90303c0a78f8e4c9b01cc33d299c7d60842cd7843d"
     },
     {
       "path": "AGENTS.md",

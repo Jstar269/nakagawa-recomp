@@ -47,7 +47,7 @@ repos:
     rev: cb8c523fd4835aba42af70f4cad5568db4df0b6c # v0.16.0
     hooks:
       - id: ruff-check
-        files: ^tools/.*\.py$
+        files: ^(tools|fixtures)/.*\.py$
 
   # Betterleaks is the actively developed successor from the Gitleaks maintainers.
   # The project-owned native config keeps default detection enabled and limits
