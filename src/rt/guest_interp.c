@@ -722,6 +722,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             s->in_delay_slot = 0u;
             s->next_pc = saved_next_pc;
             if (delay_result != SR_GUEST_INTERP_AOT_HANDOFF) {
+                if (delay_result == SR_GUEST_INTERP_EXCEPTION ||
+                    delay_result == SR_GUEST_INTERP_ERET) {
+                    sr_end(s, delay_store_address, delay_store_size);
+                }
                 return delay_result;
             }
             sr_end(s, delay_store_address, delay_store_size);
@@ -738,6 +742,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         SrGuestInterpResult result = execute_noncontrol(
             s, pc, opcode, &store_address, &store_size, fault);
         if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
+            if (result == SR_GUEST_INTERP_EXCEPTION ||
+                result == SR_GUEST_INTERP_ERET) {
+                sr_end(s, store_address, store_size);
+            }
             return result;
         }
         sr_end(s, store_address, store_size);

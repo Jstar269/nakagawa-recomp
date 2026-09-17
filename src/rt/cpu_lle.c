@@ -138,7 +138,6 @@ int sr_cpu_raise_exception(
     uint32_t badvaddr,
     unsigned in_delay_slot,
     unsigned coprocessor) {
-    uint32_t epc;
     uint32_t cause;
     uint32_t status;
     uint32_t vector;
@@ -149,18 +148,30 @@ int sr_cpu_raise_exception(
     exception_code &= 0x1Fu;
     in_delay_slot = in_delay_slot != 0u;
 
-    /* Delay-slot faults report the branch address in EPC (spec 3.3). */
-    epc = in_delay_slot ? exception_pc : fault_pc;
-    s->cop0[SR_CP0_EPC] = epc;
+    uint32_t pre_status = s->cop0[SR_CP0_STATUS];
+    int nested = (pre_status & SR_STATUS_EXL) != 0;
+
+    /* Delay-slot faults report the branch address in EPC (spec 3.3).
+     * MIPS32 Architecture For Programmers, Vol. III: The MIPS32 Privileged
+     * Resource Architecture (Section 5.1 / 6.1): when Status.EXL is already 1
+     * at exception entry (nested exception), EPC and Cause.BD are preserved,
+     * while Cause.ExcCode is still updated to the new exception. */
+    if (!nested) {
+        s->cop0[SR_CP0_EPC] = in_delay_slot ? exception_pc : fault_pc;
+    }
 
     cause = s->cop0[SR_CP0_CAUSE];
-    cause &= (uint32_t)~(SR_CAUSE_BD | SR_CAUSE_CE_MASK | SR_CAUSE_EXCCODE_MASK);
+    if (!nested) {
+        cause &= (uint32_t)~(SR_CAUSE_BD | SR_CAUSE_CE_MASK | SR_CAUSE_EXCCODE_MASK);
+        if (in_delay_slot) {
+            cause |= SR_CAUSE_BD;
+        }
+    } else {
+        cause &= (uint32_t)~(SR_CAUSE_CE_MASK | SR_CAUSE_EXCCODE_MASK);
+    }
     cause |= (uint32_t)((exception_code << 2) & SR_CAUSE_EXCCODE_MASK);
     if (exception_code == SR_EXC_CPU) {
         cause |= (uint32_t)(((coprocessor & 3u) << 28) & SR_CAUSE_CE_MASK);
-    }
-    if (in_delay_slot) {
-        cause |= SR_CAUSE_BD;
     }
     s->cop0[SR_CP0_CAUSE] = cause;
 
@@ -181,10 +192,9 @@ int sr_cpu_raise_exception(
         vector = s_vector_general;
     }
 
-    /* Vectors must be owned, aligned, readable guest spans (spec 3.3). */
-    if ((vector & 3u) != 0u ||
-        !sr_exec_span_owns_fetch(vector) ||
-        !sr_guest_span_readable(vector, 4u)) {
+    /* Vectors must be owned, aligned guest spans (spec 3.3). Readable-byte
+     * validation is deferred until the dispatcher selects the interpreter tier. */
+    if ((vector & 3u) != 0u || !sr_exec_span_owns_fetch(vector)) {
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = vector;
         return -2;
@@ -313,10 +323,10 @@ int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
             s, SR_EXC_CPU, fault_pc, exception_pc, 0u, in_delay_slot, 0u);
     }
     target = s->cop0[SR_CP0_EPC];
-    /* Fail closed on an invalid target rather than jumping blind (spec 3.3). */
-    if ((target & 3u) != 0u ||
-        !sr_exec_span_owns_fetch(target) ||
-        !sr_guest_span_readable(target, 4u)) {
+    /* Fail closed on an invalid target rather than jumping blind (spec 3.3).
+     * Executable authority is validated here; readable-byte validation is
+     * deferred until the dispatcher selects the interpreter tier. */
+    if ((target & 3u) != 0u || !sr_exec_span_owns_fetch(target)) {
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = target;
         return -2;
