@@ -294,7 +294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5e2a0a415a4196c8a577bb411eec1c895b478274f0d1c6d13a83aa6ef6132bfd"
+      "sha256": "0b75accd140ec6ee7a58b7adde8a83248fd0e1f843114482b1df3e6b44d4b4df"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -361,7 +361,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2ea91077ad91c9fedde30eeec09458ebd9854ea50bb2cc04c24eab024e54552d"
+      "sha256": "98454ee97dec8ccf25f93766b42cabf40d29517f28db11c8c3ec66b65d1b9825"
     },
     {
       "path": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "56a767a2b1c1e001d5f5fc573c4c873c2d8be273ecd56089ff969c854155897b"
+      "sha256": "ea13d99126aada71b53e2d05fd76f78638c280de688a82a93cd7d223e0721115"
     },
     {
       "path": "assets/release_manifest.json",
@@ -411,7 +411,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fb2075c8134325b883145e9dad90240a6d8885e16911bb8734c2afc07608ecfc"
+      "sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
     },
     {
       "path": "assets/title_manifest.schema.json",
@@ -972,7 +972,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84d0bab08c99759faa4ddb8aad1fb0d5debabf96022e340cbd3a610f216e72b3"
+      "sha256": "be3d352cbd9c9b7d5fd2097b674c7b39b9134b3b58b06349e52b175dae0082f4"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1063,6 +1063,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0ad0f69fcbe9bb523d08c0540718b6e20a5e8b93ede077e78dede7d264ce37aa"
+    },
+    {
+      "path": "docs/provenance/FONT_ORIGINS.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "7af5266dbf1d6180ff74d196c162b1cb9ec17d4b7346215ab18d9f10193a1c56"
     },
     {
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
@@ -1431,7 +1440,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "dc727119bf0e214ac9e17cb903a8c10ed10de32e397f526e1c7e95ee454e699f"
+      "sha256": "55b4a67662b6bb8c8edac43e536085a00f83027b219b0a2c58da4890c64bde7a"
     },
     {
       "path": "hst.ps1",
