@@ -188,6 +188,37 @@ int sr_cpu_raise_data_fault(
         s, exception_code, fault_pc, exception_pc, address, in_delay_slot, 0u);
 }
 
+int sr_cpu_guard_access(
+    CpuState *s,
+    uint32_t address,
+    unsigned width,
+    int is_store,
+    uint32_t instr_pc,
+    uint32_t branch_pc,
+    unsigned in_delay) {
+    unsigned code;
+
+    if (!s) {
+        return 0;
+    }
+    code = sr_cpu_data_access_fault(s, address, width, is_store);
+    if (code == 0u) {
+        return 0;
+    }
+    if (in_delay != 0u) {
+        uint32_t prev_next_pc = s->next_pc;
+        uint32_t prev_in_delay = s->in_delay_slot;
+        s->in_delay_slot = 1u;
+        s->next_pc = branch_pc;
+        (void)sr_cpu_raise_data_fault(s, code, address, instr_pc);
+        s->in_delay_slot = prev_in_delay;
+        s->next_pc = prev_next_pc;
+    } else {
+        (void)sr_cpu_raise_data_fault(s, code, address, instr_pc);
+    }
+    return 1;
+}
+
 int sr_cpu_raise_exception(
     CpuState *s,
     unsigned exception_code,

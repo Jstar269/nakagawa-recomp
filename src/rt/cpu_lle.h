@@ -128,6 +128,20 @@ int sr_cpu_raise_data_fault(
     uint32_t address,
     uint32_t instr_pc);
 
+/* One-call guard for generated code. Returns 1 when an address error was raised
+ * and the access must be abandoned (the caller leaves the native body at once),
+ * 0 when the access may proceed. `in_delay` installs the branch's delay context
+ * around the raise so EPC and Cause.BD stay exact, the same way a delay-slot
+ * COP0 fault does; `branch_pc` is read only then. */
+int sr_cpu_guard_access(
+    struct CpuState *s,
+    uint32_t address,
+    unsigned width,
+    int is_store,
+    uint32_t instr_pc,
+    uint32_t branch_pc,
+    unsigned in_delay);
+
 int sr_cpu_eret(struct CpuState *s, uint32_t instr_pc);
 
 /* Phase 1 stub: no INTC/timer model yet (PR 5/PR 6 own device time and Cause.IP
