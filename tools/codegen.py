@@ -431,7 +431,53 @@ NULL_BASE_WORD_LOADS = {
 }
 
 # Effect of a non-control instruction -> (c_statement, store_addr_expr_or_None, store_size).
-def effect(addr, w, hst_profile=False, lle_cpu=False):
+# Loads and stores whose effective address must satisfy the hardware's data
+# access rules under --lle-cpu, as {opcode: (width, is_store)}.
+#
+# lwl/lwr/swl/swr (0x22/0x26/0x2a/0x2e) are deliberately ABSENT. Those forms
+# exist precisely to read and write across an alignment boundary, so a
+# misaligned effective address is their normal operating condition and never an
+# address error. The VFPU load/store group is absent for a different reason: it
+# has its own alignment rules that no probe has measured yet.
+LLE_ACCESS = {
+    0x20: (1, 0), 0x21: (2, 0), 0x23: (4, 0), 0x24: (1, 0), 0x25: (2, 0), 0x31: (4, 0),
+    0x28: (1, 1), 0x29: (2, 1), 0x2B: (4, 1), 0x39: (4, 1),
+}
+
+
+def _lle_access_stmt(addr, w, op, delay_branch_pc):
+    """Guarded emission for one load or store (spec 3.3).
+
+    The effective address is computed once into `_ea`, checked, and only then
+    used. On an address error sr_cpu_guard_access() has already entered the
+    exception vector, so the body leaves the native function without performing
+    the access -- the destination register and guest memory stay untouched,
+    which is what run PSP-A3-01 measured.
+    """
+    width, is_store = LLE_ACCESS[op]
+    in_delay = 1 if delay_branch_pc is not None else 0
+    branch = f"0x{delay_branch_pc:08x}u" if delay_branch_pc is not None else "0u"
+    bodies = {
+        0x20: wr(rt(w), "((uint32_t)(int32_t)(int8_t)MEM_R8(_ea))"),
+        0x21: wr(rt(w), "((uint32_t)(int32_t)(int16_t)MEM_R16(_ea))"),
+        0x23: wr(rt(w), "MEM_R32(_ea)"),
+        0x24: wr(rt(w), "MEM_R8(_ea)"),
+        0x25: wr(rt(w), "MEM_R16(_ea)"),
+        0x31: f"s->fi[{rt(w)}] = MEM_R32(_ea);",
+        0x28: f"MEM_W8_PC(_ea, {R(rt(w))}, 0x{addr:08x}u);",
+        0x29: f"MEM_W16_PC(_ea, {R(rt(w))}, 0x{addr:08x}u);",
+        0x2B: f"MEM_W32_PC(_ea, {R(rt(w))}, 0x{addr:08x}u);",
+        0x39: f"MEM_W32_PC(_ea, s->fi[{rt(w)}], 0x{addr:08x}u);",
+    }
+    stmt = (f"{{ uint32_t _ea = {R(rs(w))} + {simm(w)}; "
+            f"if (sr_cpu_guard_access(s, _ea, {width}u, {is_store}, "
+            f"0x{addr:08x}u, {branch}, {in_delay}u)) {{ sr_end(s, 0u, 0); return; }} "
+            f"{bodies[op]} }}")
+    saddr = f"({R(rs(w))} + {simm(w)})" if is_store else None
+    return stmt, saddr, (width if is_store else 0)
+
+
+def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
         cop_rs = (w >> 21) & 0x1F
@@ -529,6 +575,11 @@ def effect(addr, w, hst_profile=False, lle_cpu=False):
             if sub == 0x18: return wr(rd(w), f"((uint32_t)(int32_t)(int16_t){R(rt(w))})"), None, 0  # seh
             if sub == 0x14: return wr(rd(w), f"sr_bitrev({R(rt(w))})"), None, 0                      # bitrev
         raise Unsupported(f"SPECIAL3 funct 0x{fn:02x} at 0x{addr:08x}")
+    # Under the LLE gate every aligned load and store is address-checked first.
+    # The hst_profile null-base word-load workaround keeps its own emission:
+    # it is a title-specific hack, and production fixtures never opt into LLE.
+    if lle_cpu and op in LLE_ACCESS and not (hst_profile and op == 0x23 and addr in NULL_BASE_WORD_LOADS):
+        return _lle_access_stmt(addr, w, op, delay_branch_pc)
     # loads
     if op == 0x20: return wr(rt(w), f"((uint32_t)(int32_t)(int8_t)MEM_R8({R(rs(w))} + {simm(w)}))"), None, 0   # lb
     if op == 0x21: return wr(rt(w), f"((uint32_t)(int32_t)(int16_t)MEM_R16({R(rs(w))} + {simm(w)}))"), None, 0  # lh
@@ -1290,9 +1341,10 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False):
+def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     try:
-        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                   delay_branch_pc=delay_branch_pc)
     except Unsupported:
         # Keep the owning function translatable when the static emitter does not know a
         # VFPU form. Invoke the single-step interpreter with the ELF opcode literal;
@@ -1370,7 +1422,8 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
-    return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu)]
+    return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                        delay_branch_pc=branch_pc if lle_cpu else None)]
 
 # ---------------------------------------------------------------------------
 # Offline static verification trace simulation (--static-verify).

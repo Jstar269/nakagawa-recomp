@@ -102,6 +102,17 @@ static uint32_t enc_mtc0(unsigned rt, unsigned rd) {
     return (0x10u << 26) | (4u << 21) | (rt << 16) | (rd << 11);
 }
 
+/* I-type memory encodings for the address-error tests below. */
+static uint32_t enc_mem(unsigned primary, unsigned base, unsigned rt, uint16_t offset) {
+    return (primary << 26) | (base << 21) | (rt << 16) | (uint32_t)offset;
+}
+static uint32_t enc_lw(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x23u, base, rt, offset);
+}
+static uint32_t enc_sw(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x2Bu, base, rt, offset);
+}
+
 static void setup_spans(void) {
     sr_exec_span_reset();
     CHECK(sr_exec_span_register(TEST_BASE, TEST_SPAN_END), "test span rejected");
@@ -636,6 +647,130 @@ static void test_interp_flow_trace(void) {
     CHECK(strstr(buf, "\n0 pc=0x08810000") == NULL, "rejected opcode must NOT record trace step");
 }
 
+/* PSP-A3-01 end to end: the measured AdEL must come out of an actual `lw`, not
+ * only out of a direct sr_cpu_raise_exception() call. Before the data-access
+ * check existed this load SUCCEEDED, because SR_PHYS() masks 0x88000014 down to
+ * 0x08000014 and the range check accepted the alias. */
+static void test_hw_psp_a3_01_adel_through_load(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;   /* user mode, EXL clear */
+    s.r[13] = 0x88000010u;
+    s.r[14] = 0x0BADBABEu;                     /* sentinel destination */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "user-mode kernel-segment lw must raise, not read RAM (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "kernel-segment lw ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "kernel-segment lw EPC=0x%08x, want the lw address",
+          s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x88000014u,
+          "kernel-segment lw BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADBABEu, "AdEL must leave the destination register unchanged");
+    CHECK(s.pc == TEST_VECTOR, "kernel-segment lw must transfer to the vector");
+
+    /* Kernel mode may reach kseg0: it is an unmapped mirror of physical RAM,
+     * which is exactly what the masking accessor implements. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = 0u;                /* kernel mode */
+    s.r[13] = 0x88000010u;
+    s.r[31] = TEST_SPAN_END;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "kernel-mode kseg0 load must not fault (got %s)", sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "kernel-mode kseg0 load must not set flow");
+}
+
+/* Alignment is SYNTHETIC: the MIPS32 architectural rule, not a PSP measurement.
+ * These pin the behaviour so a later probe has something to confirm or correct. */
+static void test_lle_misaligned_data_access(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 1u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    s.r[14] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "misaligned lw must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "misaligned load ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == TEST_BASE + 1u,
+          "misaligned load BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADBABEu, "misaligned load must not write the destination");
+
+    /* A misaligned store is AdES (ExcCode 5), not AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_sw(13u, 14u, 2u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    s.r[14] = 0xDEADBEEFu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "misaligned sw must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "misaligned store ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == TEST_BASE + 2u,
+          "misaligned store BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* A byte access has no alignment constraint. */
+    CHECK(sr_cpu_data_access_fault(&s, TEST_BASE + 1u, 1u, 0) == 0u,
+          "lb at an odd address must not fault");
+}
+
+/* The gate keeps default builds byte-identical: with LLE off, both cases keep
+ * their historical fail-closed results and neither enters a guest vector. */
+static void test_lle_gate_off_data_access(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 1u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_MISALIGNED_DATA,
+          "gate-off misaligned lw must stay MISALIGNED_DATA (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off fault must not set flow");
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x88000010u;
+    s.r[31] = TEST_SPAN_END;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "gate-off kernel-segment lw must keep the historical masked read (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off kernel-segment lw must not set flow");
+}
+
 int main(void) {
     sr_mem_init();
     setup_spans();
@@ -647,6 +782,9 @@ int main(void) {
     test_hw_psp_a1_01_break_plain();
     test_hw_psp_a2_01_break_delay_slot();
     test_hw_psp_a3_01_adel_load();
+    test_hw_psp_a3_01_adel_through_load();
+    test_lle_misaligned_data_access();
+    test_lle_gate_off_data_access();
     test_nested_exceptions();
     test_vector_selection();
     test_unbacked_aot_target();
