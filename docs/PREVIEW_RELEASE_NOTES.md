@@ -66,5 +66,5 @@ nakagawa-recomp-0.1.0-preview.1-windows-x64/
 └── SHA256SUMS.txt
 ```
 
-There is no `player.exe` in this package. The exact package command and its
+There is no `nakagawa_player.exe` (or any other player binary) in this package. The exact package command and its
 fail-closed scan are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).

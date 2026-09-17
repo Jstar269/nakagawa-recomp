@@ -102,7 +102,10 @@ publication checklist item still requires trusted evidence.
 - Delete the `0x0029a060` entry literal and `GAME_NAME=hst` fallback.
 - Remove hardcoded assumptions about `place_game_here/` layout in generic code paths; delegate input location checks to manifest validation.
 
-### Phase 5: Companion Tooling Rename
+### Phase 5: Companion Tooling Rename (Implemented under Phase 3)
+
+The renames below landed with Phase 3's companion-tooling work; the `hst_*`
+names remain as deprecated wrappers. This list is kept as the rename map.
 
 - `hst.ps1` → `nk.ps1`
 - `tools/hst_safety.ps1` → `tools/nk_safety.ps1` (updating `Assert-HstWorkspaceRoot` → `Assert-NkWorkspaceRoot`)

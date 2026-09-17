@@ -22,6 +22,17 @@ surfaces, plus the reviewed-but-not-yet-cleared sal063-derived ISO/VFS and SDL
 audio implementations. Public-safe builds link explicit unavailable boundaries;
 they reject the capability and do not fabricate success.
 
+### Public channels outside the source tree
+
+Content can also reach the public through channels that no source-tree gate
+inspects. Each is listed here with its control:
+
+| Channel | Control |
+| --- | --- |
+| Repository wiki | Editing restricted to collaborators. Pages summarize and link to the maintained docs, which stay authoritative. A wiki edit follows the same boundary rules as a tracked change: no private paths, retail-derived data, keys, or redistribution claims. Review the wiki after any boundary-rule change. |
+| Discussions, issues, and PR/review comments | Maintainer-moderated. The same boundary rules apply; private evidence is described, never attached. |
+| Releases and release assets | Tag creation is locked by the `release-tags-locked` ruleset; packages follow `PREVIEW_RELEASE.md` and its fail-closed scan. |
+
 ## Required predicates
 
 Every predicate below must pass for the same exact tree and history under review. A local
