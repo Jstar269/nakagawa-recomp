@@ -38,7 +38,7 @@ The public preview carries the dashboard's source, `interface/package.json`, and
 the checked-in `interface/package-lock.json`; it does not carry `node_modules`,
 an npm package cache, or a standalone Next.js runtime. The lockfile is the exact
 inventory for the dashboard dependency graph: it records resolved versions,
-integrity values, and license metadata for all 709 locked package entries.
+integrity values, and license metadata for all 708 locked package entries.
 The copied shadcn/ui primitives have the separate MIT text in
 `THIRD_PARTY_LICENSES/SHADCN_UI.txt`. A future package that bundles fetched npm
 code must ship the corresponding package notices rather than treating this
