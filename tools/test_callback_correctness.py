@@ -137,8 +137,9 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("0x800200D2u", reg)
 
     def test_power_callback_is_real_slot_registration(self):
-        body = strip_comments(function_body(HLE_SOURCE, "h_PowerRegisterCallback"))
-        self.assertIn("s_power_cb_slots[16]", HLE_SOURCE)
+        power_source = (ROOT / "src" / "rt" / "hle_power.c").read_text(encoding="utf-8")
+        body = strip_comments(function_body(power_source, "h_PowerRegisterCallback"))
+        self.assertIn("s_power_cb_slots[16]", power_source)
         for code in ("0x80000020u", "0x80000022u", "0x80000100u", "0x80000102u"):
             self.assertIn(code, body)
         self.assertIn("sr_callback_notify(cb_uid, 0x000010E4u)", body)
