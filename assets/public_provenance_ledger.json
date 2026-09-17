@@ -411,7 +411,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fb2075c8134325b883145e9dad90240a6d8885e16911bb8734c2afc07608ecfc"
+      "sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
     },
     {
       "path": "assets/title_manifest.schema.json",
@@ -1071,7 +1071,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4138855b094bbefae8dde27cb81fe057fdc6b85035bc27f7d8a051b4f576d2fd"
+      "sha256": "7af5266dbf1d6180ff74d196c162b1cb9ec17d4b7346215ab18d9f10193a1c56"
     },
     {
       "path": "docs/provenance/GENERICITY_CENSUS_20260826.md",
@@ -1440,7 +1440,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "3c0fe229508c365b3209d8a11848a353016907f1b994442717ecf28cbce89de5"
+      "sha256": "55b4a67662b6bb8c8edac43e536085a00f83027b219b0a2c58da4890c64bde7a"
     },
     {
       "path": "hst.ps1",
