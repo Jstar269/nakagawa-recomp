@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "10496453e8ef6eda1fd832d239baacccb81b45b00be0e63d0285b3f5613c266a"
+      "sha256": "1df0c644e996bbf0a76c60a296d14e76751f4fa8ea788cedb0077423c22d9afd"
     },
     {
       "path": "assets/release_manifest.json",
@@ -813,6 +813,15 @@
       "sha256": "e42eedc378b775323b776d8ce2df842d853af7a9bf64c0ea652d2c1a5a4e1c73"
     },
     {
+      "path": "docs/INDEPENDENCE_CAMPAIGN.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "8586c2b10f12311084fc194d371b865d8a8c975dd81aa03293163b7462ef2ac4"
+    },
+    {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -972,7 +981,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "be3d352cbd9c9b7d5fd2097b674c7b39b9134b3b58b06349e52b175dae0082f4"
+      "sha256": "af37416cc9eae66223e1ed12b3b0a09ab60a2b6362bd0aa99136e00f56cd633d"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1063,6 +1072,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0ad0f69fcbe9bb523d08c0540718b6e20a5e8b93ede077e78dede7d264ce37aa"
+    },
+    {
+      "path": "docs/cleanroom/SCHED_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "8e1d6cb4f6573eccd1903cbdfdaf638dcda1ebc52ff15ccf21c62b09a7fd6ccd"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
