@@ -65,8 +65,11 @@ add_executable(test_xb_parser
     tests/native/test_xb_parser.c
     src/player/setup_staging.c
 )
+target_include_directories(test_xb_parser PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
 target_link_libraries(test_xb_parser PRIVATE nakagawa_core)
-target_include_directories(test_xb_parser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/player)
 add_test(NAME xb_parser_test COMMAND test_xb_parser)
 
 # player_state.c is deliberately free of SDL, so the library-state regression
@@ -75,8 +78,11 @@ add_executable(test_player_state
     tests/native/test_player_state.c
     src/player/player_state.c
 )
+target_include_directories(test_player_state PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
-target_include_directories(test_player_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/player)
 add_test(NAME player_state_test COMMAND test_player_state)
 
 if(WIN32)
