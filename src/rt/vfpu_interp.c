@@ -127,10 +127,10 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     if (op == 0x32 || op == 0x3a) {  /* lv.s / sv.s */
         int vt=((w>>16)&0x1F)|((w&3)<<5), base=(w>>21)&0x1F;
         uint32_t addr=s->r[base]+(uint32_t)(int32_t)(int16_t)(w&0xFFFCu);
-        /* MEASURED (PSP-A3-08): singles need 4-byte alignment. Under --lle-cpu
-         * the same width-relative check as scalar loads/stores runs before the
-         * access, so a fault leaves the destination and guest memory untouched.
-         * STILL SYNTHETIC: sv.s misalignment (singles measured only for lv.s). */
+        /* MEASURED (PSP-A3-08 and PSP-A3-12): singles need 4-byte alignment.
+         * Under --lle-cpu the same width-relative check as scalar loads/stores
+         * runs before the access, so a fault leaves the destination and guest
+         * memory untouched. No single-alignment cell remains synthetic. */
         if (sr_cpu_lle_enabled()) {
             int is_store = (op == 0x3a);
             unsigned code = sr_cpu_data_access_fault(s, addr, 4u, is_store);
@@ -148,12 +148,13 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         uint32_t addr=s->r[base]+(uint32_t)(int32_t)(int16_t)(w&0xFFFCu);
         uint8_t idx[4];vreg_idx(vt,4,idx);
         int store=(op==0x3d || op==0x3e);
-        /* MEASURED (PSP-A3-09/10/11): quads need 16-byte alignment with the
-         * load/store code, checked here before the span test like scalar
-         * loads/stores, so a fault leaves lanes and memory untouched.
-         * lvl/lvr/svl/svr bypass with width 0, exactly like lwl/lwr/swl/swr.
-         * STILL SYNTHETIC: sv.q at +8, any VFPU access in a delay slot, and
-         * lvl/lvr/svl/svr at odd addresses. */
+        /* MEASURED (PSP-A3-09/10/11 plus PSP-A3-12..15): quads need 16-byte
+         * alignment with the load/store code, checked here before the span test
+         * like scalar loads/stores, so a fault leaves lanes and memory
+         * untouched. lvl/lvr/svl/svr bypass with width 0, exactly like
+         * lwl/lwr/swl/swr. PSP-A3-13 (sv.q+8 AdES), PSP-A3-14 (lv.q in a delay
+         * slot: BD 1, EPC = branch) and PSP-A3-15 (lvl.q at odd completes)
+         * confirm the guard; no VFPU alignment cell remains synthetic. */
         if ((op == 0x36 || op == 0x3e) && sr_cpu_lle_enabled()) {
             unsigned code = sr_cpu_data_access_fault(s, addr, 16u, store);
             if (code != 0u) {

@@ -90,6 +90,14 @@ else ifeq ($(CASE),exception-a3-vfpu-svq4)
 CASE_ID = 38
 else ifeq ($(CASE),exception-a3-vfpu-aligned)
 CASE_ID = 39
+else ifeq ($(CASE),exception-a3-vfpu-svs)
+CASE_ID = 40
+else ifeq ($(CASE),exception-a3-vfpu-svq8)
+CASE_ID = 41
+else ifeq ($(CASE),exception-a3-vfpu-lvq-delay)
+CASE_ID = 42
+else ifeq ($(CASE),exception-a3-vfpu-lvl-odd)
+CASE_ID = 43
 else ifeq ($(CASE),kobj-b1)
 CASE_ID = 26
 else ifeq ($(CASE),wait-b2)
@@ -102,11 +110,11 @@ endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
 
-# Cases 23-28 and 31-39 are standalone probes, each in its own source file, that
+# Cases 23-28 and 31-43 are standalone probes, each in its own source file, that
 # record the build commit in their output. The exception probes raise exactly
-# one exception and never return, except exception-a3-unaligned and
-# exception-a3-vfpu-aligned which are the negative controls that return and
-# write a results file; the kernel-object
+# one exception and never return, except exception-a3-unaligned,
+# exception-a3-vfpu-aligned and exception-a3-vfpu-lvl-odd which are the negative
+# controls that return and write a results file; the kernel-object
 # probes use their own complete ThreadManForUser import block
 # (threadman_user_imports.S). CASE_IDs 29/30 are reserved for open PR #244
 # (exception-a3-mload/mstore) so a future merge cannot collide.
@@ -167,6 +175,22 @@ else ifeq ($(CASE),exception-a3-vfpu-aligned)
 TARGET = $(BUILD_DIR)/psp_a3_vfpu_aligned
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
 CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=12
+else ifeq ($(CASE),exception-a3-vfpu-svs)
+TARGET = $(BUILD_DIR)/psp_a3_vfpu_svs
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=13
+else ifeq ($(CASE),exception-a3-vfpu-svq8)
+TARGET = $(BUILD_DIR)/psp_a3_vfpu_svq8
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=14
+else ifeq ($(CASE),exception-a3-vfpu-lvq-delay)
+TARGET = $(BUILD_DIR)/psp_a3_vfpu_lvq_delay
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=15
+else ifeq ($(CASE),exception-a3-vfpu-lvl-odd)
+TARGET = $(BUILD_DIR)/psp_a3_vfpu_lvl_odd
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=16
 else ifeq ($(CASE),kobj-b1)
 TARGET = $(BUILD_DIR)/psp_b1
 OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/threadman_user_imports.o

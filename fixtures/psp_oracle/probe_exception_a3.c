@@ -29,6 +29,17 @@
 //   12          - VFPU negative control (PSP-A3-11): aligned lv.q/sv.q plus
 //                 lvl.q/lvr.q at a 4-byte-aligned unaligned-to-16 address.
 //                 Must not fault; returns and writes a results file.
+//   13          - VFPU single store (sv.s at base+2) from an owned 16-byte-aligned
+//                 buffer (PSP-A3-12). Faults with AdES iff the 4-byte rule
+//                 applies to stores.
+//   14          - VFPU quad store (sv.q at base+8), the PSP-A3-13 +8 variant that
+//                 confirms the 16-byte store rule at +8 (compare with case 11).
+//   15          - VFPU quad load (lv.q at base+4) in the delay slot of an
+//                 always-taken branch (PSP-A3-14, delay-slot pattern copied from
+//                 case 4). Establishes Cause.BD and whether EPC names the branch.
+//   16          - VFPU left merge at an odd address (lvl.q at base+1, PSP-A3-15).
+//                 Returns and writes a results file if it completes; an
+//                 exception frame is itself the fault observation.
 //
 // Cases 8-12 need the VFPU unit, so their builds set the main thread attribute
 // to THREAD_ATTR_USER | THREAD_ATTR_VFPU. Without it the access would trap
@@ -67,7 +78,7 @@ PSP_HEAP_SIZE_KB(64);
 #endif
 
 extern const unsigned char a3_load_instruction[];
-#if A3_CASE == 4
+#if A3_CASE == 4 || A3_CASE == 15
 extern const unsigned char a3_branch_instruction[];
 extern const unsigned char a3_branch_target[];
 #endif
@@ -82,6 +93,9 @@ extern const unsigned char a3_v_lvq[];
 extern const unsigned char a3_v_svq[];
 extern const unsigned char a3_v_lvl[];
 extern const unsigned char a3_v_lvr[];
+#endif
+#if A3_CASE == 16
+extern const unsigned char a3_v_lvl_odd[];
 #endif
 
 #if A3_CASE == 1
@@ -499,6 +513,160 @@ __attribute__((noinline)) static int a3_write_vfpu_results(char *out, size_t out
         a3_v_dstR[0], a3_v_dstR[1], a3_v_dstR[2], a3_v_dstR[3]);
 }
 
+#elif A3_CASE == 13
+
+/* PSP-A3-12: VFPU single store at base+2. Store half of the single-alignment
+ * question: lv.s at +2 (case 8) already proved loads need 4-byte alignment.
+ * The effective address is held in $t5 with offset 0 for the same
+ * register-encoding reason as case 8. */
+static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
+    0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
+    0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
+};
+
+__attribute__((noinline)) static void a3_raise_address_error(void) {
+    register uint32_t base __asm__("$13") = (uint32_t)(uintptr_t)a3_vfpu_buffer + 2u;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "li $4, 0x11111111\n\t"
+        "li $5, 0x22222222\n\t"
+        "li $6, 0x33333333\n\t"
+        "li $7, 0x44444444\n\t"
+        "li $8, 0xaaaaaaaa\n\t"
+        "li $14, 0x0badc0de\n"
+        ".globl a3_load_instruction\n"
+        "a3_load_instruction:\n\t"
+        "sv.s S000, 0($13)\n\t"
+        "li $15, 0x5a5a5a5a\n\t"
+        ".set pop\n\t"
+        : "+r"(base)
+        : : "$4", "$5", "$6", "$7", "$8", "$14", "$15", "memory");
+}
+
+#elif A3_CASE == 14
+
+/* PSP-A3-13: VFPU quad store at base+8. Confirms the 16-byte store rule at +8:
+ * case 11 (sv.q at +4) already faults; an 8-byte rule would let +8 through
+ * while a 16-byte rule faults here too. */
+static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
+    0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
+    0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
+};
+
+__attribute__((noinline)) static void a3_raise_address_error(void) {
+    register uint32_t base __asm__("$13") = (uint32_t)(uintptr_t)a3_vfpu_buffer + 8u;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "li $4, 0x11111111\n\t"
+        "li $5, 0x22222222\n\t"
+        "li $6, 0x33333333\n\t"
+        "li $7, 0x44444444\n\t"
+        "li $8, 0xaaaaaaaa\n\t"
+        "li $14, 0x0badc0de\n"
+        ".globl a3_load_instruction\n"
+        "a3_load_instruction:\n\t"
+        "sv.q C000, 0($13)\n\t"
+        "li $15, 0x5a5a5a5a\n\t"
+        ".set pop\n\t"
+        : "+r"(base)
+        : : "$4", "$5", "$6", "$7", "$8", "$14", "$15", "memory");
+}
+
+#elif A3_CASE == 15
+
+/* PSP-A3-14: VFPU quad load at base+4 in the delay slot of an always-taken
+ * branch. Delay-slot pattern copied from case 4 (PSP-A3-04): establishes
+ * whether Cause.BD is set and EPC names the branch, as for scalar words. */
+static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
+    0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
+    0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
+};
+
+__attribute__((noinline)) static void a3_raise_address_error(void) {
+    register uint32_t base __asm__("$13") = (uint32_t)(uintptr_t)a3_vfpu_buffer + 4u;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "li $4, 0x11111111\n\t"
+        "li $5, 0x22222222\n\t"
+        "li $6, 0x33333333\n\t"
+        "li $7, 0x44444444\n\t"
+        "li $8, 0xaaaaaaaa\n\t"
+        "li $14, 0x0badc0de\n\t"
+        ".globl a3_branch_instruction\n"
+        "a3_branch_instruction:\n\t"
+        "beq $0, $0, a3_branch_target\n\t"
+        ".globl a3_load_instruction\n"
+        "a3_load_instruction:\n\t"
+        "lv.q C000, 0($13)\n\t"
+        "li $15, 0x5a5a5a5a\n\t"
+        "li $11, 0x0badc0de\n\t"
+        ".globl a3_branch_target\n"
+        "a3_branch_target:\n\t"
+        "li $12, 0x5a5a5a5a\n\t"
+        ".set pop\n\t"
+        : "+r"(base)
+        : : "$4", "$5", "$6", "$7", "$8", "$11", "$12", "$14", "$15", "memory");
+}
+
+#elif A3_CASE == 16
+
+/* PSP-A3-15: VFPU left merge at an odd address (lvl.q at base+1). Returns and
+ * writes a results file if it completes; the PSPLink exception frame is
+ * itself the fault observation. The destination is pre-filled from a sentinel
+ * quad so the reported words are deterministic either way. Offset 0 holds the
+ * full effective address in $t5, as in cases 8..11, because the low offset
+ * bits encode the register. */
+static uint32_t a3_v_src[8] __attribute__((aligned(16))) = {
+    0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
+    0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
+};
+static uint32_t a3_v_fill[4] __attribute__((aligned(16))) = {
+    0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu,
+};
+static uint32_t a3_v_dstOdd[4] __attribute__((aligned(16))) = { 0u, 0u, 0u, 0u };
+
+__attribute__((noinline)) static void a3_run_vfpu_odd(void) {
+    register uint32_t *pd __asm__("$10") = a3_v_dstOdd;
+    register uint32_t *pf __asm__("$12") = a3_v_fill;
+    register uint8_t *pu __asm__("$13") =
+        (uint8_t *)(uintptr_t)a3_v_src + 1u;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "lv.q C010, 0($12)\n\t"
+        ".globl a3_v_lvl_odd\n"
+        "a3_v_lvl_odd:\n\t"
+        "lvl.q C010, 0($13)\n\t"
+        "sv.q C010, 0($10)\n\t"
+        ".set pop\n\t"
+        : "+r"(pd), "+r"(pf), "+r"(pu)
+        : : "memory");
+}
+
+__attribute__((noinline)) static int a3_write_vfpu_odd_results(char *out, size_t out_size) {
+    a3_run_vfpu_odd();
+    return snprintf(out, out_size,
+        "probe_id=PSP-A3 run_id=PSP-A3-15 build_commit=%s\n"
+        "src_base=0x%08x fill_base=0x%08x dst_base=0x%08x odd_addr=0x%08x\n"
+        "src_words=%08x %08x %08x %08x\n"
+        "fill_words=%08x %08x %08x %08x\n"
+        "lvl_addr=0x%08x\n"
+        "dst_words=%08x %08x %08x %08x\n"
+        "completed_normally=1 fault=0\n"
+        "expectation_under_test=lvl.q at an odd address completes without faulting (left/right bypass)\n",
+        A3_BUILD_COMMIT,
+        (unsigned int)(uintptr_t)a3_v_src, (unsigned int)(uintptr_t)a3_v_fill,
+        (unsigned int)(uintptr_t)a3_v_dstOdd,
+        (unsigned int)((uintptr_t)a3_v_src + 1u),
+        a3_v_src[0], a3_v_src[1], a3_v_src[2], a3_v_src[3],
+        a3_v_fill[0], a3_v_fill[1], a3_v_fill[2], a3_v_fill[3],
+        (unsigned int)(uintptr_t)a3_v_lvl_odd,
+        a3_v_dstOdd[0], a3_v_dstOdd[1], a3_v_dstOdd[2], a3_v_dstOdd[3]);
+}
+
 #else
 #error unsupported A3_CASE
 #endif
@@ -506,20 +674,24 @@ __attribute__((noinline)) static int a3_write_vfpu_results(char *out, size_t out
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
-#if A3_CASE == 7 || A3_CASE == 12
+#if A3_CASE == 7 || A3_CASE == 12 || A3_CASE == 16
     {
         char results[1536];
 #if A3_CASE == 7
         int length = a3_run_unaligned(results, sizeof(results));
-#else
+#elif A3_CASE == 12
         int length = a3_write_vfpu_results(results, sizeof(results));
+#else
+        int length = a3_write_vfpu_odd_results(results, sizeof(results));
 #endif
         if (length < 0 || (size_t)length >= sizeof(results)) return 1;
         SceUID fd = sceIoOpen(
 #if A3_CASE == 7
                               "host0:/a3_unaligned_results.txt",
-#else
+#elif A3_CASE == 12
                               "host0:/a3_vfpu_aligned_results.txt",
+#else
+                              "host0:/a3_vfpu_lvl_odd_results.txt",
 #endif
                               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_EXCL, 0777);
         if (fd < 0) return 2;
@@ -648,12 +820,12 @@ int main(int argc, char **argv) {
         a3_raise_address_error();
         return 4;
     }
-#elif A3_CASE >= 8 && A3_CASE <= 11
+#elif A3_CASE == 8 || A3_CASE == 9 || A3_CASE == 10 || A3_CASE == 11 || A3_CASE == 13 || A3_CASE == 14
     {
         const unsigned int base = (unsigned int)(uintptr_t)a3_vfpu_buffer;
-#if A3_CASE == 8
+#if A3_CASE == 8 || A3_CASE == 13
         const unsigned int eff = base + 2u;
-#elif A3_CASE == 10
+#elif A3_CASE == 10 || A3_CASE == 14
         const unsigned int eff = base + 8u;
 #else
         const unsigned int eff = base + 4u;
@@ -680,11 +852,21 @@ int main(int argc, char **argv) {
             (unsigned int)(uintptr_t)a3_load_instruction, "lv.q C000,0($t5)",
             eff, eff, (unsigned int)((base & 15u) == 0u),
             "quad VFPU load at an 8-byte-aligned address separates an 8-byte rule (no fault) from a 16-byte rule (fault); compare with the +4 variant"
-#else
+#elif A3_CASE == 11
             "PSP-A3-10", A3_BUILD_COMMIT, "sv.q+4",
             (unsigned int)(uintptr_t)a3_load_instruction, "sv.q C000,0($t5)",
             eff, eff, (unsigned int)((base & 15u) == 0u),
             "quad VFPU store at a 4-byte-aligned address faults with AdES (ExcCode 5) iff quads require 16-byte alignment; CpU (ExcCode 11) means the thread lacks the VFPU attribute"
+#elif A3_CASE == 13
+            "PSP-A3-12", A3_BUILD_COMMIT, "sv.s+2",
+            (unsigned int)(uintptr_t)a3_load_instruction, "sv.s S000,0($t5)",
+            eff, eff, (unsigned int)((base & 15u) == 0u),
+            "single VFPU store at base+2 raises AdES (ExcCode 5) iff the 4-byte rule applies to stores; CpU (ExcCode 11) means the thread lacks the VFPU attribute, not an alignment result"
+#else
+            "PSP-A3-13", A3_BUILD_COMMIT, "sv.q+8",
+            (unsigned int)(uintptr_t)a3_load_instruction, "sv.q C000,0($t5)",
+            eff, eff, (unsigned int)((base & 15u) == 0u),
+            "quad VFPU store at an 8-byte-aligned address faults with AdES (ExcCode 5) iff quads require 16-byte alignment; compare with the +4 variant (PSP-A3-10)"
 #endif
             );
         if (length < 0 || (size_t)length >= sizeof(header)) return 1;
@@ -697,10 +879,40 @@ int main(int argc, char **argv) {
                               "host0:/a3_vfpu_lvq4_header.txt",
 #elif A3_CASE == 10
                               "host0:/a3_vfpu_lvq8_header.txt",
-#else
+#elif A3_CASE == 11
                               "host0:/a3_vfpu_svq4_header.txt",
+#elif A3_CASE == 13
+                              "host0:/a3_vfpu_svs_header.txt",
+#else
+                              "host0:/a3_vfpu_svq8_header.txt",
 #endif
                               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_EXCL, 0777);
+        if (fd < 0) return 2;
+        int written = sceIoWrite(fd, header, (SceSize)length);
+        int closed = sceIoClose(fd);
+        if (written != length || closed < 0) return 3;
+        a3_raise_address_error();
+        return 4;
+    }
+#elif A3_CASE == 15
+    {
+        const unsigned int base = (unsigned int)(uintptr_t)a3_vfpu_buffer;
+        int length = snprintf(header, sizeof(header),
+            "probe_id=PSP-A3 run_id=PSP-A3-14 build_commit=%s\n"
+            "branch_address=0x%08x load_address=0x%08x target_address=0x%08x "
+            "instruction=lv.q C000,0($t5) in delay slot of beq $0,$0,target t5=0x%08x effective=0x%08x\n"
+            "base_is_16byte_aligned=%u mapped_and_writable=yes vfpu_thread_attr=yes\n"
+            "a0=11111111 a1=22222222 a2=33333333 a3=44444444 t0=aaaaaaaa\n"
+            "t7=5a5a5a5a only if execution continued past the access\n"
+            "expectation_under_test=misaligned VFPU quad load in delay slot sets BD, EPC = branch address\n",
+            A3_BUILD_COMMIT,
+            (unsigned int)(uintptr_t)a3_branch_instruction,
+            (unsigned int)(uintptr_t)a3_load_instruction,
+            (unsigned int)(uintptr_t)a3_branch_target,
+            base + 4u, base + 4u, (unsigned int)((base & 15u) == 0u));
+        if (length < 0 || (size_t)length >= sizeof(header)) return 1;
+        SceUID fd = sceIoOpen("host0:/a3_vfpu_lvq_delay_header.txt",
+                             PSP_O_WRONLY | PSP_O_CREAT | PSP_O_EXCL, 0777);
         if (fd < 0) return 2;
         int written = sceIoWrite(fd, header, (SceSize)length);
         int closed = sceIoClose(fd);

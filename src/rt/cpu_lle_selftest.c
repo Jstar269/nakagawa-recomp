@@ -675,6 +675,200 @@ static void test_hw_psp_a3_08_11_vfpu_through_interpreter(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvr.q at +4 must not set flow");
 }
 
+/* PSP-A3-12/13/14/15: VFPU remaining alignment cells (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+ * fixtures exception-a3-vfpu-svs/svq8/lvq-delay/lvl-odd, cells in
+ * docs/HARDWARE_ORACLE.md "VFPU remaining alignment cells"). sv.s needs width
+ * 4 with the store code, sv.q at +8 needs width 16 with the store code, the
+ * delay-slot BD/EPC rule holds for the VFPU group, and lvl.q at an odd
+ * address bypasses like the unaligned word forms. */
+static void test_hw_psp_a3_12_15_vfpu_remaining(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;
+    fresh_state(&s);
+    /* PSP-A3-12: sv.s at base+2 faults AdES; the aligned single store does not. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-12 sv.s at base+2 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 4u, 1) == 0u,
+          "an aligned single store must not fault");
+    /* A misaligned single is AdES for stores, AdEL for loads: distinct codes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+2 must still classify AdEL for a single load");
+    /* PSP-A3-13: sv.q at +8 faults AdES; only 16-aligned passes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 16u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-13 sv.q at base+8 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 1) == 0u,
+          "a 16-byte-aligned quad store must not fault");
+    /* Width-relative: +8 is fine for a word/single; only width 16 rejects it. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 4u, 1) == 0u,
+          "base+8 must NOT fault for a single store: the quad rule is width-relative");
+
+    /* Frame half for PSP-A3-12: EPC is the store, Cause AdES BD clear, BadVAddr
+     * keeps the low bits, Status is the VFPU historical frame. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 2u, 0u, 0u) < 0,
+          "PSP-A3-12 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-12 ExcCode must be 5 (AdES), distinct from the lv.s load");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-12 BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-12 EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "PSP-A3-12 BadVAddr=0x%08x, want the effective address with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) == 2u,
+          "PSP-A3-12 BadVAddr must not be aligned down");
+
+    /* Frame half for PSP-A3-13 with the store code. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 8u, 0u, 0u) < 0,
+          "PSP-A3-13 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-13 ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "PSP-A3-13 BadVAddr=0x%08x, want base+8 with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 8u,
+          "PSP-A3-13 BadVAddr must not be aligned down to 16");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-13 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-14 through the guard: a misaligned lv.q in a delay slot sets BD and
+ * names the branch, exactly as PSP-A3-04 did for a scalar word. The test goes
+ * through sr_cpu_guard_access() with in_delay=1, which is the path both CPU
+ * tiers use for a VFPU delay-slot fault. */
+static void test_hw_psp_a3_14_vfpu_delay_slot(void) {
+    CpuState s;
+    int took;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, 0x08981C64u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-14 a delay-slot misaligned quad must still classify AdEL");
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x08981C60u;
+    took = sr_cpu_guard_access(&s, 0x08981C64u, 16u, 0,
+                               TEST_BASE + 4u, TEST_BASE, 1u);
+    CHECK(took == 1, "PSP-A3-14 the delay-slot guard must take the fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-14 ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "PSP-A3-14 Cause BD must be set for a delay-slot VFPU fault");
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK | SR_CAUSE_BD)) == 0x00000010u,
+          "PSP-A3-14 Cause=0x%08x, want ExcCode 4 with BD (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "PSP-A3-14 EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x08981C64u,
+          "PSP-A3-14 BadVAddr=0x%08x, want the misaligned effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 4u,
+          "PSP-A3-14 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-14 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-15 (negative control): lvl.q at an odd address completes normally.
+ * The probe returned and wrote host0:/a3_vfpu_lvl_odd_results.txt with
+ * dst = aaaaaaaa bbbbbbbb cccccccc 11223344. This pins the bypass (width 0,
+ * never faults) for an odd address, as PSP-A3-11 did at +4. */
+static void test_hw_psp_a3_15_lvl_odd_no_fault(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 0u, 0) == 0u,
+          "PSP-A3-15 an lvl op at an odd address must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 0u, 1) == 0u,
+          "PSP-A3-15 an svl op at an odd address must not fault");
+    /* Width-relative cross-check: the same odd address faults for a halfword. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+1 must still fault for a halfword: the bypass is width-relative");
+}
+
+/* PSP-A3-12/13/14/15 through the interpreter lane: the new widths must fault
+ * (or bypass) at the actual sv.s/sv.q/lv.q/lvl.q op. The stub sr_vfpu_interp
+ * here returns OTHER without touching state, so a non-faulting VFPU op reports
+ * UNSUPPORTED (not EXCEPTION) with flow NONE -- "ok" means "does not fault". */
+static void test_hw_psp_a3_12_15_vfpu_through_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t base = 0x08856580u;
+
+    /* PSP-A3-12: sv.s S000, 0(t5) at base+2 faults AdES. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3au, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 2u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.s at base+2 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.s ExcCode must be 5 (AdES), distinct from the lv.s load");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp sv.s EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "interp sv.s BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.pc == TEST_VECTOR, "interp sv.s must transfer to the vector");
+
+    /* PSP-A3-13: sv.q at +8 faults AdES. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3eu, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 8u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.q at base+8 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.q+8 ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "interp sv.q+8 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-14: lv.q at +4 in the delay slot of beq $0,$0,+3 faults with
+     * BD set and EPC at the branch. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x10000003u, TEST_BASE);  /* beq $0,$0,+3 */
+    MEM_W32_PC(TEST_BASE + 4u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp delay-slot lv.q must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp delay lv.q ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "interp delay lv.q Cause BD must be set");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "interp delay lv.q EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp delay lv.q BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-15: lvl.q at an odd address bypasses and must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 1u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvl.q at odd must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvl.q at odd must not set flow");
+}
+
 /* BEV selects the bootstrap vector; an unowned vector fails closed. */
 static void test_vector_selection(void) {
     CpuState s;
@@ -1190,6 +1384,10 @@ int main(void) {
     test_hw_psp_a3_06_unaligned_no_fault();
     test_hw_psp_a3_08_11_vfpu_alignment();
     test_hw_psp_a3_08_11_vfpu_through_interpreter();
+    test_hw_psp_a3_12_15_vfpu_remaining();
+    test_hw_psp_a3_14_vfpu_delay_slot();
+    test_hw_psp_a3_15_lvl_odd_no_fault();
+    test_hw_psp_a3_12_15_vfpu_through_interpreter();
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();

@@ -71,9 +71,8 @@ proposals. Each claim covers only the exact fixture named:
     rather than to an absent page.
   - Cause bit 31 (BD) was clear in both. The delay-slot, halfword,
     `lwl`/`lwr`/`swl`/`swr` and VFPU load/store cases were measured afterwards
-    (PSP-A3-04 to PSP-A3-11, below); the remaining unmeasured VFPU cells are
-    `sv.s` misalignment, `sv.q` at +8, any VFPU access in a delay slot, and
-    left/right merges at odd addresses.
+    (PSP-A3-04 to PSP-A3-15, below); no VFPU alignment cell from that list
+    remains unmeasured.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
 - **CPU exception delay-slot and width cells** (runs PSP-A3-04, PSP-A3-05,
@@ -148,9 +147,49 @@ proposals. Each claim covers only the exact fixture named:
     4, lv.q/sv.q width 16, lvl/lvr/svl/svr width 0 bypass), `sr_vfpu_interp()`
     checks before the access, and the interpreter width table carries the VFPU
     rows at the same point relative to the access as scalar loads/stores.
-    Default (non-LLE) output is byte-identical. STILL SYNTHETIC: `sv.s`
-    misalignment, `sv.q` at +8, any VFPU access in a delay slot, and
-    left/right merges at odd addresses.
+    Default (non-LLE) output is byte-identical. The remaining VFPU cells
+    (`sv.s` at +2, `sv.q` at +8, VFPU in a delay slot, left/right at odd) are
+    measured in the next section, which confirms this guard rather than
+    contradicting it.
+- **VFPU remaining alignment cells** (runs PSP-A3-12, PSP-A3-13, PSP-A3-14,
+  PSP-A3-15; same route and campaign `psp-hw-20260917`; fixtures
+  `exception-a3-vfpu-svs`, `exception-a3-vfpu-svq8`,
+  `exception-a3-vfpu-lvq-delay` and `exception-a3-vfpu-lvl-odd`, which are
+  `probe_exception_a3.c` built with `-DA3_CASE=13`, `=14`, `=15` and `=16`):
+  - Every probe runs with main-thread attribute
+    `THREAD_ATTR_USER | THREAD_ATTR_VFPU`. No run reported CpU (ExcCode 11):
+    the measured codes are AdEL/AdES (4/5), not coprocessor-unusable, and
+    Status reads `0x40088613` in all three faulting runs.
+  - A single VFPU store (`sv.s S000, 0($t5)`, `0xE9A00000`) at base+2 raises
+    AdES: EPC = the store `0x088FB1B8` (cross-checked against the recorded
+    `a3_load_instruction`), Cause `0x10000014` (ExcCode 5, BD 0), BadVAddr =
+    `0x08918A92` (base `0x08918A90` + 2, low bits kept). Singles therefore
+    need 4-byte alignment on the store side too, matching the `lv.s` load
+    cell (PSP-A3-08) with the store code.
+  - A quad VFPU store (`sv.q C000, 0($t5)`, `0xF9A00000`) at base+8 raises
+    AdES: EPC = `0x0892FAB8`, Cause `0x10000014`, BadVAddr = `0x0894D388`
+    (base `0x0894D380` + 8). Together with PSP-A3-10 (`sv.q` at +4), quads
+    need 16-byte alignment on the store side -- an 8-byte rule would have let
+    this through.
+  - A quad VFPU load (`lv.q C000, 0($t5)`, `0xD9A00000`) at base+4 in the
+    delay slot of an always-taken branch (`b`, `0x10000005` at `0x089643B8`,
+    load at `0x089643BC`) raises AdEL with Cause `0x90000010` (ExcCode 4,
+    BD 1): EPC = the branch `0x089643B8` (not the load), BadVAddr =
+    `0x08981C64` (base `0x08981C60` + 4). This mirrors PSP-A3-04, which
+    measured the same BD/EPC rule for a scalar word, so the `in_delay`
+    bookkeeping in `sr_cpu_guard_access()` is thereby measured for the VFPU
+    group.
+  - The odd-address control returns normally (via `sceKernelExitGame`) and
+    writes `host0:/a3_vfpu_lvl_odd_results.txt`, no exception: `lvl.q C010,
+    0($t5)` (`0xD5A10000` at `0x08998C9C`) at the odd address `0x089B6421`
+    (src base `0x089B6420` + 1) completes without faulting, leaving
+    `aaaaaaaa bbbbbbbb cccccccc 11223344` from the `aaaaaaaa..dddddddd` fill
+    (only the merged lane takes the source word `11223344`). The width-0
+    left/right bypass is thereby measured at an odd address, exactly as
+    PSP-A3-11 did at a 4-byte-aligned address.
+  - The same offset-0 encoding note applies: every faulting probe holds the
+    full effective address in `$t5` with offset 0, and each frame's `t5`
+    equals BadVAddr while `t6` stays `0x0badc0de` and `t7` stays unwritten.
 - **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
   route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
   - *Error codes for unknown IDs:*

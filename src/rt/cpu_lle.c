@@ -199,18 +199,32 @@ static void sr_cp0_delay_context(
  * host0:/a3_vfpu_aligned_results.txt: dst = the src quad bit-for-bit, and the
  * left/right merges land in the C010/C020 lanes without faulting.
  *
- * The width-relative check below already expresses that rule: width 4 covers
- * lv.s/sv.s and width 16 covers lv.q/sv.q, while lvl/lvr/svl/svr bypass with
- * width 0 exactly like lwl/lwr/swl/swr. Both CPU tiers now pass those VFPU
- * widths: tools/codegen.py emits the VFPU memory forms from vfpu_effect()
- * through the same sr_cpu_guard_access() call as scalars (only when LLE CPU
- * mode is on), sr_vfpu_interp() checks before the access, and the interpreter
- * width table carries the VFPU rows at the same point relative to the access
- * as scalar loads/stores.
- *
- * STILL SYNTHETIC: sv.s misalignment (never probed; singles are measured only
- * for the lv.s +2 load cell), sv.q at +8, any VFPU access in a delay slot,
- * and lvl/lvr/svl/svr at odd (non-4-byte-aligned) addresses. */
+  * The width-relative check below already expresses that rule: width 4 covers
+  * lv.s/sv.s and width 16 covers lv.q/sv.q, while lvl/lvr/svl/svr bypass with
+  * width 0 exactly like lwl/lwr/swl/swr. Both CPU tiers now pass those VFPU
+  * widths: tools/codegen.py emits the VFPU memory forms from vfpu_effect()
+  * through the same sr_cpu_guard_access() call as scalars (only when LLE CPU
+  * mode is on), sr_vfpu_interp() checks before the access, and the interpreter
+  * width table carries the VFPU rows at the same point relative to the access
+  * as scalar loads/stores.
+  *
+  * MEASURED (runs PSP-A3-12, PSP-A3-13, PSP-A3-14 and PSP-A3-15, same campaign
+  * and console; fixtures `exception-a3-vfpu-svs`, `exception-a3-vfpu-svq8`,
+  * `exception-a3-vfpu-lvq-delay` and `exception-a3-vfpu-lvl-odd`, which are
+  * probe_exception_a3.c built with -DA3_CASE=13, =14, =15 and =16; cells in
+  * docs/HARDWARE_ORACLE.md "VFPU remaining alignment cells"): the remaining
+  * cells confirm the same guard rather than contradicting it. `sv.s` at base+2
+  * raises AdES (Cause 0x10000014, EPC = the store at 0x088FB1B8, BadVAddr =
+  * 0x08918A92), so singles need 4-byte alignment on the store side with the
+  * store code. `sv.q` at base+8 raises AdES (EPC = 0x0892FAB8, BadVAddr =
+  * 0x0894D388), so quad stores need 16-byte alignment, not 8-byte. `lv.q` at
+  * base+4 in the delay slot of an always-taken branch raises AdEL with Cause
+  * 0x90000010 (BD 1) and EPC at the branch (0x089643B8, not the load at
+  * 0x089643BC), so the in_delay bookkeeping is measured for the VFPU group as
+  * PSP-A3-04 did for scalar words. `lvl.q` at the odd address base+1
+  * completes normally (writes host0:/a3_vfpu_lvl_odd_results.txt), so the
+  * width-0 left/right bypass holds at odd addresses. No VFPU alignment cell
+  * remains synthetic. */
 unsigned sr_cpu_data_access_fault(
     const CpuState *s,
     uint32_t address,

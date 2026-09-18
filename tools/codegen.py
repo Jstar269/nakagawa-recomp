@@ -685,10 +685,12 @@ def _flit(v):
 
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
-    # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..11): lv.s/sv.s width 4,
+    # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
     # lv.q/sv.q width 16, lvl/lvr/svl/svr width 0 (never guarded, like
-    # lwl/lwr/swl/swr). STILL SYNTHETIC: sv.s misalignment, sv.q at +8, any
-    # VFPU access in a delay slot, and lvl/lvr/svl/svr at odd addresses.
+    # lwl/lwr/swl/swr). PSP-A3-12 (sv.s+2 AdES), PSP-A3-13 (sv.q+8 AdES),
+    # PSP-A3-14 (lv.q+4 in a delay slot: BD 1, EPC = branch) and PSP-A3-15
+    # (lvl.q at odd completes) confirm this guard; no VFPU alignment cell
+    # remains synthetic.
     op = w >> 26
     if op == 0x37:
         regnum = (w >> 24) & 3

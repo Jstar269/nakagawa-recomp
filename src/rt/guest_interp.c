@@ -494,16 +494,17 @@ static SrGuestInterpResult execute_noncontrol(
         }
     }
 
-    /* VFPU loads and stores under --lle-cpu (runs PSP-A3-08..11). Widths mirror
+    /* VFPU loads and stores under --lle-cpu (runs PSP-A3-08..15). Widths mirror
      * the codegen guard: lv.s/sv.s width 4, lv.q/sv.q width 16, lvl/lvr/svl/svr
      * width 0 (never guarded, like lwl/lwr/swl/swr). With the gate off this
      * stays the historical UNSUPPORTED so default behaviour and the cosim form
      * census are unchanged. With the gate on, a faulting access enters the
      * exception vector exactly like a scalar fault; otherwise the authoritative
      * sr_vfpu_interp performs the access at the same point the scalar lane
-     * performs its MEM_* access. STILL SYNTHETIC: sv.s misalignment, sv.q at
-     * +8, any VFPU access in a delay slot, and lvl/lvr/svl/svr at odd
-     * addresses. */
+     * performs its MEM_* access. PSP-A3-12 (sv.s+2 AdES), PSP-A3-13 (sv.q+8
+     * AdES), PSP-A3-14 (lv.q in a delay slot: BD 1, EPC = branch) and PSP-A3-15
+     * (lvl.q at odd completes) confirm this guard; no VFPU alignment cell
+     * remains synthetic. */
     {
         int is_vfpu_mem = 0;
         unsigned vfpu_width = 0u;
