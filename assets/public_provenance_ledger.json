@@ -783,7 +783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a163b6074b848904fa3a3dbf9a8598faacdc46156771f7dd5857e9aa67d77a3a"
+      "sha256": "852d22633f1dc050c1cacc6d82d5c788cf80f4a88bca9f2ec28f9bda930c2415"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
