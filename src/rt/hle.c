@@ -49,6 +49,7 @@
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 #include "hle_power.h"
+#include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1486,6 +1487,63 @@ static uint32_t h_UtilityUnloadAvModule(CpuState *s) {
 }
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
+
+/* TD-27 opt-in stale translated-code detector (see src/rt/stale_code.h).
+ *
+ * Guest/host memory is one coherent array, so cache maintenance has no host
+ * work and these stay success no-ops -- with one addition: when
+ * SR_STALE_DETECT opts in, an invalidate also hash-compares the affected
+ * guest bytes against the translation-time records codegen emitted behind
+ * --stale-detect, and aborts loudly on the first mismatch (the sr_break
+ * SR_BREAK_FATAL / sr_unimplemented fail-loud convention). Disabled, each
+ * handler costs one cached flag branch and returns 0 exactly like h_ok. */
+static int stale_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
+    (void)ctx;
+    if (!sr_guest_span_readable(addr, 4u)) {
+        return 0;
+    }
+    memcpy(word_out, SR_HOST(addr), 4u);
+    return 1;
+}
+
+static uint32_t h_CacheInvalidateAll(CpuState *s) {
+    (void)s;
+    if (sr_stale_enabled()) {
+        uint32_t bad = 0u, exp = 0u, act = 0u;
+        if (sr_stale_check_all(stale_mem_read, NULL, &bad, &exp, &act)) {
+            fflush(stderr);
+            abort();
+        }
+    }
+    return 0;
+}
+
+static uint32_t h_CacheInvalidateRange(CpuState *s) {
+    /* PSP range signature: a0 = address, a1 = length. */
+    if (sr_stale_enabled()) {
+        uint32_t bad = 0u, exp = 0u, act = 0u;
+        if (sr_stale_check_range(A0, A1, stale_mem_read, NULL, &bad, &exp, &act)) {
+            fflush(stderr);
+            abort();
+        }
+    }
+    return 0;
+}
+
+void sr_stale_note_cache_op(uint32_t addr) {
+    /* `cache`-op hook emitted by codegen behind --stale-detect. Single-word
+     * invalidate; same gate and same abort-on-stale contract as above. */
+    if (!sr_stale_enabled()) {
+        return;
+    }
+    {
+        uint32_t bad = 0u, exp = 0u, act = 0u;
+        if (sr_stale_check_range(addr, 4u, stale_mem_read, NULL, &bad, &exp, &act)) {
+            fflush(stderr);
+            abort();
+        }
+    }
+}
 
 /* 0x00061e74 is the game's newlib FILE write callback used by the module-processing log
  * stream. It is a valid MIPS function entry (jr ra; move v0,zero), but lies in the four-byte
@@ -12139,11 +12197,22 @@ void sr_hle_init(void) {
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
-    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_ok);
+    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);
     /* Guest and host share one coherent byte array; cache maintenance has no
      * additional host-side work, but the syscall and success result are real. */
-    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_ok);
-    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_ok);
+    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAll);
+    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_CacheInvalidateRange);
+    /* TD-27 stale-code detector: the Icache/remaining-Dcache invalidate NIDs
+     * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
+     * in, so default dispatch behavior is unchanged. When enabled they run
+     * the same check-and-abort contract as the Dcache handlers above. */
+    if (sr_stale_enabled()) {
+        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAll);
+        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAll);
+        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRange);
+        sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
+        sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
+    }
     sr_hle_register(0x6ad345d7, "sceKernelSetGPO", h_ok);
     /* GPI reads hardware general-purpose input pins; always 0 on retail PSP. */
     sr_hle_register(0x37fb5c42, "sceKernelGetGPI", h_ok);
