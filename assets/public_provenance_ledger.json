@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0e42a85dde88054e994c05ab588520c8121de0a1765f3aa92c3191fded0eed08"
+      "sha256": "57a4b7fc226b232e455e9375570b4bd6211438e8ff64b46901c305eadff5e524"
     },
     {
       "path": "NOTICE.md",
@@ -1527,7 +1527,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e7244218c8ea635e5f91323bb821bf4e4036af3b623598d280ccee8dea9267b6"
+      "sha256": "5e65e79eb399de3ee9d3727da9447f843e08b0a05cfdd7012b8efd4b98b6283b"
     },
     {
       "path": "interface/.gitignore",
@@ -1731,7 +1731,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f1f1be88f2b175bdd42d209094818dda133e1ab778a9d55b842fe6e64cb2fe0"
+      "sha256": "3f5a01190cc0e8181903689f3cda3c01a5ad3207b265975da2d619a8df66e5f7"
     },
     {
       "path": "interface/src/app/api/recompiler/debug/nid-audit/route.ts",
@@ -1743,7 +1743,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6dd3458695561d95abfd58bff0ad01d2460a1e5f4d53001bd404d64b0f5a0f6e"
+      "sha256": "82d889c6fe0c6a282472783385dedb20928ee579c09c46cd79460d818f52d6e9"
     },
     {
       "path": "interface/src/app/api/recompiler/doctor/route.ts",
@@ -1791,7 +1791,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b131899b2f4c02d8c92ae08a737b114693c89ec53f7569fd01608214c6e29680"
+      "sha256": "399f1e5ce3e63cb71680be840ecdb3f386ed1c75bf4ec93f09b244d6250d471b"
     },
     {
       "path": "interface/src/app/api/recompiler/profiles/[id]/export/route.ts",
@@ -1851,7 +1851,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "61a3917863c2a0a2630d1dacc01164178c565f62f33d466064bcfad843209f2b"
+      "sha256": "77184f65f14415c44cd0724ccee7c7ed11e000f9792f2da4646d39ac51c3f042"
     },
     {
       "path": "interface/src/app/api/recompiler/telemetry/export/route.ts",
@@ -1923,7 +1923,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c679cbed16db4de64b8e64fa344f0f6c814b31de81aaf0b928dc89887c461aaa"
+      "sha256": "13a13913c9b93c597f0ab838bb4fd19798709ce72313dd05c4c38d7902345479"
     },
     {
       "path": "interface/src/app/api/recompiler/visual-regression/image/route.ts",
@@ -2019,7 +2019,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e05cecdae8103dffd9b335e55345f517af88a4a5bd06731bd70041b656dd0568"
+      "sha256": "834db62a434452077ddf5e2720b1ee27359519d63bc6fdabe33c052dd2392701"
     },
     {
       "path": "interface/src/app/page.tsx",
@@ -2067,7 +2067,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96dd3ad984762bbde8d59b4df78b79d7b2ac36dfdc7fd77efbac01d7f1f5c9dc"
+      "sha256": "c292971e0e815be43af07a07da729da3691553c2405f97842bf1f6b831a333dc"
     },
     {
       "path": "interface/src/components/studio/config-diff.tsx",
@@ -2115,7 +2115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7cd19382a3541b81874865d8c0514b9bc1667d8ad984b589376f5450fb461234"
+      "sha256": "f079b19e8a65e641d831c9b5e71bae314ce0bfa03b34a7fc596f8dcbd753e154"
     },
     {
       "path": "interface/src/components/studio/footer.tsx",
@@ -2163,7 +2163,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1feec9ed49e2cf6b3a000978b85301ab96b4352f60cfd286595d085e826f240"
+      "sha256": "c3476f1a35fd64957e0f3d71b53eef319893fe1b68e19f2f57beca71c93f4f5c"
     },
     {
       "path": "interface/src/components/studio/iso-file-tree.tsx",
@@ -2211,7 +2211,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5af55c069d9218d1ea12c6e3a655e787bf2b44cfbbb65d28669f8a80dea3a6b"
+      "sha256": "4de5c04107e112ba206f3b80793e86ade4a89d809ea78c7eba35d5249d2f2b84"
     },
     {
       "path": "interface/src/components/studio/onboarding-tour.tsx",
@@ -2259,7 +2259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f551e790facbf7c6c7035b3884a66b38ed46a731be3f5de5c877008c36c75eea"
+      "sha256": "88a70f902fb173a513d26c1b68907899849ee18b0a10e9a6235cff5c01662441"
     },
     {
       "path": "interface/src/components/studio/preflight-card.tsx",
@@ -2367,7 +2367,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ada9b0cde8a7caa6f33256f4192e6f41381e7eef34827c47fec372997f26dd7"
+      "sha256": "198d14466366fb4209896a708a81b1ad1b9b44f0faf170244f68bbe4679fea25"
     },
     {
       "path": "interface/src/components/studio/test-lab-panel.tsx",
@@ -2403,7 +2403,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "475203617a90d2b0071d584111cb7cc424e815877c7663754f71204748f9a19d"
+      "sha256": "3724ae33b575b8e7db67b3999c2b7031ff018e86f5aeda4e652a08ae21b959ab"
     },
     {
       "path": "interface/src/components/studio/ui-bits.tsx",
@@ -2892,7 +2892,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3705ee3d081976c7172a25b740fbc6e391ca514f05ad97f096b9db01c650894b"
+      "sha256": "d5ef6607f98a55b8941c70fb8738ee0ce40d0041b8ad3c067abe68f1afd7d385"
     },
     {
       "path": "interface/src/lib/recompiler/doctor.ts",
@@ -2904,7 +2904,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "809225834c284149020b67ff176e75ffcc81504e4773f7b02f18ef5bcb9f646e"
+      "sha256": "33a8cab62feec997d047605596648a9d132b2436769b2f7132d21b149478a59f"
     },
     {
       "path": "interface/src/lib/recompiler/iso.ts",
@@ -2928,7 +2928,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "caffcaf60bea484f8a114be16e3643b2424353d41d1c8b11838397dd1c3fe0e8"
+      "sha256": "1f660f58331f815c0fca05f4000cb70819ec29b62be9b0f1510e0a0fa5978d0f"
     },
     {
       "path": "interface/src/lib/recompiler/loopback-bind.test.mjs",
@@ -2976,7 +2976,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48564aff5eadd870cf6af4d54f8df1f5a15723d9dd9d7529530ee6383d4abca0"
+      "sha256": "4f4eb704cafee10191bb289d5433bb9fc467f5f6198112d188c907a1cd3022e6"
     },
     {
       "path": "interface/src/lib/recompiler/manager-process.ts",
@@ -2988,7 +2988,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57b4bae200682587d0e113e5548afc8a66162f31565d9dfe77ecc41b55d6f8be"
+      "sha256": "7a1071dbcdf6b4d6109509da7eb72bc4b77c91fdeec9a37ada5bdea1876769c9"
     },
     {
       "path": "interface/src/lib/recompiler/manager-sse.test.ts",
@@ -3168,7 +3168,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a3e113591eb80111a8326fb88c1cf89996a10952a8d1b3e43f1c9eaaa6d77ce0"
+      "sha256": "313ea65d71eaf63cbbc4557c56620c7c7166aa84650de39c4b55b57e48cbadfb"
     },
     {
       "path": "interface/src/lib/recompiler/route-integrity.test.ts",
@@ -3192,7 +3192,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fa4344549bff1f99a9a6ce68d938bbe8bc1fbbdca3b8c62b5e8972c73121647a"
+      "sha256": "5e808e6780aa738729f0fcf5686b3d7e59b72b10b23e070051fc87c969d6fa33"
     },
     {
       "path": "interface/src/lib/recompiler/share.ts",
@@ -3240,7 +3240,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "628eabdcee38bc3b094017e892eaea6b7615a4734cf11d9a7ecb4f2b5ee4155f"
+      "sha256": "816628473ddae119e4ccb0065f574fac207153aae681a571c6276625be3e373d"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.d.mts",
@@ -3435,7 +3435,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ed7c7fdcc74eb6e2c526876b5c91cbea5e14895c1ac8cc3207050439a1afef38"
+      "sha256": "da4baf55c79de7a29f967b77a1cd18f95ba3d38c844179e0015856b7a37e7ef1"
     },
     {
       "path": "pyproject.toml",
@@ -8468,7 +8468,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "efedeacd76bee15952a1cac38f35f86c571781de9fece7a87b8d29ff421a5639"
+      "sha256": "b8151b6a32735e2fe6803c59ffc08e502482e6445d3756498448be996cc7672c"
     },
     {
       "path": "tools/test_manager_safety.py",

@@ -3,7 +3,7 @@
  *
  * Design: this module assumes it is being executed on the same machine as the
  * Nakagawa Recomp project. Resolve REPO_ROOT from cwd; bail with a clear
- * error otherwise. PowerShell is required for hst_manager.ps1. There is no
+ * error otherwise. PowerShell is required for nk_manager.ps1. There is no
  * simulated build or runtime fallback. */
 import { spawn, ChildProcess } from "node:child_process";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -14,10 +14,10 @@ import { buildPowerShellArgs } from "./powershell-args.mjs";
 // ---- Repo layout discovery ----------------------------------------------
 
 /** Immutable anchors that must coexist at the repository root. */
-const REPO_ANCHORS = ["hst_manager.ps1", "AGENTS.md", "Makefile"] as const;
+const REPO_ANCHORS = ["nk_manager.ps1", "AGENTS.md", "Makefile"] as const;
 
 function isRepoRoot(dir: string): boolean {
-  // Issue #186: require multiple immutable anchors so a stray hst_manager.ps1
+  // Issue #186: require multiple immutable anchors so a stray nk_manager.ps1
   // elsewhere cannot grant process-control routes access to the wrong tree.
   const present = REPO_ANCHORS.filter((anchor) =>
     existsSync(/* turbopackIgnore: true */ path.join(/* turbopackIgnore: true */ dir, anchor)));
@@ -25,17 +25,29 @@ function isRepoRoot(dir: string): boolean {
 }
 
 /**
+ * Resolve the dashboard's repository-root override. NK_DASHBOARD_REPO_ROOT is
+ * canonical (issue #196); the legacy HST_DASHBOARD_REPO_ROOT is honored as a
+ * fallback so existing checkouts keep working until the Phase 5 sweep.
+ */
+function dashboardRepoRootOverride(): string | undefined {
+  const canonical = process.env.NK_DASHBOARD_REPO_ROOT?.trim();
+  if (canonical) return canonical;
+  const legacy = process.env.HST_DASHBOARD_REPO_ROOT?.trim();
+  return legacy || undefined;
+}
+
+/**
  * Resolve the canonical repository root.  Issue #186: the result is realpath-
  * canonicalized, and ambiguous or symlink/reparse-escaped roots are refused.
- * An explicit HST_DASHBOARD_REPO_ROOT environment override is honored as
+ * An explicit NK_DASHBOARD_REPO_ROOT environment override is honored as
  * explicit configuration and is itself validated against the anchors.
  */
 export function findRepoRoot(): string {
-  const override = process.env.HST_DASHBOARD_REPO_ROOT;
-  if (override?.trim()) {
+  const override = dashboardRepoRootOverride();
+  if (override) {
     const resolved = resolveCanonicalRoot(override.trim());
     if (resolved) return resolved;
-    throw new Error(`repo-root-invalid: HST_DASHBOARD_REPO_ROOT=${override} is not a Nakagawa Recomp root`);
+    throw new Error(`repo-root-invalid: NK_DASHBOARD_REPO_ROOT=${override} is not a Nakagawa Recomp root`);
   }
 
   // Walk up from cwd looking for the anchor set.
@@ -51,7 +63,7 @@ export function findRepoRoot(): string {
   const studioSibling = path.resolve(/* turbopackIgnore: true */ process.cwd(), "..");
   const siblingResolved = resolveCanonicalRoot(studioSibling);
   if (siblingResolved) return siblingResolved;
-  throw new Error("repo-root-not-found: hst_manager.ps1/AGENTS.md/Makefile are not on the path; run the dashboard from the Nakagawa Recomp project tree.");
+  throw new Error("repo-root-not-found: nk_manager.ps1/AGENTS.md/Makefile are not on the path; run the dashboard from the Nakagawa Recomp project tree.");
 }
 
 export function resolveCanonicalRoot(candidate: string): string | null {
@@ -72,10 +84,10 @@ export function repoPath(...parts: string[]): string {
   return path.join(/* turbopackIgnore: true */ findRepoRoot(), ...parts);
 }
 
-// ---- Hst.exe inspector ---------------------------------------------------
+// ---- Built-executable inspector -------------------------------------------
 
-export interface HstExecutableStatus {
-  hstExePath: string;
+export interface BinaryStatus {
+  exePath: string;
   exists: boolean;
   sizeBytes: number;
   mtime: number;
@@ -130,17 +142,51 @@ export function findVulkanSdk(): string | null {
   return candidates.find((candidate) => isUsableVulkanSdk(candidate.path))?.path ?? null;
 }
 
-export function inspectHst(repoRoot: string): HstExecutableStatus {
-  const hstExePath = path.join(/* turbopackIgnore: true */ repoRoot, "build", "hst", "hst.exe");
+/**
+ * Resolve the dashboard's built-executable status without assuming a title.
+ * The Makefile convention is build/<game>/<game>.exe, so every directory
+ * entry shaped that way is a candidate; the most recently modified one wins.
+ * When nothing has been built yet, report the canonical default product
+ * (nk_manager.ps1 defaults to assets/titles/synthetic.json whose game_name
+ * is "synthetic") so the UI points at the title a fresh BuildFull produces.
+ */
+export function inspectBinary(repoRoot: string): BinaryStatus {
+  const exePath = findBuiltExecutable(repoRoot);
   let exists = false, sizeBytes = 0, mtime = 0;
-  if (existsSync(hstExePath)) {
+  if (existsSync(exePath)) {
     exists = true;
-    const st = statSync(hstExePath);
+    const st = statSync(exePath);
     sizeBytes = st.size;
     mtime = st.mtimeMs;
   }
   const vulkanSdkFoundAt = findVulkanSdk();
-  return { hstExePath, exists, sizeBytes, mtime, vulkanSdkFoundAt };
+  return { exePath, exists, sizeBytes, mtime, vulkanSdkFoundAt };
+}
+
+function findBuiltExecutable(repoRoot: string): string {
+  const buildDir = path.join(/* turbopackIgnore: true */ repoRoot, "build");
+  try {
+    const entries = readdirSync(buildDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^[a-z0-9][a-z0-9._-]*$/i.test(entry.name));
+    const candidates: { exePath: string; mtime: number }[] = [];
+    for (const entry of entries) {
+      for (const exeName of [`${entry.name}.exe`, entry.name]) {
+        const candidate = path.join(buildDir, entry.name, exeName);
+        try {
+          const st = statSync(candidate);
+          if (st.isFile()) candidates.push({ exePath: candidate, mtime: st.mtimeMs });
+          break;
+        } catch {
+          // Not built under this spelling; try the next one.
+        }
+      }
+    }
+    candidates.sort((left, right) => right.mtime - left.mtime || (left.exePath < right.exePath ? -1 : 1));
+    if (candidates.length > 0) return candidates[0].exePath;
+  } catch {
+    // No build directory yet; fall through to the canonical default path.
+  }
+  return path.join(/* turbopackIgnore: true */ buildDir, "synthetic", "synthetic.exe");
 }
 
 // ---- Log tailing ---------------------------------------------------------

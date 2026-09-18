@@ -553,7 +553,7 @@ r28=00000000 r29=04000000 r30=00000000 r31=0004ccb8
       {/* Runtime subsystems */}
       <Panel
         title="Runtime subsystems"
-        description="src/rt/ — compiled into hst.exe (the native runtime)"
+        description="src/rt/ — compiled into the game executable (the native runtime)"
         icon={<Wrench className="size-4" />}
       >
         <div className="grid sm:grid-cols-2 gap-2">

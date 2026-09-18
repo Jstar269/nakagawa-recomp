@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 
 export const runtime = "nodejs";
 
-/** Parse the canonical hst_imports.toml into its [[import]] entries. */
+/** Parse a canonical <game>_imports.toml into its [[import]] entries. */
 function parseImportsToml(text: string): Array<{ nid: string; lib: string; stub: string }> {
   const entries: Array<{ nid: string; lib: string; stub: string }> = [];
   let current: Record<string, string> | null = null;
@@ -34,6 +34,30 @@ function parseImportsToml(text: string): Array<{ nid: string; lib: string; stub:
  * into a single "resolved" bucket, so a dedicated-but-unreviewed handler never reads as
  * implementation coverage (#181).
  */
+
+/** Newest build/<game>/<game>_imports.toml, or "" when none exists yet. */
+function findLatestImportsToml(repoRoot: string): string {
+  const buildDir = path.join(repoRoot, "build");
+  try {
+    const found: { file: string; mtime: number }[] = [];
+    for (const entry of readdirSync(buildDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(buildDir, entry.name, `${entry.name}_imports.toml`);
+      try {
+        const st = statSync(candidate);
+        if (st.isFile()) found.push({ file: candidate, mtime: st.mtimeMs });
+      } catch {
+        // Title directory without an imports file; ignore.
+      }
+    }
+    found.sort((left, right) => right.mtime - left.mtime);
+    if (found.length > 0) return found[0].file;
+  } catch {
+    // No build directory yet.
+  }
+  return "";
+}
+
 export async function GET(req: NextRequest) {
   const rejection = rejectNonLocalControlRequest(req, { mutating: true });
   if (rejection) return rejection;
@@ -41,7 +65,9 @@ export async function GET(req: NextRequest) {
     const repoRoot = findRepoRoot();
     const manifestScript = path.join(repoRoot, "tools", "hle_manifest.py");
     const manifestPath = path.join(repoRoot, "build", "hle_manifest.json");
-    const importsPath = path.join(repoRoot, "build", "hst", "hst_imports.toml");
+    // The pipeline writes build/<game>/<game>_imports.toml (Makefile convention);
+    // audit the most recently generated one instead of assuming a title.
+    const importsPath = findLatestImportsToml(repoRoot);
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
     await runSubprocess(pythonCmd, [manifestScript, "--out", manifestPath], {
@@ -135,7 +161,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      source: "tools/hle_manifest.py + build/hst/hst_imports.toml",
+      source: `tools/hle_manifest.py + ${path.relative(repoRoot, importsPath).replace(/\\/g, "/")}`,
       summary,
       status_breakdown: {
         complete: summary.resolved,

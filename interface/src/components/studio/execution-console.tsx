@@ -53,9 +53,9 @@ function responseError(response: DebugConsoleResponse, fallback: string) {
 }
 
 function connectionLabel(mode: DebugConsoleResponse["mode"]) {
-  if (mode === "process") return "Process attached (hst.exe)";
+  if (mode === "process") return "Process attached (game executable)";
   if (mode === "simulation") return "Standalone simulation";
-  return "Offline (hst.exe not running)";
+  return "Offline (game executable not running)";
 }
 
 export function ExecutionConsole() {
@@ -192,8 +192,8 @@ export function ExecutionConsole() {
         ...previous,
         { type: "system", text: "Available commands:" },
         { type: "output", text: "  status          Display current connection state and RVAs" },
-        { type: "output", text: "  pause           Suspend hst.exe (requires live-control opt-in)" },
-        { type: "output", text: "  resume          Resume hst.exe (requires live-control opt-in)" },
+        { type: "output", text: "  pause           Suspend game executable (requires live-control opt-in)" },
+        { type: "output", text: "  resume          Resume game executable (requires live-control opt-in)" },
         { type: "output", text: "  regs            Dump active CpuState MIPS registers" },
         { type: "output", text: "  set <reg> <val> Write a register (requires live-control opt-in)" },
         { type: "output", text: "  read <addr> [sz] [fmt]  Read memory range. fmt: hex | string | words" },

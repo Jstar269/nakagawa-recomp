@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,7 +24,7 @@ import {
 async function withSyntheticDoctor<T>(script: string, callback: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nakagawa-doctor-test-"));
   await mkdir(path.join(root, "tools"), { recursive: true });
-  await writeFile(path.join(root, "tools", "hst_doctor.py"), script, "utf8");
+  await writeFile(path.join(root, "tools", "nk_doctor.py"), script, "utf8");
   try {
     return await callback(root);
   } finally {
@@ -33,7 +34,7 @@ async function withSyntheticDoctor<T>(script: string, callback: (root: string) =
 
 const syntheticZeroFailureReport: DoctorReport = {
   schema_version: 1,
-  tool: "hst_doctor",
+  tool: "nk_doctor",
   root: "synthetic",
   scope: "repo",
   strict: false,
@@ -110,7 +111,7 @@ test("summary rail backstop refreshes while EventSource is reconnecting", () => 
 });
 
 test("runDoctor: rejects malformed synthetic output", async () => {
-  await withSyntheticDoctor(`print('{"tool": "hst_doctor"}')\n`, async (root) => {
+  await withSyntheticDoctor(`print('{"tool": "nk_doctor"}')\n`, async (root) => {
     await assert.rejects(runDoctor(root));
   });
 });
@@ -136,12 +137,12 @@ test("runDoctor: rejects a timed-out synthetic subprocess", async () => {
   });
 });
 
-test("runDoctor: executes hst_doctor.py and produces structured report", async () => {
+test("runDoctor: executes nk_doctor.py and produces structured report", async () => {
   const repoRoot = findRepoRoot();
   const report = await runDoctor(repoRoot, { scope: "repo" });
 
   assert.equal(report.schema_version, 1);
-  assert.equal(report.tool, "hst_doctor");
+  assert.equal(report.tool, "nk_doctor");
   assert.equal(report.scope, "repo");
   assert.ok(typeof report.counts === "object");
   assert.ok(typeof report.counts.PASS === "number");
@@ -155,6 +156,32 @@ test("runDoctor: executes hst_doctor.py and produces structured report", async (
     assert.ok(["PASS", "WARN", "FAIL", "INFO"].includes(result.status));
     assert.ok(typeof result.code === "string");
     assert.ok(typeof result.summary === "string");
+  }
+});
+
+test("findRepoRoot: honors the legacy HST_DASHBOARD_REPO_ROOT override", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nakagawa-root-test-"));
+  for (const anchor of ["nk_manager.ps1", "AGENTS.md", "Makefile"]) {
+    await writeFile(path.join(root, anchor), "# test anchor\n", "utf8");
+  }
+  const previousNk = process.env.NK_DASHBOARD_REPO_ROOT;
+  const previousHst = process.env.HST_DASHBOARD_REPO_ROOT;
+  delete process.env.NK_DASHBOARD_REPO_ROOT;
+  process.env.HST_DASHBOARD_REPO_ROOT = root;
+  try {
+    assert.equal(findRepoRoot(), realpathSync(root));
+  } finally {
+    if (previousNk === undefined) {
+      delete process.env.NK_DASHBOARD_REPO_ROOT;
+    } else {
+      process.env.NK_DASHBOARD_REPO_ROOT = previousNk;
+    }
+    if (previousHst === undefined) {
+      delete process.env.HST_DASHBOARD_REPO_ROOT;
+    } else {
+      process.env.HST_DASHBOARD_REPO_ROOT = previousHst;
+    }
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -176,7 +203,7 @@ test("GET /api/recompiler/doctor route: returns valid report for scope=repo", as
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "no-store");
   const data = (await res.json()) as { tool: string; scope: string; results: unknown[] };
-  assert.equal(data.tool, "hst_doctor");
+  assert.equal(data.tool, "nk_doctor");
   assert.equal(data.scope, "repo");
   assert.ok(Array.isArray(data.results));
 });
@@ -196,13 +223,16 @@ test("classifyDoctorFailure: maps known failure classes to plain-language remedi
   assert.ok(python.nextAction.length > 0);
 
   const root = classifyDoctorFailure(
-    "repo-root-not-found: hst_manager.ps1/AGENTS.md/Makefile are not on the path",
+    "repo-root-not-found: nk_manager.ps1/AGENTS.md/Makefile are not on the path",
   );
   assert.equal(root.reason, "repo-root-missing");
   assert.ok(root.nextAction.length > 0);
 
-  const script = classifyDoctorFailure("hst_doctor.py not found at C:/some/tools/hst_doctor.py");
+  const script = classifyDoctorFailure("nk_doctor.py not found at C:/some/tools/nk_doctor.py");
   assert.equal(script.reason, "doctor-script-missing");
+
+  const legacyScript = classifyDoctorFailure("hst_doctor.py not found at C:/some/tools/hst_doctor.py");
+  assert.equal(legacyScript.reason, "doctor-script-missing");
 
   const timeout = classifyDoctorFailure("command timed out after 20000 milliseconds");
   assert.equal(timeout.reason, "timeout");
@@ -216,6 +246,7 @@ test("classifyDoctorFailure: never discards the raw diagnostic", () => {
   for (const detail of [
     "Error: spawn python ENOENT",
     "repo-root-not-found: anchors missing",
+    "nk_doctor.py not found at X",
     "hst_doctor.py not found at X",
     "command timed out after 20000 milliseconds",
   ]) {
@@ -238,8 +269,8 @@ test("summary Doctor state: unavailable with a retained report stays a failure, 
 });
 
 test("GET /api/recompiler/doctor route: 500 payload classifies failure with remediation and keeps raw detail", async () => {
-  const previousRoot = process.env.HST_DASHBOARD_REPO_ROOT;
-  process.env.HST_DASHBOARD_REPO_ROOT = "/nonexistent-nakagawa-path-for-test";
+  const previousRoot = process.env.NK_DASHBOARD_REPO_ROOT;
+  process.env.NK_DASHBOARD_REPO_ROOT = "/nonexistent-nakagawa-path-for-test";
   try {
     const req = new NextRequest("http://127.0.0.1:3000/api/recompiler/doctor?scope=repo", {
       headers: { host: "127.0.0.1:3000" },
@@ -255,9 +286,9 @@ test("GET /api/recompiler/doctor route: 500 payload classifies failure with reme
     assert.ok(typeof data.detail === "string" && data.detail.length > 0);
   } finally {
     if (previousRoot === undefined) {
-      delete process.env.HST_DASHBOARD_REPO_ROOT;
+      delete process.env.NK_DASHBOARD_REPO_ROOT;
     } else {
-      process.env.HST_DASHBOARD_REPO_ROOT = previousRoot;
+      process.env.NK_DASHBOARD_REPO_ROOT = previousRoot;
     }
   }
 });
