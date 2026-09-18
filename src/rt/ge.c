@@ -142,6 +142,9 @@ static int s_primitive_profile_pending_phase = -1;
 static uint64_t s_primitive_profile_pending_started;
 static uint64_t s_primitive_profile_total_pending_started;
 static int s_primitive_profile_current_phase = -1;
+static void ge_transition_trace_sync_written(void);   /* defined with the transition-trace block */
+static void ge_transition_trace_configure(void);      /* defined with the transition-trace block */
+static int s_tr_enabled;   /* tentative: defined with initializer in the transition-trace block */
 
 static uint64_t primitive_profile_timer_overhead(void) {
     enum { CALIBRATION_PAIRS = 256 };
@@ -354,6 +357,7 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
+    if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
     g_ge_stall_addr = 0;
@@ -772,6 +776,140 @@ static int s_rt_active = 0;          /* tracing the current frame */
 static uint32_t s_rt_draw = 0;       /* global 3D draw sequence number */
 static int s_rt_draws_f = 0;         /* draws logged this frame (cap) */
 
+/* ---- SR_GE_TRANSITION_TRACE=<path>: narrow one-frame-corruption harness (issue #69) ----
+ * Opt-in JSONL trace with one record per WEIGHTED GE_PRIM draw (skinned geometry only),
+ * emitted at draw entry before any vertex work so the bad draw's full upload state is
+ * captured even if rasterization drops it. Off by default; when off the per-draw cost is
+ * a single cached-int check and there is no per-vertex work at all: the gate is probed
+ * once (getenv + fopen) and cached, mirroring the SR_RTRACE lazy-static pattern above,
+ * and matrix-write shadows are only maintained while armed (snapshotted at arm time).
+ * Path "1" selects the default logs/ge_transition_trace.jsonl, mirroring the
+ * SR_GE_CAPTURE_PATH default-path convention in ge_capture_configure().
+ *
+ * Each record carries the delivered-VBLANK frame index (s_ge_frame, set from s_vcount in
+ * sr_vblank_tick), the frame-scoped draw ordinal, the GE list id + PRIM command address,
+ * bone/world/view/proj matrices as BOTH most-recent guest writes and effective draw-time
+ * state (they diverge on cursor-overflow discards and cross-list restores), the decoded
+ * VTYPE (weight count uses wc+1 semantics), vertex/index bases, count, prim type, render
+ * target, bound texture, and a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
+ * bad draw matches its first recovered equivalent. See tools/ge_transition_diff.py. */
+static int s_tr_enabled = -1;        /* -1=unprobed, 0=off, 1=on */
+static FILE *s_tr_fp = NULL;
+static uint32_t s_tr_ordinal_frame = 0xFFFFFFFFu;
+static uint32_t s_tr_draw_ordinal = 0;   /* frame-scoped PRIM ordinal (all draws, any mode) */
+static float s_tr_bone_w[96], s_tr_world_w[12], s_tr_view_w[12], s_tr_proj_w[16];
+static unsigned long s_tr_bone_drop = 0, s_tr_world_drop = 0;
+static unsigned long s_tr_view_drop = 0, s_tr_proj_drop = 0;
+
+/* Snapshot effective state as the write history baseline. Pre-arm guest writes are
+ * unknowable, so records before the first post-arm matrix upload show written values
+ * equal to the arm-time effective state; later uploads update both sides. */
+static void ge_transition_trace_sync_written(void) {
+    memcpy(s_tr_bone_w, ge.bone, sizeof(s_tr_bone_w));
+    memcpy(s_tr_world_w, ge.world, sizeof(s_tr_world_w));
+    memcpy(s_tr_view_w, ge.view, sizeof(s_tr_view_w));
+    memcpy(s_tr_proj_w, ge.proj, sizeof(s_tr_proj_w));
+}
+
+static void ge_transition_trace_configure(void) {
+    if (s_tr_enabled >= 0) return;
+    s_tr_enabled = 0;
+    const char *path = getenv("SR_GE_TRANSITION_TRACE");
+    if (!path || !path[0] || strcmp(path, "0") == 0) return;
+    if (strcmp(path, "1") == 0) path = "logs/ge_transition_trace.jsonl";
+    s_tr_fp = fopen(path, "w");
+    if (!s_tr_fp) {
+        fprintf(stderr, "GE_TRANSITION_TRACE: cannot open '%s'\n", path);
+        return;
+    }
+    ge_transition_trace_sync_written();
+    s_tr_enabled = 1;
+    fprintf(stderr, "GE_TRANSITION_TRACE: armed path=%s\n", path);
+}
+
+static uint32_t ge_fb_addr(void);   /* defined with the framebuffer accessors below */
+static uint32_t ge_transition_hash_u32(uint32_t h, uint32_t w) {
+    for (int i = 0; i < 4; i++) {
+        h ^= (w >> (8 * i)) & 0xFFu;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Stable draw identity: FNV-1a over VTYPE + vertex base + prim type + count. */
+static uint32_t ge_transition_draw_id(uint32_t vtype, uint32_t vbase, int prim, int count) {
+    uint32_t h = 2166136261u;
+    h = ge_transition_hash_u32(h, vtype);
+    h = ge_transition_hash_u32(h, vbase);
+    h = ge_transition_hash_u32(h, (uint32_t)prim);
+    h = ge_transition_hash_u32(h, (uint32_t)count);
+    return h;
+}
+
+static void ge_transition_trace_floats(FILE *fp, const float *v, int n) {
+    for (int i = 0; i < n; i++)
+        fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+}
+
+static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsigned long prim_index,
+                                     uint32_t list_addr, uint32_t cmd_addr,
+                                     uint32_t vbase, uint32_t ibase) {
+    if (s_tr_enabled < 0) ge_transition_trace_configure();
+    if (!s_tr_enabled) return;
+    if (s_ge_frame != s_tr_ordinal_frame) {
+        s_tr_ordinal_frame = s_ge_frame;
+        s_tr_draw_ordinal = 0;
+    }
+    uint32_t ordinal = s_tr_draw_ordinal++;
+    if (!vf->w_n) return;   /* narrow harness: weighted (skinned) draws only */
+    int wt = (int)((ge.vtype >> 9) & 3);
+    int wc = (int)((ge.vtype >> 14) & 7);
+    FILE *fp = s_tr_fp;
+    fprintf(fp,
+            "{\"frame\":%u,\"draw\":%u,\"prim_index\":%lu,"
+            "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\","
+            "\"prim\":%d,\"count\":%d,"
+            "\"vtype\":\"0x%06x\","
+            "\"w_fmt\":%d,\"w_count\":%d,\"tc_fmt\":%d,\"col_fmt\":%d,"
+            "\"nrm_fmt\":%d,\"pos_fmt\":%d,\"idx_fmt\":%d,\"morph_n\":%d,\"through\":%d,"
+            "\"vbase\":\"0x%08x\",\"ibase\":\"0x%08x\","
+            "\"fb_ptr\":\"0x%08x\",\"fb_stride\":%u,\"fb_fmt\":%u,"
+            "\"tex_enable\":%d,\"tex_addr\":\"0x%08x\",\"tex_fmt\":%u,"
+            "\"draw_id\":\"%08x\","
+            "\"bone_cursor\":%d,\"world_cursor\":%d,\"view_cursor\":%d,\"proj_cursor\":%d,"
+            "\"bone_dropped\":%lu,\"world_dropped\":%lu,\"view_dropped\":%lu,\"proj_dropped\":%lu,",
+            s_ge_frame, ordinal, prim_index,
+            list_addr, cmd_addr,
+            type, count,
+            ge.vtype & 0xFFFFFFu,
+            wt, wt ? wc + 1 : 0, vf->tc_fmt, vf->col_fmt,
+            vf->nrm_fmt, vf->pos_fmt, (int)((ge.vtype >> 11) & 3), vf->morph_n, vf->through,
+            vbase, ibase,
+            ge_fb_addr(), ge.fbw ? ge.fbw : 512, ge.fbfmt & 3,
+            ge.tex_enable, ge.tex_addr, ge.tex_fmt & 0xFu,
+            ge_transition_draw_id(ge.vtype, vbase, type, count),
+            ge.bone_num, ge.world_num, ge.view_num, ge.proj_num,
+            s_tr_bone_drop, s_tr_world_drop, s_tr_view_drop, s_tr_proj_drop);
+    fprintf(fp, "\"bone_written\":[");
+    ge_transition_trace_floats(fp, s_tr_bone_w, 96);
+    fprintf(fp, "],\"bone_effective\":[");
+    ge_transition_trace_floats(fp, ge.bone, 96);
+    fprintf(fp, "],\"world_written\":[");
+    ge_transition_trace_floats(fp, s_tr_world_w, 12);
+    fprintf(fp, "],\"world_effective\":[");
+    ge_transition_trace_floats(fp, ge.world, 12);
+    fprintf(fp, "],\"view_written\":[");
+    ge_transition_trace_floats(fp, s_tr_view_w, 12);
+    fprintf(fp, "],\"view_effective\":[");
+    ge_transition_trace_floats(fp, ge.view, 12);
+    fprintf(fp, "],\"proj_written\":[");
+    ge_transition_trace_floats(fp, s_tr_proj_w, 16);
+    fprintf(fp, "],\"proj_effective\":[");
+    ge_transition_trace_floats(fp, ge.proj, 16);
+    fprintf(fp, "]}\n");
+    fflush(fp);   /* keep each record crash-safe; this path is opt-in only */
+}
+
 /* Per-texture alpha-test outcome counters for transform-mode fragments (SR_GESTAT). Shows which
  * textures a scene's 3D actually samples and which of them the alpha test eats. */
 #define ATEX_N 16
@@ -797,6 +935,7 @@ static int thru_ztest(void) {
 
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
+    ge_transition_trace_configure();
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {
@@ -2566,7 +2705,7 @@ static void primitive_profile_note_draw(int type, int count, const VFmt *vf) {
         s_cpu_profile_stats.primitive_profile_eligible[GE_PRIM_PROFILE_CLIPPING_ACCEPTANCE] += triangles;
 }
 
-static void draw_prim(uint32_t op, unsigned long prim_index) {
+static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr, uint32_t cmd_addr) {
     g_frame_prims++;
     s_primitive_profile_counting = 0;
     primitive_profile_clear_pending();
@@ -2620,6 +2759,10 @@ static void draw_prim(uint32_t op, unsigned long prim_index) {
     /* Advance vertex/index pointer (PPSSPP GPUCommon::AdvanceVerts). */
     if (idxfmt) ge.iaddr += (uint32_t)(count << (idxfmt - 1));
     else        ge.vaddr += (uint32_t)(count * vf.stride);
+
+    /* Narrow transition harness (issue #69): one cached-gate check per draw, before any
+     * vertex work; the helper keeps only weighted draws and emits one JSONL record. */
+    ge_transition_trace_draw(type, count, &vf, prim_index, list_addr, cmd_addr, vbase, ibase);
 
     /* Observe both the through and transform frontends.  The optional frame gate
      * preserves the fixed distinct-texture budget for late deterministic scenes. */
@@ -3347,7 +3490,13 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case 0x2A: ge.bone_num = (int)(data & 0x7F); break;    /* BONEMATRIXNUMBER */
             case 0x2B:                                             /* BONEMATRIXDATA */
                 if (s_stat_on > 0) s_stat.bonew++;
-                if (ge.bone_num < 96) ge.bone[ge.bone_num] = decode_float24(data);
+                if (ge.bone_num < 96) {
+                    float bone_f = decode_float24(data);
+                    ge.bone[ge.bone_num] = bone_f;
+                    if (s_tr_enabled > 0) s_tr_bone_w[ge.bone_num] = bone_f;
+                } else if (s_tr_enabled > 0) {
+                    s_tr_bone_drop++;
+                }
                 ge.bone_num++;
                 break;
             case GE_MORPHWEIGHT0+0: case GE_MORPHWEIGHT0+1:
@@ -3364,21 +3513,39 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_WORLDMATRIXNUMBER: ge.world_num = (int)(data & 0xF); break;
             case GE_WORLDMATRIXDATA:
                 s_stat.mw_world++;
-                if (ge.world_num < 12) ge.world[ge.world_num] = decode_float24(data);
+                if (ge.world_num < 12) {
+                    float world_f = decode_float24(data);
+                    ge.world[ge.world_num] = world_f;
+                    if (s_tr_enabled > 0) s_tr_world_w[ge.world_num] = world_f;
+                } else if (s_tr_enabled > 0) {
+                    s_tr_world_drop++;
+                }
                 ge.world_num++;
                 break;
             case GE_VIEWMATRIXNUMBER: ge.view_num = (int)(data & 0xF); break;
             case GE_VIEWMATRIXDATA:
                 s_stat.mw_view++;
                 trace_mtx_write("view", ge.view_num, data);
-                if (ge.view_num < 12) ge.view[ge.view_num] = decode_float24(data);
+                if (ge.view_num < 12) {
+                    float view_f = decode_float24(data);
+                    ge.view[ge.view_num] = view_f;
+                    if (s_tr_enabled > 0) s_tr_view_w[ge.view_num] = view_f;
+                } else if (s_tr_enabled > 0) {
+                    s_tr_view_drop++;
+                }
                 ge.view_num++;
                 break;
             case GE_PROJMATRIXNUMBER: ge.proj_num = (int)(data & 0xF); break;
             case GE_PROJMATRIXDATA:
                 s_stat.mw_proj++;
                 trace_mtx_write("proj", ge.proj_num, data);
-                if (ge.proj_num < 16) ge.proj[ge.proj_num] = decode_float24(data);
+                if (ge.proj_num < 16) {
+                    float proj_f = decode_float24(data);
+                    ge.proj[ge.proj_num] = proj_f;
+                    if (s_tr_enabled > 0) s_tr_proj_w[ge.proj_num] = proj_f;
+                } else if (s_tr_enabled > 0) {
+                    s_tr_proj_drop++;
+                }
                 ge.proj_num++;
                 break;
 
@@ -3526,7 +3693,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
 
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();
-                prims++; draw_prim(op, prims);
+                uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
+                prims++; draw_prim(op, prims, list_addr, prim_cmd);
                 if (s_cpu_profile) {
                     s_cpu_profile_stats.primitive_commands++;
                     s_cpu_profile_stats.primitive_vertices += op & 0xFFFFu;
