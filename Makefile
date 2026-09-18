@@ -469,6 +469,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/cpu_lle.c \
               src/rt/domain_mode.c \
               src/rt/nested_frames.c \
+              src/rt/stale_code.c \
               src/rt/guest_interp.c \
               src/rt/title_config.c \
               src/rt/vfpu_tables.c \
@@ -535,6 +536,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
                       src/rt/cpu_lle.c \
                       src/rt/domain_mode.c \
                       src/rt/nested_frames.c \
+                      src/rt/stale_code.c \
                       src/rt/guest_interp.c \
                       src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
@@ -614,6 +616,7 @@ PUBLIC_TARGETS := \
 	hle-title-selftest \
 	hle-title-selftest-one \
 	dispatch-selftest \
+	stale-code-selftest \
 	cpu-lle-selftest \
 	domain-mode-selftest \
 	dispatch-isolation-selftest \
@@ -705,6 +708,7 @@ HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
 HELP_DESCRIPTION_hle-title-selftest := run title-configured HLE selftests
 HELP_DESCRIPTION_hle-title-selftest-one := run one title-configured HLE selftest
 HELP_DESCRIPTION_dispatch-selftest := run the production dispatch selftest
+HELP_DESCRIPTION_stale-code-selftest := run the stale translated-code detector selftest
 HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter selftest
 HELP_DESCRIPTION_domain-mode-selftest := run the LLE domain-mode and import-seam selftest
 HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
@@ -1540,13 +1544,13 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -1573,13 +1577,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/title_config.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/title_config.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -1604,12 +1608,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
@@ -1628,6 +1632,18 @@ dispatch-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/dispatch_selftest.exe src/rt/dispatch_selftest.c
 	$(BUILD_DIR)/dispatch_selftest.exe
+
+# stale-code-selftest — host-neutral unit tests for the TD-27 opt-in stale
+# translated-code detector (src/rt/stale_code.*). No game inputs needed; links
+# only the standalone detector TU. Runs twice: gate off (an overwritten
+# invalidate must stay silent) and SR_STALE_DETECT=1 (an overwritten
+# translated block must fire loudly, pristine invalidates must stay silent).
+# Exit code 0 = all invariants hold.
+stale-code-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/stale_code_selftest.exe src/rt/stale_code_selftest.c src/rt/stale_code.c
+	$(BUILD_DIR)/stale_code_selftest.exe
+	$(PYTHON) -c "import os,subprocess,sys; e=dict(os.environ); e['SR_STALE_DETECT']='1'; p=os.path.abspath(r'$(BUILD_DIR)/stale_code_selftest.exe'); sys.exit(subprocess.run([p], env=e).returncode)"
 
 # cpu-lle-selftest — host-neutral unit tests for the LLE Phase 1 COP0,
 # exception, and eret helpers (spec 3.2/3.3) plus the interpreter lane
