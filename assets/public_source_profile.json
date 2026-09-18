@@ -594,6 +594,7 @@
     "src/rt/hle_thread_selftest.c",
     "src/rt/intr_conformance.h",
     "src/rt/iso.h",
+    "src/rt/iso_public.c",
     "src/rt/iso_unavailable.c",
     "src/rt/mpeg.c",
     "src/rt/nested_frames.c",
