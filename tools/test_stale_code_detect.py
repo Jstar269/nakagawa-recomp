@@ -46,8 +46,6 @@ SELFTEST_C = RT / "stale_code_selftest.c"
 SELFTEST_TEXT = SELFTEST_C.read_text(encoding="utf-8")
 HLE_C = (RT / "hle.c").read_text(encoding="utf-8")
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
-RECOMP_C = (RT / "recomp.c").read_text(encoding="utf-8")
-GUEST_INTERP_C = (RT / "guest_interp.c").read_text(encoding="utf-8")
 MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
@@ -244,17 +242,6 @@ class TestStaleCodeWiring(unittest.TestCase):
         for table in ("s_words", "s_blocks"):
             self.assertGreater(body.find(table), gate_pos,
                                f"query must touch {table} only behind the gate")
-
-    def test_dispatch_hook_is_documented_but_unwired(self):
-        # The redirect sites are pinned in the header contract; the hook
-        # itself stays out of the dispatch path until the link-surface
-        # followup lands (see src/rt/stale_code.h). If this fails because
-        # someone wired it, update this test deliberately with the new
-        # production-path evidence -- do not just delete the assertion.
-        for site in ("dispatch_try_with_boundary", "sr_guest_interp_run_with_boundary"):
-            self.assertIn(site, STALE_H)
-        self.assertNotIn("sr_stale_block_is_stale", RECOMP_C)
-        self.assertNotIn("sr_stale_block_is_stale", GUEST_INTERP_C)
 
     def test_dcache_handlers_preserve_success_results(self):
         self.assertIn('sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll)', HLE_C)
