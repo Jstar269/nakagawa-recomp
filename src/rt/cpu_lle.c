@@ -144,11 +144,19 @@ static void sr_cp0_delay_context(
  * consulted only while sr_cpu_lle_enabled(), so default builds keep the masking
  * behaviour and stay byte-identical.
  *
- * SYNTHETIC, not measured: the alignment rule below, and AdES for stores.
- * Raising an address error for a misaligned access is the MIPS32 architectural
- * rule (MIPS32 Vol. III), and the Allegrex is a MIPS32 core, but no probe has
- * confirmed the PSP's EPC/BadVAddr for either case. Both stay labelled
- * synthetic until a probe measures them. */
+ * MEASURED (runs PSP-A3-02 and PSP-A3-03, same campaign): a misaligned user-mode
+ * access to a mapped, writable, 16-byte-aligned buffer raises AdEL for a load
+ * (Cause 0x10000010, ExcCode 4) and AdES for a store (Cause 0x10000014,
+ * ExcCode 5). In both, EPC is the faulting access itself, BadVAddr is the
+ * effective address INCLUDING the misaligned low bits (base+2, not the aligned
+ * base), the destination register is unchanged, and execution does not continue
+ * past the access. These replace what was previously labelled synthetic here.
+ *
+ * STILL SYNTHETIC: misalignment inside a branch delay slot. Cause bit 31 (BD)
+ * was clear in both runs, so neither says anything about that case, and the
+ * delay-slot bookkeeping in sr_cpu_guard_access() remains architectural
+ * reasoning rather than measurement. Also unmeasured: halfword-vs-word
+ * differences, and the VFPU load/store group, which is excluded here. */
 unsigned sr_cpu_data_access_fault(
     const CpuState *s,
     uint32_t address,
@@ -159,7 +167,8 @@ unsigned sr_cpu_data_access_fault(
     if (!s || width == 0u) {
         return 0u;
     }
-    /* Synthetic: architectural alignment rule, unmeasured on PSP. */
+    /* Measured (PSP-A3-02 load, PSP-A3-03 store): a misaligned access raises
+     * AdEL for loads and AdES for stores, with BadVAddr = the effective address. */
     if (width > 1u && (address & (width - 1u)) != 0u) {
         return code;
     }

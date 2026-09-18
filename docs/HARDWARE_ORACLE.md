@@ -53,6 +53,26 @@ proposals. Each claim covers only the exact fixture named:
     destination register is unchanged.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
+- **Misaligned data access** (runs PSP-A3-02 and PSP-A3-03; same route,
+  campaign and console; fixtures `exception-a3-mload` and `exception-a3-mstore`,
+  which are `probe_exception_a3.c` built with `-DA3_CASE=2` and `=3`):
+  - A misaligned user-mode **load** (`lw $t6, 2($t5)`) raises AdEL, Cause
+    `0x10000010` (ExcCode 4). A misaligned **store** (`sw $t6, 2($t5)`) raises
+    AdES, Cause `0x10000014` (ExcCode 5). The two are distinct codes, not one
+    shared address error.
+  - EPC is the faulting access itself, cross-checked against the address the
+    probe recorded for its own instruction before faulting.
+  - **BadVAddr is the effective address including the misaligned low bits**
+    (base + 2), not the address rounded down to alignment.
+  - The destination register is unchanged on the faulting load, and execution
+    did not continue past the access.
+  - The base in both runs is a 16-byte-aligned, mapped, writable buffer the
+    probe module owns, so the fault is attributable to the low address bits
+    rather than to an absent page.
+  - Cause bit 31 (BD) was clear in both, so **misalignment inside a branch
+    delay slot remains unmeasured**, as do halfword-vs-word differences and the
+    VFPU load/store group. `lwl`/`lwr`/`swl`/`swr` are defined to cross
+    alignment boundaries and must never be alignment-guarded.
 - **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
   route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
   - *Error codes for unknown IDs:*
