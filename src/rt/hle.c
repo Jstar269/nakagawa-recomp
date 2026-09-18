@@ -762,6 +762,19 @@ static FplPool *fpl_lookup(uint32_t uid) {
     return idx < FPL_MAX && s_fpls[idx].used ? &s_fpls[idx] : NULL;
 }
 
+/* A woken waiter that loses the freed block (or wakes for another reason, e.g. a
+ * callback) must stay queued, at the head so FIFO order holds; FreeFpl dequeues
+ * before it wakes, so without this the thread would block with no one left to
+ * wake it. Idempotent: never adds a second entry. */
+static void fpl_requeue_waiter_head(FplPool *p, uint32_t thread_uid) {
+    for (int i = 0; i < p->nwaiters; i++)
+        if (p->waiters[i].thread_uid == thread_uid) return;
+    if (p->nwaiters >= FPL_MAX_WAITERS) return;
+    for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
+    p->waiters[0].thread_uid = thread_uid;
+    p->nwaiters++;
+}
+
 static void fpl_remove_waiter(FplPool *p, uint32_t thread_uid) {
     for (int i = 0; i < p->nwaiters; i++) {
         if (p->waiters[i].thread_uid == thread_uid) {
@@ -940,6 +953,7 @@ static uint32_t allocate_fpl_common(CpuState *s, int is_cb) {
                 MEM_W32(toptr, 0u);
                 return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
             }
+            fpl_requeue_waiter_head(p, cur_thid);
         } else {
             if (is_cb) sched_set_current_cb_wait(1);
             sched_block_on(uid);
@@ -955,6 +969,7 @@ static uint32_t allocate_fpl_common(CpuState *s, int is_cb) {
                 if (out) MEM_W32(out, addr);
                 return 0;
             }
+            fpl_requeue_waiter_head(p, cur_thid);
         }
     }
 }
@@ -1062,6 +1077,16 @@ static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
             --p->nfree;
         } else ++i;
     }
+}
+
+/* Same contract as fpl_requeue_waiter_head(). */
+static void vpl_requeue_waiter_head(VplPool *p, uint32_t thread_uid, uint32_t size) {
+    for (int i = 0; i < p->nwaiters; i++)
+        if (p->waiters[i].thread_uid == thread_uid) return;
+    if (p->nwaiters >= VPL_MAX_WAITERS) return;
+    for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
+    p->waiters[0] = (VplWaiter){thread_uid, size};
+    p->nwaiters++;
 }
 
 static void vpl_remove_waiter(VplPool *p, uint32_t thread_uid) {
@@ -1225,11 +1250,7 @@ static uint32_t allocate_vpl_common(CpuState *s, int is_cb) {
                 return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
             }
 
-            if (p->nwaiters < VPL_MAX_WAITERS) {
-                for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
-                p->waiters[0] = (VplWaiter){cur_thid, request};
-                p->nwaiters++;
-            }
+            vpl_requeue_waiter_head(p, cur_thid, request);
         } else {
             if (is_cb) sched_set_current_cb_wait(1);
             sched_block_on(uid);
@@ -1246,11 +1267,7 @@ static uint32_t allocate_vpl_common(CpuState *s, int is_cb) {
                 return 0;
             }
 
-            if (p->nwaiters < VPL_MAX_WAITERS) {
-                for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
-                p->waiters[0] = (VplWaiter){cur_thid, request};
-                p->nwaiters++;
-            }
+            vpl_requeue_waiter_head(p, cur_thid, request);
         }
     }
 }
