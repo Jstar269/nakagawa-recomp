@@ -1528,7 +1528,7 @@ class TrustedAdmissionTests(unittest.TestCase):
         fixture = _RefreshFixture(self)
         digest_a = fixture.add_new_path(self.NEW_DOC, "# Snapshot A\n")
         other = "docs/research/competitive/other.md"
-        digest_b = fixture.add_new_path(other, "# Snapshot B\n")
+        fixture.add_new_path(other, "# Snapshot B\n")
         authority = fixture.admission_authority(self._doc_statement(self.NEW_DOC, digest_a))
         result = fixture.admit(other, authority=authority)
         self.assertNotEqual(result.returncode, 0)
@@ -2328,7 +2328,7 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         fixture = _RefreshFixture(self)
         fixture.commit_change(
             "src/rt/existing.c", fixture.source.replace("return 0", "return 1"), "source edit")
-        candidate_policy_bytes = fixture.commit_policy_delta(remove=(fixture.PHANTOM_INCLUDE,))
+        fixture.commit_policy_delta(remove=(fixture.PHANTOM_INCLUDE,))
         blessed = fixture.external_policy_copy()
         authority = fixture.policy_delta_authority(
             baseline_policy=fixture.trusted_policy,
@@ -2757,7 +2757,7 @@ class TransactionalOutputTests(unittest.TestCase):
             with self.subTest(fail_at=fail_at):
                 calls = {"count": 0}
 
-                def flaky_replace(source, destination):
+                def flaky_replace(source, destination, calls=calls, fail_at=fail_at):
                     calls["count"] += 1
                     if calls["count"] == fail_at:
                         raise OSError("injected promotion failure")
@@ -2801,7 +2801,7 @@ class TransactionalOutputTests(unittest.TestCase):
             with self.subTest(fail_at=fail_at):
                 calls = {"count": 0}
 
-                def flaky_replace(source, destination):
+                def flaky_replace(source, destination, calls=calls, fail_at=fail_at):
                     calls["count"] += 1
                     if calls["count"] == fail_at:
                         raise OSError("injected promotion failure")

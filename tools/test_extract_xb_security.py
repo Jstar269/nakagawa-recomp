@@ -860,7 +860,7 @@ class PathIdentityTests(unittest.TestCase):
             )
             # No component anywhere in the produced tree carries a literal
             # backslash, which is what a POSIX host would otherwise create.
-            for dirpath, dirnames, filenames in os.walk(dest):
+            for _dirpath, dirnames, filenames in os.walk(dest):
                 for name in dirnames + filenames:
                     self.assertNotIn(BACKSLASH, name)
 

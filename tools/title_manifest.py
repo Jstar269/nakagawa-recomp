@@ -354,7 +354,7 @@ def validate_executable(value: Any, path: str) -> dict[str, Any]:
             fail(item_path, "end must be greater than start")
         spans.append({"start": start, "end": end})
     spans.sort(key=lambda span: (span["start"], span["end"]))
-    for left, right in zip(spans, spans[1:]):
+    for left, right in zip(spans, spans[1:], strict=False):
         if right["start"] < left["end"]:
             fail(f"{path}.extra_executable_spans", "spans must not overlap")
     return {

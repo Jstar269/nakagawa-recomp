@@ -16,7 +16,7 @@ import hashlib
 import struct
 import re
 import argparse
-from typing import Dict, Any, List, Tuple
+from typing import Tuple
 
 def compute_md5(fpath: str) -> str:
     """Compute MD5 hash of a file."""

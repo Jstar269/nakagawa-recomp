@@ -562,7 +562,7 @@ def audit_direct_j_candidates(elf, starts, ranges, limit=DEFAULT_STEP_LIMIT):
             elf, addr, ranges, callable_starts, limit=limit
         )
         proven = []
-        for owner, depth in sorted(owners.items()):
+        for owner, _depth in sorted(owners.items()):
             owner_profile = profile(owner)
             if owner_profile.depth_at(addr) != target_profile.continuation_delta:
                 continue

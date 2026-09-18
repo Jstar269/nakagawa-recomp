@@ -14,7 +14,6 @@ from tools.build_public_export import (
     history_audit_gate_result,
     is_public_safe_export_tree,
     run_all_publication_gates,
-    run_history_audit,
     run_publish_audit,
     run_sbom_verification,
 )

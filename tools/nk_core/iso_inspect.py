@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import struct
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 from .title_registry import TitleRegistry, get_default_registry
-from .types import IsoMetadata, TitleProfile
+from .types import IsoMetadata
 
 
 SECTOR_SIZE = 2048

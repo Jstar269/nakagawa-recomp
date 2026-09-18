@@ -546,8 +546,7 @@ class XBArchiveReader:
 
         table_reader = _Reader(table_data, self.endian)
         names: list[str] = []
-        seen: set[str] = set()
-        for index in range(file_count):
+        for _index in range(file_count):
             name_length = table_reader.u8("string-table name length")
             if name_length > self.limits.max_name_bytes:
                 raise XBProbeError("inner path exceeds the name limit")

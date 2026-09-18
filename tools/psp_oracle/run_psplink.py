@@ -60,7 +60,6 @@ def _plan(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _run_command(command: list[str], timeout: float) -> tuple[int | None, str, str, str]:
-    started = time.monotonic()
     try:
         completed = subprocess.run(
             command,

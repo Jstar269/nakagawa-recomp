@@ -383,7 +383,7 @@ def get_symbol_rvas(exe_path):
         for line in res.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 3:
-                addr_str, sym_type, name = parts[0], parts[1], parts[2]
+                addr_str, _sym_type, name = parts[0], parts[1], parts[2]
                 if name in ("g_mem", "s_cpu", ABI_SYMBOL):
                     addr = int(addr_str, 16)
                     found[name] = addr - DEFAULT_IMAGE_BASE

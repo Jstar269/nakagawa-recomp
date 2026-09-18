@@ -150,7 +150,7 @@ def scan_text(text: str, patterns: list[tuple[str, re.Pattern]]) -> list[dict]:
     hits = []
     for line_no, line in enumerate(text.splitlines(), start=1):
         for label, pat in patterns:
-            for m in pat.finditer(line):
+            for _m in pat.finditer(line):
                 # device_path pattern needs escaping in JSON display
                 snippet = line.strip()
                 if len(snippet) > 120:

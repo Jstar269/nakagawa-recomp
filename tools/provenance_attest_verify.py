@@ -152,20 +152,20 @@ import tempfile
 import threading
 import unicodedata
 from fnmatch import fnmatchcase
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 try:
     from .provenance_ledger import (
-        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
-        _class_for, _classify_policy_delta, _read_policy_delta_authority,
+        ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
     from provenance_ledger import (
-        ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
-        _class_for, _classify_policy_delta, _read_policy_delta_authority,
+        ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
+        _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         is_implementation_path, validate_ledger,
     )
     from public_export import build_document as _build_export_document
@@ -753,12 +753,6 @@ def _external_input(path: Path, *, repo: Path, label: str) -> Path:
     if not resolved.is_file():
         raise VerifyError("TRUSTED_INPUT_MISSING", f"{label} is unavailable")
     return resolved
-
-
-def _canonical_json_bytes(document: dict) -> bytes:
-    """Encode generated control JSON with the repository's canonical bytes."""
-
-    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _validate_public_baseline(

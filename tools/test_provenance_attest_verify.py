@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -39,6 +38,16 @@ sys.path.insert(0, str(ROOT / "tools"))
 import provenance_attest_verify as verifier  # noqa: E402
 import public_export  # noqa: E402
 from publication_policy import load_policy  # noqa: E402
+
+class CanonicalJsonTests(unittest.TestCase):
+    def test_shared_canonical_bytes(self):
+        import provenance_ledger
+
+        self.assertIs(verifier._canonical_json_bytes, provenance_ledger._canonical_json_bytes)
+        document = {"z": "é", "a": [True, None]}
+        expected = '{\n  "z": "é",\n  "a": [\n    true,\n    null\n  ]\n}\n'.encode("utf-8")
+        self.assertEqual(verifier._canonical_json_bytes(document), expected)
+
 
 RESERVED_CONTEXT = verifier.TRUSTED_CONTEXT
 TRUSTED_WORKFLOW = verifier.TRUSTED_WORKFLOW
