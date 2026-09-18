@@ -10,7 +10,7 @@
   "included_file_count": 784,
   "exported_file_count": 784,
   "excluded_file_count": 0,
-  "included_content_sha256": "bde3fcf31160b009388b046a0812acdb3c0f923360625738a6177ff2de9cd64c",
+  "included_content_sha256": "e9e70f75ec708bd607dd28d08b5edf1ee0457572d87fbcbba3b74643c61812f1",
   "digest_excludes": [
     "PUBLIC_EXPORT.json"
   ],
@@ -71,6 +71,6 @@
     "font/*.pgf"
   ],
   "excluded_present_paths": [],
-  "provenance_ledger_sha256": "f8029243bf30b29381f6262b4aab2e79c9cf3bfa5d3d8bcf354a75fde644a9ae",
+  "provenance_ledger_sha256": "0d314873b127e6dfa83220a5d58ffc802d966bd42374a3a32d61dbb246414dd9",
   "manifest_sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
 }

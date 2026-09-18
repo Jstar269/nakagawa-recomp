@@ -783,7 +783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bee472d7c5073e6c589019459ebfd0fb207adbfdcfa804dedb9b74a49b8683a2"
+      "sha256": "a163b6074b848904fa3a3dbf9a8598faacdc46156771f7dd5857e9aa67d77a3a"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1293,7 +1293,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2c6cafa74bcfe336510727f552209fc0629a3016f16cde653be4520ee8f7f289"
+      "sha256": "c1d7c2f948ff8a90d2c732df20de94e66c00bce4598a89325323683b24994897"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1356,7 +1356,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ccb0f0a5dea74f7b619c3266b02cdb1dca98e89a0db83392a0f8d94b7ebce546"
+      "sha256": "c40978ab9e9fead56f0a196df65fc9e672ad76283ee5d78cb946da0c940adf80"
     },
     {
       "path": "fixtures/psp_oracle/psp_b1.c",
@@ -5074,7 +5074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1910a2f52eadf68283d378c2fdc8fbc3098b6a8308a4dce3da385febfa14b62"
+      "sha256": "d587ec68d03d9e01fc3ab841ddbb1f5985869ac1891e173c58f71de35cc5115b"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5098,7 +5098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1f0eabcdeba708d3bdf60b41f4fe238a91704f3034872792be4244e65a4fb053"
+      "sha256": "b13c4363c1edba0ce887728df311fca70e7c96e26a6fda79a5594aec835c8c83"
     },
     {
       "path": "src/rt/debug.c",
