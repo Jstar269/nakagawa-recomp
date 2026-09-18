@@ -8678,7 +8678,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d01d49daf478823d9c6872965cb003b8477e5a9b33c5907fadafd82637f830d"
+      "sha256": "71f361c1de1338197a4a41abbdc25d334c50ed573f27e82f06036e90ecd73c81"
     },
     {
       "path": "tools/test_portability_inventory.py",
