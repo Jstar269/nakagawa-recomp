@@ -734,7 +734,7 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         "hle.o",
         "sched.o",
         "sr_coro.o",
-        "iso_unavailable.o",
+        "iso_public.o",
         "pgd_unavailable.o",
         "mpeg.o",
         "pgf_unavailable.o",
@@ -818,8 +818,8 @@ def run(build_dir: Path, mode: str = "aot") -> int:
         raise RuntimeError(
             f"unknown execution mode {mode!r}; known modes: " + ", ".join(sorted(MODES))
         )
-    executable = build_dir / f"{_artifact_stem(mode)}.exe"
-    image_path = build_dir / f"{_artifact_stem(mode)}_image.bin"
+    executable = (build_dir / f"{_artifact_stem(mode)}.exe").resolve()
+    image_path = (build_dir / f"{_artifact_stem(mode)}_image.bin").resolve()
     command = [
         str(executable),
         "--image",

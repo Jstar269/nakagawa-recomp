@@ -66,6 +66,11 @@ void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
 extern uint32_t sr_hle_test_load_module(CpuState *s);
+extern uint32_t sr_hle_test_start_module(CpuState *s);
+extern uint32_t sr_hle_test_stop_module(CpuState *s);
+extern uint32_t sr_hle_test_unload_module(CpuState *s);
+extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
+extern void sr_hle_test_module_reset(void);
 extern void ge_finish_latch_assist(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
@@ -496,11 +501,48 @@ static int cbabi_dispatch(CpuState *cpu, uint32_t target);
 /* Synthetic guest bodies for the H2/H3 nested-frame isolation specimens. */
 static int nfi_dispatch(CpuState *cpu, uint32_t target);
 
+typedef struct {
+    uint32_t addr;
+    RecompFn fn;
+} TestGuestFn;
+
+static TestGuestFn s_test_guest_fns[16];
+static int s_num_test_guest_fns = 0;
+
+static void sr_test_register_guest_fn(uint32_t addr, RecompFn fn) {
+    for (int i = 0; i < s_num_test_guest_fns; i++) {
+        if (s_test_guest_fns[i].addr == addr) {
+            s_test_guest_fns[i].fn = fn;
+            return;
+        }
+    }
+    if (s_num_test_guest_fns < 16) {
+        s_test_guest_fns[s_num_test_guest_fns].addr = addr;
+        s_test_guest_fns[s_num_test_guest_fns].fn = fn;
+        s_num_test_guest_fns++;
+    }
+}
+
+static void sr_test_guest_fn_reset(void) {
+    s_num_test_guest_fns = 0;
+}
+
+RecompFn sr_lookup(uint32_t addr) {
+    for (int i = 0; i < s_num_test_guest_fns; i++) {
+        if (s_test_guest_fns[i].addr == addr) {
+            return s_test_guest_fns[i].fn;
+        }
+    }
+    return NULL;
+}
+
 void dispatch(CpuState *cpu, uint32_t target) {
     if (ic_dispatch_intercept(target)) { cpu->r[2] = 0; return; }
     if (cbabi_dispatch(cpu, target)) return;
     if (nfi_dispatch(cpu, target)) return;
     if (title_hle_dispatch_intercept(cpu, target)) return;
+    RecompFn guest_fn = sr_lookup(target);
+    if (guest_fn) { guest_fn(cpu); return; }
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
@@ -12553,6 +12595,174 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
            "a no-argument sceKernelExitGame yields a zero host process result");
 }
 
+#define SYNTH_MOD_START       0x089a0000u
+#define SYNTH_MOD_STOP        0x089a0040u
+#define SYNTH_MOD_STATUS_ADDR 0x089a0100u
+
+static uint32_t s_synth_start_calls = 0;
+static uint32_t s_synth_start_a0 = 0;
+static uint32_t s_synth_start_a1 = 0;
+
+static void synth_module_start_fn(CpuState *s) {
+    s_synth_start_calls++;
+    s_synth_start_a0 = s->r[4];
+    s_synth_start_a1 = s->r[5];
+    s->r[2] = 0x42u;
+}
+
+static uint32_t s_synth_stop_calls = 0;
+static uint32_t s_synth_stop_a0 = 0;
+static uint32_t s_synth_stop_a1 = 0;
+
+static void synth_module_stop_fn(CpuState *s) {
+    s_synth_stop_calls++;
+    s_synth_stop_a0 = s->r[4];
+    s_synth_stop_a1 = s->r[5];
+    s->r[2] = 0x84u;
+}
+
+static void test_real_module_start_lifecycle(void) {
+    CpuState cpu;
+    uint32_t ret;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+
+    sr_test_register_guest_fn(SYNTH_MOD_START, synth_module_start_fn);
+    sr_test_register_guest_fn(SYNTH_MOD_STOP, synth_module_stop_fn);
+
+    /* -------------------------------------------------------------------------
+     * Phase 1: Gate OFF (default / legacy behaviour)
+     * ------------------------------------------------------------------------- */
+    _putenv("SR_REAL_MODULE_START=0");
+    s_synth_start_calls = 0;
+    s_synth_stop_calls = 0;
+
+    uint32_t uid_off = sr_hle_test_register_module("gate_off.prx", SYNTH_MOD_START, SYNTH_MOD_STOP);
+    expect(uid_off != 0, "registered synthetic module for gate-off test");
+
+    MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_off;
+    cpu.r[5] = 16u;
+    cpu.r[6] = 0x089a0200u;
+    cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    ret = sr_syscall(&cpu, 0x50f0c1ecu); /* sceKernelStartModule */
+    expect(ret == 0, "gate off: sceKernelStartModule returns 0");
+    expect(s_synth_start_calls == 0, "gate off: module_start was NOT called");
+    expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0xdeadbeefu,
+           "gate off: status pointer was not modified");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_off;
+    cpu.r[5] = 16u;
+    cpu.r[6] = 0x089a0200u;
+    cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    ret = sr_syscall(&cpu, 0xd1ff982au); /* sceKernelStopModule */
+    expect(ret == 0, "gate off: sceKernelStopModule returns 0");
+    expect(s_synth_stop_calls == 0, "gate off: module_stop was NOT called");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_off;
+    ret = sr_syscall(&cpu, 0x2e0911aau); /* sceKernelUnloadModule */
+    expect(ret == 0, "gate off: sceKernelUnloadModule returns 0");
+
+    /* -------------------------------------------------------------------------
+     * Phase 2: Gate ON (real module_start / stop / unload lifecycle)
+     * ------------------------------------------------------------------------- */
+    _putenv("SR_REAL_MODULE_START=1");
+    sr_hle_test_module_reset();
+    s_synth_start_calls = 0;
+    s_synth_stop_calls = 0;
+
+    /* Unknown / invalid UID error checks */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x9999u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: start unknown module returns SCE_ERROR_MODULE_BAD_ID");
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: stop unknown module returns SCE_ERROR_MODULE_BAD_ID");
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: unload unknown module returns SCE_ERROR_MODULE_BAD_ID");
+
+    /* Register module and start it */
+    uint32_t uid_on = sr_hle_test_register_module("gate_on.prx", SYNTH_MOD_START, SYNTH_MOD_STOP);
+    expect(uid_on != 0, "registered synthetic module for gate-on test");
+
+    MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_on;
+    cpu.r[5] = 24u;
+    cpu.r[6] = 0x089a0200u;
+    cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    ret = sr_syscall(&cpu, 0x50f0c1ecu);
+    expect(ret == 0, "gate on: sceKernelStartModule returns 0 on success");
+    expect(s_synth_start_calls == 1, "gate on: module_start executed exactly once");
+    expect(s_synth_start_a0 == 24u, "gate on: module_start received arglen in $a0");
+    expect(s_synth_start_a1 == 0x089a0200u, "gate on: module_start received argp in $a1");
+    expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x42u,
+           "gate on: module_start return status written to status pointer");
+
+    /* Attempt unload while still running */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_on;
+    ret = sr_syscall(&cpu, 0x2e0911aau);
+    expect(ret == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "gate on: unload still-running module returns SCE_ERROR_MODULE_ALREADY_LOADED");
+
+    /* Stop the module */
+    MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_on;
+    cpu.r[5] = 12u;
+    cpu.r[6] = 0x089a0300u;
+    cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    ret = sr_syscall(&cpu, 0xd1ff982au);
+    expect(ret == 0, "gate on: sceKernelStopModule returns 0 on success");
+    expect(s_synth_stop_calls == 1, "gate on: module_stop executed exactly once");
+    expect(s_synth_stop_a0 == 12u, "gate on: module_stop received arglen in $a0");
+    expect(s_synth_stop_a1 == 0x089a0300u, "gate on: module_stop received argp in $a1");
+    expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x84u,
+           "gate on: module_stop return status written to status pointer");
+
+    /* Unload the stopped module */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_on;
+    ret = sr_syscall(&cpu, 0x2e0911aau);
+    expect(ret == 0, "gate on: sceKernelUnloadModule returns 0 after module is stopped");
+
+    /* Unload again -> bad id */
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: unload already-unloaded module returns SCE_ERROR_MODULE_BAD_ID");
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: start unloaded module returns SCE_ERROR_MODULE_BAD_ID");
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_ERROR_MODULE_BAD_ID,
+           "gate on: stop unloaded module returns SCE_ERROR_MODULE_BAD_ID");
+
+    /* -------------------------------------------------------------------------
+     * Phase 3: Untranslated module entry point
+     * ------------------------------------------------------------------------- */
+    uint32_t uid_untrans = sr_hle_test_register_module("untrans.prx", 0x089b0000u, 0);
+    expect(uid_untrans != 0, "registered module with untranslated entry point");
+    MEM_W32(SYNTH_MOD_STATUS_ADDR, 0x12345678u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_untrans;
+    cpu.r[5] = 0;
+    cpu.r[6] = 0;
+    cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    ret = sr_syscall(&cpu, 0x50f0c1ecu);
+    expect(ret == 0, "gate on: start untranslated entry returns 0 (today's behaviour)");
+    expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x12345678u,
+           "gate on: untranslated entry does not write status pointer");
+
+    /* Clean up */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -12673,6 +12883,7 @@ int main(int argc, char **argv) {
     test_vpl_blocking_waits();
     test_intr_context_conformance();
     test_psp_mutex();
+    test_real_module_start_lifecycle();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

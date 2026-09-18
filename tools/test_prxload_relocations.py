@@ -162,3 +162,40 @@ class Hi16Lo16PairingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackedRelocationSegmentBitsTests(unittest.TestCase):
+    """Type-B (0x700000a1) streams size the segment field from the relocation
+    program-header index with a strict '<' (PPSSPP's LoadRelocations2). With the
+    relocation header in slot 2 that is ONE bit; decoding it as two shifted every
+    field, so jal targets stayed unrelocated and unrelated words were rewritten."""
+
+    class _Image:
+        def __init__(self, table, lo, words):
+            self.data = table
+            self.segments = [{}, {}, {}]          # two PT_LOADs + the relocation header
+            self.seg_vaddr = [lo, lo + 0x1000]
+            self.lo = lo
+            self.mem = bytearray(0x2000)
+            for addr, word in words.items():
+                struct.pack_into("<I", self.mem, addr - lo, word)
+
+        def r32(self, addr):
+            return struct.unpack_from("<I", self.mem, addr - self.lo)[0]
+
+        def w32(self, addr, value):
+            struct.pack_into("<I", self.mem, addr - self.lo, value)
+
+    def test_jal_in_first_segment_is_relocated(self):
+        lo = 0x32200000
+        flag_bits, type_bits, seg_bits = 2, 2, 1
+        # flag table [size, set-base, relocate]; type table [size, none, JAL(7)]
+        header = bytes([0, 0, flag_bits, type_bits, 3, 0x00, 0x01, 3, 0, 7])
+        set_base = (0 << (seg_bits + flag_bits)) | (0 << flag_bits) | 1
+        reloc = (0x34 << (type_bits + seg_bits + flag_bits)) | (2 << (seg_bits + flag_bits)) | (0 << flag_bits) | 2
+        table = header + struct.pack("<HH", set_base, reloc)
+        img = self._Image(table, lo, {lo + 0x34: 0x0C00001E, lo + 0x30: 0x27BDFFC0})
+        count = prxload.Prx._apply_packed(img, {"seg_idx": 2, "off": 0, "size": len(table)})
+        self.assertEqual(count, 1)
+        self.assertEqual(img.r32(lo + 0x34), 0x0C88001E)   # jal 0x32200078
+        self.assertEqual(img.r32(lo + 0x30), 0x27BDFFC0)   # neighbour untouched

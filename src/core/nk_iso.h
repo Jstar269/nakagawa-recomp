@@ -4,15 +4,58 @@
 #ifndef NK_ISO_H
 #define NK_ISO_H
 
-#include "nk_types.h"
-#include "generated/nk_title_catalog.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
+
+#ifndef NK_ISO_NO_PLAYER_EXTRAS
+#include "nk_types.h"
+#include "generated/nk_title_catalog.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Low-level / VFS ISO reader interface */
+typedef struct NkIsoReader NkIsoReader;
+
+typedef struct {
+    char name[256];
+    uint32_t lba;
+    uint32_t size;
+    bool is_directory;
+} NkIsoDirEntry;
+
+/* Open an ISO image for reading. Returns NULL on failure. */
+NkIsoReader *nk_iso_reader_open(const char *iso_path);
+
+/* Close an open ISO reader. */
+void nk_iso_reader_close(NkIsoReader *reader);
+
+/* Resolve a path (e.g. "PSP_GAME/PARAM.SFO") to its extent LBA and size.
+ * If out_is_dir is non-NULL, sets whether it is a directory.
+ * Returns 0 on success, -1 if not found.
+ */
+int nk_iso_reader_lookup(NkIsoReader *reader, const char *path, uint32_t *out_lba, uint32_t *out_size, bool *out_is_dir);
+
+/* Read bytes from extent at lba + offset into dst.
+ * Returns bytes read, or -1 on error.
+ */
+int nk_iso_reader_read(NkIsoReader *reader, uint32_t lba, uint64_t offset, void *dst, uint32_t bytes);
+
+/* Return the directory entry at 0-based index in directory at dir_path.
+ * Returns 1 on success, 0 on end of directory, -1 on invalid / not a directory.
+ */
+int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index, NkIsoDirEntry *out_entry);
+
+/* Return volume ID of reader */
+const char *nk_iso_reader_volume_id(const NkIsoReader *reader);
+
+/* Return total file size in bytes */
+uint64_t nk_iso_reader_file_size(const NkIsoReader *reader);
+
+#ifndef NK_ISO_NO_PLAYER_EXTRAS
 typedef struct {
     char disc_id[NK_MAX_DISC_ID_LEN];
     char title_name[NK_MAX_TITLE_LEN];
@@ -55,6 +98,7 @@ typedef bool (*NkIsoProgressCallback)(const char *relative_path,
  * no host-side directory listing or external extractor is involved. */
 NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
                              NkIsoProgressCallback progress, void *userdata);
+#endif
 
 #ifdef __cplusplus
 }

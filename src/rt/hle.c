@@ -1801,6 +1801,41 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, s
     return UINT32_MAX;
 }
 
+/* Forward declaration for nested-frame guest execution. */
+static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2);
+
+/* TD-26 runtime gate: real module_start / module_stop execution. */
+static int real_module_start_enabled(void) {
+    const char *e = getenv("SR_REAL_MODULE_START");
+    return (e != NULL && strcmp(e, "1") == 0);
+}
+
+typedef struct {
+    uint32_t uid;
+    char path[256];
+    uint32_t module_start;
+    uint32_t module_stop;
+    int started;
+    int stopped;
+    int unloaded;
+    int libfont_compat_poke_pending;
+} LoadedModule;
+
+static LoadedModule s_loaded_modules[16];
+static int s_nloaded_modules = 0;
+
+static LoadedModule *find_loaded_module(uint32_t uid) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (s_loaded_modules[i].uid == uid) {
+            return &s_loaded_modules[i];
+        }
+    }
+    return NULL;
+}
+
+static uint32_t s_last_prx_entry = 0;
+static uint32_t s_last_prx_stop = 0;
+
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
     FILE *f = fopen(host_path, "rb");
     if (!f) {
@@ -1847,6 +1882,11 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
     }
     uint32_t phoff; uint16_t phentsz, phnum;
     memcpy(&phoff, eh + 28, 4); memcpy(&phentsz, eh + 42, 2); memcpy(&phnum, eh + 44, 2);
+    uint32_t e_entry = 0;
+    memcpy(&e_entry, eh + 24, 4);
+    if (e_entry != 0 && e_entry <= UINT32_MAX - base) {
+        s_last_prx_entry = base + e_entry;
+    }
     uint64_t ph_bytes = (uint64_t)phentsz * phnum;
     if (phentsz != 32 || !phnum || phnum > 16 || ph_bytes > file_len || phoff > file_len - (size_t)ph_bytes ||
         phoff > (uint32_t)LONG_MAX || fseek(f, (long)phoff, SEEK_SET)) {
@@ -1896,6 +1936,13 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
                      * nonzero base; only reject the final absolute-address wrap. */
                     if (target <= UINT32_MAX - base &&
                         sr_hle_register_late_import(pairs[i], base + target)) registered++;
+                    if (target <= UINT32_MAX - base) {
+                        if (pairs[i] == 0xd632acdbu) {
+                            s_last_prx_entry = base + target;
+                        } else if (pairs[i] == 0xcee05613u) {
+                            s_last_prx_stop = base + target;
+                        }
+                    }
                 }
             }
             free(pairs);
@@ -1942,12 +1989,23 @@ static unsigned register_known_module(const char *module_root,
 static unsigned populate_known_module(const char *name) {
     const char *module_root = getenv("SR_MODULE_DIR");
     if (!module_root || !module_root[0]) module_root = "place_game_here/EXTRACTED/decrypted";
-    if (name && (strstr(name, "libfont") || strstr(name, "LIBFONT")))
-        return register_known_module(module_root, "libfont.prx", PRX_LIBFONT_BASE);
-    if (name && (strstr(name, "PsmfP") || strstr(name, "psmfplayer") || strstr(name, "libpsmfplayer")))
-        return register_known_module(module_root, "scePsmfP_library.prx", PRX_PSMFP_BASE);
-    if (name && (strstr(name, "Psmf") || strstr(name, "psmf")))
-        return register_known_module(module_root, "scePsmf_library.prx", PRX_PSMF_BASE);
+    s_last_prx_entry = 0;
+    s_last_prx_stop = 0;
+    if (name && (strstr(name, "libfont") || strstr(name, "LIBFONT"))) {
+        unsigned res = register_known_module(module_root, "libfont.prx", PRX_LIBFONT_BASE);
+        if (!s_last_prx_entry) s_last_prx_entry = PRX_LIBFONT_BASE;
+        return res;
+    }
+    if (name && (strstr(name, "PsmfP") || strstr(name, "psmfplayer") || strstr(name, "libpsmfplayer"))) {
+        unsigned res = register_known_module(module_root, "scePsmfP_library.prx", PRX_PSMFP_BASE);
+        if (!s_last_prx_entry) s_last_prx_entry = PRX_PSMFP_BASE;
+        return res;
+    }
+    if (name && (strstr(name, "Psmf") || strstr(name, "psmf"))) {
+        unsigned res = register_known_module(module_root, "scePsmf_library.prx", PRX_PSMF_BASE);
+        if (!s_last_prx_entry) s_last_prx_entry = PRX_PSMF_BASE;
+        return res;
+    }
     return 0;
 }
 
@@ -2419,18 +2477,63 @@ extern int sr_callback_find_in_table(uint32_t uid);
 static uint32_t h_GetModuleId(CpuState *s) { (void)s; return 0x112; }   /* main module's id (stable) */
 
 static uint32_t h_StopModule_Trace(CpuState *s) {
-    uint32_t uid = sched_current_uid();
-    fprintf(stderr, "TRACE_STOPMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
-            uid, s->pc, s->r[31], s->r[4]);
-    fflush(stderr);
+    if (!real_module_start_enabled()) {
+        uint32_t uid = sched_current_uid();
+        fprintf(stderr, "TRACE_STOPMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
+                uid, s->pc, s->r[31], s->r[4]);
+        fflush(stderr);
+        return 0;
+    }
+
+    uint32_t modid = A0;
+    uint32_t arglen = A1;
+    uint32_t argp = A2;
+    uint32_t status_ptr = A3;
+    fprintf(stderr, "sceKernelStopModule(modid=0x%x, arglen=%u, argp=0x%x)\n", modid, arglen, argp);
+
+    LoadedModule *mod = find_loaded_module(modid);
+    if (!mod || mod->unloaded) {
+        return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
+    }
+
+    if (mod->module_stop != 0 && sr_lookup(mod->module_stop) != NULL) {
+        fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
+                modid, mod->path, mod->module_stop);
+        uint32_t rv = ge_call_guest_rv(s, mod->module_stop, arglen, argp, 0);
+        if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
+            MEM_W32(status_ptr, rv);
+        }
+    } else {
+        static int s_logged_stop_untranslated = 0;
+        if (!s_logged_stop_untranslated) {
+            s_logged_stop_untranslated = 1;
+            fprintf(stderr, "sceKernelStopModule(uid=0x%x) -> entry untranslated or unknown, skipping entry\n", modid);
+        }
+    }
+    mod->stopped = 1;
     return 0;
 }
 
 static uint32_t h_UnloadModule_Trace(CpuState *s) {
-    uint32_t uid = sched_current_uid();
-    fprintf(stderr, "TRACE_UNLOADMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
-            uid, s->pc, s->r[31], s->r[4]);
-    fflush(stderr);
+    if (!real_module_start_enabled()) {
+        uint32_t uid = sched_current_uid();
+        fprintf(stderr, "TRACE_UNLOADMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
+                uid, s->pc, s->r[31], s->r[4]);
+        fflush(stderr);
+        return 0;
+    }
+
+    uint32_t modid = A0;
+    fprintf(stderr, "sceKernelUnloadModule(modid=0x%x)\n", modid);
+
+    LoadedModule *mod = find_loaded_module(modid);
+    if (!mod || mod->unloaded) {
+        return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
+    }
+    if (mod->started && !mod->stopped) {
+        return SCE_ERROR_MODULE_ALREADY_LOADED; /* unmeasured */
+    }
+    mod->unloaded = 1;
     return 0;
 }
 
@@ -5986,14 +6089,6 @@ extern void f_32200000(CpuState *s);
 extern void f_32280000(CpuState *s);
 extern void f_322f8868(CpuState *s);
 
-typedef struct {
-    uint32_t uid;
-    char path[256];
-} LoadedModule;
-
-static LoadedModule s_loaded_modules[16];
-static int s_nloaded_modules = 0;
-
 static uint32_t h_LoadModule(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
@@ -6006,37 +6101,43 @@ static uint32_t h_LoadModule(CpuState *s) {
      * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). Title-qualified: only when the
      * manifest configures the compat flag; generic sceKernelLoadModule
      * otherwise performs no guest write. */
+    int poke_pending = 0;
     if (strstr(path, "libfont.prx")) {
-        uint32_t flag;
-        if (sr_title_config_libfont_ready_flag_addr(&flag)) {
-            if (!sr_guest_span_writable(flag, 4)) {
-                fprintf(stderr,
-                        "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
-                        flag, sr_title_config()->source_id);
+        if (!real_module_start_enabled()) {
+            uint32_t flag;
+            if (sr_title_config_libfont_ready_flag_addr(&flag)) {
+                if (!sr_guest_span_writable(flag, 4)) {
+                    fprintf(stderr,
+                            "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
+                            flag, sr_title_config()->source_id);
+                } else {
+                    MEM_W32(flag, 1u);
+                    fprintf(stderr,
+                            "libfont compat: flag 0x%08x <- 1 (title %s)\n",
+                            flag, sr_title_config()->source_id);
+                }
             } else {
-                MEM_W32(flag, 1u);
                 fprintf(stderr,
-                        "libfont compat: flag 0x%08x <- 1 (title %s)\n",
-                        flag, sr_title_config()->source_id);
+                        "libfont.prx loaded (generic: no compat flag write, title %s)\n",
+                        sr_title_config()->source_id);
             }
         } else {
-            fprintf(stderr,
-                    "libfont.prx loaded (generic: no compat flag write, title %s)\n",
-                    sr_title_config()->source_id);
+            poke_pending = 1;
         }
     }
     if (s_nloaded_modules < 16) {
-        s_loaded_modules[s_nloaded_modules].uid = uid;
-        snprintf(s_loaded_modules[s_nloaded_modules].path, sizeof(s_loaded_modules[0].path), "%s", path);
-        s_nloaded_modules++;
+        LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+        mod->uid = uid;
+        snprintf(mod->path, sizeof(mod->path), "%s", path);
+        mod->module_start = s_last_prx_entry;
+        mod->module_stop = s_last_prx_stop;
+        mod->started = 0;
+        mod->stopped = 0;
+        mod->unloaded = 0;
+        mod->libfont_compat_poke_pending = poke_pending;
     }
     return uid;
 }
-
-#ifdef SR_HLE_THREAD_SELFTEST
-/* Test-build-only call-through to the production LoadModule handler. */
-uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
-#endif
 
 /* LoadModuleByID receives an already-open file UID, so the original path is not part of this
  * ABI call. Populate the fixed set of statically recompiled late modules idempotently; the
@@ -6053,37 +6154,120 @@ static uint32_t h_StartModule(CpuState *s) {
     uint32_t uid = A0;
     uint32_t arglen = A1;
     uint32_t argp = A2;
+    uint32_t status_ptr = A3;
     fprintf(stderr, "sceKernelStartModule(uid=0x%x, arglen=%u, argp=0x%x)\n", uid, arglen, argp);
-    const char *path = NULL;
-    for (int i = 0; i < s_nloaded_modules; i++) {
-        if (s_loaded_modules[i].uid == uid) {
-            path = s_loaded_modules[i].path;
-            break;
+
+    if (!real_module_start_enabled()) {
+        const char *path = NULL;
+        for (int i = 0; i < s_nloaded_modules; i++) {
+            if (s_loaded_modules[i].uid == uid) {
+                path = s_loaded_modules[i].path;
+                break;
+            }
         }
+        /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
+         * h_UtilityLoadModule): libfont/psmf/libpsmfplayer are fully host-side HLE'd, and their
+         * real module_start entries (f_32200000/f_32280000/f_322f8868) are genuine Sony SDK init
+         * code that assumes a real PSP kernel underneath -- running them hangs on an unconditional
+         * WaitSema. This is a second, independent call path into the exact same three PRXs (via
+         * sceKernelLoadModule + sceKernelStartModule instead of sceUtilityLoadModule), so it needs
+         * the identical skip. populate_known_module(path) was already called in h_LoadModule when
+         * the module was recorded, so it is not repeated here. */
+        if (path) {
+            if (strstr(path, "libfont.prx")) {
+                fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
+                return 0;
+            } else if (strstr(path, "psmf.prx")) {
+                fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
+                return 0;
+            } else if (strstr(path, "libpsmfplayer.prx")) {
+                fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
+                return 0;
+            }
+        }
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
+        return 0;
     }
-    /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
-     * h_UtilityLoadModule): libfont/psmf/libpsmfplayer are fully host-side HLE'd, and their
-     * real module_start entries (f_32200000/f_32280000/f_322f8868) are genuine Sony SDK init
-     * code that assumes a real PSP kernel underneath -- running them hangs on an unconditional
-     * WaitSema. This is a second, independent call path into the exact same three PRXs (via
-     * sceKernelLoadModule + sceKernelStartModule instead of sceUtilityLoadModule), so it needs
-     * the identical skip. populate_known_module(path) was already called in h_LoadModule when
-     * the module was recorded, so it is not repeated here. */
-    if (path) {
-        if (strstr(path, "libfont.prx")) {
+
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || mod->unloaded) {
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or unloaded module\n", uid);
+        return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
+    }
+
+    if (mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
+                uid, mod->path, mod->module_start);
+        uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
+        if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
+            MEM_W32(status_ptr, rv);
+        }
+        mod->started = 1;
+        mod->libfont_compat_poke_pending = 0;
+        return 0;
+    }
+
+    /* Entry is unknown or untranslated: keep today's behaviour and log once. */
+    if (mod->libfont_compat_poke_pending) {
+        uint32_t flag;
+        if (sr_title_config_libfont_ready_flag_addr(&flag)) {
+            if (!sr_guest_span_writable(flag, 4)) {
+                fprintf(stderr,
+                        "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
+                        flag, sr_title_config()->source_id);
+            } else {
+                MEM_W32(flag, 1u);
+                fprintf(stderr,
+                        "libfont compat: flag 0x%08x <- 1 (title %s)\n",
+                        flag, sr_title_config()->source_id);
+            }
+        }
+        mod->libfont_compat_poke_pending = 0;
+    }
+
+    static int s_logged_untranslated = 0;
+    if (!s_logged_untranslated) {
+        s_logged_untranslated = 1;
+        if (strstr(mod->path, "libfont.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
-            return 0;
-        } else if (strstr(path, "psmf.prx")) {
+        } else if (strstr(mod->path, "psmf.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-            return 0;
-        } else if (strstr(path, "libpsmfplayer.prx")) {
+        } else if (strstr(mod->path, "libpsmfplayer.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-            return 0;
+        } else {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
     }
-    fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
     return 0;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only call-throughs to the production handlers. */
+uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
+uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
+uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
+uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+
+uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop) {
+    if (s_nloaded_modules >= 16) return 0;
+    uint32_t uid = sr_alloc_uid();
+    LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+    mod->uid = uid;
+    snprintf(mod->path, sizeof(mod->path), "%s", path ? path : "test_module.prx");
+    mod->module_start = module_start;
+    mod->module_stop = module_stop;
+    mod->started = 0;
+    mod->stopped = 0;
+    mod->unloaded = 0;
+    mod->libfont_compat_poke_pending = 0;
+    return uid;
+}
+
+void sr_hle_test_module_reset(void) {
+    s_nloaded_modules = 0;
+    memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
+}
+#endif
 
 static uint32_t h_KernelPrintf(CpuState *s) {
     char msg[512];
@@ -13011,6 +13195,16 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
 }
 
+static void hle_register_kernel_module_handlers(void) {
+    sr_hle_register(0x977de386, "sceKernelLoadModule", h_LoadModule);
+    sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
+    sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
+    sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
+    sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
+    sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
+    sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
+}
+
 static void hle_register_bulk_memory_handlers(void) {
     sr_hle_register(0x617f3fe6, "sceDmacMemcpy", h_DmacMemcpy);
     /* Both DMAC copy NIDs register here rather than in the general table below,
@@ -13099,6 +13293,7 @@ void sr_hle_init(void) {
      * public NIDs in the same helper used by the normal registry prevents the
      * test mapping from becoming a duplicate implementation. */
     hle_register_utility_module_handlers();
+    hle_register_kernel_module_handlers();
     hle_register_msgpipe_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
      * branches so the selftest exercises the production mapping. */
@@ -13246,13 +13441,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x6b4a146c, "sceUmdGetDriveStat", h_UmdDriveStat);
     sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_ok);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
-    sr_hle_register(0x977de386, "sceKernelLoadModule", h_LoadModule);
-    sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
-    sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
-    sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
-    sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
-    sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
-    sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
+    hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
     sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
     sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
