@@ -7943,7 +7943,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d02227eb1ce7557f3056453266f9f3928a0cc3b98162ab421651e50707671bf0"
+      "sha256": "35ea7a2a10f6471b84648d651abdebdd22f4fdd57bb5faa5c7de3a7e0c79a95f"
     },
     {
       "path": "tools/test_ci_paths.py",
@@ -8426,7 +8426,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d9beec467cbc59a7dbc4b47f9fee6d6de7efce1ba51e4053b4db07764fa96ceb"
+      "sha256": "3717aea7ca22198919c3de4e063caa661976a52eae6d1b3f0ce78fc4b6069e2a"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -9161,7 +9161,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a0f78dfbb90194c7e548c89983c3de5249e6b3abfaadb9ff9b126e55a442daf8"
+      "sha256": "01285ddbea820b62d3d1b9f910b054d1fee9e5ecf06ccb7f19f7b7e2eb3b2e0e"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
