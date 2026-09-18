@@ -1233,7 +1233,7 @@ class Prx:
         type_bits = d[buf_offset + 3]
 
         seg_bits = 1
-        while (1 << seg_bits) <= rel_seg_idx:
+        while (1 << seg_bits) < rel_seg_idx:
             seg_bits += 1
 
         if not (1 <= flag_bits <= 8 and 1 <= type_bits <= 8) or flag_bits + type_bits + seg_bits > 16:

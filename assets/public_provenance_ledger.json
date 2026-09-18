@@ -7586,7 +7586,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "bc07c47761ab3402a129fd65e8585401069447aee21e87948ebc4605086cc2dc"
+      "sha256": "55d9a31f1ddf08bd35949032bd6ba82f52161b31b6a7de9253322c8eab089769"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -8786,7 +8786,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "18ee8c66ab76e6a58170204b4a5e7141f7b049431f5bb5059fe39ca49efb3ac7"
+      "sha256": "ff261c0b795a32c27f3266a921241e969abdb910ef689efdcc9c4789c595c8bf"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
