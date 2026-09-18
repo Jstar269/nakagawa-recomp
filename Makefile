@@ -7,7 +7,7 @@
 # Override these on the command line for your game (see README).
 # NOTE: HST (flat-PRX image) requires GAME_BASE=0 GAME_ENTRY=0. The defaults below
 # are for a generic rebased ELF. Using the wrong base → cascading label errors at link.
-# Prefer hst_manager.ps1 (sets the correct values automatically).
+# Prefer nk_manager.ps1 (sets the correct values automatically).
 GAME_NAME  ?= mygame
 GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
@@ -48,7 +48,7 @@ GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 # The analyzer applies no title-specific span of its own: an extra executable span
 # outside the section table is title configuration, so the HST span is bound here
-# explicitly for direct-Make builds. hst_manager.ps1 -TitleManifest supplies the same
+# explicitly for direct-Make builds. nk_manager.ps1 -TitleManifest supplies the same
 # value from the validated manifest plan; a command-line/environment value overrides
 # this default. LEGACY_ADAPTER: this hard-coded span mirrors the retail HST manifest
 # (assets/titles/hst-ucus98701.json, the source of truth — publication-excluded, never
@@ -175,7 +175,7 @@ PYTHON     ?= python
 ifeq ($(VULKAN_SDK),)
 VULKAN_SDK := $(shell $(PYTHON) -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
 endif
-# PowerShell commonly exports this with backslashes while hst_manager passes the
+# PowerShell commonly exports this with backslashes while nk_manager passes the
 # same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
 # and manager builds do not churn otherwise identical runtime profiles.
 VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
@@ -329,7 +329,7 @@ CPU_STATE_ABI_HEADER := src/rt/recomp.h
 # input at all, and no default build inherits any title's addresses.
 #
 # HST binds its real values through the local title manifest
-# (assets/titles/hst-ucus98701.json, supplied by hst_manager.ps1 -TitleManifest or by
+# (assets/titles/hst-ucus98701.json, supplied by nk_manager.ps1 -TitleManifest or by
 # TITLE_MANIFEST= on a direct Make command line). That file is intentionally never
 # checked in and is publication-excluded, with a .gitignore accident guard.
 # They are deliberately not encoded here.
@@ -398,7 +398,7 @@ $(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
 
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
-	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local HST retail manifest: publication-excluded, never checked in) or build through hst_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
+	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local HST retail manifest: publication-excluded, never checked in) or build through nk_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
 endif
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
 

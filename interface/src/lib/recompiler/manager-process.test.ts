@@ -38,9 +38,9 @@ class FakeChild extends EventEmitter {
 function makeDeps(overrides: Partial<Parameters<typeof createManagerProcess>[0]> = {}) {
   const children: FakeChild[] = [];
   const terminated: FakeChild[] = [];
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "hst-mgr-test-"));
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "nk-mgr-test-"));
   // The anchor set findRepoRoot needs.
-  writeFileSync(path.join(repoRoot, "hst_manager.ps1"), "# test\n");
+  writeFileSync(path.join(repoRoot, "nk_manager.ps1"), "# test\n");
   writeFileSync(path.join(repoRoot, "AGENTS.md"), "# test\n");
   writeFileSync(path.join(repoRoot, "Makefile"), "all:\n");
   // Directories the run may touch (fuzz mirror log, watcher script probe).
@@ -255,7 +255,7 @@ test("bounded log history by bytes and lines with chunk truncation", () => {
 });
 
 test("FuzzLogWriter caps bytes and closes", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "hst-fuzz-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "nk-fuzz-"));
   const file = path.join(dir, "fuzz.log");
   const writer = new FuzzLogWriter(file, 1024);
   writer.append("a".repeat(500));
@@ -296,8 +296,8 @@ test("terminateProcessTree refuses stale PIDs without spawning taskkill", () => 
 });
 
 test("resolveCanonicalRoot requires the full anchor set", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "hst-root-"));
-  writeFileSync(path.join(root, "hst_manager.ps1"), "# x\n");
+  const root = mkdtempSync(path.join(tmpdir(), "nk-root-"));
+  writeFileSync(path.join(root, "nk_manager.ps1"), "# x\n");
   assert.equal(resolveCanonicalRoot(root), null, "single anchor is not a repo root");
   writeFileSync(path.join(root, "AGENTS.md"), "# x\n");
   assert.equal(resolveCanonicalRoot(root), null, "two anchors still insufficient");
@@ -307,7 +307,7 @@ test("resolveCanonicalRoot requires the full anchor set", () => {
 });
 
 test("tailFile reads only the tail of a large file", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "hst-tail-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "nk-tail-"));
   const file = path.join(dir, "big.log");
   const lineCount = 20_000;
   const lines: string[] = [];

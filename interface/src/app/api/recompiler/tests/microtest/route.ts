@@ -30,6 +30,8 @@ export async function POST(req: NextRequest) {
     }
 
     const repoRoot = findRepoRoot();
+    // Deliberate: the Makefile microtest gate consumes build/hst/microtest_gen.c
+    // for the HST title flow, so this route stages the generated file there.
     const destDir = path.join(repoRoot, "build", "hst");
     mkdirSync(destDir, { recursive: true });
     const destFile = path.join(destDir, "microtest_gen.c");

@@ -327,7 +327,7 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
   function cleanManagerEnvironment(additions: Record<string, string> = {}): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // SR_* switches are presence-based in the runtime. Never inherit a caller's
-    // shell diagnostics into a dashboard task; hst_manager.ps1 sets the selected
+    // shell diagnostics into a dashboard task; nk_manager.ps1 sets the selected
     // profile explicitly. Fuzzer inputs are added only by the validated endpoint.
     for (const key of Object.keys(env)) {
       if (key.startsWith("SR_") || key.startsWith("FUZZ_")) delete env[key];
@@ -378,8 +378,8 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
     }
 
     const repoRoot = findRepoRoot();
-    const psScript = path.join(repoRoot, "hst_manager.ps1");
-    if (!existsSync(psScript)) throw new Error(`hst_manager.ps1 not found at ${psScript}`);
+    const psScript = path.join(repoRoot, "nk_manager.ps1");
+    if (!existsSync(psScript)) throw new Error(`nk_manager.ps1 not found at ${psScript}`);
 
     const fuzzLogPath = path.join(repoRoot, "logs", "vfpu_fuzz_latest.log");
     const fuzzWriter = action === "Fuzz" ? new FuzzLogWriter(fuzzLogPath) : null;

@@ -116,7 +116,7 @@ export function PortingPanel() {
       {/* Run profiles */}
       <Panel
         title="Run profiles"
-        description="hst_manager.ps1 -Profile presets"
+        description="nk_manager.ps1 -Profile presets"
         icon={<Settings className="size-4" />}
       >
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -148,7 +148,7 @@ export function PortingPanel() {
           {[
             ["Linker failure", "Check the first unresolved symbol plus UCRT64 SDL3 and the Vulkan SDK library path"],
             ["VULKAN_SDK not found", "Set VULKAN_SDK to your install path, or install the SDK"],
-            ["SDL3.dll not found", "Ensure SDL3.dll is next to hst.exe (Makefile copies it)"],
+            ["SDL3.dll not found", "Ensure SDL3.dll is next to the built game executable (Makefile copies it)"],
             ["VFPU tables not loaded", "Set PSP_VFPU_TABLES=assets/vfpu"],
             ["Unknown NID crash", "Use SR_HLELOG=1, verify the NID mapping, then add a real HLE handler"],
             ["Infinite loop", "Inspect the sampled guest PC and generated stubs; LOOP_CAPS are retired"],
@@ -177,7 +177,7 @@ export function PortingPanel() {
           {[
             "Don't edit generated files in build/ (*_recomp*.c)",
             "Don't change GAME_BASE from 0 (Makefile default 0x08804000 is WRONG for flat-PRX)",
-            "Don't raise optimization on hst_recomp_*.c — gcc OOMs at -O1+",
+            "Don't raise optimization on <game>_recomp_*.c — gcc OOMs at -O1+",
             "Don't reintroduce retired LOOP_CAPS; fix the underlying control flow or data path",
             "Don't assume GAME_NAME=mygame works without overrides",
             "Don't edit assets/vfpu/*.dat — copy from PPSSPP",

@@ -92,7 +92,7 @@ export function TroubleshootingPanel() {
           <li>Use the native manager profiles for ordinary runs; the dashboard does not accept arbitrary environment overrides.</li>
           <li><code className="font-mono text-foreground">SR_*</code> diagnostic switches are presence-based, so a value of <code className="font-mono text-foreground">0</code> may still enable a switch.</li>
           <li>Native framebuffer captures are PPM files. The dashboard converts them to PNG only for browser display.</li>
-          <li>Generated <code className="font-mono text-foreground">build/hst/hst_recomp_*.c</code> chunks must be regenerated through the pipeline, never edited by hand.</li>
+          <li>Generated <code className="font-mono text-foreground">build/&lt;game&gt;/&lt;game&gt;_recomp_*.c</code> chunks must be regenerated through the pipeline, never edited by hand.</li>
         </ul>
       </Panel>
     </div>

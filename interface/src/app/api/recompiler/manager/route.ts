@@ -88,7 +88,7 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/recompiler/manager
-// Non-blocking trigger to start hst_manager.ps1 with the requested action.
+// Non-blocking trigger to start nk_manager.ps1 with the requested action.
 export async function POST(req: NextRequest) {
   const rejection = rejectNonLocalControlRequest(req, { mutating: true }) ?? rejectUnsupportedProcessHost();
   if (rejection) return rejection;

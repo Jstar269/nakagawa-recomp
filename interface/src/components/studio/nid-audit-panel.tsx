@@ -101,7 +101,7 @@ export function NidAuditPanel() {
   if (!data) {
     return (
       <div className="p-8 text-center text-amber-500 font-mono text-xs border border-amber-500/20 rounded-xl bg-amber-500/5">
-        Failed to execute NID compliance audit. Verify build/hst/hst_imports.toml exists.
+        Failed to execute NID compliance audit. Verify a build/&lt;game&gt;/&lt;game&gt;_imports.toml exists (run the pipeline first).
       </div>
     );
   }
@@ -160,7 +160,7 @@ export function NidAuditPanel() {
           <div className="space-y-1">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Total Imports Found</span>
             <div className="text-2xl font-bold font-mono">{summary.total_imports}</div>
-            <p className="text-[10px] text-muted-foreground leading-normal">Registered in hst_imports.toml</p>
+            <p className="text-[10px] text-muted-foreground leading-normal">Registered in {"<game>"}_imports.toml</p>
           </div>
 
           <div className="space-y-1">

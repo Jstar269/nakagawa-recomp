@@ -6,7 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 export const metadata: Metadata = {
   title: "Nakagawa Recomp — PSP static recompiler",
   description:
-    "Local build, run, diagnostics, and boot-health dashboard for the HST PSP static recompiler.",
+    "Local build, run, diagnostics, and boot-health dashboard for the Nakagawa Recomp PSP static recompiler.",
   keywords: [
     "PSP",
     "recompiler",
