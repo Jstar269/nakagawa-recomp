@@ -19,15 +19,27 @@ class PspIssueMatrixTests(unittest.TestCase):
 
     def test_checked_in_snapshot_covers_every_open_issue_snapshot(self) -> None:
         path = Path(__file__).resolve().parents[1] / "docs" / "PSP_ISSUE_MATRIX.json"
-        if not path.is_file():
-            self.skipTest(
-                "volatile issue snapshot is intentionally excluded from the sanitized public tree"
+        if path.is_file():
+            matrix = json.loads(path.read_text(encoding="utf-8"))
+            expected_count = 85
+        else:
+            sample_numbers = [27, 248, 54, 31, 148, 45, 1, 23, 999]
+            matrix = psp_issue_matrix.build_matrix(
+                [
+                    {
+                        "number": number,
+                        "title": f"Synthetic Issue {number}",
+                        "body": f"Synthetic claim for {number}",
+                    }
+                    for number in sample_numbers
+                ],
+                generated_at="2026-01-01T00:00:00Z",
             )
-        matrix = json.loads(path.read_text(encoding="utf-8"))
+            expected_count = len(sample_numbers)
         self.assertEqual(matrix["issue_count"], len(matrix["rows"]))
-        self.assertEqual(matrix["issue_count"], 85)
+        self.assertEqual(matrix["issue_count"], expected_count)
         self.assertEqual({row["primary_state"] for row in matrix["rows"]}, psp_issue_matrix.STATES)
-        self.assertEqual(len({row["issue"] for row in matrix["rows"]}), 85)
+        self.assertEqual(len({row["issue"] for row in matrix["rows"]}), expected_count)
 
         manifest = json.loads(
             (Path(__file__).resolve().parent / "psp_oracle" / "manifest.json").read_text(encoding="utf-8")
