@@ -145,8 +145,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "alter-handback-pc",
         "alter handback PC",
         [(
-            "        if (sr_lookup(pc)) {\n            s->pc = pc;",
-            "        if (sr_lookup(pc)) {\n            s->pc = pc + 4u;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc + 4u;",
             1,
         )],
     ),
