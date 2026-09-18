@@ -526,6 +526,13 @@ jobs:
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
+    # The synthetic VFPU fuzzer build is ~5.5 of the job's ~11 minutes, so it runs
+    # as its own matrix part in parallel with the other steps. Both parts repeat the
+    # cheap setup/compile steps; needs.windows_runtime.result aggregates both.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [main, fuzz]
     timeout-minutes: 25
     steps:
       - name: Check out repository
@@ -587,6 +594,7 @@ jobs:
       # links every production runtime object with the real driver, and reaches
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
+        if: matrix.part == 'main'
         shell: msys2 {0}
         # The ordinary compile target invokes the repository's PowerShell 7.6
         # asset-copy script after linking. Keep the broader Windows PATH scoped
@@ -605,6 +613,7 @@ jobs:
       # ownership gates interpretation, and the run must hand off to registered
       # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
+        if: matrix.part == 'main'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -614,12 +623,14 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
       - name: Run native core test suite on Windows
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc native-core-tests
 
       - name: Build and run platform-ladder filesystem workload
+        if: matrix.part == 'main'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -636,6 +647,7 @@ jobs:
       # headless (--sched): the assertion is the guest-visible framebuffer word,
       # so no display is required on the runner.
       - name: Build and run display presentation smoke
+        if: matrix.part == 'main'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -651,6 +663,7 @@ jobs:
       # Without this in CI, the only thing standing between a codegen semantic
       # regression and a title run is a developer remembering to run it.
       - name: Build and run AOT/interpreter cosimulation gate
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -661,12 +674,14 @@ jobs:
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
 
       - name: Build and run scheduler selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -678,18 +693,21 @@ jobs:
       # rather than the scheduler. Without it in CI, the isolation claim rests
       # on a gate that only ever ran on a developer's machine.
       - name: Build and run dispatch isolation selftest matrix
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       - name: Build and run strbuf checked-append formatting selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -701,12 +719,14 @@ jobs:
       # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
       # same target again. Building it in CI is what stops the third recurrence.
       - name: Build and run HLE thread selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
 
       - name: Build and run synthetic VFPU fuzzer
+        if: matrix.part == 'fuzz'
         shell: msys2 {0}
         run: |
           python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
@@ -714,7 +734,7 @@ jobs:
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
-            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 vfpu_fuzz_build
+            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
 
   main_smoke:
     name: Main integration smoke
