@@ -29,9 +29,9 @@ Run `tools/test_compat_manifest.py` for the current compatibility inventory gate
 ================================================================================
 NAKAGAWA SUBSYSTEM CENSUS
 ================================================================================
-Import Registrations Audited (import_audit_gate):   377 NIDs
-  - Dedicated Implementations:                     319 NIDs (Tier 3 Generic HLE)
-  - Fake Success Stubs:                             51 NIDs (Tier 5 Workaround)
+Import Registrations Audited (import_audit_gate):   380 NIDs
+  - Dedicated Implementations:                     314 NIDs (Tier 3 Generic HLE)
+  - Fake Success Stubs:                             59 NIDs (Tier 5 Workaround)
   - Controlled Unsupported:                          7 NIDs (Fail-closed)
 
 Dispatch Hooks & Walkers (src/rt/recomp.c):
@@ -102,9 +102,9 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 ---
 
-### 3.3 The 51 Fake-Success Stubs (Tier 5)
+### 3.3 The 59 Fake-Success Stubs (Tier 5)
 
-`tools/import_audit_baseline.json` registers 51 NIDs with `classification: "fake_success"`. These return `0` without implementing the documented Sony PSP kernel semantics:
+`tools/import_audit_baseline.json` registers 59 NIDs with `classification: "fake_success"`. These return `0` without implementing the documented Sony PSP kernel semantics. Fifty-one route to the generic `h_ok` handler; eight are dedicated handlers whose bodies do nothing but `(void)s` / diagnostic logging / `return 0`, detected mechanically by `tools/hle_manifest.py` (no hand-listed names): `sceKernelFreeFpl` (`0xf6414a71`, `h_FreeFpl`), `sceGeDrawSync` (`0xb287bd61`, `h_GeDrawSync`), `sceUtilityOskUpdate` (`0x4b85c861`, `h_OskUpdate`), `sceAudioGetChannelRestLength` (`0xb011922f`, `h_AudioRestLen`), `sceIoDevctl` (`0x54f5fb11`, `h_IoDevctl`), `sceKernelStartModule` (`0x50f0c1ec`, `h_StartModule`), `sceKernelStopModule` (`0xd1ff982a`, `h_StopModule_Trace`), `sceKernelUnloadModule` (`0x2e0911aa`, `h_UnloadModule_Trace`):
 
 | NID | Function Name | Library | Risk to Fidelity | Remediation Path |
 | :--- | :--- | :--- | :--- | :--- |
