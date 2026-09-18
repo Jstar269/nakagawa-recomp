@@ -168,5 +168,110 @@ class TestSeamPortability(unittest.TestCase):
                       "backend selection must be a capability probe, not a platform guess")
 
 
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestIsoVfsContained(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_vfs_c import create_synthetic_vfs_iso
+        cls.tmp = tempfile.mkdtemp(prefix="isocont_")
+        cls.iso = Path(cls.tmp) / "contained.iso"
+        create_synthetic_vfs_iso(cls.iso)
+
+        cls.c_src = Path(cls.tmp) / "iso_containment_test.c"
+        cls.c_src.write_text(r"""#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "iso.h"
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
+static void set_env_iso(const char *val) {
+#if defined(_WIN32) || defined(_WIN64)
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "PSP_ISO=%s", val ? val : "");
+    _putenv(buf);
+    SetEnvironmentVariableA("PSP_ISO", val ? val : "");
+#else
+    if (val && val[0]) setenv("PSP_ISO", val, 1);
+    else unsetenv("PSP_ISO");
+#endif
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) return 1;
+    set_env_iso(argv[1]);
+    if (iso_init() != 0) return 1;
+
+    uint32_t lba = 0, sz = 0;
+    IsoDirEntry de;
+
+    /* Valid lookup works */
+    if (iso_lookup("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN", &lba, &sz) != 0) return 1;
+
+    /* Containment tests: all parent traversals must be refused */
+    const char *bad_lookups[] = {
+        "disc0:/..",
+        "disc0:/../",
+        "disc0:/../etc/passwd",
+        "disc0:/PSP_GAME/..",
+        "disc0:/PSP_GAME/../",
+        "disc0:/PSP_GAME/../PSP_GAME/SYSDIR/EBOOT.BIN",
+        "disc0:/PSP_GAME/SYSDIR/../../EBOOT.BIN",
+        "disc0:/PSP_GAME/USRDIR/../../..",
+        "disc0:\\..\\EBOOT.BIN",
+        "disc0:/PSP_GAME\\..\\SYSDIR\\EBOOT.BIN",
+        NULL
+    };
+    for (int i = 0; bad_lookups[i]; i++) {
+        if (iso_lookup(bad_lookups[i], &lba, &sz) == 0) {
+            fprintf(stderr, "FAIL: containment breached on lookup: %s\n", bad_lookups[i]);
+            return 2;
+        }
+    }
+
+    const char *bad_lists[] = {
+        "disc0:/..",
+        "disc0:/../",
+        "disc0:/PSP_GAME/..",
+        "disc0:/PSP_GAME/../../",
+        "disc0:\\..",
+        NULL
+    };
+    for (int i = 0; bad_lists[i]; i++) {
+        if (iso_list(bad_lists[i], 0, &de) != -1) {
+            fprintf(stderr, "FAIL: containment breached on list: %s\n", bad_lists[i]);
+            return 3;
+        }
+    }
+
+    printf("iso containment: OK\n");
+    return 0;
+}
+""", encoding="utf-8")
+
+        cls.exe = os.path.join(cls.tmp, "iso_containment_test.exe")
+        cmd = [
+            CC, "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror",
+            f"-I{RT}", "-o", cls.exe, str(cls.c_src), str(ROOT / "src" / "rt" / "iso_public.c")
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("iso_containment_test did not compile:\n" + result.stderr)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_iso_vfs_containment_enforced(self):
+        run = subprocess.run([self.exe, str(self.iso)], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("iso containment: OK", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

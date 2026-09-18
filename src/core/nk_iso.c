@@ -5,7 +5,9 @@
 #define _DEFAULT_SOURCE
 
 #include "nk_iso.h"
+#ifndef NK_ISO_NO_PLAYER_EXTRAS
 #include "nk_platform.h"
+#endif
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +72,421 @@ static FILE *nk_iso_fopen(const char *path, const char *mode) {
 #endif
 }
 
+static inline int nk_iso_fseek64(FILE *f, int64_t offset, int whence) {
+#if defined(_WIN32) || defined(_WIN64)
+    return _fseeki64(f, offset, whence);
+#else
+    return fseeko(f, (off_t)offset, whence);
+#endif
+}
+
+static inline int64_t nk_iso_ftell64(FILE *f) {
+#if defined(_WIN32) || defined(_WIN64)
+    return _ftelli64(f);
+#else
+    return (int64_t)ftello(f);
+#endif
+}
+
+struct NkIsoReader {
+    FILE *f;
+    uint64_t file_size;
+    uint32_t root_lba;
+    uint32_t root_size;
+    char volume_id[33];
+};
+
+const char *nk_iso_reader_volume_id(const NkIsoReader *reader) {
+    return reader ? reader->volume_id : "";
+}
+
+uint64_t nk_iso_reader_file_size(const NkIsoReader *reader) {
+    return reader ? reader->file_size : 0;
+}
+
+NkIsoReader *nk_iso_reader_open(const char *iso_path) {
+    if (!iso_path || !iso_path[0]) return NULL;
+
+    FILE *f = nk_iso_fopen(iso_path, "rb");
+    if (!f) return NULL;
+
+    if (nk_iso_fseek64(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    int64_t raw_sz = nk_iso_ftell64(f);
+    if (raw_sz <= 0 || (uint64_t)raw_sz < (uint64_t)(PVD_SECTOR + 1) * SECTOR_SIZE) {
+        fclose(f);
+        return NULL;
+    }
+    uint64_t file_size = (uint64_t)raw_sz;
+
+    uint8_t pvd[SECTOR_SIZE];
+    if (nk_iso_fseek64(f, (int64_t)PVD_SECTOR * SECTOR_SIZE, SEEK_SET) != 0 ||
+        fread(pvd, 1, SECTOR_SIZE, f) != SECTOR_SIZE) {
+        fclose(f);
+        return NULL;
+    }
+
+    if (pvd[0] != 0x01 || memcmp(&pvd[1], "CD001", 5) != 0) {
+        fclose(f);
+        return NULL;
+    }
+
+    uint32_t root_lba_le = read_le32(&pvd[158]);
+    uint32_t root_lba_be = read_be32(&pvd[162]);
+    uint32_t root_sz_le = read_le32(&pvd[166]);
+    uint32_t root_sz_be = read_be32(&pvd[170]);
+
+    if (root_lba_le != root_lba_be || root_sz_le != root_sz_be) {
+        fclose(f);
+        return NULL;
+    }
+
+    uint64_t root_offset = (uint64_t)root_lba_le * SECTOR_SIZE;
+    if (root_offset > file_size || (uint64_t)root_sz_le > file_size - root_offset ||
+        root_sz_le == 0 || root_sz_le > NK_ISO_MAX_DIR_BYTES) {
+        fclose(f);
+        return NULL;
+    }
+
+    NkIsoReader *reader = (NkIsoReader *)calloc(1, sizeof(NkIsoReader));
+    if (!reader) {
+        fclose(f);
+        return NULL;
+    }
+
+    reader->f = f;
+    reader->file_size = file_size;
+    reader->root_lba = root_lba_le;
+    reader->root_size = root_sz_le;
+
+    memcpy(reader->volume_id, &pvd[40], 32);
+    reader->volume_id[32] = '\0';
+    for (int i = 31; i >= 0; i--) {
+        if (reader->volume_id[i] == ' ' || reader->volume_id[i] == '\0') {
+            reader->volume_id[i] = '\0';
+        } else {
+            break;
+        }
+    }
+
+    return reader;
+}
+
+void nk_iso_reader_close(NkIsoReader *reader) {
+    if (!reader) return;
+    if (reader->f) {
+        fclose(reader->f);
+        reader->f = NULL;
+    }
+    free(reader);
+}
+
+int nk_iso_reader_read(NkIsoReader *reader, uint32_t lba, uint64_t offset, void *dst, uint32_t bytes) {
+    if (!reader || !reader->f || !dst) return -1;
+    if (bytes == 0) return 0;
+
+    uint64_t file_pos = ((uint64_t)lba * SECTOR_SIZE) + offset;
+    if (file_pos >= reader->file_size) {
+        return 0; /* EOF */
+    }
+
+    uint64_t available = reader->file_size - file_pos;
+    if ((uint64_t)bytes > available) {
+        bytes = (uint32_t)available;
+    }
+
+    if (nk_iso_fseek64(reader->f, (int64_t)file_pos, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    size_t got = fread(dst, 1, bytes, reader->f);
+    return (int)got;
+}
+
+static bool nk_iso_name_matches(const char *token, const uint8_t *name_bytes, uint8_t name_len) {
+    if (!token || !name_bytes || name_len == 0) return false;
+
+    size_t comp_len = name_len;
+    for (size_t i = 0; i < name_len; i++) {
+        if (name_bytes[i] == ';') {
+            comp_len = i;
+            break;
+        }
+    }
+
+    size_t tok_len = strlen(token);
+    for (size_t i = 0; i < tok_len; i++) {
+        if (token[i] == ';') {
+            tok_len = i;
+            break;
+        }
+    }
+
+    if (tok_len == comp_len && strncasecmp(token, (const char *)name_bytes, comp_len) == 0) {
+        return true;
+    }
+
+    if (comp_len == tok_len + 1 && name_bytes[tok_len] == '.' &&
+        strncasecmp(token, (const char *)name_bytes, tok_len) == 0) {
+        return true;
+    }
+
+    if (tok_len == comp_len + 1 && token[comp_len] == '.' &&
+        strncasecmp(token, (const char *)name_bytes, comp_len) == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+static bool nk_iso_find_in_dir(NkIsoReader *reader, uint32_t dir_lba, uint32_t dir_size,
+                               const char *token, uint32_t *out_lba, uint32_t *out_size,
+                               bool *out_is_dir) {
+    if (!reader || !reader->f || dir_size == 0 || dir_size > NK_ISO_MAX_DIR_BYTES) return false;
+
+    uint64_t offset = (uint64_t)dir_lba * SECTOR_SIZE;
+    if (offset > reader->file_size || (uint64_t)dir_size > reader->file_size - offset) {
+        return false;
+    }
+
+    uint8_t *buf = (uint8_t *)malloc(dir_size);
+    if (!buf) return false;
+
+    if (nk_iso_fseek64(reader->f, (int64_t)offset, SEEK_SET) != 0 ||
+        fread(buf, 1, dir_size, reader->f) != dir_size) {
+        free(buf);
+        return false;
+    }
+
+    bool found = false;
+    size_t pos = 0;
+    while (pos < dir_size) {
+        uint8_t rec_len = buf[pos];
+        if (rec_len == 0) {
+            pos = ((pos / SECTOR_SIZE) + 1u) * SECTOR_SIZE;
+            continue;
+        }
+        if (rec_len < 34u || rec_len > dir_size - pos || (pos % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
+            break;
+        }
+        uint8_t name_len = buf[pos + 32];
+        if (name_len == 0 || 33u + name_len > rec_len) {
+            break;
+        }
+
+        /* Skip '.' (0) and '..' (1) */
+        const uint8_t *name_bytes = &buf[pos + 33];
+        if (name_len == 1 && (name_bytes[0] == 0 || name_bytes[0] == 1)) {
+            pos += rec_len;
+            continue;
+        }
+
+        uint32_t ext_lba_le = read_le32(&buf[pos + 2]);
+        uint32_t ext_lba_be = read_be32(&buf[pos + 6]);
+        uint32_t ext_sz_le = read_le32(&buf[pos + 10]);
+        uint32_t ext_sz_be = read_be32(&buf[pos + 14]);
+
+        if (ext_lba_le != ext_lba_be || ext_sz_le != ext_sz_be) {
+            pos += rec_len;
+            continue;
+        }
+
+        uint64_t ext_off = (uint64_t)ext_lba_le * SECTOR_SIZE;
+        if (ext_off > reader->file_size || (uint64_t)ext_sz_le > reader->file_size - ext_off) {
+            pos += rec_len;
+            continue;
+        }
+
+        if (nk_iso_name_matches(token, name_bytes, name_len)) {
+            if (out_lba) *out_lba = ext_lba_le;
+            if (out_size) *out_size = ext_sz_le;
+            if (out_is_dir) *out_is_dir = (buf[pos + 25] & 0x02u) != 0;
+            found = true;
+            break;
+        }
+
+        pos += rec_len;
+    }
+
+    free(buf);
+    return found;
+}
+
+int nk_iso_reader_lookup(NkIsoReader *reader, const char *path, uint32_t *out_lba, uint32_t *out_size, bool *out_is_dir) {
+    if (!reader || !path) return -1;
+
+    while (*path == '/' || *path == '\\') path++;
+
+    if (*path == '\0') {
+        if (out_lba) *out_lba = reader->root_lba;
+        if (out_size) *out_size = reader->root_size;
+        if (out_is_dir) *out_is_dir = true;
+        return 0;
+    }
+
+    char path_copy[512];
+    snprintf(path_copy, sizeof(path_copy), "%s", path);
+
+    char *saveptr = NULL;
+    char *token = strtok_r(path_copy, "/\\", &saveptr);
+    if (!token) {
+        if (out_lba) *out_lba = reader->root_lba;
+        if (out_size) *out_size = reader->root_size;
+        if (out_is_dir) *out_is_dir = true;
+        return 0;
+    }
+
+    uint32_t cur_lba = reader->root_lba;
+    uint32_t cur_size = reader->root_size;
+    int depth = 0;
+
+    while (token != NULL) {
+        if (++depth > NK_ISO_MAX_DEPTH) {
+            return -1;
+        }
+
+        if (strcmp(token, ".") == 0) {
+            token = strtok_r(NULL, "/\\", &saveptr);
+            continue;
+        }
+        if (strcmp(token, "..") == 0) {
+            return -1;
+        }
+
+        char *next_token = strtok_r(NULL, "/\\", &saveptr);
+        bool is_last = (next_token == NULL);
+
+        uint32_t entry_lba = 0;
+        uint32_t entry_size = 0;
+        bool entry_is_dir = false;
+
+        if (!nk_iso_find_in_dir(reader, cur_lba, cur_size, token, &entry_lba, &entry_size, &entry_is_dir)) {
+            return -1;
+        }
+
+        if (is_last) {
+            if (out_lba) *out_lba = entry_lba;
+            if (out_size) *out_size = entry_size;
+            if (out_is_dir) *out_is_dir = entry_is_dir;
+            return 0;
+        }
+
+        if (!entry_is_dir) {
+            return -1;
+        }
+
+        cur_lba = entry_lba;
+        cur_size = entry_size;
+        token = next_token;
+    }
+
+    return -1;
+}
+
+int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index, NkIsoDirEntry *out_entry) {
+    if (!reader || !reader->f || !out_entry) return -1;
+
+    uint32_t dir_lba = reader->root_lba;
+    uint32_t dir_size = reader->root_size;
+
+    if (dir_path) {
+        while (*dir_path == '/' || *dir_path == '\\') dir_path++;
+        if (*dir_path != '\0') {
+            bool is_dir = false;
+            if (nk_iso_reader_lookup(reader, dir_path, &dir_lba, &dir_size, &is_dir) != 0 || !is_dir) {
+                return -1;
+            }
+        }
+    }
+
+    if (dir_size == 0 || dir_size > NK_ISO_MAX_DIR_BYTES) return -1;
+    uint64_t offset = (uint64_t)dir_lba * SECTOR_SIZE;
+    if (offset > reader->file_size || (uint64_t)dir_size > reader->file_size - offset) {
+        return -1;
+    }
+
+    uint8_t *buf = (uint8_t *)malloc(dir_size);
+    if (!buf) return -1;
+
+    if (nk_iso_fseek64(reader->f, (int64_t)offset, SEEK_SET) != 0 ||
+        fread(buf, 1, dir_size, reader->f) != dir_size) {
+        free(buf);
+        return -1;
+    }
+
+    uint32_t cur_index = 0;
+    bool found = false;
+    size_t pos = 0;
+
+    while (pos < dir_size) {
+        uint8_t rec_len = buf[pos];
+        if (rec_len == 0) {
+            pos = ((pos / SECTOR_SIZE) + 1u) * SECTOR_SIZE;
+            continue;
+        }
+        if (rec_len < 34u || rec_len > dir_size - pos || (pos % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
+            break;
+        }
+        uint8_t name_len = buf[pos + 32];
+        if (name_len == 0 || 33u + name_len > rec_len) {
+            break;
+        }
+
+        /* Skip '.' (0) and '..' (1) */
+        const uint8_t *name_bytes = &buf[pos + 33];
+        if (name_len == 1 && (name_bytes[0] == 0 || name_bytes[0] == 1)) {
+            pos += rec_len;
+            continue;
+        }
+
+        uint32_t ext_lba_le = read_le32(&buf[pos + 2]);
+        uint32_t ext_lba_be = read_be32(&buf[pos + 6]);
+        uint32_t ext_sz_le = read_le32(&buf[pos + 10]);
+        uint32_t ext_sz_be = read_be32(&buf[pos + 14]);
+
+        if (ext_lba_le != ext_lba_be || ext_sz_le != ext_sz_be) {
+            pos += rec_len;
+            continue;
+        }
+
+        uint64_t ext_off = (uint64_t)ext_lba_le * SECTOR_SIZE;
+        if (ext_off > reader->file_size || (uint64_t)ext_sz_le > reader->file_size - ext_off) {
+            pos += rec_len;
+            continue;
+        }
+
+        if (cur_index == index) {
+            memset(out_entry, 0, sizeof(*out_entry));
+            size_t comp_len = name_len;
+            for (size_t c = 0; c < name_len; c++) {
+                if (name_bytes[c] == ';') { comp_len = c; break; }
+            }
+            if (comp_len > 0 && name_bytes[comp_len - 1] == '.') {
+                comp_len--;
+            }
+            if (comp_len >= sizeof(out_entry->name)) {
+                comp_len = sizeof(out_entry->name) - 1;
+            }
+            memcpy(out_entry->name, name_bytes, comp_len);
+            out_entry->name[comp_len] = '\0';
+            out_entry->lba = ext_lba_le;
+            out_entry->is_directory = (buf[pos + 25] & 0x02u) != 0;
+            out_entry->size = out_entry->is_directory ? 0 : ext_sz_le;
+            found = true;
+            break;
+        }
+
+        cur_index++;
+        pos += rec_len;
+    }
+
+    free(buf);
+    return found ? 1 : 0;
+}
+
+#ifndef NK_ISO_NO_PLAYER_EXTRAS
 /* SFO parameter formats. 0x0004 is UTF-8 that is not NUL-terminated and
    0x0204 is NUL-terminated UTF-8; 0x0404 is a little-endian uint32. Only the
    two string forms carry text. */
@@ -1171,3 +1588,4 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
     fclose(iso);
     return result;
 }
+#endif /* NK_ISO_NO_PLAYER_EXTRAS */

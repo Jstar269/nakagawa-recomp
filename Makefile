@@ -306,7 +306,7 @@ ASSET_COPY_ARGS :=
 else
 PGF_BACKEND_SRC := src/rt/pgf_unavailable.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
-ISO_BACKEND_SRC := src/rt/iso_unavailable.c
+ISO_BACKEND_SRC := src/rt/iso_public.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
 # override for the same reason as SR_BUILD_DIR above, and because it is now required:
