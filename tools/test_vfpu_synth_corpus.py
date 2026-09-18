@@ -715,18 +715,19 @@ class CategoryDistinguishingTests(unittest.TestCase):
         from vfpu_synth_gen import classify_word_production
         self.assertTrue(classify_word_production(w).startswith("emitter_unsupported"))
     def test_interpreter_fallback_is_distinct(self):
-        import codegen
+        from vfpu_synth_gen import classify_word_production
         w=(0x35<<26)|0x00000000
-        try:
-            body,_,_=codegen.vfpu_effect(0x08900000,w)
-            if "sr_vfpu_interp" in body:
-                self.assertIn("sr_vfpu_interp",body)
-            else:
-                w2=(0x3E<<26)|0x00000000
-                body2,_,_=codegen.vfpu_effect(0x08900000,w2)
-                self.assertIn("sr_vfpu_interp",body2)
-        except codegen.Unsupported:
-            self.skipTest("no fallback")
+        # Behavioural, not structural: run the emitter (classify_word_production
+        # goes through codegen.vfpu_effect itself) and require the fallback.
+        # If emitter coverage for these families is ever added, the expected
+        # value changes with it and this test says so. Deleting the fallback
+        # therefore fails here instead of silently passing as a SKIP.
+        self.assertEqual(
+            classify_word_production(w), "interpreter_fallback",
+            "0x35/0x3E VFPU words must classify as interpreter_fallback; if the "
+            "emitter now covers them, retire or re-point this test deliberately "
+            "rather than letting the old guard pass vacuously",
+        )
     def test_malformed_vs_positive_are_disjoint(self):
         from vfpu_synth_gen import generate_synthetic_corpus, generate_malformed_corpus, classify_word_production
         pos=generate_synthetic_corpus()
