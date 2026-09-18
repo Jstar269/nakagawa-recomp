@@ -1134,10 +1134,10 @@
     "status": "unreviewed"
   },
   "0x779103a0": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_IoRename",
     "name": "sceIoRename",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x779242a2": {
     "classification": "dedicated",
@@ -1368,10 +1368,10 @@
     "status": "unreviewed"
   },
   "0x95fd0c2d": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AudioChangeChannelConfig",
     "name": "sceAudioChangeChannelConfig",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x977de386": {
     "classification": "dedicated",
@@ -1608,10 +1608,10 @@
     "status": "unreviewed"
   },
   "0xb011922f": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_AudioRestLen",
     "name": "sceAudioGetChannelRestLength",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb011b11f": {
     "classification": "dedicated",
