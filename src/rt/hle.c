@@ -669,8 +669,7 @@ static uint32_t h_AllocPartitionMemory(CpuState *s) {
     return uid;
 }
 static uint32_t h_GetBlockHeadAddr(CpuState *s) { return block_addr(A0); }
-static uint32_t h_FreePartitionMemory(CpuState *s) {
-    uint32_t uid = A0;
+static uint32_t free_block(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) {
         if (s_blocks[i].uid == uid && s_blocks[i].addr != 0) {
             /* Kernel metadata is host-side. Never scribble a synthetic free header
@@ -694,6 +693,9 @@ static uint32_t h_FreePartitionMemory(CpuState *s) {
     /* Block not found — could be an invalid UID. PSP returns error. */
     if (getenv("SR_ALLOC_TRACE")) fprintf(stderr, "FreePartitionMemory: uid=0x%x not found\n", uid);
     return 0x80020000;
+}
+static uint32_t h_FreePartitionMemory(CpuState *s) {
+    return free_block(A0);
 }
 static uint32_t partition_free(void) {
     user_partition_init();
@@ -727,7 +729,7 @@ static uint32_t h_MaxFreeMemSize(CpuState *s) {
 /* Fixed Pool (FPL) â€” simple bump allocator per pool.  Enough for games that use FPL
  * to allocate objects whose constructors populate vtables (e.g. sceUtility dialogs). */
 #define FPL_MAX 16
-typedef struct { uint32_t base; uint32_t cur; uint32_t end; uint32_t bsize; int used; } FplPool;
+typedef struct { uint32_t base; uint32_t cur; uint32_t end; uint32_t bsize; int used; uint32_t block_uid; } FplPool;
 static FplPool s_fpls[FPL_MAX];
 static uint32_t h_CreateFpl(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=blockSize. 5th arg (numBlocks) is in t0 (r8). */
@@ -739,7 +741,13 @@ static uint32_t h_CreateFpl(CpuState *s) {
     uint32_t block_uid = alloc_block(total ? total : 16);
     uint32_t pool = block_addr(block_uid);
     uint32_t uid = 0;
-    for (int i = 0; i < FPL_MAX; i++) { if (!s_fpls[i].used) { uid = (uint32_t)(i + 0x500); s_fpls[i] = (FplPool){pool, pool, pool + total, bsize, 1}; break; } }
+    for (int i = 0; i < FPL_MAX; i++) {
+        if (!s_fpls[i].used) {
+            uid = (uint32_t)(i + 0x500);
+            s_fpls[i] = (FplPool){pool, pool, pool + total, bsize, 1, block_uid};
+            break;
+        }
+    }
     fprintf(stderr, "sceKernelCreateFpl: uid=0x%x pool_uid=0x%x base=0x%08x bsize=%u nblocks=%u total=%u\n", uid, block_uid, pool, bsize, nblocks, total);
     return uid;
 }
@@ -777,8 +785,15 @@ static uint32_t h_AllocateFpl(CpuState *s) {
     return h_TryAllocateFpl(s);
 }
 static uint32_t h_DeleteFpl(CpuState *s) {
-    uint32_t uid = A0; uint32_t idx = uid - 0x500;
-    if (idx < FPL_MAX && s_fpls[idx].used) s_fpls[idx].used = 0;
+    uint32_t uid = A0;
+    uint32_t idx = uid - 0x500;
+    if (idx >= FPL_MAX || !s_fpls[idx].used) return 0;
+    uint32_t block_uid = s_fpls[idx].block_uid;
+    s_fpls[idx].used = 0;
+    s_fpls[idx].block_uid = 0;
+    if (block_uid) {
+        free_block(block_uid);
+    }
     return 0;
 }
 static uint32_t h_FreeFpl(CpuState *s) { (void)s; return 0; }
