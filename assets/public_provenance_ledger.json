@@ -1179,7 +1179,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "65b301910297fae9eebca395b9b5a74c26e6d5996e097cd79d5937f943161305"
+      "sha256": "684c1fa1c4cf096ab5492a251c59986020952beaa8175e7156e83ca4f5805c9c"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
