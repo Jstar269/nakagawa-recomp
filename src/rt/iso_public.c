@@ -65,17 +65,18 @@ static const char *iso_normalize_path(const char *guest_path, char *buf, size_t 
 }
 
 static const char *get_iso_env(void) {
-    const char *iso_env = getenv("PSP_ISO");
 #if defined(_WIN32) || defined(_WIN64)
-    static char win_env[1024];
-    if (!iso_env || !iso_env[0]) {
-        DWORD len = GetEnvironmentVariableA("PSP_ISO", win_env, sizeof(win_env));
-        if (len > 0 && len < sizeof(win_env)) {
-            return win_env;
-        }
-    }
+    /* nk_iso opens paths as UTF-8 (_wfopen). getenv() returns the ANSI code page,
+     * which mangles names such as "Hot Shots Tennis - Get a Grip™ [...].iso", so
+     * read the variable as UTF-16 and convert. */
+    static char utf8_env[1024];
+    const wchar_t *w = _wgetenv(L"PSP_ISO");
+    if (!w || !w[0]) return NULL;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, utf8_env, (int)sizeof(utf8_env), NULL, NULL);
+    return n > 0 ? utf8_env : NULL;
+#else
+    return getenv("PSP_ISO");
 #endif
-    return iso_env;
 }
 
 static int iso_init_locked(void) {
