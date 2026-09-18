@@ -144,7 +144,7 @@ reason a branch looks finished and is not:
 | `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
 | `provenance_attest_verify` | the **external private authority** | yes; normal mode checks path authority and content binding; strict mode also checks legacy blob approvals |
 
-A tree can report `publication audit: OK (738 tracked files)` and
+A tree can report `publication audit: OK (784 tracked files)` and
 `verdict: FAIL (5 fatal findings)` at the same commit. "Gates green" that means
 only the first is not evidence that the branch can merge.
 
@@ -182,7 +182,7 @@ The repository's text bytes are **UTF-8 without BOM, LF, with a final newline**.
 authority; this section says how to *produce* bytes that satisfy them.
 
 Git normalises on commit, so the index is clean by construction — a scan of all
-674 tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
+784 tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
 elsewhere: in working trees and in generated artifacts. A checkout polluted with
 CRLF makes every touched file's content hash disagree with the provenance
 ledger, and the resulting wall of `PROVENANCE_CONTENT_MISMATCH` names the

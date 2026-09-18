@@ -747,7 +747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9aa1083c1fe67d8f65015f6d369df1288c77b67ef3965a1ee2630d01b48cfa6d"
+      "sha256": "6a8456e0ad8578b43e9bac0808e0322a110560370ec6e782a1e490c7f257d28c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "58fe67fe26fdef09a04ad2ef7a6bbc2162eac4fb7360faea817ea75d42f20762"
+      "sha256": "ae0de6680ebc8dfe1c323fc98e83d6f98980c46b53822e0f56a7217db1d6f334"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -864,7 +864,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "49c592201d8b1789ee1950eb0febfb330020ef51a54b57a57b002848192dc30e"
+      "sha256": "6c578e5c47fdd3c6e4080e8a9e0ce32b276e8523c3a19118c7e8681a58387b64"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1026,7 +1026,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f9e2ebeb8cc23b86bf039002e5a1a9c44efcd7724f6030e74d8eba15cdd6f193"
+      "sha256": "4df8a0fef94d151d2e3627003eae051fa04b9b0f657bb731318531b13d3ebb93"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -1053,7 +1053,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4affa6e60fbd8a09b334a2a39bde957af241c8b81c719010551ad2dca91a8e3c"
+      "sha256": "6373094121cf747a88d716c1fe7633ab9591d683971693af6d50bfdfde993892"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1134,7 +1134,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "871609cb56bedbdddacb8ca4735e30c892053973756e6a41769e0f17b7c45e28"
+      "sha256": "6a73ae279d7b47b6ab4ba24604280abe19869b99c2abe8f1c9b4a1ba560168c8"
     },
     {
       "path": "docs/ui-baseline/README.md",
@@ -1152,7 +1152,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1bbe87a86f040b26fb41b85fbe5525a9e7d739b16671e1870db56a191db0369d"
+      "sha256": "69d0de58476690346ed511e34926a56b423e4519cddd627dcaee0f48ee9a3339"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",

@@ -248,7 +248,7 @@ one mutant restores the **generator** to its pre-fix computed-transfer emission 
 the exact production defect this fixture was built to find — and `jrslot`/`jrtail` must
 both diverge.
 
-Three interpreter guards are not killed by this gate, and each is layering rather than a
+Two interpreter guards are not killed by this gate, and each is layering rather than a
 hole:
 
 * deleting the `is_control_opcode()` guard inside `execute_noncontrol()` changes nothing
