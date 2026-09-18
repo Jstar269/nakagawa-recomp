@@ -866,6 +866,7 @@ static uint32_t h_TryAllocateVpl(CpuState *s) {
     uint32_t request = A1, out = A2;
     if (!p) return VPL_BAD_ID;
     if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
     for (int i = 0; i < p->nfree; ++i) {
         if (p->free[i].size >= need) {
@@ -911,7 +912,7 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t info = A1;
     if (!p) return VPL_BAD_ID;
-    if (!info) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads.
      * Name contents and wait-thread count are UNMEASURED here; only size/free accounting
      * is promised by this non-blocking implementation. */
