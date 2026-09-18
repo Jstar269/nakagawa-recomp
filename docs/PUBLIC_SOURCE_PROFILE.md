@@ -13,8 +13,9 @@ check is an engineering containment result, not legal clearance.
 - PGF parser/font payloads and PGD/amctrl implementation/tooling pending
   qualified provenance and distribution review.
 - The sal063-derived ISO/VFS and SDL audio backends pending their separate
-  public review. `iso_unavailable.c` and `audio_unavailable.c` provide explicit
-  public-safe link boundaries.
+  public review. `iso_public.c` provides a project-authored public ISO VFS backend
+  satisfying the `iso.h` seam via `nk_iso`; `iso_unavailable.c` and `audio_unavailable.c`
+  provide explicit public-safe link boundaries.
 
 The excluded files remain local development material. They are not reconstructed
 by the public candidate, and the public-safe Makefile cannot silently select them

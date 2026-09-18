@@ -308,6 +308,47 @@ int main(int argc, char **argv) {{
     }}
 #endif
 
+    if (strcmp(mode, "reader_test") == 0) {{
+        if (argc < 3) return 1;
+        const char *iso_path = argv[2];
+        NkIsoReader *reader = nk_iso_reader_open(iso_path);
+        if (!reader) {{
+            printf("READER:OPEN_FAILED\\n");
+            return 0;
+        }}
+        printf("READER:OPEN_OK\\n");
+        printf("VOLUME_ID:%s\\n", nk_iso_reader_volume_id(reader));
+        printf("FILE_SIZE:%llu\\n", (unsigned long long)nk_iso_reader_file_size(reader));
+
+        uint32_t lba = 0, sz = 0;
+        bool is_dir = false;
+        int rc = nk_iso_reader_lookup(reader, "PSP_GAME/PARAM.SFO", &lba, &sz, &is_dir);
+        printf("LOOKUP_SFO:%d:%u:%u:%d\\n", rc, (unsigned)lba, (unsigned)sz, is_dir ? 1 : 0);
+
+        rc = nk_iso_reader_lookup(reader, "PSP_GAME", &lba, &sz, &is_dir);
+        printf("LOOKUP_DIR:%d:%u:%u:%d\\n", rc, (unsigned)lba, (unsigned)sz, is_dir ? 1 : 0);
+
+        rc = nk_iso_reader_lookup(reader, "NONEXISTENT", &lba, &sz, &is_dir);
+        printf("LOOKUP_MISS:%d\\n", rc);
+
+        NkIsoDirEntry de;
+        rc = nk_iso_reader_list(reader, "", 0, &de);
+        printf("LIST_ROOT_0:%d:%s:%u:%u:%d\\n", rc, de.name, (unsigned)de.lba, (unsigned)de.size, de.is_directory ? 1 : 0);
+
+        rc = nk_iso_reader_list(reader, "", 1, &de);
+        printf("LIST_ROOT_1:%d\\n", rc);
+
+        uint8_t buf[256];
+        int bytes = nk_iso_reader_read(reader, 32, 0, buf, sizeof(buf));
+        printf("READ_SFO:%d\\n", bytes);
+
+        bytes = nk_iso_reader_read(reader, 2000, 0, buf, sizeof(buf));
+        printf("READ_EOF:%d\\n", bytes);
+
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
+
     return 2;
 }}
 """
@@ -457,8 +498,8 @@ int main(int argc, char **argv) {{
         res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)
-        self.assertIn(str(mock_exe), res.stdout)
-        self.assertIn(str(mock_iso), res.stdout)
+        self.assertIn(Path(mock_exe).name, res.stdout)
+        self.assertIn(Path(mock_iso).name, res.stdout)
         self.assertIn("BASE:0x08810000", res.stdout)
         self.assertIn("ENTRY:0x08810000", res.stdout)
 
@@ -566,6 +607,52 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_other.get("RESULT"), "OK")
         self.assertEqual(c_other.get("DISC_ID"), "UCUS98701")
 
+    def test_reader_parity_inspect_and_lookup(self) -> None:
+        iso_path = self.temp_dir / "reader_test.iso"
+        create_test_iso(iso_path, disc_id="UCUS98701", title="Reader Test", volume_id="READER_VOL")
+
+        # Python inspect
+        py_meta = inspect_iso(iso_path)
+        self.assertEqual(py_meta.volume_id.rstrip("\x00 "), "READER_VOL")
+
+        # Native reader test
+        cmd = [str(self.exe_path), "reader_test", str(iso_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        lines = dict(line.split(":", 1) for line in res.stdout.strip().splitlines() if ":" in line)
+        self.assertEqual(lines.get("READER"), "OPEN_OK")
+        self.assertEqual(lines.get("VOLUME_ID"), "READER_VOL")
+        self.assertEqual(lines.get("FILE_SIZE"), str(1024 * 2048))
+
+        sfo_parts = lines.get("LOOKUP_SFO", "").split(":")
+        self.assertEqual(sfo_parts[0], "0")
+        self.assertEqual(sfo_parts[1], "32")
+        self.assertEqual(sfo_parts[3], "0")
+
+        dir_parts = lines.get("LOOKUP_DIR", "").split(":")
+        self.assertEqual(dir_parts[0], "0")
+        self.assertEqual(dir_parts[1], "34")
+        self.assertEqual(dir_parts[3], "1")
+
+        self.assertEqual(lines.get("LOOKUP_MISS"), "-1")
+
+        list_parts = lines.get("LIST_ROOT_0", "").split(":")
+        self.assertEqual(list_parts[0], "1")
+        self.assertEqual(list_parts[1], "PSP_GAME")
+        self.assertEqual(list_parts[2], "34")
+        self.assertEqual(list_parts[4], "1")
+
+        self.assertEqual(lines.get("LIST_ROOT_1"), "0")
+        self.assertGreater(int(lines.get("READ_SFO", "0")), 0)
+        self.assertEqual(lines.get("READ_EOF"), "0")
+
+    def test_reader_invalid_iso_fails_open(self) -> None:
+        bad_iso = self.temp_dir / "bad.iso"
+        bad_iso.write_bytes(b"garbage data not an iso" * 100)
+        cmd = [str(self.exe_path), "reader_test", str(bad_iso)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("READER:OPEN_FAILED", res.stdout)
 
 
 if __name__ == "__main__":

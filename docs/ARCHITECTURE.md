@@ -212,7 +212,7 @@ The runtime executes generated guest functions and implements the host side of P
 | `hle.c` | PSP syscall/NID dispatch and a large portion of kernel/user HLE behavior |
 | `hle_thread_selftest.c` | Game-input-free Windows harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
 | `audio_unavailable.c` | Public-tree stub linked under `PUBLIC_SAFE=1`; SDL3 audio backend `audio.c` is private-only |
-| `iso_unavailable.c` / `iso.h` | Public-tree UMD/ISO stub linked under `PUBLIC_SAFE=1`; `iso.c` backend is private-only |
+| `iso_public.c` / `iso.h` | Public-tree UMD/ISO backend linked under `PUBLIC_SAFE=1` using `nk_iso`; `iso_unavailable.c` is kept as a stub alternative; `iso.c` backend is private-only |
 | `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; installed-data backend `pgd.c` is private-only |
 | `mpeg.c` | MPEG/SAS/Atrac-related behavior derived in part from PPSSPP lineage |
 | `savedata.c` | Utility savedata mapped to host storage |
