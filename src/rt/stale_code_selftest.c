@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
-// Host-neutral regression for the TD-27 stale translated-code detector
+// Host-neutral regression for the TD-27 stale translated-code tracker
 // (src/rt/stale_code.h/.c). A synthetic "translated block" is a few words of
 // fake guest memory with registered translation-time expectations; the test
 // overwrites those bytes and runs the invalidate-time check, exactly the
-// shape the HLE cache handlers execute in production. No title data, no
-// image, no guest input.
+// shape the HLE cache handlers execute in production. The invalidation half
+// additionally asserts the per-entry stale flag and the dispatch-side
+// sr_stale_block_is_stale() query through a modeled AOT-vs-interpreter tier
+// branch. No title data, no image, no guest input.
 //
 // Two modes, selected by the SR_STALE_DETECT environment gate itself:
 //   gate off (unset): register + overwrite + check must stay SILENT (the
@@ -86,6 +88,8 @@ static void test_gate_off_is_silent(void) {
     CHECK(rc_range == 0, "gate off: overwritten invalidate must stay silent (range)");
     CHECK(rc_all == 0, "gate off: overwritten invalidate must stay silent (all)");
     CHECK(bad == 0u && exp == 0u && act == 0u, "gate off: outputs must be zeroed");
+    CHECK(sr_stale_block_is_stale(BLOCK_A + 4u) == 0,
+          "gate off: query must stay clean so dispatch keeps the AOT path");
 }
 
 static void test_detector_matrix(void) {
@@ -177,6 +181,94 @@ static void test_detector_matrix(void) {
     CHECK(sr_stale_entry_count() == before, "bad records must be ignored");
 }
 
+#define INV_BLOCK (FAKE_BASE + 0x40u)
+
+/* TD-27 invalidation half, synthetic self-modifying case. The "AOT body" is
+ * the translation-time constant; the "interpreter" re-reads the live fake
+ * guest bytes. The tier branch between them is driven by the real
+ * sr_stale_block_is_stale() dispatch-side query -- production dispatch must
+ * apply the same query at the sites named in src/rt/stale_code.h. */
+static uint32_t inv_aot_result(void) {
+    return WORD_W0;
+}
+
+static uint32_t inv_interp_result(void) {
+    uint32_t w = 0u;
+    CHECK(fake_read(INV_BLOCK, &w, NULL) == 1, "interp must read the live bytes");
+    return w;
+}
+
+static void test_invalidation_half(void) {
+    static const uint32_t inv_words[2] = { WORD_W0, WORD_W1 };
+    static const uint32_t inv_remade[2] = { 0xdeadbeefu, WORD_W1 };
+    uint32_t bad = 0u;
+    uint32_t exp = 0u;
+    uint32_t act = 0u;
+    uint32_t tiered;
+
+    sr_stale_reset();
+    /* Codegen-shaped registration: entry word plus head-run block. */
+    sr_stale_register_word(INV_BLOCK, WORD_W0);
+    sr_stale_register_block(INV_BLOCK, 2u, sr_stale_fnv1a(inv_words, 2u));
+    fake_write(INV_BLOCK, WORD_W0);
+    fake_write(INV_BLOCK + 4u, WORD_W1);
+
+    /* Pristine: the check is silent, the query is clean, dispatch takes AOT. */
+    CHECK(sr_stale_check_range(INV_BLOCK, 8u, fake_read, NULL, &bad, &exp, &act) == 0,
+          "pristine invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 0, "pristine block must not be stale");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK + 4u) == 0, "interior probe must be clean");
+    CHECK(sr_stale_block_is_stale(WORD_B) == 0, "unregistered probe must be clean");
+    tiered = sr_stale_block_is_stale(INV_BLOCK) ? inv_interp_result() : inv_aot_result();
+    CHECK(tiered == WORD_W0, "pristine dispatch must take the AOT value");
+
+    /* Overwrite one guest word, then run the cache op: the check fires, the
+     * flag is set, and the interpreted result follows the new bytes while
+     * the stale AOT value still names the old ones. */
+    fake_write(INV_BLOCK, 0xdeadbeefu);
+    CHECK(sr_stale_check_range(INV_BLOCK, 8u, fake_read, NULL, &bad, &exp, &act) == 1,
+          "overwritten invalidate must fire");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 1, "firing check must set the flag");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK + 4u) == 1,
+          "interior dispatch must see the stale block");
+    tiered = sr_stale_block_is_stale(INV_BLOCK) ? inv_interp_result() : inv_aot_result();
+    CHECK(tiered == 0xdeadbeefu, "stale dispatch must follow the new bytes");
+    CHECK(tiered != inv_aot_result(), "interpreted result must differ from stale AOT");
+
+    /* A disjoint probe stays clean while this block is stale. */
+    CHECK(sr_stale_block_is_stale(WORD_B) == 0, "disjoint probe must stay clean");
+
+    /* Restore the bytes, then run the cache op again: silent, flag cleared,
+     * dispatch returns to the AOT path. */
+    fake_write(INV_BLOCK, WORD_W0);
+    CHECK(sr_stale_check_range(INV_BLOCK, 8u, fake_read, NULL, &bad, &exp, &act) == 0,
+          "restored invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 0, "restored bytes must clear the flag");
+    tiered = sr_stale_block_is_stale(INV_BLOCK) ? inv_interp_result() : inv_aot_result();
+    CHECK(tiered == WORD_W0, "restored dispatch must return to the AOT value");
+
+    /* check-all marks and clears the same flag. */
+    fake_write(INV_BLOCK + 4u, 0x0bad0badu);
+    CHECK(sr_stale_check_all(fake_read, NULL, &bad, &exp, &act) == 1,
+          "check-all must fire on the overwrite");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 1, "check-all must set the flag");
+    fake_write(INV_BLOCK + 4u, WORD_W1);
+    CHECK(sr_stale_check_all(fake_read, NULL, &bad, &exp, &act) == 0,
+          "check-all must be silent once restored");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 0, "check-all must clear the flag");
+
+    /* A fresh registration installs a fresh expectation with the flag clear,
+     * without needing another check. */
+    fake_write(INV_BLOCK, 0xdeadbeefu);
+    CHECK(sr_stale_check_range(INV_BLOCK, 8u, fake_read, NULL, &bad, &exp, &act) == 1,
+          "overwrite must fire again");
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 1, "flag must be set again");
+    sr_stale_register_word(INV_BLOCK, 0xdeadbeefu);
+    sr_stale_register_block(INV_BLOCK, 2u, sr_stale_fnv1a(inv_remade, 2u));
+    CHECK(sr_stale_block_is_stale(INV_BLOCK) == 0,
+          "re-registration must clear the flag");
+}
+
 int main(void) {
     if (!sr_stale_enabled()) {
         test_gate_off_is_silent();
@@ -189,6 +281,7 @@ int main(void) {
     }
     test_fnv_vectors();
     test_detector_matrix();
+    test_invalidation_half();
     sr_stale_reset();
     if (g_failed) {
         fprintf(stderr, "stale_code selftest: FAILED\n");

@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""TD-27: opt-in DETECTION of stale translated code (no invalidation system).
+"""TD-27: opt-in stale translated-code tracking (detection + invalidation half).
 
 Layer 1 (behavioral): compile and run ``src/rt/stale_code_selftest.c``
 against the real ``src/rt/stale_code.c`` twice -- gate off (an overwritten
-invalidate must stay silent) and SR_STALE_DETECT=1 (an overwritten translated
-block must fire loudly, pristine invalidates must stay silent) -- plus a
-source mutation of the word comparison that must kill both directions,
+invalidate must stay silent and the dispatch-side query must stay clean) and
+SR_STALE_DETECT=1 (an overwritten translated block must fire loudly, set the
+per-entry stale flag, and clear it once the bytes are restored; pristine
+invalidates must stay silent) -- plus source mutations of the word
+comparison, the flag-set, and the query that must each kill the gate-on run,
 proving the assertions are load-bearing rather than vacuous.
 
 Layer 2 (wiring/consistency): source checks that the gate is off by default
@@ -17,7 +19,8 @@ guest-memory touch), that a firing check names the block address, the first
 differing word and expected vs actual before aborting (the SR_BREAK_FATAL /
 sr_unimplemented fail-loud convention), that the HLE cache hooks preserve
 default dispatch behavior (Icache NIDs stay unregistered unless opted in),
-that codegen emits nothing stale-related by default, and that the Makefile
+that codegen emits nothing stale-related by default, that the dispatch hook
+stays documented-but-unwired (see src/rt/stale_code.h), and that the Makefile
 wires the new objects and selftest like the existing native selftests.
 """
 
@@ -40,12 +43,17 @@ RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
 STALE_C = (RT / "stale_code.c").read_text(encoding="utf-8")
 SELFTEST_C = RT / "stale_code_selftest.c"
+SELFTEST_TEXT = SELFTEST_C.read_text(encoding="utf-8")
 HLE_C = (RT / "hle.c").read_text(encoding="utf-8")
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
+RECOMP_C = (RT / "recomp.c").read_text(encoding="utf-8")
+GUEST_INTERP_C = (RT / "guest_interp.c").read_text(encoding="utf-8")
 MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 WORD_CMP_ANCHOR = "if (actual != entry->expected) {"
+FLAG_SET_ANCHOR = "->stale = 1;"
+FLAG_CLEAR_ANCHOR = "entry->stale = 0;"
 
 
 def _scrubbed_env():
@@ -120,6 +128,78 @@ class TestStaleCodeSelftestC(unittest.TestCase):
             self.assertNotEqual(run.returncode, 0,
                                 "neutered detector still passed; the selftest is vacuous")
 
+    def test_invalidation_half_self_modifying_case(self):
+        """The gate-on run must exercise the modeled tier branch: the
+        self-modifying block's interpreted result follows the new bytes while
+        the stale AOT value still names the old ones, and restoring the bytes
+        returns to the AOT path. Assert the probes exist so a deleted case
+        cannot silently shrink this test to the detector matrix."""
+        for probe in ("test_invalidation_half", "sr_stale_block_is_stale",
+                      "interpreted result must differ from stale AOT",
+                      "restored dispatch must return to the AOT value",
+                      "re-registration must clear the flag"):
+            self.assertIn(probe, SELFTEST_TEXT)
+        result = subprocess.run([self.exe], capture_output=True, text=True,
+                                env=_enabled_env())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stale_code selftest: OK", result.stdout)
+        # The modeled case fires at least one check (word granularity names
+        # the overwritten word) and the query-driven branch keeps running.
+        self.assertIn("block=0x08800040", result.stderr)
+
+    def test_flag_set_mutation_kills_gate_on(self):
+        """Failing-before proof for the flag (not the return code) driving
+        the query: neutering every flag-set keeps the firing return values
+        intact, so only the invalidation-half assertions must fail."""
+        self.assertEqual(STALE_C.count(FLAG_SET_ANCHOR), 3,
+                         "flag-set anchor drifted; the mutant below would be vacuous")
+        with tempfile.TemporaryDirectory(prefix="stalecode_flagmut_") as tmp_dir:
+            mutated = STALE_C.replace(FLAG_SET_ANCHOR, "->stale = 0;")
+            Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
+            Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
+            shutil.copy(SELFTEST_C, Path(tmp_dir, "stale_code_selftest.c"))
+            exe = os.path.join(tmp_dir, "mut_selftest.exe")
+            comp = subprocess.run(
+                [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 f"-I{tmp_dir}", "-o", exe,
+                 os.path.join(tmp_dir, "stale_code_selftest.c"),
+                 os.path.join(tmp_dir, "stale_code.c")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(comp.returncode, 0, "mutant did not compile:\n" + comp.stderr)
+            run = subprocess.run([exe], capture_output=True, text=True, env=_enabled_env())
+            self.assertNotEqual(run.returncode, 0,
+                                "flag-neutered tracker still passed; the query is vacuous")
+
+    def test_query_kill_mutation_breaks_both_gates(self):
+        """Failing-before proof for the query: forcing it to always report
+        stale must break the gate-off run (which requires the AOT path) and
+        the gate-on run (which requires clean-when-pristine)."""
+        body = STALE_C.split("int sr_stale_block_is_stale(uint32_t addr) {", 1)
+        self.assertEqual(len(body), 2, "query body anchor drifted")
+        head, tail = body
+        query = tail.split("\n}\n", 1)[0]
+        self.assertIn("return 1;", query, "query must have a firing return to neuter")
+        mutated = head + "int sr_stale_block_is_stale(uint32_t addr) {\n    (void)addr;\n    return 1;\n}\n" + tail.split("\n}\n", 1)[1]
+        with tempfile.TemporaryDirectory(prefix="stalecode_qmut_") as tmp_dir:
+            Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
+            Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
+            shutil.copy(SELFTEST_C, Path(tmp_dir, "stale_code_selftest.c"))
+            exe = os.path.join(tmp_dir, "mut_selftest.exe")
+            comp = subprocess.run(
+                [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 f"-I{tmp_dir}", "-o", exe,
+                 os.path.join(tmp_dir, "stale_code_selftest.c"),
+                 os.path.join(tmp_dir, "stale_code.c")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(comp.returncode, 0, "mutant did not compile:\n" + comp.stderr)
+            for env, name in ((_scrubbed_env(), "gate off"), (_enabled_env(), "gate on")):
+                run = subprocess.run([exe], capture_output=True, text=True, env=env)
+                self.assertNotEqual(run.returncode, 0,
+                                    f"always-stale query still passed {name}; "
+                                    "the tier branch is vacuous")
+
 
 class TestStaleCodeWiring(unittest.TestCase):
     def test_gate_is_cached_and_off_by_default(self):
@@ -140,6 +220,41 @@ class TestStaleCodeWiring(unittest.TestCase):
         for handler in ("h_CacheInvalidateAll", "h_CacheInvalidateRange", "sr_stale_note_cache_op"):
             self.assertIn(handler, HLE_C)
         self.assertIn("abort();", HLE_C)
+
+    def test_stale_flags_are_per_entry_and_cleared_on_match(self):
+        self.assertIn("int sr_stale_block_is_stale(uint32_t addr);", STALE_H)
+        for type_name in ("SrStaleWordEntry", "SrStaleBlockEntry"):
+            body = STALE_C.split(f"}} {type_name};", 1)[0].rsplit("typedef struct {", 1)[-1]
+            self.assertIn("int stale;", body, f"{type_name} must carry a stale flag")
+        # Registration installs a fresh expectation: creating and replacing
+        # a record both clear its flag.
+        self.assertEqual(STALE_C.count("stale = 0;"), 7,
+                         "flag-clear anchor drifted")
+        # Every examined record updates its flag; an unreadable block keeps
+        # its flag (the skip path below touches no stale field).
+        mark = STALE_C.split("static int mark_block(", 1)[1].split("SrStaleFire fire;", 1)[0]
+        skip = mark.split("if (!read(waddr, &w, ctx)) {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("stale", skip)
+
+    def test_query_consults_gate_before_tables(self):
+        body = STALE_C.split("int sr_stale_block_is_stale(uint32_t addr) {", 1)[1]
+        body = body.split("\n}\n", 1)[0]
+        gate_pos = body.find("if (!sr_stale_enabled())")
+        self.assertNotEqual(gate_pos, -1, "query must consult the gate")
+        for table in ("s_words", "s_blocks"):
+            self.assertGreater(body.find(table), gate_pos,
+                               f"query must touch {table} only behind the gate")
+
+    def test_dispatch_hook_is_documented_but_unwired(self):
+        # The redirect sites are pinned in the header contract; the hook
+        # itself stays out of the dispatch path until the link-surface
+        # followup lands (see src/rt/stale_code.h). If this fails because
+        # someone wired it, update this test deliberately with the new
+        # production-path evidence -- do not just delete the assertion.
+        for site in ("dispatch_try_with_boundary", "sr_guest_interp_run_with_boundary"):
+            self.assertIn(site, STALE_H)
+        self.assertNotIn("sr_stale_block_is_stale", RECOMP_C)
+        self.assertNotIn("sr_stale_block_is_stale", GUEST_INTERP_C)
 
     def test_dcache_handlers_preserve_success_results(self):
         self.assertIn('sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll)', HLE_C)
