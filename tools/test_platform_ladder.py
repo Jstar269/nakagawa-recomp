@@ -74,13 +74,13 @@ def _is_toolchain_missing_error(output: str) -> str | None:
     out_lower = output.lower()
     if (
         "no usable vulkan sdk found" in out_lower
-        or "vulkan/vulkan.h" in out_lower
+        or ("vulkan/" in out_lower and "no such file" in out_lower)
         or "-lvulkan" in out_lower
         or "cannot find -lvulkan" in out_lower
     ):
         return "Vulkan SDK dependency is missing or unusable"
     if (
-        "sdl3/sdl.h" in out_lower
+        ("sdl3/" in out_lower and "no such file" in out_lower)
         or "-lsdl3" in out_lower
         or "cannot find -lsdl3" in out_lower
     ):
