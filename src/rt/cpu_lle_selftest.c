@@ -335,6 +335,148 @@ static void test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr(void) {
           "PSP-A3-03 Status=0x%08x, want 0x00088613", s.cop0[SR_CP0_STATUS]);
 }
 
+/* PSP-A3-04: a misaligned `lw $t6, 2($t5)` in the delay slot of an
+ * always-taken branch raises AdEL with Cause 0x90000010 (ExcCode 4, BD 1):
+ * EPC names the branch (not the load), BadVAddr keeps the misaligned low
+ * bits of the effective address, the destination is unchanged, and neither
+ * successor runs. The guard path (in_delay=1) is what sets BD/EPC here, so
+ * the test goes through sr_cpu_guard_access(), not around it. */
+static void test_hw_psp_a3_04_delay_slot_misaligned(void) {
+    CpuState s;
+    int took;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, 0x08821C52u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-04 a delay-slot misaligned load must still classify AdEL");
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x08821C50u;                 /* t5: the probe's base */
+    s.r[14] = 0x0BADC0DEu;                 /* t6: the probe's sentinel */
+    took = sr_cpu_guard_access(&s, 0x08821C52u, 4u, 0,
+                               TEST_BASE + 4u, TEST_BASE, 1u);
+    CHECK(took == 1, "PSP-A3-04 the delay-slot guard must take the fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-04 ExcCode must be 4 (AdEL)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "PSP-A3-04 Cause BD must be set for a delay-slot data fault");
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK | SR_CAUSE_BD)) == 0x00000010u,
+          "PSP-A3-04 Cause=0x%08x, want ExcCode 4 with BD (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "PSP-A3-04 EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x08821C52u,
+          "PSP-A3-04 BadVAddr=0x%08x, want the misaligned effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) == 2u,
+          "PSP-A3-04 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-04 t6 must be unchanged by a faulting load");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-04 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-05: halfword accesses at an odd address of an owned aligned buffer.
+ * `lh` raises AdEL (Cause 0x10000010), `sh` raises AdES (Cause 0x10000014);
+ * in both EPC is the access itself and BadVAddr is the odd effective address.
+ * The rule is width-relative: base+2 faults for a word but must NOT fault
+ * for a halfword, which is asserted directly. */
+static void test_hw_psp_a3_05_halfword_odd(void) {
+    CpuState s;
+    const uint32_t base = 0x088564F0u;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-05 an odd lh must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-05 an odd sh must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 2u, 0) == 0u,
+          "base+2 must NOT fault for a halfword: the rule is width-relative");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 2u, 1) == 0u,
+          "base+2 must NOT fault for a halfword store either");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+2 must still fault for a word load");
+
+    /* Load half: lh $t6, 1($t5). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[14] = 0x0BADC0DEu;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, TEST_BASE, TEST_BASE,
+                                 base + 1u, 0u, 0u) < 0,
+          "PSP-A3-05 lh raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-05 lh ExcCode must be 4 (AdEL)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-05 lh BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-05 lh EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 1u,
+          "PSP-A3-05 lh BadVAddr=0x%08x, want the odd effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-05 lh must leave t6 unchanged");
+
+    /* Store half: sh $t6, 1($t5). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 1u, 0u, 0u) < 0,
+          "PSP-A3-05 sh raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-05 sh ExcCode must be 5 (AdES), distinct from the load");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-05 sh BD must be 0");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 1u,
+          "PSP-A3-05 sh BadVAddr=0x%08x, want the odd effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u,
+          "PSP-A3-05 Status=0x%08x, want 0x00088613", s.cop0[SR_CP0_STATUS]);
+}
+
+/* PSP-A3-06 (negative control): lwl/lwr/swl/swr across alignment boundaries
+ * complete normally. The probe returned and wrote host0:/a3_unaligned_results.txt
+ * with loaded_pair=0x88776655, lwl_only=0x332211ff, lwr_only=0x00004433 for
+ * source bytes 11 22 33 44 55 66 77 88 99 aa bb cc. This pins both halves:
+ * the bypass (width 0, how those primaries are decoded, never faults) and the
+ * merge bytes the hardware produced, which equal the sr_* model bit-for-bit. */
+static void test_hw_psp_a3_06_unaligned_no_fault(void) {
+    CpuState s;
+    static const uint8_t pattern[12] = {
+        0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u,
+        0x77u, 0x88u, 0x99u, 0xaau, 0xbbu, 0xccu,
+    };
+    const uint32_t src = TEST_BASE + 0x200u;
+    const uint32_t dst = TEST_BASE + 0x300u;
+    unsigned i;
+    uint32_t loaded, lwl_only, lwr_only;
+    fresh_state(&s);
+    /* The bypass width: unaligned primaries never reach the guard. */
+    CHECK(sr_cpu_data_access_fault(&s, src + 1u, 0u, 0) == 0u,
+          "PSP-A3-06 an unaligned op at +1 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, src + 2u, 0u, 0) == 0u,
+          "PSP-A3-06 an unaligned op at +2 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, dst + 1u, 0u, 1) == 0u,
+          "PSP-A3-06 an unaligned store at +1 must not fault");
+
+    for (i = 0; i < 12u; i++) {
+        MEM_W8_PC(src + i, pattern[i], TEST_BASE);
+        MEM_W8_PC(dst + i, 0u, TEST_BASE);
+    }
+    /* The exact probed load sequence: lwl v0,1(t0) then lwr v0,4(t0). */
+    loaded = sr_lwl(0u, src + 1u);
+    loaded = sr_lwr(loaded, src + 4u);
+    CHECK(loaded == 0x88776655u,
+          "PSP-A3-06 paired load gave 0x%08x, hardware measured 0x88776655", loaded);
+    lwl_only = sr_lwl(0xFFFFFFFFu, src + 2u);
+    CHECK(lwl_only == 0x332211FFu,
+          "PSP-A3-06 lwl-only gave 0x%08x, hardware measured 0x332211ff", lwl_only);
+    lwr_only = sr_lwr(0u, src + 2u);
+    CHECK(lwr_only == 0x00004433u,
+          "PSP-A3-06 lwr-only gave 0x%08x, hardware measured 0x00004433", lwr_only);
+    /* The probed store pair in isolation: dst[0..3] must read 77 88 00 00,
+     * exactly as the hardware's dst_bytes start. */
+    sr_swl(dst + 1u, loaded);
+    sr_swr(dst + 4u, loaded);
+    CHECK(MEM_R32(dst) == 0x00008877u,
+          "PSP-A3-06 stored dst[0..3]=0x%08x, hardware dst_bytes start 77880000",
+          MEM_R32(dst));
+    CHECK(MEM_R32(dst + 4u) == 0x88776655u,
+          "PSP-A3-06 stored dst[4..7]=0x%08x, want the paired word", MEM_R32(dst + 4u));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "PSP-A3-06 helpers must not set flow");
+}
+
 /* BEV selects the bootstrap vector; an unowned vector fails closed. */
 static void test_vector_selection(void) {
     CpuState s;
@@ -845,6 +987,9 @@ int main(void) {
     test_hw_psp_a2_01_break_delay_slot();
     test_hw_psp_a3_01_adel_load();
     test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr();
+    test_hw_psp_a3_04_delay_slot_misaligned();
+    test_hw_psp_a3_05_halfword_odd();
+    test_hw_psp_a3_06_unaligned_no_fault();
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();
