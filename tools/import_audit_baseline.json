@@ -438,10 +438,10 @@
     "status": "stub"
   },
   "0x2e0911aa": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_UnloadModule_Trace",
     "name": "sceKernelUnloadModule",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0x30fd48f0": {
     "classification": "dedicated",
@@ -732,10 +732,10 @@
     "status": "unreviewed"
   },
   "0x4b85c861": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_OskUpdate",
     "name": "sceUtilityOskUpdate",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0x4c145944": {
     "classification": "fake_success",
@@ -780,10 +780,10 @@
     "status": "unreviewed"
   },
   "0x50f0c1ec": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_StartModule",
     "name": "sceKernelStartModule",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0x52089ca1": {
     "classification": "dedicated",
@@ -792,10 +792,10 @@
     "status": "unreviewed"
   },
   "0x54f5fb11": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_IoDevctl",
     "name": "sceIoDevctl",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0x55c20a00": {
     "classification": "dedicated",
@@ -1608,10 +1608,10 @@
     "status": "unreviewed"
   },
   "0xb011922f": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_AudioRestLen",
     "name": "sceAudioGetChannelRestLength",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0xb011b11f": {
     "classification": "dedicated",
@@ -1626,10 +1626,10 @@
     "status": "unreviewed"
   },
   "0xb287bd61": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_GeDrawSync",
     "name": "sceGeDrawSync",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0xb29ddf9c": {
     "classification": "dedicated",
@@ -1848,10 +1848,10 @@
     "status": "stub"
   },
   "0xd1ff982a": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_StopModule_Trace",
     "name": "sceKernelStopModule",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0xd4475aa8": {
     "classification": "fake_success",
@@ -2166,10 +2166,10 @@
     "status": "unreviewed"
   },
   "0xf6414a71": {
-    "classification": "dedicated",
+    "classification": "fake_success",
     "handler": "h_FreeFpl",
     "name": "sceKernelFreeFpl",
-    "status": "unreviewed"
+    "status": "stub"
   },
   "0xf6837a1a": {
     "classification": "dedicated",

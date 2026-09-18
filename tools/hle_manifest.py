@@ -154,14 +154,224 @@ def active_source(source: str) -> str:
     return _blank_inactive_blocks(_strip_comments(source))
 
 
-def classify(handler: str) -> tuple[str, str]:
-    """Return (classification, status) for a handler name, from curated policy."""
+def classify(handler: str, mechanical_stubs: frozenset[str] | set[str] = frozenset()) -> tuple[str, str]:
+    """Return (classification, status) for a handler name, from curated policy.
+
+    `h_ok` keeps its existing generic-success classification unchanged; handlers
+    whose bodies do nothing but ``(void)s`` / logging / ``return 0`` (see
+    :func:`mechanical_stub_handlers`) are classified identically without
+    hand-listing their names, so new stubs cannot slip through.
+    """
     status = meta.HANDLER_STATUS.get(handler, "unreviewed")
-    if handler in meta.GENERIC_SUCCESS_HANDLERS or status == "stub":
+    if handler in meta.GENERIC_SUCCESS_HANDLERS or status == "stub" or handler in mechanical_stubs:
         return "fake_success", "stub"
     if status == "controlled_unsupported":
         return "controlled_unsupported", status
     return "dedicated", status
+
+
+# ---------------------------------------------------------------------------
+# Mechanical zero-returning stub detection
+# ---------------------------------------------------------------------------
+# Curated GENERIC_SUCCESS_HANDLERS only names h_ok, so dedicated one-line
+# `return 0` stubs (h_FreeFpl, h_GeDrawSync, h_OskUpdate, ...) and
+# log-then-return-0 stubs (h_IoDevctl, h_StopModule_Trace, ...) were invisible
+# to the census. This pass recognises them by body shape instead of by name:
+# a handler that returns 0 on its success path while performing no
+# guest/host-observable work besides `(void)s` silencing and diagnostic
+# logging. Anything that writes guest memory (MEM_W*), writes runtime state
+# (s_*/g_*/s->*/p-> assignments), or calls an implementation/scheduler/sync
+# entry point is real work and is never flagged, so a new stub cannot slip
+# through while a real handler cannot be misclassified by adding a log line.
+#
+# Allowed (pure/diagnostic) calls: diagnostic logging itself (fprintf/fflush/
+# fputs/fputc/puts/printf), log-gate queries (getenv, hle/ge/atrac/sas_log_on),
+# read-only guest introspection used to format a log line or validate an
+# argument (guest_cstr, sr_inrange, sr_guest_span_*, sr_size_*), the
+# read-only thread identity used as a log prefix (sched_current_uid),
+# read-only guest loads (MEM_R*), and pure string/size queries
+# (strstr/strlen/strcmp/strncmp/_strnicmp/memcmp/sizeof). Every other call --
+# including any h_* delegation, scheduler/sync/dialog/audio/mpeg/atrac/psmf/
+# sas/ge implementation entry, and host allocation or capture helpers -- marks
+# the handler as doing work.
+
+_MECHANICAL_ALLOWED_CALLS = frozenset(
+    {
+        "fprintf",
+        "fflush",
+        "fputs",
+        "fputc",
+        "puts",
+        "printf",
+        "snprintf",
+        "vsnprintf",
+        "getenv",
+        "hle_log_on",
+        "ge_log_on",
+        "atrac_log_on",
+        "sas_log_on",
+        "guest_cstr",
+        "sr_inrange",
+        "sr_guest_span_readable",
+        "sr_guest_span_writable",
+        "sr_size_add_ok",
+        "sr_size_mul_ok",
+        "sched_current_uid",
+        "MEM_R32",
+        "MEM_R8",
+        "MEM_R16",
+        "MEM_R64",
+        "strstr",
+        "strlen",
+        "strcmp",
+        "strncmp",
+        "_strnicmp",
+        "memcmp",
+        "sizeof",
+    }
+)
+
+_MECHANICAL_CONTROL_WORDS = frozenset(
+    {"if", "for", "while", "switch", "return", "sizeof", "static", "extern"}
+)
+
+# A single `=` that is not part of `==`, `!=`, `<=`, `>=`, `+=`, `-=`, etc.
+_MECHANICAL_SINGLE_EQ = r"(?<![=!<>+\-*/%&|^])=(?!=)"
+
+_MECHANICAL_RETURN_ZERO_RE = re.compile(r"\breturn\s+(?:\(uint32_t\))?\s*0u?\s*;")
+_MECHANICAL_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_MECHANICAL_HANDLER_DEF_RE = re.compile(
+    r"\b(?:static\s+)?uint32_t\s+(h_\w+)\s*\(\s*CpuState\s*\*\s*\w+\s*\)\s*\{"
+)
+
+
+def _strip_string_literals(text: str) -> str:
+    """Blank string/char literal contents so log text cannot fake code.
+
+    Quotes and newlines are preserved; every other byte inside a literal
+    becomes a space. Escape-aware, so an escaped quote does not end the
+    literal early.
+    """
+    out = list(text)
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"' or c == "'":
+            quote = c
+            j = i + 1
+            while j < n and text[j] != quote:
+                j += 2 if text[j] == "\\" else 1
+            j = min(j + 1, n)
+            for k in range(i, j):
+                if text[k] != "\n":
+                    out[k] = " " if text[k] not in ('"', "'") else text[k]
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _handler_bodies(active_src: str) -> dict[str, str]:
+    """Map handler name -> inner body text, brace-matched, strings skipped.
+
+    Runs on the active view (comments and `#if 0` regions already blanked),
+    so disabled handlers never enter the census. Macro-defined handlers
+    (UTILITY_DIALOG_HANDLERS) have no `uint32_t` definition and are absent;
+    they implement real dialog state machines and correctly stay dedicated.
+    """
+    bodies: dict[str, str] = {}
+    for m in _MECHANICAL_HANDLER_DEF_RE.finditer(active_src):
+        name = m.group(1)
+        depth = 0
+        i = m.end() - 1  # at the opening brace
+        j = i
+        n = len(active_src)
+        in_str: str | None = None
+        while j < n:
+            c = active_src[j]
+            if in_str is not None:
+                if c == "\\":
+                    j += 2
+                    continue
+                if c == in_str:
+                    in_str = None
+            elif c == '"' or c == "'":
+                in_str = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        bodies[name] = active_src[m.end() : j]
+    return bodies
+
+
+def _has_observable_write(body_inner: str) -> bool:
+    """True when the body writes guest memory or runtime state.
+
+    Reads (`s->pc` in a log line, `s_ge_lists[i].uid == uid`, `>=`
+    comparisons) are not writes. Only a single `=` assignment (or compound
+    `+=`/`|=`/`++`/`--`) whose target reaches guest memory (`MEM_W*`),
+    runtime globals (`s_*`/`g_*`), CpuState (`s->`), or a pointed-to object
+    (`p->field`) counts. Assignments to function-local temporaries
+    (`uint32_t uid = ...`, `char dev[64]`, `const char *path = NULL`) never
+    match because their left-hand side names no such target.
+    """
+    nos = _strip_string_literals(body_inner)
+    if "MEM_W" in nos:
+        return True
+    pats = (
+        rf"\b[sg]_\w+[^\n;]*?{_MECHANICAL_SINGLE_EQ}",
+        rf"\bs\s*->[^\n;]*?{_MECHANICAL_SINGLE_EQ}",
+        rf"->\s*\w+[^\n;]*?{_MECHANICAL_SINGLE_EQ}",
+        r"\b[sg]_\w+[^\n;]*?(?:\+=|-=|\*=|/=|>>=|<<=|\|=|&=)",
+        r"->\s*\w+[^\n;]*?(?:\+=|-=|\*=|/=|>>=|<<=|\|=|&=)",
+        r"\bs\s*->[^\n;]*?(?:\+\+|--)",
+    )
+    for pat in pats:
+        if re.search(pat, nos):
+            return True
+    if re.search(r"\b[sg]_\w+\s*(?:\+\+|--)", nos):
+        return True
+    return False
+
+
+def is_trivial_success_stub(body_inner: str) -> bool:
+    """True when a handler body does nothing but silence/log/return-0.
+
+    `body_inner` is the text between the handler's outer braces (comments
+    already blanked). The check is positive, not a denylist of names: the
+    body must return literal 0 on its success path, perform no observable
+    write (see :func:`_has_observable_write`), and call nothing beyond pure
+    diagnostic helpers. Early error returns (`return 0x8001...`) for argument
+    validation are allowed; they do not make a stub real.
+    """
+    if not _MECHANICAL_RETURN_ZERO_RE.search(body_inner):
+        return False
+    if _has_observable_write(body_inner):
+        return False
+    nos = _strip_string_literals(body_inner)
+    for call in _MECHANICAL_CALL_RE.findall(nos):
+        if call in _MECHANICAL_ALLOWED_CALLS or call in _MECHANICAL_CONTROL_WORDS:
+            continue
+        # Any other call -- including any h_* delegation to another HLE
+        # handler -- is real work.
+        return False
+    return True
+
+
+def mechanical_stub_handlers(source: str) -> set[str]:
+    """Handlers in `source` whose bodies are trivial zero-returning stubs.
+
+    Takes the same combined `hle.c` + `hle_power.c` text :func:`build_manifest`
+    consumes (or any synthetic C snippet for tests) and returns the stub
+    handler names. `h_ok` is included when present; callers keep its curated
+    generic-success classification unchanged and union this set with it.
+    """
+    bodies = _handler_bodies(active_source(source))
+    return {name for name, inner in bodies.items() if is_trivial_success_stub(inner)}
 
 
 def extract_registrations(raw_source: str) -> list[dict]:
@@ -335,9 +545,10 @@ def build_manifest(source: str | None = None) -> dict:
         source += "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
     regs = extract_registrations(source)
     validate_meta(regs)
+    mechanical = mechanical_stub_handlers(source)
     entries = []
     for r in regs:
-        classification, status = classify(r["handler"])
+        classification, status = classify(r["handler"], mechanical)
         entries.append(
             {
                 "nid": f"0x{r['nid']:08x}",

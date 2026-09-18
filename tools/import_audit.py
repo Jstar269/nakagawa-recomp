@@ -10,8 +10,9 @@ import as one of:
 
     missing                -- no static HLE registration; under the scheduler a
                               call terminates the process (_Exit(7) in hle.c)
-    fake_success           -- registered to a generic always-success handler;
-                              silently fabricates success
+    fake_success           -- registered to a generic always-success handler,
+                               a curated stub, or a mechanically detected
+                               trivial stub; silently fabricates success
     dedicated              -- has its own handler (status metadata says how
                               finished that handler is believed to be)
     controlled_unsupported -- refuses with the API's documented error code
