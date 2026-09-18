@@ -235,6 +235,7 @@ static uint32_t stack_arg(CpuState *s, int idx) {
 #define SCE_KERNEL_ERROR_UNKNOWN_SEMID 0x80020199u
 #define SCE_KERNEL_ERROR_ILLEGAL_COUNT 0x800201bdu
 #define SCE_KERNEL_ERROR_WAIT_TIMEOUT  0x800201a8u
+#define SCE_KERNEL_ERROR_WAIT_DELETE   0x800201b5u
 
 /* ---- kernel object UID + user-memory bump allocator ---- */
 
@@ -727,11 +728,52 @@ static uint32_t h_MaxFreeMemSize(CpuState *s) {
     return max_free;
 }
 
-/* Fixed Pool (FPL) â€” simple bump allocator per pool.  Enough for games that use FPL
- * to allocate objects whose constructors populate vtables (e.g. sceUtility dialogs). */
+/* Fixed Pool (FPL) — partition-backed fixed block pool with free list,
+ * waiter queuing, and blocking allocation support (PR-G). */
 #define FPL_MAX 16
-typedef struct { uint32_t base; uint32_t cur; uint32_t end; uint32_t bsize; int used; uint32_t block_uid; } FplPool;
+#define FPL_MAX_WAITERS 64
+#define FPL_BAD_ID 0x800200d3u
+#define FPL_EXHAUSTED 0x800200d9u
+
+typedef struct {
+    uint32_t thread_uid;
+} FplWaiter;
+
+typedef struct {
+    uint32_t base;
+    uint32_t cur;
+    uint32_t end;
+    uint32_t bsize;
+    int used;
+    uint32_t block_uid;
+    uint32_t attr;
+    uint32_t *free_blocks;
+    int nfree;
+    int nblocks;
+    uint8_t *allocated;
+    FplWaiter waiters[FPL_MAX_WAITERS];
+    int nwaiters;
+} FplPool;
+
 static FplPool s_fpls[FPL_MAX];
+
+static FplPool *fpl_lookup(uint32_t uid) {
+    uint32_t idx = uid - 0x500u;
+    return idx < FPL_MAX && s_fpls[idx].used ? &s_fpls[idx] : NULL;
+}
+
+static void fpl_remove_waiter(FplPool *p, uint32_t thread_uid) {
+    for (int i = 0; i < p->nwaiters; i++) {
+        if (p->waiters[i].thread_uid == thread_uid) {
+            for (int j = i; j + 1 < p->nwaiters; j++) {
+                p->waiters[j] = p->waiters[j + 1];
+            }
+            p->nwaiters--;
+            break;
+        }
+    }
+}
+
 static uint32_t h_CreateFpl(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=blockSize. 5th arg (numBlocks) is in t0 (r8). */
     uint32_t bsize = A3;
@@ -740,82 +782,266 @@ static uint32_t h_CreateFpl(CpuState *s) {
     if (nblocks == 0) nblocks = 1;
     uint32_t total = bsize * nblocks;
     uint32_t block_uid = alloc_block(total ? total : 16);
+    if (block_uid == 0xFFFFFFFFu) return FPL_EXHAUSTED;
     uint32_t pool = block_addr(block_uid);
     uint32_t uid = 0;
     for (int i = 0; i < FPL_MAX; i++) {
         if (!s_fpls[i].used) {
             uid = (uint32_t)(i + 0x500);
-            s_fpls[i] = (FplPool){pool, pool, pool + total, bsize, 1, block_uid};
+            FplPool *p = &s_fpls[i];
+            if (p->free_blocks) free(p->free_blocks);
+            if (p->allocated) free(p->allocated);
+            memset(p, 0, sizeof *p);
+            p->base = pool;
+            p->cur = pool;
+            p->end = pool + total;
+            p->bsize = bsize;
+            p->used = 1;
+            p->block_uid = block_uid;
+            p->attr = A2;
+            p->nblocks = (int)nblocks;
+            p->free_blocks = (uint32_t *)calloc(nblocks, sizeof(uint32_t));
+            p->allocated = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
             break;
         }
+    }
+    if (uid == 0) {
+        free_block(block_uid);
+        return FPL_EXHAUSTED;
     }
     fprintf(stderr, "sceKernelCreateFpl: uid=0x%x pool_uid=0x%x base=0x%08x bsize=%u nblocks=%u total=%u\n", uid, block_uid, pool, bsize, nblocks, total);
     return uid;
 }
+
+static uint32_t fpl_try_allocate_internal(FplPool *p, uint32_t *addr_out) {
+    if (p->nfree > 0) {
+        uint32_t addr = p->free_blocks[--p->nfree];
+        uint32_t bidx = (addr - p->base) / p->bsize;
+        if (p->allocated && (int)bidx < p->nblocks) p->allocated[bidx] = 1;
+        *addr_out = addr;
+        return 0;
+    }
+    if (p->cur + p->bsize <= p->end) {
+        uint32_t addr = p->cur;
+        p->cur += p->bsize;
+        uint32_t bidx = (addr - p->base) / p->bsize;
+        if (p->allocated && (int)bidx < p->nblocks) p->allocated[bidx] = 1;
+        *addr_out = addr;
+        return 0;
+    }
+    return FPL_EXHAUSTED;
+}
+
 static uint32_t h_TryAllocateFpl(CpuState *s) {
     /* a0=fplUid, a1=dataPtrOut. Returns 0 on success. */
     uint32_t uid = A0, out = A1;
-    uint32_t idx = uid - 0x500;
-    if (idx >= FPL_MAX || !s_fpls[idx].used) { fprintf(stderr, "sceKernelTryAllocateFpl: bad uid=0x%x\n", uid); return 0x800200d3; }
-    FplPool *p = &s_fpls[idx];
-    if (p->cur + p->bsize > p->end) { fprintf(stderr, "sceKernelTryAllocateFpl: pool 0x%x exhausted\n", uid); return 0x800200d9; }
-    uint32_t addr = p->cur; p->cur += p->bsize;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) { fprintf(stderr, "sceKernelTryAllocateFpl: bad uid=0x%x\n", uid); return FPL_BAD_ID; }
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t addr = 0;
+    uint32_t err = fpl_try_allocate_internal(p, &addr);
+    if (err) { fprintf(stderr, "sceKernelTryAllocateFpl: pool 0x%x exhausted\n", uid); return err; }
     if (out) MEM_W32(out, addr);
     fprintf(stderr, "sceKernelTryAllocateFpl: uid=0x%x -> 0x%08x (cur=0x%08x)\n", uid, addr, p->cur);
     return 0;
 }
+
 /* sceKernelAllocateFpl / ...CB are the BLOCKING allocate forms, so unlike
  * sceKernelTryAllocateFpl they are subject to the interrupt/dispatch context rule.
  * waits.expected puts the context decision ahead of the FPL object lookup: a bad
- * fpl id answers CAN_NOT_WAIT (L102/L103, L108/L109) rather than the bad-id error,
- * and so does a valid pool that could have satisfied the request immediately
- * (L104/L105, L110/L111). One leading check therefore covers all four cells, and
- * because it returns before h_TryAllocateFpl() runs, a rejected call performs no
- * part of the operation -- no block leaves the pool and no output pointer is
- * written.
- *
- * This is only a split of the blocking form away from the non-blocking one; the
- * two shared a handler before. sceKernelTryAllocateFpl keeps its own registration
- * straight to h_TryAllocateFpl and is deliberately untouched: it does not block,
- * so the context rule does not apply to it, and HST imports that NID rather than
- * these. In normal context sched_wait_permitted() is true and the call is
- * byte-for-byte what it was. FPL reclamation, exhaustion-blocking, waiter queues
- * and timeouts remain #16's. */
-static uint32_t h_AllocateFpl(CpuState *s) {
+ * fpl id answers CAN_NOT_WAIT rather than the bad-id error, and so does a valid
+ * pool that could have satisfied the request immediately. One leading check
+ * covers both cases before any lookup or mutation. */
+static uint32_t allocate_fpl_common(CpuState *s, int is_cb) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    return h_TryAllocateFpl(s);
+
+    uint32_t uid = A0, out = A1, toptr = A2;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) return FPL_BAD_ID;
+
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    uint64_t end_time = 0;
+    int has_timeout = 0;
+    if (toptr) {
+        if (!sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) {
+            uint32_t addr = 0;
+            if (p->nwaiters == 0 && fpl_try_allocate_internal(p, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+        }
+        sched_vtime_refresh();
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
+
+    uint32_t addr = 0;
+    if (p->nwaiters == 0 && fpl_try_allocate_internal(p, &addr) == 0) {
+        if (out) MEM_W32(out, addr);
+        return 0;
+    }
+
+    uint32_t cur_thid = sched_current_uid();
+    if (cur_thid == 0) {
+        /* Direct invocation outside scheduler thread fiber cannot block */
+        return FPL_EXHAUSTED;
+    }
+
+    if (p->nwaiters >= FPL_MAX_WAITERS) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    p->waiters[p->nwaiters++].thread_uid = cur_thid;
+
+    for (;;) {
+        if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sr_thread_dispatch_callbacks();
+            p = fpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            sched_vtime_refresh();
+            continue;
+        }
+
+        /* PSP-B3-01: FPL waits report waitType 7 */
+        sched_set_current_wait_kind(7);
+
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end_time) {
+                p = fpl_lookup(uid);
+                if (p) fpl_remove_waiter(p, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            uint32_t remaining = (uint32_t)(end_time - now);
+            if (is_cb) sched_set_current_cb_wait(1);
+            int timed_out = sched_block_on_timeout(uid, remaining);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+
+            p = fpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (fpl_try_allocate_internal(p, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                sched_vtime_refresh();
+                now = sched_vtime_us();
+                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0u;
+                MEM_W32(toptr, rem);
+                return 0;
+            }
+
+            if (timed_out) {
+                fpl_remove_waiter(p, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+        } else {
+            if (is_cb) sched_set_current_cb_wait(1);
+            sched_block_on(uid);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+
+            p = fpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (fpl_try_allocate_internal(p, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+        }
+    }
 }
+
+static uint32_t h_AllocateFpl(CpuState *s) {
+    return allocate_fpl_common(s, 0);
+}
+
+static uint32_t h_AllocateFplCB(CpuState *s) {
+    return allocate_fpl_common(s, 1);
+}
+
 static uint32_t h_DeleteFpl(CpuState *s) {
     uint32_t uid = A0;
     uint32_t idx = uid - 0x500;
     if (idx >= FPL_MAX || !s_fpls[idx].used) return 0;
-    uint32_t block_uid = s_fpls[idx].block_uid;
-    s_fpls[idx].used = 0;
-    s_fpls[idx].block_uid = 0;
+    FplPool *p = &s_fpls[idx];
+    uint32_t block_uid = p->block_uid;
+    int waiters = sched_count_waiters(uid);
+    if (waiters) {
+        sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();
+    }
+    if (p->free_blocks) free(p->free_blocks);
+    if (p->allocated) free(p->allocated);
+    memset(p, 0, sizeof *p);
     if (block_uid) {
         free_block(block_uid);
     }
     return 0;
 }
-static uint32_t h_FreeFpl(CpuState *s) { (void)s; return 0; }
+
+static uint32_t h_FreeFpl(CpuState *s) {
+    uint32_t uid = A0, addr = A1;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) return FPL_BAD_ID;
+    if (addr < p->base || addr + p->bsize > p->end || ((addr - p->base) % p->bsize) != 0) {
+        /* Exact bad-address error code for FreeFpl is UNMEASURED; using SCE_KERNEL_ERROR_ILLEGAL_ADDR (0x80000103u) as defined in hle.c. */
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    uint32_t bidx = (addr - p->base) / p->bsize;
+    if (p->allocated && (int)bidx < p->nblocks && !p->allocated[bidx]) {
+        /* Double-free or block not currently in use; exact error code is UNMEASURED, returning SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    if (p->allocated && (int)bidx < p->nblocks) p->allocated[bidx] = 0;
+    if (p->free_blocks && p->nfree < p->nblocks) {
+        p->free_blocks[p->nfree++] = addr;
+    }
+    /* Waiter order: semaphores in hle.c do not handle attr for priority/FIFO queuing;
+     * per task instruction, default to FIFO order and document.
+     * Wake one waiter. */
+    if (p->nwaiters > 0) {
+        uint32_t next_thread = p->waiters[0].thread_uid;
+        for (int j = 0; j + 1 < p->nwaiters; j++) {
+            p->waiters[j] = p->waiters[j + 1];
+        }
+        p->nwaiters--;
+        sched_wake_one_object_waiter(uid, next_thread);
+        sched_preempt();
+    }
+    return 0;
+}
 
 /* Variable Pool (VPL): one SysMem partition block per pool, with a host-side first-fit
- * free list for the pool span.  The pool's kernel header and exact PSP alignment are
- * UNMEASURED; this implementation exposes the requested span and uses 16-byte chunks,
- * the smallest conservative alignment for guest allocations. */
+ * free list for the pool span, waiter queuing, and blocking allocation support (PR-G).
+ * The pool's kernel header and exact PSP alignment are UNMEASURED; this implementation
+ * exposes the requested span and uses 16-byte chunks, the smallest conservative
+ * alignment for guest allocations. */
 #define VPL_MAX 16
 #define VPL_MAX_ALLOCS 128
+#define VPL_MAX_WAITERS 64
 #define VPL_ALIGN 16u
 #define VPL_BAD_ID 0x800200d3u       /* same invalid-object code used by FPL */
 #define VPL_EXHAUSTED 0x800200d9u    /* same no-space code used by FPL */
 typedef struct { uint32_t addr, size; } VplSpan;
 typedef struct { uint32_t addr, size; int used; } VplAlloc;
+typedef struct { uint32_t thread_uid; uint32_t size; } VplWaiter;
 typedef struct {
     uint32_t base, size, block_uid;
+    uint32_t attr;
     int used;
     VplSpan free[VPL_MAX_ALLOCS];
     int nfree;
     VplAlloc allocs[VPL_MAX_ALLOCS];
+    VplWaiter waiters[VPL_MAX_WAITERS];
+    int nwaiters;
 } VplPool;
 static VplPool s_vpls[VPL_MAX];
 
@@ -838,6 +1064,18 @@ static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
     }
 }
 
+static void vpl_remove_waiter(VplPool *p, uint32_t thread_uid) {
+    for (int i = 0; i < p->nwaiters; i++) {
+        if (p->waiters[i].thread_uid == thread_uid) {
+            for (int j = i; j + 1 < p->nwaiters; j++) {
+                p->waiters[j] = p->waiters[j + 1];
+            }
+            p->nwaiters--;
+            break;
+        }
+    }
+}
+
 static uint32_t h_CreateVpl(CpuState *s) {
     uint32_t size = A3;
     if (size == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
@@ -849,6 +1087,7 @@ static uint32_t h_CreateVpl(CpuState *s) {
             VplPool *p = &s_vpls[i];
             memset(p, 0, sizeof *p);
             p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
+            p->attr = A2;
             p->free[0] = (VplSpan){base, size}; p->nfree = 1;
             return (uint32_t)(0x600 + i);
         }
@@ -862,12 +1101,8 @@ static VplPool *vpl_lookup(uint32_t uid) {
     return i < VPL_MAX && s_vpls[i].used ? &s_vpls[i] : NULL;
 }
 
-static uint32_t h_TryAllocateVpl(CpuState *s) {
-    VplPool *p = vpl_lookup(A0);
-    uint32_t request = A1, out = A2;
-    if (!p) return VPL_BAD_ID;
+static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t *addr_out) {
     if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
-    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
     for (int i = 0; i < p->nfree; ++i) {
         if (p->free[i].size >= need) {
@@ -879,7 +1114,7 @@ static uint32_t h_TryAllocateVpl(CpuState *s) {
             }
             for (int j = 0; j < VPL_MAX_ALLOCS; ++j) if (!p->allocs[j].used) {
                 p->allocs[j] = (VplAlloc){addr, need, 1};
-                if (out) MEM_W32(out, addr);
+                *addr_out = addr;
                 return 0;
             }
             vpl_insert_free(p, addr, need);
@@ -889,6 +1124,145 @@ static uint32_t h_TryAllocateVpl(CpuState *s) {
     return VPL_EXHAUSTED;
 }
 
+static uint32_t h_TryAllocateVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t request = A1, out = A2;
+    if (!p) return VPL_BAD_ID;
+    if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t addr = 0;
+    uint32_t err = vpl_try_allocate_internal(p, request, &addr);
+    if (err) return err;
+    if (out) MEM_W32(out, addr);
+    return 0;
+}
+
+static uint32_t allocate_vpl_common(CpuState *s, int is_cb) {
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+
+    uint32_t uid = A0, request = A1, out = A2, toptr = A3;
+    VplPool *p = vpl_lookup(uid);
+    if (!p) return VPL_BAD_ID;
+    if (request == 0) return VPL_EXHAUSTED;
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    uint64_t end_time = 0;
+    int has_timeout = 0;
+    if (toptr) {
+        if (!sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) {
+            uint32_t addr = 0;
+            if (p->nwaiters == 0 && vpl_try_allocate_internal(p, request, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+        }
+        sched_vtime_refresh();
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
+
+    uint32_t addr = 0;
+    if (p->nwaiters == 0 && vpl_try_allocate_internal(p, request, &addr) == 0) {
+        if (out) MEM_W32(out, addr);
+        return 0;
+    }
+
+    uint32_t cur_thid = sched_current_uid();
+    if (cur_thid == 0) {
+        return VPL_EXHAUSTED;
+    }
+
+    if (p->nwaiters >= VPL_MAX_WAITERS) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    p->waiters[p->nwaiters++] = (VplWaiter){cur_thid, request};
+
+    for (;;) {
+        if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sr_thread_dispatch_callbacks();
+            p = vpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            sched_vtime_refresh();
+            continue;
+        }
+
+        /* PSP waitType 6 = VPL */
+        sched_set_current_wait_kind(6);
+
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end_time) {
+                p = vpl_lookup(uid);
+                if (p) vpl_remove_waiter(p, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            uint32_t remaining = (uint32_t)(end_time - now);
+            if (is_cb) sched_set_current_cb_wait(1);
+            int timed_out = sched_block_on_timeout(uid, remaining);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+
+            p = vpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (vpl_try_allocate_internal(p, request, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                sched_vtime_refresh();
+                now = sched_vtime_us();
+                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0u;
+                MEM_W32(toptr, rem);
+                return 0;
+            }
+
+            if (timed_out) {
+                vpl_remove_waiter(p, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+
+            if (p->nwaiters < VPL_MAX_WAITERS) {
+                for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
+                p->waiters[0] = (VplWaiter){cur_thid, request};
+                p->nwaiters++;
+            }
+        } else {
+            if (is_cb) sched_set_current_cb_wait(1);
+            sched_block_on(uid);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) return woken;
+
+            p = vpl_lookup(uid);
+            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (vpl_try_allocate_internal(p, request, &addr) == 0) {
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+
+            if (p->nwaiters < VPL_MAX_WAITERS) {
+                for (int j = p->nwaiters; j > 0; j--) p->waiters[j] = p->waiters[j - 1];
+                p->waiters[0] = (VplWaiter){cur_thid, request};
+                p->nwaiters++;
+            }
+        }
+    }
+}
+
+static uint32_t h_AllocateVpl(CpuState *s) {
+    return allocate_vpl_common(s, 0);
+}
+
+static uint32_t h_AllocateVplCB(CpuState *s) {
+    return allocate_vpl_common(s, 1);
+}
+
 static uint32_t h_FreeVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t addr = A1;
@@ -896,6 +1270,18 @@ static uint32_t h_FreeVpl(CpuState *s) {
     for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
         vpl_insert_free(p, addr, p->allocs[i].size);
         p->allocs[i].used = 0;
+        /* Waiter order: semaphores in hle.c do not handle attr for priority/FIFO queuing;
+         * per task instruction, default to FIFO order and document.
+         * Wake one waiter. */
+        if (p->nwaiters > 0) {
+            uint32_t next_thread = p->waiters[0].thread_uid;
+            for (int j = 0; j + 1 < p->nwaiters; j++) {
+                p->waiters[j] = p->waiters[j + 1];
+            }
+            p->nwaiters--;
+            sched_wake_one_object_waiter(A0, next_thread);
+            sched_preempt();
+        }
         return 0;
     }
     return VPL_BAD_ID;
@@ -905,6 +1291,12 @@ static uint32_t h_DeleteVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     if (!p) return VPL_BAD_ID;
     uint32_t block_uid = p->block_uid;
+    uint32_t uid = A0;
+    int waiters = sched_count_waiters(uid);
+    if (waiters) {
+        sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();
+    }
     memset(p, 0, sizeof *p);
     return free_block(block_uid); /* exactly once; unknown/double delete frees nothing */
 }
@@ -914,21 +1306,18 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     uint32_t info = A1;
     if (!p) return VPL_BAD_ID;
     if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads.
-     * Name contents and wait-thread count are UNMEASURED here; only size/free accounting
-     * is promised by this non-blocking implementation. */
+    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads. */
     MEM_W32(info + 0, 52u);
-    MEM_W32(info + 36, 0u);
+    MEM_W32(info + 36, p->attr);
     MEM_W32(info + 40, p->size);
     uint32_t free_size = 0;
     for (int i = 0; i < p->nfree; ++i) free_size += p->free[i].size;
     MEM_W32(info + 44, free_size);
-    MEM_W32(info + 48, 0u);
+    MEM_W32(info + 48, (uint32_t)p->nwaiters);
     return 0;
 }
 
-/* AllocateVpl / AllocateVplCB intentionally remain unregistered: they require wait-queue
- * integration, unlike TryAllocateVpl. */
+/* AllocateVpl / AllocateVplCB blocking forms integrated with fiber wait queues (PR-G). */
 
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
 static uint32_t h_CreateThread(CpuState *s) {
@@ -4679,6 +5068,14 @@ extern void sr_mutex_release_thread(uint32_t thread_uid);
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
+    if (thread_uid) {
+        for (int i = 0; i < FPL_MAX; i++) {
+            if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
+        }
+        for (int i = 0; i < VPL_MAX; i++) {
+            if (s_vpls[i].used) vpl_remove_waiter(&s_vpls[i], thread_uid);
+        }
+    }
 }
 
 uint32_t sr_callback_notify(uint32_t uid, uint32_t notify_arg) {
@@ -11938,7 +12335,8 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlagCB);
     sr_hle_register(0xc07bb470, "sceKernelCreateFpl", h_CreateFpl);
     sr_hle_register(0xd979e9bf, "sceKernelAllocateFpl", h_AllocateFpl);
-    sr_hle_register(0xe7282cb6, "sceKernelAllocateFplCB", h_AllocateFpl);
+    sr_hle_register(0xe7282cb6, "sceKernelAllocateFplCB", h_AllocateFplCB);
+    sr_hle_register(0xf6414a71, "sceKernelFreeFpl", h_FreeFpl);
     /* Not a matrix NID -- waits.cpp never probes a Try form. It is here so the
      * selftest can pin, through production dispatch, that splitting the blocking
      * Allocate forms off this handler left it alone. Registered by this same
@@ -11948,11 +12346,13 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
-    /* VPL non-blocking set (PSP_INTR_WAITS_MATRIX.md coverage rows; blocking
-     * AllocateVpl forms deliberately stay absent until wait queues exist). */
+    /* VPL set (PSP_INTR_WAITS_MATRIX.md PR-G coverage rows; blocking AllocateVpl
+     * forms registered with fiber wait queues). */
     sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);
     sr_hle_register(0x89b3d48c, "sceKernelDeleteVpl", h_DeleteVpl);
     sr_hle_register(0xaf36d708, "sceKernelTryAllocateVpl", h_TryAllocateVpl);
+    sr_hle_register(0xbed27435, "sceKernelAllocateVpl", h_AllocateVpl);
+    sr_hle_register(0xec0a693f, "sceKernelAllocateVplCB", h_AllocateVplCB);
     sr_hle_register(0xb736e9ff, "sceKernelFreeVpl", h_FreeVpl);
     sr_hle_register(0x39810265, "sceKernelReferVplStatus", h_ReferVplStatus);
     sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateMutex);
@@ -12247,10 +12647,9 @@ void sr_hle_init(void) {
     /* sceKernelAllocPartitionMemory, sceKernelGetBlockHeadAddr, sceKernelFreePartitionMemory,
      * sceKernelTotalFreeMemSize, sceKernelMaxFreeMemSize registered via
      * hle_register_partition_savedata_handlers() */
-    /* sceKernelTryAllocateFpl and sceKernelDeleteFpl moved to
+    /* sceKernelTryAllocateFpl, sceKernelFreeFpl, and sceKernelDeleteFpl moved to
      * hle_register_wait_conformance_handlers(), which this branch also calls --
      * same NIDs, names and handlers as before. */
-    sr_hle_register(0xf6414a71, "sceKernelFreeFpl", h_FreeFpl);
     sr_hle_register(0x9f9b46b9, "sceKernelCreateNotifyCallback", h_CreateNotifyCallback);
     sr_hle_register(0x0ed48fe2, "sceKernelDeleteNotifyCallback", h_DeleteNotifyCallback);
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
