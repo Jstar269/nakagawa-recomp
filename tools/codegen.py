@@ -35,6 +35,17 @@ LLE_CPU = False
 # never off the seam return, because legitimate HLE errors are nonzero.
 LLE_IMPORT_SEAM = False
 
+# TD-27 stale-code detection (tools/codegen.py side of the SR_STALE_DETECT
+# gate). When True, codegen emits one compact (address, entry word, word
+# count, FNV-1a) record per translated primary-image function into
+# sr_register_all(), and routes the `cache` op through
+# sr_stale_note_cache_op() instead of the default no-op. Set by
+# --stale-detect; default False preserves byte-for-byte output. Only the
+# primary image is recorded: extra modules are translated at build time but
+# never copied into guest RAM, so their arena bytes cannot be compared
+# without false-firing on the first check.
+STALE_DETECT = False
+
 
 def enable_lle_import_seam():
     """Turn on the import seam and the PR 2 flow machinery it relies on.
@@ -605,7 +616,13 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     if op == 0x31: return f"s->fi[{rt(w)}] = MEM_R32({R(rs(w))} + {simm(w)});", None, 0  # lwc1
     if op == 0x39: return f"MEM_W32_PC({R(rs(w))} + {simm(w)}, s->fi[{rt(w)}], 0x{addr:08x}u);", f"({R(rs(w))} + {simm(w)})", 4  # swc1
     if op == 0x11: return fpu_effect(addr, w)
-    if op == 0x2f: return "(void)0;", None, 0  # cache (no-op in user space static recompilation)
+    if op == 0x2f:
+        # cache (TD-27): a no-op in default static recompilation. Behind
+        # --stale-detect the invalidate becomes a stale-code check hook; the
+        # SR_STALE_DETECT runtime gate keeps it off the hot path when unset.
+        if STALE_DETECT:
+            return f"sr_stale_note_cache_op((uint32_t)({R(rs(w))} + {simm(w)}));", None, 0
+        return "(void)0;", None, 0  # cache (no-op in user space static recompilation)
     if op == 0x3f: return f"if ((0x{w:08x}u & 0xFFFF0000u) != 0xFFFF0000u) {{ s->vfpuCtrl[0]=0xe4u; s->vfpuCtrl[1]=0xe4u; s->vfpuCtrl[2]=0u; }}", None, 0  # vflush
     if op in (0x35, 0x36, 0x3d, 0x3e, 0x32, 0x3a, 0x12, 0x18, 0x19, 0x1b, 0x37, 0x34, 0x3c): return vfpu_effect(addr, w)
     raise Unsupported(f"opcode 0x{op:02x} at 0x{addr:08x}")
@@ -1225,6 +1242,52 @@ def jump_target(addr, w):
 def read32(elf, addr):
     b = elf.read_at_vaddr(addr, 4)
     return int.from_bytes(b, 'little') if b and len(b) >= 4 else None
+
+
+def stale_fnv1a(words):
+    """FNV-1a over 32-bit words, little-endian byte order.
+
+    Mirrors src/rt/stale_code.h::sr_stale_fnv1a; both sides pin the shared
+    vectors (empty -> 0x811c9dc5, [0x00000000] -> 0x4b95f515,
+    [0x00000061] -> 0xf5e1d3e4). Used only behind --stale-detect. """
+    h = 0x811C9DC5
+    for w in words:
+        for shift in (0, 8, 16, 24):
+            h ^= (w >> shift) & 0xFF
+            h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def stale_block_for_function(elf, addr, ranges, known, resume_owners=None,
+                             dispatch_boundaries=None):
+    """Compact translation-time record for one emitted function.
+
+    Returns (entry_word, nwords, digest) over the contiguous translated run
+    starting at the entry, or None when the entry word is unreadable. Only
+    the head run is covered: a non-contiguous tail stays outside TD-27 scope
+    rather than hashing bytes the build did not translate into this body.
+    Every hashed word is a translated PC, so a firing check always names
+    bytes the build actually translated. Used only behind --stale-detect. """
+    entry = read32(elf, addr)
+    if entry is None:
+        return None
+    insns, _, _ = function_flow(
+        elf, addr, ranges, known,
+        resume_owners=resume_owners or {},
+        dispatch_boundaries=dispatch_boundaries or set())
+    words = []
+    pc = addr
+    while pc in insns:
+        w = read32(elf, pc)
+        if w is None:
+            break
+        words.append(w)
+        if pc > 0xFFFFFFFF - 4:
+            break
+        pc = (pc + 4) & 0xFFFFFFFF
+    if not words:
+        return None
+    return (entry, len(words), stale_fnv1a(words))
 
 def is_control(w):
     op = w >> 26
@@ -2173,6 +2236,12 @@ def main(argv):
             # sr_import_call instead of sr_syscall. Default (absent)
             # preserves byte-identical HLE stubs.
             enable_lle_import_seam()
+        elif o == "--stale-detect":
+            # TD-27 stale-code detection: emit the compact translation-time
+            # record table and route `cache` through the check hook.
+            # Default (absent) preserves byte-identical output.
+            global STALE_DETECT
+            STALE_DETECT = True
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):
@@ -2259,6 +2328,7 @@ def main(argv):
     emitted = []
     stubbed = []
     func_texts = []
+    stale_funcs = []  # TD-27: primary-image addresses with real translations
 
     # Semantic name overrides for known HST functions. Single source of truth is
     # host_stubs.HST_SIMPLE_STUBS: addr -> (name, retflag). retflag=1 means the
@@ -2532,6 +2602,8 @@ def main(argv):
                 resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries)))
             emitted.append(a)
+            if STALE_DETECT:
+                stale_funcs.append(a)
         except Unsupported as e:
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
@@ -2661,6 +2733,27 @@ def main(argv):
         )
         main_out.append("        exit(1);")
         main_out.append("    }")
+    if STALE_DETECT:
+        # TD-27 compact translation-time records (address + entry word +
+        # word count + FNV-1a per translated primary-image function). No raw
+        # code bodies are embedded; the runtime compares these against live
+        # guest bytes at cache-invalidate time behind SR_STALE_DETECT.
+        main_out.append("    sr_stale_reset();")
+        stale_records = 0
+        for a in stale_funcs:
+            rec = stale_block_for_function(
+                elf, a, ranges, known, resume_owners, dispatch_boundaries)
+            if rec is None:
+                sys.stderr.write(f"stale-detect: no record for 0x{a:08x} (unreadable entry)\n")
+                continue
+            entry_word, nwords, digest = rec
+            main_out.append(f"    sr_stale_register_word(0x{a:08x}u, 0x{entry_word:08x}u);")
+            main_out.append(f"    sr_stale_register_block(0x{a:08x}u, {nwords}u, 0x{digest:08x}u);")
+            stale_records += 1
+        main_out.append(
+            f'    fprintf(stderr, "sr_register_all: registered {stale_records} '
+            'stale-detect record(s)\\n");'
+        )
     main_out.append(
         f'    fprintf(stderr, "sr_register_all: registered {len(exec_spans)} '
         'executable span(s)\\n");'

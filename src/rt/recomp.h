@@ -31,6 +31,7 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 /* Debug framework — included early so sr_w32() can call sr_check_mem_watch(). */
 #include "debug.h"
 #include "perf.h"
+#include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
 #ifndef SR_CPUSTATE_ABI_VERSION
 #define SR_CPUSTATE_ABI_VERSION 2u
@@ -469,7 +470,10 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
 /* Returns a registered body only when the same PC has complete four-byte
  * executable ownership. Interpreter-readable bytes are required only to
  * interpret; entering the translated body does not re-read them. This static
- * first slice does not yet provide content guards. */
+ * first slice does not yet provide content guards: sr_lookup stays structural
+ * (and hot-path cheap) by design. Opt-in content checking lives separately
+ * in src/rt/stale_code.h (SR_STALE_DETECT, checked at cache-invalidate time,
+ * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
 
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
