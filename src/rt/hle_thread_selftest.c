@@ -8867,6 +8867,125 @@ static void test_td28_partition_free_reuse(void) {
     expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
 }
 
+static void test_fpl_delete_releases_partition(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern int sr_hle_test_partition_free_block_count(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    CpuState cpu;
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+
+    /* 1. Allocate anchor block A to ensure the FPL pool is an interior block */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_A = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_A != 0u && uid_A < 0x80000000u, "alloc anchor A succeeds");
+
+    /* 2. Create pool 1 (size = 0x1000: bsize 0x100, nblocks 0x10) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x10u;
+    uint32_t fpl1 = sr_syscall(&cpu, NID_FPL_CREATE);
+    expect(fpl1 >= 0x500u, "fpl1 create succeeds");
+
+    /* Allocate first block to get fpl1 base address */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1; cpu.r[5] = FPL_OUTPTR; cpu.r[6] = 0u;
+    uint32_t alloc_rc1 = sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    expect(alloc_rc1 == 0u, "allocate from fpl1 succeeds");
+    uint32_t addr1 = MEM_R32(FPL_OUTPTR);
+
+    /* 3. Allocate anchor block C following pool 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_C = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_C != 0u && uid_C < 0x80000000u, "alloc anchor C succeeds");
+
+    /* 4. Delete pool 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1;
+    uint32_t del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(del_rc == 0u, "delete fpl1 succeeds");
+
+    /* Partition block should now be in the free list (exactly 1 free block) */
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "delete fpl1 releases its partition block to free list");
+
+    /* 5. Double-delete pool 1: assert it returns existing error/status code (0) and does not free twice */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1;
+    uint32_t double_del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(double_del_rc == 0u, "double-delete of fpl1 returns existing error/status (0)");
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "double-delete of fpl1 does not free twice (free block count unchanged)");
+
+    /* Also assert deleting an unknown uid returns existing code (0) and does not free */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x9999u;
+    uint32_t unknown_del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(unknown_del_rc == 0u, "delete unknown uid returns existing error/status (0)");
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "delete unknown uid does not free (free block count unchanged)");
+
+    /* 6. Create pool 2 of the same size: assert it reuses pool 1's address */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x10u;
+    uint32_t fpl2 = sr_syscall(&cpu, NID_FPL_CREATE);
+    expect(fpl2 >= 0x500u, "fpl2 create succeeds");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl2; cpu.r[5] = FPL_OUTPTR; cpu.r[6] = 0u;
+    uint32_t alloc_rc2 = sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    expect(alloc_rc2 == 0u, "allocate from fpl2 succeeds");
+    uint32_t addr2 = MEM_R32(FPL_OUTPTR);
+
+    expect(addr2 == addr1, "pool 2 of same size reuses deleted pool 1 partition address");
+    expect(sr_hle_test_partition_free_block_count() == 0,
+           "fpl2 allocation consumed the free partition block");
+
+    /* 7. Clean up */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = fpl2;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_A;
+    (void)sr_syscall(&cpu, NID_FREE_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_C;
+    (void)sr_syscall(&cpu, NID_FREE_PART);
+
+    /* 8. Assert create-without-delete sequence returns unchanged addresses */
+    sr_hle_test_partition_reset();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x4u; /* 0x400 */
+    uint32_t p_x = sr_syscall(&cpu, NID_FPL_CREATE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_x; cpu.r[5] = FPL_OUTPTR;
+    (void)sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    uint32_t addr_px = MEM_R32(FPL_OUTPTR);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x8u; /* 0x800 */
+    uint32_t p_y = sr_syscall(&cpu, NID_FPL_CREATE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_y; cpu.r[5] = FPL_OUTPTR;
+    (void)sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    uint32_t addr_py = MEM_R32(FPL_OUTPTR);
+
+    expect(addr_px == base0, "create-without-delete fpl 1 address unchanged");
+    expect(addr_py == ((base0 + 0x400u + 0xFFu) & ~0xFFu), "create-without-delete fpl 2 address unchanged");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_x;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_y;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+}
+
 /* =========================================================================
  * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
  * ========================================================================= */
@@ -11183,6 +11302,7 @@ int main(int argc, char **argv) {
     test_msgpipe_safety();
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
+    test_fpl_delete_releases_partition();
     test_intr_context_conformance();
     test_psp_mutex();
 
