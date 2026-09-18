@@ -140,7 +140,8 @@ def create_synthetic_vfs_iso(path: Path) -> None:
     path.write_bytes(data)
 
 
-ISO_HARNESS_C = r"""#include <stdio.h>
+ISO_HARNESS_C = r"""#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>

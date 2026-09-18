@@ -181,7 +181,8 @@ class TestIsoVfsContained(unittest.TestCase):
         create_synthetic_vfs_iso(cls.iso)
 
         cls.c_src = Path(cls.tmp) / "iso_containment_test.c"
-        cls.c_src.write_text(r"""#include <stdio.h>
+        cls.c_src.write_text(r"""#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "iso.h"
