@@ -563,6 +563,12 @@
     "name": "sceKernelTerminateDeleteThread",
     "status": "unreviewed"
   },
+  "0x39810265": {
+    "classification": "dedicated",
+    "handler": "h_ReferVplStatus",
+    "name": "sceKernelReferVplStatus",
+    "status": "unreviewed"
+  },
   "0x3ad58b8c": {
     "classification": "dedicated",
     "handler": "h_SuspendDispatchThread",
@@ -819,6 +825,12 @@
     "classification": "dedicated",
     "handler": "h_AtracSetDataAndGetID",
     "name": "sceAtracSetAA3DataAndGetID",
+    "status": "unreviewed"
+  },
+  "0x56c039b5": {
+    "classification": "dedicated",
+    "handler": "h_CreateVpl",
+    "name": "sceKernelCreateVpl",
     "status": "unreviewed"
   },
   "0x574b6fbc": {
@@ -1301,6 +1313,12 @@
     "name": "sceIoOpenAsync",
     "status": "unreviewed"
   },
+  "0x89b3d48c": {
+    "classification": "dedicated",
+    "handler": "h_DeleteVpl",
+    "name": "sceKernelDeleteVpl",
+    "status": "unreviewed"
+  },
   "0x8a389411": {
     "classification": "fake_success",
     "handler": "h_ok",
@@ -1619,6 +1637,12 @@
     "name": "sceUmdRegisterUMDCallBack",
     "status": "unreviewed"
   },
+  "0xaf36d708": {
+    "classification": "dedicated",
+    "handler": "h_TryAllocateVpl",
+    "name": "sceKernelTryAllocateVpl",
+    "status": "unreviewed"
+  },
   "0xb011922f": {
     "classification": "dedicated",
     "handler": "h_AudioRestLen",
@@ -1683,6 +1707,12 @@
     "classification": "dedicated",
     "handler": "h_FreePartitionMemory",
     "name": "sceKernelFreePartitionMemory",
+    "status": "unreviewed"
+  },
+  "0xb736e9ff": {
+    "classification": "dedicated",
+    "handler": "h_FreeVpl",
+    "name": "sceKernelFreeVpl",
     "status": "unreviewed"
   },
   "0xb7660a23": {

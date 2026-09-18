@@ -126,16 +126,16 @@ and used as a control, never compared against hardware.
 
 ## Coverage of `waits.cpp` by the Nakagawa registry
 
-`waits.cpp` names 103 `sce*` entry points. 31 are not registered anywhere in
+`waits.cpp` names 103 `sce*` entry points. 26 are not registered anywhere in
 `src/rt/hle.c`, so no hardware cell for them can be exercised at any evidence tier:
 
 `sceAudioSRCChRelease`, `sceAudioSRCChReserve`, `sceAudioSRCOutputBlocking`,
 `sceDisplayWaitVblankCB`, `sceDisplayWaitVblankStartCB`, `sceDisplayWaitVblankStartMulti`,
 `sceDisplayWaitVblankStartMultiCB`, `sceGeListDeQueue`, `sceIoGetAsyncStat`, `sceIoRemove`,
 `sceKernelAllocateVpl`, `sceKernelAllocateVplCB`, `sceKernelCreateMbx`,
-`sceKernelCreateTlspl`, `sceKernelCreateVpl`, `sceKernelDelaySysClockThread`,
+`sceKernelCreateTlspl`, `sceKernelDelaySysClockThread`,
 `sceKernelDelaySysClockThreadCB`, `sceKernelDeleteMbx`, `sceKernelDeleteTlspl`,
-`sceKernelDeleteVpl`, `sceKernelFreeTlspl`, `sceKernelGetTlsAddr`, `sceKernelReceiveMbx`,
+`sceKernelFreeTlspl`, `sceKernelGetTlsAddr`, `sceKernelReceiveMbx`,
 `sceKernelReceiveMbxCB`, `sceKernelReceiveMsgPipe`, `sceKernelReceiveMsgPipeCB`,
 `sceKernelReferTlsplStatus`, `sceKernelSendMsgPipe`,
 `sceKernelSendMsgPipeCB`, `sceKernelTerminateThread`.
@@ -650,10 +650,12 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
    **30 cells total.**
 6. **PR-F - controller ring reset (S2), then `sceCtrlReadBufferPositive` precedence.**
    `INVALID_SIZE` (`0x80000104`) for count 256 and `CAN_NOT_WAIT` (`0x800201a7`) for valid across 3 contexts (6 cells). Test-only prerequisite first.
-7. **PR-G - registration of the 31 unregistered `waits.cpp` APIs**, in whatever order
-   their subsystems land (Mbx, Vpl, Tlspl, MsgPipe blocking forms, `DelaySysClockThread`,
-   the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`). Each expands the matrix
-   rather than changing it.
+7. **PR-G - registration of the 26 unregistered `waits.cpp` APIs**, in whatever order
+   their subsystems land (Mbx, VPL blocking forms, Tlspl, MsgPipe blocking forms,
+   `DelaySysClockThread`, the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`).
+   The non-blocking VPL set
+   (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `FreeVpl`, `ReferVplStatus`) is now registered;
+   only the two blocking allocation forms remain here. Each expands the matrix rather than changing it.
 
 `sceGeListSync` / `sceGeDrawSync` and `sceAudioOutputBlocking` are intentionally absent
 from this ordering: their hardware cells are recorded above, but exercising them belongs
