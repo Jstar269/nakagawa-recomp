@@ -651,11 +651,11 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
 6. **PR-F - controller ring reset (S2), then `sceCtrlReadBufferPositive` precedence.**
    `INVALID_SIZE` (`0x80000104`) for count 256 and `CAN_NOT_WAIT` (`0x800201a7`) for valid across 3 contexts (6 cells). Test-only prerequisite first.
 7. **PR-G - registration of the 26 unregistered `waits.cpp` APIs**, in whatever order
-   their subsystems land (Mbx, VPL blocking forms, Tlspl, MsgPipe blocking forms,
+   their subsystems land (Mbx, Tlspl, MsgPipe blocking forms,
    `DelaySysClockThread`, the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`).
-   The non-blocking VPL set
-   (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `FreeVpl`, `ReferVplStatus`) is now registered;
-   only the two blocking allocation forms remain here. Each expands the matrix rather than changing it.
+   The full VPL set (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `AllocateVpl`, `AllocateVplCB`,
+   `FreeVpl`, `ReferVplStatus`) is now registered with wait queue integration.
+   Each expands the matrix rather than changing it.
 
 `sceGeListSync` / `sceGeDrawSync` and `sceAudioOutputBlocking` are intentionally absent
 from this ordering: their hardware cells are recorded above, but exercising them belongs
