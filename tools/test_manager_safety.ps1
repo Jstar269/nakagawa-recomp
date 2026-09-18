@@ -21,7 +21,7 @@
 #>
 
 $ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "hst_safety.ps1")
+. (Join-Path $PSScriptRoot "nk_safety.ps1")
 . (Join-Path $PSScriptRoot "hst_run_support.ps1")
 
 $script:Failures = 0

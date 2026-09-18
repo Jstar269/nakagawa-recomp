@@ -446,7 +446,7 @@ try {
         throw "No run entry point resolved by the active title manifest."
     }
 
-    # Backward compatibility alias
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Get-HstRunEntry { return Get-NkRunEntry }
 
     function Get-NkMakeBaseArgs {
@@ -456,7 +456,7 @@ try {
         return $args
     }
 
-    # Backward compatibility alias
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Get-HstMakeBaseArgs { return Get-NkMakeBaseArgs }
 
     # Log directory
@@ -545,7 +545,7 @@ try {
         }
     }
 
-    # Backward compatibility alias
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Stop-WorkspaceHst { Stop-WorkspaceTarget }
 
     function Stop-BuildProcesses {
@@ -1156,7 +1156,7 @@ try {
         return $true
     }
 
-    # Backward compatibility alias
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Invoke-HstBuild {
         param([string]$Mode)
         return Invoke-NkBuild -Mode $Mode
@@ -1182,6 +1182,7 @@ try {
         } catch { }
     }
 
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Write-HstBuildManifest {
         param([string]$Mode, [int]$ExitCode)
         Write-NkBuildManifest -Mode $Mode -ExitCode $ExitCode
@@ -1393,7 +1394,7 @@ try {
         Analyze-RunLogs "$LogDir/stderr_run.log"
     }
 
-    # Backward compatibility alias
+    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
     function Run-HstEngine {
         param([string]$Profile = "Standard", [int]$RunDuration = 0, [switch]$NoGui)
         Run-NkEngine -Profile $Profile -RunDuration $RunDuration -NoGui:$NoGui

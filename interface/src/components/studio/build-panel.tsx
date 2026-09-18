@@ -49,7 +49,7 @@ interface BinaryInfo {
   exists: boolean;
   sizeBytes: number;
   mtime: number;
-  hstExePath: string;
+  exePath: string;
   vulkanSdkFoundAt: string | null;
 }
 
@@ -90,7 +90,7 @@ export function BuildPanel() {
       const binary = data.exists
         ? `${(data.sizeBytes / 1024 / 1024).toFixed(2)} MB · built ${new Date(data.mtime).toLocaleString()}`
         : "missing — run BuildFull";
-      setInspectStatus(`${data.hstExePath.split(/[\\/]/).pop()} · ${binary}`);
+      setInspectStatus(`${data.exePath.split(/[\\/]/).pop()} · ${binary}`);
     } catch (error) {
       setInspectStatus(`unreachable: ${String(error)}`);
     }
@@ -154,7 +154,7 @@ export function BuildPanel() {
       return;
     }
     if (action === "Run" && !binaryInfo?.exists) {
-      setActiveActionNote("Run requires a built hst.exe. Complete BuildFull or BuildFast first.");
+      setActiveActionNote("Run requires a built game executable. Complete BuildFull or BuildFast first.");
       return;
     }
 
@@ -165,7 +165,7 @@ export function BuildPanel() {
     setRealStatus("running");
     if (action !== "Run") setBuild({ buildStatus: "running" });
     setRealLogTail([
-      `[${new Date().toISOString()}] starting hst_manager.ps1 -Action ${action}`,
+      `[${new Date().toISOString()}] starting nk_manager.ps1 -Action ${action}`,
     ]);
 
     try {
@@ -279,7 +279,7 @@ export function BuildPanel() {
       <SectionHeader
         icon={<Hammer className="size-4.5" />}
         title="Recompile & Run"
-        subtitle="Manage the native compilation pipeline, verify prerequisites, and execute hst.exe via hst_manager.ps1."
+        subtitle="Manage the native compilation pipeline, verify prerequisites, and execute the built game via nk_manager.ps1."
         right={
           <Badge
             variant="outline"
@@ -330,8 +330,8 @@ export function BuildPanel() {
               Analyzes decrypted MIPS binaries (<code className="font-mono text-foreground">EBOOT.elf</code> and PRXs) from{" "}
               <code className="font-mono text-foreground">place_game_here/</code>, runs the full Python code generator (
               <code className="font-mono text-foreground">tools/codegen.py</code>), outputs translation chunks (
-              <code className="font-mono text-foreground">build/hst/hst_recomp_*.c</code>) and{" "}
-              <code className="font-mono text-foreground">hst_image.bin</code>, then compiles the executable.
+              <code className="font-mono text-foreground">build/&lt;game&gt;/&lt;game&gt;_recomp_*.c</code>) and{" "}
+              <code className="font-mono text-foreground">&lt;game&gt;_image.bin</code>, then compiles the executable.
             </p>
             <div className="text-[10px] text-muted-foreground font-mono bg-accent/30 p-1 rounded">
               Use when: Initial build, changing game inputs, modifying analyzer logic, or after compiler updates.
@@ -368,7 +368,7 @@ export function BuildPanel() {
                 <Play className="size-3 text-emerald-400" /> Run Standard GUI
               </span>
               <span className="text-[10px] text-muted-foreground leading-snug block">
-                Launches <code className="font-mono">build/hst/hst.exe</code> with interactive window and Vulkan graphics renderer.
+                Launches <code className="font-mono">build/&lt;game&gt;/&lt;game&gt;.exe</code> with interactive window and Vulkan graphics renderer.
               </span>
             </div>
             <div className="p-2 rounded bg-background/20 border border-border/30">
@@ -386,11 +386,11 @@ export function BuildPanel() {
       {/* Main Native Pipeline Panel */}
       <Panel
         title="Native Execution Controls"
-        description="Invokes hst_manager.ps1 with strict prerequisite validation and live stdout/stderr SSE streaming."
+        description="Invokes nk_manager.ps1 with strict prerequisite validation and live stdout/stderr SSE streaming."
         icon={<Server className="size-4" />}
         right={
           <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => void refreshInspect()}>
-            Refresh hst.exe
+            Refresh executable
           </Button>
         }
       >
@@ -449,7 +449,7 @@ export function BuildPanel() {
           <div className="rounded-lg border border-border/60 bg-card/20 p-2.5 mb-3 text-xs text-muted-foreground flex items-center gap-2">
             <Info className="size-4 text-ball shrink-0" />
             <span>
-              <code className="font-mono text-foreground font-semibold">hst.exe</code> has not been built yet.
+              <code className="font-mono text-foreground font-semibold">game executable</code> has not been built yet.
               Run <strong className="text-foreground">BuildFull</strong> (or <strong className="text-foreground">BuildFast</strong>) before launching a run profile.
             </span>
           </div>
@@ -506,7 +506,7 @@ export function BuildPanel() {
                 void realBuild("Run");
               }}
               disabled={running || !binaryExists || !buildPrereqs.ready}
-              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Launch hst.exe with GUI" : "Requires built hst.exe"}
+              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Launch game executable with GUI" : "Requires built game executable"}
             >
               <Play className="size-3.5" /> Run Standard GUI
             </Button>
@@ -525,7 +525,7 @@ export function BuildPanel() {
                 });
               }}
               disabled={running || !binaryExists || !buildPrereqs.ready}
-              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Capture 15s snapshots headlessly" : "Requires built hst.exe"}
+              title={!buildPrereqs.ready ? blockedReason : binaryExists ? "Capture 15s snapshots headlessly" : "Requires built game executable"}
             >
               <Play className="size-3.5" /> Capture 15s snapshots
             </Button>
@@ -558,7 +558,7 @@ export function BuildPanel() {
 
       {completed ? (
         <p className="text-[11px] text-muted-foreground">
-          The native build completed. Runtime files remain in <code className="font-mono text-foreground">build/hst/</code>; this dashboard does not manufacture or package replacement binaries.
+          The native build completed. Runtime files remain in <code className="font-mono text-foreground">build/&lt;game&gt;/</code>; this dashboard does not manufacture or package replacement binaries.
         </p>
       ) : null}
     </div>

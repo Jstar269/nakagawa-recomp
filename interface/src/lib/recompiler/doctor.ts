@@ -51,7 +51,7 @@ export function isDoctorReport(value: unknown): value is DoctorReport {
   if (!isRecord(value)) return false;
   if (
     value.schema_version !== 1 ||
-    value.tool !== "hst_doctor" ||
+    (value.tool !== "nk_doctor" && value.tool !== "hst_doctor") ||
     typeof value.root !== "string" ||
     typeof value.scope !== "string" ||
     !SCOPE_SET.has(value.scope) ||
@@ -141,20 +141,20 @@ export function classifyDoctorFailure(rawDetail: string | null | undefined): Cla
       reason: "repo-root-missing",
       title: "The Nakagawa Recomp project folder was not found",
       explanation:
-        "The dashboard locates the project by finding hst_manager.ps1, AGENTS.md and Makefile together. The folder it started in does not contain them.",
+        "The dashboard locates the project by finding nk_manager.ps1, AGENTS.md and Makefile together. The folder it started in does not contain them.",
       nextAction:
-        "Start the dashboard from the Nakagawa Recomp checkout (run 'npm run dev' inside its interface folder), or set HST_DASHBOARD_REPO_ROOT to the project folder and reload.",
+        "Start the dashboard from the Nakagawa Recomp checkout (run 'npm run dev' inside its interface folder), or set NK_DASHBOARD_REPO_ROOT to the project folder and reload.",
       diagnostic: detail || null,
     };
   }
-  if (lower.includes("hst_doctor.py not found")) {
+  if (lower.includes("nk_doctor.py not found") || lower.includes("hst_doctor.py not found")) {
     return {
       reason: "doctor-script-missing",
       title: "The preflight diagnostic script is missing",
       explanation:
-        "The dashboard could not find the project's diagnostic script (tools/hst_doctor.py) inside the Nakagawa Recomp project.",
+        "The dashboard could not find the project's diagnostic script (tools/nk_doctor.py) inside the Nakagawa Recomp project.",
       nextAction:
-        "Verify this is a complete Nakagawa Recomp checkout; tools/hst_doctor.py must exist in the project folder.",
+        "Verify this is a complete Nakagawa Recomp checkout; tools/nk_doctor.py must exist in the project folder.",
       diagnostic: detail || null,
     };
   }
@@ -165,7 +165,7 @@ export function classifyDoctorFailure(rawDetail: string | null | undefined): Cla
       explanation:
         "The diagnostic script did not finish within its time limit. A first run can be slow while every tool is probed.",
       nextAction:
-        "Use Refresh to try again. If it keeps timing out, run 'python tools/hst_doctor.py --json --scope all' in a terminal to see where it stalls.",
+        "Use Refresh to try again. If it keeps timing out, run 'python tools/nk_doctor.py --json --scope all' in a terminal to see where it stalls.",
       diagnostic: detail || null,
     };
   }
@@ -203,10 +203,10 @@ export async function runDoctor(
 ): Promise<DoctorReport> {
   const scope = options.scope ?? "all";
   const strict = Boolean(options.strict);
-  const doctorScript = path.join(repoRoot, "tools", "hst_doctor.py");
+  const doctorScript = path.join(repoRoot, "tools", "nk_doctor.py");
 
   if (!existsSync(doctorScript)) {
-    throw new Error(`hst_doctor.py not found at ${doctorScript}`);
+    throw new Error(`nk_doctor.py not found at ${doctorScript}`);
   }
 
   const pythonCmd = process.platform === "win32" ? "python" : "python3";
@@ -232,7 +232,7 @@ export async function runDoctor(
 
     const output = stdout.trim() || stderr.trim();
     if (!output) {
-      throw new Error("hst_doctor.py produced no output");
+      throw new Error("nk_doctor.py produced no output");
     }
 
     const parsed = JSON.parse(output) as unknown;

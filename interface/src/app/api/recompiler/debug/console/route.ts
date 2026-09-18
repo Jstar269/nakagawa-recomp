@@ -10,7 +10,10 @@ import {
 
 export const runtime = "nodejs";
 
-const LIVE_CONTROL_ENABLED = process.env.HST_DASHBOARD_LIVE_CONTROL === "1";
+// NK_DASHBOARD_LIVE_CONTROL is canonical (issue #196); the legacy
+// HST_DASHBOARD_LIVE_CONTROL is honored so existing setups keep working.
+const LIVE_CONTROL_ENABLED =
+  process.env.NK_DASHBOARD_LIVE_CONTROL === "1" || process.env.HST_DASHBOARD_LIVE_CONTROL === "1";
 
 export async function POST(req: NextRequest) {
   const rejection = rejectNonLocalControlRequest(req, { mutating: true });
@@ -35,7 +38,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: "live-control-disabled",
-        detail: "Set HST_DASHBOARD_LIVE_CONTROL=1 before starting the dashboard to enable process mutations.",
+        detail: "Set NK_DASHBOARD_LIVE_CONTROL=1 before starting the dashboard to enable process mutations.",
       },
       { status: 403 },
     );
@@ -47,7 +50,7 @@ export async function POST(req: NextRequest) {
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
     // mem_debug.py is read-only by default (#180): mutating actions require the
     // explicit --mutate flag, which the dashboard only forwards when live
-    // control is enabled (already gated above by HST_DASHBOARD_LIVE_CONTROL).
+    // control is enabled (already gated above by NK_DASHBOARD_LIVE_CONTROL).
     const toolArgs = command.mutating && LIVE_CONTROL_ENABLED ? ["--mutate"] : [];
     const childArgs = [scriptPath, ...toolArgs, command.action, ...command.args];
 

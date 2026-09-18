@@ -24,6 +24,7 @@ function isDoctorReportPayload(value: unknown): value is DoctorReport {
   const results = payload.results;
   if (
     payload.schema_version !== 1 ||
+    payload.tool !== "nk_doctor" &&
     payload.tool !== "hst_doctor" ||
     typeof payload.root !== "string" ||
     typeof payload.scope !== "string" ||
@@ -121,7 +122,7 @@ type BinaryState = {
   exists?: boolean;
   sizeBytes?: number;
   mtime?: number;
-  hstExePath?: string;
+  exePath?: string;
 };
 
 export function SummaryRail() {
@@ -300,7 +301,7 @@ export function SummaryRail() {
       </Panel>
 
       {/* Native Binary Status */}
-      <Panel title="Native binary" description="Actual build/hst/hst.exe" icon={<Binary className="size-4" />}>
+      <Panel title="Native binary" description="Actual build/<game>/<game>.exe" icon={<Binary className="size-4" />}>
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium">{binary.exists ? "Built" : "Missing"}</span>
           <span className="text-xs font-mono text-ball">
@@ -308,7 +309,7 @@ export function SummaryRail() {
           </span>
         </div>
         <p className="mt-2 text-[9px] font-mono text-muted-foreground break-all">
-          {binary.hstExePath ?? "Project unavailable"}
+          {binary.exePath ?? "Project unavailable"}
         </p>
         {binary.mtime ? (
           <p className="mt-1 text-[9px] text-muted-foreground">Built {new Date(binary.mtime).toLocaleString()}</p>
