@@ -783,7 +783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dde34cc5de7afcadad36625201a026b6fb90d103f684907ab990fec9210b3f02"
+      "sha256": "3faf7ed25920ce5607a49954632890423930a9aea21e6549cec114feb177717d"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1293,7 +1293,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e0cea5af98a8aaaf43446d1f3c67a6bdfde2b0723100bcae7837ab92753974bd"
+      "sha256": "05fec094aa623137d54d5203207d943ec23fb631f1284d4539a304c15aeea223"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1356,7 +1356,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "067d3b8d2f4ae171478f5476b58276af620adbe7ed601381bf5f6016cc04dba1"
+      "sha256": "3af6653753cb5f44bcf97a387da0f8f5f14255646da4c3ecfe65a95d2b6df88a"
     },
     {
       "path": "fixtures/psp_oracle/psp_b1.c",
@@ -5074,7 +5074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6976dceea3c6cb63ebb273657292344e71fb2dda6567d2c4871dd93e365adc73"
+      "sha256": "2c5fa835e3586eb2b099f0012cba4eccbbd8e711a758cb412cb2278d2aadd5b0"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5098,7 +5098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f923ba49ead74a7f5f643e90c67fead9b264379ea56913fccdd10dba685cd068"
+      "sha256": "b8bbfc9ba200c4d6a2541cb2aa6808881bf4374ffe50320c89c27bc024955798"
     },
     {
       "path": "src/rt/debug.c",
@@ -6704,7 +6704,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f5e359ebf46d496b5784b58e9ca63fdf8ae48f63e73e4882219a8104337e7399"
+      "sha256": "b14b46d750580433798198f0a6abf8dcb65cee8d0d2368b2819351fc2b4acadf"
     },
     {
       "path": "tools/codegen_gate.py",
