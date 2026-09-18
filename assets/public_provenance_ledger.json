@@ -6163,7 +6163,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6f25ae2dd81a3c55bf7db16b524308c8f0fbbfc9eba9934f8f2c2fc3a51103d"
+      "sha256": "b4aff8563d0a5d2207d32233f81dba8d5197a9974b03ac2118b5bfd3a64e0534"
     },
     {
       "path": "src/rt/stale_code.h",
@@ -6175,7 +6175,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d143d6ea1ed1608b49dc72d48d746331b7208afea4d52729502852dd7195f9c8"
+      "sha256": "f75d1eea003128d5c238d7fba972fbbc68a50425f0e35b3f9a6dfff3ca2c297e"
     },
     {
       "path": "src/rt/stale_code_selftest.c",
@@ -6187,7 +6187,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8bdb9915110559e8572c2dfb288c597a9452a1f8f53b02cd794b87cc0c83f5a9"
+      "sha256": "c258b6703fa3c45353ee760d7fd94fee73dee29d913e56ffd83747e677115dc7"
     },
     {
       "path": "src/rt/strbuf.h",
@@ -8981,7 +8981,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac76a3fd6546200a05ba4115292707613d2d90f82aff312a2f94c0a0f3a92f36"
+      "sha256": "715c81006c62ac07340318e0680ccb779725b6f24882713c7d56ea4080d6384f"
     },
     {
       "path": "tools/test_sync_drift_check.py",
