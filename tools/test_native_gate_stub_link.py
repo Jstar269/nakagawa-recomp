@@ -42,7 +42,7 @@ _CI_BUILD_TO_MAKE_TARGET = {
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestGateStubLink(unittest.TestCase):
-    def test_same_headless_runtime_link_inputs_have_no_stale_symbols(self) -> None:
+    def test_same_headless_runtime_link_inputs_include_stale_detector(self) -> None:
         assert CC is not None
         with tempfile.TemporaryDirectory(prefix="gate_stub_link_") as td:
             work = Path(td)
@@ -101,6 +101,11 @@ class TestGateStubLink(unittest.TestCase):
                 # from the real TU, not from gate_stub.c dead symbols.
                 str(RT / "cpu_lle.c"),
                 str(RT / "domain_mode.c"),
+                # Both dispatch tiers call the TD-27 stale-block query; the
+                # real detector links here exactly as production requires.
+                # Gate off it is one cached branch, so the headless gate
+                # stays on the AOT path with zero guest-memory touches.
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "title_config.c"),
@@ -157,6 +162,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "guest_interp.c"),
                 str(RT / "cpu_lle.c"),
                 str(RT / "domain_mode.c"),
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(GATE_STUB),
@@ -203,6 +209,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "guest_interp.c"),
                 str(RT / "cpu_lle.c"),
                 str(RT / "domain_mode.c"),
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "title_config.c"),

@@ -136,7 +136,9 @@ def main(argv):
     # The headless microtest link set is: generated chunks + recomp core +
     # guest_interp.c (recomp.c's sr_lookup()/dispatch() consult the exec-span
     # registry and interpreter floor it implements) + cpu_lle.c (the COP0 /
-    # exception helpers guest_interp.c calls) + the VFPU table loader
+    # exception helpers guest_interp.c calls) + stale_code.c (the TD-27
+    # opt-in stale-block query both dispatch tiers call; gate off it is one
+    # cached branch) + the VFPU table loader
     # (vfpu_tables.c, which owns the table globals recomp.c references) +
     # driver + title_config.c + tools/gate_stub.c.  sched.c / sr_coro.c are
     # intentionally omitted because the microtest never enters the scheduler
@@ -151,6 +153,7 @@ def main(argv):
             os.path.join(rt, "guest_interp.c"),
             os.path.join(rt, "cpu_lle.c"),
             os.path.join(rt, "domain_mode.c"),
+            os.path.join(rt, "stale_code.c"),
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
             os.path.join(rt, "title_config.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
