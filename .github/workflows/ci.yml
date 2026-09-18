@@ -151,6 +151,14 @@ jobs:
     name: Python tooling gates
     runs-on: ubuntu-24.04
     needs: [classify, hygiene]
+    # The suite is ~6 minutes serially. Four runners take the test files
+    # round-robin (sorted), so every file runs exactly once across the shards
+    # and shards never share a working tree. needs.python_tools.result is the
+    # aggregate of all shards, so ci_required is unchanged.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
@@ -179,8 +187,14 @@ jobs:
       # from the version pinned in .pre-commit-config.yaml, so that pin stays the
       # single source of truth. A second pip-pinned copy here would silently
       # drift -- it was pinned at 0.15.21 while the hook moved to 0.16.0.
-      - name: Run Python unit tests
-        run: python -m unittest discover -s tools -p "test_*.py" -v
+      - name: Run Python unit tests (shard ${{ matrix.shard }} of 4)
+        # Same files and sys.path as `python -m unittest discover -s tools -p "test_*.py"`.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mapfile -t mods < <(ls tools/test_*.py | sort | awk -v s="$SHARD" '(NR-1)%4==s' | xargs -n1 basename | sed 's/\.py$//')
+          echo "shard $SHARD: ${#mods[@]} test files"
+          PYTHONPATH=tools python -m unittest -v "${mods[@]}"
 
   native_tools:
     name: Native and translation gates
@@ -503,13 +517,15 @@ jobs:
   windows_runtime:
     name: Windows runtime compile gate
     runs-on: windows-2022
-    needs: [classify, hygiene, python_tools, native_tools]
+    # Runs alongside the Linux gates rather than after them: it is the longest job
+    # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
+    # PR's critical path. A Linux failure still fails ci_required; the Windows run
+    # is then merely redundant, which costs nothing on a public repository.
+    needs: [classify, hygiene]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
-          needs.classify.outputs.run_windows == 'true' &&
-          (needs.python_tools.result == 'success' || needs.python_tools.result == 'skipped') &&
-          (needs.native_tools.result == 'success' || needs.native_tools.result == 'skipped') }}
+          needs.classify.outputs.run_windows == 'true' }}
     timeout-minutes: 25
     steps:
       - name: Check out repository
