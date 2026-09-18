@@ -19,9 +19,12 @@ guest-memory touch), that a firing check names the block address, the first
 differing word and expected vs actual before aborting (the SR_BREAK_FATAL /
 sr_unimplemented fail-loud convention), that the HLE cache hooks preserve
 default dispatch behavior (Icache NIDs stay unregistered unless opted in),
-that codegen emits nothing stale-related by default, that the dispatch hook
-stays documented-but-unwired (see src/rt/stale_code.h), and that the Makefile
-wires the new objects and selftest like the existing native selftests.
+that codegen emits nothing stale-related by default, and that the Makefile
+wires the new objects and selftest like the existing native selftests. The
+dispatch redirect itself is wired (see src/rt/stale_code.h) and proven by
+the dispatch-isolation selftest's synthetic self-modifying program, which
+runs the NEW bytes through the interpreter while stale and returns to the
+AOT body once restored.
 """
 
 import os

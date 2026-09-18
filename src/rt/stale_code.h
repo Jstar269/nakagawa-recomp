@@ -2,10 +2,10 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // Opt-in stale translated-code tracking (TD-27): DETECTION plus a per-entry
-// stale flag and a dispatch-side query. The dispatch redirect itself is NOT
-// yet wired (see "Dispatch hook" below): until it lands, the HLE cache
-// handlers stay fail-loud (abort on a firing check), so a stale AOT body can
-// never silently run.
+// stale flag, a dispatch-side query, and the dispatch redirect that runs a
+// stale block through the guest interpreter instead of its AOT body. The HLE
+// cache handlers stay fail-loud (abort on a firing check), so a stale AOT
+// body can never silently run.
 //
 // Background. The production interpreter (src/rt/guest_interp.c) re-reads the
 // guest instruction word per step (MEM_R32(pc)), while ahead-of-time
@@ -45,8 +45,8 @@
 // immediately on a cached disabled flag before touching guest memory; the
 // default codegen emits no hook calls at all. sr_stale_block_is_stale()
 // likewise returns 0 on one cached disabled branch before touching the
-// record tables, so an unwired-by-default dispatch stays exactly on its
-// current path.
+// record tables, so dispatch stays exactly on its current path when the
+// gate is off.
 //
 // Stale flags (invalidation half, TD-27). Every registered word/block record
 // carries a stale flag. A check that examines a record SETS the flag when the
@@ -57,41 +57,41 @@
 // gate-disabled path. sr_stale_reset() drops all records including flags; a
 // repeated registration installs a fresh expectation with the flag clear.
 //
-// Dispatch hook (REQUIRED before stale blocks may execute; NOT YET WIRED).
-// When a check marks a block stale, the next dispatch to that block must run
-// the guest bytes through the existing single-step interpreter instead of
-// the registered AOT body, until return to the caller:
+// Dispatch hook (WIRED). When a check marks a block stale, the next dispatch
+// to that block runs the guest bytes through the existing single-step
+// interpreter instead of the registered AOT body, until return to the
+// caller:
 //
-//   1. src/rt/recomp.c dispatch_try_with_boundary(), in the `if (fn)` hit
-//      path after the reloc/kseg/late-import fixups and before `fn(s)`:
-//      when sr_stale_block_is_stale(target) is true, run
-//      sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
-//      (or sr_guest_interp_run(s, target, &fault) when call_boundary is
-//      NULL) and return its result exactly like the existing miss path
-//      does (AOT_HANDOFF/CALL_RETURN return; EXCEPTION/ERET clear flow and
-//      recurse; any reject propagates to the fail-closed wrapper).
+//   1. src/rt/recomp.c dispatch_try_with_boundary(), at the top of the
+//      `if (fn)` hit path (after the reloc/kseg/late-import fixups, before
+//      `fn(s)`): when sr_stale_block_is_stale(target) is true, control goes
+//      to dispatch_run_interp(), the shared tail the ordinary miss path
+//      also uses -- sr_guest_interp_run_with_boundary(s, target,
+//      call_boundary, &fault) (or sr_guest_interp_run(s, target, &fault)
+//      when call_boundary is NULL), with AOT_HANDOFF/CALL_RETURN returned,
+//      EXCEPTION/ERET flow cleared and recursed, and any reject propagated
+//      to the fail-closed wrapper.
 //   2. src/rt/guest_interp.c sr_guest_interp_run_internal(), in the tier
-//      selection ahead of `dispatch(s, pc)`: enter the AOT body only when
-//      `sr_lookup(pc) && !sr_stale_block_is_stale(pc)`, else keep
-//      interpreting. Without (2), the interpreter started by (1) would hand
-//      the same stale pc straight back to dispatch and recurse.
+//      selection ahead of `dispatch(s, pc)`: the AOT body is entered only
+//      when `sr_lookup(pc) && !sr_stale_block_is_stale(pc)`, else
+//      interpreting continues. Without (2), the interpreter started by (1)
+//      would hand the same stale pc straight back to dispatch and recurse.
 //
-// The hook is deliberately deferred: wiring it adds a stale_code.c edge to
-// the recomp.c/guest_interp.c link surface, which is locked in several
-// places this mission may not move -- the headless gate-stub link
-// (tools/test_native_gate_stub_link.py
-// test_same_headless_runtime_link_inputs_have_no_stale_symbols links
-// recomp.c+guest_interp.c with no stale TU), the hosted-CI inline-build
-// source lock (tools/test_native_gate_stub_link.py
-// TestInlineCiSelftestLinkSync pins the vfpu-interp-selftest recipe against
-// .github/workflows/ci.yml), the Makefile/CI/python-harness link audits
-// (tools/test_title_runtime_config.py
-// test_every_recomp_runtime_surface_links_guest_interp,
-// tools/test_cpu_lle.py, tools/test_domain_mode.py), and the selftest
-// recipes that would each need the new TU (heap, profiler, vfpu-interp,
-// cpu-lle, domain-mode, dispatch-isolation). Until the hook lands, the HLE
-// handlers keep the fail-loud abort, so detection without redirect still
-// fails closed instead of running stale bytes.
+// The hook adds a stale_code.c edge to the recomp.c/guest_interp.c link
+// surface: every Makefile selftest recipe linking either TU links
+// src/rt/stale_code.c, as do the headless gate link (tools/codegen_gate.py
+// and tools/test_native_gate_stub_link.py) and the hosted-CI inline
+// vfpu-interp-selftest builds. Gate off, each site costs one predictable
+// branch and default-generated code is byte-identical (codegen.py emits no
+// stale records unless --stale-detect opts in).
+//
+// The HLE handlers keep the fail-loud abort on a firing check, so in
+// production a set stale flag is always followed by an abort at invalidate
+// time; the redirect additionally guards any dispatch that reaches a stale
+// block through a path no firing check precedes. The synthetic
+// self-modifying program in src/rt/dispatch_isolation_selftest.c proves the
+// redirect: patch, check, dispatch runs the NEW bytes, restore, dispatch
+// returns to the AOT body.
 
 #ifndef NAKAGAWA_STALE_CODE_H
 #define NAKAGAWA_STALE_CODE_H

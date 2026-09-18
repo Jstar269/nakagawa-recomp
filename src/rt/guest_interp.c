@@ -653,8 +653,15 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
          * executable ownership, so a registered native body may be entered even
          * when no arena bytes back the PC: the translation itself embodies those
          * instructions (build-time-translated modules). Only the interpreted tier
-         * below needs readable bytes. */
-        if (sr_lookup(pc)) {
+         * below needs readable bytes.
+         *
+         * TD-27 stale redirect (see src/rt/stale_code.h "Dispatch hook"): a
+         * block the guest has overwritten since translation keeps interpreting
+         * instead of handing its stale pc back to dispatch, which would
+         * redirect here again and recurse. Gate off, the query is one
+         * cached-flag branch returning 0, so this stays exactly on the
+         * current path. */
+        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,

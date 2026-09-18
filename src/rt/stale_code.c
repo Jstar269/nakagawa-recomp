@@ -354,7 +354,7 @@ int sr_stale_check_all(SrStaleReadFn read, void *ctx,
 
 int sr_stale_block_is_stale(uint32_t addr) {
     /* Cached getenv (the SR_DISPLOG idiom): the disabled path is one
-     * predictable branch before any table touch, so a future dispatch hook
+     * predictable branch before any table touch, so the dispatch hook
      * stays off the hot path when the gate is unset. */
     size_t i;
     size_t j;
