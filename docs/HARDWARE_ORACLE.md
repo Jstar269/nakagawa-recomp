@@ -142,11 +142,15 @@ proposals. Each claim covers only the exact fixture named:
     offset belong to the register encoding (`lv.s S000, 2($t5)` assembles to
     `lv.s S002, 0($t5)`), so every faulting VFPU probe holds the full effective
     address in `$t5` with offset 0.
-  - Guard wiring is NOT part of this measurement: `sr_cpu_data_access_fault()`
-    already decides widths 4/16 correctly, but no codegen or interpreter call
-    site passes VFPU widths yet (see `src/rt/cpu_lle.c`). A misaligned VFPU
-    access under `--lle-cpu` therefore still succeeds in the model; wiring the
-    guard is an open review item, not a measured behavior.
+  - Guard wiring is now wired in both CPU tiers under `--lle-cpu`:
+    `tools/codegen.py` emits the VFPU memory forms from `vfpu_effect()`
+    through the same `sr_cpu_guard_access()` call as scalars (lv.s/sv.s width
+    4, lv.q/sv.q width 16, lvl/lvr/svl/svr width 0 bypass), `sr_vfpu_interp()`
+    checks before the access, and the interpreter width table carries the VFPU
+    rows at the same point relative to the access as scalar loads/stores.
+    Default (non-LLE) output is byte-identical. STILL SYNTHETIC: `sv.s`
+    misalignment, `sv.q` at +8, any VFPU access in a delay slot, and
+    left/right merges at odd addresses.
 - **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
   route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
   - *Error codes for unknown IDs:*

@@ -112,6 +112,9 @@ static uint32_t enc_lw(unsigned base, unsigned rt, uint16_t offset) {
 static uint32_t enc_sw(unsigned base, unsigned rt, uint16_t offset) {
     return enc_mem(0x2Bu, base, rt, offset);
 }
+static uint32_t enc_vfpu(unsigned primary, unsigned base, unsigned vt, uint16_t offset) {
+    return enc_mem(primary, base, vt, offset);
+}
 
 static void setup_spans(void) {
     sr_exec_span_reset();
@@ -548,6 +551,128 @@ static void test_hw_psp_a3_08_11_vfpu_alignment(void) {
           s.cop0[SR_CP0_BADVADDR]);
     CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
           "PSP-A3-10 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-08/09/10/11 through the interpreter lane: the VFPU widths above must
+ * fault (or bypass) at the actual lv.s/lv.q/sv.q/lvl.q op, not only in the
+ * decision function. Misaligned forms raise AdEL/AdES with EPC at the access
+ * and BadVAddr holding the effective address; the aligned quad and the
+ * left/right forms at +4 must not raise. The stub sr_vfpu_interp here returns
+ * OTHER without touching state, so a non-faulting VFPU op reports
+ * UNSUPPORTED (not EXCEPTION) with flow NONE -- "ok" means "does not fault". */
+static void test_hw_psp_a3_08_11_vfpu_through_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t base = 0x08856580u;
+
+    /* PSP-A3-08: lv.s S000, 0(t5) at base+2 faults AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x32u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 2u;
+    s.vi[0] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.s at base+2 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.s ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp lv.s EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "interp lv.s BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.vi[0] == 0x0BADBABEu, "interp lv.s must leave the destination unchanged");
+    CHECK(s.pc == TEST_VECTOR, "interp lv.s must transfer to the vector");
+
+    /* PSP-A3-09: lv.q at +4 and +8 both fault AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    s.vi[0] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.q at base+4 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.q+4 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp lv.q+4 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.vi[0] == 0x0BADBABEu, "interp lv.q+4 must leave the destination unchanged");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 8u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.q at base+8 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.q+8 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "interp lv.q+8 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-10: sv.q at +4 faults AdES, distinct from the load code. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3Eu, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.q at base+4 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.q ExcCode must be 5 (AdES), distinct from the load");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp sv.q EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp sv.q BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* Aligned lv.q is ok: it must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp aligned lv.q must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp aligned lv.q must not set flow");
+
+    /* PSP-A3-11: lvl.q/lvr.q at +4 bypass like lwl/lwr and must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvl.q at +4 must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvl.q at +4 must not set flow");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 2u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvr.q at +4 must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvr.q at +4 must not set flow");
 }
 
 /* BEV selects the bootstrap vector; an unowned vector fails closed. */
@@ -1064,6 +1189,7 @@ int main(void) {
     test_hw_psp_a3_05_halfword_odd();
     test_hw_psp_a3_06_unaligned_no_fault();
     test_hw_psp_a3_08_11_vfpu_alignment();
+    test_hw_psp_a3_08_11_vfpu_through_interpreter();
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();
