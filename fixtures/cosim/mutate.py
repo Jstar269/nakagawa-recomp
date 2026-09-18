@@ -110,7 +110,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 8),
+            ("s->r[0] = 0u;", "(void)0;", 9),
         ],
     ),
     Mutant(
