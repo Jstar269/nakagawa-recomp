@@ -1608,10 +1608,10 @@
     "status": "unreviewed"
   },
   "0xb011922f": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_AudioRestLen",
     "name": "sceAudioGetChannelRestLength",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb011b11f": {
     "classification": "dedicated",
