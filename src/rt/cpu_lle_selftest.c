@@ -477,6 +477,79 @@ static void test_hw_psp_a3_06_unaligned_no_fault(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "PSP-A3-06 helpers must not set flow");
 }
 
+/* PSP-A3-08/09/10/11: VFPU load/store alignment (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+ * fixtures exception-a3-vfpu-lvs/lvq4/lvq8/svq4/vfpu-aligned, cells in
+ * docs/HARDWARE_ORACLE.md "VFPU load/store alignment cells"). lv.s needs
+ * width 4, lv.q/sv.q need width 16, and lvl/lvr/svl/svr bypass with width 0
+ * exactly like lwl/lwr/swl/swr. The probed bases are 16-byte-aligned owned
+ * buffers; the offsets below are the probed effective addresses. */
+static void test_hw_psp_a3_08_11_vfpu_alignment(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;  /* the PSP-A3-09 +4 run's base */
+    fresh_state(&s);
+    /* PSP-A3-08: lv.s at base+2 faults AdEL; the aligned single does not. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-08 lv.s at base+2 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base, 4u, 0) == 0u,
+          "an aligned single must not fault");
+    /* PSP-A3-09: lv.q at +4 and +8 both fault AdEL; only 16-aligned passes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-09 lv.q at base+4 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-09 lv.q at base+8 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 0) == 0u,
+          "a 16-byte-aligned quad load must not fault");
+    /* Width-relative: +4/+8 are fine for a word; only width 16 rejects them. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 4u, 0) == 0u,
+          "base+4 must NOT fault for a word: the quad rule is width-relative");
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 4u, 0) == 0u,
+          "base+8 must NOT fault for a word either");
+    /* PSP-A3-10: sv.q at +4 faults AdES, distinct from the load code. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 16u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-10 sv.q at base+4 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 1) == 0u,
+          "a 16-byte-aligned quad store must not fault");
+    /* PSP-A3-11 (negative control): the left/right forms bypass like the
+     * unaligned word forms. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 0u, 0) == 0u,
+          "PSP-A3-11 an lvl/lvr op at +4 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 0u, 1) == 0u,
+          "PSP-A3-11 an svl/svr op at +4 must not fault");
+
+    /* Frame half, with the PSP-A3-09 +4 run's exact cells: EPC is the access,
+     * Cause is AdEL with BD clear (and ExcCode 4, not CpU 11), BadVAddr keeps
+     * the low bits instead of being aligned down. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, TEST_BASE, TEST_BASE,
+                                 base + 4u, 0u, 0u) < 0,
+          "PSP-A3-09 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-09 ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-09 BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-09 EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "PSP-A3-09 BadVAddr=0x%08x, want the effective address with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 4u,
+          "PSP-A3-09 BadVAddr must not be aligned down to 16");
+
+    /* Store half with the PSP-A3-10 run's code. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 4u, 0u, 0u) < 0,
+          "PSP-A3-10 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-10 ExcCode must be 5 (AdES), distinct from the load");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "PSP-A3-10 BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-10 must transfer to the vector, not continue");
+}
+
 /* BEV selects the bootstrap vector; an unowned vector fails closed. */
 static void test_vector_selection(void) {
     CpuState s;
@@ -990,6 +1063,7 @@ int main(void) {
     test_hw_psp_a3_04_delay_slot_misaligned();
     test_hw_psp_a3_05_halfword_odd();
     test_hw_psp_a3_06_unaligned_no_fault();
+    test_hw_psp_a3_08_11_vfpu_alignment();
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();

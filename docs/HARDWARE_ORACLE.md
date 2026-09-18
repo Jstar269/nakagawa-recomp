@@ -69,9 +69,11 @@ proposals. Each claim covers only the exact fixture named:
   - The base in both runs is a 16-byte-aligned, mapped, writable buffer the
     probe module owns, so the fault is attributable to the low address bits
     rather than to an absent page.
-  - Cause bit 31 (BD) was clear in both. The delay-slot, halfword and
-    `lwl`/`lwr`/`swl`/`swr` cases were measured afterwards (PSP-A3-04 to
-    PSP-A3-06, below); only the VFPU load/store group remains unmeasured.
+  - Cause bit 31 (BD) was clear in both. The delay-slot, halfword,
+    `lwl`/`lwr`/`swl`/`swr` and VFPU load/store cases were measured afterwards
+    (PSP-A3-04 to PSP-A3-11, below); the remaining unmeasured VFPU cells are
+    `sv.s` misalignment, `sv.q` at +8, any VFPU access in a delay slot, and
+    left/right merges at odd addresses.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
 - **CPU exception delay-slot and width cells** (runs PSP-A3-04, PSP-A3-05,
@@ -100,6 +102,51 @@ proposals. Each claim covers only the exact fixture named:
     bit-for-bit. The exemption in `LLE_ACCESS`, the interpreter width table
     and `sr_cpu_data_access_fault` (never guarded) is thereby measured.
   - Status in all faulting runs is `0x00088613`, as in PSP-A1-01/A2-01/A3-01.
+- **VFPU load/store alignment cells** (runs PSP-A3-08, PSP-A3-09 (+4 and +8
+  variants), PSP-A3-10, PSP-A3-11; same route and campaign `psp-hw-20260917`;
+  fixtures `exception-a3-vfpu-lvs`, `exception-a3-vfpu-lvq4`,
+  `exception-a3-vfpu-lvq8`, `exception-a3-vfpu-svq4` and
+  `exception-a3-vfpu-aligned`, which are `probe_exception_a3.c` built with
+  `-DA3_CASE=8`, `=9`, `=10`, `=11` and `=12`):
+  - Every VFPU probe runs with main-thread attribute
+    `THREAD_ATTR_USER | THREAD_ATTR_VFPU`. No run reported CpU (ExcCode 11),
+    which confirms the attribute held: the measured codes are AdEL/AdES (4/5),
+    not coprocessor-unusable. Status reads `0x40088613` in all four faulting
+    runs -- the historical `0x00088613` plus CU2 (`0x40000000`), the VFPU-enable
+    bit the attribute sets.
+  - A single VFPU load (`lv.s S000, 0($t5)`, `0xC9A00000`) at base+2 of an
+    owned 16-byte-aligned buffer raises AdEL: EPC = the access `0x088043B8`
+    (cross-checked against the recorded `a3_load_instruction`), Cause
+    `0x10000010` (ExcCode 4, BD 0), BadVAddr = `0x08821C92` (t5, i.e. base
+    `0x08821C90` + 2, low bits kept). Singles therefore need 4-byte alignment.
+  - A quad VFPU load (`lv.q C000, 0($t5)`, `0xD9A00000`) at base+4 raises AdEL:
+    EPC = `0x08838CB8`, Cause `0x10000010`, BadVAddr = `0x08856584` (base
+    `0x08856580` + 4). The same load at base+8 also raises AdEL: EPC =
+    `0x0886D5B8`, Cause `0x10000010`, BadVAddr = `0x0888AE78` (base + 8). Quads
+    therefore need 16-byte alignment -- a 4-byte or 8-byte rule would have let
+    one or both of these through.
+  - A quad VFPU store (`sv.q C000, 0($t5)`, `0xF9A00000`) at base+4 raises
+    AdES: EPC = the store `0x088A1EB8`, Cause `0x10000014` (ExcCode 5, BD 0),
+    BadVAddr = `0x088BF794` (base `0x088BF790` + 4). Quad stores match the
+    16-byte rule with the store code.
+  - The negative control returns normally (via `sceKernelExitGame`) and writes
+    `host0:/a3_vfpu_aligned_results.txt`, no exception: an aligned `lv.q` /
+    `sv.q` round-trip reproduces the source quad bit-for-bit (`11223344
+    55667788 99aabbcc ddeeff00`), and `lvl.q` / `lvr.q` at the 4-byte-aligned
+    unaligned-to-16 address src+4 complete without faulting (C010 lanes land as
+    `aaaaaaaa bbbbbbbb 11223344 55667788`, C020 as `55667788 99aabbcc ddeeff00
+    dddddddd` from the `aaaaaaaa..dddddddd` fill). The left/right bypass in
+    `LLE_ACCESS`-style guarding is thereby measured for the VFPU group, exactly
+    as PSP-A3-06 did for `lwl`/`lwr`/`swl`/`swr`.
+  - Encoding note the probes worked around: the low two bits of a VFPU memory
+    offset belong to the register encoding (`lv.s S000, 2($t5)` assembles to
+    `lv.s S002, 0($t5)`), so every faulting VFPU probe holds the full effective
+    address in `$t5` with offset 0.
+  - Guard wiring is NOT part of this measurement: `sr_cpu_data_access_fault()`
+    already decides widths 4/16 correctly, but no codegen or interpreter call
+    site passes VFPU widths yet (see `src/rt/cpu_lle.c`). A misaligned VFPU
+    access under `--lle-cpu` therefore still succeeds in the model; wiring the
+    guard is an open review item, not a measured behavior.
 - **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
   route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
   - *Error codes for unknown IDs:*

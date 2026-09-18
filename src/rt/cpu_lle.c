@@ -178,8 +178,40 @@ static void sr_cp0_delay_context(
  * the probed sequence). They are deliberately never alignment-guarded here,
  * in tools/codegen.py LLE_ACCESS, or in the interpreter width table.
  *
- * STILL SYNTHETIC: the VFPU load/store group, which has its own alignment
- * rules that no probe has measured yet and is excluded here. */
+ * MEASURED (runs PSP-A3-08, PSP-A3-09 (+4 and +8 variants), PSP-A3-10 and
+ * PSP-A3-11, same campaign and console; fixtures `exception-a3-vfpu-lvs`,
+ * `exception-a3-vfpu-lvq4`, `exception-a3-vfpu-lvq8`, `exception-a3-vfpu-svq4`
+ * and `exception-a3-vfpu-aligned`, which are probe_exception_a3.c built with
+ * -DA3_CASE=8, =9, =10, =11 and =12; cells in docs/HARDWARE_ORACLE.md "VFPU
+ * load/store alignment cells"): the VFPU group follows the same width-relative
+ * rule with its own widths. `lv.s` at base+2 raises AdEL (Cause 0x10000010,
+ * EPC = the access at 0x088043B8, BadVAddr = 0x08821C92, the effective address
+ * with low bits kept), so singles need 4-byte alignment. `lv.q` at base+4 AND
+ * at base+8 both raise AdEL (EPC = the access, BadVAddr = the effective
+ * address in both), so quads need 16-byte alignment, not 4- or 8-byte.
+ * `sv.q` at base+4 raises AdES (Cause 0x10000014, EPC = the store at
+ * 0x088A1EB8, BadVAddr = the effective address 0x088BF794), so quad stores
+ * match. All bases are 16-byte-aligned owned buffers; no run reported CpU
+ * (ExcCode 11), which confirms the THREAD_ATTR_VFPU main-thread attribute
+ * held, and Status reads 0x40088613 (the historical 0x00088613 plus CU2).
+ * The negative control (aligned lv.q/sv.q round-trip plus lvl.q/lvr.q at the
+ * 4-byte-aligned unaligned-to-16 address src+4) completes normally and writes
+ * host0:/a3_vfpu_aligned_results.txt: dst = the src quad bit-for-bit, and the
+ * left/right merges land in the C010/C020 lanes without faulting.
+ *
+ * The width-relative check below already expresses that rule: width 4 covers
+ * lv.s/sv.s and width 16 covers lv.q/sv.q, while lvl/lvr/svl/svr bypass with
+ * width 0 exactly like lwl/lwr/swl/swr. What is NOT yet wired is any caller
+ * passing those VFPU widths: tools/codegen.py emits the VFPU memory forms
+ * from vfpu_effect() without an LLE guard, sr_vfpu_interp() performs no
+ * alignment check, and the interpreter width table has no VFPU row, so a
+ * misaligned VFPU access under --lle-cpu currently succeeds instead of
+ * faulting. That wiring is left for review; the decision function and its
+ * selftests below are measured, the call sites are not.
+ *
+ * STILL SYNTHETIC: sv.s misalignment (never probed; singles are measured only
+ * for the lv.s +2 load cell), sv.q at +8, any VFPU access in a delay slot,
+ * and lvl/lvr/svl/svr at odd (non-4-byte-aligned) addresses. */
 unsigned sr_cpu_data_access_fault(
     const CpuState *s,
     uint32_t address,
@@ -191,11 +223,14 @@ unsigned sr_cpu_data_access_fault(
         return 0u;
     }
     /* Measured (PSP-A3-02 load, PSP-A3-03 store, PSP-A3-04 word in a delay
-     * slot, PSP-A3-05 halfword at odd
-     * address): a misaligned access raises AdEL for loads and AdES for
+     * slot, PSP-A3-05 halfword at odd address, PSP-A3-08 VFPU single at +2,
+     * PSP-A3-09 VFPU quad at +4/+8, PSP-A3-10 VFPU quad store at +4): a
+     * misaligned access raises AdEL for loads and AdES for
      * stores, with BadVAddr = the effective address. Width-relative: an odd
      * address faults for halfwords and words, while base+2 faults only for
-     * words. lwl/lwr/swl/swr never reach this check (PSP-A3-06). */
+     * words; base+4 and base+8 fault only for width 16 (VFPU quads).
+     * lwl/lwr/swl/swr and lvl/lvr/svl/svr never reach this check (PSP-A3-06,
+     * PSP-A3-11) and are passed width 0 by their callers. */
     if (width > 1u && (address & (width - 1u)) != 0u) {
         return code;
     }
