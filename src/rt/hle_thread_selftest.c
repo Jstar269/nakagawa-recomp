@@ -4963,6 +4963,15 @@ static void test_b23_second_round(void) {
 #define FPL_SENTINEL          0xfeedfaceu
 #define FPL_BSIZE             0x100u
 #define FPL_NBLOCKS           0x10
+#define NID_VPL_CREATE        0x56c039b5u
+#define NID_VPL_DELETE        0x89b3d48cu
+#define NID_VPL_TRY_ALLOCATE  0xaf36d708u
+#define NID_VPL_FREE          0xb736e9ffu
+#define NID_VPL_REFER         0x39810265u
+#define VPL_BAD_ID_ERR        0x800200d3u
+#define VPL_EXHAUSTED_ERR     0x800200d9u
+#define VPL_INFO              0x00240a00u
+#define VPL_OUTPTR            0x00240a80u
 
 /* Fresh FPL_NBLOCKS x FPL_BSIZE pool. Returns 0 on arrangement failure. */
 static uint32_t fpl_make_pool(void) {
@@ -9146,6 +9155,78 @@ static void test_fpl_delete_releases_partition(void) {
     (void)sr_syscall(&cpu, NID_FPL_DELETE);
 }
 
+static void test_vpl_nonblocking_roundtrip(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern int sr_hle_test_partition_free_block_count(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    CpuState cpu;
+    /* Keep the VPL block interior so free_block's top rollback does not hide
+     * the released block; this mirrors the FPL lifetime fixture. */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t anchor = sr_syscall(&cpu, 0x237dbd4fu);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 2u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t vpl = sr_syscall(&cpu, NID_VPL_CREATE);
+    expect(vpl >= 0x600u, "vpl create succeeds");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t trailer = sr_syscall(&cpu, 0x237dbd4fu);
+
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = 0x80u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == 0u, "vpl first allocation succeeds");
+    uint32_t first = MEM_R32(VPL_OUTPTR);
+    expect(first != 0u, "vpl allocation writes address");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = 0x80u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == 0u, "vpl pool reaches exhaustion boundary");
+    MEM_W32(VPL_OUTPTR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = 1u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == VPL_EXHAUSTED_ERR,
+           "vpl exhaustion returns the existing pool error");
+    expect(MEM_R32(VPL_OUTPTR) == 0xfeedfaceu, "vpl exhaustion leaves output/state untouched");
+
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = first;
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == 0u, "vpl free succeeds");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = VPL_INFO;
+    expect(sr_syscall(&cpu, NID_VPL_REFER) == 0u, "vpl refer status succeeds");
+    expect(MEM_R32(VPL_INFO + 40) == 0x100u && MEM_R32(VPL_INFO + 44) == 0x80u,
+           "vpl status reports pool and free sizes");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = first;
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl double free is rejected");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = 0xdead0000u;
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl unknown address is rejected");
+
+    /* Delete releases the single backing partition block, so same-size recreate reuses it. */
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == 0u, "vpl delete succeeds");
+    expect(sr_hle_test_partition_free_block_count() == 1, "vpl delete releases backing block");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl double delete is rejected");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = 0x699u;
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl unknown uid is rejected");
+
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 2u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t vpl2 = sr_syscall(&cpu, NID_VPL_CREATE);
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl2; cpu.r[5] = 0x80u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == 0u && MEM_R32(VPL_OUTPTR) == first,
+           "same-size vpl recreate reuses the released partition address");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl2; cpu.r[5] = MEM_R32(VPL_OUTPTR);
+    (void)sr_syscall(&cpu, NID_VPL_FREE);
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl2;
+    (void)sr_syscall(&cpu, NID_VPL_DELETE);
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = anchor;
+    (void)sr_syscall(&cpu, 0xb6d61d02u);
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = trailer;
+    (void)sr_syscall(&cpu, 0xb6d61d02u);
+}
+
 /* =========================================================================
  * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
  * ========================================================================= */
@@ -11464,6 +11545,7 @@ int main(int argc, char **argv) {
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
     test_fpl_delete_releases_partition();
+    test_vpl_nonblocking_roundtrip();
     test_intr_context_conformance();
     test_psp_mutex();
 
