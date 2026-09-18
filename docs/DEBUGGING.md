@@ -102,6 +102,7 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD` |
 
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
