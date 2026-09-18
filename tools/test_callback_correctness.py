@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -71,19 +75,17 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("0x80020001u", body)
         self.assertIn("0x800200D3u", body)
 
-    def test_callback_abi_and_context_preservation(self):
-        pack = strip_comments(function_body(RECOMP_H_SOURCE, "sr_callback_pack_args"))
-        self.assertIn("cpu->r[4] = (uint32_t)notify_count", pack)
-        self.assertIn("cpu->r[5] = notify_arg", pack)
-        self.assertIn("cpu->r[6] = common_arg", pack)
+    def test_callback_abi_and_context_preservation_source_shape(self):
+        """Structural companion to CallbackDispatchBehaviourTests below.
+
+        The compiled probe proves what the helpers *do*; this greps what they
+        must keep *out* of the dispatch path (a callback-global GP override, a
+        wiped register file).  Only the negative properties live here, so a
+        refactor cannot satisfy them by accident.
+        """
         body = strip_comments(function_body(RECOMP_H_SOURCE, "sr_callback_dispatch_one"))
-        self.assertIn("CpuState save = *cpu", body)
-        self.assertIn("*cpu = save", body)
-        self.assertIn("cpu->r[31] = 0", body)
-        self.assertIn("cpu->pc = entry", body)
         self.assertNotIn("cpu->r[28]", body)
         self.assertNotIn("memset(cpu", body)
-        self.assertLess(body.index("uint32_t ret = cpu->r[2]"), body.index("*cpu = save"))
 
     def test_dispatcher_has_no_gp_override_or_arbitrary_pass_cap(self):
         body = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callbacks"))
@@ -177,6 +179,153 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("sched_terminate_thread(A0)", body)
         sched = strip_comments((ROOT / "src" / "rt" / "sched.c").read_text(encoding="utf-8"))
         self.assertIn("sr_callback_unregister_owner(t->uid)", sched)
+
+
+class CallbackDispatchBehaviourTests(unittest.TestCase):
+    """Run sr_callback_dispatch_one for real instead of grepping its source.
+
+    The previous version of test_callback_abi_and_context_preservation asserted
+    the C source of src/rt/recomp.h line by line ($a0 assignment strings, a
+    ``CpuState save = *cpu`` literal, statement order).  A refactor that renamed
+    locals or restructured the helpers could fail it while behaving correctly,
+    and a behavioural break could still pass it.  These tests compile
+    recomp.h's callback seam and execute it: the dispatcher is injected the
+    same way hle.c injects the real dispatch(), so the production helpers run
+    without linking the runtime.
+    """
+
+    # Self-contained probe: record the register file exactly as the PSP callback
+    # ABI delivers it ($a0/$a1/$a2 arguments, inherited $gp, pinned $ra), return
+    # $v0 = 0x2a, and print the interrupted context after the helper restores it.
+    PROBE_SOURCE = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "recomp.h"
+
+static void guest_callback(CpuState *cpu) {
+    printf("cb a0=%08x a1=%08x a2=%08x gp=%08x ra=%08x\n",
+           cpu->r[4], cpu->r[5], cpu->r[6], cpu->r[28], cpu->r[31]);
+    cpu->r[2] = 0x0000002au;  /* the callback's $v0 */
+}
+
+/* Stand-in for recompiled code, injected exactly the way hle.c injects the
+ * real dispatch(): it only runs the guest body.  A real `jal` leaves $ra =
+ * call+8; it never touches $gp. */
+static void stand_in_dispatch(CpuState *cpu, uint32_t entry) {
+    (void)entry;
+    cpu->r[31] = 0xfeed0008u;
+    guest_callback(cpu);
+}
+
+/* A second dispatcher that forgets to emulate the `jal`: it leaves $ra alone.
+ * The helper must still hand the callback a defined $ra (its own pin), not the
+ * interrupted thread's stale one. */
+static void bare_dispatch(CpuState *cpu, uint32_t entry) {
+    (void)entry;
+    guest_callback(cpu);
+}
+
+int main(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[28] = 0x12340000u;   /* interrupted thread's live $gp */
+    cpu.r[11] = 0x55555555u;   /* register the ABI must preserve */
+    cpu.r[2]  = 0x77777777u;   /* interrupted $v0 */
+    cpu.r[31] = 0x08900040u;   /* interrupted $ra */
+    cpu.pc    = 0x08900000u;   /* interrupted pc */
+    cpu.hi    = 0x11111111u;
+    cpu.lo    = 0x22222222u;
+
+    /* 1: jal-like dispatcher (the real shape).  The callback must see the
+     * arguments, the inherited $gp, and the jal's $ra -- never a helper-installed
+     * callback-global $gp or $ra on top of the dispatcher's own. */
+    (void)sr_callback_dispatch_one(
+        &cpu, 0x08804000u, 7, 0x0000beefu, 0x0000c0deu, stand_in_dispatch);
+    /* 2: dispatcher that does not set $ra: the helper's pin (0) must show. */
+    uint32_t ret = sr_callback_dispatch_one(
+        &cpu, 0x08804000u, 7, 0x0000beefu, 0x0000c0deu, bare_dispatch);
+
+    printf("ret=%08x\n", ret);
+    printf("after r28=%08x r11=%08x v0=%08x hi=%08x lo=%08x ra=%08x pc=%08x\n",
+           cpu.r[28], cpu.r[11], cpu.r[2], cpu.hi, cpu.lo, cpu.r[31], cpu.pc);
+    return 0;
+}
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cc = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+        if cls.cc is None:
+            raise unittest.SkipTest("no C compiler on PATH")
+        cls.tmp = tempfile.mkdtemp(prefix="callback_dispatch_probe_")
+        try:
+            source = Path(cls.tmp) / "callback_probe.c"
+            source.write_text(cls.PROBE_SOURCE, encoding="ascii")
+            exe = Path(cls.tmp) / (
+                "callback_probe.exe" if sys.platform == "win32" else "callback_probe"
+            )
+            result = subprocess.run(
+                [
+                    cls.cc, "-std=c11", "-O0", "-Wall", "-Werror",
+                    f"-I{ROOT / 'src' / 'rt'}",
+                    "-o", str(exe), str(source),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise AssertionError(
+                    "callback dispatch probe did not compile:\n"
+                    + result.stdout
+                    + result.stderr
+                )
+            cls.exe = str(exe)
+        except BaseException:
+            shutil.rmtree(cls.tmp, ignore_errors=True)
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run_probe(self) -> str:
+        result = subprocess.run([self.exe], capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise AssertionError(
+                "callback dispatch probe crashed:\n" + result.stdout + result.stderr
+            )
+        return result.stdout
+
+    def test_abi_args_inherited_gp_and_ra_ownership(self):
+        """The callback body must see the PSP ABI: $a0=count, $a1=arg, $a2=common,
+        the interrupted thread's $gp (never a callback-global GP), and a $ra owned
+        by the dispatch path: the jal's value when the dispatcher sets one, the
+        helper's pin (0) when it does not."""
+        out = self._run_probe()
+        self.assertIn(
+            "cb a0=00000007 a1=0000beef a2=0000c0de gp=12340000 ra=feed0008",
+            out,
+            "the PSP callback ABI delivered by sr_callback_dispatch_one is wrong "
+            "(jal-like dispatcher case):\n" + out,
+        )
+        self.assertIn(
+            "cb a0=00000007 a1=0000beef a2=0000c0de gp=12340000 ra=00000000",
+            out,
+            "the helper must pin $ra=0 before dispatch so a dispatcher that "
+            "never emulates the jal still hands the callback a defined $ra:\n" + out,
+        )
+
+    def test_interrupted_context_restored_and_return_value_delivered(self):
+        """$v0 is observed before the snapshot is restored; every register the
+        dispatcher did not own comes back exactly as the interrupted thread had it."""
+        out = self._run_probe()
+        self.assertIn("ret=0000002a", out, "the callback's $v0 must be the return value:\n" + out)
+        self.assertIn(
+            "after r28=12340000 r11=55555555 v0=77777777 hi=11111111 lo=22222222 ra=08900040 pc=08900000",
+            out,
+            "the interrupted context must be fully restored after the dispatch:\n" + out,
+        )
 
 
 if __name__ == "__main__":

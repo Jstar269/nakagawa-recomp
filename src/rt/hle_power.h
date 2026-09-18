@@ -16,6 +16,8 @@ uint32_t h_PowerIsBatteryExist(CpuState *s);
 uint32_t h_PowerIsPowerOnline(CpuState *s);
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s);
 uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s);
+uint32_t h_PowerSetClockFrequency(CpuState *s);
+uint32_t h_PowerSetClockFrequency350(CpuState *s);
 uint32_t h_PowerRegisterCallback(CpuState *s);
 
 int sr_callback_is_valid(uint32_t uid);
