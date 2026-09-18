@@ -72,6 +72,14 @@ else ifeq ($(CASE),exception-a3-mload)
 CASE_ID = 29
 else ifeq ($(CASE),exception-a3-mstore)
 CASE_ID = 30
+else ifeq ($(CASE),exception-a3-delayslot)
+CASE_ID = 31
+else ifeq ($(CASE),exception-a3-half-load)
+CASE_ID = 32
+else ifeq ($(CASE),exception-a3-half-store)
+CASE_ID = 33
+else ifeq ($(CASE),exception-a3-unaligned)
+CASE_ID = 34
 else ifeq ($(CASE),kobj-b1)
 CASE_ID = 26
 else ifeq ($(CASE),wait-b2)
@@ -84,10 +92,13 @@ endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
 
-# Cases 23-28 are standalone probes, each in its own source file, that record
-# the build commit in their output. The exception probes raise exactly one
-# exception and never return; the kernel-object probes use their own complete
-# ThreadManForUser import block (threadman_user_imports.S).
+# Cases 23-28 and 31-34 are standalone probes, each in its own source file, that
+# record the build commit in their output. The exception probes raise exactly
+# one exception and never return, except exception-a3-unaligned which is the
+# negative control that returns and writes a results file; the kernel-object
+# probes use their own complete ThreadManForUser import block
+# (threadman_user_imports.S). CASE_IDs 29/30 are reserved for open PR #244
+# (exception-a3-mload/mstore) so a future merge cannot collide.
 PROBE_BUILD_COMMIT ?= $(shell git rev-parse --short HEAD)
 ifeq ($(CASE),exception-a1)
 TARGET = $(BUILD_DIR)/psp_a1
@@ -109,6 +120,22 @@ else ifeq ($(CASE),exception-a3-mstore)
 TARGET = $(BUILD_DIR)/psp_a3_mstore
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
 CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=3
+else ifeq ($(CASE),exception-a3-delayslot)
+TARGET = $(BUILD_DIR)/psp_a3_delayslot
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=4
+else ifeq ($(CASE),exception-a3-half-load)
+TARGET = $(BUILD_DIR)/psp_a3_half_load
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=5
+else ifeq ($(CASE),exception-a3-half-store)
+TARGET = $(BUILD_DIR)/psp_a3_half_store
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=6
+else ifeq ($(CASE),exception-a3-unaligned)
+TARGET = $(BUILD_DIR)/psp_a3_unaligned
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=7
 else ifeq ($(CASE),kobj-b1)
 TARGET = $(BUILD_DIR)/psp_b1
 OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/threadman_user_imports.o
