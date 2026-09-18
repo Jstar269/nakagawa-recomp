@@ -140,7 +140,12 @@ int main(int argc, char **argv) {
     static char envbuf[512];
     if (!(argc > 1 && strcmp(argv[1], "off") == 0)) {
         snprintf(envbuf, sizeof(envbuf), "SR_GE_TRANSITION_TRACE=%s", argv[1]);
+#ifdef _WIN32
         _putenv(envbuf);
+#else
+        extern int putenv(char *);   /* hidden by glibc under -std=c11 */
+        putenv(envbuf);
+#endif
     }
     uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
     if (!arena) return 2;
