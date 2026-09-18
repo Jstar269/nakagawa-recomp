@@ -393,9 +393,85 @@ static void user_partition_init(void) {
 /* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
  * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
  * writes malloc chunk metadata at the start of its UserSbrk block. */
-typedef struct { uint32_t uid, addr, size, prev, next; } Block;
-static Block s_blocks[256];
+typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
+#define HLE_MAX_PARTITION_BLOCKS 256
+static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 static int s_nblocks = 0;
+
+/* Free list for partition memory reuse. Real PSP firmware (SysMem) keeps partition
+ * blocks sorted by address and uses First-Fit from the bottom (PSP_SMEM_Low)
+ * coalescing adjacent free blocks on release.
+ * NOTE: First-fit low-address allocation matches the PSP PSP_SMEM_Low contract.
+ * Granularity is 256 bytes (0x100), matching PSP partition alignment. Any internal
+ * splitting choice or free-block capacity is project-authored and marked as an
+ * unmeasured choice relative to physical hardware sysmem fragmentation structures. */
+typedef struct {
+    uint32_t addr;
+    uint32_t size;
+} FreeBlock;
+
+#define HLE_MAX_FREE_BLOCKS 256
+static FreeBlock s_free_blocks[HLE_MAX_FREE_BLOCKS];
+static int s_nfree_blocks = 0;
+
+static void partition_free_block(uint32_t addr, uint32_t size) {
+    if (size == 0) return;
+
+    /* Check if this freed block reaches or exceeds the bump pointer s_heap. */
+    if (addr + size >= s_heap) {
+        /* Check if it coalesces with the last free block in the free list. */
+        if (s_nfree_blocks > 0 &&
+            s_free_blocks[s_nfree_blocks - 1].addr + s_free_blocks[s_nfree_blocks - 1].size == addr) {
+            s_heap = s_free_blocks[s_nfree_blocks - 1].addr;
+            s_nfree_blocks--;
+        } else {
+            s_heap = addr;
+        }
+        s_heap_last_bump = s_heap;
+        return;
+    }
+
+    /* Interior block: insert into s_free_blocks sorted by addr and coalesce. */
+    int idx = 0;
+    while (idx < s_nfree_blocks && s_free_blocks[idx].addr < addr) {
+        idx++;
+    }
+
+    int merge_left = (idx > 0 && s_free_blocks[idx - 1].addr + s_free_blocks[idx - 1].size == addr);
+    int merge_right = (idx < s_nfree_blocks && addr + size == s_free_blocks[idx].addr);
+
+    if (merge_left && merge_right) {
+        s_free_blocks[idx - 1].size += size + s_free_blocks[idx].size;
+        for (int j = idx; j < s_nfree_blocks - 1; j++) {
+            s_free_blocks[j] = s_free_blocks[j + 1];
+        }
+        s_nfree_blocks--;
+    } else if (merge_left) {
+        s_free_blocks[idx - 1].size += size;
+    } else if (merge_right) {
+        s_free_blocks[idx].addr = addr;
+        s_free_blocks[idx].size += size;
+    } else {
+        if (s_nfree_blocks < HLE_MAX_FREE_BLOCKS) {
+            for (int j = s_nfree_blocks; j > idx; j--) {
+                s_free_blocks[j] = s_free_blocks[j - 1];
+            }
+            s_free_blocks[idx].addr = addr;
+            s_free_blocks[idx].size = size;
+            s_nfree_blocks++;
+        } else {
+            fprintf(stderr, "partition_free_block: free block table exhausted\n");
+        }
+    }
+
+    /* If the highest free block now reaches s_heap, roll s_heap back. */
+    if (s_nfree_blocks > 0 &&
+        s_free_blocks[s_nfree_blocks - 1].addr + s_free_blocks[s_nfree_blocks - 1].size >= s_heap) {
+        s_heap = s_free_blocks[s_nfree_blocks - 1].addr;
+        s_heap_last_bump = s_heap;
+        s_nfree_blocks--;
+    }
+}
 
 static uint32_t alloc_block(uint32_t size) {
     static int trace = -1, guard = -1;
@@ -409,22 +485,63 @@ static uint32_t alloc_block(uint32_t size) {
         max_req = em ? (uint32_t)strtoul(em, NULL, 16) : 0xFFFFFFFFu;
     }
     user_partition_init();
-    /* Guard: reject impossible sizes or overflow past partition top. Real PSP returns an
-     * alloc-failure sentinel; bumping past partition top corrupts every later block (e.g. the
-     * 0x56E00000 request that pushed heap to 0x57d08bc0 and spun thread 0x115 at 0x6ea40). */
-    uint32_t aligned = (s_heap + 0xFFu) & ~0xFFu;
-    int overflow = (size == 0) || (size > max_req) ||
-                   (aligned + size < aligned) || (aligned + size > s_part_top);
-    if (overflow && guard) {
-        fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                size, size, s_heap, s_part_top, max_req);
-        fflush(stderr);
-        return 0xFFFFFFFFu;  /* PSP alloc-failure sentinel */
+
+    if (size == 0 || size > max_req) {
+        if (guard) {
+            fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
+                    size, size, s_heap, s_part_top, max_req);
+            fflush(stderr);
+        }
+        return 0xFFFFFFFFu;
     }
-    uint32_t addr = aligned;   /* 256-byte align */
+
+    uint32_t needed_slot = (size + 0xFFu) & ~0xFFu;
+    if (needed_slot == 0) needed_slot = 0x100u;
+
+    uint32_t addr = 0;
+    uint32_t slot_size = 0;
+    int found_fb = -1;
+
+    /* First-fit search across sorted free list (PSP_SMEM_Low policy). */
+    for (int i = 0; i < s_nfree_blocks; i++) {
+        if (s_free_blocks[i].size >= needed_slot) {
+            found_fb = i;
+            break;
+        }
+    }
+
+    if (found_fb >= 0) {
+        addr = s_free_blocks[found_fb].addr;
+        slot_size = needed_slot;
+        if (s_free_blocks[found_fb].size == needed_slot) {
+            for (int j = found_fb; j < s_nfree_blocks - 1; j++) {
+                s_free_blocks[j] = s_free_blocks[j + 1];
+            }
+            s_nfree_blocks--;
+        } else {
+            s_free_blocks[found_fb].addr += needed_slot;
+            s_free_blocks[found_fb].size -= needed_slot;
+        }
+    } else {
+        /* Bump allocation from s_heap. */
+        uint32_t aligned = (s_heap + 0xFFu) & ~0xFFu;
+        int overflow = (aligned + size < aligned) || (aligned + size > s_part_top);
+        if (overflow && guard) {
+            fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
+                    size, size, s_heap, s_part_top, max_req);
+            fflush(stderr);
+            return 0xFFFFFFFFu;  /* PSP alloc-failure sentinel */
+        }
+        addr = aligned;   /* 256-byte align */
+        slot_size = needed_slot;
+        s_heap = addr + size;
+        s_heap_last_bump = s_heap;
+    }
+
     sr_last_alloc_addr = addr;
     uint32_t prev = 0xFFFFFFFFu;                  /* nobody ahead of us in the freelist */
     uint32_t next = 0u;
+
     /* Preserve the diagnostic chain entirely host-side. */
     for (int i = s_nblocks - 1; i >= 0; --i) {
         if (s_blocks[i].uid != 0u && s_blocks[i].addr != 0u) {
@@ -433,19 +550,30 @@ static uint32_t alloc_block(uint32_t size) {
             break;
         }
     }
-    s_heap = addr + size;
-    s_heap_last_bump = s_heap;
+
     uint32_t uid = sr_alloc_uid();
-    if (s_nblocks < 256) {
-        s_blocks[s_nblocks].uid   = uid;
-        s_blocks[s_nblocks].addr  = addr;
-        s_blocks[s_nblocks].size  = size;
-        s_blocks[s_nblocks].prev  = prev;
-        s_blocks[s_nblocks].next  = next;
-        s_nblocks++;
+    /* Record in s_blocks, reusing an empty slot if possible. */
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++) {
+        if (s_blocks[i].uid == 0u) {
+            slot = i;
+            break;
+        }
     }
+    if (slot < 0 && s_nblocks < HLE_MAX_PARTITION_BLOCKS) {
+        slot = s_nblocks++;
+    }
+    if (slot >= 0) {
+        s_blocks[slot].uid       = uid;
+        s_blocks[slot].addr      = addr;
+        s_blocks[slot].size      = size;
+        s_blocks[slot].slot_size = slot_size;
+        s_blocks[slot].prev      = prev;
+        s_blocks[slot].next      = next;
+    }
+
     /* Telemetry: emit structured line so WebUI /api/recomp/allocs can parse the live block chain.
-     * Format: ALLOC_BLOCK uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=%d
+     * Format: ALLOC_BLOCK uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0
      * Gated on SR_POSTUMD so release/perf runs are not affected. */
     if (getenv("SR_POSTUMD")) {
         fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
@@ -454,10 +582,34 @@ static uint32_t alloc_block(uint32_t size) {
     }
     return uid;
 }
+
 static uint32_t block_addr(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) if (s_blocks[i].uid == uid) return s_blocks[i].addr;
     return 0;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_partition_reset(void) {
+    s_heap = 0;
+    s_part_top = 0;
+    s_heap_last_bump = 0;
+    s_nblocks = 0;
+    memset(s_blocks, 0, sizeof(s_blocks));
+    s_nfree_blocks = 0;
+    memset(s_free_blocks, 0, sizeof(s_free_blocks));
+}
+int sr_hle_test_partition_free_block_count(void) { return s_nfree_blocks; }
+int sr_hle_test_partition_get_free_block(int idx, uint32_t *addr_out, uint32_t *size_out) {
+    if (idx < 0 || idx >= s_nfree_blocks) return 0;
+    if (addr_out) *addr_out = s_free_blocks[idx].addr;
+    if (size_out) *size_out = s_free_blocks[idx].size;
+    return 1;
+}
+uint32_t sr_hle_test_partition_heap_ptr(void) {
+    user_partition_init();
+    return s_heap;
+}
+#endif
 
 /* ---- handlers ---- */
 
@@ -522,36 +674,55 @@ static uint32_t h_FreePartitionMemory(CpuState *s) {
     for (int i = 0; i < s_nblocks; i++) {
         if (s_blocks[i].uid == uid && s_blocks[i].addr != 0) {
             /* Kernel metadata is host-side. Never scribble a synthetic free header
-             * into memory returned to the guest. Interior blocks are not compacted. */
+             * into memory returned to the guest. Free blocks are tracked host-side
+             * and adjacent blocks are coalesced. */
             uint32_t addr = s_blocks[i].addr;
+            uint32_t slot_sz = s_blocks[i].slot_size;
             s_blocks[i].uid = 0;                  /* slot now free */
             s_blocks[i].addr = 0;
             s_blocks[i].size = 0;
+            s_blocks[i].slot_size = 0;
             s_blocks[i].prev = 0;
             s_blocks[i].next = 0;
+            partition_free_block(addr, slot_sz);
             if (getenv("SR_ALLOC_TRACE")) {
                 fprintf(stderr, "FreePartitionMemory: uid=0x%x addr=0x%08x marked free\n", uid, addr);
             }
             return 0;
         }
     }
-    /* Block not found â€” could be an invalid UID. PSP returns error. */
+    /* Block not found — could be an invalid UID. PSP returns error. */
     if (getenv("SR_ALLOC_TRACE")) fprintf(stderr, "FreePartitionMemory: uid=0x%x not found\n", uid);
     return 0x80020000;
 }
 static uint32_t partition_free(void) {
     user_partition_init();
-    return s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t f = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    for (int i = 0; i < s_nfree_blocks; i++) {
+        f += s_free_blocks[i].size;
+    }
+    return f;
 }
 /* A small accounting tail (the kernel keeps block headers per allocation) so the figure is not
  * the exact arithmetic free; PPSSPP reports e.g. 0x1a0b00 with several blocks live. */
-static uint32_t h_TotalFreeMemSize(CpuState *s) { (void)s; uint32_t f = partition_free(); return f > (uint32_t)s_nblocks*0x100u ? f - (uint32_t)s_nblocks*0x100u : f; }
-/* sceKernelMaxFreeMemSize: returns the largest contiguous free block. The bump allocator
- * only has one truly contiguous free region: from the current s_heap up to s_part_top.
- * The freelist blocks are scattered and not necessarily contiguous. Return that single
- * remaining chunk rather than the sum of all free blocks (which is what TotalFreeMemSize
- * approximates). */
-static uint32_t h_MaxFreeMemSize(CpuState *s) { (void)s; user_partition_init(); return s_heap < s_part_top ? s_part_top - s_heap : 0u; }
+static uint32_t h_TotalFreeMemSize(CpuState *s) {
+    (void)s;
+    uint32_t f = partition_free();
+    return f > (uint32_t)s_nblocks*0x100u ? f - (uint32_t)s_nblocks*0x100u : f;
+}
+/* sceKernelMaxFreeMemSize: returns the largest contiguous free block across both the unallocated
+ * space (from current s_heap to s_part_top) and the host-side free list blocks. */
+static uint32_t h_MaxFreeMemSize(CpuState *s) {
+    (void)s;
+    user_partition_init();
+    uint32_t max_free = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    for (int i = 0; i < s_nfree_blocks; i++) {
+        if (s_free_blocks[i].size > max_free) {
+            max_free = s_free_blocks[i].size;
+        }
+    }
+    return max_free;
+}
 
 /* Fixed Pool (FPL) â€” simple bump allocator per pool.  Enough for games that use FPL
  * to allocate objects whose constructors populate vtables (e.g. sceUtility dialogs). */
@@ -11740,6 +11911,10 @@ static void hle_register_bulk_memory_handlers(void) {
  * from looping. */
 static void hle_register_partition_savedata_handlers(void) {
     sr_hle_register(0x237dbd4f, "sceKernelAllocPartitionMemory", h_AllocPartitionMemory);
+    sr_hle_register(0x9d9a5ba1, "sceKernelGetBlockHeadAddr", h_GetBlockHeadAddr);
+    sr_hle_register(0xb6d61d02, "sceKernelFreePartitionMemory", h_FreePartitionMemory);
+    sr_hle_register(0xf919f628, "sceKernelTotalFreeMemSize", h_TotalFreeMemSize);
+    sr_hle_register(0xa291f107, "sceKernelMaxFreeMemSize", h_MaxFreeMemSize);
     sr_hle_register(0x50c4cd57, "sceUtilitySavedataInitStart", h_SavedataInitStart);
 }
 
@@ -11807,11 +11982,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x7591c7db, "sceKernelSetCompiledSdkVersion", h_SetCompiledSdkVersion);
     sr_hle_register(0x35669d4c, "sceKernelSetCompiledSdkVersion600_602", h_SetCompiledSdkVersion);
     sr_hle_register(0xf77d77cb, "sceKernelSetCompilerVersion", h_SetCompiledSdkVersion);
-    /* sceKernelAllocPartitionMemory registered via hle_register_partition_savedata_handlers() */
-    sr_hle_register(0x9d9a5ba1, "sceKernelGetBlockHeadAddr", h_GetBlockHeadAddr);
-    sr_hle_register(0xb6d61d02, "sceKernelFreePartitionMemory", h_FreePartitionMemory);
-    sr_hle_register(0xf919f628, "sceKernelTotalFreeMemSize", h_TotalFreeMemSize);
-    sr_hle_register(0xa291f107, "sceKernelMaxFreeMemSize", h_MaxFreeMemSize);
+    /* sceKernelAllocPartitionMemory, sceKernelGetBlockHeadAddr, sceKernelFreePartitionMemory,
+     * sceKernelTotalFreeMemSize, sceKernelMaxFreeMemSize registered via
+     * hle_register_partition_savedata_handlers() */
     /* sceKernelTryAllocateFpl and sceKernelDeleteFpl moved to
      * hle_register_wait_conformance_handlers(), which this branch also calls --
      * same NIDs, names and handlers as before. */
