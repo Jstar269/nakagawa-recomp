@@ -641,10 +641,45 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
     return 0;
 }
 /* sceUtilityGetSystemParamString(id, char *out, int len): nickname etc. Write a short ASCII name. */
-/* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): both thresholds "disabled". */
+/* Retained controller sampling state (TD-24 batch 4): the Set calls store
+ * their arguments and the getter below reports the stored pair. Public
+ * behaviour reference: PSPSDK pspctrl.h (sceCtrlSetSamplingMode/Cycle/
+ * IdleCancelThreshold) and PPSSPP Core/HLE/sceCtrl.cpp, where the sets update
+ * the sampling state later reads observe. The power-on defaults are digital
+ * mode (0), cycle 0, and disabled thresholds (-1/-1, matching the previous
+ * fixed getter and its PPSSPP-default comment). Validation of out-of-range
+ * modes/cycles is UNMEASURED here: requests are retained verbatim and
+ * reported back, like the batch-2 power clocks. */
+static uint32_t s_ctrl_sampling_mode = 0u;
+static uint32_t s_ctrl_sampling_cycle = 0u;
+static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
+static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+/* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
+ * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
-    if (A0) MEM_W32(A0, 0xFFFFFFFFu);   /* -1 = idle cancel disabled (PPSSPP default) */
-    if (A1) MEM_W32(A1, 0xFFFFFFFFu);
+    if (A0) MEM_W32(A0, s_ctrl_idle_reset);
+    if (A1) MEM_W32(A1, s_ctrl_idle_back);
+    return 0;
+}
+/* sceCtrlSetSamplingMode(mode): store the mode, returning the previous one. */
+static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
+    uint32_t prev = s_ctrl_sampling_mode;
+    s_ctrl_sampling_mode = A0;
+    return prev;
+}
+/* sceCtrlSetSamplingCycle(cycle): store the cycle, returning the previous one. */
+static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
+    uint32_t prev = s_ctrl_sampling_cycle;
+    s_ctrl_sampling_cycle = A0;
+    return prev;
+}
+/* sceCtrlSetIdleCancelThreshold(idlereset, idleback): store both thresholds.
+ * Returns success; the stored pair is observable through
+ * sceCtrlGetIdleCancelThreshold, which is the round-trip the regression pins
+ * (whether firmware returns a previous value here is UNMEASURED). */
+static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
+    s_ctrl_idle_reset = A0;
+    s_ctrl_idle_back = A1;
     return 0;
 }
 
@@ -3729,6 +3764,11 @@ uint32_t mpeg_malloc_avc_es_buf(uint32_t mpegAddr);
 uint32_t mpeg_free_avc_es_buf(uint32_t mpegAddr, uint32_t esBuf);
 uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr);
 uint32_t mpeg_query_atrac_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr);
+#ifndef SR_HLE_THREAD_SELFTEST
+uint32_t mpeg_flush_all_stream(uint32_t mpegAddr);
+uint32_t mpeg_avc_decode_flush(uint32_t mpegAddr);
+#endif
+
 
 static uint32_t h_MpegInit(CpuState *s) { (void)s; return mpeg_init(); }
 static uint32_t h_MpegMallocAvcEsBuf(CpuState *s) { return mpeg_malloc_avc_es_buf(A0); }
@@ -3781,6 +3821,72 @@ static uint32_t h_MpegAtracDecode(CpuState *s) {
     return r;
 }
 static uint32_t h_MpegAvcDecodeStop(CpuState *s) { return mpeg_avc_decode_stop(A0, A1, A2, A3); }
+/* sceMpegRingbufferDestruct(ring): drain a constructed ring buffer. The ring
+ * layout is owned by src/rt/mpeg.c (RB_* field offsets); mpeg.c is not linked
+ * into the executable HLE harness, so the harness-visible handler carries the
+ * counter reset here against the same offsets. Only the queue accounting is
+ * reset -- packetsRead/packetsWritePos/packetsAvail to zero, which is exactly
+ * "reset counters, clear queued packets": the packet capacity, data span and
+ * fill callback stay constructed, and the host movie progress (fedPackets)
+ * is untouched. Whether firmware also detaches the ring or zeroes the
+ * descriptor is UNMEASURED here. A null or partially-mapped descriptor is
+ * refused with the same bad-ring code mpeg_ringbuffer_construct uses. */
+#define MPEG_RB_BYTES 48u
+#define MPEG_RB_PACKETS_READ 4u
+#define MPEG_RB_PACKETS_WRITE_POS 8u
+#define MPEG_RB_PACKETS_AVAIL 12u
+static uint32_t h_MpegRingbufferDestruct(CpuState *s) {
+    uint32_t ring = A0;
+    if (!ring || !sr_guest_span_writable(ring, MPEG_RB_BYTES)) return 0x80020003u;
+    MEM_W32(ring + MPEG_RB_PACKETS_READ, 0u);
+    MEM_W32(ring + MPEG_RB_PACKETS_WRITE_POS, 0u);
+    MEM_W32(ring + MPEG_RB_PACKETS_AVAIL, 0u);
+    return 0;
+}
+
+/* sceMpegFlushAllStream(mpeg): flush and reset stream packets for an MPEG stream.
+ * Public behaviour reference: PSPSDK pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp.
+ * Resets the ring buffer counters (packetsRead, packetsWritePos, packetsAvail)
+ * and marks streams for reset. Errors reuse neighbouring bad-ring/address codes. */
+static uint32_t h_MpegFlushAllStream(CpuState *s) {
+    uint32_t mpegAddr = A0;
+    if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4u)) return 0x80020003u;
+#ifndef SR_HLE_THREAD_SELFTEST
+    mpeg_flush_all_stream(mpegAddr);
+#endif
+    uint32_t h = MEM_R32(mpegAddr);
+    if (h && sr_guest_span_readable(h, 24u)) {
+        uint32_t ring = MEM_R32(h + 16u);
+        if (ring && sr_guest_span_writable(ring, MPEG_RB_BYTES)) {
+            MEM_W32(ring + MPEG_RB_PACKETS_READ, 0u);
+            MEM_W32(ring + MPEG_RB_PACKETS_WRITE_POS, 0u);
+            MEM_W32(ring + MPEG_RB_PACKETS_AVAIL, 0u);
+        }
+    }
+    return 0;
+}
+
+/* sceMpegAvcDecodeFlush(mpeg): flush queued AVC decoding frames/packets.
+ * Public behaviour reference: PSPSDK pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp.
+ * Resets the ring packet counters and any pending AVC decode timestamps. */
+static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
+    uint32_t mpegAddr = A0;
+    if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4u)) return 0x80020003u;
+#ifndef SR_HLE_THREAD_SELFTEST
+    mpeg_avc_decode_flush(mpegAddr);
+#endif
+    uint32_t h = MEM_R32(mpegAddr);
+    if (h && sr_guest_span_readable(h, 24u)) {
+        uint32_t ring = MEM_R32(h + 16u);
+        if (ring && sr_guest_span_writable(ring, MPEG_RB_BYTES)) {
+            MEM_W32(ring + MPEG_RB_PACKETS_READ, 0u);
+            MEM_W32(ring + MPEG_RB_PACKETS_WRITE_POS, 0u);
+            MEM_W32(ring + MPEG_RB_PACKETS_AVAIL, 0u);
+        }
+    }
+    return 0;
+}
+
 
 /* sceAtrac3plus: control-flow model with the real streaming contract. The game feeds a track in
  * chunks: SetData installs the first chunk (buffer + size), then the audio thread polls
@@ -3823,6 +3929,8 @@ typedef struct {
     uint32_t codecType;
     uint32_t buf;                 /* guest ring buffer base */
     uint32_t size;                /* bytes of file data fed so far (first_.size) */
+    uint32_t secondBuf;           /* sceAtracSetSecondBuffer guest address (0 = none) */
+    uint32_t secondBufSize;       /* sceAtracSetSecondBuffer byte size */
     uint32_t bufferMaxSize;       /* ring capacity (SetData bufferSize) */
     uint32_t fileSize;            /* total track size in bytes (RIFF extent) */
     uint32_t dataByteOffset;      /* file offset where audio frames start */
@@ -4371,6 +4479,15 @@ int sr_hle_test_atrac_ring(uint32_t id, uint32_t *pos, uint32_t *base,
     if (valid) *valid = a->bufferValidBytes;
     return 1;
 }
+/* Retained second-buffer probe for the TD-24 batch 4 regression. Test builds
+ * only; reads state, never changes it. */
+int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size) {
+    Atrac *a = atrac_of(id);
+    if (!a) return 0;
+    if (addr) *addr = a->secondBuf;
+    if (size) *size = a->secondBufSize;
+    return 1;
+}
 #endif
 /* PR-B: decode the next frame through the bridge into guest `out`. Returns
  *   1  frame decoded and written (channels*ATRAC_SAMPLES_PER_FRAME interleaved s16),
@@ -4568,6 +4685,32 @@ static uint32_t h_AtracIsSecondBufferNeeded(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     return (atrac_streamed_state(a) && a->size < a->fileSize) ? 1u : 0u;
 }
+/* sceAtracSetSecondBuffer(id, secondBuffer, secondBufferSize): retain the
+ * overflow/second buffer for a streamed track. Public behaviour reference:
+ * the PSPSDK ATRAC3+ interface and PPSSPP Core/HLE/sceAtrac.cpp, where the
+ * Set call stores the buffer reference the second-buffer query path reports.
+ * The stored address is never dereferenced by this runtime (loop-refill from
+ * the second buffer is UNMEASURED here), so retention is the complete honest
+ * behaviour: a nonzero buffer must still be a readable guest span (fail
+ * closed like h_AtracSetData), while (0, 0) clears the reference. Whether
+ * firmware gates this on streamed state, and the exact error for a null
+ * buffer with a nonzero size, are UNMEASURED: the inconsistent pair is
+ * refused with the neighbouring SIZE_TOO_SMALL code. Errors reuse the
+ * neighbouring Atrac codes. */
+static uint32_t h_AtracSetSecondBuffer(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    uint32_t buf = A1, size = A2;
+    if (!buf) {
+        if (size != 0u) return ATRAC_ERROR_SIZE_TOO_SMALL;
+        a->secondBuf = 0u;
+        a->secondBufSize = 0u;
+        return 0;
+    }
+    if (!sr_guest_span_readable(buf, size)) return ATRAC_ERROR_SIZE_TOO_SMALL;
+    a->secondBuf = buf;
+    a->secondBufSize = size;
+    return 0;
+}
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
@@ -4658,6 +4801,118 @@ static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     if (a->dec) atrac3p_bridge_reset(a->dec);  /* PR-B: decoder history must not cross a seek */
     return 0;
 }
+
+/* sceAtracGetSecondBufferInfo(id, *puiPosition, *puiDataByte): second-buffer
+ * streaming position and required size. Public behaviour reference: PSPSDK
+ * pspatrac3.h and PPSSPP Core/HLE/sceAtrac.cpp (AtracCtx::GetSecondBufferInfo).
+ * Only streamed contexts with a loop trailer need a second buffer; otherwise
+ * zero is reported with ATRAC_ERROR_SECOND_BUFFER_NOT_NEEDED (0x80630022).
+ * When needed, reports the file offset corresponding to the loop end sample
+ * and the remaining track bytes to the end of the file. */
+static uint32_t h_AtracGetSecondBufferInfo(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u) || !A2 || !sr_guest_span_writable(A2, 4u))
+        return 0x80000103u; /* ILLEGAL_ADDR */
+    if (a->bufferState != ATRAC_STATE_STREAMED_LOOP_TRAILER) {
+        MEM_W32(A1, 0u);
+        MEM_W32(A2, 0u);
+        return 0x80630022u; /* SECOND_BUFFER_NOT_NEEDED */
+    }
+    uint32_t fileOffset = (a->loopEndSample > 0 && a->bytesPerFrame > 0)
+        ? (a->dataByteOffset + (uint32_t)a->loopEndSample / ATRAC_SAMPLES_PER_FRAME * a->bytesPerFrame)
+        : 0u;
+    uint32_t desiredSize = (a->fileSize > fileOffset) ? (a->fileSize - fileOffset) : 0u;
+    MEM_W32(A1, fileOffset);
+    MEM_W32(A2, desiredSize);
+    return 0;
+}
+
+/* sceAtracGetBufferInfoForResetting / sceAtracGetBufferInfoForReseting:
+ * obtains the buffer information required to seek to a sample position before
+ * sceAtracResetPlayPosition. Public behaviour reference: PSPSDK pspatrac3.h
+ * (PspBufferInfo, 32 bytes) and PPSSPP Core/HLE/sceAtrac.cpp.
+ * Fills the 8-word PspBufferInfo describing the first and second buffer spans. */
+static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A2 || !sr_guest_span_writable(A2, 32u)) return 0x80000103u; /* ILLEGAL_ADDR */
+    if (a->bufferState == ATRAC_STATE_STREAMED_LOOP_TRAILER && !a->secondBuf)
+        return 0x80630012u; /* SECOND_BUFFER_NEEDED */
+    if (a->endSample >= 0 && (int)A1 > a->endSample)
+        return 0x80630015u; /* BAD_SAMPLE */
+
+    uint32_t writePos1 = a->buf;
+    uint32_t writable1 = 0u;
+    uint32_t minWrite1 = 0u;
+    uint32_t filePos1 = 0u;
+
+    if (a->bufferState == ATRAC_STATE_ALL_DATA_LOADED) {
+        writePos1 = a->buf;
+        writable1 = 0u;
+        minWrite1 = 0u;
+        filePos1 = 0u;
+    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        writePos1 = a->buf + a->size;
+        writable1 = (a->fileSize > a->size) ? (a->fileSize - a->size) : 0u;
+        uint32_t needed = a->dataByteOffset;
+        if (a->bytesPerFrame > 0)
+            needed += (A1 / ATRAC_SAMPLES_PER_FRAME) * a->bytesPerFrame;
+        minWrite1 = (needed > a->size) ? (needed - a->size) : 0u;
+        filePos1 = a->size;
+    } else {
+        /* Streamed mode */
+        uint32_t sampleFileOffset = a->dataByteOffset;
+        if (a->bytesPerFrame > 0 && A1 >= ATRAC_SAMPLES_PER_FRAME) {
+            sampleFileOffset += ((A1 - ATRAC_SAMPLES_PER_FRAME) / ATRAC_SAMPLES_PER_FRAME) * a->bytesPerFrame;
+        }
+        uint32_t bSize = a->bytesPerFrame > 0 ? (a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame) : a->bufferMaxSize;
+        writePos1 = a->buf;
+        writable1 = (a->fileSize > sampleFileOffset) ? (a->fileSize - sampleFileOffset) : 0u;
+        if (writable1 > bSize) writable1 = bSize;
+        minWrite1 = a->bytesPerFrame > 0 ? a->bytesPerFrame * 2u : 0u;
+        filePos1 = sampleFileOffset;
+    }
+
+    /* First buffer info */
+    MEM_W32(A2 + 0u, writePos1);
+    MEM_W32(A2 + 4u, writable1);
+    MEM_W32(A2 + 8u, minWrite1);
+    MEM_W32(A2 + 12u, filePos1);
+
+    /* Second buffer info: reset never needs a second buffer write */
+    MEM_W32(A2 + 16u, a->secondBuf ? a->secondBuf : a->buf);
+    MEM_W32(A2 + 20u, 0u);
+    MEM_W32(A2 + 24u, 0u);
+    MEM_W32(A2 + 28u, 0u);
+
+    return 0;
+}
+
+/* sceAtracReinit(at3Count, at3plusCount): reinitialize the ATRAC subsystem.
+ * Refuses with SCE_KERNEL_ERROR_BUSY (0x80000021) if any context is currently in use. */
+static uint32_t s_atrac_reinit_count = 0u;
+static uint32_t h_AtracReinit(CpuState *s) {
+    (void)s;
+    for (int i = 0; i < 8; i++) {
+        if (s_atrac[i].used) return 0x80000021u; /* SCE_KERNEL_ERROR_BUSY */
+    }
+    s_atrac_reinit_count++;
+    return 0;
+}
+
+/* sceAtracReleaseResources(): release system resources allocated for ATRAC decoding. */
+static uint32_t s_atrac_release_count = 0u;
+static uint32_t h_AtracReleaseResources(CpuState *s) {
+    (void)s;
+    s_atrac_release_count++;
+    return 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_atrac_reinit_count(void) { return s_atrac_reinit_count; }
+void sr_hle_test_atrac_reinit_reset(void) { s_atrac_reinit_count = 0u; }
+uint32_t sr_hle_test_atrac_release_count(void) { return s_atrac_release_count; }
+void sr_hle_test_atrac_release_reset(void) { s_atrac_release_count = 0u; }
+#endif
 
 /* sceUtility dialogs (savedata/msg/osk). Faithful to PPSSPP's PSPDialog status machine
  * (Core/Dialog/PSPDialog.cpp): status enum NONE=0, INITIALIZE=1, RUNNING=2, FINISHED=3,
@@ -8211,6 +8466,14 @@ static int ctrl_pulse_suppressed(uint32_t keys) {
 #ifdef SR_HLE_THREAD_SELFTEST
 void sr_ctrl_test_reset_live_input(void) { s_live_input_seen = 0; }
 int sr_ctrl_test_live_input_seen(void) { return s_live_input_seen; }
+/* TD-24 batch 4: isolate the retained sampling fixtures from one another.
+ * Test builds only; restores the power-on defaults, never production state. */
+void sr_hle_test_ctrl_sampling_reset(void) {
+    s_ctrl_sampling_mode = 0u;
+    s_ctrl_sampling_cycle = 0u;
+    s_ctrl_idle_reset = 0xFFFFFFFFu;
+    s_ctrl_idle_back = 0xFFFFFFFFu;
+}
 /* Exercise the exact production gate with synthetic key masks (the harness stubs
  * gui_on()/gui_buttons() to neutral, so production keys are always 0 there). */
 int sr_ctrl_test_pulse_suppressed(uint32_t keys) { return ctrl_pulse_suppressed(keys); }
@@ -9951,7 +10214,27 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
     (void)s;
     return 0x00200000u;
 }
-static uint32_t h_GeDrawSync(CpuState *s) { (void)s; return 0; }
+static uint32_t h_GeDrawSync(CpuState *s) {
+    /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
+     * completion of every queued GE list. Public behaviour reference: the
+     * PSPSDK GE interface (pspge.h) and PPSSPP Core/HLE/sceGe.cpp. The queue
+     * state is the same s_ge_lists table h_GeListSync reads: status 1 is a
+     * list still owned by the GE (stalled on its stall address), status 2 is
+     * completed. Peek reports the documented sync status (1 while any list is
+     * still owned, else 0); wait yields once through the scheduler -- the same
+     * pacing h_GeListSync's mode-0 path uses -- and reports completion,
+     * because a stalled list advances only on the game's UpdateStallAddr,
+     * never on time, so blocking here could never complete it. Which
+     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the
+     * documented peek takes the wait path. */
+    uint32_t mode = A0;
+    int busy = 0;
+    for (int i = 0; i < GE_LIST_MAX; i++)
+        if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    if (mode == 1u) return busy ? 1u : 0u;
+    if (busy) sched_delay_current(1000);
+    return 0;
+}
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
 static uint32_t h_GeSetCallback(CpuState *s) {
     uint32_t info = A0;
@@ -10900,7 +11183,9 @@ uint32_t sr_hle_test_dmac_effective_max(void) { return SCE_DMAC_EFFECTIVE_MAX; }
 typedef struct {
     int used; uint32_t uid; int count, maxc; uint32_t pattern;
     uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
-    int initc;                     /* semaphores: create-time count for CancelSema(-1) */
+    int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
+    uint32_t workarea;             /* LwMutex workarea address */
+    char name[32];                 /* LwMutex name */
 } Sync;
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
@@ -11352,6 +11637,11 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
     if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
     Sync *m = sync_new(); if (!m) return 0x80020000;
+    m->workarea = wa;
+    m->attr = attr;
+    m->initc = initial;
+    if (A1) guest_cstr(A1, m->name, sizeof(m->name));
+    else m->name[0] = '\0';
     MEM_W32(wa + LWMUTEX_LOCK_LEVEL, (uint32_t)initial);
     MEM_W32(wa + LWMUTEX_LOCK_THREAD, initial > 0 ? sched_current_uid() : 0u);
     MEM_W32(wa + LWMUTEX_ATTR, attr);
@@ -11380,6 +11670,73 @@ static uint32_t h_DeleteLwMutex(CpuState *s) {
     MEM_W32(wa + LWMUTEX_LOCK_THREAD, LWMUTEX_DELETED_WORD);
     MEM_W32(wa + LWMUTEX_UID, LWMUTEX_DELETED_WORD);
     return 0;
+}
+
+/* SceKernelLwMutexInfo (64 bytes): public reference pspthreadman.h and PPSSPP
+ * Core/HLE/sceKernelMutex.cpp (NativeLwMutex). */
+typedef struct {
+    uint32_t size;
+    char name[32];
+    uint32_t attr;
+    uint32_t uid;
+    uint32_t workarea;
+    int32_t initialCount;
+    int32_t currentCount;
+    int32_t lockThread;
+    int32_t numWaitThreads;
+} SceKernelLwMutexInfo;
+
+static uint32_t lwmutex_refer_status(Sync *m, uint32_t info_addr) {
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelLwMutexInfo) ? input_size : (uint32_t)sizeof(SceKernelLwMutexInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    SceKernelLwMutexInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelLwMutexInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.uid = m->uid;
+    info.workarea = m->workarea;
+    info.initialCount = m->initc;
+    if (m->workarea && sr_guest_span_readable(m->workarea, LWMUTEX_WORKAREA_SIZE)) {
+        info.currentCount = (int32_t)MEM_R32(m->workarea + LWMUTEX_LOCK_LEVEL);
+        uint32_t th = MEM_R32(m->workarea + LWMUTEX_LOCK_THREAD);
+        info.lockThread = th == 0 ? -1 : (int32_t)th;
+        info.numWaitThreads = (int32_t)MEM_R32(m->workarea + LWMUTEX_NUM_WAIT);
+    } else {
+        info.currentCount = 0;
+        info.lockThread = -1;
+        info.numWaitThreads = 0;
+    }
+    for (uint32_t i = 0; i < write_len; i++) {
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
+    }
+    return 0;
+}
+
+/* sceKernelReferLwMutexStatus(workarea, info): query lightweight mutex status by workarea. */
+static uint32_t h_ReferLwMutexStatus(CpuState *s) {
+    uint32_t wa = A0;
+    uint32_t info_addr = A1;
+    if (!lwmutex_workarea_ok(wa)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
+    return lwmutex_refer_status(m, info_addr);
+}
+
+/* sceKernelReferLwMutexStatusByID(uid, info): query lightweight mutex status by UID. */
+static uint32_t h_ReferLwMutexStatusByID(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
+    return lwmutex_refer_status(m, info_addr);
 }
 
 /* Shared by Lock/TryLock/LockCB. `blocking` selects whether contention waits. */
@@ -12442,6 +12799,8 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x19cff145, "sceKernelCreateLwMutex", h_CreateLwMutex);
     sr_hle_register(0xbea46419, "sceKernelLockLwMutex", h_LockLwMutex);
     sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
+    sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
@@ -12509,6 +12868,26 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x71ec4271, "sceKernelLibcGettimeofday", h_LibcGettimeofday);
 }
 
+/* General-purpose I/O pins (TD-24 batch 4). sceKernelSetGPO stores the
+ * output latch; sceKernelGetGPI reads the input pins, which are always 0 on
+ * retail PSP (see the previous registration comment). The two are independent
+ * hardware: storing a GPO value must never surface from GetGPI, and the
+ * regression pins exactly that separation. Whether firmware validates or
+ * masks the stored output bits is UNMEASURED: the value is retained
+ * verbatim. */
+static uint32_t s_gpo_latch = 0u;
+static uint32_t s_gpi_pins = 0u;
+static uint32_t h_SetGPO(CpuState *s) { s_gpo_latch = A0; return 0; }
+static uint32_t h_GetGPI(CpuState *s) { (void)s; return s_gpi_pins; }
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only view of the retained GPO latch and synthetic GPI pins. Adds no production behaviour. */
+uint32_t sr_hle_test_gpo_value(void) { return s_gpo_latch; }
+void sr_hle_test_gpo_reset(void) { s_gpo_latch = 0u; }
+uint32_t sr_hle_test_gpi_value(void) { return s_gpi_pins; }
+void sr_hle_test_gpi_set(uint32_t val) { s_gpi_pins = val; }
+void sr_hle_test_gpi_reset(void) { s_gpi_pins = 0u; }
+#endif
+
 static void hle_register_display_handlers(void) {
     sr_hle_register(0x289d82fe, "sceDisplaySetFrameBuf", h_DisplaySetFrameBuf);
     sr_hle_register(0xeeda2e54, "sceDisplayGetFrameBuf", h_DisplayGetFrameBuf);
@@ -12548,14 +12927,14 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0xfaa4f89b, "sceAtracGetLoopStatus", h_AtracGetLoopStatus);
     sr_hle_register(0x868120b5, "sceAtracSetLoopNum", h_AtracSetLoopNum);
     sr_hle_register(0x644e5607, "sceAtracResetPlayPosition", h_AtracResetPlayPosition);
-    /* Additional sceAtrac stubs (not yet modelled; accepted to unblock init) */
-    sr_hle_register(0x132f1eca, "sceAtracReinit", h_ok);
+    /* Additional sceAtrac handlers (TD-24 batch 4) */
+    sr_hle_register(0x132f1eca, "sceAtracReinit", h_AtracReinit);
     sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x3f6e26b5, "sceAtracSetHalfwayBuffer", h_AtracSetDataAndGetID);
     sr_hle_register(0x0e2a73ab, "sceAtracSetData", h_AtracSetData);
     sr_hle_register(0x780f88d1, "sceAtracGetAtracID", h_AtracGetAtracID);
-    sr_hle_register(0x2dd3e298, "sceAtracGetBufferInfoForResetting", h_ok);
-    sr_hle_register(0xca3ca3d2, "sceAtracGetBufferInfoForReseting", h_ok);
+    sr_hle_register(0x2dd3e298, "sceAtracGetBufferInfoForResetting", h_AtracGetBufferInfoForResetting);
+    sr_hle_register(0xca3ca3d2, "sceAtracGetBufferInfoForReseting", h_AtracGetBufferInfoForResetting);
     /* 0x31668bba was a single-nibble transcription error for 0x31668baa (the
      * canonical NID in src/rt/nid_names.h, reproducible as sha1(name)[0:4]).
      * No guest import can carry the typo, so this registration was previously
@@ -12574,16 +12953,15 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetDataAndGetID);
     sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetDataAndGetID);
-    sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_ok);
-    sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_ok);
-    sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_ok);
+    sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_AtracSetSecondBuffer);
+    sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_AtracGetSecondBufferInfo);
+    sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_AtracReleaseResources);
     sr_hle_register(0xd1f59fdb, "sceAtracStartEntry", h_ok);
     sr_hle_register(0xeca32a99, "sceAtracIsSecondBufferNeeded", h_AtracIsSecondBufferNeeded);
     sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);
     sr_hle_register(0x231fc6b7, "_sceAtracGetContextAddress", h_ok);
     sr_hle_register(0x1575d64b, "sceAtracLowLevelInitDecoder", h_ok);
     sr_hle_register(0x0c116e1b, "sceAtracLowLevelDecode", h_ok);
-    sr_hle_register(0x707b7629, "sceMpegFlushAllStream", h_ok);
 }
 
 /* sceSasCore: stateful SAS registrations.  This helper is called outside the selftest
@@ -12674,6 +13052,35 @@ static void hle_register_power_clock_handlers(void) {
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
 }
 
+/* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
+ * branches, so the executable harness pins the production mapping through
+ * dispatch (same rule as the batch-2 clock helpers above). */
+static void hle_register_ctrl_sampling_handlers(void) {
+    sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
+    sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
+    sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
+    /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
+     * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
+     * through a1's 4-byte int (and could block the caller on the input ring). */
+    sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
+}
+static void hle_register_power_lock_handlers(void) {
+    sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_PowerLock);
+    sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_PowerUnlock);
+    sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
+}
+static void hle_register_gpi_gpo_handlers(void) {
+    sr_hle_register(0x6ad345d7, "sceKernelSetGPO", h_SetGPO);
+    /* GPI reads hardware general-purpose input pins; always 0 on retail PSP. */
+    sr_hle_register(0x37fb5c42, "sceKernelGetGPI", h_GetGPI);
+}
+static void hle_register_mpeg_shared_handlers(void) {
+    /* MPEG flush/destruct family: shared between selftest harness and production. */
+    sr_hle_register(0x13407f13, "sceMpegRingbufferDestruct", h_MpegRingbufferDestruct);
+    sr_hle_register(0x707b7629, "sceMpegFlushAllStream", h_MpegFlushAllStream);
+    sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -12703,6 +13110,12 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     hle_register_power_clock_handlers();
+    /* TD-24 batch 4 families: shared with production through the helpers, so
+     * the executable harness dispatches the exact production mapping. */
+    hle_register_ctrl_sampling_handlers();
+    hle_register_power_lock_handlers();
+    hle_register_gpi_gpo_handlers();
+    hle_register_mpeg_shared_handlers();
     hle_register_partition_savedata_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
@@ -12789,7 +13202,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x37295ed8, "sceMpegRingbufferConstruct", h_MpegRingbufferConstruct);
-    sr_hle_register(0x13407f13, "sceMpegRingbufferDestruct", h_ok);
+    /* sceMpeg ringbuffer destruct and flush: shared with the executable harness
+     * through hle_register_mpeg_shared_handlers(). */
+    hle_register_mpeg_shared_handlers();
     sr_hle_register(0xb240a59e, "sceMpegRingbufferPut", h_MpegRingbufferPut);
     sr_hle_register(0xb5f6dc87, "sceMpegRingbufferAvailableSize", h_MpegRingbufferAvailable);
     sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
@@ -12797,7 +13212,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x0e3c2e9d, "sceMpegAvcDecode", h_MpegAvcDecode);
     sr_hle_register(0x800c44df, "sceMpegAtracDecode", h_MpegAtracDecode);
     sr_hle_register(0x740fccd1, "sceMpegAvcDecodeStop", h_MpegAvcDecodeStop);
-    sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_ok);
     sr_hle_register(0xa780cf7e, "sceMpegMallocAvcEsBuf", h_MpegMallocAvcEsBuf);
     sr_hle_register(0xceb870b1, "sceMpegFreeAvcEsBuf", h_MpegFreeAvcEsBuf);
     sr_hle_register(0x167afd9e, "sceMpegInitAu", h_MpegInitAu);
@@ -12864,14 +13278,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
     sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
     sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioOutput2Rest);
-    /* sceCtrl */
-    sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_ok);
-    sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_ok);
-    sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_ok);
-    /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
-     * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
-     * through a1's 4-byte int (and could block the caller on the input ring). */
-    sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
+    /* sceCtrl sampling family: shared with the executable harness through
+     * hle_register_ctrl_sampling_handlers(). */
+    hle_register_ctrl_sampling_handlers();
     hle_register_ge_handlers();
     /* Issue #86: the previous numeric NIDs for the four getters below were bogus (absent from
      * the PPSSPP-derived nid_names.h); they are replaced with the canonical NIDs so real title
@@ -12907,9 +13316,9 @@ void sr_hle_init(void) {
         sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
         sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
     }
-    sr_hle_register(0x6ad345d7, "sceKernelSetGPO", h_ok);
-    /* GPI reads hardware general-purpose input pins; always 0 on retail PSP. */
-    sr_hle_register(0x37fb5c42, "sceKernelGetGPI", h_ok);
+    /* GPO latch / GPI pins: shared with the executable harness through
+     * hle_register_gpi_gpo_handlers(). */
+    hle_register_gpi_gpo_handlers();
     /* StdioForKernel std handles and kernel printf NIDs (0xcab439df is the
      * StdioForKernel "printf" export; 0x13a5abef is SysMemUserForUser's
      * "sceKernelPrintf"). */
@@ -12919,9 +13328,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xa6bab2e9, "sceKernelStdout", h_StdFd);
     sr_hle_register(0xf78ba90a, "sceKernelStderr", h_StdFd);
     /* scePower / sceSuspendForUser / LoadExecForUser: locks and registrations succeed. */
-    sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_ok);
-    sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_ok);
-    sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_ok);
+    hle_register_power_lock_handlers();
     sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
     /* Unlock takes only the type arg -- it must NOT run the Lock handler: writing the
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
@@ -12934,13 +13341,7 @@ void sr_hle_init(void) {
     hle_register_msgpipe_handlers();
     /* semaphores */
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
-    /* Lightweight mutexes. See the h_CreateLwMutex block above for why these
-     * are no longer no-ops and which entries remain deliberately unimplemented.
-     * The CB variants share the plain handler: a blocking lock here parks on
-     * sched_block_on, which is already a callback-safe yield point. */
-    /* Status layout unmeasured -- see the note above h_CreateEventFlag. */
-    sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ok);
-    sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ok);
+    /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
     /* Registry utility (sceReg) stubs */
     /* Registry utility (sceReg) stubs -- issue #78: all six NIDs were registered under the

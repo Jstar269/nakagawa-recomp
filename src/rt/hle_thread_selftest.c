@@ -8585,6 +8585,411 @@ static void test_td24c_atrac_info_batch(void) {
     }
 }
 
+/* TD-24 batch 4: production-dispatch regressions for 20 converted fake-success
+ * handlers across 6 families:
+ *   1. Ctrl sampling (SetSamplingMode, SetSamplingCycle, SetIdleCancelThreshold, GetIdleCancelThreshold)
+ *   2. Power locks (PowerLock, PowerUnlock, PowerTick)
+ *   3. GPIO (SetGPO, GetGPI)
+ *   4. GE draw sync (GeDrawSync)
+ *   5. MPEG (RingbufferDestruct, FlushAllStream, AvcDecodeFlush)
+ *   6. LwMutex status (ReferLwMutexStatus, ReferLwMutexStatusByID)
+ *   7. ATRAC second buffer & lifecycle (SetSecondBuffer, GetSecondBufferInfo,
+ *      GetBufferInfoForResetting / Reseting, Reinit, ReleaseResources)
+ * Dispatches through sr_syscall to pin the exact production NID mapping. */
+
+#define NID_SCE_CTRL_SET_SAMPLING_MODE               0x1f4011e6u
+#define NID_SCE_CTRL_SET_SAMPLING_CYCLE              0x6a2774f3u
+#define NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD       0xa7144800u
+#define NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD       0x687660fau
+#define NID_SCE_KERNEL_POWER_LOCK                    0xeadb1bd7u
+#define NID_SCE_KERNEL_POWER_UNLOCK                  0x3aee7261u
+#define NID_SCE_KERNEL_POWER_TICK                    0x090ccb3fu
+#define NID_SCE_KERNEL_SET_GPO                       0x6ad345d7u
+#define NID_SCE_KERNEL_GET_GPI                       0x37fb5c42u
+#ifndef NID_SCE_GE_DRAW_SYNC
+#define NID_SCE_GE_DRAW_SYNC                         0xb287bd61u
+#endif
+#define NID_SCE_MPEG_RINGBUFFER_DESTRUCT             0x13407f13u
+#define NID_SCE_MPEG_FLUSH_ALL_STREAM                0x707b7629u
+#define NID_SCE_MPEG_AVC_DECODE_FLUSH                0x4571cc64u
+#define NID_TD24D_CREATE_LWMUTEX                     0x19cff145u
+#define NID_TD24D_DELETE_LWMUTEX                     0x60107536u
+#define NID_SCE_KERNEL_REFER_LWMUTEX_STATUS          0xc1734599u
+#define NID_SCE_KERNEL_REFER_LWMUTEX_STATUS_BY_ID    0x4c145944u
+#define NID_SCE_ATRAC_SET_SECOND_BUFFER              0x83bf7afdu
+#define NID_SCE_ATRAC_GET_SECOND_BUFFER_INFO         0x83e85ea0u
+#define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING  0x2dd3e298u
+#define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING   0xca3ca3d2u
+#define NID_SCE_ATRAC_REINIT                         0x132f1ecau
+#define NID_SCE_ATRAC_RELEASE_RESOURCES              0xd5c28cc0u
+
+extern void sr_hle_test_ctrl_sampling_reset(void);
+extern uint32_t sr_hle_test_power_lock_count(void);
+extern uint32_t sr_hle_test_power_tick_count(void);
+extern void sr_hle_test_power_lock_reset(void);
+extern uint32_t sr_hle_test_gpo_value(void);
+extern void sr_hle_test_gpo_reset(void);
+extern uint32_t sr_hle_test_gpi_value(void);
+extern void sr_hle_test_gpi_set(uint32_t val);
+extern void sr_hle_test_gpi_reset(void);
+extern int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size);
+extern uint32_t sr_hle_test_atrac_reinit_count(void);
+extern void sr_hle_test_atrac_reinit_reset(void);
+extern uint32_t sr_hle_test_atrac_release_count(void);
+extern void sr_hle_test_atrac_release_reset(void);
+
+static void test_td24d_hle_batch(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    /* =========================================================================
+     * 1. Ctrl sampling family (4 NIDs):
+     *    sceCtrlSetSamplingMode (0x1f4011e6), sceCtrlSetSamplingCycle (0x6a2774f3),
+     *    sceCtrlSetIdleCancelThreshold (0xa7144800), sceCtrlGetIdleCancelThreshold (0x687660fa)
+     * ========================================================================= */
+    sr_hle_test_ctrl_sampling_reset();
+    enum {
+        TD24D_CTRL_OUT = 0x08007200u,
+    };
+    MEM_W32(TD24D_CTRL_OUT, 0u);
+    MEM_W32(TD24D_CTRL_OUT + 4u, 0u);
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, TD24D_CTRL_OUT, TD24D_CTRL_OUT + 4u, 0u, 0u) == 0u &&
+               MEM_R32(TD24D_CTRL_OUT) == 0xFFFFFFFFu &&
+               MEM_R32(TD24D_CTRL_OUT + 4u) == 0xFFFFFFFFu,
+           "sceCtrlGetIdleCancelThreshold reports default disabled (-1) state");
+
+    /* Mode: returns previous mode */
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_SAMPLING_MODE, 1u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingMode returns initial mode 0");
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_SAMPLING_MODE, 0u, 0u, 0u, 0u) == 1u,
+           "sceCtrlSetSamplingMode returns previous mode 1");
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_SAMPLING_MODE, 1u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingMode returns previous mode 0");
+
+    /* Cycle: returns previous cycle */
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 5555u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingCycle returns initial cycle 0");
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 0u, 0u, 0u, 0u) == 5555u,
+           "sceCtrlSetSamplingCycle returns previous cycle 5555");
+
+    /* Thresholds round-trip */
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, 123u, 456u, 0u, 0u) == 0u,
+           "sceCtrlSetIdleCancelThreshold accepts custom thresholds");
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, TD24D_CTRL_OUT, TD24D_CTRL_OUT + 4u, 0u, 0u) == 0u &&
+               MEM_R32(TD24D_CTRL_OUT) == 123u &&
+               MEM_R32(TD24D_CTRL_OUT + 4u) == 456u,
+           "sceCtrlGetIdleCancelThreshold reflects set thresholds");
+    sr_hle_test_ctrl_sampling_reset();
+
+    /* =========================================================================
+     * 2. Power locks & tick (3 NIDs):
+     *    sceKernelPowerLock (0xeadb1bd7), sceKernelPowerUnlock (0x3aee7261),
+     *    sceKernelPowerTick (0x090ccb3f)
+     * ========================================================================= */
+    sr_hle_test_power_lock_reset();
+    expect(sr_hle_test_power_lock_count() == 0u && sr_hle_test_power_tick_count() == 0u,
+           "power lock fixture starts at zero locks and ticks");
+
+    /* Rejects invalid lockType != 0 */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_LOCK, 1u, 0u, 0u, 0u) == 0x80000107u,
+           "sceKernelPowerLock rejects lockType 1 with INVALID_MODE (0x80000107)");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_UNLOCK, 1u, 0u, 0u, 0u) == 0x80000107u,
+           "sceKernelPowerUnlock rejects lockType 1 with INVALID_MODE (0x80000107)");
+
+    /* Unlock when 0 clamps at 0 */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_UNLOCK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerUnlock succeeds and clamps when lock count is 0");
+    expect(sr_hle_test_power_lock_count() == 0u, "lock count remains 0");
+
+    /* Lock and Unlock count tracking */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_LOCK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerLock increments lock count");
+    expect(sr_hle_test_power_lock_count() == 1u, "retained lock count is 1");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_LOCK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerLock can lock recursively");
+    expect(sr_hle_test_power_lock_count() == 2u, "retained lock count is 2");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_UNLOCK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerUnlock decrements lock count");
+    expect(sr_hle_test_power_lock_count() == 1u, "retained lock count is 1");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_UNLOCK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerUnlock decrements lock count back to zero");
+    expect(sr_hle_test_power_lock_count() == 0u, "retained lock count is 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_UNLOCK, 0u, 0u, 0u, 0u) == 0u,
+           "subsequent sceKernelPowerUnlock again clamps lock count at 0");
+    expect(sr_hle_test_power_lock_count() == 0u, "lock count remains 0");
+
+    /* Tick */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_TICK, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerTick returns success");
+    expect(sr_hle_test_power_tick_count() == 1u, "power tick count incremented to 1");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_POWER_TICK, 1u, 0u, 0u, 0u) == 0u,
+           "sceKernelPowerTick type 1 returns success");
+    expect(sr_hle_test_power_tick_count() == 2u, "power tick count incremented to 2");
+
+    /* =========================================================================
+     * 3. GPIO pins (2 NIDs):
+     *    sceKernelSetGPO (0x6ad345d7), sceKernelGetGPI (0x37fb5c42)
+     * ========================================================================= */
+    sr_hle_test_gpo_reset();
+    sr_hle_test_gpi_reset();
+    expect(td24b_dispatch4(NID_SCE_KERNEL_GET_GPI, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelGetGPI defaults to 0 on retail PSP");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_SET_GPO, 0x12345678u, 0u, 0u, 0u) == 0u,
+           "sceKernelSetGPO stores output latch");
+    expect(sr_hle_test_gpo_value() == 0x12345678u, "retained GPO value is 0x12345678");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_GET_GPI, 0u, 0u, 0u, 0u) == 0u,
+           "sceKernelGetGPI remains 0: GPO output latch does not leak to GPI inputs");
+    sr_hle_test_gpi_set(0xaabbcc00u);
+    expect(td24b_dispatch4(NID_SCE_KERNEL_GET_GPI, 0u, 0u, 0u, 0u) == 0xaabbcc00u,
+           "sceKernelGetGPI reflects simulated input pin values");
+    expect(sr_hle_test_gpo_value() == 0x12345678u, "GPO latch remains unchanged");
+    sr_hle_test_gpo_reset();
+    sr_hle_test_gpi_reset();
+
+    /* =========================================================================
+     * 4. GE draw sync (1 NID):
+     *    sceGeDrawSync (0xb287bd61)
+     * ========================================================================= */
+    expect(td24b_dispatch4(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u) == 0u,
+           "sceGeDrawSync peek mode (1) returns 0 when no GE lists are busy");
+    expect(td24b_dispatch4(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0u,
+           "sceGeDrawSync wait mode (0) returns 0 when idle");
+
+    /* =========================================================================
+     * 5. MPEG family (3 NIDs):
+     *    sceMpegRingbufferDestruct (0x13407f13), sceMpegFlushAllStream (0x707b7629),
+     *    sceMpegAvcDecodeFlush (0x4571cc64)
+     * ========================================================================= */
+    /* Destruct rejects invalid / null pointers */
+    expect(td24b_dispatch4(NID_SCE_MPEG_RINGBUFFER_DESTRUCT, 0u, 0u, 0u, 0u) == 0x80020003u,
+           "sceMpegRingbufferDestruct rejects null pointer with 0x80020003");
+    expect(td24b_dispatch4(NID_SCE_MPEG_FLUSH_ALL_STREAM, 0u, 0u, 0u, 0u) == 0x80020003u,
+           "sceMpegFlushAllStream rejects null pointer with 0x80020003");
+    expect(td24b_dispatch4(NID_SCE_MPEG_AVC_DECODE_FLUSH, 0u, 0u, 0u, 0u) == 0x80020003u,
+           "sceMpegAvcDecodeFlush rejects null pointer with 0x80020003");
+
+    enum {
+        TD24D_RB_ADDR   = 0x08007400u,
+        TD24D_MPEG_DESC = 0x08007500u,
+        TD24D_MPEG_H    = 0x08007600u,
+    };
+    /* RingbufferDestruct clears packetsRead, packetsWritePos, packetsAvail */
+    MEM_W32(TD24D_RB_ADDR + 4u, 10u);
+    MEM_W32(TD24D_RB_ADDR + 8u, 20u);
+    MEM_W32(TD24D_RB_ADDR + 12u, 30u);
+    expect(td24b_dispatch4(NID_SCE_MPEG_RINGBUFFER_DESTRUCT, TD24D_RB_ADDR, 0u, 0u, 0u) == 0u,
+           "sceMpegRingbufferDestruct succeeds on valid ringbuffer");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
+           "sceMpegRingbufferDestruct clears packet counters");
+
+    /* FlushAllStream clears packet counters via mpeg struct */
+    MEM_W32(TD24D_MPEG_DESC, TD24D_MPEG_H);
+    MEM_W32(TD24D_MPEG_H + 16u, TD24D_RB_ADDR);
+    MEM_W32(TD24D_RB_ADDR + 4u, 11u);
+    MEM_W32(TD24D_RB_ADDR + 8u, 21u);
+    MEM_W32(TD24D_RB_ADDR + 12u, 31u);
+    expect(td24b_dispatch4(NID_SCE_MPEG_FLUSH_ALL_STREAM, TD24D_MPEG_DESC, 0u, 0u, 0u) == 0u,
+           "sceMpegFlushAllStream succeeds on valid MPEG descriptor");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
+           "sceMpegFlushAllStream flushes ring packet counters");
+
+    /* AvcDecodeFlush clears packet counters via mpeg struct */
+    MEM_W32(TD24D_RB_ADDR + 4u, 12u);
+    MEM_W32(TD24D_RB_ADDR + 8u, 22u);
+    MEM_W32(TD24D_RB_ADDR + 12u, 32u);
+    expect(td24b_dispatch4(NID_SCE_MPEG_AVC_DECODE_FLUSH, TD24D_MPEG_DESC, 0u, 0u, 0u) == 0u,
+           "sceMpegAvcDecodeFlush succeeds on valid MPEG descriptor");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
+           "sceMpegAvcDecodeFlush flushes ring packet counters");
+
+    /* =========================================================================
+     * 6. LwMutex family (2 NIDs):
+     *    sceKernelReferLwMutexStatus (0xc1734599), sceKernelReferLwMutexStatusByID (0x4c145944)
+     * ========================================================================= */
+    enum {
+        TD24D_LW_WA   = 0x08007700u,
+        TD24D_LW_NAME = 0x08007740u,
+        TD24D_LW_INFO = 0x08007800u,
+    };
+    /* Write null-terminated name */
+    for (int i = 0; i < 32; i++) MEM_W8(TD24D_LW_NAME + (uint32_t)i, 0);
+    MEM_W8(TD24D_LW_NAME + 0u, 't');
+    MEM_W8(TD24D_LW_NAME + 1u, 'd');
+    MEM_W8(TD24D_LW_NAME + 2u, '2');
+    MEM_W8(TD24D_LW_NAME + 3u, '4');
+
+    /* Invalid lookups before create */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS, TD24D_LW_WA, TD24D_LW_INFO, 0u, 0u) == 0x800201cau,
+           "sceKernelReferLwMutexStatus reports LWMUTEX_NOT_FOUND (0x800201ca) for uncreated workarea");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS_BY_ID, 0x9999u, TD24D_LW_INFO, 0u, 0u) == 0x800201cau,
+           "sceKernelReferLwMutexStatusByID reports LWMUTEX_NOT_FOUND for nonexistent UID");
+
+    /* Create the LwMutex: recursive attr (0x200), initialCount 0 */
+    expect(td24b_dispatch4(NID_TD24D_CREATE_LWMUTEX, TD24D_LW_WA, TD24D_LW_NAME, 0x200u, 0u) == 0u,
+           "create LwMutex for status query succeeds");
+    uint32_t lw_uid = MEM_R32(TD24D_LW_WA + 0x10u);
+    expect(lw_uid != 0u && lw_uid != 0xFFFFFFFFu, "workarea holds a valid UID");
+
+    /* Query by workarea: null info rejected */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS, TD24D_LW_WA, 0u, 0u, 0u) == 0x80000103u,
+           "sceKernelReferLwMutexStatus rejects null info address with ILLEGAL_ADDR");
+
+    /* Query by workarea with valid info buffer */
+    for (uint32_t i = 0; i < 64u; i++) MEM_W8(TD24D_LW_INFO + i, 0);
+    MEM_W32(TD24D_LW_INFO, 64u);
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS, TD24D_LW_WA, TD24D_LW_INFO, 0u, 0u) == 0u,
+           "sceKernelReferLwMutexStatus succeeds");
+    expect(MEM_R32(TD24D_LW_INFO + 0u) == 64u &&
+               MEM_R8(TD24D_LW_INFO + 4u) == 't' &&
+               MEM_R8(TD24D_LW_INFO + 5u) == 'd' &&
+               MEM_R8(TD24D_LW_INFO + 6u) == '2' &&
+               MEM_R8(TD24D_LW_INFO + 7u) == '4' &&
+               MEM_R32(TD24D_LW_INFO + 36u) == 0x200u &&
+               MEM_R32(TD24D_LW_INFO + 40u) == lw_uid &&
+               MEM_R32(TD24D_LW_INFO + 44u) == TD24D_LW_WA &&
+               MEM_R32(TD24D_LW_INFO + 48u) == 0u &&
+               MEM_R32(TD24D_LW_INFO + 52u) == 0u &&
+               MEM_R32(TD24D_LW_INFO + 60u) == 0u,
+           "sceKernelReferLwMutexStatus populates SceKernelLwMutexInfo correctly");
+
+    /* Query by UID with valid info buffer */
+    for (uint32_t i = 0; i < 64u; i++) MEM_W8(TD24D_LW_INFO + i, 0);
+    MEM_W32(TD24D_LW_INFO, 64u);
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS_BY_ID, lw_uid, TD24D_LW_INFO, 0u, 0u) == 0u,
+           "sceKernelReferLwMutexStatusByID succeeds");
+    expect(MEM_R32(TD24D_LW_INFO + 0u) == 64u &&
+               MEM_R32(TD24D_LW_INFO + 36u) == 0x200u &&
+               MEM_R32(TD24D_LW_INFO + 40u) == lw_uid &&
+               MEM_R32(TD24D_LW_INFO + 44u) == TD24D_LW_WA,
+           "sceKernelReferLwMutexStatusByID populates SceKernelLwMutexInfo identically");
+
+    /* Delete and verify refer fails */
+    expect(td24b_dispatch4(NID_TD24D_DELETE_LWMUTEX, TD24D_LW_WA, 0u, 0u, 0u) == 0u,
+           "delete LwMutex succeeds");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS, TD24D_LW_WA, TD24D_LW_INFO, 0u, 0u) == 0x800201cau,
+           "sceKernelReferLwMutexStatus after delete returns LWMUTEX_NOT_FOUND");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REFER_LWMUTEX_STATUS_BY_ID, lw_uid, TD24D_LW_INFO, 0u, 0u) == 0x800201cau,
+           "sceKernelReferLwMutexStatusByID after delete returns LWMUTEX_NOT_FOUND");
+
+    /* =========================================================================
+     * 7. ATRAC second buffer & lifecycle family (5 NIDs / 6 functions):
+     *    sceAtracSetSecondBuffer (0x83bf7afd), sceAtracGetSecondBufferInfo (0x83e85ea0),
+     *    sceAtracGetBufferInfoForResetting (0x2dd3e298) / sceAtracGetBufferInfoForReseting (0xca3ca3d2),
+     *    sceAtracReinit (0x132f1eca), sceAtracReleaseResources (0xd5c28cc0)
+     * ========================================================================= */
+    sr_hle_test_atrac_reinit_reset();
+    sr_hle_test_atrac_release_reset();
+
+    /* Reinit with no contexts in use: succeeds and increments count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracReinit succeeds when no ATRAC contexts are in use");
+    expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
+
+    /* Release resources succeeds and increments count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_RESOURCES, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracReleaseResources succeeds");
+    expect(sr_hle_test_atrac_release_count() == 1u, "release count incremented");
+
+    /* Bad-ID error checks */
+    enum {
+        TD24D_ATRAC_OUT = 0x08007900u,
+        TD24D_BUFINFO   = 0x08007a00u,
+        TD24D_2ND_BUF   = 0x08007b00u,
+        TD24D_TRACK     = 0x08008000u,
+        TD24D_TRACK_SZ  = 0x400u,
+    };
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_SECOND_BUFFER, 0x7fu, TD24D_2ND_BUF, 0x200u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracSetSecondBuffer rejects invalid ID with BAD_ATRACID");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_SECOND_BUFFER_INFO, 0x7fu, TD24D_ATRAC_OUT, TD24D_ATRAC_OUT + 4u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracGetSecondBufferInfo rejects invalid ID with BAD_ATRACID");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING, 0x7fu, 0u, TD24D_BUFINFO, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracGetBufferInfoForResetting rejects invalid ID with BAD_ATRACID");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING, 0x7fu, 0u, TD24D_BUFINFO, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracGetBufferInfoForReseting rejects invalid ID with BAD_ATRACID");
+
+    /* Allocate ATRAC context */
+    uint32_t atrac_id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+    expect(atrac_id < 8u, "allocate ATRAC context succeeds");
+
+    /* Now that a context is in use, Reinit must be refused with BUSY */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0x80000021u,
+           "sceAtracReinit fails with BUSY (0x80000021) while a context is in use");
+
+    /* Feed synthetic track data */
+    td24c_build_track(TD24D_TRACK, TD24D_TRACK_SZ, 16000u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, atrac_id, TD24D_TRACK, TD24D_TRACK_SZ, 0u) == 0u,
+           "sceAtracSetData feeds synthetic track");
+
+    /* SetSecondBuffer: null buffer with non-zero size rejected */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_SECOND_BUFFER, atrac_id, 0u, 0x100u, 0u) ==
+               ATRAC_ERROR_SIZE_TOO_SMALL,
+           "sceAtracSetSecondBuffer rejects null buffer with nonzero size");
+
+    /* SetSecondBuffer: valid buffer retained */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_SECOND_BUFFER, atrac_id, TD24D_2ND_BUF, 0x200u, 0u) == 0u,
+           "sceAtracSetSecondBuffer accepts valid buffer");
+    uint32_t ret_buf = 0, ret_sz = 0;
+    expect(sr_hle_test_atrac_second_buffer(atrac_id, &ret_buf, &ret_sz) == 1 &&
+               ret_buf == TD24D_2ND_BUF && ret_sz == 0x200u,
+           "retained second buffer matches set arguments");
+
+    /* Clear second buffer with (0, 0) */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_SECOND_BUFFER, atrac_id, 0u, 0u, 0u) == 0u,
+           "sceAtracSetSecondBuffer clears with (0, 0)");
+    expect(sr_hle_test_atrac_second_buffer(atrac_id, &ret_buf, &ret_sz) == 1 &&
+               ret_buf == 0u && ret_sz == 0u,
+           "cleared second buffer retained as zero");
+
+    /* GetSecondBufferInfo: non-streamed-loop context reports SECOND_BUFFER_NOT_NEEDED (0x80630022) */
+    MEM_W32(TD24D_ATRAC_OUT, 0xdeadbeefu);
+    MEM_W32(TD24D_ATRAC_OUT + 4u, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_SECOND_BUFFER_INFO, atrac_id, TD24D_ATRAC_OUT, TD24D_ATRAC_OUT + 4u, 0u) ==
+               0x80630022u,
+           "sceAtracGetSecondBufferInfo returns SECOND_BUFFER_NOT_NEEDED for non-looping track");
+    expect(MEM_R32(TD24D_ATRAC_OUT) == 0u && MEM_R32(TD24D_ATRAC_OUT + 4u) == 0u,
+           "sceAtracGetSecondBufferInfo clears position and byte count");
+
+    /* GetBufferInfoForResetting (0x2dd3e298) */
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(TD24D_BUFINFO + i, 0xFFu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING, atrac_id, 0u, TD24D_BUFINFO, 0u) == 0u,
+           "sceAtracGetBufferInfoForResetting succeeds on valid ATRAC context");
+    expect(MEM_R32(TD24D_BUFINFO + 0u) == TD24D_TRACK &&
+               MEM_R32(TD24D_BUFINFO + 4u) == 0u &&
+               MEM_R32(TD24D_BUFINFO + 8u) == 0u &&
+               MEM_R32(TD24D_BUFINFO + 12u) == 0u,
+           "sceAtracGetBufferInfoForResetting writes correct first buffer info");
+
+    /* GetBufferInfoForReseting alias (0xca3ca3d2) */
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(TD24D_BUFINFO + i, 0xFFu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING, atrac_id, 0u, TD24D_BUFINFO, 0u) == 0u,
+           "sceAtracGetBufferInfoForReseting alias succeeds identically");
+    expect(MEM_R32(TD24D_BUFINFO + 0u) == TD24D_TRACK &&
+               MEM_R32(TD24D_BUFINFO + 4u) == 0u &&
+               MEM_R32(TD24D_BUFINFO + 8u) == 0u &&
+               MEM_R32(TD24D_BUFINFO + 12u) == 0u,
+           "sceAtracGetBufferInfoForReseting alias writes identical first buffer info");
+
+    /* Release ATRAC context */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, atrac_id, 0u, 0u, 0u) == 0u,
+           "release ATRAC context succeeds");
+
+    /* Once released, Reinit succeeds again */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracReinit succeeds again after releasing all contexts");
+    expect(sr_hle_test_atrac_reinit_count() == 2u, "reinit count reached 2");
+}
+
+
 /* Production-dispatch regression for the BGM/SFX mix junction (#32, #75).
  *
  * The title routes music as: sceAtracDecodeData writes PCM, the game copies it
@@ -12256,6 +12661,7 @@ int main(int argc, char **argv) {
     test_td24b_cheap_hle_batch();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
+    test_td24d_hle_batch();
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();
