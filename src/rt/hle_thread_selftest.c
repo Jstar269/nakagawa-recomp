@@ -113,6 +113,7 @@ extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
+extern uint32_t sr_hle_test_io_rename(CpuState *s);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
 
@@ -173,6 +174,9 @@ extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
 #define NID_SCE_AUDIO_CH_RELEASE 0x6fc46853u
 #define NID_SCE_AUDIO_OUTPUT_BLOCKING 0x136caf51u
 #define NID_SCE_AUDIO_SET_DATA_LEN 0xcb2e439eu
+#define NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG 0x95fd0c2du
+#define NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH 0xb011922fu
+#define NID_SCE_IO_RENAME 0x779103a0u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -1179,6 +1183,86 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_close(&cpu) == 0u,
            "ordinary descriptor opened after a standard close closes cleanly");
 
+    /* sceIoRename contract verification */
+    const uint32_t rename_src_addr = 0x09013000u;
+    const uint32_t rename_dst_addr = 0x09013100u;
+    static const char rename_nonexist[] = "ms0:/NAKAGAWA_NONEXIST_RENAME.TXT";
+    static const char rename_dst_guest[] = "ms0:/NAKAGAWA_RENAMED_RESULT.TXT";
+    char rename_dst_host[256];
+    fd_host_path(rename_dst_host, sizeof(rename_dst_host), rename_dst_guest);
+    DeleteFileA(rename_dst_host);
+
+    /* 1. Rename on non-existent file returns 0x80010002 */
+    fd_guest_copy(rename_src_addr, rename_nonexist, sizeof(rename_nonexist));
+    fd_guest_copy(rename_dst_addr, rename_dst_guest, sizeof(rename_dst_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = rename_src_addr;
+    cpu.r[5] = rename_dst_addr;
+    expect(sr_hle_test_io_rename(&cpu) == 0x80010002u,
+           "sceIoRename on non-existent source file returns driver errno 0x80010002");
+
+    /* 2. Null pointer returns 0x80010016 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = rename_dst_addr;
+    expect(sr_hle_test_io_rename(&cpu) == 0x80010016u,
+           "sceIoRename with null source pointer returns 0x80010016");
+
+    /* 3. Existing file rename moves file and content */
+    static const char rename_src_guest[] = "ms0:/NAKAGAWA_RENAME_SRC.TXT";
+    static const uint8_t rename_payload[] = "RENAME_TEST_PAYLOAD\n";
+    char rename_src_host[256];
+    fd_host_path(rename_src_host, sizeof(rename_src_host), rename_src_guest);
+    DeleteFileA(rename_src_host);
+    fd_set_path(&cpu, rename_src_addr, rename_src_guest);
+    uint32_t rn_fd = sr_hle_test_io_open(&cpu);
+    expect(rn_fd == 3u, "open rename source file succeeds");
+    fd_guest_copy(payload_addr, rename_payload, sizeof(rename_payload) - 1u);
+    fd_set_write(&cpu, rn_fd, payload_addr, (uint32_t)(sizeof(rename_payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(rename_payload) - 1u,
+           "write rename source file succeeds");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = rn_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "close rename source file succeeds");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = rename_src_addr;
+    cpu.r[5] = rename_dst_addr;
+    expect(sr_hle_test_io_rename(&cpu) == 0u,
+           "sceIoRename on existing source file succeeds");
+    expect(GetFileAttributesA(rename_src_host) == INVALID_FILE_ATTRIBUTES,
+           "sceIoRename removes original source file from host");
+    expect(fd_host_bytes_equal(rename_dst_host, rename_payload, sizeof(rename_payload) - 1u),
+           "sceIoRename preserves file content at destination path");
+
+    /* 4. Rename with replace over existing destination */
+    static const char overwrite_src_guest[] = "ms0:/NAKAGAWA_OVERWRITE_SRC.TXT";
+    static const uint8_t overwrite_payload[] = "OVERWRITE_PAYLOAD_NEW\n";
+    char overwrite_src_host[256];
+    fd_host_path(overwrite_src_host, sizeof(overwrite_src_host), overwrite_src_guest);
+    DeleteFileA(overwrite_src_host);
+    fd_set_path(&cpu, rename_src_addr, overwrite_src_guest);
+    uint32_t ow_fd = sr_hle_test_io_open(&cpu);
+    expect(ow_fd == 3u, "open overwrite source file succeeds");
+    fd_guest_copy(payload_addr, overwrite_payload, sizeof(overwrite_payload) - 1u);
+    fd_set_write(&cpu, ow_fd, payload_addr, (uint32_t)(sizeof(overwrite_payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(overwrite_payload) - 1u,
+           "write overwrite source file succeeds");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ow_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "close overwrite source file succeeds");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = rename_src_addr;
+    cpu.r[5] = rename_dst_addr;
+    expect(sr_hle_test_io_rename(&cpu) == 0u,
+           "sceIoRename replacing existing destination file succeeds");
+    expect(GetFileAttributesA(overwrite_src_host) == INVALID_FILE_ATTRIBUTES,
+           "sceIoRename source file removed after replace");
+    expect(fd_host_bytes_equal(rename_dst_host, overwrite_payload, sizeof(overwrite_payload) - 1u),
+           "sceIoRename replaced destination contains new payload");
+    DeleteFileA(rename_dst_host);
+
     DeleteFileA(result_host);
     RemoveDirectoryA("build/hle_fd_namespace_fs");
     if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
@@ -1429,6 +1513,46 @@ static void test_audio_regular_contract_safety(void) {
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SET_DATA_LEN, 0xffffffffu, 64u, 0u) ==
                SCE_AUDIO_ERROR_INVALID_CH,
            "AudioSetChannelDataLen rejects an invalid channel before mutation");
+
+    /* sceAudioChangeChannelConfig contract verification */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 0xffffffffu, 0u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioChangeChannelConfig rejects a negative channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 8u, 0u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioChangeChannelConfig rejects out-of-range channel 8");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 1u, 0u, 0u) ==
+               SCE_AUDIO_ERROR_NOT_INITIALIZED,
+           "AudioChangeChannelConfig rejects an unreserved regular channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 0u, 1u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_FORMAT,
+           "AudioChangeChannelConfig rejects an invalid format");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 0u, 0u, 0u) == 0u,
+           "AudioChangeChannelConfig accepts valid stereo format 0");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) && format == 0,
+           "channel state reflects updated stereo format 0");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CHANGE_CHANNEL_CONFIG, 0u, 0x10u, 0u) == 0u,
+           "AudioChangeChannelConfig restores mono format 0x10");
+    expect(sr_hle_test_audio_state(0u, &reserved, &frames, &format) && format == 0x10,
+           "channel state reflects restored mono format 0x10");
+
+    /* sceAudioGetChannelRestLength contract verification */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0xffffffffu, 0u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioGetChannelRestLength rejects a negative channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 8u, 0u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioGetChannelRestLength rejects out-of-range channel 8");
+    s_audio_queue_result = 512;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 512u,
+           "AudioGetChannelRestLength returns queued frame count from backend");
+    s_audio_queue_result = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 0u,
+           "AudioGetChannelRestLength returns 0 when queue has 0 frames");
+    s_audio_queue_result = -1;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 0u,
+           "AudioGetChannelRestLength clamps negative queue backend report to 0");
+    s_audio_queue_result = 0;
 
     for (uint32_t i = 0; i < 64u; i++)
         MEM_W16(MONO_EDGE + i * 2u, (uint16_t)(i + 1u));
@@ -8743,6 +8867,125 @@ static void test_td28_partition_free_reuse(void) {
     expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
 }
 
+static void test_fpl_delete_releases_partition(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern int sr_hle_test_partition_free_block_count(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    CpuState cpu;
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+
+    /* 1. Allocate anchor block A to ensure the FPL pool is an interior block */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_A = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_A != 0u && uid_A < 0x80000000u, "alloc anchor A succeeds");
+
+    /* 2. Create pool 1 (size = 0x1000: bsize 0x100, nblocks 0x10) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x10u;
+    uint32_t fpl1 = sr_syscall(&cpu, NID_FPL_CREATE);
+    expect(fpl1 >= 0x500u, "fpl1 create succeeds");
+
+    /* Allocate first block to get fpl1 base address */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1; cpu.r[5] = FPL_OUTPTR; cpu.r[6] = 0u;
+    uint32_t alloc_rc1 = sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    expect(alloc_rc1 == 0u, "allocate from fpl1 succeeds");
+    uint32_t addr1 = MEM_R32(FPL_OUTPTR);
+
+    /* 3. Allocate anchor block C following pool 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_C = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_C != 0u && uid_C < 0x80000000u, "alloc anchor C succeeds");
+
+    /* 4. Delete pool 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1;
+    uint32_t del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(del_rc == 0u, "delete fpl1 succeeds");
+
+    /* Partition block should now be in the free list (exactly 1 free block) */
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "delete fpl1 releases its partition block to free list");
+
+    /* 5. Double-delete pool 1: assert it returns existing error/status code (0) and does not free twice */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl1;
+    uint32_t double_del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(double_del_rc == 0u, "double-delete of fpl1 returns existing error/status (0)");
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "double-delete of fpl1 does not free twice (free block count unchanged)");
+
+    /* Also assert deleting an unknown uid returns existing code (0) and does not free */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x9999u;
+    uint32_t unknown_del_rc = sr_syscall(&cpu, NID_FPL_DELETE);
+    expect(unknown_del_rc == 0u, "delete unknown uid returns existing error/status (0)");
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "delete unknown uid does not free (free block count unchanged)");
+
+    /* 6. Create pool 2 of the same size: assert it reuses pool 1's address */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x10u;
+    uint32_t fpl2 = sr_syscall(&cpu, NID_FPL_CREATE);
+    expect(fpl2 >= 0x500u, "fpl2 create succeeds");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fpl2; cpu.r[5] = FPL_OUTPTR; cpu.r[6] = 0u;
+    uint32_t alloc_rc2 = sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    expect(alloc_rc2 == 0u, "allocate from fpl2 succeeds");
+    uint32_t addr2 = MEM_R32(FPL_OUTPTR);
+
+    expect(addr2 == addr1, "pool 2 of same size reuses deleted pool 1 partition address");
+    expect(sr_hle_test_partition_free_block_count() == 0,
+           "fpl2 allocation consumed the free partition block");
+
+    /* 7. Clean up */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = fpl2;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_A;
+    (void)sr_syscall(&cpu, NID_FREE_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_C;
+    (void)sr_syscall(&cpu, NID_FREE_PART);
+
+    /* 8. Assert create-without-delete sequence returns unchanged addresses */
+    sr_hle_test_partition_reset();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x4u; /* 0x400 */
+    uint32_t p_x = sr_syscall(&cpu, NID_FPL_CREATE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_x; cpu.r[5] = FPL_OUTPTR;
+    (void)sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    uint32_t addr_px = MEM_R32(FPL_OUTPTR);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    cpu.r[8] = 0x8u; /* 0x800 */
+    uint32_t p_y = sr_syscall(&cpu, NID_FPL_CREATE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_y; cpu.r[5] = FPL_OUTPTR;
+    (void)sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+    uint32_t addr_py = MEM_R32(FPL_OUTPTR);
+
+    expect(addr_px == base0, "create-without-delete fpl 1 address unchanged");
+    expect(addr_py == ((base0 + 0x400u + 0xFFu) & ~0xFFu), "create-without-delete fpl 2 address unchanged");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_x;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = p_y;
+    (void)sr_syscall(&cpu, NID_FPL_DELETE);
+}
+
 /* =========================================================================
  * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
  * ========================================================================= */
@@ -11059,6 +11302,7 @@ int main(int argc, char **argv) {
     test_msgpipe_safety();
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
+    test_fpl_delete_releases_partition();
     test_intr_context_conformance();
     test_psp_mutex();
 
