@@ -62,6 +62,10 @@ typedef struct SrGuestInterpCallBoundary {
  *              on sr_cpu_lle_enabled(); with the gate off these keep the
  *              historical fail-closed SR_GUEST_INTERP_UNSUPPORTED so the
  *              default lane and the cosim form census are unchanged)
+ *   LLE VFPU   lv.s sv.s lv.q sv.q lvl.q lvr.q svl.q svr.q address checks
+ *              (widths 4/16, left/right width 0 bypass; gated on
+ *              sr_cpu_lle_enabled() with the same historical UNSUPPORTED
+ *              when off; the access itself runs via sr_vfpu_interp)
  *
  * The LLE gate is what keeps the cosim census honest: census probes run with
  * the default (disabled) configuration, so the newly decoded COP0/syscall

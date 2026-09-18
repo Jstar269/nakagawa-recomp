@@ -456,10 +456,10 @@
     "status": "unreviewed"
   },
   "0x31668baa": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetChannel",
     "name": "sceAtracGetChannel",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x3251ea56": {
     "classification": "dedicated",
@@ -1554,10 +1554,10 @@
     "status": "unreviewed"
   },
   "0xa554a158": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetBitrate",
     "name": "sceAtracGetBitrate",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xa569e425": {
     "classification": "fake_success",
@@ -2136,10 +2136,10 @@
     "status": "unreviewed"
   },
   "0xe88f759b": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetInternalErrorInfo",
     "name": "sceAtracGetInternalErrorInfo",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xeadb1bd7": {
     "classification": "fake_success",
@@ -2166,10 +2166,10 @@
     "status": "unreviewed"
   },
   "0xeca32a99": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracIsSecondBufferNeeded",
     "name": "sceAtracIsSecondBufferNeeded",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xed1410e0": {
     "classification": "dedicated",

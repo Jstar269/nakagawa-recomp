@@ -218,6 +218,10 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
 #define NID_SCE_ATRAC_GET_REMAIN_FRAME 0x9ae849a7u
 #define NID_SCE_ATRAC_GET_MAX_SAMPLE 0xd6a5f2f7u
+#define NID_SCE_ATRAC_GET_CHANNEL 0x31668baau
+#define NID_SCE_ATRAC_GET_BITRATE 0xa554a158u
+#define NID_SCE_ATRAC_GET_INTERNAL_ERROR 0xe88f759bu
+#define NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED 0xeca32a99u
 
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
@@ -8399,6 +8403,188 @@ static void test_atrac_stream_ring_wrap(void) {
            "streamed context releases cleanly");
 }
 
+/* TD-24 batch 3: production-dispatch regressions for four converted Class B
+ * fake-success handlers. Every leg enters the exact production NID mapping
+ * through sr_syscall -- the same path a generated import stub takes -- and
+ * pins behaviour the old h_ok routing could not produce: the parsed fmt
+ * channel count, the header-declared bitrate (proved header-sourced by
+ * re-reading a rewritten rate, not a constant), the no-latent-error zero,
+ * and the streamed second-buffer signal that unblocks feed loops while file
+ * bytes remain. HOST_TESTED, not PSP_HARDWARE evidence; anything the runtime
+ * does not measure is marked UNMEASURED in the handler comments. */
+static void td24c_wr32(uint32_t guest, uint32_t v) {
+    uint32_t o = guest - 0x08000000u;
+    g_mem[o] = (uint8_t)v; g_mem[o + 1] = (uint8_t)(v >> 8);
+    g_mem[o + 2] = (uint8_t)(v >> 16); g_mem[o + 3] = (uint8_t)(v >> 24);
+}
+static void td24c_wr16(uint32_t guest, uint32_t v) {
+    uint32_t o = guest - 0x08000000u;
+    g_mem[o] = (uint8_t)v; g_mem[o + 1] = (uint8_t)(v >> 8);
+}
+/* Synthetic RIFF/WAVE track: fmt channels=2, blockAlign 744, fact samples,
+ * data payload. Fully synthetic bytes; no game data. */
+static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgBytes) {
+    for (uint32_t i = 0; i < fileSize; i++)
+        g_mem[base - 0x08000000u + i] = 0;
+    td24c_wr32(base + 0u, 0x46464952u);          /* 'RIFF' */
+    td24c_wr32(base + 4u, fileSize - 8u);
+    td24c_wr32(base + 8u, 0x45564157u);          /* 'WAVE' */
+    td24c_wr32(base + 12u, 0x20746d66u);         /* 'fmt ' */
+    td24c_wr32(base + 16u, 16u);
+    td24c_wr16(base + 20u, 1u);                  /* format tag */
+    td24c_wr16(base + 22u, 2u);                  /* channels */
+    td24c_wr32(base + 24u, 44100u);
+    td24c_wr32(base + 28u, avgBytes);            /* nAvgBytesPerSec */
+    td24c_wr16(base + 32u, 744u);                /* blockAlign */
+    td24c_wr16(base + 34u, 16u);
+    td24c_wr32(base + 36u, 0x74636166u);         /* 'fact' */
+    td24c_wr32(base + 40u, 4u);
+    td24c_wr32(base + 44u, 0x1000u);             /* total samples */
+    td24c_wr32(base + 48u, 0x61746164u);         /* 'data' */
+    td24c_wr32(base + 52u, fileSize - 56u);
+}
+
+static void test_td24c_atrac_info_batch(void) {
+    enum {
+        TD24C_BASE = 0x08002000u,
+        TD24C_FILESIZE = 0x400u,
+        TD24C_PREFIX = 0x08002400u,
+        TD24C_OUT = 0x08003000u,
+        TD24C_SENTINEL = 0xdeadbeefu,
+    };
+    reset_fixture();
+    sr_hle_init();
+
+    /* ---- 0. bad-id legs need no context; a bad id beats a bad pointer ---- */
+    MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, 0x7fu, TD24C_OUT, 0u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID && MEM_R32(TD24C_OUT) == TD24C_SENTINEL,
+           "sceAtracGetChannel reports the bad-id error without writing");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, 0x7fu, TD24C_OUT, 0u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID && MEM_R32(TD24C_OUT) == TD24C_SENTINEL,
+           "sceAtracGetBitrate reports the bad-id error without writing");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_INTERNAL_ERROR, 0x7fu, TD24C_OUT, 0u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID && MEM_R32(TD24C_OUT) == TD24C_SENTINEL,
+           "sceAtracGetInternalErrorInfo reports the bad-id error without writing");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, 0x7fu, 0u, 0u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracIsSecondBufferNeeded reports the bad-id error");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, 0x7fu, 0u, 0u, 0u) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "sceAtracGetChannel validates the id before the out-pointer");
+
+    /* ---- 1. fully fed track: all-data mode ---- */
+    {
+        uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+        expect(id < 8u, "info fixture allocates a tracked ATRAC context");
+        if (id >= 8u) return;
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, 0u, 0u, 0u) ==
+                   SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+               "sceAtracGetChannel rejects a null out-pointer");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, id, 0u, 0u, 0u) ==
+                   SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+               "sceAtracGetBitrate rejects a null out-pointer");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_INTERNAL_ERROR, id, 0u, 0u, 0u) ==
+                   SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+               "sceAtracGetInternalErrorInfo rejects a null out-pointer");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, 0x0bfffffeu, 0u, 0u) ==
+                   SCE_KERNEL_ERROR_ILLEGAL_ADDR && MEM_R32(TD24C_OUT) == TD24C_SENTINEL,
+               "sceAtracGetChannel rejects a span crossing the arena boundary");
+        td24c_build_track(TD24C_BASE, TD24C_FILESIZE, 16000u);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TD24C_BASE, TD24C_FILESIZE, 0u) == 0u,
+               "info fixture feeds a complete synthetic track");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 2u,
+               "sceAtracGetChannel reports the parsed fmt channel count");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 128u,
+               "sceAtracGetBitrate reports the header-declared rate in kbps");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_INTERNAL_ERROR, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 0u,
+               "sceAtracGetInternalErrorInfo reports no latent error");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 0u,
+               "an all-data track needs no second buffer");
+        /* The rate comes from the header, not a constant: halving the
+         * declared nAvgBytesPerSec halves the reported kbps. */
+        td24c_wr32(TD24C_BASE + 28u, 8000u);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TD24C_BASE, TD24C_FILESIZE, 0u) == 0u,
+               "info fixture re-feeds the track with a rewritten rate");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 64u,
+               "sceAtracGetBitrate tracks the rewritten header rate");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+               "info fixture releases its ATRAC context");
+    }
+
+    /* ---- 2. fact-only prefix: no fmt parsed, linear mode ---- */
+    {
+        uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+        expect(id < 8u, "prefix fixture allocates a tracked ATRAC context");
+        if (id >= 8u) return;
+        for (uint32_t i = 0; i < 44u; i++)
+            g_mem[TD24C_PREFIX - 0x08000000u + i] = 0;
+        td24c_wr32(TD24C_PREFIX + 0u, 0x46464952u);
+        td24c_wr32(TD24C_PREFIX + 4u, 0x1000u);
+        td24c_wr32(TD24C_PREFIX + 8u, 0x45564157u);
+        td24c_wr32(TD24C_PREFIX + 12u, 0x74636166u);
+        td24c_wr32(TD24C_PREFIX + 16u, 4u);
+        td24c_wr32(TD24C_PREFIX + 20u, 0x1000u);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TD24C_PREFIX, 44u, 0u) == 0u,
+               "prefix fixture feeds a fact-only envelope");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 0u,
+               "no parsed fmt chunk honestly reports zero channels, not garbage");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 0u,
+               "no parsed fmt chunk honestly reports a zero rate, not garbage");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 0u,
+               "a linear prefix needs no second buffer");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+               "prefix fixture releases its ATRAC context");
+    }
+
+    /* ---- 3. streamed prefix: second buffer needed until the file is fed ---- */
+    {
+        atring_build_header();
+        /* Pin the declared rate so the bitrate leg reads a known value. */
+        fixture_wr32(&g_mem[AT_RINGBASE - 0x08000000u + 28], 16000u);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = AT_RINGBASE;
+        cpu.r[5] = AT_BUFSIZE;
+        uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+        expect(id < 8u, "streamed fixture accepted by sceAtracSetDataAndGetID");
+        if (id >= 8u) return;
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 2u,
+               "sceAtracGetChannel reports streamed-track channels too");
+        MEM_W32(TD24C_OUT, TD24C_SENTINEL);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_BITRATE, id, TD24C_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(TD24C_OUT) == 128u,
+               "sceAtracGetBitrate reports the streamed header rate");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 1u,
+               "a streamed track with unfed file bytes needs its second buffer");
+        /* Feed the remainder of the synthetic file, then reconfigure with the
+         * whole file: nothing remains unfed, so the signal must clear. */
+        for (uint32_t f = AT_BUFSIZE; f < AT_FILESIZE; f++)
+            g_mem[AT_RINGBASE - 0x08000000u + f] = atring_file_byte(f);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, AT_RINGBASE, AT_FILESIZE, 0u) == 0u,
+               "streamed fixture re-feeds the complete synthetic file");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 0u,
+               "a fully fed track clears the second-buffer signal");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+               "streamed fixture releases its ATRAC context");
+    }
+}
+
 /* Production-dispatch regression for the BGM/SFX mix junction (#32, #75).
  *
  * The title routes music as: sceAtracDecodeData writes PCM, the game copies it
@@ -12069,6 +12255,7 @@ int main(int argc, char **argv) {
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
     test_atrac_stream_ring_wrap();
+    test_td24c_atrac_info_batch();
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();
