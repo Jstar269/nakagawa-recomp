@@ -799,6 +799,137 @@ static uint32_t h_DeleteFpl(CpuState *s) {
 }
 static uint32_t h_FreeFpl(CpuState *s) { (void)s; return 0; }
 
+/* Variable Pool (VPL): one SysMem partition block per pool, with a host-side first-fit
+ * free list for the pool span.  The pool's kernel header and exact PSP alignment are
+ * UNMEASURED; this implementation exposes the requested span and uses 16-byte chunks,
+ * the smallest conservative alignment for guest allocations. */
+#define VPL_MAX 16
+#define VPL_MAX_ALLOCS 128
+#define VPL_ALIGN 16u
+#define VPL_BAD_ID 0x800200d3u       /* same invalid-object code used by FPL */
+#define VPL_EXHAUSTED 0x800200d9u    /* same no-space code used by FPL */
+typedef struct { uint32_t addr, size; } VplSpan;
+typedef struct { uint32_t addr, size; int used; } VplAlloc;
+typedef struct {
+    uint32_t base, size, block_uid;
+    int used;
+    VplSpan free[VPL_MAX_ALLOCS];
+    int nfree;
+    VplAlloc allocs[VPL_MAX_ALLOCS];
+} VplPool;
+static VplPool s_vpls[VPL_MAX];
+
+static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
+    int i = 0;
+    while (i < p->nfree && p->free[i].addr < addr) i++;
+    if (p->nfree < VPL_MAX_ALLOCS) {
+        for (int j = p->nfree; j > i; --j) p->free[j] = p->free[j - 1];
+        p->free[i] = (VplSpan){addr, size};
+        p->nfree++;
+    }
+    /* Coalesce all touching neighbors; the free-list capacity is intentionally
+     * bounded and is UNMEASURED relative to firmware's kernel object limits. */
+    for (i = 0; i + 1 < p->nfree;) {
+        if (p->free[i].addr + p->free[i].size == p->free[i + 1].addr) {
+            p->free[i].size += p->free[i + 1].size;
+            for (int j = i + 1; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
+            --p->nfree;
+        } else ++i;
+    }
+}
+
+static uint32_t h_CreateVpl(CpuState *s) {
+    uint32_t size = A3;
+    if (size == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    uint32_t block_uid = alloc_block(size);
+    if (block_uid == 0xFFFFFFFFu) return VPL_EXHAUSTED;
+    uint32_t base = block_addr(block_uid);
+    for (int i = 0; i < VPL_MAX; ++i) {
+        if (!s_vpls[i].used) {
+            VplPool *p = &s_vpls[i];
+            memset(p, 0, sizeof *p);
+            p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
+            p->free[0] = (VplSpan){base, size}; p->nfree = 1;
+            return (uint32_t)(0x600 + i);
+        }
+    }
+    (void)free_block(block_uid);
+    return VPL_EXHAUSTED;
+}
+
+static VplPool *vpl_lookup(uint32_t uid) {
+    uint32_t i = uid - 0x600u;
+    return i < VPL_MAX && s_vpls[i].used ? &s_vpls[i] : NULL;
+}
+
+static uint32_t h_TryAllocateVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t request = A1, out = A2;
+    if (!p) return VPL_BAD_ID;
+    if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
+    for (int i = 0; i < p->nfree; ++i) {
+        if (p->free[i].size >= need) {
+            uint32_t addr = p->free[i].addr;
+            p->free[i].addr += need; p->free[i].size -= need;
+            if (!p->free[i].size) {
+                for (int j = i; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
+                --p->nfree;
+            }
+            for (int j = 0; j < VPL_MAX_ALLOCS; ++j) if (!p->allocs[j].used) {
+                p->allocs[j] = (VplAlloc){addr, need, 1};
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+            vpl_insert_free(p, addr, need);
+            return VPL_EXHAUSTED;
+        }
+    }
+    return VPL_EXHAUSTED;
+}
+
+static uint32_t h_FreeVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t addr = A1;
+    if (!p) return VPL_BAD_ID;
+    for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
+        vpl_insert_free(p, addr, p->allocs[i].size);
+        p->allocs[i].used = 0;
+        return 0;
+    }
+    return VPL_BAD_ID;
+}
+
+static uint32_t h_DeleteVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    if (!p) return VPL_BAD_ID;
+    uint32_t block_uid = p->block_uid;
+    memset(p, 0, sizeof *p);
+    return free_block(block_uid); /* exactly once; unknown/double delete frees nothing */
+}
+
+static uint32_t h_ReferVplStatus(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t info = A1;
+    if (!p) return VPL_BAD_ID;
+    if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads.
+     * Name contents and wait-thread count are UNMEASURED here; only size/free accounting
+     * is promised by this non-blocking implementation. */
+    MEM_W32(info + 0, 52u);
+    MEM_W32(info + 36, 0u);
+    MEM_W32(info + 40, p->size);
+    uint32_t free_size = 0;
+    for (int i = 0; i < p->nfree; ++i) free_size += p->free[i].size;
+    MEM_W32(info + 44, free_size);
+    MEM_W32(info + 48, 0u);
+    return 0;
+}
+
+/* AllocateVpl / AllocateVplCB intentionally remain unregistered: they require wait-queue
+ * integration, unlike TryAllocateVpl. */
+
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
 static uint32_t h_CreateThread(CpuState *s) {
     /* a0=name, a1=entry, a2=priority, a3=stackSize. Returns a UID bound to the entry.
@@ -3959,6 +4090,19 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
  * ATRAC_SAMPLES_PER_FRAME only when a frame is actually consumed and stops at
  * endSample, so the honest answer is exactly what that path will do next.
  * Reporting anything else here would contradict the decoder's own bookkeeping. */
+/* sceAtracGetMaxSample(id, *outMax): maximum samples per decode frame.
+ * Public behaviour reference: the PSPSDK ATRAC3+ interface and PPSSPP
+ * Core/HLE/sceAtrac.cpp. This runtime decodes ATRAC_SAMPLES_PER_FRAME samples
+ * per consumed frame (see h_AtracDecodeData), so the honest answer is exactly
+ * that constant -- reporting anything else would contradict the decoder's own
+ * bookkeeping. Codec-dependent variation (AT3 1024 vs AT3+ 2048) is UNMEASURED
+ * here. Errors reuse the neighbouring Atrac codes. */
+static uint32_t h_AtracGetMaxSample(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
+    return 0;
+}
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
@@ -4726,6 +4870,24 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
     return 0;
 }
 static uint32_t h_EnableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 1; return 0; }
+/* sceKernelDisableSubIntr(intno, no): stop delivery of the VBLANK (intno 30)
+ * sub-interrupt without unregistering its handler, so a later Enable resumes
+ * the same handler. Public behaviour reference: the PSPSDK interrupt manager
+ * (pspinterrupt.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
+ * retained delivery state here (g_vbl_handler/g_vbl_on, owned by
+ * h_RegisterSubIntr/h_EnableSubIntr above); other lines have no delivery
+ * state, so like the neighbouring Enable they answer success without effect
+ * (UNMEASURED). */
+static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; return 0; }
+/* sceKernelReleaseSubIntrHandler(intno, no): unregister the VBLANK handler and
+ * stop its delivery. Same public references as Disable above; the handler word
+ * itself is cleared, so Enable after Release delivers nothing until a fresh
+ * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
+ * with Enable/Disable. */
+static uint32_t h_ReleaseSubIntr(CpuState *s) {
+    if (A0 == 30) { g_vbl_handler = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    return 0;
+}
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
 uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
 
@@ -6672,6 +6834,24 @@ static uint32_t h_AudioSetChannelDataLen(CpuState *s) {
     s_audio_len[A0] = A1;
     return 0;
 }
+/* sceAudioChangeChannelVolume(ch, leftvol, rightvol): retain the requested
+ * output levels for a reserved regular channel. Public behaviour reference:
+ * PSPSDK src/audio/pspaudio.h (sceAudioChangeChannelVolume) and PPSSPP
+ * Core/HLE/sceAudio.cpp, which keep per-channel volumes as channel state.
+ * Errors reuse the neighbouring regular-audio codes, and the 0x8000 volume
+ * ceiling is the same bound h_AudioOutput2Blocking already enforces. Whether
+ * the retained levels multiply the per-call volumes handed to the
+ * OutputBlocking family, and the power-on default level, are UNMEASURED here:
+ * mixing still consumes the per-call volumes only. */
+static uint32_t s_audio_volL[8], s_audio_volR[8];
+static uint32_t h_AudioChangeChannelVolume(CpuState *s) {
+    if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
+    if (!s_audio_ch[A0]) return SCE_AUDIO_ERROR_NOT_INITIALIZED;
+    if (A1 > 0x8000u || A2 > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
+    s_audio_volL[A0] = A1;
+    s_audio_volR[A0] = A2;
+    return 0;
+}
 /* Read a guest sample buffer, expand mono to stereo, hand to the backend, then block until
  * the host queue is back down to ~one buffer of lead (real sceAudio blocking semantics).
  * Pacing against the queue self-corrects: a late thread returns immediately and catches up,
@@ -6711,6 +6891,8 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_ch, 0, sizeof(s_audio_ch));
     memset(s_audio_fmt, 0, sizeof(s_audio_fmt));
     memset(s_audio_len, 0, sizeof(s_audio_len));
+    memset(s_audio_volL, 0, sizeof(s_audio_volL));
+    memset(s_audio_volR, 0, sizeof(s_audio_volR));
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
@@ -6721,6 +6903,15 @@ int sr_hle_test_audio_state(uint32_t ch, int *reserved, uint32_t *frames, int *f
     if (reserved) *reserved = s_audio_ch[ch];
     if (frames)   *frames   = s_audio_len[ch];
     if (format)   *format   = s_audio_fmt[ch];
+    return 1;
+}
+
+/* Read-only view of the retained ChangeChannelVolume levels for the
+ * production-dispatch regression below. Test builds only. */
+int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right) {
+    if (ch >= 8u) return 0;
+    if (left)  *left  = s_audio_volL[ch];
+    if (right) *right = s_audio_volR[ch];
     return 1;
 }
 #endif
@@ -6807,7 +6998,7 @@ static void hle_register_regular_audio_handlers(void) {
     sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
     sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_AudioChangeChannelConfig);
     sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
-    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
+    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_AudioChangeChannelVolume);
     sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
 }
 
@@ -11757,6 +11948,13 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
+    /* VPL non-blocking set (PSP_INTR_WAITS_MATRIX.md coverage rows; blocking
+     * AllocateVpl forms deliberately stay absent until wait queues exist). */
+    sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);
+    sr_hle_register(0x89b3d48c, "sceKernelDeleteVpl", h_DeleteVpl);
+    sr_hle_register(0xaf36d708, "sceKernelTryAllocateVpl", h_TryAllocateVpl);
+    sr_hle_register(0xb736e9ff, "sceKernelFreeVpl", h_FreeVpl);
+    sr_hle_register(0x39810265, "sceKernelReferVplStatus", h_ReferVplStatus);
     sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateMutex);
     sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_DeleteMutex);
     sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_LockMutex);
@@ -11779,6 +11977,12 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x35dbd746, "sceIoWaitAsyncCB", h_IoWaitAsyncCB);
     sr_hle_register(0xca04a2b9, "sceKernelRegisterSubIntrHandler", h_RegisterSubIntr);
     sr_hle_register(0xfb8e22ec, "sceKernelEnableSubIntr", h_EnableSubIntr);
+    /* TD-24 batch 2 lifecycle pair, MOVED verbatim out of sr_hle_init()'s
+     * production branch like the lines above: one definition reached by both
+     * builds, so the executable harness pins the production mapping and no
+     * handler behavior changes on either side. */
+    sr_hle_register(0xd61e6961, "sceKernelReleaseSubIntrHandler", h_ReleaseSubIntr);
+    sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_DisableSubIntr);
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -11887,7 +12091,7 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x36faabfb, "sceAtracGetNextSample", h_AtracGetNextSample);
     sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_ok);
     sr_hle_register(0xb3b5d042, "sceAtracGetOutputChannel", h_ok);
-    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_ok);
+    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
     sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetDataAndGetID);
@@ -11980,6 +12184,20 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
+/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
+ * SetClockFrequency variants share one definition, reached by both
+ * sr_hle_init() branches, so the executable harness pins the production
+ * mapping through dispatch. The getter NIDs below are the canonical #86
+ * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
+ * unregistered); the float-return shaping for the non-Int getters remains
+ * tracked by #86. */
+static void hle_register_power_clock_handlers(void) {
+    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
+    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
+    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
+    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -12008,6 +12226,7 @@ void sr_hle_init(void) {
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
+    hle_register_power_clock_handlers();
     hle_register_partition_savedata_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
@@ -12188,10 +12407,10 @@ void sr_hle_init(void) {
     sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
     sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
     sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
-    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
-    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
-    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_ok);
-    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_ok);
+    /* Clock getters/setters: shared with the executable harness through
+     * hle_register_power_clock_handlers(), which carries the canonical #86
+     * getter NIDs noted above. */
+    hle_register_power_clock_handlers();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -12235,9 +12454,8 @@ void sr_hle_init(void) {
      * which silently killed every .PMD model lookup, e.g. the hangar aircraft). */
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_ok);
     hle_register_exit_game_handler();
-    /* InterruptManager: record the VBLANK handler; the scheduler delivers it per frame. */
-    sr_hle_register(0xd61e6961, "sceKernelReleaseSubIntrHandler", h_ok);
-    sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_ok);
+    /* InterruptManager Disable/Release pair: shared with the executable harness
+     * through hle_register_wait_conformance_handlers(), next to Register/Enable. */
     hle_register_msgpipe_handlers();
     /* semaphores */
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
