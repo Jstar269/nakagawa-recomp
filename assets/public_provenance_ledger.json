@@ -783,7 +783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3faf7ed25920ce5607a49954632890423930a9aea21e6549cec114feb177717d"
+      "sha256": "c1d61b4fb0687d21dbd174e7fcd9afbb1e74044a3ec4eef646904960d66c5991"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -5074,7 +5074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c5fa835e3586eb2b099f0012cba4eccbbd8e711a758cb412cb2278d2aadd5b0"
+      "sha256": "068e8abcf70ebde4d1aa7f992498de15139e25784bf213ee31bfe52a2ceb0306"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5098,7 +5098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b8bbfc9ba200c4d6a2541cb2aa6808881bf4374ffe50320c89c27bc024955798"
+      "sha256": "5fe2c0fdfbd06df0fc1c75d6d2d41ae52d1268c2eaa1d7fff32c65bea6a743b8"
     },
     {
       "path": "src/rt/debug.c",
@@ -5614,7 +5614,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "6e174664afb98c302a7cd95e1dc2cdc4aea8feefb3591f5bd2fd6b15f6ac2035"
+      "sha256": "d72ce6aca1941e50a7f372c53920d557170bea8d9be62691911eabf221b83234"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -5626,7 +5626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": "ppsspp"
       },
-      "sha256": "1cb56b44d469d76ada276f3f231bc5a63512925b4ed125a9d56f05b6627abdd7"
+      "sha256": "6ea8e1e81b76896547c61f57c99173c51d8456af5864aa65d30c4b0b60f09b14"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -6280,7 +6280,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "808a5625c73f12f44536274c0e12da48599f6fa6ed62907fba08ad104959732e"
+      "sha256": "a5b4b7c7c444badbb31f21dee466bdc4111dabef687653fc3d8519c0c850a681"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -6704,7 +6704,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b14b46d750580433798198f0a6abf8dcb65cee8d0d2368b2819351fc2b4acadf"
+      "sha256": "0484b6a2a98aa682b34a06d9096d1f5c780dd23ccaba38248cad67f8d70b411c"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -8090,7 +8090,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "39ca4cb0b0519822e3abb241b946492bd4e96fe383bf4a2dffc82ce489c7d643"
+      "sha256": "186314c3d7193904f59e773086fa87076a304091d5ee639da54e337d938e6e04"
     },
     {
       "path": "tools/test_dco_policy.py",
