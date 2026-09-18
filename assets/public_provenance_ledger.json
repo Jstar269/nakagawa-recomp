@@ -3480,7 +3480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7bac4a3b2da72526668af2e6737c94e47eac684b0ccfada840ad83ea1347e66"
+      "sha256": "17be793e93ff2e2ee024f029e10d654ada151e8a64e03321299120673a1ae03e"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -9200,7 +9200,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "89030e3004dc961d159592f2a75f3750e01ccdfff71cb2c202de4cb02135d0aa"
+      "sha256": "cd6ac4ee12eda27ef4b57709a804a82ab6e460f66f36b8ce701cf62752234d78"
     },
     {
       "path": "tools/test_vfs_contained.py",
@@ -9209,7 +9209,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7cd8afe5907a813a5f63f3a118889ccc1912e946f830bcff9f7aac40751eb761"
+      "sha256": "57b24fce8ce0dc6a9f64b59e2ee1235aeece093eb317538a1b44bed5c2fa6c2a"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
