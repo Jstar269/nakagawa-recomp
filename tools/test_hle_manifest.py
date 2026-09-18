@@ -492,7 +492,6 @@ static uint32_t h_SynthReal(CpuState *s) {
             "h_FreeFpl",
             "h_GeDrawSync",
             "h_OskUpdate",
-            "h_AudioRestLen",
             "h_IoDevctl",
             "h_StartModule",
             "h_StopModule_Trace",
@@ -508,7 +507,15 @@ static uint32_t h_SynthReal(CpuState *s) {
         fake = sum(
             1 for r in manifest["registrations"] if r["classification"] == "fake_success"
         )
-        self.assertEqual(fake, 59, "mechanical census must report all 59 zero-returning stubs")
+        # Compare against the committed baseline rather than a literal, so converting a
+        # stub into a real handler only needs the baseline refresh the gate already demands.
+        baseline_path = Path(__file__).resolve().parent / "import_audit_baseline.json"
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        committed = sum(
+            1 for v in baseline.values()
+            if isinstance(v, dict) and v.get("classification") == "fake_success"
+        )
+        self.assertEqual(fake, committed, "live census must match the committed baseline")
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):
