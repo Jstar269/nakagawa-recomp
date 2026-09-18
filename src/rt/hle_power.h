@@ -19,8 +19,17 @@ uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s);
 uint32_t h_PowerSetClockFrequency(CpuState *s);
 uint32_t h_PowerSetClockFrequency350(CpuState *s);
 uint32_t h_PowerRegisterCallback(CpuState *s);
+uint32_t h_PowerLock(CpuState *s);
+uint32_t h_PowerUnlock(CpuState *s);
+uint32_t h_PowerTick(CpuState *s);
 
 int sr_callback_is_valid(uint32_t uid);
 uint32_t sr_callback_notify(uint32_t uid, uint32_t notify_arg);
+
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_power_lock_count(void);
+uint32_t sr_hle_test_power_tick_count(void);
+void sr_hle_test_power_lock_reset(void);
+#endif
 
 #endif

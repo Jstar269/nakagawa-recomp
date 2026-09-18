@@ -85,3 +85,36 @@ uint32_t h_PowerRegisterCallback(CpuState *s) {
     (void)sr_callback_notify(cb_uid, 0x000010E4u);
     return (uint32_t)result;
 }
+
+/* sceKernelPowerLock(lockType) / sceKernelPowerUnlock(lockType) / sceKernelPowerTick(flag)
+ * (TD-24 batch 4). Public behaviour reference: PSPSDK psppower.h and PPSSPP
+ * Core/HLE/scePower.cpp. sceKernelPowerLock and sceKernelPowerUnlock validate
+ * lockType (must be 0, else INVALID_MODE 0x80000107) and maintain a nested
+ * lock count. sceKernelPowerTick records ticks without blocking. */
+#define SCE_KERNEL_ERROR_INVALID_MODE 0x80000107u
+static uint32_t s_power_lock_count = 0u;
+static uint32_t s_power_tick_count = 0u;
+
+uint32_t h_PowerLock(CpuState *s) {
+    if (A0 != 0u) return SCE_KERNEL_ERROR_INVALID_MODE;
+    s_power_lock_count++;
+    return 0;
+}
+
+uint32_t h_PowerUnlock(CpuState *s) {
+    if (A0 != 0u) return SCE_KERNEL_ERROR_INVALID_MODE;
+    if (s_power_lock_count > 0u) s_power_lock_count--;
+    return 0;
+}
+
+uint32_t h_PowerTick(CpuState *s) {
+    (void)s;
+    s_power_tick_count++;
+    return 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_power_lock_count(void) { return s_power_lock_count; }
+uint32_t sr_hle_test_power_tick_count(void) { return s_power_tick_count; }
+void sr_hle_test_power_lock_reset(void) { s_power_lock_count = 0u; s_power_tick_count = 0u; }
+#endif

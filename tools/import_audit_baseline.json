@@ -48,10 +48,10 @@
     "status": "unreviewed"
   },
   "0x090ccb3f": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_PowerTick",
     "name": "sceKernelPowerTick",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x092968f4": {
     "classification": "dedicated",
@@ -144,16 +144,16 @@
     "status": "unreviewed"
   },
   "0x132f1eca": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracReinit",
     "name": "sceAtracReinit",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x13407f13": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_MpegRingbufferDestruct",
     "name": "sceMpegRingbufferDestruct",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x136caf51": {
     "classification": "dedicated",
@@ -246,10 +246,10 @@
     "status": "unreviewed"
   },
   "0x1f4011e6": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CtrlSetSamplingMode",
     "name": "sceCtrlSetSamplingMode",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x1f6752ad": {
     "classification": "dedicated",
@@ -432,10 +432,10 @@
     "status": "unreviewed"
   },
   "0x2dd3e298": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetBufferInfoForResetting",
     "name": "sceAtracGetBufferInfoForResetting",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x2e0911aa": {
     "classification": "dedicated",
@@ -552,10 +552,10 @@
     "status": "unreviewed"
   },
   "0x37fb5c42": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_GetGPI",
     "name": "sceKernelGetGPI",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x383f7bcc": {
     "classification": "dedicated",
@@ -582,10 +582,10 @@
     "status": "unreviewed"
   },
   "0x3aee7261": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_PowerUnlock",
     "name": "sceKernelPowerUnlock",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x3b183e26": {
     "classification": "dedicated",
@@ -684,10 +684,10 @@
     "status": "unreviewed"
   },
   "0x4571cc64": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_MpegAvcDecodeFlush",
     "name": "sceMpegAvcDecodeFlush",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x46ebb729": {
     "classification": "dedicated",
@@ -750,10 +750,10 @@
     "status": "stub"
   },
   "0x4c145944": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_ReferLwMutexStatusByID",
     "name": "sceKernelReferLwMutexStatusByID",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x4cfa57b0": {
     "classification": "dedicated",
@@ -1014,10 +1014,10 @@
     "status": "unreviewed"
   },
   "0x6a2774f3": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CtrlSetSamplingCycle",
     "name": "sceCtrlSetSamplingCycle",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x6a638d83": {
     "classification": "dedicated",
@@ -1032,10 +1032,10 @@
     "status": "unreviewed"
   },
   "0x6ad345d7": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_SetGPO",
     "name": "sceKernelSetGPO",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x6af9b50a": {
     "classification": "fake_success",
@@ -1074,10 +1074,10 @@
     "status": "unreviewed"
   },
   "0x707b7629": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_MpegFlushAllStream",
     "name": "sceMpegFlushAllStream",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x71040d5c": {
     "classification": "dedicated",
@@ -1254,16 +1254,16 @@
     "status": "unreviewed"
   },
   "0x83bf7afd": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracSetSecondBuffer",
     "name": "sceAtracSetSecondBuffer",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x83e85ea0": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetSecondBufferInfo",
     "name": "sceAtracGetSecondBufferInfo",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x840e8133": {
     "classification": "dedicated",
@@ -1584,10 +1584,10 @@
     "status": "unreviewed"
   },
   "0xa7144800": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CtrlSetIdleCancelThreshold",
     "name": "sceCtrlSetIdleCancelThreshold",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xa780cf7e": {
     "classification": "dedicated",
@@ -1662,10 +1662,10 @@
     "status": "unreviewed"
   },
   "0xb287bd61": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_GeDrawSync",
     "name": "sceGeDrawSync",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb29ddf9c": {
     "classification": "dedicated",
@@ -1806,10 +1806,10 @@
     "status": "unreviewed"
   },
   "0xc1734599": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_ReferLwMutexStatus",
     "name": "sceKernelReferLwMutexStatus",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xc2df770e": {
     "classification": "dedicated",
@@ -1848,10 +1848,10 @@
     "status": "unreviewed"
   },
   "0xca3ca3d2": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetBufferInfoForResetting",
     "name": "sceAtracGetBufferInfoForReseting",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xcab439df": {
     "classification": "dedicated",
@@ -1938,10 +1938,10 @@
     "status": "unreviewed"
   },
   "0xd5c28cc0": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracReleaseResources",
     "name": "sceAtracReleaseResources",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd5ebbbcd": {
     "classification": "controlled_unsupported",
@@ -2142,10 +2142,10 @@
     "status": "unreviewed"
   },
   "0xeadb1bd7": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_PowerLock",
     "name": "sceKernelPowerLock",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xeb092469": {
     "classification": "dedicated",

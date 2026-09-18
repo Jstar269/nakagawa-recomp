@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "7f6511f19ee97a645442449bf113acefcea4419869e9c0f01608fe316014c18c"
+      "sha256": "26ca85a7dca6be62c4a02ee85eb822afbb37d98dcf979c78eed685b214535709"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5766,7 +5766,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "83d33e1d1ec44b38f55f8e2ba2b95740d1d467a1da0e6011ca9d89509857e56f"
+      "sha256": "890b70bf8138993231e6019fa0ebf0f35d1f7e8743fc1875b813cebd0484dc2f"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -5791,7 +5791,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3a6b5f8a52ca756e67b5454b2150217b094469f3863171613a8425a939d643ca"
+      "sha256": "40e3892a1aec5c5cfa88778a1201132039fdd46bb66cb6f4f456b0a2762eddad"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -5803,7 +5803,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "179e4eccc302038b87b7073ccd8735718bd591ddb20c511c28ad839dcc8ef525"
+      "sha256": "df019b8c981d2f0f68e0d72ff67107d72766ac572747b6e9756e0a86d4573bdf"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5871,7 +5871,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8ed0915f2d69878567750c1fe91a5eebe94b774d7906aff71cf7bc7bc4744a50"
+      "sha256": "c25f3c9e7d018650047ba56dc2adbdd741742b8473cb34f2c09bb0f965752dd0"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -7136,7 +7136,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "62bd497d279595d63c2892bd5958626cde93487c962b088bd87897d97c3fa8cd"
+      "sha256": "9fb70c26a429f6058c969c8c25262fe074fc193846982663483827a1d399cf13"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8393,7 +8393,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b9f49992cb975a488ecbdb22ecc47f545d76ba78b1fa09282b4cd902ec968572"
+      "sha256": "947a1d9197ab1e1dda604a5b3f8dc850231c9653b853648eb913a2a4554bdd35"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",

@@ -489,7 +489,6 @@ static uint32_t h_SynthReal(CpuState *s) {
         for r in manifest["registrations"]:
             by_handler.setdefault(r["handler"], []).append(r)
         for handler in (
-            "h_GeDrawSync",
             "h_OskUpdate",
             "h_IoDevctl",
         ):
