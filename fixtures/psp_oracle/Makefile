@@ -68,6 +68,10 @@ else ifeq ($(CASE),exception-a2)
 CASE_ID = 24
 else ifeq ($(CASE),exception-a3)
 CASE_ID = 25
+else ifeq ($(CASE),exception-a3-mload)
+CASE_ID = 29
+else ifeq ($(CASE),exception-a3-mstore)
+CASE_ID = 30
 else ifeq ($(CASE),exception-a3-delayslot)
 CASE_ID = 31
 else ifeq ($(CASE),exception-a3-half-load)
@@ -108,6 +112,14 @@ else ifeq ($(CASE),exception-a3)
 TARGET = $(BUILD_DIR)/psp_a3
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
 CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+else ifeq ($(CASE),exception-a3-mload)
+TARGET = $(BUILD_DIR)/psp_a3_mload
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=2
+else ifeq ($(CASE),exception-a3-mstore)
+TARGET = $(BUILD_DIR)/psp_a3_mstore
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=3
 else ifeq ($(CASE),exception-a3-delayslot)
 TARGET = $(BUILD_DIR)/psp_a3_delayslot
 OBJS = $(BUILD_DIR)/probe_exception_a3.o

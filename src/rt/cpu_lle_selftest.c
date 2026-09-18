@@ -273,6 +273,68 @@ static void test_hw_psp_a3_01_adel_load(void) {
           "PSP-A3-01 must transfer to the vector, not continue");
 }
 
+/* PSP-A3-02 / PSP-A3-03: a misaligned user-mode access to a mapped, writable,
+ * 16-byte-aligned buffer. The load case raises AdEL (Cause 0x10000010) and the
+ * store case AdES (Cause 0x10000014) -- distinct codes, not one shared address
+ * error. In both, BadVAddr is the effective address INCLUDING the misaligned low
+ * bits, not the aligned base. That last point is the one a plausible-looking
+ * implementation gets wrong, so it is asserted directly. */
+static void test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr(void) {
+    CpuState s;
+    /* The measured bases and effective addresses, from the probe headers. */
+    const uint32_t load_base = 0x08821C00u, load_ea = 0x08821C02u;
+    const uint32_t store_base = 0x08856400u, store_ea = 0x08856402u;
+
+    /* The decision function must classify each case before anything is raised. */
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, load_ea, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-02 a misaligned load must be classified AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, store_ea, 4u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-03 a misaligned store must be classified AdES");
+    CHECK(sr_cpu_data_access_fault(&s, load_base, 4u, 0) == 0u,
+          "an aligned load at the same base must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, store_base, 4u, 1) == 0u,
+          "an aligned store at the same base must not fault");
+
+    /* PSP-A3-02: lw $t6, 2($t5), t5 = 0x08821C00. */
+    fresh_state(&s);
+    s.r[13] = load_base;
+    s.r[14] = 0x0BADC0DEu;                 /* t6: the probe's sentinel */
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x088043B8u, 0x088043B8u,
+                                 load_ea, 0u, 0u) < 0,
+          "PSP-A3-02 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-02 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x088043B8u,
+          "PSP-A3-02 EPC=0x%08x, want the lw address", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == load_ea,
+          "PSP-A3-02 BadVAddr=0x%08x, want the misaligned effective address 0x%08x",
+          s.cop0[SR_CP0_BADVADDR], load_ea);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) != 0u,
+          "PSP-A3-02 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-02 t6 must be unchanged by a faulting load");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-02 must transfer to the vector, not continue");
+
+    /* PSP-A3-03: sw $t6, 2($t5), t5 = 0x08856400. */
+    fresh_state(&s);
+    s.r[13] = store_base;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, 0x08838BB8u, 0x08838BB8u,
+                                 store_ea, 0u, 0u) < 0,
+          "PSP-A3-03 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-03 ExcCode must be 5 (AdES), distinct from the load case");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08838BB8u,
+          "PSP-A3-03 EPC=0x%08x, want the sw address", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == store_ea,
+          "PSP-A3-03 BadVAddr=0x%08x, want the misaligned effective address 0x%08x",
+          s.cop0[SR_CP0_BADVADDR], store_ea);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u,
+          "PSP-A3-03 Status=0x%08x, want 0x00088613", s.cop0[SR_CP0_STATUS]);
+}
+
 /* PSP-A3-04: a misaligned `lw $t6, 2($t5)` in the delay slot of an
  * always-taken branch raises AdEL with Cause 0x90000010 (ExcCode 4, BD 1):
  * EPC names the branch (not the load), BadVAddr keeps the misaligned low
@@ -924,6 +986,7 @@ int main(void) {
     test_hw_psp_a1_01_break_plain();
     test_hw_psp_a2_01_break_delay_slot();
     test_hw_psp_a3_01_adel_load();
+    test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr();
     test_hw_psp_a3_04_delay_slot_misaligned();
     test_hw_psp_a3_05_halfword_odd();
     test_hw_psp_a3_06_unaligned_no_fault();

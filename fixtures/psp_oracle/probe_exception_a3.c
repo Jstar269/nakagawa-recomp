@@ -77,6 +77,39 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
         : : : "$4", "$5", "$6", "$7", "$8", "$13", "$14", "$15", "memory");
 }
 
+#elif A3_CASE == 2 || A3_CASE == 3
+
+/* A mapped, writable, 16-byte-aligned buffer in the probe's own data. The fault
+ * under test must come from the low address bits, not from the page being
+ * absent, so the base is deliberately a real object this module owns. */
+static volatile uint32_t a3_aligned_buffer[4] __attribute__((aligned(16))) = {
+    0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
+};
+
+__attribute__((noinline)) static void a3_raise_address_error(void) {
+    register uint32_t base __asm__("$13") = (uint32_t)(uintptr_t)a3_aligned_buffer;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "li $4, 0x11111111\n\t"
+        "li $5, 0x22222222\n\t"
+        "li $6, 0x33333333\n\t"
+        "li $7, 0x44444444\n\t"
+        "li $8, 0xaaaaaaaa\n\t"
+        "li $14, 0x0badc0de\n"
+        ".globl a3_load_instruction\n"
+        "a3_load_instruction:\n\t"
+#if A3_CASE == 2
+        "lw $14, 2($13)\n\t"
+#else
+        "sw $14, 2($13)\n\t"
+#endif
+        "li $15, 0x5a5a5a5a\n\t"
+        ".set pop\n\t"
+        : "+r"(base)
+        : : "$4", "$5", "$6", "$7", "$8", "$14", "$15", "memory");
+}
+
 #elif A3_CASE == 4
 
 /* A mapped, writable, 16-byte-aligned buffer in the probe's own data. The fault
@@ -298,6 +331,45 @@ int main(int argc, char **argv) {
         "a0=11111111 a1=22222222 a2=33333333 a3=44444444 t0=aaaaaaaa t6=0badc0de(before)\n"
         "t7=5a5a5a5a only if execution continued past the load\n",
         A3_BUILD_COMMIT, (unsigned int)(uintptr_t)a3_load_instruction);
+#elif A3_CASE == 2 || A3_CASE == 3
+    {
+        const unsigned int base = (unsigned int)(uintptr_t)a3_aligned_buffer;
+        int length = snprintf(header, sizeof(header),
+            "probe_id=PSP-A3 run_id=%s build_commit=%s\n"
+            "access_address=0x%08x instruction=%s t5=0x%08x effective=0x%08x\n"
+            "base_is_16byte_aligned=%u mapped_and_writable=yes\n"
+            "a0=11111111 a1=22222222 a2=33333333 a3=44444444 t0=aaaaaaaa t6=0badc0de(before)\n"
+            "t7=5a5a5a5a only if execution continued past the access\n"
+            "expectation_under_test=%s\n",
+#if A3_CASE == 2
+            "PSP-A3-02", A3_BUILD_COMMIT,
+            (unsigned int)(uintptr_t)a3_load_instruction, "lw $t6,2($t5)",
+            base, base + 2u, (unsigned int)((base & 15u) == 0u),
+            "misaligned load raises AdEL (ExcCode 4), BadVAddr = effective address"
+#else
+            "PSP-A3-03", A3_BUILD_COMMIT,
+            (unsigned int)(uintptr_t)a3_load_instruction, "sw $t6,2($t5)",
+            base, base + 2u, (unsigned int)((base & 15u) == 0u),
+            "misaligned store raises AdES (ExcCode 5), BadVAddr = effective address"
+#endif
+            );
+        if (length < 0 || (size_t)length >= sizeof(header)) return 1;
+        /* O_EXCL on purpose: a rerun must not silently overwrite a previous
+         * run's header, because that is the record the measurement is cited from. */
+        SceUID fd = sceIoOpen(
+#if A3_CASE == 2
+                             "host0:/a3_mload_header.txt",
+#else
+                             "host0:/a3_mstore_header.txt",
+#endif
+                             PSP_O_WRONLY | PSP_O_CREAT | PSP_O_EXCL, 0777);
+        if (fd < 0) return 2;
+        int written = sceIoWrite(fd, header, (SceSize)length);
+        int closed = sceIoClose(fd);
+        if (written != length || closed < 0) return 3;
+        a3_raise_address_error();
+        return 4;
+    }
 #elif A3_CASE == 4
     {
         const unsigned int base = (unsigned int)(uintptr_t)a3_aligned_buffer;

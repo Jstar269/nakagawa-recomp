@@ -144,6 +144,17 @@ static void sr_cp0_delay_context(
  * consulted only while sr_cpu_lle_enabled(), so default builds keep the masking
  * behaviour and stay byte-identical.
  *
+ * MEASURED (runs PSP-A3-02 and PSP-A3-03, same campaign): a misaligned user-mode
+ * access to a mapped, writable, 16-byte-aligned buffer raises AdEL for a load
+ * (Cause 0x10000010, ExcCode 4) and AdES for a store (Cause 0x10000014,
+ * ExcCode 5). In both, EPC is the faulting access itself, BadVAddr is the
+ * effective address INCLUDING the misaligned low bits (base+2, not the aligned
+ * base), the destination register is unchanged, and execution does not continue
+ * past the access. These replace what was previously labelled synthetic here.
+ *
+ * (A3-02/03 left the delay-slot and halfword cases synthetic; A3-04 and A3-05
+ * below have since measured both, so that caveat is gone rather than kept.)
+ *
  * MEASURED (runs PSP-A3-04 and PSP-A3-05, campaign psp-hw-20260917,
  * PSP-3000/6.61, user-mode PRX probes via PSPLink; fixtures
  * `exception-a3-delayslot`, `exception-a3-half-load`, `exception-a3-half-store`
@@ -179,7 +190,8 @@ unsigned sr_cpu_data_access_fault(
     if (!s || width == 0u) {
         return 0u;
     }
-    /* Measured (PSP-A3-04 word in delay slot, PSP-A3-05 halfword at odd
+    /* Measured (PSP-A3-02 load, PSP-A3-03 store, PSP-A3-04 word in a delay
+     * slot, PSP-A3-05 halfword at odd
      * address): a misaligned access raises AdEL for loads and AdES for
      * stores, with BadVAddr = the effective address. Width-relative: an odd
      * address faults for halfwords and words, while base+2 faults only for
