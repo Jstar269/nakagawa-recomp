@@ -201,13 +201,12 @@ static void sr_cp0_delay_context(
  *
  * The width-relative check below already expresses that rule: width 4 covers
  * lv.s/sv.s and width 16 covers lv.q/sv.q, while lvl/lvr/svl/svr bypass with
- * width 0 exactly like lwl/lwr/swl/swr. What is NOT yet wired is any caller
- * passing those VFPU widths: tools/codegen.py emits the VFPU memory forms
- * from vfpu_effect() without an LLE guard, sr_vfpu_interp() performs no
- * alignment check, and the interpreter width table has no VFPU row, so a
- * misaligned VFPU access under --lle-cpu currently succeeds instead of
- * faulting. That wiring is left for review; the decision function and its
- * selftests below are measured, the call sites are not.
+ * width 0 exactly like lwl/lwr/swl/swr. Both CPU tiers now pass those VFPU
+ * widths: tools/codegen.py emits the VFPU memory forms from vfpu_effect()
+ * through the same sr_cpu_guard_access() call as scalars (only when LLE CPU
+ * mode is on), sr_vfpu_interp() checks before the access, and the interpreter
+ * width table carries the VFPU rows at the same point relative to the access
+ * as scalar loads/stores.
  *
  * STILL SYNTHETIC: sv.s misalignment (never probed; singles are measured only
  * for the lv.s +2 load cell), sv.q at +8, any VFPU access in a delay slot,

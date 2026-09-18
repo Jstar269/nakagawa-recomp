@@ -394,6 +394,20 @@ SWL = _mem(0x2A, 13, 14, 1)
 SWR = _mem(0x2E, 13, 14, 1)
 
 
+def _vfpu(op, base=13, vt=0, off=0):
+    return (op << 26) | (base << 21) | (vt << 16) | (off & 0xFFFF)
+
+
+LVS = _vfpu(0x32, 13, 0, 0)
+SVS = _vfpu(0x3A, 13, 0, 0)
+LVQ = _vfpu(0x36, 13, 0, 0)
+SVQ = _vfpu(0x3E, 13, 0, 0)
+LVL = _vfpu(0x35, 13, 0, 0)
+LVR = _vfpu(0x35, 13, 0, 2)
+SVL = _vfpu(0x3D, 13, 0, 0)
+SVR = _vfpu(0x3D, 13, 0, 2)
+
+
 class LleDataAccessGuardTests(unittest.TestCase):
     """Loads and stores are address-checked under --lle-cpu (spec 3.3).
 
@@ -463,6 +477,62 @@ class LleDataAccessGuardTests(unittest.TestCase):
         self.assertIn("sr_cpu_guard_access", header)
         self.assertIn("sr_cpu_data_access_fault", header)
         self.assertIn("int sr_cpu_guard_access(", source)
+
+
+class LleVfpuGuardTests(unittest.TestCase):
+    """VFPU loads/stores carry the measured alignment guard under --lle-cpu.
+
+    Failing-before evidence: vfpu_effect() ignored lle_cpu, so effect(...,
+    lle_cpu=True) for lv.s/lv.q/sv.s/sv.q emitted the same bare access as the
+    default lane with no sr_cpu_guard_access call.
+    """
+
+    def test_lvs_guarded_at_width_four(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, LVS, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _ea, 4u, 0, 0x00001000u", stmt)
+        self.assertIn("MEM_R32(_ea)", stmt)
+        self.assertIsNone(saddr)
+        self.assertEqual(ssize, 0)
+
+    def test_svs_guarded_at_width_four_store(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, SVS, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _ea, 4u, 1, 0x00001000u", stmt)
+        self.assertIn("MEM_W32_PC(_ea,", stmt)
+        self.assertEqual(ssize, 4)
+
+    def test_lvq_guarded_at_width_sixteen(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, LVQ, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _a, 16u, 0, 0x00001000u", stmt)
+        self.assertIsNone(saddr)
+        self.assertEqual(ssize, 0)
+
+    def test_svq_guarded_at_width_sixteen_store(self):
+        stmt, saddr, ssize = codegen.effect(0x1000, SVQ, lle_cpu=True)
+        self.assertIn("sr_cpu_guard_access(s, _a, 16u, 1, 0x00001000u", stmt)
+        self.assertEqual(ssize, 16)
+
+    def test_vfpu_left_right_never_guarded(self):
+        # lvl/lvr/svl/svr bypass like lwl/lwr/swl/swr (width 0, PSP-A3-11).
+        for name, word in (("lvl.q", LVL), ("lvr.q", LVR),
+                           ("svl.q", SVL), ("svr.q", SVR)):
+            with self.subTest(form=name):
+                lle, _, _ = codegen.effect(0x1000, word, lle_cpu=True)
+                default, _, _ = codegen.effect(0x1000, word)
+                self.assertNotIn("sr_cpu_guard_access", lle)
+                self.assertEqual(lle, default)
+
+    def test_delay_slot_vfpu_carries_the_branch_pc(self):
+        lines = codegen.delay_slot_lines(0x1004, LVQ, 0x1000, lle_cpu=True)
+        body = "\n".join(lines)
+        self.assertIn("sr_cpu_guard_access(s, _a, 16u, 0,", body)
+        self.assertIn("0x00001004u, 0x00001000u, 1u)", body)
+
+    def test_default_lane_vfpu_is_unchanged(self):
+        for name, word in (("lv.s", LVS), ("sv.s", SVS),
+                           ("lv.q", LVQ), ("sv.q", SVQ)):
+            with self.subTest(form=name):
+                stmt, _, _ = codegen.effect(0x1000, word)
+                self.assertNotIn("sr_cpu_guard_access", stmt)
 
 
 if __name__ == "__main__":

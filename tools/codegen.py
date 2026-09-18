@@ -448,12 +448,11 @@ NULL_BASE_WORD_LOADS = {
 # lwl/lwr/swl/swr (0x22/0x26/0x2a/0x2e) are deliberately ABSENT. Those forms
 # exist precisely to read and write across an alignment boundary, so a
 # misaligned effective address is their normal operating condition and never an
-# address error. The VFPU load/store group is absent for a different reason: it
-# is emitted from vfpu_effect(), not from _lle_access_stmt(), and no guard call
-# has been wired there yet. Its rules are now MEASURED (runs PSP-A3-08 through
-# PSP-A3-11: lv.s needs width 4, lv.q/sv.q need width 16, lvl/lvr/svl/svr bypass
-# like the unaligned word forms), so a future change wires those widths through
-# sr_cpu_guard_access(); it does not change this table's scalar rows.
+# address error. The VFPU load/store group is likewise absent here because it
+# is emitted from vfpu_effect(), not from _lle_access_stmt(): lv.s/sv.s use
+# width 4 and lv.q/sv.q use width 16 through the same sr_cpu_guard_access()
+# call there (runs PSP-A3-08 through PSP-A3-11), while lvl/lvr/svl/svr bypass
+# with width 0 exactly like the unaligned word forms above.
 LLE_ACCESS = {
     0x20: (1, 0), 0x21: (2, 0), 0x23: (4, 0), 0x24: (1, 0), 0x25: (2, 0), 0x31: (4, 0),
     0x28: (1, 1), 0x29: (2, 1), 0x2B: (4, 1), 0x39: (4, 1),
@@ -624,7 +623,7 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
             return f"sr_stale_note_cache_op((uint32_t)({R(rs(w))} + {simm(w)}));", None, 0
         return "(void)0;", None, 0  # cache (no-op in user space static recompilation)
     if op == 0x3f: return f"if ((0x{w:08x}u & 0xFFFF0000u) != 0xFFFF0000u) {{ s->vfpuCtrl[0]=0xe4u; s->vfpuCtrl[1]=0xe4u; s->vfpuCtrl[2]=0u; }}", None, 0  # vflush
-    if op in (0x35, 0x36, 0x3d, 0x3e, 0x32, 0x3a, 0x12, 0x18, 0x19, 0x1b, 0x37, 0x34, 0x3c): return vfpu_effect(addr, w)
+    if op in (0x35, 0x36, 0x3d, 0x3e, 0x32, 0x3a, 0x12, 0x18, 0x19, 0x1b, 0x37, 0x34, 0x3c): return vfpu_effect(addr, w, lle_cpu=lle_cpu, delay_branch_pc=delay_branch_pc)
     raise Unsupported(f"opcode 0x{op:02x} at 0x{addr:08x}")
 
 def _arr(idx):
@@ -684,7 +683,12 @@ def _flit(v):
         s += ".0"
     return s + "f"
 
-def vfpu_effect(addr, w):
+def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
+    # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
+    # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..11): lv.s/sv.s width 4,
+    # lv.q/sv.q width 16, lvl/lvr/svl/svr width 0 (never guarded, like
+    # lwl/lwr/swl/swr). STILL SYNTHETIC: sv.s misalignment, sv.q at +8, any
+    # VFPU access in a delay slot, and lvl/lvr/svl/svr at odd addresses.
     op = w >> 26
     if op == 0x37:
         regnum = (w >> 24) & 3
@@ -875,6 +879,8 @@ def vfpu_effect(addr, w):
         raise Unsupported(f"VV2Op optype {optype} at 0x{addr:08x}")
     # lvl.q/lvr.q/svl.q/svr.q: their left/right merge behavior lives in the
     # single-step interpreter so codegen cannot accidentally treat them as aligned lv.q.
+    # MEASURED (PSP-A3-11): they bypass alignment guarding with width 0, exactly
+    # like lwl/lwr/swl/swr, so lle_cpu leaves this emission unchanged.
     if op == 0x35 or op == 0x3d:
         base = f"({R(rs(w))} + {simm(w & 0xFFFFFFFC)})"
         # Guest code pages are not guaranteed to remain mapped in the runtime image.
@@ -884,10 +890,26 @@ def vfpu_effect(addr, w):
         return run, (base if op == 0x3d else None), (16 if op == 0x3d else 0)
     # lv.q / sv.q. Aligned accesses stay native; a dynamic alignment violation is
     # delegated to the same authoritative decoder as the explicit left/right forms.
+    # MEASURED (PSP-A3-09/10): quads need 16-byte alignment with the load/store
+    # code, so under --lle-cpu the same sr_cpu_guard_access() call as scalars
+    # runs first (width 16); default emission below is unchanged.
     if op == 0x36 or op == 0x3e:
         vt = ((w >> 16) & 0x1F) | ((w & 1) << 5)
         idx = vreg_indices(vt, 4)
         base = f"({R(rs(w))} + {simm(w & 0xFFFFFFFC)})"
+        if lle_cpu:
+            in_delay = 1 if delay_branch_pc is not None else 0
+            branch = f"0x{delay_branch_pc:08x}u" if delay_branch_pc is not None else "0u"
+            is_store = 1 if op == 0x3e else 0
+            guard = (f"if (sr_cpu_guard_access(s, _a, 16u, {is_store}, "
+                     f"0x{addr:08x}u, {branch}, {in_delay}u)) {{ sr_end(s, 0u, 0); return; }} ")
+            if op == 0x36:  # lv.q
+                parts = " ".join(f"s->vi[{idx[i]}] = MEM_R32(_a + {i*4});" for i in range(4))
+                return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_readable(_a,16u)){{ {parts} }}else{{"
+                        f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), None, 0
+            parts = " ".join(f"MEM_W32_PC(_a + {i*4}, s->vi[{idx[i]}], 0x{addr:08x}u);" for i in range(4))
+            return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
+                    f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), base, 16  # sv.q
         if op == 0x36:  # lv.q
             # #184: the whole 16-byte span must be readable before any destination
             # lane commits. A straddling/wrapped aligned span falls back to the
@@ -898,13 +920,25 @@ def vfpu_effect(addr, w):
         parts = " ".join(f"MEM_W32_PC(_a + {i*4}, s->vi[{idx[i]}], 0x{addr:08x}u);" for i in range(4))
         return (f"{{ uint32_t _a = {base}; if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
                 f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), base, 16  # sv.q
-    # lv.s / sv.s
+    # lv.s / sv.s. MEASURED (PSP-A3-08): singles need 4-byte alignment (AdEL),
+    # so under --lle-cpu the same sr_cpu_guard_access() call as scalars runs
+    # first (width 4); default emission below is unchanged.
     if op == 0x32 or op == 0x3a:
         vt = ((w >> 16) & 0x1F) | ((w & 3) << 5)
         i0 = vreg_indices(vt, 1)[0]
         off = (w & 0xFFFC)
         off = off - 0x10000 if off & 0x8000 else off
         addr_e = f"({R(rs(w))} + {off})"
+        if lle_cpu:
+            in_delay = 1 if delay_branch_pc is not None else 0
+            branch = f"0x{delay_branch_pc:08x}u" if delay_branch_pc is not None else "0u"
+            if op == 0x32:  # lv.s
+                return (f"{{ uint32_t _ea = {R(rs(w))} + {off}; "
+                        f"if (sr_cpu_guard_access(s, _ea, 4u, 0, 0x{addr:08x}u, {branch}, {in_delay}u)) "
+                        f"{{ sr_end(s, 0u, 0); return; }} s->vi[{i0}] = MEM_R32(_ea); }}"), None, 0
+            return (f"{{ uint32_t _ea = {R(rs(w))} + {off}; "
+                    f"if (sr_cpu_guard_access(s, _ea, 4u, 1, 0x{addr:08x}u, {branch}, {in_delay}u)) "
+                    f"{{ sr_end(s, 0u, 0); return; }} MEM_W32_PC(_ea, s->vi[{i0}], 0x{addr:08x}u); }}"), addr_e, 4  # sv.s
         if op == 0x32:  # lv.s
             return f"s->vi[{i0}] = MEM_R32({addr_e});", None, 0
         return f"MEM_W32_PC({addr_e}, s->vi[{i0}], 0x{addr:08x}u);", addr_e, 4  # sv.s

@@ -56,6 +56,15 @@ void sr_heap_note_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
 }
 uint32_t sched_current_uid(void) { return 0u; }
 uint32_t sr_get_ge_status(void) { return 0u; }
+/* The LLE CPU gate is off here, so the VFPU alignment guard (#258) never runs;
+ * these keep the translation unit linking without src/rt/cpu_lle.c. */
+int sr_cpu_lle_enabled(void) { return 0; }
+unsigned sr_cpu_data_access_fault(const CpuState *s, uint32_t address, unsigned width, int is_store) {
+    (void)s; (void)address; (void)width; (void)is_store; return 0u;
+}
+int sr_cpu_raise_data_fault(CpuState *s, unsigned exception_code, uint32_t address, uint32_t instr_pc) {
+    (void)s; (void)exception_code; (void)address; (void)instr_pc; return 0;
+}
 void sr_vread(float *r, const CpuState *s, const uint8_t *idx, int n, uint32_t prefix) {
     (void)r; (void)s; (void)idx; (void)n; (void)prefix;
 }
