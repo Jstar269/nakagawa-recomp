@@ -945,7 +945,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1bab9f32982e50b395c7b592aff43e9f7cc13da54e775365f3c760266c675fff"
+      "sha256": "111067a4d4ba3daa2490b2a3c9f47e81216493a98c7e3ec368e175fff81fcfb6"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "8739d92a8b813835254249e99a8f9fbe173576ee4529b6c1c553ef64faf4c566"
+      "sha256": "53c2745438035fe82c5547e30bb0cf039bef687a972c93a4ccc8c32dc5509ebe"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5803,7 +5803,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a7605c173897612e5a3ca5f21d8673d1ac21a96879f1ce18fbe3f3491659ffd"
+      "sha256": "aa5bc5adf3536049767835ec685cb368f0224a96fc67ceb9db678c9034f7122c"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -7076,7 +7076,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "89db0c0d12af99c4076a939c2138a3ff21c10bfa66031004b36e2ad87cb73c42"
+      "sha256": "d68ab1401f0cfc891ac190413226d2536ec38c97a6e0881e9384117a611cf964"
     },
     {
       "path": "tools/import_audit_gate.py",
