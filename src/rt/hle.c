@@ -6255,6 +6255,10 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
     s_closed_res[fd] = 0;
     return 0;
 }
+/* sceIoRename(oldname, newname). Both names resolve beneath the writable fs
+ * root (host_path_alloc), never the disc. UNMEASURED: whether firmware lets
+ * the target already exist; replacing it matches the common write-temp-then-
+ * rename save pattern. */
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
     if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
