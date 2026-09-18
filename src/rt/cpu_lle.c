@@ -152,11 +152,34 @@ static void sr_cp0_delay_context(
  * base), the destination register is unchanged, and execution does not continue
  * past the access. These replace what was previously labelled synthetic here.
  *
- * STILL SYNTHETIC: misalignment inside a branch delay slot. Cause bit 31 (BD)
- * was clear in both runs, so neither says anything about that case, and the
- * delay-slot bookkeeping in sr_cpu_guard_access() remains architectural
- * reasoning rather than measurement. Also unmeasured: halfword-vs-word
- * differences, and the VFPU load/store group, which is excluded here. */
+ * (A3-02/03 left the delay-slot and halfword cases synthetic; A3-04 and A3-05
+ * below have since measured both, so that caveat is gone rather than kept.)
+ *
+ * MEASURED (runs PSP-A3-04 and PSP-A3-05, campaign psp-hw-20260917,
+ * PSP-3000/6.61, user-mode PRX probes via PSPLink; fixtures
+ * `exception-a3-delayslot`, `exception-a3-half-load`, `exception-a3-half-store`
+ * in fixtures/psp_oracle/probe_exception_a3.c, cells in
+ * docs/HARDWARE_ORACLE.md "CPU exception delay-slot and width cells"):
+ * a misaligned `lw` in the delay slot of an always-taken branch raises AdEL
+ * with Cause 0x90000010 (ExcCode 4, BD 1), EPC at the branch address, and
+ * BadVAddr holding the effective address including the misaligned low bits;
+ * `lh`/`sh` at an odd address of an owned aligned buffer raise AdEL/AdES
+ * (Cause 0x10000010/0x10000014, BD 0) with BadVAddr = the effective address,
+ * so the rule is width-relative. The destination register is unchanged on a
+ * faulting load and execution does not continue past the access. The
+ * delay-slot bookkeeping in sr_cpu_guard_access() (BD set, EPC = branch) is
+ * thereby measured rather than architectural reasoning.
+ *
+ * MEASURED (run PSP-A3-06, same campaign; fixture `exception-a3-unaligned`,
+ * a negative control that returns and writes a results file): lwl/lwr/swl/swr
+ * across alignment boundaries complete normally with the PPSSPP-derived
+ * little-endian merge semantics this file's sr_lwl/sr_lwr/sr_swl/sr_swr
+ * implement (loaded 0x88776655, lwl-only 0x332211ff, lwr-only 0x00004433 for
+ * the probed sequence). They are deliberately never alignment-guarded here,
+ * in tools/codegen.py LLE_ACCESS, or in the interpreter width table.
+ *
+ * STILL SYNTHETIC: the VFPU load/store group, which has its own alignment
+ * rules that no probe has measured yet and is excluded here. */
 unsigned sr_cpu_data_access_fault(
     const CpuState *s,
     uint32_t address,
@@ -167,8 +190,12 @@ unsigned sr_cpu_data_access_fault(
     if (!s || width == 0u) {
         return 0u;
     }
-    /* Measured (PSP-A3-02 load, PSP-A3-03 store): a misaligned access raises
-     * AdEL for loads and AdES for stores, with BadVAddr = the effective address. */
+    /* Measured (PSP-A3-02 load, PSP-A3-03 store, PSP-A3-04 word in a delay
+     * slot, PSP-A3-05 halfword at odd
+     * address): a misaligned access raises AdEL for loads and AdES for
+     * stores, with BadVAddr = the effective address. Width-relative: an odd
+     * address faults for halfwords and words, while base+2 faults only for
+     * words. lwl/lwr/swl/swr never reach this check (PSP-A3-06). */
     if (width > 1u && (address & (width - 1u)) != 0u) {
         return code;
     }
