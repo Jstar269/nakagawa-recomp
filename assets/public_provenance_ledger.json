@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7f6934953da11ef15ca2052fb9bda03920ed066594ef42468babe120be03e257"
+      "sha256": "386cf979635c33f0c483583b75e94ee3dbd227dee78d139d32a76a63299595f0"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -8678,7 +8678,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee2d1d1f111c1528200c3be5ca8916dd54b3480e6a5714f23480a85ca54ee7b6"
+      "sha256": "71f361c1de1338197a4a41abbdc25d334c50ed573f27e82f06036e90ecd73c81"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -8783,7 +8783,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "16502da4e9eeff0826b028f392321a24a73d02bbd396110b5c8fa46eba5d4510"
+      "sha256": "8c8cdb51c2c330aad35d0ba93a8205596aee6ce33e55e006883b82b96f9779e9"
     },
     {
       "path": "tools/test_psp_oracle.py",
