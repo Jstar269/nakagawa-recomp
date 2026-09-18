@@ -401,17 +401,56 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             failures = [res for res in report.results if res.status == "FAIL"]
             self.assertEqual(failures, [])
 
-    def test_case_h_lawful_private_preflight_if_available(self) -> None:
-        """Preflight validation of live private inputs if present (preflight only, not retail acceptance)."""
-        live_root = ROOT
-        eboot_elf = live_root / "place_game_here" / "EBOOT.elf"
-        if not eboot_elf.is_file():
-            self.skipTest("Lawful private EBOOT.elf not available in workspace")
-        report = hst_doctor.Report(live_root, "inputs")
-        hst_doctor_checks.check_private_inputs(report, need_iso=False, need_assets=False)
-        eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
-        self.assertIsNotNone(eboot_elf_res)
-        self.assertEqual(eboot_elf_res.status, "PASS")
+    def test_case_h_missing_lawful_inputs_fail_closed(self) -> None:
+        """The doctor must FAIL CLOSED when the lawful retail inputs are absent.
+
+        Case H used to skip whenever no live EBOOT.elf was present, which made
+        the preflight acceptance check invisible to CI: delete the check (or
+        the INPUT_EBOOT_ELF diagnosis) and this test silently passed as a
+        SKIP.  An absent input is a diagnosis -- INPUT_EBOOT_ELF FAIL with a
+        nonzero exit -- not a reason to stop checking.  Both halves below are
+        hermetic and run on every host: the fail-closed diagnosis and exit
+        contract (including end-to-end through the CLI operators invoke), and
+        the preflight PASS for a structurally valid EBOOT.elf through the same
+        code path the live-input case used to exercise.
+        """
+        # 1. An absent EBOOT.elf is a FAIL with exit status 1, never a pass-through.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "place_game_here").mkdir()
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
+            self.assertIsNotNone(
+                eboot_elf_res, "an absent EBOOT.elf must still be diagnosed")
+            self.assertEqual(eboot_elf_res.status, "FAIL")
+            self.assertEqual(report.exit_code(False), 1)
+
+            proc = subprocess.run(
+                [sys.executable, str(TOOLS / "hst_doctor.py"),
+                 "--root", str(root), "--scope", "inputs"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(
+                proc.returncode, 1,
+                "the doctor must exit nonzero with the lawful inputs absent:\n"
+                + proc.stdout + proc.stderr,
+            )
+            self.assertIn("INPUT_EBOOT_ELF", proc.stdout)
+
+        # 2. A structurally valid synthetic EBOOT.elf passes the same check the
+        #    live-input case validated, so the acceptance path stays covered.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._setup_synthetic_preflight_workspace(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
+            self.assertIsNotNone(eboot_elf_res)
+            self.assertEqual(
+                eboot_elf_res.status, "PASS",
+                "a structurally valid EBOOT.elf must pass the preflight the "
+                "live-input case used to exercise")
 
 
 class AgentIdentityChecks(unittest.TestCase):
