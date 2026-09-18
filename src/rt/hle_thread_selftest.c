@@ -8627,6 +8627,122 @@ static void test_td23_guest_pointer_validation(void) {
            "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
+static void test_td28_partition_free_reuse(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern int sr_hle_test_partition_free_block_count(void);
+    extern int sr_hle_test_partition_get_free_block(int idx, uint32_t *addr_out, uint32_t *size_out);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    CpuState cpu;
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+
+    uint32_t initial_heap = sr_hle_test_partition_heap_ptr();
+
+    /* 1. Allocate A, B, C */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_A = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_A != 0u && uid_A < 0x80000000u, "alloc A succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_A;
+    uint32_t addr_A = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(addr_A == initial_heap, "addr_A matches partition heap start");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_B = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_B != 0u && uid_B < 0x80000000u, "alloc B succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_B;
+    uint32_t addr_B = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(addr_B == addr_A + 0x1000u, "addr_B immediately follows A");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid_C = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_C != 0u && uid_C < 0x80000000u, "alloc C succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_C;
+    uint32_t addr_C = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(addr_C == addr_B + 0x1000u, "addr_C immediately follows B");
+
+    /* 2. Free B */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_B;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free B succeeds");
+
+    /* 3. Allocate a block that fits B's slot and assert it reuses it */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x800u; /* fits in B's 0x1000 slot */
+    uint32_t uid_B2 = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_B2 != 0u && uid_B2 < 0x80000000u, "alloc B2 (fits B slot) succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_B2;
+    uint32_t addr_B2 = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(addr_B2 == addr_B, "block fitting B's slot reuses B's address");
+
+    /* 4. Free A and B and assert coalescing */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_B2;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free B2 succeeds");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_A;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free A succeeds");
+
+    /* Assert coalescing: A and B are adjacent free blocks. They must coalesce
+     * into a single free block spanning [addr_A, addr_B + 0x1000) of size 0x2000. */
+    expect(sr_hle_test_partition_free_block_count() == 1,
+           "adjacent free blocks A and B coalesce into a single free block");
+    uint32_t fb_addr = 0u, fb_size = 0u;
+    expect(sr_hle_test_partition_get_free_block(0, &fb_addr, &fb_size) == 1,
+           "get free block 0 succeeds");
+    expect(fb_addr == addr_A, "coalesced block begins at addr_A");
+    expect(fb_size == 0x2000u, "coalesced block size is 0x2000 (A + B)");
+
+    /* Also verify via allocation: request 0x1800 bytes (> size A and > size B).
+     * Without coalescing, 0x1800 cannot fit in either slot and would bump past C.
+     * With coalescing, it fits in the merged slot and gets addr_A. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1800u;
+    uint32_t uid_merged = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_merged != 0u && uid_merged < 0x80000000u, "alloc 0x1800 from coalesced block succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_merged;
+    uint32_t addr_merged = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(addr_merged == addr_A, "allocation larger than single block reuses coalesced A+B slot");
+
+    /* Clean up remaining live blocks C and merged */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_C;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free C succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_merged;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free merged succeeds");
+
+    /* 5. Assert the no-free sequence yields identical addresses to before */
+    sr_hle_test_partition_reset();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t uid_x = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_x;
+    uint32_t addr_x = sr_syscall(&cpu, NID_GET_HEAD);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x500u;
+    uint32_t uid_y = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_y;
+    uint32_t addr_y = sr_syscall(&cpu, NID_GET_HEAD);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1200u;
+    uint32_t uid_z = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_z;
+    uint32_t addr_z = sr_syscall(&cpu, NID_GET_HEAD);
+
+    expect(addr_x == base0, "no-free path block 1 address unchanged");
+    expect(addr_y == ((base0 + 0x100u + 0xFFu) & ~0xFFu), "no-free path block 2 address unchanged");
+    expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
+}
+
 /* =========================================================================
  * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
  * ========================================================================= */
@@ -10942,6 +11058,7 @@ int main(int argc, char **argv) {
     test_sas_state_contracts();
     test_msgpipe_safety();
     test_td23_guest_pointer_validation();
+    test_td28_partition_free_reuse();
     test_intr_context_conformance();
     test_psp_mutex();
 
