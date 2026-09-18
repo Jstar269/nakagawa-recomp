@@ -8153,7 +8153,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "75fbdf7a01ee3bbf856985707e2a13c8e122213610ac82a0cc5e8cafb3afb24f"
+      "sha256": "5a5367f779eae9a45bfba1cae30052d8a01db87eb307d286c32b33dbd43e2e26"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
