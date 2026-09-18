@@ -497,6 +497,12 @@
     "name": "sceKernelCheckCallback",
     "status": "unreviewed"
   },
+  "0x34b9fa9e": {
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateRange",
+    "name": "sceKernelDcacheWritebackInvalidateRange",
+    "status": "unreviewed"
+  },
   "0x35669d4c": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
@@ -606,10 +612,10 @@
     "status": "unreviewed"
   },
   "0x3ee30821": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateRange",
     "name": "sceKernelDcacheWritebackRange",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x3f53e640": {
     "classification": "dedicated",
@@ -1164,10 +1170,10 @@
     "status": "unreviewed"
   },
   "0x79d1c3fa": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateAll",
     "name": "sceKernelDcacheWritebackAll",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x7a20e7af": {
     "classification": "dedicated",
@@ -1329,6 +1335,12 @@
     "classification": "dedicated",
     "handler": "h_NetDialogUpdate",
     "name": "sceUtilityNetconfUpdate",
+    "status": "unreviewed"
+  },
+  "0x920f104a": {
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateAll",
+    "name": "sceKernelIcacheInvalidateAll",
     "status": "unreviewed"
   },
   "0x92e41280": {
@@ -1644,10 +1656,10 @@
     "status": "stub"
   },
   "0xb435dec5": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateAll",
     "name": "sceKernelDcacheWritebackInvalidateAll",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb55249d2": {
     "classification": "dedicated",
@@ -1733,6 +1745,12 @@
     "name": "_sceKernelUnlockLwMutex",
     "status": "unreviewed"
   },
+  "0xbfa98062": {
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateRange",
+    "name": "sceKernelDcacheInvalidateRange",
+    "status": "unreviewed"
+  },
   "0xc07bb470": {
     "classification": "dedicated",
     "handler": "h_CreateFpl",
@@ -1756,6 +1774,12 @@
     "handler": "h_ok",
     "name": "sceKernelReferLwMutexStatus",
     "status": "stub"
+  },
+  "0xc2df770e": {
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateRange",
+    "name": "sceKernelIcacheInvalidateRange",
+    "status": "unreviewed"
   },
   "0xc492f751": {
     "classification": "dedicated",
@@ -1917,6 +1941,12 @@
     "classification": "dedicated",
     "handler": "h_MpegRingbufferQueryMemSize",
     "name": "sceMpegRingbufferQueryMemSize",
+    "status": "unreviewed"
+  },
+  "0xd8779ac6": {
+    "classification": "dedicated",
+    "handler": "h_CacheInvalidateAll",
+    "name": "sceKernelIcacheClearAll",
     "status": "unreviewed"
   },
   "0xd8b73127": {
