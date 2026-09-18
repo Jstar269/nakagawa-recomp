@@ -530,3 +530,33 @@ assert(!nk_title_identity_by_disc("TEST12345"));
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuestModuleBaseTests(unittest.TestCase):
+    """A guest PRX's code and data live at load_address, so it must be real user RAM."""
+
+    def _with_module(self, **fields):
+        manifest = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        module = dict(manifest["modules"][0])
+        module.update(fields)
+        manifest["modules"] = [module]
+        return manifest
+
+    def test_base_outside_user_ram_is_rejected(self) -> None:
+        for bad in (0x32200000, 0x00400000, 0x0C000000):
+            with self.subTest(base=hex(bad)):
+                with self.assertRaisesRegex(title_manifest.TitleManifestError, "user RAM"):
+                    title_manifest.validate_manifest(self._with_module(load_address=bad))
+
+    def test_guest_path_and_evidence_are_carried(self) -> None:
+        normalized = title_manifest.validate_manifest(self._with_module(
+            load_address=0x09EC7F00, guest_path="disc0:/PSP_GAME/USRDIR/module/x.prx",
+            load_address_evidence="measured-ppsspp"))
+        self.assertEqual(normalized["modules"][0]["guest_path"], "disc0:/PSP_GAME/USRDIR/module/x.prx")
+        self.assertEqual(normalized["modules"][0]["load_address_evidence"], "measured-ppsspp")
+
+    def test_bad_guest_path_and_evidence_are_rejected(self) -> None:
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "guest_path"):
+            title_manifest.validate_manifest(self._with_module(guest_path="module/x.prx"))
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "evidence"):
+            title_manifest.validate_manifest(self._with_module(load_address_evidence="guess"))

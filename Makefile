@@ -42,9 +42,9 @@ NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(M
 # ---------------------------------------------------------------------------
 ifeq ($(GAME_NAME),hst)
 CODEGEN_PROFILE_ARG := --profile=hst
-GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868
+GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 \
+                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 \
+                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 # The analyzer applies no title-specific span of its own: an extra executable span
 # outside the section table is title configuration, so the HST span is bound here

@@ -19,7 +19,7 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 4
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 5
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -53,6 +53,53 @@ static const SrTitleCallbackTerminator s_callback_terminators[] = {
 _Static_assert(sizeof s_callback_terminators / sizeof s_callback_terminators[0]
                    == SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1u,
                "generated callback-terminator list does not match its declared count");
+
+/* Guest PRX modules and their load bases: the same manifest list the recompiler used for
+ * GAME_EXTRA_ELFS, so code and data agree on one address per module. */
+typedef struct { const char *name; const char *guest_path; uint32_t base; } SrTitleGuestModule;
+#define SR_TITLE_CFG_GUEST_MODULE(n, p, b) { (n), (p), (b) },
+static const SrTitleGuestModule s_guest_modules[] = {
+    SR_TITLE_CONFIG_GUEST_MODULE_LIST
+    { "", "", 0u }  /* placeholder: never read; the count is the authority */
+};
+#undef SR_TITLE_CFG_GUEST_MODULE
+_Static_assert(sizeof s_guest_modules / sizeof s_guest_modules[0]
+                   == SR_TITLE_CONFIG_GUEST_MODULE_COUNT + 1u,
+               "generated guest-module list does not match its declared count");
+
+static int ascii_ieq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+int sr_title_config_guest_module(const char *guest_path, const char **name_out, uint32_t *base_out) {
+    if (!guest_path) return 0;
+    for (unsigned i = 0; i < (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT; i++) {
+        const SrTitleGuestModule *m = &s_guest_modules[i];
+        if (m->guest_path[0] && ascii_ieq(m->guest_path, guest_path)) {
+            if (name_out) *name_out = m->name;
+            if (base_out) *base_out = m->base;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+unsigned sr_title_config_guest_module_count(void) { return (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT; }
+
+int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
+                                    uint32_t *base_out) {
+    if (index >= (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT) return 0;
+    if (name_out) *name_out = s_guest_modules[index].name;
+    if (guest_path_out) *guest_path_out = s_guest_modules[index].guest_path;
+    if (base_out) *base_out = s_guest_modules[index].base;
+    return 1;
+}
 
 #define SR_TITLE_CFG_RUNTIME_SYNC_WRAPPER(m, e, l) { (m), (e), (l) },
 static const SrTitleRuntimeSyncWrapper s_runtime_sync_wrappers[] = {

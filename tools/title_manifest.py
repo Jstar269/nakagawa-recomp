@@ -867,13 +867,18 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     return result
 
 
+GUEST_MODULE_RAM_LO = 0x08800000
+GUEST_MODULE_RAM_HI = 0x0C000000  # 64 MB models extend user RAM; the runtime arena ends here
+
+
 def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     names: set[str] = set()
     addresses: set[int] = set()
     for index, item in enumerate(array(value, path, 32)):
         item_path = f"{path}[{index}]"
-        item = obj(item, item_path, {"name", "load_address", "required", "role"})
+        item = obj(item, item_path, {"name", "load_address", "required", "role",
+                                     "guest_path", "load_address_evidence"})
         require(item, item_path, "name", "load_address", "required", "role")
         name = text(item["name"], f"{item_path}.name", 128)
         if not FILENAME_RE.fullmatch(name) or name.endswith("."):
@@ -895,7 +900,26 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
             fail(item_path, "optional-guest-prx cannot be marked required")
         if role == "hle-capability" and not required:
             fail(item_path, "hle-capability must be marked required")
-        result.append({"name": name, "load_address": address, "required": required, "role": role})
+        entry = {"name": name, "load_address": address, "required": required, "role": role}
+        if role in {"guest-prx", "optional-guest-prx"}:
+            # A guest module's code AND data live at load_address, so it must be real
+            # user RAM: a base outside it lets translated code run while every data
+            # write is dropped (the late-PRX bases once sat at 0x322xxxxx).
+            if not GUEST_MODULE_RAM_LO <= address < GUEST_MODULE_RAM_HI:
+                fail(f"{item_path}.load_address",
+                     f"guest module base must lie in user RAM [0x{GUEST_MODULE_RAM_LO:08x}, "
+                     f"0x{GUEST_MODULE_RAM_HI:08x})")
+        if "guest_path" in item:
+            guest_path = text(item["guest_path"], f"{item_path}.guest_path", 256)
+            if not guest_path.split(":", 1)[0] in {"disc0", "umd0", "ms0", "flash0", "host0"}                     or ":/" not in guest_path:
+                fail(f"{item_path}.guest_path", "must be an absolute PSP device path (e.g. disc0:/...)")
+            entry["guest_path"] = guest_path
+        if "load_address_evidence" in item:
+            evidence = text(item["load_address_evidence"], f"{item_path}.load_address_evidence", 32)
+            if evidence not in {"measured-hw", "measured-ppsspp", "provisional"}:
+                fail(f"{item_path}.load_address_evidence", "unsupported evidence class")
+            entry["load_address_evidence"] = evidence
+        result.append(entry)
     return result
 
 
