@@ -6255,6 +6255,38 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
     s_closed_res[fd] = 0;
     return 0;
 }
+static uint32_t h_IoRename(CpuState *s) {
+    char oldpath[256], newpath[256];
+    if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
+        return 0x80010016u;
+    char *old_hp = host_path_alloc(oldpath);
+    char *new_hp = host_path_alloc(newpath);
+    if (!old_hp || !new_hp) {
+        free(old_hp);
+        free(new_hp);
+        return 0x80010002;
+    }
+    wchar_t *w_old = NULL, *w_new = NULL;
+    if (!sr_wide_path_alloc(old_hp, &w_old) || !sr_wide_path_alloc(new_hp, &w_new)) {
+        free(w_old);
+        free(w_new);
+        free(old_hp);
+        free(new_hp);
+        return 0x80010005;
+    }
+    BOOL ok = MoveFileExW(w_old, w_new, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+    free(w_old);
+    free(w_new);
+    free(old_hp);
+    free(new_hp);
+    if (!ok) {
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+            return 0x80010002;
+        return 0x80010005;
+    }
+    return 0;
+}
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
@@ -6275,6 +6307,7 @@ uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
 uint32_t sr_hle_test_io_close_async(CpuState *s) { return h_IoCloseAsync(s); }
+uint32_t sr_hle_test_io_rename(CpuState *s) { return h_IoRename(s); }
 int sr_hle_test_fd_kind(uint32_t fd) {
     return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) ? (int)s_fds[fd].kind : -1;
 }
@@ -6500,7 +6533,21 @@ static uint32_t h_AudioOutputPannedBlocking(CpuState *s) {
     /* sceAudioOutputPannedBlocking(ch, leftvol, rightvol, buf) */
     return audio_output(s, A0, A3, (int)(A1 & 0xFFFF), (int)(A2 & 0xFFFF));
 }
-static uint32_t h_AudioRestLen(CpuState *s) { (void)s; return 0; }         /* never backed up */
+static uint32_t h_AudioChangeChannelConfig(CpuState *s) {
+    (void)s;
+    if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
+    if (!s_audio_ch[A0]) return SCE_AUDIO_ERROR_NOT_INITIALIZED;
+    if (A1 != PSP_AUDIO_FORMAT_STEREO && A1 != PSP_AUDIO_FORMAT_MONO)
+        return SCE_AUDIO_ERROR_INVALID_FORMAT;
+    s_audio_fmt[A0] = (int)A1;
+    return 0;
+}
+static uint32_t h_AudioRestLen(CpuState *s) {
+    (void)s;
+    if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
+    int q = sr_audio_queued((int)A0);
+    return q > 0 ? (uint32_t)q : 0u;
+}
 
 /* Keep the executable audio contract harness on the exact production NID
  * mapping without exposing the separate Output2 family to that focused test. */
@@ -6510,7 +6557,7 @@ static void hle_register_regular_audio_handlers(void) {
     sr_hle_register(0x136caf51, "sceAudioOutputBlocking", h_AudioOutputBlocking);
     sr_hle_register(0x13f592bc, "sceAudioOutputPannedBlocking", h_AudioOutputPannedBlocking);
     sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
-    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_ok);
+    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_AudioChangeChannelConfig);
     sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
     sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
     sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
@@ -11850,7 +11897,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
     /* IoFileMgrForUser: file IO from the ISO. */
     sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
-    sr_hle_register(0x779103a0, "sceIoRename", h_ok);
+    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
     sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
     sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
     sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);
