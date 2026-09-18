@@ -393,9 +393,6 @@ static void user_partition_init(void) {
 /* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
  * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
  * writes malloc chunk metadata at the start of its UserSbrk block. */
-/* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
- * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
- * writes malloc chunk metadata at the start of its UserSbrk block. */
 typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
