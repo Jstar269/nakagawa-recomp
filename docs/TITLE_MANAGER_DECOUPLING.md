@@ -13,9 +13,9 @@ Both issues are now closed; see the linked live records.
 
 ## 1. Context & Motivation
 
-At 1,445 lines (`wc -l`), `nk_manager.ps1` is the canonical orchestration layer for
+At 1,499 lines (`wc -l`), `nk_manager.ps1` is the canonical orchestration layer for
 developer workflows in Nakagawa Recomp; `hst_manager.ps1` is now a deprecated
-forwarding wrapper (165 lines by `wc -l`). The manager provides **generic recompiler infrastructure**:
+forwarding wrapper (178 lines by `wc -l`). The manager provides **generic recompiler infrastructure**:
 
 - **Build Orchestration**: Invoking Make with toolchain detection, parallel jobs, and profile compilation flags.
 - **Run Profiles**: Managing runtime presets (`Standard`, `Performance`, `Benchmark`, `Diagnostics`, `Software`).

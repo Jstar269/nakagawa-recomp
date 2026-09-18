@@ -98,7 +98,7 @@ The matrix distinguishes between architectural staging, implementation completen
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
 | 8 | Gamepad Calibration | Web Gamepad API | SDL3 gamepad detection, library selection and full focus navigation | **PARTIAL** — a pad is opened, named and drives d-pad/shoulder selection plus focus moves, SOUTH activates, EAST goes back and START toggles settings; the badge reports the real state. There is no calibration, binding or deadzone UI; the web baseline's calibration screen has no native counterpart |
-| 9 | Preflight Checks | `hst_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
+| 9 | Preflight Checks | `nk_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
 | 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |

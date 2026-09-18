@@ -21,8 +21,10 @@ For every existing or proposed HLE routine, developers and agents must answer:
 
 ## 2. Quantitative Census of the Current Codebase
 
-Import and hook totals below retain the static audit of `af5c4f4` / `1c672f5`;
-the title-configuration and walker descriptions were checked against `faa43e6`.
+Import and hook totals below were re-checked at `8e58c6b`
+(`tools/import_audit_gate.py` reports 380 registrations); the hook-table,
+title-configuration, and walker line references were verified against the same
+revision.
 Run `tools/test_compat_manifest.py` for the current compatibility inventory gate:
 
 ```text
@@ -88,15 +90,15 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 #### 1. `INIT_WALKER_GUARD` (Callee-Saved `$s0` / `$r16` Preservation)
 
-- **Location:** `src/rt/recomp.c:2063–2075`, inline in `dispatch()`, not a dispatch hook-table entry.
+- **Location:** `src/rt/recomp.c:2068–2080`, inline in `dispatch()`, not a dispatch hook-table entry.
 - **Mechanism:** When the caller's `s->pc` is `0x00000f98` or `0x00000fdc`, saves `s->r[16]` around `fn(s)` and unconditionally restores it on return. These PCs select the guard; they are not the dispatch target.
 - **Root Cause:** A MIPS ABI violation in recompiled code or compiler optimization where a callee corrupted callee-saved register `$s0`.
 - **Lower-Level Solution:** Audit the recompiled functions called by `0x00000fdc` in `tools/codegen.py` to ensure standard MIPS calling conventions preserve `$s0`–`$s7` across function boundaries.
 
 #### 2. `WALKER_CAP` Historical Comment
 
-- **Location:** `src/rt/recomp.c:1586–1607` (comment only; `WALKER_CAP` mentions at lines 1593 and 1601).
-- **Mechanism:** The comment describes a former 2048-iteration cap and the rationale for bypassing `f_000008d8` by returning `r[2]=0` directly (`WALKER_SKIP`, lines 1605–1606). It is not an active cap or executable function at those lines.
+- **Location:** `src/rt/recomp.c:1591–1612` (comment only; `WALKER_CAP` mentions at lines 1598 and 1606).
+- **Mechanism:** The comment describes a former 2048-iteration cap and the rationale for bypassing `f_000008d8` by returning `r[2]=0` directly (`WALKER_SKIP`, line 1611). It is not an active cap or executable function at those lines.
 - **Root Cause:** The historical comment describes recursive walker dispatch and repeated yields starving frame-present progress; it is not current behavioral proof.
 - **Lower-Level Solution:** Verify current walker execution and guest table initialization before treating the historical bypass rationale as an active workaround.
 
