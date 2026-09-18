@@ -449,7 +449,11 @@ NULL_BASE_WORD_LOADS = {
 # exist precisely to read and write across an alignment boundary, so a
 # misaligned effective address is their normal operating condition and never an
 # address error. The VFPU load/store group is absent for a different reason: it
-# has its own alignment rules that no probe has measured yet.
+# is emitted from vfpu_effect(), not from _lle_access_stmt(), and no guard call
+# has been wired there yet. Its rules are now MEASURED (runs PSP-A3-08 through
+# PSP-A3-11: lv.s needs width 4, lv.q/sv.q need width 16, lvl/lvr/svl/svr bypass
+# like the unaligned word forms), so a future change wires those widths through
+# sr_cpu_guard_access(); it does not change this table's scalar rows.
 LLE_ACCESS = {
     0x20: (1, 0), 0x21: (2, 0), 0x23: (4, 0), 0x24: (1, 0), 0x25: (2, 0), 0x31: (4, 0),
     0x28: (1, 1), 0x29: (2, 1), 0x2B: (4, 1), 0x39: (4, 1),
