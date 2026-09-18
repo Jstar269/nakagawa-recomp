@@ -3421,6 +3421,7 @@ typedef struct {
     uint32_t fileSize;            /* total track size in bytes (RIFF extent) */
     uint32_t dataByteOffset;      /* file offset where audio frames start */
     uint32_t bytesPerFrame;       /* frame size (RIFF fmt blockAlign) */
+    uint32_t avgBytesPerSec;      /* RIFF fmt nAvgBytesPerSec (bitrate source) */
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -3544,6 +3545,7 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     uint32_t fileSize = riff_end;
     uint32_t dataByteOffset = 0;
     uint32_t bytesPerFrame = 0;
+    uint32_t avgBytesPerSec = 0;
     int channels = 0;
     int endSample = 0;
     int loopStartSample = -1, loopEndSample = -1;
@@ -3568,10 +3570,12 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
             if (sz < 16u || sz > avail) return 0;
             uint32_t ch = MEM_R16(p + 10u);      /* channels */
             uint32_t align = MEM_R16(p + 20u);   /* blockAlign = bytes per frame */
+            uint32_t rate = MEM_R32(p + 16u);    /* nAvgBytesPerSec = declared byte rate */
             if (ch < 1u || ch > 8u) return 0;
             if (align < 1u || align > 0x10000u) return 0;
             channels = (int)ch;
             bytesPerFrame = align;
+            avgBytesPerSec = rate;
         } else if (id == 0x61746164u /* 'data' */) {
             if (!sr_size_add_ok(off, 8u, &dataByteOffset)) return 0;
         } else if (id == 0x6c706d73u /* 'smpl' */) {
@@ -3606,6 +3610,7 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     a->fileSize = fileSize;
     a->dataByteOffset = dataByteOffset;
     a->bytesPerFrame = bytesPerFrame;
+    a->avgBytesPerSec = avgBytesPerSec;
     a->channels = channels;
     a->endSample = endSample;
     a->loopStartSample = loopStartSample;
@@ -4102,6 +4107,60 @@ static uint32_t h_AtracGetMaxSample(CpuState *s) {
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
     MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
     return 0;
+}
+/* sceAtracGetChannel(id, *outChannels): active audio channel count (1 = mono,
+ * 2 = stereo). Public behaviour reference: the PSPSDK ATRAC3+ interface and
+ * PPSSPP Core/HLE/sceAtrac.cpp. The honest answer is the parsed fmt header's
+ * channel count retained on the context (a->channels); a fact-only prefix
+ * that never carried a fmt chunk honestly reports 0. Errors reuse the
+ * neighbouring Atrac codes. */
+static uint32_t h_AtracGetChannel(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    MEM_W32(A1, (uint32_t)(a->channels < 0 ? 0 : a->channels));
+    return 0;
+}
+/* sceAtracGetBitrate(id, *outBitrate): stream bitrate in kbps. Public
+ * behaviour reference: the PSPSDK ATRAC3+ interface and PPSSPP
+ * Core/HLE/sceAtrac.cpp. The container's own declared rate is the fmt
+ * nAvgBytesPerSec field the parser already retains (a->avgBytesPerSec), so
+ * the honest answer is that rate converted to kilobits per second; no other
+ * bitrate source exists in the track. Whether firmware derives the value
+ * from this field or from blockAlign and the sample rate is UNMEASURED here.
+ * Errors reuse the neighbouring Atrac codes. */
+static uint32_t h_AtracGetBitrate(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    MEM_W32(A1, (uint32_t)((uint64_t)a->avgBytesPerSec * 8u / 1000u));
+    return 0;
+}
+/* sceAtracGetInternalErrorInfo(id, *outErr): sticky internal decoder error.
+ * Public behaviour reference: the PSPSDK ATRAC3+ interface and PPSSPP
+ * Core/HLE/sceAtrac.cpp. This runtime retains no latent error word: every
+ * failure surfaces synchronously as the handling call's return code
+ * (DecodeData returns a codec error instead of fabricating PCM), so a
+ * reachable context by construction has no outstanding internal error and
+ * the honest report is 0. If a sticky error is ever retained it must be
+ * stored on the context and read here. Errors reuse the neighbouring Atrac
+ * codes. */
+static uint32_t h_AtracGetInternalErrorInfo(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    MEM_W32(A1, 0u);
+    return 0;
+}
+/* sceAtracIsSecondBufferNeeded(id): 1 while a streamed track still has unfed
+ * file bytes, else 0. Public behaviour reference: the PSPSDK ATRAC3+
+ * interface and PPSSPP Core/HLE/sceAtrac.cpp. The second buffer exists only
+ * for streamed (ring) playback, so ALL_DATA/HALFWAY contexts never need one;
+ * within streamed mode the honest "needs more" signal is the decoder's own
+ * size < fileSize bookkeeping -- the same condition AddStreamData enforces --
+ * so a stream-feeding loop that waits for nonzero cannot hang while data
+ * remains. The exact firmware window (loop-refill timing, ring-full gating)
+ * is UNMEASURED here. Bad IDs reuse the neighbouring Atrac code. */
+static uint32_t h_AtracIsSecondBufferNeeded(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    return (atrac_streamed_state(a) && a->size < a->fileSize) ? 1u : 0u;
 }
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
@@ -12084,12 +12143,12 @@ static void hle_register_atrac_handlers(void) {
      * canonical NID in src/rt/nid_names.h, reproducible as sha1(name)[0:4]).
      * No guest import can carry the typo, so this registration was previously
      * unreachable and a real sceAtracGetChannel call was an unhandled-NID miss.
-     * Correcting it makes the h_ok acceptance actually take effect: the call
-     * now returns fake success without reporting a channel count. That gap is
-     * tracked by #286 and must not be read as sceAtracGetChannel being modelled. */
-    sr_hle_register(0x31668baa, "sceAtracGetChannel", h_ok);
+     * TD-24 batch 3 models it with h_AtracGetChannel (parsed fmt channels);
+     * sceAtracGetOutputChannel keeps its h_ok acceptance below (#286 tracks
+     * the remaining output-mapping gap). */
+    sr_hle_register(0x31668baa, "sceAtracGetChannel", h_AtracGetChannel);
     sr_hle_register(0x36faabfb, "sceAtracGetNextSample", h_AtracGetNextSample);
-    sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_ok);
+    sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_AtracGetBitrate);
     sr_hle_register(0xb3b5d042, "sceAtracGetOutputChannel", h_ok);
     sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
     sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
@@ -12102,8 +12161,8 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_ok);
     sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_ok);
     sr_hle_register(0xd1f59fdb, "sceAtracStartEntry", h_ok);
-    sr_hle_register(0xeca32a99, "sceAtracIsSecondBufferNeeded", h_ok);
-    sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_ok);
+    sr_hle_register(0xeca32a99, "sceAtracIsSecondBufferNeeded", h_AtracIsSecondBufferNeeded);
+    sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);
     sr_hle_register(0x231fc6b7, "_sceAtracGetContextAddress", h_ok);
     sr_hle_register(0x1575d64b, "sceAtracLowLevelInitDecoder", h_ok);
     sr_hle_register(0x0c116e1b, "sceAtracLowLevelDecode", h_ok);
