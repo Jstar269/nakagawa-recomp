@@ -11,9 +11,11 @@ stale handler names or NIDs fail the gate instead of rotting silently.
 
 Classification model (per registered NID):
   fake_success           -- routed to a generic always-success handler (h_ok
-                            family) or a handler curated as `stub`. The call
-                            reports success but performs none of the API's
-                            contract. These are the silent-corruption risks
+                            family), a handler curated as `stub`, or a handler
+                            mechanically detected by tools/hle_manifest.py as
+                            doing nothing but `(void)s` / logging / `return 0`.
+                            The call reports success but performs none of the
+                            API's contract. These are the silent-corruption risks
                             issue #71 exists to surface.
   controlled_unsupported -- a dedicated handler that deliberately refuses the
                             operation with the API's own documented error

@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "48224a8f580d9cc7748d9940b9eb33114d47ee6b7168b9db38e942f3c3351829"
+      "sha256": "696c461eda8abd5692407a0d98acfd62eb39ce45266e217a452954601a3d3c46"
     },
     {
       "path": "assets/release_manifest.json",
@@ -765,7 +765,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e8f360d51f0dc611a58572f4265b51f140def9f05b9385e533f35cd14f54b035"
+      "sha256": "6386beb5dc3a6cb960fa7f681d15383dfc43ea51829069174aac95e9af5e57a3"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ae0de6680ebc8dfe1c323fc98e83d6f98980c46b53822e0f56a7217db1d6f334"
+      "sha256": "70c4eb36e41270f8191b3797fc50cd3efa86e127dc9bdc5ddf9f79500b730f73"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -810,7 +810,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e42eedc378b775323b776d8ce2df842d853af7a9bf64c0ea652d2c1a5a4e1c73"
+      "sha256": "8a7b4d171d6802c6add0cd159534e5cd4582631b426ded84d4e25c1813eb6a0d"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -5334,7 +5334,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b35fef754feb02772597bbfd3754e8b1958c7a1fc5876c40b7974dc699f1b7af"
+      "sha256": "b764c7035ac7267b61bb2a1184963950a60c696874400f5a36abd3c9f71b7643"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f96830802cfb9a8f3e0d7af6217d93ad0cfc243fc9affe26c656aea7e4af31cc"
+      "sha256": "3d5b6e3e81f7f8ad610ced4c88ae4e6dd536579903331157cb93119bb0338854"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5766,7 +5766,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "83d33e1d1ec44b38f55f8e2ba2b95740d1d467a1da0e6011ca9d89509857e56f"
+      "sha256": "984dbbb6575965291f10a114de90384116ca2298c5b7543b0815a4de00f8f6f0"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -5791,7 +5791,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3a6b5f8a52ca756e67b5454b2150217b094469f3863171613a8425a939d643ca"
+      "sha256": "b3b41aaa3dac3308cb9868caf647cd3acc7c131d82c564ef10dc549e9c7402d3"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -5803,7 +5803,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "454720f0273ab7097fa297e8be2878b1534a0acb655fe0f246c770d90389fab1"
+      "sha256": "080febd031acd299b3d1c5766bb5211d6ad804a1494ff7d96d99ec3cf009c979"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6813,6 +6813,18 @@
       "sha256": "628404bc449c1fcf09ae3569c33970bf43827bc144a82bb03f2a6e96a66d1b06"
     },
     {
+      "path": "tools/ge_transition_diff.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-transition-trace-tools-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d74a5e9cb9fc33e2014c34b29aa1a1f7a10da34e5e2c10b0c7101055c01e5bad"
+    },
+    {
       "path": "tools/gen_key_scrub_spec.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6959,7 +6971,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3baf43f7eaaa10a2552fd372a0a029f72f0d81a017c7314ec42c41cd349c49b1"
+      "sha256": "a4758573aa1846ad4f6e1ea44c4fb6acce2f7291df4a22b808e1932a83786b64"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -6971,7 +6983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4349b2c9b40ad95d2f48845c7ce3af7401149cf175a193a9e94e045a574479e8"
+      "sha256": "0c0dee1ca1dc0199032213d897b70a4f4685063576ef8b94ee09cd1af24802ec"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7067,7 +7079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88ebd3beff47ba7944cd17bb3e8de3f9abe96256ff8c30c2c2ac6d877de61ca9"
+      "sha256": "fd1fab89fe4c416c0e906a93b4327bd9c95e5ba4e6fee3fdd859372cea1cbfb2"
     },
     {
       "path": "tools/import_audit_baseline.json",
@@ -7076,7 +7088,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "98ce54f1f5e9cf8636d48c12a70d5ff6ed87363ca1b9b136aab1458918af98e5"
+      "sha256": "de554907a8dcd6ad4811872c0c9c52b8042dbf665f7b4d2a9043c23a60abded5"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8237,6 +8249,18 @@
       "sha256": "cda06d44c0b26503bd92696a8db4e76be9afdd33d11d19327b518194ae1871c0"
     },
     {
+      "path": "tools/test_ge_transition_trace.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-transition-trace-tools-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c55cc85c9198d9382ea98b659ddd9bf413c9ec5a0f82e9d3cb996b14a4d54ab3"
+    },
+    {
       "path": "tools/test_gen_nidnames.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8321,7 +8345,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "580ff4fb38dd5f4c0401633668eb3b6b509d05f9bf78892f6699cb5d19ab39ee"
+      "sha256": "ef412509f8966b90c984826c45444ceb2543c9d9cbf720c7050a773da3292d7a"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
