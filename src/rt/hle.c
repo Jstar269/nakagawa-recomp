@@ -798,6 +798,136 @@ static uint32_t h_DeleteFpl(CpuState *s) {
 }
 static uint32_t h_FreeFpl(CpuState *s) { (void)s; return 0; }
 
+/* Variable Pool (VPL): one SysMem partition block per pool, with a host-side first-fit
+ * free list for the pool span.  The pool's kernel header and exact PSP alignment are
+ * UNMEASURED; this implementation exposes the requested span and uses 16-byte chunks,
+ * the smallest conservative alignment for guest allocations. */
+#define VPL_MAX 16
+#define VPL_MAX_ALLOCS 128
+#define VPL_ALIGN 16u
+#define VPL_BAD_ID 0x800200d3u       /* same invalid-object code used by FPL */
+#define VPL_EXHAUSTED 0x800200d9u    /* same no-space code used by FPL */
+typedef struct { uint32_t addr, size; } VplSpan;
+typedef struct { uint32_t addr, size; int used; } VplAlloc;
+typedef struct {
+    uint32_t base, size, block_uid;
+    int used;
+    VplSpan free[VPL_MAX_ALLOCS];
+    int nfree;
+    VplAlloc allocs[VPL_MAX_ALLOCS];
+} VplPool;
+static VplPool s_vpls[VPL_MAX];
+
+static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
+    int i = 0;
+    while (i < p->nfree && p->free[i].addr < addr) i++;
+    if (p->nfree < VPL_MAX_ALLOCS) {
+        for (int j = p->nfree; j > i; --j) p->free[j] = p->free[j - 1];
+        p->free[i] = (VplSpan){addr, size};
+        p->nfree++;
+    }
+    /* Coalesce all touching neighbors; the free-list capacity is intentionally
+     * bounded and is UNMEASURED relative to firmware's kernel object limits. */
+    for (i = 0; i + 1 < p->nfree;) {
+        if (p->free[i].addr + p->free[i].size == p->free[i + 1].addr) {
+            p->free[i].size += p->free[i + 1].size;
+            for (int j = i + 1; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
+            --p->nfree;
+        } else ++i;
+    }
+}
+
+static uint32_t h_CreateVpl(CpuState *s) {
+    uint32_t size = A3;
+    if (size == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    uint32_t block_uid = alloc_block(size);
+    if (block_uid == 0xFFFFFFFFu) return VPL_EXHAUSTED;
+    uint32_t base = block_addr(block_uid);
+    for (int i = 0; i < VPL_MAX; ++i) {
+        if (!s_vpls[i].used) {
+            VplPool *p = &s_vpls[i];
+            memset(p, 0, sizeof *p);
+            p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
+            p->free[0] = (VplSpan){base, size}; p->nfree = 1;
+            return (uint32_t)(0x600 + i);
+        }
+    }
+    (void)free_block(block_uid);
+    return VPL_EXHAUSTED;
+}
+
+static VplPool *vpl_lookup(uint32_t uid) {
+    uint32_t i = uid - 0x600u;
+    return i < VPL_MAX && s_vpls[i].used ? &s_vpls[i] : NULL;
+}
+
+static uint32_t h_TryAllocateVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t request = A1, out = A2;
+    if (!p) return VPL_BAD_ID;
+    if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
+    for (int i = 0; i < p->nfree; ++i) {
+        if (p->free[i].size >= need) {
+            uint32_t addr = p->free[i].addr;
+            p->free[i].addr += need; p->free[i].size -= need;
+            if (!p->free[i].size) {
+                for (int j = i; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
+                --p->nfree;
+            }
+            for (int j = 0; j < VPL_MAX_ALLOCS; ++j) if (!p->allocs[j].used) {
+                p->allocs[j] = (VplAlloc){addr, need, 1};
+                if (out) MEM_W32(out, addr);
+                return 0;
+            }
+            vpl_insert_free(p, addr, need);
+            return VPL_EXHAUSTED;
+        }
+    }
+    return VPL_EXHAUSTED;
+}
+
+static uint32_t h_FreeVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t addr = A1;
+    if (!p) return VPL_BAD_ID;
+    for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
+        vpl_insert_free(p, addr, p->allocs[i].size);
+        p->allocs[i].used = 0;
+        return 0;
+    }
+    return VPL_BAD_ID;
+}
+
+static uint32_t h_DeleteVpl(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    if (!p) return VPL_BAD_ID;
+    uint32_t block_uid = p->block_uid;
+    memset(p, 0, sizeof *p);
+    return free_block(block_uid); /* exactly once; unknown/double delete frees nothing */
+}
+
+static uint32_t h_ReferVplStatus(CpuState *s) {
+    VplPool *p = vpl_lookup(A0);
+    uint32_t info = A1;
+    if (!p) return VPL_BAD_ID;
+    if (!info) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads.
+     * Name contents and wait-thread count are UNMEASURED here; only size/free accounting
+     * is promised by this non-blocking implementation. */
+    MEM_W32(info + 0, 52u);
+    MEM_W32(info + 36, 0u);
+    MEM_W32(info + 40, p->size);
+    uint32_t free_size = 0;
+    for (int i = 0; i < p->nfree; ++i) free_size += p->free[i].size;
+    MEM_W32(info + 44, free_size);
+    MEM_W32(info + 48, 0u);
+    return 0;
+}
+
+/* AllocateVpl / AllocateVplCB intentionally remain unregistered: they require wait-queue
+ * integration, unlike TryAllocateVpl. */
+
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
 static uint32_t h_CreateThread(CpuState *s) {
     /* a0=name, a1=entry, a2=priority, a3=stackSize. Returns a UID bound to the entry.
@@ -11648,6 +11778,13 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
+    /* VPL non-blocking set (PSP_INTR_WAITS_MATRIX.md coverage rows; blocking
+     * AllocateVpl forms deliberately stay absent until wait queues exist). */
+    sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);
+    sr_hle_register(0x89b3d48c, "sceKernelDeleteVpl", h_DeleteVpl);
+    sr_hle_register(0xaf36d708, "sceKernelTryAllocateVpl", h_TryAllocateVpl);
+    sr_hle_register(0xb736e9ff, "sceKernelFreeVpl", h_FreeVpl);
+    sr_hle_register(0x39810265, "sceKernelReferVplStatus", h_ReferVplStatus);
     sr_hle_register(0xb7d098c6, "sceKernelCreateMutex", h_CreateMutex);
     sr_hle_register(0xf8170fbe, "sceKernelDeleteMutex", h_DeleteMutex);
     sr_hle_register(0xb011b11f, "sceKernelLockMutex", h_LockMutex);
