@@ -147,6 +147,9 @@ extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
+extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
+extern void sr_hle_test_power_reset(void);
+extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -173,10 +176,12 @@ extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
 #define NID_SCE_AUDIO_CH_RELEASE 0x6fc46853u
 #define NID_SCE_AUDIO_OUTPUT_BLOCKING 0x136caf51u
 #define NID_SCE_AUDIO_SET_DATA_LEN 0xcb2e439eu
+#define NID_SCE_AUDIO_CHANGE_VOLUME 0xb7e1d8e7u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
 #define SCE_AUDIO_ERROR_INVALID_FORMAT 0x80260007u
+#define SCE_AUDIO_ERROR_INVALID_VOL 0x8026000bu
 
 /* White-box fixture hook defined in hle.c under SR_HLE_THREAD_SELFTEST. */
 extern void sr_hle_test_reset_rtc_epoch(void);
@@ -187,6 +192,14 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_CPU_RESUME_INTR_SYNC 0x3b84732du
 #define NID_SCE_KERNEL_IS_CPU_INTR_SUSPENDED 0x47a0b729u
 #define NID_SCE_KERNEL_IS_CPU_INTR_ENABLE 0xb55249d2u
+#define NID_SCE_KERNEL_REGISTER_SUBINTR 0xca04a2b9u
+#define NID_SCE_KERNEL_ENABLE_SUBINTR 0xfb8e22ecu
+#define NID_SCE_KERNEL_DISABLE_SUBINTR 0x8a389411u
+#define NID_SCE_KERNEL_RELEASE_SUBINTR 0xd61e6961u
+#define NID_SCE_POWER_SET_CLOCK 0x737486f2u
+#define NID_SCE_POWER_SET_CLOCK_350 0xebd177d6u
+#define NID_SCE_POWER_GET_CPU_INT 0xfdb5bfe9u
+#define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
 #define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
 #define NID_SCE_KERNEL_RESUME_DISPATCH_THREAD  0x27e22ec2u
 #define SCE_KERNEL_ERROR_MPP_FULL     0x800201b3u
@@ -200,6 +213,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
 #define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
 #define NID_SCE_ATRAC_GET_REMAIN_FRAME 0x9ae849a7u
+#define NID_SCE_ATRAC_GET_MAX_SAMPLE 0xd6a5f2f7u
 
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
@@ -5185,6 +5199,152 @@ static void test_atrac_context_abi(void) {
         cpu.r[4] = ids[i];
         expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
                "sceAtracReleaseAtracID releases a tracked context");
+    }
+}
+
+/* TD-24 batch 2: production-dispatch regressions for six converted Class B
+ * fake-success handlers. Every leg enters the exact production NID mapping
+ * through sr_syscall -- the same path a generated import stub takes -- and
+ * pins behaviour the old h_ok routing could not produce: per-channel volume
+ * retention with the neighbouring audio error codes, VBLANK disable/release
+ * delivery transitions observed through sr_vblank_handler(), retained power
+ * clocks reflected by the Get handlers, and the decoder's own frame size from
+ * sceAtracGetMaxSample. HOST_TESTED, not PSP_HARDWARE evidence; anything the
+ * runtime does not measure is marked UNMEASURED in the handler comments. */
+static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
+                                uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_td24b_cheap_hle_batch(void) {
+    uint32_t left = 0, right = 0;
+
+    /* ---- 1. sceAudioChangeChannelVolume (0xb7e1d8e7) ---- */
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 8u, 0x8000u, 0x8000u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioChangeChannelVolume rejects channel 8 before touching state");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 0xffffffffu, 0x8000u, 0x8000u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_CH,
+           "AudioChangeChannelVolume rejects a wrapped channel before touching state");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x8000u, 0x8000u, 0u) ==
+               SCE_AUDIO_ERROR_NOT_INITIALIZED,
+           "AudioChangeChannelVolume rejects an unreserved channel");
+    expect(sr_hle_test_audio_volume(2u, &left, &right) && left == 0u && right == 0u,
+           "unreserved-channel rejection retains no volume");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CH_RESERVE, 2u, 64u, 0u, 0u) == 2u,
+           "volume fixture reserves regular channel 2");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x8001u, 0x8000u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_VOL,
+           "AudioChangeChannelVolume rejects an over-maximum left volume");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x8000u, 0x8001u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_VOL,
+           "AudioChangeChannelVolume rejects an over-maximum right volume");
+    expect(sr_hle_test_audio_volume(2u, &left, &right) && left == 0u && right == 0u,
+           "over-maximum rejection leaves the retained volumes at zero");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x4000u, 0x2000u, 0u) == 0u,
+           "AudioChangeChannelVolume accepts an asymmetric in-range pair");
+    expect(sr_hle_test_audio_volume(2u, &left, &right) && left == 0x4000u && right == 0x2000u,
+           "accepted volumes are retained per channel, left and right independently");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x8001u, 0x8001u, 0u) ==
+               SCE_AUDIO_ERROR_INVALID_VOL,
+           "a later invalid change still reports INVALID_VOL");
+    expect(sr_hle_test_audio_volume(2u, &left, &right) && left == 0x4000u && right == 0x2000u,
+           "a rejected change does not clobber the previously retained pair");
+    expect(sr_hle_test_audio_volume(3u, &left, &right) && left == 0u && right == 0u,
+           "retained volumes do not leak across channels");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x8000u, 0x8000u, 0u) == 0u,
+           "AudioChangeChannelVolume accepts the 0x8000 maximum pair");
+    expect(sr_hle_test_audio_volume(2u, &left, &right) && left == 0x8000u && right == 0x8000u,
+           "the maximum pair overwrites the retained volumes");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CH_RELEASE, 2u, 0u, 0u, 0u) == 0u,
+           "volume fixture releases channel 2");
+    expect(td24b_dispatch4(NID_SCE_AUDIO_CHANGE_VOLUME, 2u, 0x1000u, 0x1000u, 0u) ==
+               SCE_AUDIO_ERROR_NOT_INITIALIZED,
+           "AudioChangeChannelVolume rejects a released channel again");
+
+    /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "sub-interrupt fixture starts from a released VBLANK line");
+    expect(sr_vblank_handler() == 0u, "VBLANK delivery starts clear");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 0u, 0x08001000u, 0x1234u) == 0u,
+           "RegisterSubIntrHandler records the VBLANK handler");
+    expect(sr_vblank_handler() == 0u, "a registered-but-disabled handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "EnableSubIntr answers success");
+    expect(sr_vblank_handler() == 0x08001000u, "an enabled VBLANK handler is delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "DisableSubIntr answers success");
+    expect(sr_vblank_handler() == 0u, "a disabled VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "EnableSubIntr answers success a second time");
+    expect(sr_vblank_handler() == 0x08001000u, "Disable keeps the registration: Enable resumes it");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "ReleaseSubIntrHandler answers success");
+    expect(sr_vblank_handler() == 0u, "a released VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "EnableSubIntr after release still answers success");
+    expect(sr_vblank_handler() == 0u, "Release clears the handler word: Enable delivers nothing");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
+           "DisableSubIntr on a non-VBLANK line answers success without effect");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
+           "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
+    expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
+
+    /* ---- 4+5. scePowerSetClockFrequency / 350 ---- */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u,
+           "CPU clock reads the 333 MHz default");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
+           "bus clock reads the 166 MHz default");
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 222u, 111u, 55u, 0u) == 0u,
+           "scePowerSetClockFrequency answers success");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 111u,
+           "CPU clock reflects the last Set request, not the old fixed value");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 55u,
+           "bus clock reflects the last Set request, not the old fixed value");
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK_350, 333u, 300u, 150u, 0u) == 0u,
+           "scePowerSetClockFrequency350 answers success");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 300u,
+           "CPU clock reflects the 350-variant Set request through shared state");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 150u,
+           "bus clock reflects the 350-variant Set request through shared state");
+    sr_hle_test_power_reset();
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
+           "the power reset restores the 333/166 defaults for later fixtures");
+
+    /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
+    reset_fixture();
+    sr_hle_init();
+    {
+        enum { MAXSAMPLE_OUT = 0x08002000u, MAXSAMPLE_SENTINEL = 0xdeadbeefu };
+        uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+        expect(id < 8u, "max-sample fixture allocates a tracked ATRAC context");
+        if (id < 8u) {
+            MEM_W32(MAXSAMPLE_OUT, MAXSAMPLE_SENTINEL);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, id, MAXSAMPLE_OUT, 0u, 0u) == 0u &&
+                       MEM_R32(MAXSAMPLE_OUT) == 2048u,
+                   "sceAtracGetMaxSample reports this runtime's frame size (2048)");
+            expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, id, 0u, 0u, 0u) ==
+                       SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+                   "sceAtracGetMaxSample rejects a null out-pointer");
+            MEM_W32(MAXSAMPLE_OUT, MAXSAMPLE_SENTINEL);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, 0x7fu, MAXSAMPLE_OUT, 0u, 0u) ==
+                       ATRAC_ERROR_BAD_ATRACID &&
+                       MEM_R32(MAXSAMPLE_OUT) == MAXSAMPLE_SENTINEL,
+                   "sceAtracGetMaxSample reports the bad-id error without writing");
+            expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+                   "max-sample fixture releases its ATRAC context");
+        }
     }
 }
 
@@ -10937,6 +11097,7 @@ int main(int argc, char **argv) {
     test_b23_second_round();
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
+    test_td24b_cheap_hle_batch();
     test_atrac_stream_ring_wrap();
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();

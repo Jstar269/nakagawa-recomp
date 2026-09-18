@@ -1092,10 +1092,10 @@
     "status": "unreviewed"
   },
   "0x737486f2": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_PowerSetClockFrequency",
     "name": "scePowerSetClockFrequency",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x740fccd1": {
     "classification": "dedicated",
@@ -1296,10 +1296,10 @@
     "status": "unreviewed"
   },
   "0x8a389411": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_DisableSubIntr",
     "name": "sceKernelDisableSubIntr",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x8ef08fce": {
     "classification": "dedicated",
@@ -1686,10 +1686,10 @@
     "status": "unreviewed"
   },
   "0xb7e1d8e7": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AudioChangeChannelVolume",
     "name": "sceAudioChangeChannelVolume",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xb7f46618": {
     "classification": "dedicated",
@@ -1890,16 +1890,16 @@
     "status": "controlled_unsupported"
   },
   "0xd61e6961": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_ReleaseSubIntr",
     "name": "sceKernelReleaseSubIntrHandler",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd6a5f2f7": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_AtracGetMaxSample",
     "name": "sceAtracGetMaxSample",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd6da4ba1": {
     "classification": "dedicated",
@@ -2088,10 +2088,10 @@
     "status": "unreviewed"
   },
   "0xebd177d6": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_PowerSetClockFrequency350",
     "name": "scePowerSetClockFrequency350",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xeca32a99": {
     "classification": "fake_success",

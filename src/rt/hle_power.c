@@ -9,14 +9,50 @@
 
 #define A0 (s->r[4])
 #define A1 (s->r[5])
+#define A2 (s->r[6])
 
 /* scePower */
 uint32_t h_PowerGetBatteryLifePercent(CpuState *s) { (void)s; return 100; }
 uint32_t h_PowerIsBatteryCharging(CpuState *s) { (void)s; return 1; }
 uint32_t h_PowerIsBatteryExist(CpuState *s) { (void)s; return 1; }
 uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return 1; }
-uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return 333; }
-uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return 166; }
+
+/* Retained clock request in MHz. Public behaviour reference: PSPSDK
+ * src/power/psppower.h (scePowerSetClockFrequency) and PPSSPP
+ * Core/HLE/scePower.cpp, where the Set calls update the frequencies the Get
+ * calls report. The getters below previously returned fixed 333/166; they now
+ * reflect the last accepted Set request. Frequency validation, the PLL
+ * parameter, and any 350 MHz ceiling difference between the two Set variants
+ * are UNMEASURED here: every request is retained verbatim and reported back. */
+static uint32_t s_cpu_freq = 333u, s_bus_freq = 166u;
+
+uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return s_cpu_freq; }
+uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return s_bus_freq; }
+
+/* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): retain the requested
+ * CPU/bus clocks. Same public references as the retained state above. */
+uint32_t h_PowerSetClockFrequency(CpuState *s) {
+    (void)A0;
+    s_cpu_freq = A1;
+    s_bus_freq = A2;
+    return 0;
+}
+
+/* scePowerSetClockFrequency350(pllfreq, cpufreq, busfreq): same shape, same
+ * retained state. Whether firmware 350 permits a distinct PLL ceiling is
+ * UNMEASURED here. */
+uint32_t h_PowerSetClockFrequency350(CpuState *s) {
+    (void)A0;
+    s_cpu_freq = A1;
+    s_bus_freq = A2;
+    return 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only reset so the executable harness can isolate the retained
+ * clock fixtures from one another. Adds no production behaviour. */
+void sr_hle_test_power_reset(void) { s_cpu_freq = 333u; s_bus_freq = 166u; }
+#endif
 
 static uint32_t s_power_cb_slots[16];
 

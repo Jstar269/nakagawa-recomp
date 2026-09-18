@@ -3715,6 +3715,19 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
  * ATRAC_SAMPLES_PER_FRAME only when a frame is actually consumed and stops at
  * endSample, so the honest answer is exactly what that path will do next.
  * Reporting anything else here would contradict the decoder's own bookkeeping. */
+/* sceAtracGetMaxSample(id, *outMax): maximum samples per decode frame.
+ * Public behaviour reference: the PSPSDK ATRAC3+ interface and PPSSPP
+ * Core/HLE/sceAtrac.cpp. This runtime decodes ATRAC_SAMPLES_PER_FRAME samples
+ * per consumed frame (see h_AtracDecodeData), so the honest answer is exactly
+ * that constant -- reporting anything else would contradict the decoder's own
+ * bookkeeping. Codec-dependent variation (AT3 1024 vs AT3+ 2048) is UNMEASURED
+ * here. Errors reuse the neighbouring Atrac codes. */
+static uint32_t h_AtracGetMaxSample(CpuState *s) {
+    Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
+    return 0;
+}
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
@@ -4482,6 +4495,24 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
     return 0;
 }
 static uint32_t h_EnableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 1; return 0; }
+/* sceKernelDisableSubIntr(intno, no): stop delivery of the VBLANK (intno 30)
+ * sub-interrupt without unregistering its handler, so a later Enable resumes
+ * the same handler. Public behaviour reference: the PSPSDK interrupt manager
+ * (pspinterrupt.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
+ * retained delivery state here (g_vbl_handler/g_vbl_on, owned by
+ * h_RegisterSubIntr/h_EnableSubIntr above); other lines have no delivery
+ * state, so like the neighbouring Enable they answer success without effect
+ * (UNMEASURED). */
+static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; return 0; }
+/* sceKernelReleaseSubIntrHandler(intno, no): unregister the VBLANK handler and
+ * stop its delivery. Same public references as Disable above; the handler word
+ * itself is cleared, so Enable after Release delivers nothing until a fresh
+ * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
+ * with Enable/Disable. */
+static uint32_t h_ReleaseSubIntr(CpuState *s) {
+    if (A0 == 30) { g_vbl_handler = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    return 0;
+}
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
 uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
 
@@ -6391,6 +6422,24 @@ static uint32_t h_AudioSetChannelDataLen(CpuState *s) {
     s_audio_len[A0] = A1;
     return 0;
 }
+/* sceAudioChangeChannelVolume(ch, leftvol, rightvol): retain the requested
+ * output levels for a reserved regular channel. Public behaviour reference:
+ * PSPSDK src/audio/pspaudio.h (sceAudioChangeChannelVolume) and PPSSPP
+ * Core/HLE/sceAudio.cpp, which keep per-channel volumes as channel state.
+ * Errors reuse the neighbouring regular-audio codes, and the 0x8000 volume
+ * ceiling is the same bound h_AudioOutput2Blocking already enforces. Whether
+ * the retained levels multiply the per-call volumes handed to the
+ * OutputBlocking family, and the power-on default level, are UNMEASURED here:
+ * mixing still consumes the per-call volumes only. */
+static uint32_t s_audio_volL[8], s_audio_volR[8];
+static uint32_t h_AudioChangeChannelVolume(CpuState *s) {
+    if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
+    if (!s_audio_ch[A0]) return SCE_AUDIO_ERROR_NOT_INITIALIZED;
+    if (A1 > 0x8000u || A2 > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
+    s_audio_volL[A0] = A1;
+    s_audio_volR[A0] = A2;
+    return 0;
+}
 /* Read a guest sample buffer, expand mono to stereo, hand to the backend, then block until
  * the host queue is back down to ~one buffer of lead (real sceAudio blocking semantics).
  * Pacing against the queue self-corrects: a late thread returns immediately and catches up,
@@ -6430,6 +6479,8 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_ch, 0, sizeof(s_audio_ch));
     memset(s_audio_fmt, 0, sizeof(s_audio_fmt));
     memset(s_audio_len, 0, sizeof(s_audio_len));
+    memset(s_audio_volL, 0, sizeof(s_audio_volL));
+    memset(s_audio_volR, 0, sizeof(s_audio_volR));
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
@@ -6440,6 +6491,15 @@ int sr_hle_test_audio_state(uint32_t ch, int *reserved, uint32_t *frames, int *f
     if (reserved) *reserved = s_audio_ch[ch];
     if (frames)   *frames   = s_audio_len[ch];
     if (format)   *format   = s_audio_fmt[ch];
+    return 1;
+}
+
+/* Read-only view of the retained ChangeChannelVolume levels for the
+ * production-dispatch regression below. Test builds only. */
+int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right) {
+    if (ch >= 8u) return 0;
+    if (left)  *left  = s_audio_volL[ch];
+    if (right) *right = s_audio_volR[ch];
     return 1;
 }
 #endif
@@ -6512,7 +6572,7 @@ static void hle_register_regular_audio_handlers(void) {
     sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
     sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_ok);
     sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
-    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
+    sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_AudioChangeChannelVolume);
     sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
 }
 
@@ -11484,6 +11544,12 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x35dbd746, "sceIoWaitAsyncCB", h_IoWaitAsyncCB);
     sr_hle_register(0xca04a2b9, "sceKernelRegisterSubIntrHandler", h_RegisterSubIntr);
     sr_hle_register(0xfb8e22ec, "sceKernelEnableSubIntr", h_EnableSubIntr);
+    /* TD-24 batch 2 lifecycle pair, MOVED verbatim out of sr_hle_init()'s
+     * production branch like the lines above: one definition reached by both
+     * builds, so the executable harness pins the production mapping and no
+     * handler behavior changes on either side. */
+    sr_hle_register(0xd61e6961, "sceKernelReleaseSubIntrHandler", h_ReleaseSubIntr);
+    sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_DisableSubIntr);
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -11592,7 +11658,7 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x36faabfb, "sceAtracGetNextSample", h_AtracGetNextSample);
     sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_ok);
     sr_hle_register(0xb3b5d042, "sceAtracGetOutputChannel", h_ok);
-    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_ok);
+    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
     sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetDataAndGetID);
@@ -11681,6 +11747,20 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
+/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
+ * SetClockFrequency variants share one definition, reached by both
+ * sr_hle_init() branches, so the executable harness pins the production
+ * mapping through dispatch. The getter NIDs below are the canonical #86
+ * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
+ * unregistered); the float-return shaping for the non-Int getters remains
+ * tracked by #86. */
+static void hle_register_power_clock_handlers(void) {
+    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
+    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
+    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
+    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -11709,6 +11789,7 @@ void sr_hle_init(void) {
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
+    hle_register_power_clock_handlers();
     hle_register_partition_savedata_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
@@ -11891,10 +11972,10 @@ void sr_hle_init(void) {
     sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
     sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
     sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
-    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
-    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
-    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_ok);
-    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_ok);
+    /* Clock getters/setters: shared with the executable harness through
+     * hle_register_power_clock_handlers(), which carries the canonical #86
+     * getter NIDs noted above. */
+    hle_register_power_clock_handlers();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -11927,9 +12008,8 @@ void sr_hle_init(void) {
      * which silently killed every .PMD model lookup, e.g. the hangar aircraft). */
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_ok);
     hle_register_exit_game_handler();
-    /* InterruptManager: record the VBLANK handler; the scheduler delivers it per frame. */
-    sr_hle_register(0xd61e6961, "sceKernelReleaseSubIntrHandler", h_ok);
-    sr_hle_register(0x8a389411, "sceKernelDisableSubIntr", h_ok);
+    /* InterruptManager Disable/Release pair: shared with the executable harness
+     * through hle_register_wait_conformance_handlers(), next to Register/Enable. */
     hle_register_msgpipe_handlers();
     /* semaphores */
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
