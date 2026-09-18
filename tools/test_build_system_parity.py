@@ -139,9 +139,13 @@ class BuildSystemParityTests(unittest.TestCase):
             self.makefile_text,
         ))
         defined_targets.difference_update({".PHONY", ".SECONDARY"})
+        internal = set(
+            self.makefile_text.split("INTERNAL_TARGETS :=", 1)[1]
+            .splitlines()[0].split()
+        )
         self.assertEqual(
             defined_targets,
-            set(targets) | {"FORCE"},
+            set(targets) | internal,
             "public and internal target catalogs must cover every named target",
         )
 
