@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "48224a8f580d9cc7748d9940b9eb33114d47ee6b7168b9db38e942f3c3351829"
+      "sha256": "696c461eda8abd5692407a0d98acfd62eb39ce45266e217a452954601a3d3c46"
     },
     {
       "path": "assets/release_manifest.json",
@@ -765,7 +765,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e8f360d51f0dc611a58572f4265b51f140def9f05b9385e533f35cd14f54b035"
+      "sha256": "6386beb5dc3a6cb960fa7f681d15383dfc43ea51829069174aac95e9af5e57a3"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -5334,7 +5334,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b35fef754feb02772597bbfd3754e8b1958c7a1fc5876c40b7974dc699f1b7af"
+      "sha256": "b764c7035ac7267b61bb2a1184963950a60c696874400f5a36abd3c9f71b7643"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -6813,6 +6813,18 @@
       "sha256": "628404bc449c1fcf09ae3569c33970bf43827bc144a82bb03f2a6e96a66d1b06"
     },
     {
+      "path": "tools/ge_transition_diff.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-transition-trace-tools-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d74a5e9cb9fc33e2014c34b29aa1a1f7a10da34e5e2c10b0c7101055c01e5bad"
+    },
+    {
       "path": "tools/gen_key_scrub_spec.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8235,6 +8247,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "cda06d44c0b26503bd92696a8db4e76be9afdd33d11d19327b518194ae1871c0"
+    },
+    {
+      "path": "tools/test_ge_transition_trace.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-transition-trace-tools-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "344eb23294a96315eb4137e5f53a08468e8d19da6e2c04bc3b9d177d4f0cb0f1"
     },
     {
       "path": "tools/test_gen_nidnames.py",
