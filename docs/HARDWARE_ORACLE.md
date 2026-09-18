@@ -51,8 +51,34 @@ proposals. Each claim covers only the exact fixture named:
   - A user-mode `lw` from a kernel-segment address raises AdEL (ExcCode 4):
     EPC = the load instruction, BadVAddr = the effective address, and the
     destination register is unchanged.
-  - Cause bit 28 read as 1 in all three runs, so treat the CE field as
-    undefined for non-coprocessor-unusable exceptions.
+   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
+     undefined for non-coprocessor-unusable exceptions.
+ - **CPU exception delay-slot and width cells** (runs PSP-A3-04, PSP-A3-05,
+   PSP-A3-06; same route and campaign `psp-hw-20260917`; fixtures
+   `exception-a3-delayslot`, `exception-a3-half-load`, `exception-a3-half-store`
+   and `exception-a3-unaligned`, which are `probe_exception_a3.c` built with
+   `-DA3_CASE=4`, `=5`, `=6` and `=7`):
+   - A misaligned `lw $t6, 2($t5)` in the delay slot of an always-taken branch
+     raises AdEL: EPC = the branch address (`0x088043B8`, not the load at
+     `0x088043BC`), Cause `0x90000010` (ExcCode 4, BD 1), BadVAddr =
+     the effective address `0x08821C52` (t5 `0x08821C50` + 2, low bits kept).
+     The destination register is unchanged and neither successor executed.
+     This mirrors PSP-A2-01, which measured the same BD/EPC rule for `break`.
+   - A halfword load (`lh $t6, 1($t5)`) at an odd address raises AdEL, Cause
+     `0x10000010` (ExcCode 4, BD 0): EPC = the access `0x08838CB8`, BadVAddr =
+     `0x088564F1`. A halfword store (`sh $t6, 1($t5)`) at an odd address
+     raises AdES, Cause `0x10000014` (ExcCode 5, BD 0): EPC = `0x0886D4B8`,
+     BadVAddr = `0x0888ACF1`. Both bases are 16-byte-aligned owned buffers,
+     so the rule is width-relative (odd faults for a halfword).
+   - `lwl`/`lwr`/`swl`/`swr` across alignment boundaries complete normally
+     (negative control: the probe returned via `sceKernelExitGame` and wrote
+     `host0:/a3_unaligned_results.txt`, no exception). For source bytes
+     `11 22 33 44 55 66 77 88 99 aa bb cc`, the `lwl v0,1(t0)` +
+     `lwr v0,4(t0)` pair loaded `0x88776655`, single `lwl`/`lwr` at +2 gave
+     `0x332211ff` / `0x00004433`, matching the `sr_lwl`/`sr_lwr` merge model
+     bit-for-bit. The exemption in `LLE_ACCESS`, the interpreter width table
+     and `sr_cpu_data_access_fault` (never guarded) is thereby measured.
+   - Status in all faulting runs is `0x00088613`, as in PSP-A1-01/A2-01/A3-01.
 - **Kernel-object semantics** (runs PSP-B1-01, PSP-B2-01, PSP-B3-01; same
   route and campaign; fixtures `kobj-b1`, `wait-b2`, `kernel-b3`):
   - *Error codes for unknown IDs:*
