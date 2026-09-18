@@ -38,7 +38,7 @@ proposals. Each claim covers only the exact fixture named:
   12/12 per delay); enabled-starved behavior stays CORROBORATIVE_ONLY and the
   software/hardware renderers stay non-oracles.
 - **CPU exception entry** (runs PSP-A1-01, PSP-A2-01, PSP-A3-01; campaign
-  `psp-hw-20260917`, 2026-09-17, PSP-3000 / 6.61 / ARK CFW, user-mode PRX
+  `psp-hw-20260917`, 2026-09-17, PSP-3000 / 6.61 / ARK-5.1.0, user-mode PRX
   probes loaded through PSPLink; fixtures `exception-a1`..`exception-a3` in
   [`fixtures/psp_oracle/`](../fixtures/psp_oracle/README.md)):
   - A user-mode `break` reports EPC = the `break` address (not +4) and Cause
@@ -307,9 +307,12 @@ hardware truth would produce something that looks like tier-1 evidence and is no
 Requires a CFW-capable PSP (1000/2000/3000 use **mini-USB Type B**; the Go uses a proprietary
 connector), a **Memory Stick PRO Duo**, a data-capable cable, and mains power.
 
-1. **Firmware** — official 6.60 or 6.61 is a prerequisite for ARK-4.
-2. **CFW** — install ARK-4 (`ARK_01234` → `PSP/SAVEDATA/`, `ARK_Loader` → `PSP/GAME/`), then make
+1. **Firmware** — official 6.60 or 6.61 is a prerequisite for the ARK CFW.
+2. **CFW** — install ARK (`ARK_01234` → `PSP/SAVEDATA/`, `ARK_Loader` → `PSP/GAME/`), then make
    it permanent with Infinity so a reboot cannot silently drop the device out of CFW mid-session.
+   **This workspace's qualified route is ARK-5.1.0**, which is what every measured cell above was
+   taken on; "ARK-4" elsewhere in this document is the upstream project name, not the version to
+   install. Do not cite a measurement against a route you did not run it on.
 3. **PSPLink** — extract the psplinkusb release to `ms0:/PSP/GAME`.
 4. **Windows driver** — with PSPLink running and USB connected, use Zadig: *Options → List All
    Devices*, select **`"PSP" type B`**, install the **`libusb-win32`** driver.
