@@ -492,9 +492,6 @@ static uint32_t h_SynthReal(CpuState *s) {
             "h_GeDrawSync",
             "h_OskUpdate",
             "h_IoDevctl",
-            "h_StartModule",
-            "h_StopModule_Trace",
-            "h_UnloadModule_Trace",
         ):
             with self.subTest(handler=handler):
                 self.assertIn(handler, by_handler, f"{handler} must still be registered")

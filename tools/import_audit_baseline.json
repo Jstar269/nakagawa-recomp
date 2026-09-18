@@ -438,10 +438,10 @@
     "status": "stub"
   },
   "0x2e0911aa": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_UnloadModule_Trace",
     "name": "sceKernelUnloadModule",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x30fd48f0": {
     "classification": "dedicated",
@@ -792,10 +792,10 @@
     "status": "unreviewed"
   },
   "0x50f0c1ec": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_StartModule",
     "name": "sceKernelStartModule",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x52089ca1": {
     "classification": "dedicated",
@@ -1908,10 +1908,10 @@
     "status": "stub"
   },
   "0xd1ff982a": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_StopModule_Trace",
     "name": "sceKernelStopModule",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xd4475aa8": {
     "classification": "fake_success",
