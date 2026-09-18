@@ -4967,9 +4967,12 @@ static void test_b23_second_round(void) {
 #define FPL_SENTINEL          0xfeedfaceu
 #define FPL_BSIZE             0x100u
 #define FPL_NBLOCKS           0x10
+#define NID_FPL_FREE          0xf6414a71u
 #define NID_VPL_CREATE        0x56c039b5u
 #define NID_VPL_DELETE        0x89b3d48cu
 #define NID_VPL_TRY_ALLOCATE  0xaf36d708u
+#define NID_VPL_ALLOCATE      0xbed27435u
+#define NID_VPL_ALLOCATE_CB   0xec0a693fu
 #define NID_VPL_FREE          0xb736e9ffu
 #define NID_VPL_REFER         0x39810265u
 #define VPL_BAD_ID_ERR        0x800200d3u
@@ -9414,6 +9417,532 @@ static void test_vpl_nonblocking_roundtrip(void) {
 }
 
 /* =========================================================================
+ * PR-G Blocking Memory Pool Tests (FPL and VPL)
+ * ========================================================================= */
+
+typedef struct {
+    uint32_t uid;
+    TCB     *tcb;
+    uint32_t pool_uid;
+    uint32_t outptr;
+    uint32_t toptr;
+    uint32_t req_size;
+    int      is_cb;
+    uint32_t ret;
+    int      returned;
+} SelftestPoolWaiterCtx;
+
+int s_pool_parks = 0;
+
+static void selftest_fpl_waiter_fiber_body(void *arg) {
+    SelftestPoolWaiterCtx *ctx = (SelftestPoolWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->pool_uid;
+    cpu.r[5] = ctx->outptr;
+    cpu.r[6] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? NID_FPL_ALLOCATE_CB : NID_FPL_ALLOCATE);
+    ctx->returned = 1;
+    s_pool_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void selftest_vpl_waiter_fiber_body(void *arg) {
+    SelftestPoolWaiterCtx *ctx = (SelftestPoolWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->pool_uid;
+    cpu.r[5] = ctx->req_size;
+    cpu.r[6] = ctx->outptr;
+    cpu.r[7] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? NID_VPL_ALLOCATE_CB : NID_VPL_ALLOCATE);
+    ctx->returned = 1;
+    s_pool_parks++;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t selftest_fpl_create(uint32_t bsize, uint32_t nblocks) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = FPL_NAMEBUF;
+    cpu.r[5] = 2u;
+    cpu.r[6] = 0u;
+    cpu.r[7] = bsize;
+    cpu.r[8] = nblocks;
+    return sr_syscall(&cpu, NID_FPL_CREATE);
+}
+
+static uint32_t selftest_fpl_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_FPL_DELETE);
+}
+
+static uint32_t selftest_fpl_allocate(uint32_t uid, uint32_t outptr, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    cpu.r[6] = toptr;
+    return sr_syscall(&cpu, NID_FPL_ALLOCATE);
+}
+
+static uint32_t selftest_fpl_try_allocate(uint32_t uid, uint32_t outptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    return sr_syscall(&cpu, NID_FPL_TRY_ALLOCATE);
+}
+
+static uint32_t selftest_fpl_free(uint32_t uid, uint32_t addr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = addr;
+    return sr_syscall(&cpu, NID_FPL_FREE);
+}
+
+static uint32_t selftest_vpl_create(uint32_t size) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = FPL_NAMEBUF;
+    cpu.r[5] = 2u;
+    cpu.r[6] = 0u;
+    cpu.r[7] = size;
+    return sr_syscall(&cpu, NID_VPL_CREATE);
+}
+
+static uint32_t selftest_vpl_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_VPL_DELETE);
+}
+
+static uint32_t selftest_vpl_allocate(uint32_t uid, uint32_t size, uint32_t outptr, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = size;
+    cpu.r[6] = outptr;
+    cpu.r[7] = toptr;
+    return sr_syscall(&cpu, NID_VPL_ALLOCATE);
+}
+
+static uint32_t selftest_vpl_try_allocate(uint32_t uid, uint32_t size, uint32_t outptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = size;
+    cpu.r[6] = outptr;
+    return sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE);
+}
+
+static uint32_t selftest_vpl_free(uint32_t uid, uint32_t addr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = addr;
+    return sr_syscall(&cpu, NID_VPL_FREE);
+}
+
+static void test_fpl_blocking_waits(void) {
+    extern void sr_hle_test_partition_reset(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x101u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    uint32_t out1 = 0x00271010u;
+    uint32_t out2 = 0x00271014u;
+    uint32_t out3 = 0x00271018u;
+
+    /* ---- 1. FreeFpl reuse and validation ---- */
+    uint32_t pool = selftest_fpl_create(64, 2);
+    expect(pool >= 0x500u, "FPL: CreateFpl returns valid UID");
+    expect(selftest_fpl_allocate(pool, out1, 0) == 0, "FPL: first allocation succeeds");
+    expect(selftest_fpl_allocate(pool, out2, 0) == 0, "FPL: second allocation succeeds");
+    uint32_t addr1 = MEM_R32(out1);
+    uint32_t addr2 = MEM_R32(out2);
+    expect(addr1 != addr2, "FPL: allocations return distinct addresses");
+    MEM_W32(out3, 0xfeedfaceu);
+    expect(selftest_fpl_try_allocate(pool, out3) == FPL_EXHAUSTED_ERR, "FPL: pool is exhausted");
+    expect(MEM_R32(out3) == 0xfeedfaceu, "FPL: exhausted try_allocate leaves outptr untouched");
+
+    expect(selftest_fpl_free(0x5ffu, addr1) == FPL_BAD_ID_ERR, "FPL: bad UID free is rejected");
+    expect(selftest_fpl_free(pool, 0xdeadbeefu) == 0x80000103u, "FPL: illegal address free is rejected");
+    expect(selftest_fpl_free(pool, addr1 + 1) == 0x80000103u, "FPL: unaligned address free is rejected");
+
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: FreeFpl succeeds");
+    expect(selftest_fpl_free(pool, addr1) == 0x80000103u, "FPL: double free is rejected");
+
+    expect(selftest_fpl_allocate(pool, out3, 0) == 0, "FPL: allocate after free succeeds");
+    expect(MEM_R32(out3) == addr1, "FPL: freed block address is reused");
+    expect(selftest_fpl_free(pool, addr2) == 0, "FPL: free block 2 succeeds");
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: free reused block succeeds");
+    expect(selftest_fpl_delete(pool) == 0, "FPL: DeleteFpl succeeds");
+
+    /* ---- 2. AllocateFpl blocks then wakes on FreeFpl (FIFO order & CB check) ---- */
+    pool = selftest_fpl_create(64, 1);
+    expect(pool >= 0x500u, "FPL: CreateFpl 1-block pool succeeds");
+    expect(selftest_fpl_allocate(pool, out1, 0) == 0, "FPL: allocate exhausts pool");
+    addr1 = MEM_R32(out1);
+
+    SelftestPoolWaiterCtx w1; memset(&w1, 0, sizeof w1);
+    w1.uid = 0x130u;
+    w1.tcb = fixture_thread(w1.uid, TH_READY, 32);
+    w1.tcb->started = 1;
+    w1.pool_uid = pool;
+    w1.outptr = out2;
+    MEM_W32(out2, 0xfeedfaceu);
+    w1.tcb->coro = sr_coro_create(selftest_fpl_waiter_fiber_body, &w1, (size_t)4 << 20);
+
+    SelftestPoolWaiterCtx w2; memset(&w2, 0, sizeof w2);
+    w2.uid = 0x131u;
+    w2.tcb = fixture_thread(w2.uid, TH_READY, 32);
+    w2.tcb->started = 1;
+    w2.pool_uid = pool;
+    w2.outptr = out3;
+    MEM_W32(out3, 0xfeedfaceu);
+    w2.tcb->coro = sr_coro_create(selftest_fpl_waiter_fiber_body, &w2, (size_t)4 << 20);
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 0 && w1.tcb->state == TH_WAIT_OBJ, "FPL: waiter 1 blocked");
+    expect(w1.tcb->wait_kind == 7, "FPL: waiter 1 wait_kind is 7");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 0 && w2.tcb->state == TH_WAIT_OBJ, "FPL: waiter 2 blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: owner freed block");
+    expect(w1.tcb->state == TH_READY && w2.tcb->state == TH_WAIT_OBJ,
+           "FPL: FIFO order: waiter 1 woken to TH_READY, waiter 2 remains TH_WAIT_OBJ");
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 1 && w1.ret == 0, "FPL: waiter 1 returned 0");
+    expect(MEM_R32(out2) == addr1, "FPL: waiter 1 received freed block");
+
+    /* Waiter 1 frees block to wake waiter 2 */
+    s_cur = (int)(w1.tcb - s_tcb);
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: waiter 1 freed block");
+    expect(w2.tcb->state == TH_READY, "FPL: waiter 2 woken to TH_READY");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 1 && w2.ret == 0, "FPL: waiter 2 returned 0");
+    expect(MEM_R32(out3) == addr1, "FPL: waiter 2 received freed block");
+
+    s_cur = (int)(w2.tcb - s_tcb);
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: waiter 2 freed block");
+    sr_coro_destroy(w1.tcb->coro); w1.tcb->coro = NULL;
+    sr_coro_destroy(w2.tcb->coro); w2.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_fpl_delete(pool) == 0, "FPL: DeleteFpl succeeds");
+
+    /* ---- 2b. AllocateFplCB callback wait flag ---- */
+    pool = selftest_fpl_create(64, 1);
+    expect(selftest_fpl_allocate(pool, out1, 0) == 0, "FPL: allocate exhausts pool for CB test");
+    addr1 = MEM_R32(out1);
+
+    SelftestPoolWaiterCtx w_cb; memset(&w_cb, 0, sizeof w_cb);
+    w_cb.uid = 0x132u;
+    w_cb.tcb = fixture_thread(w_cb.uid, TH_READY, 32);
+    w_cb.tcb->started = 1;
+    w_cb.pool_uid = pool;
+    w_cb.outptr = out2;
+    w_cb.is_cb = 1;
+    MEM_W32(out2, 0xfeedfaceu);
+    w_cb.tcb->coro = sr_coro_create(selftest_fpl_waiter_fiber_body, &w_cb, (size_t)4 << 20);
+
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 0 && w_cb.tcb->state == TH_WAIT_OBJ, "FPL: CB waiter blocked");
+    expect(w_cb.tcb->is_cb_wait == 1, "FPL: CB waiter has is_cb_wait marked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: owner freed block for CB waiter");
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 1 && w_cb.ret == 0, "FPL: CB waiter returned 0");
+    expect(w_cb.tcb->is_cb_wait == 0, "FPL: CB waiter cleared is_cb_wait");
+    s_cur = (int)(w_cb.tcb - s_tcb);
+    selftest_fpl_free(pool, addr1);
+    sr_coro_destroy(w_cb.tcb->coro); w_cb.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+    selftest_fpl_delete(pool);
+
+    /* ---- 3. AllocateFpl timeout returns WAIT_TIMEOUT ---- */
+    pool = selftest_fpl_create(64, 1);
+    expect(selftest_fpl_allocate(pool, out1, 0) == 0, "FPL: allocate exhausts pool for timeout test");
+    addr1 = MEM_R32(out1);
+
+    /* Timeout = 0 returns immediately without blocking */
+    uint32_t toptr_0 = 0x00271030u;
+    MEM_W32(toptr_0, 0u);
+    MEM_W32(out2, 0xfeedfaceu);
+    TCB *th_to = fixture_thread(0x133u, TH_READY, 32);
+    th_to->started = 1;
+    s_cur = (int)(th_to - s_tcb);
+    expect(selftest_fpl_allocate(pool, out2, toptr_0) == 0x800201a8u, "FPL: timeout 0 returns WAIT_TIMEOUT immediately");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "FPL: timeout 0 leaves outptr unmodified");
+    expect(MEM_R32(toptr_0) == 0u, "FPL: timeout 0 leaves toptr unmodified");
+
+    /* Waiter fiber with timeout blocks and expires */
+    SelftestPoolWaiterCtx w_to; memset(&w_to, 0, sizeof w_to);
+    w_to.uid = 0x134u;
+    w_to.tcb = fixture_thread(w_to.uid, TH_READY, 32);
+    w_to.tcb->started = 1;
+    w_to.pool_uid = pool;
+    w_to.outptr = out2;
+    uint32_t toptr_exp = 0x00271034u;
+    MEM_W32(toptr_exp, 50000u);
+    w_to.toptr = toptr_exp;
+    w_to.tcb->coro = sr_coro_create(selftest_fpl_waiter_fiber_body, &w_to, (size_t)4 << 20);
+
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 0 && w_to.tcb->state == TH_WAIT_OBJ, "FPL: waiter blocked on timeout");
+
+    s_vtime_us += 60000;
+    w_to.tcb->state = TH_READY;
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 1 && w_to.ret == 0x800201a8u, "FPL: waiter returned WAIT_TIMEOUT (0x800201a8)");
+    expect(MEM_R32(toptr_exp) == 0u, "FPL: remaining timeout written as 0");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "FPL: timeout leaves outptr unmodified");
+    sr_coro_destroy(w_to.tcb->coro); w_to.tcb->coro = NULL;
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_fpl_free(pool, addr1) == 0, "FPL: free block");
+    expect(selftest_fpl_delete(pool) == 0, "FPL: DeleteFpl succeeds");
+
+    /* ---- 4. DeleteFpl wakes waiter with WAIT_DELETE (0x800201b5) ---- */
+    pool = selftest_fpl_create(64, 1);
+    expect(selftest_fpl_allocate(pool, out1, 0) == 0, "FPL: allocate exhausts pool for delete test");
+
+    SelftestPoolWaiterCtx w_del; memset(&w_del, 0, sizeof w_del);
+    w_del.uid = 0x135u;
+    w_del.tcb = fixture_thread(w_del.uid, TH_READY, 32);
+    w_del.tcb->started = 1;
+    w_del.pool_uid = pool;
+    w_del.outptr = out2;
+    MEM_W32(out2, 0xfeedfaceu);
+    w_del.tcb->coro = sr_coro_create(selftest_fpl_waiter_fiber_body, &w_del, (size_t)4 << 20);
+
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 0 && w_del.tcb->state == TH_WAIT_OBJ, "FPL: waiter blocked on pool");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_fpl_delete(pool) == 0, "FPL: DeleteFpl succeeded while waiter blocked");
+    expect(w_del.tcb->state == TH_READY, "FPL: waiter woke to TH_READY on delete");
+
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "FPL: waiter returned WAIT_DELETE (0x800201b5)");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "FPL: deleted pool writes no output pointer");
+    sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+}
+
+static void test_vpl_blocking_waits(void) {
+    extern void sr_hle_test_partition_reset(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x101u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    uint32_t out1 = 0x00271040u;
+    uint32_t out2 = 0x00271044u;
+    uint32_t out3 = 0x00271048u;
+
+    /* ---- 1. FreeVpl reuse and validation ---- */
+    uint32_t vpool = selftest_vpl_create(256);
+    expect(vpool >= 0x600u, "VPL: CreateVpl returns valid UID");
+    expect(selftest_vpl_allocate(vpool, 128, out1, 0) == 0, "VPL: first 128B allocation succeeds");
+    expect(selftest_vpl_allocate(vpool, 128, out2, 0) == 0, "VPL: second 128B allocation succeeds");
+    uint32_t addr1 = MEM_R32(out1);
+    uint32_t addr2 = MEM_R32(out2);
+    expect(addr1 != addr2, "VPL: allocations return distinct addresses");
+    MEM_W32(out3, 0xfeedfaceu);
+    expect(selftest_vpl_try_allocate(vpool, 64, out3) == VPL_EXHAUSTED_ERR, "VPL: pool is exhausted");
+    expect(MEM_R32(out3) == 0xfeedfaceu, "VPL: exhausted try_allocate leaves outptr untouched");
+
+    expect(selftest_vpl_free(0x6ffu, addr1) == VPL_BAD_ID_ERR, "VPL: bad UID free is rejected");
+    expect(selftest_vpl_free(vpool, 0xdeadbeefu) == VPL_BAD_ID_ERR, "VPL: unknown address free is rejected");
+
+    expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: FreeVpl succeeds");
+    expect(selftest_vpl_free(vpool, addr1) == VPL_BAD_ID_ERR, "VPL: double free is rejected");
+
+    expect(selftest_vpl_allocate(vpool, 128, out3, 0) == 0, "VPL: allocate after free succeeds");
+    expect(MEM_R32(out3) == addr1, "VPL: freed address is reused");
+    expect(selftest_vpl_free(vpool, addr2) == 0, "VPL: free block 2 succeeds");
+    expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: free reused block succeeds");
+    expect(selftest_vpl_delete(vpool) == 0, "VPL: DeleteVpl succeeds");
+
+    /* ---- 2. AllocateVpl blocks then wakes on FreeVpl (FIFO order & CB check) ---- */
+    vpool = selftest_vpl_create(256);
+    expect(vpool >= 0x600u, "VPL: CreateVpl succeeds");
+    expect(selftest_vpl_allocate(vpool, 256, out1, 0) == 0, "VPL: allocate 256B exhausts pool");
+    addr1 = MEM_R32(out1);
+
+    SelftestPoolWaiterCtx w1; memset(&w1, 0, sizeof w1);
+    w1.uid = 0x136u;
+    w1.tcb = fixture_thread(w1.uid, TH_READY, 32);
+    w1.tcb->started = 1;
+    w1.pool_uid = vpool;
+    w1.req_size = 128;
+    w1.outptr = out2;
+    MEM_W32(out2, 0xfeedfaceu);
+    w1.tcb->coro = sr_coro_create(selftest_vpl_waiter_fiber_body, &w1, (size_t)4 << 20);
+
+    SelftestPoolWaiterCtx w2; memset(&w2, 0, sizeof w2);
+    w2.uid = 0x137u;
+    w2.tcb = fixture_thread(w2.uid, TH_READY, 32);
+    w2.tcb->started = 1;
+    w2.pool_uid = vpool;
+    w2.req_size = 128;
+    w2.outptr = out3;
+    MEM_W32(out3, 0xfeedfaceu);
+    w2.tcb->coro = sr_coro_create(selftest_vpl_waiter_fiber_body, &w2, (size_t)4 << 20);
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 0 && w1.tcb->state == TH_WAIT_OBJ, "VPL: waiter 1 blocked");
+    expect(w1.tcb->wait_kind == 6, "VPL: waiter 1 wait_kind is 6");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 0 && w2.tcb->state == TH_WAIT_OBJ, "VPL: waiter 2 blocked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: owner freed 256B block");
+    expect(w1.tcb->state == TH_READY && w2.tcb->state == TH_WAIT_OBJ,
+           "VPL: FIFO order: waiter 1 woken to TH_READY, waiter 2 remains TH_WAIT_OBJ");
+
+    s_cur = (int)(w1.tcb - s_tcb); sr_coro_switch(w1.tcb->coro);
+    expect(w1.returned == 1 && w1.ret == 0, "VPL: waiter 1 returned 0");
+    expect(MEM_R32(out2) != 0xfeedfaceu, "VPL: waiter 1 received allocated address");
+
+    /* Waiter 1 frees its 128B allocation to wake waiter 2 */
+    s_cur = (int)(w1.tcb - s_tcb);
+    expect(selftest_vpl_free(vpool, MEM_R32(out2)) == 0, "VPL: waiter 1 freed block");
+    expect(w2.tcb->state == TH_READY, "VPL: waiter 2 woken to TH_READY");
+
+    s_cur = (int)(w2.tcb - s_tcb); sr_coro_switch(w2.tcb->coro);
+    expect(w2.returned == 1 && w2.ret == 0, "VPL: waiter 2 returned 0");
+    expect(MEM_R32(out3) != 0xfeedfaceu, "VPL: waiter 2 received allocated address");
+
+    s_cur = (int)(w2.tcb - s_tcb);
+    expect(selftest_vpl_free(vpool, MEM_R32(out3)) == 0, "VPL: waiter 2 freed block");
+    sr_coro_destroy(w1.tcb->coro); w1.tcb->coro = NULL;
+    sr_coro_destroy(w2.tcb->coro); w2.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_vpl_delete(vpool) == 0, "VPL: DeleteVpl succeeds");
+
+    /* ---- 2b. AllocateVplCB callback wait flag ---- */
+    vpool = selftest_vpl_create(256);
+    expect(selftest_vpl_allocate(vpool, 256, out1, 0) == 0, "VPL: allocate exhausts pool for CB test");
+    addr1 = MEM_R32(out1);
+
+    SelftestPoolWaiterCtx w_cb; memset(&w_cb, 0, sizeof w_cb);
+    w_cb.uid = 0x138u;
+    w_cb.tcb = fixture_thread(w_cb.uid, TH_READY, 32);
+    w_cb.tcb->started = 1;
+    w_cb.pool_uid = vpool;
+    w_cb.req_size = 128;
+    w_cb.outptr = out2;
+    w_cb.is_cb = 1;
+    MEM_W32(out2, 0xfeedfaceu);
+    w_cb.tcb->coro = sr_coro_create(selftest_vpl_waiter_fiber_body, &w_cb, (size_t)4 << 20);
+
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 0 && w_cb.tcb->state == TH_WAIT_OBJ, "VPL: CB waiter blocked");
+    expect(w_cb.tcb->is_cb_wait == 1, "VPL: CB waiter has is_cb_wait marked");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: owner freed block for CB waiter");
+    s_cur = (int)(w_cb.tcb - s_tcb); sr_coro_switch(w_cb.tcb->coro);
+    expect(w_cb.returned == 1 && w_cb.ret == 0, "VPL: CB waiter returned 0");
+    expect(w_cb.tcb->is_cb_wait == 0, "VPL: CB waiter cleared is_cb_wait");
+    s_cur = (int)(w_cb.tcb - s_tcb);
+    selftest_vpl_free(vpool, MEM_R32(out2));
+    sr_coro_destroy(w_cb.tcb->coro); w_cb.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+    selftest_vpl_delete(vpool);
+
+    /* ---- 3. AllocateVpl timeout returns WAIT_TIMEOUT ---- */
+    vpool = selftest_vpl_create(256);
+    expect(selftest_vpl_allocate(vpool, 256, out1, 0) == 0, "VPL: allocate exhausts pool for timeout test");
+    addr1 = MEM_R32(out1);
+
+    /* Timeout = 0 returns immediately without blocking */
+    uint32_t toptr_0 = 0x00271050u;
+    MEM_W32(toptr_0, 0u);
+    MEM_W32(out2, 0xfeedfaceu);
+    TCB *th_to = fixture_thread(0x139u, TH_READY, 32);
+    th_to->started = 1;
+    s_cur = (int)(th_to - s_tcb);
+    expect(selftest_vpl_allocate(vpool, 128, out2, toptr_0) == 0x800201a8u, "VPL: timeout 0 returns WAIT_TIMEOUT immediately");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "VPL: timeout 0 leaves outptr unmodified");
+    expect(MEM_R32(toptr_0) == 0u, "VPL: timeout 0 leaves toptr unmodified");
+
+    /* Waiter fiber with timeout blocks and expires */
+    SelftestPoolWaiterCtx w_to; memset(&w_to, 0, sizeof w_to);
+    w_to.uid = 0x13au;
+    w_to.tcb = fixture_thread(w_to.uid, TH_READY, 32);
+    w_to.tcb->started = 1;
+    w_to.pool_uid = vpool;
+    w_to.req_size = 128;
+    w_to.outptr = out2;
+    uint32_t toptr_exp = 0x00271054u;
+    MEM_W32(toptr_exp, 50000u);
+    w_to.toptr = toptr_exp;
+    w_to.tcb->coro = sr_coro_create(selftest_vpl_waiter_fiber_body, &w_to, (size_t)4 << 20);
+
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 0 && w_to.tcb->state == TH_WAIT_OBJ, "VPL: waiter blocked on timeout");
+
+    s_vtime_us += 60000;
+    w_to.tcb->state = TH_READY;
+    s_cur = (int)(w_to.tcb - s_tcb); sr_coro_switch(w_to.tcb->coro);
+    expect(w_to.returned == 1 && w_to.ret == 0x800201a8u, "VPL: waiter returned WAIT_TIMEOUT (0x800201a8)");
+    expect(MEM_R32(toptr_exp) == 0u, "VPL: remaining timeout written as 0");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "VPL: timeout leaves outptr unmodified");
+    sr_coro_destroy(w_to.tcb->coro); w_to.tcb->coro = NULL;
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: free block");
+    expect(selftest_vpl_delete(vpool) == 0, "VPL: DeleteVpl succeeds");
+
+    /* ---- 4. DeleteVpl wakes waiter with WAIT_DELETE (0x800201b5) ---- */
+    vpool = selftest_vpl_create(256);
+    expect(selftest_vpl_allocate(vpool, 256, out1, 0) == 0, "VPL: allocate exhausts pool for delete test");
+
+    SelftestPoolWaiterCtx w_del; memset(&w_del, 0, sizeof w_del);
+    w_del.uid = 0x13bu;
+    w_del.tcb = fixture_thread(w_del.uid, TH_READY, 32);
+    w_del.tcb->started = 1;
+    w_del.pool_uid = vpool;
+    w_del.req_size = 128;
+    w_del.outptr = out2;
+    MEM_W32(out2, 0xfeedfaceu);
+    w_del.tcb->coro = sr_coro_create(selftest_vpl_waiter_fiber_body, &w_del, (size_t)4 << 20);
+
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 0 && w_del.tcb->state == TH_WAIT_OBJ, "VPL: waiter blocked on pool");
+
+    s_cur = (int)(cur - s_tcb);
+    expect(selftest_vpl_delete(vpool) == 0, "VPL: DeleteVpl succeeded while waiter blocked");
+    expect(w_del.tcb->state == TH_READY, "VPL: waiter woke to TH_READY on delete");
+
+    s_cur = (int)(w_del.tcb - s_tcb); sr_coro_switch(w_del.tcb->coro);
+    expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "VPL: waiter returned WAIT_DELETE (0x800201b5)");
+    expect(MEM_R32(out2) == 0xfeedfaceu, "VPL: deleted pool writes no output pointer");
+    sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+}
+
+/* =========================================================================
  * PSP Heavyweight Mutex Semantics and Lifetime Test Suite
  * ========================================================================= */
 
@@ -10004,13 +10533,14 @@ static void check_coroutine_lifecycle(void) {
      * coroutine layer rather than a tautology. */
     {
         extern int s_mtx_parks;
-        int expected_parks = 8 + 3 + 3 + ic_expected_parks() + s_mtx_parks;
-        char msg[224];
+        extern int s_pool_parks;
+        int expected_parks = 8 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks;
+        char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + %d returned conformance legs + %d mutex legs = %d, observed %lu)",
-                 ic_expected_parks(), s_mtx_parks, expected_parks, s_parks);
+                 "+ 3 cancel/release waiters + 3 second-round waiters + %d returned conformance legs + %d mutex legs + %d pool legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, s_pool_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -11732,7 +12262,9 @@ int main(int argc, char **argv) {
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
     test_fpl_delete_releases_partition();
+    test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
+    test_vpl_blocking_waits();
     test_intr_context_conformance();
     test_psp_mutex();
 

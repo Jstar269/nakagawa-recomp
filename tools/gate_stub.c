@@ -20,6 +20,13 @@
 //
 // This is NOT a silent workaround: it does not mask or skip any instruction under
 // test. It only provides dead symbols so the host executable links headlessly.
+//
+// The TD-27 stale-block query (sr_stale_block_is_stale, src/rt/stale_code.c)
+// is deliberately NOT stubbed here: both dispatch tiers call it, and the
+// headless link carries the real detector TU exactly as production does
+// (see tools/codegen_gate.py). Gate off it costs one cached branch, so the
+// microtest path is unaffected; do not add stub definitions of the sr_stale_*
+// symbols here, they would collide with the real TU at link time.
 
 #include <stdint.h>
 #include <stddef.h>

@@ -110,7 +110,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 8),
+            ("s->r[0] = 0u;", "(void)0;", 9),
         ],
     ),
     Mutant(
@@ -145,8 +145,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "alter-handback-pc",
         "alter handback PC",
         [(
-            "        if (sr_lookup(pc)) {\n            s->pc = pc;",
-            "        if (sr_lookup(pc)) {\n            s->pc = pc + 4u;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc + 4u;",
             1,
         )],
     ),

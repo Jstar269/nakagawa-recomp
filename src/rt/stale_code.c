@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
-// TD-27 stale translated-code detector: table, hash, gate, and pure checks.
+// TD-27 stale translated-code tracker: table, hash, gate, pure checks, plus
+// the invalidation half -- per-entry stale flags and the dispatch-side
+// sr_stale_block_is_stale() query. See src/rt/stale_code.h for the contract.
 // See src/rt/stale_code.h for the contract. Production guest-memory wiring
 // lives in src/rt/hle.c (cache-syscall handlers plus sr_stale_note_cache_op);
 // this TU stays free of recomp.h so the selftest links it standalone.
@@ -15,12 +17,14 @@
 typedef struct {
     uint32_t addr;
     uint32_t expected;
+    int stale;
 } SrStaleWordEntry;
 
 typedef struct {
     uint32_t addr;
     uint32_t nwords;
     uint32_t expected_hash;
+    int stale;
 } SrStaleBlockEntry;
 
 static SrStaleWordEntry *s_words;
@@ -74,6 +78,7 @@ void sr_stale_register_word(uint32_t addr, uint32_t expected_word) {
     for (i = 0; i < s_word_count; i++) {
         if (s_words[i].addr == addr) {
             s_words[i].expected = expected_word;
+            s_words[i].stale = 0;
             return;
         }
     }
@@ -82,6 +87,7 @@ void sr_stale_register_word(uint32_t addr, uint32_t expected_word) {
     }
     s_words[s_word_count].addr = addr;
     s_words[s_word_count].expected = expected_word;
+    s_words[s_word_count].stale = 0;
     s_word_count++;
 }
 
@@ -99,6 +105,7 @@ void sr_stale_register_block(uint32_t addr, uint32_t nwords, uint32_t expected_h
         if (s_blocks[i].addr == addr) {
             s_blocks[i].nwords = nwords;
             s_blocks[i].expected_hash = expected_hash;
+            s_blocks[i].stale = 0;
             return;
         }
     }
@@ -108,6 +115,7 @@ void sr_stale_register_block(uint32_t addr, uint32_t nwords, uint32_t expected_h
     s_blocks[s_block_count].addr = addr;
     s_blocks[s_block_count].nwords = nwords;
     s_blocks[s_block_count].expected_hash = expected_hash;
+    s_blocks[s_block_count].stale = 0;
     s_block_count++;
 }
 
@@ -168,23 +176,19 @@ static int range_words(uint32_t addr, uint32_t size, uint32_t *first_out, uint32
     return 1;
 }
 
-/* Check one block record overlapping the comparable window: recompute the
- * FNV-1a over all nwords and compare hashes. Any unreadable word skips the
- * whole block -- partial evidence never fires. */
-static int check_block(const SrStaleBlockEntry *entry, uint32_t first, uint32_t last,
-                       SrStaleReadFn read, void *ctx,
-                       uint32_t *bad_addr_out, uint32_t *expected_out, uint32_t *actual_out) {
-    uint32_t block_first = entry->addr;
-    uint32_t block_last = entry->addr + entry->nwords * 4u - 4u;
+/* Recompute one block record's FNV-1a and update its flag. Returns 1 with
+ * *hash_out set on a fully read mismatch, -1 on a fully read match, and 0
+ * when any word is unreadable (the flag is left untouched: partial evidence
+ * never fires and never clears). Overlap with the caller's window is the
+ * caller's business. */
+static int mark_block(SrStaleBlockEntry *entry, SrStaleReadFn read, void *ctx,
+                      uint32_t *hash_out) {
     uint32_t h = 0x811c9dc5u;
     uint32_t i;
-    if (block_last < first || block_first > last) {
-        return 0;
-    }
+    int shift;
     for (i = 0; i < entry->nwords; i++) {
         uint32_t waddr = entry->addr + i * 4u;
         uint32_t w = 0u;
-        int shift;
         if (!read(waddr, &w, ctx)) {
             return 0;
         }
@@ -194,21 +198,76 @@ static int check_block(const SrStaleBlockEntry *entry, uint32_t first, uint32_t 
         }
     }
     if (h != entry->expected_hash) {
-        fprintf(stderr,
-                "STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x\n",
-                entry->addr, entry->nwords, entry->expected_hash, h);
-        if (bad_addr_out) {
-            *bad_addr_out = entry->addr;
-        }
-        if (expected_out) {
-            *expected_out = entry->expected_hash;
-        }
-        if (actual_out) {
-            *actual_out = h;
+        entry->stale = 1;
+        if (hash_out) {
+            *hash_out = h;
         }
         return 1;
     }
-    return 0;
+    entry->stale = 0;
+    return -1;
+}
+
+/* First-firing report shared by both checks. Words are examined before
+ * blocks and records in registration order, so the saved detail always names
+ * the earliest mismatch in that order even though every examined record's
+ * flag is updated. Prints exactly one STALE_CODE_DETECT line. */
+typedef struct {
+    int fired;
+    int is_block;
+    uint32_t addr;
+    uint32_t expected;
+    uint32_t actual;
+    uint32_t nwords;
+} SrStaleFire;
+
+static void fire_note_word(SrStaleFire *fire, uint32_t addr, uint32_t expected, uint32_t actual) {
+    if (!fire->fired) {
+        fire->fired = 1;
+        fire->is_block = 0;
+        fire->addr = addr;
+        fire->expected = expected;
+        fire->actual = actual;
+    }
+}
+
+static void fire_note_block(SrStaleFire *fire, uint32_t addr, uint32_t nwords,
+                            uint32_t expected_hash, uint32_t actual_hash) {
+    if (!fire->fired) {
+        fire->fired = 1;
+        fire->is_block = 1;
+        fire->addr = addr;
+        fire->nwords = nwords;
+        fire->expected = expected_hash;
+        fire->actual = actual_hash;
+    }
+}
+
+static int fire_report(const SrStaleFire *fire,
+                       uint32_t *bad_addr_out, uint32_t *expected_out, uint32_t *actual_out) {
+    if (!fire->fired) {
+        zero_outs(bad_addr_out, expected_out, actual_out);
+        return 0;
+    }
+    if (fire->is_block) {
+        fprintf(stderr,
+                "STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x\n",
+                fire->addr, fire->nwords, fire->expected, fire->actual);
+    } else {
+        fprintf(stderr,
+                "STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x\n",
+                fire->addr, fire->addr, fire->expected, fire->actual);
+    }
+    if (bad_addr_out) {
+        *bad_addr_out = fire->addr;
+    }
+    if (expected_out) {
+        *expected_out = fire->expected;
+    }
+    if (actual_out) {
+        *actual_out = fire->actual;
+    }
+    return 1;
 }
 
 int sr_stale_check_range(uint32_t addr, uint32_t size, SrStaleReadFn read, void *ctx,
@@ -216,6 +275,8 @@ int sr_stale_check_range(uint32_t addr, uint32_t size, SrStaleReadFn read, void 
     uint32_t first = 0u;
     uint32_t last = 0u;
     size_t i;
+    SrStaleFire fire;
+    memset(&fire, 0, sizeof fire);
     if (!sr_stale_enabled()) {
         zero_outs(bad_addr_out, expected_out, actual_out);
         return 0;
@@ -226,7 +287,7 @@ int sr_stale_check_range(uint32_t addr, uint32_t size, SrStaleReadFn read, void 
     }
     for (i = 0; i < s_word_count; i++) {
         uint32_t actual = 0u;
-        const SrStaleWordEntry *entry = &s_words[i];
+        SrStaleWordEntry *entry = &s_words[i];
         if (entry->addr < first || entry->addr > last) {
             continue;
         }
@@ -234,34 +295,32 @@ int sr_stale_check_range(uint32_t addr, uint32_t size, SrStaleReadFn read, void 
             continue;
         }
         if (actual != entry->expected) {
-            fprintf(stderr,
-                    "STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x\n",
-                    entry->addr, entry->addr, entry->expected, actual);
-            if (bad_addr_out) {
-                *bad_addr_out = entry->addr;
-            }
-            if (expected_out) {
-                *expected_out = entry->expected;
-            }
-            if (actual_out) {
-                *actual_out = actual;
-            }
-            return 1;
+            entry->stale = 1;
+            fire_note_word(&fire, entry->addr, entry->expected, actual);
+            continue;
         }
+        entry->stale = 0;
     }
     for (i = 0; i < s_block_count; i++) {
-        if (check_block(&s_blocks[i], first, last, read, ctx,
-                        bad_addr_out, expected_out, actual_out)) {
-            return 1;
+        SrStaleBlockEntry *entry = &s_blocks[i];
+        uint32_t block_first = entry->addr;
+        uint32_t block_last = entry->addr + entry->nwords * 4u - 4u;
+        uint32_t h = 0u;
+        if (block_last < first || block_first > last) {
+            continue;
+        }
+        if (mark_block(entry, read, ctx, &h) == 1) {
+            fire_note_block(&fire, entry->addr, entry->nwords, entry->expected_hash, h);
         }
     }
-    zero_outs(bad_addr_out, expected_out, actual_out);
-    return 0;
+    return fire_report(&fire, bad_addr_out, expected_out, actual_out);
 }
 
 int sr_stale_check_all(SrStaleReadFn read, void *ctx,
                        uint32_t *bad_addr_out, uint32_t *expected_out, uint32_t *actual_out) {
     size_t i;
+    SrStaleFire fire;
+    memset(&fire, 0, sizeof fire);
     if (!sr_stale_enabled()) {
         zero_outs(bad_addr_out, expected_out, actual_out);
         return 0;
@@ -272,63 +331,65 @@ int sr_stale_check_all(SrStaleReadFn read, void *ctx,
     }
     for (i = 0; i < s_word_count; i++) {
         uint32_t actual = 0u;
-        const SrStaleWordEntry *entry = &s_words[i];
+        SrStaleWordEntry *entry = &s_words[i];
         if (!read(entry->addr, &actual, ctx)) {
             continue;
         }
         if (actual != entry->expected) {
-            fprintf(stderr,
-                    "STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x\n",
-                    entry->addr, entry->addr, entry->expected, actual);
-            if (bad_addr_out) {
-                *bad_addr_out = entry->addr;
-            }
-            if (expected_out) {
-                *expected_out = entry->expected;
-            }
-            if (actual_out) {
-                *actual_out = actual;
-            }
+            entry->stale = 1;
+            fire_note_word(&fire, entry->addr, entry->expected, actual);
+            continue;
+        }
+        entry->stale = 0;
+    }
+    for (i = 0; i < s_block_count; i++) {
+        SrStaleBlockEntry *entry = &s_blocks[i];
+        uint32_t h = 0u;
+        if (mark_block(entry, read, ctx, &h) == 1) {
+            fire_note_block(&fire, entry->addr, entry->nwords, entry->expected_hash, h);
+        }
+    }
+    return fire_report(&fire, bad_addr_out, expected_out, actual_out);
+}
+
+int sr_stale_block_is_stale(uint32_t addr) {
+    /* Cached getenv (the SR_DISPLOG idiom): the disabled path is one
+     * predictable branch before any table touch, so the dispatch hook
+     * stays off the hot path when the gate is unset. */
+    size_t i;
+    size_t j;
+    if (!sr_stale_enabled()) {
+        return 0;
+    }
+    if ((addr & 3u) != 0u) {
+        return 0;
+    }
+    for (i = 0; i < s_word_count; i++) {
+        if (s_words[i].addr == addr && s_words[i].stale) {
             return 1;
         }
     }
     for (i = 0; i < s_block_count; i++) {
-        const SrStaleBlockEntry *entry = &s_blocks[i];
-        uint32_t h = 0x811c9dc5u;
-        uint32_t j;
-        int readable = 1;
-        for (j = 0; j < entry->nwords; j++) {
-            uint32_t waddr = entry->addr + j * 4u;
-            uint32_t w = 0u;
-            int shift;
-            if (!read(waddr, &w, ctx)) {
-                readable = 0;
-                break;
-            }
-            for (shift = 0; shift < 32; shift += 8) {
-                h ^= (w >> shift) & 0xffu;
-                h *= 0x01000193u;
-            }
-        }
-        if (!readable) {
+        uint64_t span = (uint64_t)s_blocks[i].nwords * 4u;
+        if (addr < s_blocks[i].addr || (uint64_t)(addr - s_blocks[i].addr) >= span) {
             continue;
         }
-        if (h != entry->expected_hash) {
-            fprintf(stderr,
-                    "STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x\n",
-                    entry->addr, entry->nwords, entry->expected_hash, h);
-            if (bad_addr_out) {
-                *bad_addr_out = entry->addr;
-            }
-            if (expected_out) {
-                *expected_out = entry->expected_hash;
-            }
-            if (actual_out) {
-                *actual_out = h;
-            }
+        if (s_blocks[i].stale) {
             return 1;
         }
+        if (addr == s_blocks[i].addr) {
+            /* Dispatch to a block head whose own hash still matches but an
+             * interior word record is stale (the block read was skipped as
+             * unreadable while the word stayed comparable): the AOT body
+             * would still execute the stale word. Registration rejects
+             * wrapping spans, so addr + span cannot wrap here. */
+            uint32_t end = s_blocks[i].addr + (uint32_t)span;
+            for (j = 0; j < s_word_count; j++) {
+                if (s_words[j].stale && s_words[j].addr >= addr && s_words[j].addr < end) {
+                    return 1;
+                }
+            }
+        }
     }
-    zero_outs(bad_addr_out, expected_out, actual_out);
     return 0;
 }

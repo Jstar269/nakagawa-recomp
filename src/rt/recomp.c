@@ -1752,6 +1752,43 @@ static void dump_dispatch_misses(void) {
     fflush(stderr);
 }
 
+/* TD-27 stale redirect (see src/rt/stale_code.h "Dispatch hook"): run the
+ * guest bytes through the existing single-step interpreter instead of a
+ * stale registered AOT body, until return to the caller. Shared by the
+ * AOT-hit redirect below and the ordinary miss path so both tiers handle
+ * the interpreter result identically (AOT_HANDOFF/CALL_RETURN return;
+ * EXCEPTION/ERET clear flow and recurse; any reject propagates to the
+ * fail-closed wrapper). */
+static int dispatch_try_with_boundary(
+    CpuState *s,
+    uint32_t target,
+    const SrGuestInterpCallBoundary *call_boundary);
+static int dispatch_run_interp(
+    CpuState *s,
+    uint32_t target,
+    const SrGuestInterpCallBoundary *call_boundary) {
+    SrGuestInterpFault fault;
+    SrGuestInterpResult interp_result = call_boundary
+        ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
+        : sr_guest_interp_run(s, target, &fault);
+    if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF ||
+        interp_result == SR_GUEST_INTERP_CALL_RETURN) {
+        return (int)interp_result;
+    }
+    if (interp_result == SR_GUEST_INTERP_EXCEPTION ||
+        interp_result == SR_GUEST_INTERP_ERET) {
+        uint32_t flow_target = s->flow_target;
+        sr_cpu_clear_flow(s);
+        return dispatch_try_with_boundary(s, flow_target, call_boundary);
+    }
+    fprintf(stderr,
+            "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "
+            "opcode=%s0x%08x address=0x%08x\n",
+            target, sr_guest_interp_result_name(interp_result), fault.pc,
+            fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
+    return (int)interp_result;
+}
+
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
@@ -2037,6 +2074,14 @@ static int dispatch_try_with_boundary(
      * it. Its loop body dispatches from pc 0x00000fdc; see INIT_ARRAY_WALK / INIT_ARRAY_DUMP
      * below for the instrumentation that actually fires. */
     if (fn) {
+        /* TD-27 stale redirect: the registered AOT body was translated from
+         * bytes the guest has since overwritten (see src/rt/stale_code.h).
+         * Run the live bytes through the interpreter instead of calling fn.
+         * Gate off, sr_stale_block_is_stale() is one cached-flag branch
+         * returning 0, so this stays exactly on the current path. */
+        if (sr_stale_block_is_stale(target)) {
+            return dispatch_run_interp(s, target, call_boundary);
+        }
         if (target == 0x00000214u) {
             fprintf(stderr, "DISPATCH_EXIT: target=0x214 fn=%p ra=0x%x uid=0x%x\n",
                     (void*)fn, s->r[31], sched_current_uid());
@@ -2224,26 +2269,7 @@ static int dispatch_try_with_boundary(
          * instruction's architectural effects unapplied and propagates to the public
          * dispatch wrapper, which terminates instead of resuming native code as if the
          * guest transfer had succeeded. */
-        SrGuestInterpFault fault;
-        SrGuestInterpResult interp_result = call_boundary
-            ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
-            : sr_guest_interp_run(s, target, &fault);
-        if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF ||
-            interp_result == SR_GUEST_INTERP_CALL_RETURN) {
-            return (int)interp_result;
-        }
-        if (interp_result == SR_GUEST_INTERP_EXCEPTION ||
-            interp_result == SR_GUEST_INTERP_ERET) {
-            uint32_t flow_target = s->flow_target;
-            sr_cpu_clear_flow(s);
-            return dispatch_try_with_boundary(s, flow_target, call_boundary);
-        }
-        fprintf(stderr,
-                "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "
-                "opcode=%s0x%08x address=0x%08x\n",
-                target, sr_guest_interp_result_name(interp_result), fault.pc,
-                fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
-        return (int)interp_result;
+        return dispatch_run_interp(s, target, call_boundary);
     }
     return SR_GUEST_INTERP_AOT_HANDOFF;
 }

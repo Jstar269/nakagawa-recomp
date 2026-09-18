@@ -494,6 +494,81 @@ static SrGuestInterpResult execute_noncontrol(
         }
     }
 
+    /* VFPU loads and stores under --lle-cpu (runs PSP-A3-08..15). Widths mirror
+     * the codegen guard: lv.s/sv.s width 4, lv.q/sv.q width 16, lvl/lvr/svl/svr
+     * width 0 (never guarded, like lwl/lwr/swl/swr). With the gate off this
+     * stays the historical UNSUPPORTED so default behaviour and the cosim form
+     * census are unchanged. With the gate on, a faulting access enters the
+     * exception vector exactly like a scalar fault; otherwise the authoritative
+     * sr_vfpu_interp performs the access at the same point the scalar lane
+     * performs its MEM_* access. PSP-A3-12 (sv.s+2 AdES), PSP-A3-13 (sv.q+8
+     * AdES), PSP-A3-14 (lv.q in a delay slot: BD 1, EPC = branch) and PSP-A3-15
+     * (lvl.q at odd completes) confirm this guard; no VFPU alignment cell
+     * remains synthetic. */
+    {
+        int is_vfpu_mem = 0;
+        unsigned vfpu_width = 0u;
+        int vfpu_is_store = 0;
+        switch (primary) {
+        case 0x32u: vfpu_width = 4u; vfpu_is_store = 0; is_vfpu_mem = 1; break;
+        case 0x3au: vfpu_width = 4u; vfpu_is_store = 1; is_vfpu_mem = 1; break;
+        case 0x36u: vfpu_width = 16u; vfpu_is_store = 0; is_vfpu_mem = 1; break;
+        case 0x3eu: vfpu_width = 16u; vfpu_is_store = 1; is_vfpu_mem = 1; break;
+        case 0x35u: case 0x3du: is_vfpu_mem = 1; vfpu_width = 0u; break;
+        default: break;
+        }
+        if (is_vfpu_mem) {
+            if (!sr_cpu_lle_enabled()) {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            if (vfpu_width != 0u) {
+                const uint32_t vfpu_address =
+                    read_gpr(s, rs) + sign_extend_16(opcode & 0xFFFCu);
+                const unsigned vfpu_fault =
+                    sr_cpu_data_access_fault(s, vfpu_address, vfpu_width, vfpu_is_store);
+                if (vfpu_fault != 0u) {
+                    int rc;
+                    sr_begin(s, pc, opcode);
+                    rc = sr_cpu_raise_data_fault(s, vfpu_fault, vfpu_address, pc);
+                    if (rc == 0) {
+                        set_fault(fault, pc, opcode, vfpu_address, 1);
+                        return SR_GUEST_INTERP_UNSUPPORTED;
+                    }
+                    sr_end(s, 0u, 0);
+                    return map_flow_result(s, rc, fault, pc, opcode);
+                }
+            }
+            {
+                uint32_t saved_pc = s->pc;
+                int vfpu_rc;
+                s->pc = pc;
+                vfpu_rc = sr_vfpu_interp(s, opcode);
+                if (s->flow_kind != 0u) {
+                    int rc = -1;
+                    return map_flow_result(s, rc, fault, pc, opcode);
+                }
+                s->pc = saved_pc;
+                if (vfpu_rc == SR_VFPU_OTHER) {
+                    set_fault(fault, pc, opcode, pc, 1);
+                    return SR_GUEST_INTERP_UNSUPPORTED;
+                }
+                if (primary == 0x3au) {
+                    *store_address = read_gpr(s, rs) + sign_extend_16(opcode & 0xFFFCu);
+                    *store_size = 4;
+                } else if (primary == 0x3eu || primary == 0x3du) {
+                    *store_address = read_gpr(s, rs) + sign_extend_16(opcode & 0xFFFCu);
+                    *store_size = 16;
+                } else {
+                    *store_address = 0u;
+                    *store_size = 0;
+                }
+                s->r[0] = 0u;
+                return SR_GUEST_INTERP_AOT_HANDOFF;
+            }
+        }
+    }
+
     set_fault(fault, pc, opcode, pc, 1);
     return SR_GUEST_INTERP_UNSUPPORTED;
 }
@@ -653,8 +728,15 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
          * executable ownership, so a registered native body may be entered even
          * when no arena bytes back the PC: the translation itself embodies those
          * instructions (build-time-translated modules). Only the interpreted tier
-         * below needs readable bytes. */
-        if (sr_lookup(pc)) {
+         * below needs readable bytes.
+         *
+         * TD-27 stale redirect (see src/rt/stale_code.h "Dispatch hook"): a
+         * block the guest has overwritten since translation keeps interpreting
+         * instead of handing its stale pc back to dispatch, which would
+         * redirect here again and recurse. Gate off, the query is one
+         * cached-flag branch returning 0, so this stays exactly on the
+         * current path. */
+        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,
