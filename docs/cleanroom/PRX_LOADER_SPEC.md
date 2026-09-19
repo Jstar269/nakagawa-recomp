@@ -76,9 +76,9 @@ Field order, helper structure, and internal names are the implementer's own.
 ### 3.1 Input recognition
 
 1. The input must start with the ELF magic `0x7F 'E' 'L' 'F'`, class ELF32,
-   little-endian, machine MIPS (8) [C1][C2]. Anything else fails.
+   little-endian, machine MIPS (8) [C1], [C2]. Anything else fails.
 2. ELF type `0xFFA0` is a relocatable PSP module; types 1 (`ET_REL`) and 2
-   (`ET_EXEC`) are accepted as ordinary ELF images [C1][C3].
+   (`ET_EXEC`) are accepted as ordinary ELF images [C1], [C3].
 3. An input that begins with the `~PSP` container magic is refused with a reason
    naming decryption as out of scope (§0) — never parsed as ELF [C3].
 
@@ -90,7 +90,7 @@ Field order, helper structure, and internal names are the implementer's own.
 2. Segment *i* is placed at `base + p_vaddr(i)` for relocatable inputs (types
    `0xFFA0`, `ET_REL`) and at `p_vaddr(i)` unchanged for `ET_EXEC` when `base` is 0;
    `ET_EXEC` with a nonzero base is refused (it has no relocations to rebase with)
-   [C1][C3].
+   [C1], [C3].
 3. `p_filesz` bytes are copied from the file; the remaining `p_memsz − p_filesz`
    bytes are zero-filled [C1].
 4. A segment whose file range or memory range overflows 32 bits, exceeds the input
@@ -112,7 +112,7 @@ does not, callers use the entry address as the start routine [C4].
 1. The module-information block (`SceModuleInfo`) is located by the first loadable
    segment's `p_paddr`: for relocatable modules, `p_paddr` holds the block's file
    offset relative to that segment, so its guest address is `segment 0 address +
-   (p_paddr − p_offset(0))` [C3][C4]. When a section named `.rodata.sceModuleInfo`
+   (p_paddr − p_offset(0))` [C3], [C4]. When a section named `.rodata.sceModuleInfo`
    exists, its address must agree; disagreement fails (project decision: two
    sources that disagree mean a malformed module).
 2. Block layout [C4]: attribute (16 bits), version (2 bytes), name (28 bytes,
@@ -123,7 +123,7 @@ does not, callers use the entry address as the start routine [C4].
 ### 3.5 Relocation — common rules
 
 1. Relocation data comes from program headers of type `0x700000A0` (format A) and
-   `0x700000A1` (format B) [C3][C5]. Section headers of type `0x700000A0` are an
+   `0x700000A1` (format B) [C3], [C5]. Section headers of type `0x700000A0` are an
    equivalent source for format A when no such program header exists [C3].
 2. Every relocation names an **offset segment** (whose base plus an offset gives the
    site address) and an **address segment** (whose load address is the value
@@ -141,10 +141,10 @@ does not, callers use the entry address as the start routine [C4].
 
 ### 3.6 Relocation formats
 
-**Format A** — a table of 8-byte records (offset, info), little-endian [C3][C5]:
+**Format A** — a table of 8-byte records (offset, info), little-endian [C3], [C5]:
 info bits 0–7 are the relocation kind, bits 8–15 the offset segment, bits 16–23 the
 address segment [C3]. Kinds, with *S* the address segment's load address, *W* the
-site word, and sign-extension written `sx16` [C2][C3]:
+site word, and sign-extension written `sx16` [C2], [C3]:
 
 | Kind | Name | Result |
 | --- | --- | --- |
@@ -161,7 +161,7 @@ site word, and sign-extension written `sx16` [C2][C3]:
 The carry adjustment is the MIPS ELF convention [C2]; the partner rule is the
 firmware's [C3]. A HI16 run that reaches the end of the table with no partner fails.
 
-**Format B** — a compressed stream [C3][C5]:
+**Format B** — a compressed stream [C3], [C5]:
 
 1. Header: bytes 0–1 must be zero; byte 2 = *F* (flag-field width in bits); byte 3 =
    *T* (kind-field width in bits). Both must be 1–8 and *F* + *T* + segment width
@@ -274,8 +274,8 @@ token-trigram overlap, longest identical run, and constant-table orderings per c
 
 ## 7. Provenance record fields (fill at admission)
 
-Classification proposed: `project-authored-independent`. Behaviour sources: this spec
-+ [C1]–[C8]. Upstream consulted by the spec session: yes (derived `tools/prxload.py`,
+Classification proposed: `project-authored-independent`. Behaviour sources: this
+spec plus [C1]–[C8]. Upstream consulted by the spec session: yes (derived `tools/prxload.py`,
 the discarded port, and the public decompilation [C3]); by the implementation
 session: no (workspace inventory attached). Maintainer attestation: (maintainer
 signs; agents do not).
@@ -315,26 +315,26 @@ modules at their manifest bases, and the in-game run of the late-module route.
 ## 9. Citation catalog
 
 - [C1] ELF: *Tool Interface Standard (TIS) Executable and Linking Format (ELF)
-  Specification, Version 1.2* — https://refspecs.linuxfoundation.org/elf/elf.pdf
+  Specification, Version 1.2* — <https://refspecs.linuxfoundation.org/elf/elf.pdf>
   (headers, program headers, `PT_LOAD`, segment file/memory sizes, entry).
 - [C2] MIPS ELF: *System V Application Binary Interface, MIPS RISC Processor
-  Supplement, 3rd Edition* — https://refspecs.linuxfoundation.org/elf/mipsabi.pdf
+  Supplement, 3rd Edition* — <https://refspecs.linuxfoundation.org/elf/mipsabi.pdf>
   (relocation kinds 16/32/26/HI16/LO16, HI16/LO16 pairing and carry adjustment, word
   encoding).
 - [C3] uofw (unofficial PSP firmware reimplementation), `src/kd/loadcore/loadelf.c`
   at commit `5e192e75a83d043d5a65db21128d62758e5741f5` —
-  https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/src/kd/loadcore/loadelf.c
+  <https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/src/kd/loadcore/loadelf.c>
   (PSP relocation program-header types, format A record fields, format B header,
   tables, command fields, segment-width rule, kind behaviours, refusal of LITERAL,
   `~PSP` handling). Read by the spec session only; divergences from it are recorded
   in §3.6 with evidence.
 - [C4] PSPSDK public headers at commit `654ac51fc73fbf7ad9350fac90e39e66e7a0b1c6`
-  (https://github.com/pspdev/pspsdk): `src/user/pspmoduleinfo.h` (`SceModuleInfo`
+  (<https://github.com/pspdev/pspsdk>): `src/user/pspmoduleinfo.h` (`SceModuleInfo`
   layout), `src/kernel/psploadcore.h` (module structures), and the system-library
   NIDs for module_start / module_stop / module_info as used by PSPSDK's
   `tools/psp-build-exports.c`.
 - [C5] PSP Developer Wiki, *PRX File Format* —
-  https://www.psdevwiki.com/psp/PRX_File_Format (names the two relocation segment
+  <https://www.psdevwiki.com/psp/PRX_File_Format> (names the two relocation segment
   types and the 4-byte header of the compressed one).
 - [C6] PSPSDK `src/kernel/psploadcore.h` at the [C4] commit: `SceLibraryEntryTable`
   and `SceLibraryStubTable` field order and widths.
