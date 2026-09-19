@@ -618,26 +618,31 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
 }
 /* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
  * Project-authored boundary for the guest libpsmfplayer, which decodes each access unit into an
- * opaque "YCbCr" buffer and later colour-converts that buffer into its display buffer. The guest
- * only passes these buffers between firmware calls (observed in the title's own libpsmfplayer:
- * QueryYCbCrSize -> InitYCbCr -> DecodeYCbCr -> Csc/CopyYCbCr), so the host keeps the decoded
- * picture itself: DecodeYCbCr advances the media clock and records one pending picture against
- * the buffer, and Csc pulls the pending pictures from the H.264 backend straight into the
- * destination in the context's pixel mode (the last one wins, so skipped buffers cannot drift the
- * decoder). The buffer contents are never interpreted. */
-typedef struct { uint32_t mpeg, buf; int pending; } YcbcrBuf;
+ * opaque "YCbCr" buffer, may copy it to another YCbCr buffer, and later colour-converts one into
+ * its display buffer (observed in the title's own libpsmfplayer: QueryYCbCrSize -> InitYCbCr ->
+ * DecodeYCbCr -> CopyYCbCr -> Csc). The guest never reads the buffer contents, so the host keeps
+ * the decoded picture for each buffer address itself: DecodeYCbCr decodes the next picture into
+ * that buffer's host store, CopyYCbCr copies a store, and Csc converts a store into the
+ * destination in the context's pixel mode. Stores are RGBA8888, 512 x 272. */
+#define YCBCR_W 512
+#define YCBCR_H 272
+typedef struct { uint32_t mpeg, buf; uint8_t *rgba; int valid; } YcbcrBuf;
 static YcbcrBuf s_ycbcr[16];
 
-static YcbcrBuf *ycbcr_slot(uint32_t mpegAddr, uint32_t buf, int create) {
-    YcbcrBuf *free_slot = NULL;
-    for (int i = 0; i < 16; i++) {
-        if (s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg == mpegAddr && buf) return &s_ycbcr[i];
-        if (!s_ycbcr[i].buf && !free_slot) free_slot = &s_ycbcr[i];
-    }
-    if (!create) return NULL;
-    if (!free_slot) free_slot = &s_ycbcr[0];   /* recycle: oldest slot */
-    free_slot->mpeg = mpegAddr; free_slot->buf = buf; free_slot->pending = 0;
-    return free_slot;
+static YcbcrBuf *ycbcr_find(uint32_t mpegAddr, uint32_t buf) {
+    for (int i = 0; i < 16; i++)
+        if (buf && s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg == mpegAddr) return &s_ycbcr[i];
+    return NULL;
+}
+
+static YcbcrBuf *ycbcr_slot(uint32_t mpegAddr, uint32_t buf) {
+    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
+    if (b || !buf) return b;
+    for (int i = 0; i < 16; i++) if (!s_ycbcr[i].buf) { b = &s_ycbcr[i]; break; }
+    if (!b) b = &s_ycbcr[0];   /* all in use: recycle the first slot */
+    b->mpeg = mpegAddr; b->buf = buf; b->valid = 0;
+    if (!b->rgba) b->rgba = (uint8_t *)calloc(YCBCR_W * YCBCR_H, 4);
+    return b->rgba ? b : NULL;
 }
 
 /* 4:2:0 planar size (Y plane plus two quarter-size chroma planes) plus a 128-byte header. */
@@ -656,8 +661,8 @@ uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, u
                              uint32_t buf) {
     (void)mode; (void)width; (void)height;
     if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 1);
-    if (b) b->pending = 0;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf);
+    if (b) b->valid = 0;
     return 0;
 }
 
@@ -672,21 +677,29 @@ uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
     return 0;
 }
 
-uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf, uint32_t initAddr) {
+/* sceMpegAvcDecodeYCbCr(mpeg, au, ycbcr*, init*): like sceMpegAvcDecode, the buffer argument
+ * points at the YCbCr buffer address. */
+uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufPtr, uint32_t initAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     g_mpeg_avcdec++;
     ctx->videoPts += videoTimestampStep;
-    /* Like sceMpegAvcDecode, the buffer argument points at the YCbCr buffer address. */
-    uint32_t ycbcr = buf ? MEM_R32(buf) : 0u;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, ycbcr, 1);
-    if (b) b->pending++;
-    if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in `buf` */
+    uint32_t buf = bufPtr ? MEM_R32(bufPtr) : 0u;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf);
+    int got = 0;
+#ifdef SR_SDL3VK
+    if (b && ctx->h264Init && ctx->h264 >= 0) {
+        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+        got = sr_h264_frame_host(ctx->h264, eos, b->rgba, YCBCR_W, YCBCR_W * 4);
+        if (got > 0) { b->valid = 1; ctx->h264Frames++; }
+    }
+#endif
+    if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in the buffer */
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcDecodeYCbCr #%d au=0x%x buf=0x%x [buf]=0x%x pts=%lld\n",
-                    n, auAddr, buf, buf ? MEM_R32(buf) : 0u, (long long)ctx->videoPts);
+            fprintf(stderr, "MpegAvcDecodeYCbCr #%d au=0x%x ycbcr=0x%x dec=%d frames=%d pts=%lld\n",
+                    n, auAddr, buf, got, ctx->h264Frames, (long long)ctx->videoPts);
     }
     return 0;
 }
@@ -700,14 +713,16 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t st
 
 uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    YcbcrBuf *from = ycbcr_slot(mpegAddr, src, 0);
-    YcbcrBuf *to = ycbcr_slot(mpegAddr, dst, 1);
-    if (to) to->pending = from ? from->pending : 0;
-    if (from) from->pending = 0;
+    YcbcrBuf *from = ycbcr_find(mpegAddr, src);
+    YcbcrBuf *to = ycbcr_slot(mpegAddr, dst);
+    if (from && to && from != to) {
+        if (from->valid) memcpy(to->rgba, from->rgba, (size_t)YCBCR_W * YCBCR_H * 4);
+        to->valid = from->valid;
+    }
     return 0;
 }
 
-/* sceMpegAvcCsc(mpeg, ycbcr, range*, frameWidth, dest): range is {x, y, w, h}. */
+/* sceMpegAvcCsc(mpeg, ycbcr, range*, frameWidth, dest): range is {x, y, w, h} in pixels. */
 uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint32_t frameWidth,
                       uint32_t dest) {
     Mpeg *ctx = mpeg_find(mpegAddr);
@@ -715,27 +730,44 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
     if (!rangeAddr || !dest) return SCE_MPEG_ERROR_INVALID_VALUE;
     if (frameWidth == 0 || frameWidth > 2048)
         frameWidth = ctx->defaultFrameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 0);
-    int pending = b ? b->pending : 0;
-    if (b) b->pending = 0;
-    int gotFrame = 0;
-#ifdef SR_SDL3VK
-    if (ctx->h264Init && ctx->h264 >= 0) {
-        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
-        for (int i = 0; i < (pending > 0 ? pending : 1); i++) {
-            int r = sr_h264_frame(ctx->h264, eos, dest, (int)frameWidth, ctx->pixelMode);
-            if (r > 0) { gotFrame = r; ctx->h264Frames++; }
+    uint32_t x0 = MEM_R32(rangeAddr), y0 = MEM_R32(rangeAddr + 4);
+    uint32_t w = MEM_R32(rangeAddr + 8), h = MEM_R32(rangeAddr + 12);
+    if (x0 >= YCBCR_W || y0 >= YCBCR_H) return SCE_MPEG_ERROR_INVALID_VALUE;
+    if (w > YCBCR_W - x0) w = YCBCR_W - x0;
+    if (h > YCBCR_H - y0) h = YCBCR_H - y0;
+    if (w > frameWidth) w = frameWidth;
+    uint32_t bpp = ctx->pixelMode == 3 ? 4u : 2u;
+    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
+    if (!b || !b->valid) {
+        if (!ctx->h264Frames) clear_video_buffer(dest, frameWidth, ctx->pixelMode);
+    } else {
+        for (uint32_t y = 0; y < h; y++) {
+            uint32_t row = dest + ((y0 + y) * frameWidth + x0) * bpp;
+            if (!sr_guest_span_writable(row, w * bpp)) break;
+            const uint8_t *px = b->rgba + ((size_t)(y0 + y) * YCBCR_W + x0) * 4u;
+            uint8_t *out = (uint8_t *)SR_HOST(row);
+            for (uint32_t x = 0; x < w; x++, px += 4) {
+                unsigned r = px[0], g = px[1], bl = px[2];
+                uint16_t v16;
+                switch (ctx->pixelMode) {
+                    case 0: v16 = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11));
+                            memcpy(out + x * 2u, &v16, 2); break;
+                    case 1: v16 = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((bl >> 3) << 10) | 0x8000u);
+                            memcpy(out + x * 2u, &v16, 2); break;
+                    case 2: v16 = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((bl >> 4) << 8) | 0xF000u);
+                            memcpy(out + x * 2u, &v16, 2); break;
+                    default: memcpy(out + x * 4u, px, 4); break;
+                }
+            }
         }
     }
-#endif
-    if (gotFrame <= 0 && !ctx->h264Frames) clear_video_buffer(dest, frameWidth, ctx->pixelMode);
     extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
     sr_gpu_vram_dirty(dest, video_buffer_bytes(frameWidth, ctx->pixelMode));
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCsc #%d buf=0x%x dest=0x%x fw=%u pending=%d dec=%d frames=%d\n",
-                    n, buf, dest, frameWidth, pending, gotFrame, ctx->h264Frames);
+            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%x valid=%d dest=0x%x fw=%u range=%u,%u %ux%u\n",
+                    n, buf, b ? b->valid : -1, dest, frameWidth, x0, y0, w, h);
     }
     return 0;
 }

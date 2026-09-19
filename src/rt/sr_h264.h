@@ -36,5 +36,9 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len);
  * `eos` != 0 once the whole movie has been fed (drain the last frames). Returns 1 if a frame was
  * written, 0 if none is available yet, -1 on failure. */
 int  sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode);
+/* Decode the next picture into host memory as RGBA8888 (byte order R, G, B, A), at most
+ * `maxW` x 272 pixels with a row pitch of `strideBytes`. Returns 1 when a picture was written,
+ * 0 when more input is needed, -1 on failure or without a decoder. */
+int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes);
 
 #endif /* SR_H264_H */

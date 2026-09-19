@@ -384,7 +384,36 @@ static void convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
 }
 
 /* Try to pull one decoded frame. 1 = frame written to buffer, 0 = need more input, -1 = failure. */
-static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode) {
+/* NV12 -> host RGBA8888 (BT.601 limited range), for pictures the caller stores and converts
+ * later (the sceMpegAvc*YCbCr path). */
+static void convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
+                               int maxW, int strideBytes) {
+    if (!dst || !src || maxW <= 0 || strideBytes < maxW * 4) return;
+    int stride = d->outStride > 0 ? d->outStride : d->outW;
+    int w = d->outW, h = d->outH;
+    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return;
+    uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
+    uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * (((uint64_t)(uint32_t)h + 1u) / 2u);
+    if (srcNeed > srcLen) return;
+    if (w > maxW) w = maxW;
+    if (h > 272) h = 272;
+    const uint8_t *uvp = src + (size_t)yBytes;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *yr = src + (size_t)y * (size_t)stride;
+        const uint8_t *uv = uvp + (size_t)(y / 2) * (size_t)stride;
+        uint8_t *row = dst + (size_t)y * (size_t)strideBytes;
+        for (int x = 0; x < w; x++) {
+            int c = yr[x] - 16, dd = uv[x & ~1] - 128, e = uv[(x & ~1) + 1] - 128;
+            row[x * 4 + 0] = clamp8((298 * c + 409 * e + 128) >> 8);
+            row[x * 4 + 1] = clamp8((298 * c - 100 * dd - 208 * e + 128) >> 8);
+            row[x * 4 + 2] = clamp8((298 * c + 516 * dd + 128) >> 8);
+            row[x * 4 + 3] = 0xFF;
+        }
+    }
+}
+
+static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
+                    uint8_t *host, int hostW, int hostStride) {
     for (;;) {
         MFT_OUTPUT_STREAM_INFO si;
         memset(&si, 0, sizeof(si));
@@ -418,12 +447,13 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode) {
             if (mflog()) fprintf(stderr, "h264: ProcessOutput hr=0x%08lx\n", (unsigned long)hr);
             return -1;
         }
-        if (buffer) {
+        if (buffer || host) {
             IMFMediaBuffer *cbuf = NULL;
             if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &cbuf)) && cbuf) {
                 BYTE *base = NULL; DWORD cur = 0;
                 if (SUCCEEDED(IMFMediaBuffer_Lock(cbuf, &base, NULL, &cur))) {
-                    convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
+                    if (host) convert_frame_host(d, base, cur, host, hostW, hostStride);
+                    else convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
                     IMFMediaBuffer_Unlock(cbuf);
                 }
                 IMFMediaBuffer_Release(cbuf);
@@ -484,12 +514,13 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
 /* Decode the next frame into buffer (guest video buffer address). eos != 0 once the
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
-int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
+static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode,
+                      uint8_t *host, int hostW, int hostStride) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = pump_out(d, buffer, frameWidth, pixelMode);
+        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride);
         if (r > 0) return 1;
         if (r < 0) { d->failed = 1; return -1; }
         if (d->curCk < d->nCk) {
@@ -505,6 +536,15 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
         }
     }
     return 0;
+}
+
+int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
+    return pull_frame(id, eos, buffer, frameWidth, pixelMode, NULL, 0, 0);
+}
+
+int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
+    if (!dst) return -1;
+    return pull_frame(id, eos, 0, 0, 0, dst, maxW, strideBytes);
 }
 
 #endif /* _WIN32 */

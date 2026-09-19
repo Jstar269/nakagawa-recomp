@@ -22,5 +22,9 @@ int  sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMo
     (void)id; (void)eos; (void)buffer; (void)frameWidth; (void)pixelMode;
     return -1;   /* no decoder: mpeg.c clears the frame buffer and advances the timestamp model */
 }
+int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
+    (void)id; (void)eos; (void)dst; (void)maxW; (void)strideBytes;
+    return -1;
+}
 
 #endif /* !_WIN32 */
