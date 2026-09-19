@@ -9672,6 +9672,207 @@ static void test_td28_partition_free_reuse(void) {
     expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
 }
 
+/* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
+ * heap_selftest.c covers recomp.c's newlib heap, a different allocator, so the
+ * user-partition tests live here next to test_td28_partition_free_reuse. */
+static void test_alloc_block_at_fixed_address(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_top(void);
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+    const uint32_t NID_TOTAL_FREE = 0xf919f628u;
+    const uint32_t NID_MAX_FREE   = 0xa291f107u;
+    const uint32_t FAIL = 0xFFFFFFFFu;
+    CpuState cpu;
+
+    /* Phase A: free-size accounting on a fresh partition. */
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t f0 = sr_syscall(&cpu, NID_TOTAL_FREE);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t m0 = sr_syscall(&cpu, NID_MAX_FREE);
+    uint32_t R = base0 + 0x10000u, RSZ = 0x1000u;
+    uint32_t uid_r = sr_alloc_block_at(R, RSZ, "rsv");
+    expect(uid_r != 0u && uid_r < 0x80000000u, "fixed reservation in free space succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_r;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == R, "fixed reservation head is the requested address");
+    expect(sr_hle_test_partition_heap_ptr() == R + RSZ,
+           "bump pointer skips over the reserved range");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t f1 = sr_syscall(&cpu, NID_TOTAL_FREE);
+    expect(f0 - f1 == RSZ + 0x100u, "reservation counts against free size (+one block tail)");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t m1 = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(m0 - m1 == 0x11000u, "max-free shrinks by reservation plus skipped gap");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_r;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u,
+           "fixed reservation frees via the existing free path");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_TOTAL_FREE) == f0 - 0x100u,
+           "freeing restores free size up to the block tail");
+
+    /* Phase B: Low allocations skip reservations; interior carve; overlap fails. */
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    base0 = sr_hle_test_partition_heap_ptr();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x800u;
+    uint32_t uid_a = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_a != 0u && uid_a < 0x80000000u, "low block A succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0, "low block A sits at the heap base");
+    R = base0 + 0x10000u;
+    uid_r = sr_alloc_block_at(R, RSZ, "rsv");
+    expect(uid_r != 0u && uid_r < 0x80000000u, "fixed reservation above low block succeeds");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x800u;
+    uint32_t uid_b = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x800u,
+           "later low block is served from the gap, skipping the reservation");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0xF000u;
+    uint32_t uid_c = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_c;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x1000u,
+           "low block consumes the rest of the gap without touching the reservation");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
+    uint32_t uid_d = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_d;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == R + RSZ,
+           "bump allocation past a consumed gap lands beyond the reservation");
+    /* Free A and B: they coalesce into [base0, 0x1000), then carve from it. */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free low block B succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free low block A succeeds");
+    uint32_t uid_in = sr_alloc_block_at(base0 + 0x100u, 0x200u, "carve");
+    expect(uid_in != 0u && uid_in < 0x80000000u, "interior reservation carves a freed span");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_in;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x100u,
+           "carved reservation head is the requested address");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x800u;
+    uint32_t uid_e = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_e;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x300u,
+           "first-fit skips the carved reservation");
+    /* Overlapping reservations fail and leave state untouched. */
+    uint32_t heap_before = sr_hle_test_partition_heap_ptr();
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t f_before = sr_syscall(&cpu, NID_TOTAL_FREE);
+    expect(sr_alloc_block_at(base0 + 0x80u, 0x100u, "ov") == FAIL,
+           "reservation overlapping a live low block fails");
+    expect(sr_alloc_block_at(R, RSZ, "ov") == FAIL,
+           "reservation overlapping a live reservation fails");
+    expect(sr_alloc_block_at(R + RSZ - 0x100u, 0x200u, "ov") == FAIL,
+           "reservation straddling a reservation end fails");
+    expect(sr_alloc_block_at(base0 + 0x100u, 0x200u, "ov") == FAIL,
+           "reservation exactly overlapping a carved reservation fails");
+    expect(sr_alloc_block_at(base0 - 0x100u, 0x200u, "ov") == FAIL,
+           "reservation below the heap base (loaded image) fails");
+    expect(sr_hle_test_partition_heap_ptr() == heap_before,
+           "failed reservations do not move the bump pointer");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_TOTAL_FREE) == f_before,
+           "failed reservations do not change free-size accounting");
+    /* Free then re-reserve works. */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_in;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "free carved reservation succeeds");
+    uid_in = sr_alloc_block_at(base0 + 0x100u, 0x200u, "carve2");
+    expect(uid_in != 0u && uid_in < 0x80000000u, "re-reserve after free succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_in;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x100u,
+           "re-reserved head is the requested address");
+
+    /* Phase C: handler type 2, partition bounds, and the type-1/3 fallthrough. */
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    base0 = sr_hle_test_partition_heap_ptr();
+    uint32_t top = sr_hle_test_partition_top();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 1u; cpu.r[7] = 0x100u;
+    uint32_t uid_h1 = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_h1;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0,
+           "type 1 High is served bottom-up like Low today (pre-existing fake)");
+    uint32_t R2 = base0 + 0x20000u;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 2u; cpu.r[7] = 0x800u; cpu.r[8] = R2;
+    uint32_t uid_t2 = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid_t2 != 0u && uid_t2 < 0x80000000u, "type-2 handler reservation succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_t2;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == R2, "type-2 handler head is the requested address");
+    expect(sr_hle_test_partition_heap_ptr() == R2 + 0x800u,
+           "type-2 handler advances the bump pointer past the reservation");
+    heap_before = sr_hle_test_partition_heap_ptr();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 2u; cpu.r[7] = 0x800u; cpu.r[8] = R2 + 0x400u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+           "type-2 handler rejects an overlapping address");
+    expect(sr_hle_test_partition_heap_ptr() == heap_before,
+           "rejected type-2 handler call does not move the bump pointer");
+    uint32_t R3 = base0 + 0x30000u;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 2u; cpu.r[7] = 0u; cpu.r[8] = R3;
+    uint32_t uid_z = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_z;
+    expect(uid_z != 0u && uid_z < 0x80000000u && sr_syscall(&cpu, NID_GET_HEAD) == R3,
+           "type-2 handler maps size 0 to 16 like the existing path");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 3u; cpu.r[7] = 0x100u;
+    uint32_t uid_t3 = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_t3;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x100u,
+           "type 3 keeps the pre-existing Low fallthrough behaviour");
+    expect(sr_alloc_block_at(top - 0x800u, 0x1000u, "ov") == FAIL,
+           "reservation crossing the partition top fails");
+    expect(sr_alloc_block_at(0xFFFFFF00u, 0x200u, "ov") == FAIL,
+           "wrapping reservation range fails");
+    uint32_t uid_top = sr_alloc_block_at(top - 0x1000u, 0x1000u, "topedge");
+    expect(uid_top != 0u && uid_top < 0x80000000u,
+           "reservation ending exactly at the partition top succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_top;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == top - 0x1000u,
+           "top-edge reservation head is the requested address");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_top;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "top-edge reservation frees cleanly");
+    uid_top = sr_alloc_block_at(top - 0x1000u, 0x1000u, "topedge2");
+    expect(uid_top != 0u && uid_top < 0x80000000u, "top-edge re-reserve after free succeeds");
+
+    /* Phase D: a reservation may not land in a live block's alignment slack.
+     * A 0x101-byte Low block owns the 0x200 slot [base0, base0+0x200) while the
+     * bump pointer stops at base0+0x101, so [base0+0x101, base0+0x201) is above
+     * the heap (the free-coverage check cannot see it) yet owned. */
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    base0 = sr_hle_test_partition_heap_ptr();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x101u;
+    uint32_t uid_s = sr_syscall(&cpu, NID_ALLOC_PART);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_s;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0, "unaligned-size low block sits at the heap base");
+    expect(sr_alloc_block_at(base0 + 0x101u, 0x100u, "ov") == FAIL,
+           "reservation inside a live block's alignment slack fails");
+    uint32_t uid_after = sr_alloc_block_at(base0 + 0x200u, 0x100u, "slackend");
+    expect(uid_after != 0u && uid_after < 0x80000000u,
+           "reservation at the live slot end succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_after;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) == base0 + 0x200u,
+           "slot-end reservation head is the requested address");
+}
+
 static void test_fpl_delete_releases_partition(void) {
     extern void sr_hle_test_partition_reset(void);
     extern int sr_hle_test_partition_free_block_count(void);
@@ -12877,6 +13078,7 @@ int main(int argc, char **argv) {
     test_msgpipe_safety();
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
+    test_alloc_block_at_fixed_address();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();

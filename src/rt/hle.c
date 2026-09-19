@@ -265,6 +265,7 @@ uint32_t sr_alloc_uid(void) {
  * (top - bump pointer) and shrinks as it allocates -- not a fixed fake. */
 static uint32_t s_heap = 0;              /* bump pointer in user RAM; 0 = not yet initialised */
 static uint32_t s_part_top = 0;
+static uint32_t s_heap_base = 0;          /* partition floor: heap value at init, always >= loaded image end */
 static uint32_t s_heap_last_bump = 0;     /* mirror of last s_heap value, for the main-thread diagnostic */
 uint32_t user_partition_last_heap(void) { return s_heap_last_bump ? s_heap_last_bump : s_heap; }
 
@@ -379,6 +380,7 @@ static void user_partition_init(void) {
         abort();
     }
     s_heap = base;
+    s_heap_base = base;
     s_part_top = et ? (uint32_t)strtoul(et, NULL, 16) : 0x0A000000u;
     if (s_part_top <= s_heap) {
         fprintf(stderr,
@@ -416,24 +418,11 @@ typedef struct {
 static FreeBlock s_free_blocks[HLE_MAX_FREE_BLOCKS];
 static int s_nfree_blocks = 0;
 
-static void partition_free_block(uint32_t addr, uint32_t size) {
-    if (size == 0) return;
-
-    /* Check if this freed block reaches or exceeds the bump pointer s_heap. */
-    if (addr + size >= s_heap) {
-        /* Check if it coalesces with the last free block in the free list. */
-        if (s_nfree_blocks > 0 &&
-            s_free_blocks[s_nfree_blocks - 1].addr + s_free_blocks[s_nfree_blocks - 1].size == addr) {
-            s_heap = s_free_blocks[s_nfree_blocks - 1].addr;
-            s_nfree_blocks--;
-        } else {
-            s_heap = addr;
-        }
-        s_heap_last_bump = s_heap;
-        return;
-    }
-
-    /* Interior block: insert into s_free_blocks sorted by addr and coalesce. */
+static void free_list_insert_sorted(uint32_t addr, uint32_t size) {
+    /* Insert [addr, addr+size) into s_free_blocks sorted by addr and coalesce
+     * with touching neighbours. No bump-pointer rollback: the caller owns the
+     * heap invariant (partition_free_block checks the top span itself, and the
+     * fixed-address path manages s_heap explicitly). */
     int idx = 0;
     while (idx < s_nfree_blocks && s_free_blocks[idx].addr < addr) {
         idx++;
@@ -465,6 +454,27 @@ static void partition_free_block(uint32_t addr, uint32_t size) {
             fprintf(stderr, "partition_free_block: free block table exhausted\n");
         }
     }
+}
+
+static void partition_free_block(uint32_t addr, uint32_t size) {
+    if (size == 0) return;
+
+    /* Check if this freed block reaches or exceeds the bump pointer s_heap. */
+    if (addr + size >= s_heap) {
+        /* Check if it coalesces with the last free block in the free list. */
+        if (s_nfree_blocks > 0 &&
+            s_free_blocks[s_nfree_blocks - 1].addr + s_free_blocks[s_nfree_blocks - 1].size == addr) {
+            s_heap = s_free_blocks[s_nfree_blocks - 1].addr;
+            s_nfree_blocks--;
+        } else {
+            s_heap = addr;
+        }
+        s_heap_last_bump = s_heap;
+        return;
+    }
+
+    /* Interior block: insert into s_free_blocks sorted by addr and coalesce. */
+    free_list_insert_sorted(addr, size);
 
     /* If the highest free block now reaches s_heap, roll s_heap back. */
     if (s_nfree_blocks > 0 &&
@@ -585,6 +595,154 @@ static uint32_t alloc_block(uint32_t size) {
     return uid;
 }
 
+/* Fixed-address reservation for the runtime module loader and for
+ * sceKernelAllocPartitionMemory type 2 (PSP_SMEM_Addr / "Addr"): reserve exactly
+ * [addr, addr+size) and return a block UID releasable with the existing free
+ * path, or 0xFFFFFFFFu on failure. Failure (never corruption) results when the
+ * range overlaps a live allocation, the loaded image/BSS, or lies outside
+ * [heap base, partition top).
+ *
+ * Later Low allocations can never be handed reserved space, structurally:
+ *  - a reservation at/above the bump pointer jumps s_heap past its end, and any
+ *    virgin gap left behind ([old heap, addr)) is returned to the free list, so
+ *    the bump pointer only ever moves forward over reserved ranges;
+ *  - a reservation inside already-allocated space carves the range out of the
+ *    free list (splitting one entry when strictly contained), so first-fit can
+ *    never return overlapping space;
+ *  - heap rollback on free can only land on a freed span: rollback targets are
+ *    freed top spans or coalesced free spans, and a free span can never cross a
+ *    live reservation, so s_heap stays >= every live reservation end and the
+ *    bump path (which starts at s_heap) cannot reach one either.
+ * Hence alloc_block itself is untouched: with no reservation live, every path
+ * below is unreachable and its behaviour is byte-identical.
+ *
+ * UNMEASURED choices (no physical-hardware source): the address is honoured
+ * exactly (no 256-byte rounding of addr/size, unlike Low's slot granularity);
+ * slot_size tracks the exact size so free returns the exact range; a zero size
+ * maps to 16 bytes like the existing handler; failure propagates the same
+ * 0xFFFFFFFFu sentinel the existing OOM path returns rather than a guessed
+ * firmware error code; only the partition bounds cap the size (SR_ALLOC_MAX stays
+ * a game-request policy inside alloc_block, not a loader-path coupling). */
+uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
+    (void)name;   /* kernel keeps block names for debug only; no guest-visible slot */
+    user_partition_init();
+
+    uint32_t eff = size ? size : 16u;
+    uint64_t end64 = (uint64_t)addr + (uint64_t)eff;
+    if (end64 > (uint64_t)0xFFFFFFFFu) return 0xFFFFFFFFu;
+    uint32_t end = (uint32_t)end64;
+    if (addr < s_heap_base || end > s_part_top) return 0xFFFFFFFFu;
+
+    /* Live occupancy is the slot span [b.addr, b.addr+b.slot_size): Low blocks
+     * own their 256-byte rounding slack, fixed blocks own their exact range. */
+    for (int i = 0; i < s_nblocks; i++) {
+        if (s_blocks[i].uid == 0u || s_blocks[i].addr == 0u) continue;
+        uint64_t b_end = (uint64_t)s_blocks[i].addr + (uint64_t)s_blocks[i].slot_size;
+        if ((uint64_t)addr < b_end && (uint64_t)s_blocks[i].addr < end64)
+            return 0xFFFFFFFFu;
+    }
+
+    /* Below-heap space is either live (checked above) or free: every subspan of
+     * [addr, end) below s_heap must be covered by free-list entries. */
+    uint32_t old_heap = s_heap;
+    uint32_t need = end <= old_heap ? end : old_heap;
+    uint32_t cur = addr;
+    if (cur < need) {
+        for (int i = 0; i < s_nfree_blocks && cur < need; i++) {
+            uint64_t f_end = (uint64_t)s_free_blocks[i].addr + (uint64_t)s_free_blocks[i].size;
+            if (s_free_blocks[i].addr > cur) return 0xFFFFFFFFu;
+            if (f_end > (uint64_t)cur) cur = f_end > (uint64_t)need ? need : (uint32_t)f_end;
+        }
+        if (cur < need) return 0xFFFFFFFFu;
+    }
+
+    /* Capacity pre-check so a half-carved state is impossible: at most one split
+     * (a free entry strictly containing the range) plus at most one gap entry. */
+    int need_slots = 0;
+    for (int i = 0; i < s_nfree_blocks; i++) {
+        uint64_t f_end = (uint64_t)s_free_blocks[i].addr + (uint64_t)s_free_blocks[i].size;
+        if (s_free_blocks[i].addr < addr && end64 < f_end) { need_slots++; break; }
+    }
+    uint32_t gap_start = (old_heap + 0xFFu) & ~0xFFu;
+    int have_gap = (addr > old_heap && gap_start < addr) ? 1 : 0;
+    if (have_gap && gap_start < old_heap) return 0xFFFFFFFFu;   /* bump rounding wrapped */
+    if (have_gap) need_slots++;
+    if (s_nfree_blocks + need_slots > HLE_MAX_FREE_BLOCKS) return 0xFFFFFFFFu;
+
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++) {
+        if (s_blocks[i].uid == 0u) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (s_nblocks >= HLE_MAX_PARTITION_BLOCKS) return 0xFFFFFFFFu;
+        slot = s_nblocks++;
+    }
+
+    /* Carve [addr, end) out of every overlapping free entry. */
+    for (int i = 0; i < s_nfree_blocks;) {
+        uint32_t f_addr = s_free_blocks[i].addr;
+        uint64_t f_end64 = (uint64_t)f_addr + (uint64_t)s_free_blocks[i].size;
+        if (f_addr >= end || f_end64 <= (uint64_t)addr) { i++; continue; }
+        if (f_addr < addr && end64 < f_end64) {
+            /* Strict containment: split into [f_addr, addr) + [end, f_end). */
+            uint32_t right_addr = end;
+            uint32_t right_size = (uint32_t)(f_end64 - end64);
+            s_free_blocks[i].size = addr - f_addr;
+            for (int j = s_nfree_blocks; j > i + 1; j--) s_free_blocks[j] = s_free_blocks[j - 1];
+            s_free_blocks[i + 1].addr = right_addr;
+            s_free_blocks[i + 1].size = right_size;
+            s_nfree_blocks++;
+            break;   /* one entry can strictly contain the range; the rest only touch it */
+        } else if (f_addr < addr) {
+            s_free_blocks[i].size = addr - f_addr;
+            i++;
+        } else if (end64 < f_end64) {
+            uint32_t shrink = (uint32_t)(end64 - (uint64_t)f_addr);
+            s_free_blocks[i].addr = end;
+            s_free_blocks[i].size -= shrink;
+            i++;
+        } else {
+            for (int j = i; j < s_nfree_blocks - 1; j++) s_free_blocks[j] = s_free_blocks[j + 1];
+            s_nfree_blocks--;
+        }
+    }
+
+    /* Return the skipped virgin gap to the free list (aligned start keeps later
+     * Low heads 256-byte aligned: every Low take is a 0x100 multiple). The sliver
+     * below the alignment stays leaked, exactly like today's bump alignment. */
+    if (have_gap) free_list_insert_sorted(gap_start, addr - gap_start);
+
+    if (end > s_heap) {
+        s_heap = end;
+        s_heap_last_bump = s_heap;
+    }
+    sr_last_alloc_addr = addr;
+
+    uint32_t prev = 0xFFFFFFFFu;
+    uint32_t next = 0u;
+    for (int i = s_nblocks - 1; i >= 0; --i) {
+        if (i != slot && s_blocks[i].uid != 0u && s_blocks[i].addr != 0u) {
+            prev = s_blocks[i].addr;
+            s_blocks[i].next = addr;
+            break;
+        }
+    }
+    uint32_t uid = sr_alloc_uid();
+    s_blocks[slot].uid       = uid;
+    s_blocks[slot].addr      = addr;
+    s_blocks[slot].size      = eff;
+    s_blocks[slot].slot_size = eff;
+    s_blocks[slot].prev      = prev;
+    s_blocks[slot].next      = next;
+
+    if (getenv("SR_POSTUMD")) {
+        fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
+                uid, addr, eff, prev, next);
+        fflush(stderr);
+    }
+    return uid;
+}
+
 static uint32_t block_addr(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) if (s_blocks[i].uid == uid) return s_blocks[i].addr;
     return 0;
@@ -593,6 +751,7 @@ static uint32_t block_addr(uint32_t uid) {
 #ifdef SR_HLE_THREAD_SELFTEST
 void sr_hle_test_partition_reset(void) {
     s_heap = 0;
+    s_heap_base = 0;
     s_part_top = 0;
     s_heap_last_bump = 0;
     s_nblocks = 0;
@@ -610,6 +769,10 @@ int sr_hle_test_partition_get_free_block(int idx, uint32_t *addr_out, uint32_t *
 uint32_t sr_hle_test_partition_heap_ptr(void) {
     user_partition_init();
     return s_heap;
+}
+uint32_t sr_hle_test_partition_top(void) {
+    user_partition_init();
+    return s_part_top;
 }
 #endif
 
@@ -690,8 +853,27 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
+/* sceKernelAllocPartitionMemory(partition, name, type, size, addr): the 5th
+ * argument arrives in t0 (r8) under MIPS EABI (see stack_arg), not at sp+16.
+ * Type dispatch today:
+ *   0 Low        -> alloc_block first-fit/bump (the PSP_SMEM_Low contract).
+ *   1 High       -> NOT implemented top-down: falls through to the Low path
+ *                   and allocates bottom-up exactly like type 0. This fake is
+ *                   pre-existing behaviour, documented here, and unchanged by
+ *                   the fixed-address work (no live reservation can sit above
+ *                   s_heap, so leaving High as Low cannot hand out reserved
+ *                   space; see sr_alloc_block_at).
+ *   2 Addr       -> sr_alloc_block_at: reserve exactly [addr, addr+size), fail
+ *                   with the 0xFFFFFFFFu sentinel when overlapped/out of range
+ *                   (the exact firmware error for this case is UNMEASURED, so
+ *                   the existing allocator sentinel is propagated exactly as
+ *                   the current OOM path already does).
+ *   3 LowAligned / 4 HighAligned -> fall through to the Low path, ignoring the
+ *                   alignment argument (pre-existing behaviour, unchanged).
+ * The partition argument is ignored: the kernel hands the game one user
+ * partition (pre-existing behaviour, unchanged). */
 static uint32_t h_AllocPartitionMemory(CpuState *s) {
-    /* a0=partition, a1=name, a2=type, a3=size, [sp+16]=addr. Returns a block UID. */
+    /* a0=partition, a1=name, a2=type, a3=size, t0(r8)=addr. Returns a block UID. */
     char name[64];
     if (A1) {
         if (!guest_cstr(A1, name, sizeof(name)))
@@ -699,8 +881,11 @@ static uint32_t h_AllocPartitionMemory(CpuState *s) {
     } else {
         name[0] = '\0';
     }
+    uint32_t type = A2;
     uint32_t size = A3;
-    uint32_t uid = alloc_block(size ? size : 16);
+    uint32_t uid = (type == 2u)
+        ? sr_alloc_block_at(stack_arg(s, 0), size, name)
+        : alloc_block(size ? size : 16);
     fprintf(stderr, "  -> uid=0x%x addr=0x%08x (heap_bump_now=0x%08x)\n",
             uid, sr_last_alloc_addr, s_heap);
     return uid;
