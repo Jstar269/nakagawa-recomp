@@ -13901,9 +13901,13 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         uint32_t target = started_module_export(nid);
         RecompFn gfn = target ? sr_lookup(target) : NULL;
         if (gfn) {
-            static int s_linked_logged = 0;
-            if (s_linked_logged < 64) {
-                s_linked_logged++;
+            /* Log each linked NID once. */
+            static uint32_t s_linked_seen[256];
+            static unsigned s_linked_n = 0;
+            unsigned k = 0;
+            while (k < s_linked_n && s_linked_seen[k] != nid) k++;
+            if (k == s_linked_n && s_linked_n < 256) {
+                s_linked_seen[s_linked_n++] = nid;
                 const char *nm = sr_nid_name(nid);
                 fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n",
                         nm ? nm : "?", nid, target);
