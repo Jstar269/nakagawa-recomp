@@ -4135,6 +4135,7 @@ uint32_t mpeg_init(void);
 uint32_t mpeg_finish(void);
 uint32_t mpeg_query_mem_size(uint32_t outAddr);
 uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets);
+uint32_t mpeg_ringbuffer_query_pack_num(uint32_t mem_size);
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size, uint32_t cbAddr, uint32_t cbArg);
 uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr, uint32_t frameWidth, uint32_t mode, uint32_t ddrTop);
 uint32_t mpeg_delete(uint32_t mpegAddr);
@@ -4177,6 +4178,7 @@ static uint32_t h_MpegCreate(CpuState *s) {
 }
 static uint32_t h_MpegDelete(CpuState *s) { return mpeg_delete(A0); }
 static uint32_t h_MpegRingbufferQueryMemSize(CpuState *s) { return mpeg_ringbuffer_query_mem_size(A0); }
+static uint32_t h_MpegRingbufferQueryPackNum(CpuState *s) { return mpeg_ringbuffer_query_pack_num(A0); }
 static uint32_t h_MpegRingbufferConstruct(CpuState *s) { return mpeg_ringbuffer_construct(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1)); }
 static uint32_t h_MpegRingbufferAvailable(CpuState *s) { return mpeg_ringbuffer_available_size(A0); }
 static uint32_t h_MpegRingbufferPut(CpuState *s) { return mpeg_ringbuffer_put(s, A0, A1, A2); }
@@ -13685,6 +13687,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x21ff80e4, "sceMpegQueryStreamOffset", h_MpegQueryStreamOffset);
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
+    sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
     sr_hle_register(0x37295ed8, "sceMpegRingbufferConstruct", h_MpegRingbufferConstruct);
     /* sceMpeg ringbuffer destruct and flush: shared with the executable harness
      * through hle_register_mpeg_shared_handlers(). */
