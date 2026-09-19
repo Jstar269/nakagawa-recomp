@@ -44,5 +44,7 @@ int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes
  * absolute program-stream byte count it (and everything before it) consumed, 0 when no
  * complete picture has been fed yet, -1 without a decoder. */
 int  sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts);
+/* Presentation time of the first audio PES seen in the fed stream, or -1. */
+int64_t sr_h264_first_audio_pts(int id);
 
 #endif /* SR_H264_H */

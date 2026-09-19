@@ -596,7 +596,16 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (!ring) return (uint32_t)-1;
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
-    int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    int64_t base = ctx->firstTimestamp;
+#ifdef SR_SDL3VK
+    /* With the stream demuxed, audio is timed from its own first PTS, independent of when the
+     * video's first timestamp becomes known. */
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        int64_t fa = sr_h264_first_audio_pts(ctx->h264);
+        if (fa >= 0) base = fa;
+    }
+#endif
+    int64_t pts = ctx->audioPts + base;
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);

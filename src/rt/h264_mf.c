@@ -75,6 +75,7 @@ typedef struct {
     uint8_t *es; uint32_t esLen, esCap;
     EsChunk *ck; uint32_t nCk, capCk, curCk;
     uint32_t takeCk;               /* chunks handed out as access units (sceMpegGetAvcAu) */
+    int64_t firstAudioPts;         /* PTS of the first audio PES (private stream 1), -1 before */
     int ckOpen;                    /* last chunk is still receiving bytes (no AUD after it yet) */
     LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
 } Dec;
@@ -199,6 +200,12 @@ static int ps_parse_one(Dec *d) {
     uint32_t len = ((uint32_t)p[4] << 8) | p[5];
     uint32_t tot = 6 + len;
     if (n < tot) return 0;
+    if (code == 0xBD && d->firstAudioPts < 0 && len >= 8 && (p[6] & 0xC0) == 0x80 &&
+        (p[7] & 0x80) && p[8] >= 5) {
+        d->firstAudioPts = ((int64_t)(p[9]  >> 1 & 7) << 30) | ((int64_t) p[10] << 22) |
+                           ((int64_t)(p[11] >> 1)    << 15) | ((int64_t) p[12] << 7)  |
+                           ((int64_t)(p[13] >> 1));
+    }
     if (code >= 0xE0 && code <= 0xEF && len >= 3 && (p[6] & 0xC0) == 0x80) {
         uint32_t hdr = 9 + p[8];
         int64_t pts = -1;
@@ -489,6 +496,7 @@ int sr_h264_create(void) {
         Dec *d = &s_dec[i];
         memset(d, 0, sizeof(*d));
         d->used = 1;
+        d->firstAudioPts = -1;
         if (!dec_open(d)) {
             if (d->xf) { IMFTransform_Release(d->xf); d->xf = NULL; }
             d->used = 0;
@@ -567,6 +575,11 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
 int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
     if (!dst) return -1;
     return pull_frame(id, eos, 0, 0, 0, dst, maxW, strideBytes);
+}
+
+int64_t sr_h264_first_audio_pts(int id) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
+    return s_dec[id].firstAudioPts;
 }
 
 int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
