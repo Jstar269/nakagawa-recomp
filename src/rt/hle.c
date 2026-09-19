@@ -2965,8 +2965,12 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - a zero request returns 0x80000104 (illegal size);
  *   - a NULL or invalid complete source/destination span returns 0x80000103
  *     before any guest or GPU-visible side effect;
- *   - the effective transfer length is min(requested, 0xC000), and a request
- *     above that ceiling still returns success after copying only that prefix;
+ *   - the complete requested length is copied. The 2026-08-27 hardware campaign
+ *     (issue #23) completed a full 1 MiB transfer in one call, and the retail
+ *     libpsmfplayer (UCUS98701) moves 64 KiB per call with correct cache
+ *     maintenance and plays its movies on hardware. An earlier bracketed probe
+ *     that reported a 0xC000 prefix ceiling contradicts both and is superseded
+ *     pending the cache-disciplined re-probe recorded on issue #23;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
  *   - the Try form is synchronous from a single caller's point of view and
  *     shares the measured copy/error contract;
@@ -2989,7 +2993,6 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
-#define SCE_DMAC_EFFECTIVE_MAX 0xC000u
 
 static uint32_t h_DmacMemcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
@@ -3010,7 +3013,7 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
         if (!sr_guest_span_readable(src, n)) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
-    uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;
+    uint32_t effective = n;
 
     /* memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
@@ -11675,7 +11678,6 @@ uint32_t sr_hle_test_msgpipe_max_capacity(void) { return MSG_PIPE_MAX_CAPACITY; 
 
 /* Expose the measured effective-transfer ceiling to the executable regression
  * without duplicating the contract literal in its fixture. */
-uint32_t sr_hle_test_dmac_effective_max(void) { return SCE_DMAC_EFFECTIVE_MAX; }
 #endif /* SR_HLE_THREAD_SELFTEST */
 
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */

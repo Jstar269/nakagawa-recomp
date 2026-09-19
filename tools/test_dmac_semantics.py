@@ -10,8 +10,9 @@ These assertions guard the two properties a behavioral test cannot express:
 
 * validation of the complete requested spans before any guest or GPU side
   effect, and
-* the measured effective-prefix ceiling, including the fact that the dirty
-  notification covers only bytes that were actually transferred.
+* the complete requested length is transferred (issue #23: a full 1 MiB hardware
+  transfer; the retail libpsmfplayer's 64 KiB copies), and the dirty
+  notification covers exactly the transferred bytes.
 
 The concurrent BUSY result and invalid-truncated-tail precedence remain
 unknown; this module must not turn either into an invented hardware fact.
@@ -51,15 +52,13 @@ class TestDmacValidationOrder(unittest.TestCase):
         span_check = region.index(
             "if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n))"
         )
-        effective = region.index(
-            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;"
-        )
+        effective = region.index("uint32_t effective = n;")
         copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
         dirty = region.index("sr_gpu_vram_dirty(dst, effective)")
 
         self.assertLess(size_check, null_check)
         self.assertLess(null_check, span_check)
-        self.assertLess(span_check, effective, "requested spans must be validated before clamping")
+        self.assertLess(span_check, effective, "requested spans must be validated before copying")
         self.assertLess(effective, copy, "the effective length must be selected before copying")
         self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
         self.assertIn("sr_guest_span_readable(src, n)", region)
@@ -84,14 +83,11 @@ class TestDmacValidationOrder(unittest.TestCase):
         self.assertEqual(text.count('"sceDmacMemcpy"'), 1)
 
 
-class TestDmacMeasuredCeiling(unittest.TestCase):
-    def test_measured_effective_ceiling_is_encoded(self) -> None:
+class TestDmacFullLength(unittest.TestCase):
+    def test_complete_request_is_transferred(self) -> None:
         region = _dmac_region()
-        self.assertIn("#define SCE_DMAC_EFFECTIVE_MAX 0xC000u", region)
-        self.assertIn(
-            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;",
-            region,
-        )
+        self.assertNotIn("SCE_DMAC_EFFECTIVE_MAX", region)
+        self.assertIn("uint32_t effective = n;", region)
         self.assertNotIn("SR_DMAC_VERIFIED_FULL_MAX", region)
         self.assertNotIn("sr_dmac_note_unverified_size", region)
         self.assertNotIn("s_dmac_unverified", region)
@@ -138,8 +134,8 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "VRAM-to-RAM",
             "VRAM-to-VRAM",
             "aliased VRAM destination",
-            "a measured-ceiling request copies the complete effective prefix",
-            "a measured-ceiling request leaves the truncated tail untouched",
+            "a large request copies every requested byte",
+            "a large request writes nothing past its request",
             "the conservative policy rejects an invalid requested tail",
         ):
             self.assertIn(needle, text)

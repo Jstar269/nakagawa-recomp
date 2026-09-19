@@ -7922,11 +7922,10 @@ static void test_bulk_guest_span_atomicity(void) {
  *
  * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
  * private capture details are intentionally not part of this public-safe tree.
- * The measured large-transfer ceiling is asserted as a prefix copy with an
- * untouched tail. The invalid-truncated-tail case is deliberately labelled as
- * a conservative runtime policy: hardware has not yet established whether the
- * tail is validated before the effective transfer length is applied. */
-extern uint32_t sr_hle_test_dmac_effective_max(void);
+ * Large transfers copy the complete request (issue #23: a full 1 MiB hardware
+ * transfer; the retail libpsmfplayer's 64 KiB copies). The invalid-tail case is
+ * deliberately labelled as a conservative runtime policy: the complete
+ * requested span is validated before any byte moves. */
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -8100,51 +8099,45 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_matches(src, 16384u, 16u),
            "PSP: a backward-overlapping copy is memmove-correct across the span");
 
-    /* --- measured: the 0xC000 effective ceiling ----------------------------- */
+    /* --- large transfers copy the complete request ---------------------------- */
 
-    /* Independent PSP-3001 / 6.61-ARK runs bracketed the boundary at 0xC000:
-     * 0xBFFF and 0xC000 are complete, while larger requests return success,
-     * copy the contiguous prefix, and leave the remainder untouched. Assert
-     * every byte for both registered NIDs, including the dirty range reported
-     * to the renderer. */
-    const uint32_t ceiling = sr_hle_test_dmac_effective_max();
-    expect(ceiling == 0xC000u, "the measured DMA effective ceiling is 0xC000");
-    static const uint32_t ceiling_sizes[] = {
+    /* Sizes around the formerly assumed 0xC000 prefix ceiling and a full 64 KiB
+     * (the retail libpsmfplayer's per-call ring fill): every byte arrives, nothing
+     * past the request is written, and the dirty range is the whole request. */
+    static const uint32_t large_sizes[] = {
         0xBFFFu, 0xC000u, 0xC001u, 0xD000u, 0xF000u, 0xFFFFu, 0x10000u
     };
-    for (unsigned i = 0; i < sizeof(ceiling_sizes) / sizeof(ceiling_sizes[0]); i++) {
-        const uint32_t requested = ceiling_sizes[i];
-        const uint32_t effective = requested > ceiling ? ceiling : requested;
+    for (unsigned i = 0; i < sizeof(large_sizes) / sizeof(large_sizes[0]); i++) {
+        const uint32_t requested = large_sizes[i];
         dmac_fill(src, requested);
         dmac_clear(dst, requested + 1u, 0xa7u);
         gpu_dirty_reset();
         expect(bulk_call(nid, dst, src, requested) == 0u,
-               "a measured-ceiling request returns success");
-        expect(dmac_span_matches(dst, effective, 0u),
-               "a measured-ceiling request copies the complete effective prefix");
-        expect(dmac_span_is(dst + effective, requested - effective, 0xa7u),
-               "a measured-ceiling request leaves the truncated tail untouched");
+               "a large request returns success");
+        expect(dmac_span_matches(dst, requested, 0u),
+               "a large request copies every requested byte");
         expect(MEM_R8(dst + requested) == 0xa7u,
-               "a measured-ceiling request writes nothing past its request");
+               "a large request writes nothing past its request");
         expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
-                   s_gpu_dirty_bytes == effective,
-               "a measured-ceiling request dirties only the effective destination prefix");
+                   s_gpu_dirty_bytes == requested,
+               "a large request dirties exactly the requested destination");
     }
 
-    /* Conservative memory-safety policy (not a hardware claim): a request
-     * whose effective prefix is in range but whose requested tail crosses the
-     * modeled arena is rejected atomically until hardware settles precedence.
-     * This prevents a partially validated bulk access from reaching SR_HOST. */
+    /* Conservative memory-safety policy (not a hardware claim): a request whose
+     * leading part is in range but whose tail crosses the modeled arena end
+     * (0x0c000000) is rejected atomically, so no partially validated bulk access
+     * reaches SR_HOST. `in_range` is the part below the arena end. */
     const uint32_t invalid_tail_dst = 0x0bff1000u;
     const uint32_t invalid_tail_src = 0x08210000u;
     const uint32_t invalid_tail_size = 0x10000u;
+    const uint32_t in_range = 0x0c000000u - invalid_tail_dst;
     dmac_fill(invalid_tail_src, invalid_tail_size);
-    dmac_clear(invalid_tail_dst, ceiling, 0x6du);
+    dmac_clear(invalid_tail_dst, in_range, 0x6du);
     gpu_dirty_reset();
     expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
                SCE_DMAC_ILLEGAL_ADDR,
            "the conservative policy rejects an invalid requested tail");
-    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
+    expect(dmac_span_is(invalid_tail_dst, in_range, 0x6du),
            "an invalid requested tail causes no prefix mutation");
     expect(s_gpu_dirty_calls == 0u,
            "an invalid requested tail causes no GPU dirty notification");
