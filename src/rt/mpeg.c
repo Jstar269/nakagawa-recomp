@@ -135,6 +135,7 @@ typedef struct {
     int h264;                    /* SDL3 build: Media Foundation H.264 decoder id (-1 = none) */
     int h264Init, h264Frames;
     int defaultFrameWidth, pixelMode;
+    int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset) */
     struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
@@ -690,8 +691,14 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
 #ifdef SR_SDL3VK
     if (b && ctx->h264Init && ctx->h264 >= 0) {
         int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
-        got = sr_h264_frame_host(ctx->h264, eos, b->rgba, YCBCR_W, YCBCR_W * 4);
-        if (got > 0) { b->valid = 1; ctx->h264Frames++; }
+        /* One picture per request: pull until the decoder's output count catches up with the
+         * requests (a low-latency decoder can hold pictures back), keeping the newest. */
+        ctx->ycbcrWant++;
+        while (ctx->h264Frames < ctx->ycbcrWant) {
+            int r = sr_h264_frame_host(ctx->h264, eos, b->rgba, YCBCR_W, YCBCR_W * 4);
+            if (r <= 0) break;
+            got = r; b->valid = 1; ctx->h264Frames++;
+        }
     }
 #endif
     if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in the buffer */

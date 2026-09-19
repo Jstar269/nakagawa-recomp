@@ -72,6 +72,7 @@ typedef struct {
     /* demuxed H.264 ES byte fifo + chunk table (one chunk per video PES payload) */
     uint8_t *es; uint32_t esLen, esCap;
     EsChunk *ck; uint32_t nCk, capCk, curCk;
+    int ckOpen;                    /* last chunk is still receiving bytes (no AUD after it yet) */
     LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
 } Dec;
 
@@ -101,22 +102,7 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need, uint32_t max) 
     return 1;
 }
 
-static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
-    if (n > H264_MAX_ES_BYTES - d->esLen ||
-        !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
-    /* A PES packet carries a PTS only when it begins an access unit; payloads without one
-     * continue the previous picture. Keep one input sample per access unit (the decoder runs
-     * in low-latency mode and treats each sample as a whole picture) by extending the last
-     * chunk while it has not been submitted yet. */
-    if (pts < 0 && d->nCk > d->curCk) {
-        EsChunk *last = &d->ck[d->nCk - 1];
-        if (last->off + last->len == d->esLen) {
-            memcpy(d->es + d->esLen, p, n);
-            last->len += n;
-            d->esLen += n;
-            return 1;
-        }
-    }
+static int ck_push(Dec *d, uint32_t off, int64_t pts) {
     if (d->nCk == d->capCk) {
         if (d->nCk >= H264_MAX_ES_CHUNKS) return 0;
         uint32_t c = d->capCk ? d->capCk : 256u;
@@ -127,16 +113,42 @@ static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
         if (!t) return 0;
         d->ck = t; d->capCk = c;
     }
-    memcpy(d->es + d->esLen, p, n);
-    d->ck[d->nCk].off = d->esLen;
-    d->ck[d->nCk].len = n;
+    d->ck[d->nCk].off = off;
+    d->ck[d->nCk].len = 0;
     d->ck[d->nCk].pts = pts;
     d->nCk++;
-    d->esLen += n;
     return 1;
 }
 
-/* Drop consumed bytes so the fifos stay small (the ring is ~1.2MB; the game feeds as we drain). */
+/* Append a video PES payload to the ES fifo, cut into one chunk per access unit. PSMF streams
+ * carry an access-unit delimiter NAL (type 9) at the start of every picture but a PTS on only a
+ * few PES packets, so pictures are delimited by AUD start codes; the decoder runs in
+ * low-latency mode and treats each input sample as one whole picture. The last chunk stays open
+ * (not submitted) until the next delimiter or end of stream. */
+static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
+    if (n > H264_MAX_ES_BYTES - d->esLen ||
+        !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
+    uint32_t start = d->esLen;
+    memcpy(d->es + d->esLen, p, n);
+    d->esLen += n;
+    if (!d->ckOpen) {
+        if (!ck_push(d, start, pts)) return 0;
+        d->ckOpen = 1;
+    }
+    uint32_t from = start >= 3u ? start - 3u : 0u;
+    for (uint32_t k = from; k + 3u < d->esLen; k++) {
+        EsChunk *last = &d->ck[d->nCk - 1];
+        if (k <= last->off) continue;
+        if (d->es[k] != 0 || d->es[k + 1] != 0 || d->es[k + 2] != 1 || (d->es[k + 3] & 0x1F) != 9)
+            continue;
+        uint32_t cut = (k > last->off + 1u && d->es[k - 1] == 0) ? k - 1u : k;
+        last->len = cut - last->off;
+        if (!ck_push(d, cut, -1)) return 0;
+    }
+    EsChunk *open = &d->ck[d->nCk - 1];
+    open->len = d->esLen - open->off;
+    return 1;
+}
 static void es_compact(Dec *d) {
     if (d->curCk == 0 || d->curCk >= d->nCk || d->curCk < d->nCk / 2 ||
         d->esLen < (1u << 20)) return;
@@ -523,10 +535,13 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
         int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride);
         if (r > 0) return 1;
         if (r < 0) { d->failed = 1; return -1; }
-        if (d->curCk < d->nCk) {
+        uint32_t ready = d->nCk - (d->ckOpen ? 1u : 0u);
+        if (d->curCk < ready) {
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */
+        } else if (eos && d->ckOpen) {
+            d->ckOpen = 0;                  /* end of stream closes the last picture */
         } else if (eos && !d->drained) {
             d->drained = 1;
             IMFTransform_ProcessMessage(d->xf, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
