@@ -36,6 +36,50 @@ MGR = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / 
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 
+def function_body(source: str, signature: str) -> str:
+    """Return the complete text of the function declared by ``signature``.
+
+    The body is delimited by matching the declaration's braces, not by taking a
+    fixed-size slice. A byte window silently stops covering the fail-closed block
+    as soon as the function grows, which turns a policy invariant into a test of
+    how much unrelated code sits above it: sr_syscall gained the runtime PRX
+    import-linking path, and the retired 2000-byte window no longer reached
+    ``if (!e)``. Brace matching keeps the assertion tied to the policy instead.
+
+    Quoted spans and comments are skipped so that a brace inside a literal or a
+    comment cannot end the body early.
+    """
+    start = source.find(signature)
+    if start < 0:
+        return ""
+    open_brace = source.find("{", start)
+    if open_brace < 0:
+        return ""
+    depth = 0
+    i = open_brace
+    while i < len(source):
+        ch = source[i]
+        if ch in "\"'":
+            quote, i = ch, i + 1
+            while i < len(source) and source[i] != quote:
+                i += 2 if source[i] == "\\" else 1
+        elif source.startswith("//", i):
+            i = source.find("\n", i)
+            if i < 0:
+                break
+        elif source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            i = len(source) if end < 0 else end + 1
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:i + 1]
+        i += 1
+    return source[start:]
+
+
 class TestDispatchFatalPolicySource(unittest.TestCase):
     """Source-level invariants verifying fail-closed dispatch and NID handling."""
 
@@ -43,8 +87,7 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         """sr_syscall must terminate on unregistered NIDs and never return 0."""
         hle_src = HLE_C.read_text(encoding="utf-8")
         self.assertIn("uint32_t sr_syscall(CpuState *s, uint32_t nid)", hle_src)
-        idx = hle_src.find("uint32_t sr_syscall(CpuState *s, uint32_t nid)")
-        fn_body = hle_src[idx:idx + 2000]
+        fn_body = function_body(hle_src, "uint32_t sr_syscall(CpuState *s, uint32_t nid)")
         self.assertIn("if (!e)", fn_body)
         self.assertIn("_Exit(7)", fn_body)
         self.assertIn("longjmp(g_hle_jmp", fn_body)
