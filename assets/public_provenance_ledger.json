@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9b9d51cbf36b6bb452b7b0e676e369e68180d533767378f959b0ee350e652a87"
+      "sha256": "caf046455c92f9a8aef3cfa37b8ba74f35cbe6dc5c743b89b62d5fe9f9ca5cb3"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -5701,7 +5701,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "01b5adbacb7d619d477d5c22c3b2d9ac58d63ed948928ca2c0743c7187cd76d7"
+      "sha256": "367b55ada4c07b1e5264968a0b35d6d3e922b8afaff57fa176ce0603e005daf1"
     },
     {
       "path": "src/rt/h264_null.c",
@@ -5713,7 +5713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c0aa72e47b4d62fe54f99dc8aff4bc52a59e94906b5e6ca5ed952bf4c99e669b"
+      "sha256": "acd2d872a5b12ba32323b2f284061bc02240861a111e199fdedd7ecae6b4edef"
     },
     {
       "path": "src/rt/heap_selftest.c",
@@ -5750,7 +5750,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "ebfeefc8094c28e6c40b5e0540602e0ec9c150df0dd34bc4b952d456b0b784b0"
+      "sha256": "063ce859e1ce9b032d47d095fe0e31de00f3f5f3daacfe7d10901347cd15c7ae"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5812,7 +5812,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0df4ea14fe7eedc53664b0527f05f089cd4f357334576179571ea22165c3406"
+      "sha256": "ff58dc778a6545724a1e27050ffe5fd29ddb3a6484de3472ae268784573661d4"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5880,7 +5880,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "c6c97d9250938751534e337353f0b51559e20076c05d0a77975c33523871b111"
+      "sha256": "52cf7bf7c9cc87a2e52b83d02598311a728b20e5f8ebc20f464ac76dd287f534"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -6196,7 +6196,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c268d0b3087e57138dec2a4ee227b5c2c69bc92fdd975d241a3aca143314de48"
+      "sha256": "df3aed408b1f4fb8508479d5d6dde2c7df1537ccec32f9b6bf2a87e3871530f6"
     },
     {
       "path": "src/rt/stale_code.c",
@@ -7169,7 +7169,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9fb70c26a429f6058c969c8c25262fe074fc193846982663483827a1d399cf13"
+      "sha256": "4c824c7c0b2532f5f0b94bdc61a02871247bb3f30f2251555d046b95dbe83118"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8210,7 +8210,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "587258a53e8d22083959b75284012bb99b5c9a0c88c140e1cbacfba35c1b804b"
+      "sha256": "dafc89919c07d33cf1f97a9279b3bd3a1d9ded3c391a50a639d838ac49c28622"
     },
     {
       "path": "tools/test_dmac_semantics.py",
@@ -8219,7 +8219,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2dc8553a36b8088f02bbee8f3149306f7f87365373687e2527ed8316b1e6158b"
+      "sha256": "5793784e1a74672b6f55ca2fde7b71acda65327eaa888b7eb47ad20a1babf492"
     },
     {
       "path": "tools/test_domain_mode.py",
@@ -8387,7 +8387,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d761b771f50efea5c5ea588348a6a984ffba5a8a1009e17dd7cd70968676cdcb"
+      "sha256": "89a502a82124718e1a828b5948b018c6aecde1a6af188322e7b17f1f347a5e58"
     },
     {
       "path": "tools/test_guestmem_c.py",
@@ -9038,7 +9038,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc86a9352d64d15cec79e946e0017e983b929a065bcbf86772169c3f39cc0e63"
+      "sha256": "2174fa7843934c422679d1c693333d0fa32b3e1821687b5bb2e9559cebd4b910"
     },
     {
       "path": "tools/test_sync_drift_check.py",
