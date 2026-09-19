@@ -1139,6 +1139,12 @@
     "name": "sceKernelSetCompiledSdkVersion",
     "status": "complete"
   },
+  "0x769bebb6": {
+    "classification": "dedicated",
+    "handler": "h_MpegRingbufferQueryPackNum",
+    "name": "sceMpegRingbufferQueryPackNum",
+    "status": "unreviewed"
+  },
   "0x76f01aca": {
     "classification": "dedicated",
     "handler": "h_SasSetKeyOn",

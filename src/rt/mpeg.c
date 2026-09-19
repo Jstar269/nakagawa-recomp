@@ -253,6 +253,12 @@ uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets) {
     return u32_mul_checked(packets, MPEG_RING_BYTES_PER_PKT, &bytes) ? bytes : UINT32_MAX;
 }
 
+/* Inverse of mpeg_ringbuffer_query_mem_size: how many whole packets a buffer of
+ * `mem_size` bytes holds. */
+uint32_t mpeg_ringbuffer_query_pack_num(uint32_t mem_size) {
+    return mem_size / MPEG_RING_BYTES_PER_PKT;
+}
+
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size,
                                    uint32_t cbAddr, uint32_t cbArg) {
     uint32_t dataBytes, requiredBytes, dataUpper;

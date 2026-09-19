@@ -153,6 +153,21 @@ class Elf:
                             text_sec = next((s for s in self.sections if s.get("nm") == ".text"), None)
                             if text_sec:
                                 text_sec["size"] = meta_start - text_sec["addr"]
+                            # Everything in the code segment after the module metadata is
+                            # read-only data (.rodata.sceResident/.sceNid/.rodata): switch
+                            # jump tables and function-pointer tables live there, so expose
+                            # it as .rodata for the data-pointer scan.
+                            meta_end = module_info_offset + 52
+                            if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
+                                meta_end = max(meta_end, entend)
+                            if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
+                                meta_end = max(meta_end, stubend)
+                            seg_end = code_seg["vaddr"] + code_seg["filesz"]
+                            if meta_end < seg_end:
+                                self.sections.append(dict(name=0, typ=1, flags=2, addr=meta_end,
+                                                          off=code_seg["off"] + (meta_end - code_seg["vaddr"]),
+                                                          size=seg_end - meta_end, link=0, info=0, entsz=0,
+                                                          nm=".rodata"))
                             break
 
         # PRX (ET_SCE_PRX = 0xFFA0), relocatable (ET_REL), and relocation-bearing

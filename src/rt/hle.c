@@ -50,6 +50,7 @@
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 #include "hle_power.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
+#include "prx_loader.h"  /* clean-room PRX image loader (G3) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2168,11 +2169,116 @@ static const char *guest_module_root(void) {
     return (module_root && module_root[0]) ? module_root : "place_game_here/EXTRACTED/decrypted";
 }
 
-/* Register one manifest-declared guest module's exports at its manifest base (the same
- * base the recompiler used, from the title manifest's modules[] list). */
+/* ---- Late-module image load (L4) ----
+ * The recompiler translates a late module's code ahead of time at its manifest base,
+ * but the module's initialised data (.data/.rodata, relocated pointer tables, strings)
+ * only exists in guest RAM if the loader puts it there. The clean-room loader
+ * (prx_loader.c) relocates the image; its only guest access is sr_prx_guest_write,
+ * which this runtime implements as a host staging buffer so nothing touches guest RAM
+ * until the module's exact range [base, end) has been reserved in the user partition. */
+static uint8_t *s_prx_stage;
+static uint32_t s_prx_stage_base, s_prx_stage_len, s_prx_stage_cap;
+static int s_prx_staging;
+
+int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
+    if (!s_prx_staging || guest_addr < s_prx_stage_base || (n && !src)) return 1;
+    uint64_t off = (uint64_t)guest_addr - s_prx_stage_base;
+    uint64_t end = off + n;
+    if (end > 0x04000000u) return 1;            /* larger than all of user RAM */
+    if (end > s_prx_stage_cap) {
+        uint64_t cap = s_prx_stage_cap ? s_prx_stage_cap : 0x10000u;
+        while (cap < end) cap *= 2u;
+        uint8_t *grown = (uint8_t *)realloc(s_prx_stage, (size_t)cap);
+        if (!grown) return 1;
+        memset(grown + s_prx_stage_cap, 0, (size_t)(cap - s_prx_stage_cap));
+        s_prx_stage = grown;
+        s_prx_stage_cap = (uint32_t)cap;
+    }
+    if (n) memcpy(s_prx_stage + off, src, n);
+    if (end > s_prx_stage_len) s_prx_stage_len = (uint32_t)end;
+    return 0;
+}
+
+/* Resident images: LoadModuleByID repopulates every manifest module, and a second load must
+ * not overwrite a running module's live data. `started` is set once the module's real
+ * module_start has run; only then are its exports linked to importers (see
+ * started_module_export). */
+typedef struct { uint32_t base, end; int started; } PrxImage;
+static PrxImage s_prx_images[16];
+static unsigned s_prx_image_count;
+static atomic_int s_prx_started_count;
+
+/* The guest address a started module exports for `nid`, or 0. Importers are linked to a
+ * module's exports only after that module has been initialised, as the kernel does. */
+static uint32_t started_module_export(uint32_t nid) {
+    if (atomic_load_explicit(&s_prx_started_count, memory_order_acquire) == 0) return 0;
+    uint32_t t = sr_hle_resolve_late_import(nid);
+    if (!t || t == SR_HLE_LATE_BUILTIN) return 0;
+    for (unsigned i = 0; i < s_prx_image_count; i++)
+        if (s_prx_images[i].started && t >= s_prx_images[i].base && t < s_prx_images[i].end) return t;
+    return 0;
+}
+
+static void mark_module_started(uint32_t entry) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (entry >= s_prx_images[i].base && entry < s_prx_images[i].end && !s_prx_images[i].started) {
+            s_prx_images[i].started = 1;
+            atomic_fetch_add_explicit(&s_prx_started_count, 1, memory_order_release);
+        }
+    }
+}
+
+static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
+    for (unsigned i = 0; i < s_prx_image_count; i++)
+        if (s_prx_images[i].base == base) return 1;
+    if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) return 0;
+
+    SrPrxImage img;
+    char err[160] = "";
+    memset(&img, 0, sizeof(img));
+    if (s_prx_stage && s_prx_stage_cap) memset(s_prx_stage, 0, s_prx_stage_cap);
+    s_prx_stage_base = base;
+    s_prx_stage_len = 0;
+    s_prx_staging = 1;
+    int rc = sr_prx_load(host_path, base, &img, err, sizeof(err));
+    s_prx_staging = 0;
+    if (rc != 0) {
+        fprintf(stderr, "PRX image: %s at 0x%08x: load failed: %s\n", host_path, base, err);
+        return 0;
+    }
+    uint32_t size = (img.end > base && img.end - base > s_prx_stage_len) ? img.end - base
+                                                                         : s_prx_stage_len;
+    int ok = 0;
+    if (size == 0 || img.start != base) {
+        fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x\n",
+                host_path, img.start, img.end, base);
+    } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
+        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not free in the user partition; "
+                        "image not loaded\n", host_path, base, base + size);
+    } else if (!sr_guest_span_writable(base, size)) {
+        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory\n",
+                host_path, base, base + size);
+    } else {
+        memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
+        if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
+        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, 0};
+        fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
+                img.modname, base, base + size, img.nexp, img.nimp);
+        ok = 1;
+    }
+    sr_prx_image_free(&img);
+    return ok;
+}
+
+/* Load one manifest-declared guest module's image and register its exports at its
+ * manifest base (the same base the recompiler used, from the title manifest's modules[]
+ * list). */
 static unsigned populate_guest_module(const char *file, uint32_t base) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    char image_path[1024];
+    int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
+    if (written > 0 && (size_t)written < sizeof(image_path)) load_prx_image(image_path, base, file);
     unsigned res = register_known_module(guest_module_root(), file, base);
     if (!s_last_prx_entry) s_last_prx_entry = base;
     return res;
@@ -4029,6 +4135,7 @@ uint32_t mpeg_init(void);
 uint32_t mpeg_finish(void);
 uint32_t mpeg_query_mem_size(uint32_t outAddr);
 uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets);
+uint32_t mpeg_ringbuffer_query_pack_num(uint32_t mem_size);
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size, uint32_t cbAddr, uint32_t cbArg);
 uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr, uint32_t frameWidth, uint32_t mode, uint32_t ddrTop);
 uint32_t mpeg_delete(uint32_t mpegAddr);
@@ -4071,6 +4178,7 @@ static uint32_t h_MpegCreate(CpuState *s) {
 }
 static uint32_t h_MpegDelete(CpuState *s) { return mpeg_delete(A0); }
 static uint32_t h_MpegRingbufferQueryMemSize(CpuState *s) { return mpeg_ringbuffer_query_mem_size(A0); }
+static uint32_t h_MpegRingbufferQueryPackNum(CpuState *s) { return mpeg_ringbuffer_query_pack_num(A0); }
 static uint32_t h_MpegRingbufferConstruct(CpuState *s) { return mpeg_ringbuffer_construct(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1)); }
 static uint32_t h_MpegRingbufferAvailable(CpuState *s) { return mpeg_ringbuffer_available_size(A0); }
 static uint32_t h_MpegRingbufferPut(CpuState *s) { return mpeg_ringbuffer_put(s, A0, A1, A2); }
@@ -6381,6 +6489,7 @@ static uint32_t h_StartModule(CpuState *s) {
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
         uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
+        mark_module_started(mod->module_start);
         if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
             MEM_W32(status_ptr, rv);
         }
@@ -13578,6 +13687,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x21ff80e4, "sceMpegQueryStreamOffset", h_MpegQueryStreamOffset);
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
+    sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
     sr_hle_register(0x37295ed8, "sceMpegRingbufferConstruct", h_MpegRingbufferConstruct);
     /* sceMpeg ringbuffer destruct and flush: shared with the executable harness
      * through hle_register_mpeg_shared_handlers(). */
@@ -13739,6 +13849,29 @@ void sr_hle_init(void) {
 
 /* ---- dispatch ---- */
 
+/* Import linking for runtime-loaded modules: a NID exported by a module whose image is resident
+ * and whose module_start has run executes that module's recompiled guest code (e.g.
+ * scePsmfPlayer* -> libpsmfplayer.prx), exactly as the kernel links the importer's stub to the
+ * export. Returns 1 when the call was linked (result in v0); the host handler then only serves
+ * NIDs no started module exports. */
+static int link_started_export(CpuState *s, uint32_t nid) {
+    uint32_t target = started_module_export(nid);
+    RecompFn gfn = target ? sr_lookup(target) : NULL;
+    if (!gfn) return 0;
+    /* Log each linked NID once. */
+    static uint32_t s_linked_seen[256];
+    static unsigned s_linked_n = 0;
+    unsigned k = 0;
+    while (k < s_linked_n && s_linked_seen[k] != nid) k++;
+    if (k == s_linked_n && s_linked_n < 256) {
+        s_linked_seen[s_linked_n++] = nid;
+        const char *nm = sr_nid_name(nid);
+        fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
+    }
+    gfn(s);
+    return 1;
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
     sr_last_nid = nid;
@@ -13748,6 +13881,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
                   if ((++nc & 0x3f) == 0) fflush(nf); }
     }
+    if (link_started_export(s, nid)) return s->r[2];
     HleEntry *e = hle_find(nid);
     if (hle_log_on()) {
         /* Deduplicate: only log each (thread, nid) pair once to avoid drowning

@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "20e5cc030ccb2af7783ae3e1939e1b5338975d2b8ef3d28c1fdcb24827d6df9d"
+      "sha256": "8524bd13fe822a61961507bb83958aff880c472d88be9a2a0d348f61cf1d83f5"
     },
     {
       "path": "NOTICE.md",
@@ -5750,7 +5750,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "81815d60464898708545780a384660b406a5a74f2aecfaa556c9132656517ef3"
+      "sha256": "b90033f38124f4e7e6ccdf45cb3dca535c08ded28fd0915cf1185357552f867c"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5880,7 +5880,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "c25f3c9e7d018650047ba56dc2adbdd741742b8473cb34f2c09bb0f965752dd0"
+      "sha256": "c6c97d9250938751534e337353f0b51559e20076c05d0a77975c33523871b111"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -6612,7 +6612,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "59f98f7b5a3693d5af715e291141ea8cde2bd15ef9427f59f9fac56dded7d82f"
+      "sha256": "e41ef7d15f9d314f0dfd907ac0f6e004c804f92f64df41b8f048f9543bdbd5e7"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -7169,7 +7169,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9fb70c26a429f6058c969c8c25262fe074fc193846982663483827a1d399cf13"
+      "sha256": "284dd32a07be8b81385f27d25bc21a8265c01c14fed9572dd29c31ac08718a11"
     },
     {
       "path": "tools/import_audit_gate.py",
