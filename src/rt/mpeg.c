@@ -745,6 +745,13 @@ uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
     YcbcrBuf *from = ycbcr_find(mpegAddr, src);
     YcbcrBuf *to = ycbcr_slot(mpegAddr, dst);
+    if (getenv("SR_MPEGLOG")) {
+        static int n = 0;
+        if (n++ < 32 || (n & 0xFF) == 0)
+            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%x [dst]=0x%x src=0x%x [src]=0x%x from=%d\n",
+                    n, dst, sr_guest_span_readable(dst, 4) ? MEM_R32(dst) : 0u,
+                    src, sr_guest_span_readable(src, 4) ? MEM_R32(src) : 0u, from ? from->valid : -1);
+    }
     if (from && to && from != to) {
         if (from->valid) memcpy(to->rgba, from->rgba, (size_t)YCBCR_W * YCBCR_H * 4);
         to->valid = from->valid;
