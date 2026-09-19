@@ -673,7 +673,6 @@ uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
 }
 
 uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf, uint32_t initAddr) {
-    (void)auAddr;
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     g_mpeg_avcdec++;
@@ -681,6 +680,12 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf,
     YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 1);
     if (b) b->pending++;
     if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in `buf` */
+    if (getenv("SR_MPEGLOG")) {
+        static int n = 0;
+        if (n++ < 32 || (n & 0xFF) == 0)
+            fprintf(stderr, "MpegAvcDecodeYCbCr #%d au=0x%x buf=0x%x [buf]=0x%x pts=%lld\n",
+                    n, auAddr, buf, buf ? MEM_R32(buf) : 0u, (long long)ctx->videoPts);
+    }
     return 0;
 }
 
