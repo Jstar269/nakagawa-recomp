@@ -42,6 +42,13 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 #define MAX_COMPAT_DISC_IDS 16
 #define NK_MANIFEST_MAX_OVERLAYS 8
 
+/* The window a guest module's base must lie in: its code and data are both placed there, so a
+ * base outside it lets translated code run while every data write is dropped. Mirrors
+ * GUEST_MODULE_RAM_LO/HI in tools/title_manifest.py (64 MB models extend user RAM; the runtime
+ * arena ends where this window ends). */
+#define GUEST_MODULE_RAM_LO 0x08800000u
+#define GUEST_MODULE_RAM_HI 0x0C000000u
+
 #define SR_DISPATCH_VFPU_TAG  0x40000000U
 #define SR_DISPATCH_VFPU_MASK 0xFC000000U
 
@@ -821,6 +828,28 @@ static bool is_valid_portable_path(const char *s) {
     return true;
 }
 
+static bool is_guest_device_path(const char *s) {
+    if (!s || !*s) return false;
+    size_t len = strlen(s);
+    if (len > 256) return false;
+    const char *colon = strchr(s, ':');
+    if (!colon || colon[1] != '/') return false;
+    static const char * const devices[] = {"disc0", "umd0", "ms0", "flash0", "host0", NULL};
+    size_t dlen = (size_t)(colon - s);
+    for (int i = 0; devices[i]; i++) {
+        if (strlen(devices[i]) == dlen && strncmp(s, devices[i], dlen) == 0) return true;
+    }
+    return false;
+}
+
+static bool is_load_address_evidence(const char *s) {
+    static const char * const classes[] = {"measured-hw", "measured-ppsspp", "provisional", NULL};
+    for (int i = 0; classes[i]; i++) {
+        if (strcmp(s, classes[i]) == 0) return true;
+    }
+    return false;
+}
+
 static bool parse_uint32(const JsonNode *node, uint32_t *out_val) {
     if (!node) return false;
     if (node->type == JSON_NUMBER) {
@@ -1153,12 +1182,19 @@ bool nk_title_manifest_parse_buffer(
         json_free(root);
         return false;
     }
-    static const char * const allowed_mod_keys[] = {"name", "load_address", "required", "role", NULL};
+    /* guest_path and load_address_evidence are optional schema v1 module declarations: the
+       manifest names where a guest module's image lives on the PSP's own device tree, and how
+       its base was established. Both are part of the schema and are validated by the Python
+       parser, so they belong in the accepted set here rather than being rejected as unknown
+       fields -- rejecting them made the two parsers disagree on any manifest that uses them. */
+    static const char * const allowed_mod_keys[] = {"name", "load_address", "required", "role",
+                                                    "guest_path", "load_address_evidence", NULL};
+    static const char * const required_mod_keys[] = {"name", "load_address", "required", "role", NULL};
     for (size_t i = 0; i < mods_node->u.arr.count; i++) {
         JsonNode *m = mods_node->u.arr.items[i];
         char mod_path[64];
         snprintf(mod_path, sizeof(mod_path), "$.modules[%zu]", i);
-        if (!check_object_keys(m, mod_path, allowed_mod_keys, allowed_mod_keys, error_buf, error_buf_len)) {
+        if (!check_object_keys(m, mod_path, allowed_mod_keys, required_mod_keys, error_buf, error_buf_len)) {
             json_free(root);
             return false;
         }
@@ -1227,6 +1263,32 @@ bool nk_title_manifest_parse_buffer(
             if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu]: hle-capability must be marked required", i);
             json_free(root);
             return false;
+        }
+        if (strcmp(role_str, "guest-prx") == 0 || strcmp(role_str, "optional-guest-prx") == 0) {
+            /* A guest module's code AND data live at load_address, so it must be real user RAM:
+               a base outside it lets translated code run while every data write is dropped (the
+               late-PRX bases once sat at 0x322xxxxx). The Python parser enforces the same window. */
+            if (mod_addr < GUEST_MODULE_RAM_LO || mod_addr >= GUEST_MODULE_RAM_HI) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: guest module base must lie in user RAM [0x%08x, 0x%08x)", i, GUEST_MODULE_RAM_LO, GUEST_MODULE_RAM_HI);
+                json_free(root);
+                return false;
+            }
+        }
+        JsonNode *gpath_node = obj_get(m, "guest_path");
+        if (gpath_node) {
+            if (gpath_node->type != JSON_STRING || !is_guest_device_path(gpath_node->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].guest_path: must be an absolute PSP device path (e.g. disc0:/...)", i);
+                json_free(root);
+                return false;
+            }
+        }
+        JsonNode *evidence_node = obj_get(m, "load_address_evidence");
+        if (evidence_node) {
+            if (evidence_node->type != JSON_STRING || !is_load_address_evidence(evidence_node->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address_evidence: unsupported evidence class", i);
+                json_free(root);
+                return false;
+            }
         }
     }
 
