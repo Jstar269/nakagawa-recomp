@@ -176,6 +176,7 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
+    s->pc = fn;   /* dispatch() treats pc == 0 as a lost thread and halts it */
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
     dispatch(s, fn);
     uint32_t ret = s->r[2];
