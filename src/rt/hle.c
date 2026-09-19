@@ -787,21 +787,72 @@ static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_s
  * defaults (Core/HLE/sceUtility.cpp registry): English (1), Western button order, 24h clock.
  * A no-op that leaves *out untouched makes the game read garbage for the language and load the
  * wrong region assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. */
-static uint32_t h_GetSystemParamInt(CpuState *s) {
-    uint32_t id = A0, out = A1, v;
+static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
-        case 2:  v = 1;  break;   /* ADHOC_CHANNEL: automatic */
-        case 3:  v = 0;  break;   /* WLAN_POWERSAVE: off */
-        case 4:  v = 1;  break;   /* DATE_FORMAT: MMDDYYYY */
-        case 5:  v = 0;  break;   /* TIME_FORMAT: 24h */
-        case 6:  v = 0;  break;   /* TIMEZONE offset (minutes) */
-        case 7:  v = 0;  break;   /* DAYLIGHTSAVINGS: off */
-        case 8:  v = 1;  break;   /* LANGUAGE: English (PPSSPP default) */
-        case 9:  v = 1;  break;   /* BUTTON_PREFERENCE: cross = enter (Western) */
-        default: v = 1;  break;   /* safe default */
+        case 2:  return 1;   /* ADHOC_CHANNEL: automatic */
+        case 3:  return 0;   /* WLAN_POWERSAVE: off */
+        case 4:  return 1;   /* DATE_FORMAT: MMDDYYYY */
+        case 5:  return 0;   /* TIME_FORMAT: 24h */
+        case 6:  return 0;   /* TIMEZONE offset (minutes) */
+        case 7:  return 0;   /* DAYLIGHTSAVINGS: off */
+        case 8:  return 1;   /* LANGUAGE: English (PPSSPP default) */
+        case 9:  return 1;   /* BUTTON_PREFERENCE: cross = enter (Western) */
+        default: return 1;   /* safe default */
     }
+}
+
+static uint32_t h_GetSystemParamInt(CpuState *s) {
+    uint32_t id = A0, out = A1;
+    uint32_t v = systemparam_int_value(id);
     if (out) MEM_W32(out, v);
     if (hle_log_on()) fprintf(stderr, "sceUtilityGetSystemParamInt: id=%u -> %u\n", id, v);
+    return 0;
+}
+
+/* sceImpose: the impose language and confirm-button mode. The game sets this once during boot and
+ * the impose surface (plus any dialog that follows the system convention) must agree with it, so
+ * this is retained state rather than the h_ok fake success it used to be.
+ *
+ * Contract (public reference model: PPSSPP Core/HLE/sceImpose.cpp; the NIDs below are the same
+ * ones already carried by src/rt/nid_names.h):
+ *   sceImposeSetLanguageMode(language, buttonConfirm) stores BOTH values and returns 0. The
+ *     reference also stores a language that differs from the system language -- it logs a warning
+ *     and still returns 0 -- so a mismatch must not become an error here.
+ *   sceImposeGetLanguageMode(int *language, int *buttonConfirm) writes both back and returns 0.
+ *     Either out-pointer is optional in the wrapper ('xx'), so each is written only when the guest
+ *     supplied a writable 4-byte span.
+ * Defaults come from the same table as sceUtilityGetSystemParamInt, so the two surfaces cannot
+ * disagree before the game's first set. The numeric convention for the confirm button is whatever
+ * that table reports for id 9; it is deliberately not reinterpreted here. */
+static uint32_t s_impose_language;
+static uint32_t s_impose_button;
+static int s_impose_inited;
+
+static void impose_init_once(void) {
+    if (s_impose_inited) return;
+    s_impose_inited = 1;
+    s_impose_language = systemparam_int_value(8);  /* SCE_SYSTEMPARAM_ID_INT_LANGUAGE */
+    s_impose_button = systemparam_int_value(9);    /* SCE_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE */
+}
+
+static uint32_t h_ImposeSetLanguageMode(CpuState *s) {
+    (void)s;
+    impose_init_once();
+    s_impose_language = A0;
+    s_impose_button = A1;
+    if (hle_log_on())
+        fprintf(stderr, "sceImposeSetLanguageMode: language=%u buttonConfirm=%u\n", A0, A1);
+    return 0;
+}
+
+static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
+    (void)s;
+    impose_init_once();
+    if (A0 && sr_guest_span_writable(A0, 4u)) MEM_W32(A0, s_impose_language);
+    if (A1 && sr_guest_span_writable(A1, 4u)) MEM_W32(A1, s_impose_button);
+    if (hle_log_on())
+        fprintf(stderr, "sceImposeGetLanguageMode: -> language=%u buttonConfirm=%u\n",
+                s_impose_language, s_impose_button);
     return 0;
 }
 /* sceUtilityGetSystemParamString(id, char *out, int len): nickname etc. Write a short ASCII name. */
@@ -13603,6 +13654,13 @@ static void hle_register_mpeg_shared_handlers(void) {
     sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
 }
 
+/* sceImpose language/confirm-button mode (see h_ImposeSetLanguageMode). One definition, called
+ * by both registry branches, so the executable harness dispatches the production mapping. */
+static void hle_register_impose_handlers(void) {
+    sr_hle_register(0x36aa6e91, "sceImposeSetLanguageMode", h_ImposeSetLanguageMode);
+    sr_hle_register(0x24fd7bcf, "sceImposeGetLanguageMode", h_ImposeGetLanguageMode);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -13640,6 +13698,7 @@ void sr_hle_init(void) {
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
     hle_register_partition_savedata_handlers();
+    hle_register_impose_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -13672,7 +13731,9 @@ void sr_hle_init(void) {
     /* Boot setup batch (return success / reference value). */
     sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
-    sr_hle_register(0x36aa6e91, "sceImposeSetLanguageMode", h_ok);
+    /* sceImpose language/confirm-button mode: retained state shared with the system-param table
+     * above (the getter had no registration at all before this). */
+    hle_register_impose_handlers();
     /* sceUtility dialogs (OSK / savedata / netconf): no dialog active -> status 0, calls ok. */
     sr_hle_register(0xf3f76017, "sceUtilityOskGetStatus", h_OskGetStatus);
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);

@@ -9029,6 +9029,37 @@ static void test_td24d_hle_batch(void) {
     expect(sr_hle_test_atrac_reinit_count() == 2u, "reinit count reached 2");
 }
 
+/* sceImpose language/confirm-button mode: the setter (0x36aa6e91) was registered to the generic
+ * h_ok fake success and the getter (0x24fd7bcf) had no registration at all, so the pair could not
+ * even round-trip. Both legs dispatch through sr_syscall to pin the production NID mapping; the
+ * default must match the system-param table the state seeds from (language 1, button pref 1). */
+#define NID_SCE_IMPOSE_SET_LANGUAGE_MODE 0x36aa6e91u
+#define NID_SCE_IMPOSE_GET_LANGUAGE_MODE 0x24fd7bcfu
+
+static void test_impose_language_mode_pair(void) {
+    reset_fixture();
+    sr_hle_init();
+    enum { IMPOSE_LANG = 0x08007300u, IMPOSE_BTN = 0x08007310u };
+    MEM_W32(IMPOSE_LANG, 0xdeadbeefu);
+    MEM_W32(IMPOSE_BTN, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, IMPOSE_BTN, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 1u && MEM_R32(IMPOSE_BTN) == 1u,
+           "sceImposeGetLanguageMode reports the system-param defaults before any set");
+
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_SET_LANGUAGE_MODE, 0u, 1u, 0u, 0u) == 0u,
+           "sceImposeSetLanguageMode accepts a language that differs from the system language");
+    MEM_W32(IMPOSE_LANG, 0u);
+    MEM_W32(IMPOSE_BTN, 0u);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, IMPOSE_BTN, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 0u && MEM_R32(IMPOSE_BTN) == 1u,
+           "sceImposeGetLanguageMode round-trips the stored pair");
+
+    MEM_W32(IMPOSE_LANG, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, 0u, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 0u,
+           "sceImposeGetLanguageMode writes language when the button pointer is NULL");
+}
+
 
 /* Production-dispatch regression for the BGM/SFX mix junction (#32, #75).
  *
@@ -13071,6 +13102,7 @@ int main(int argc, char **argv) {
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
     test_td24d_hle_batch();
+    test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();

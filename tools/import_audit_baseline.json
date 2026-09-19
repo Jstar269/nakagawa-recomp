@@ -335,6 +335,12 @@
     "name": "sceUtilityGamedataInstallInitStart",
     "status": "unreviewed"
   },
+  "0x24fd7bcf": {
+    "classification": "dedicated",
+    "handler": "h_ImposeGetLanguageMode",
+    "name": "sceImposeGetLanguageMode",
+    "status": "unreviewed"
+  },
   "0x267a6dd2": {
     "classification": "dedicated",
     "handler": "h_SasRevParam",
@@ -540,10 +546,10 @@
     "status": "unreviewed"
   },
   "0x36aa6e91": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_ImposeSetLanguageMode",
     "name": "sceImposeSetLanguageMode",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0x36cdfade": {
     "classification": "dedicated",
