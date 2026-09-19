@@ -2199,15 +2199,39 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
     return 0;
 }
 
-/* Bases whose image is resident: LoadModuleByID repopulates every manifest module, and a
- * second load must not overwrite a running module's live data. */
-static uint32_t s_prx_image_bases[16];
+/* Resident images: LoadModuleByID repopulates every manifest module, and a second load must
+ * not overwrite a running module's live data. `started` is set once the module's real
+ * module_start has run; only then are its exports linked to importers (see
+ * started_module_export). */
+typedef struct { uint32_t base, end; int started; } PrxImage;
+static PrxImage s_prx_images[16];
 static unsigned s_prx_image_count;
+static atomic_int s_prx_started_count;
+
+/* The guest address a started module exports for `nid`, or 0. Importers are linked to a
+ * module's exports only after that module has been initialised, as the kernel does. */
+static uint32_t started_module_export(uint32_t nid) {
+    if (atomic_load_explicit(&s_prx_started_count, memory_order_acquire) == 0) return 0;
+    uint32_t t = sr_hle_resolve_late_import(nid);
+    if (!t || t == SR_HLE_LATE_BUILTIN) return 0;
+    for (unsigned i = 0; i < s_prx_image_count; i++)
+        if (s_prx_images[i].started && t >= s_prx_images[i].base && t < s_prx_images[i].end) return t;
+    return 0;
+}
+
+static void mark_module_started(uint32_t entry) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (entry >= s_prx_images[i].base && entry < s_prx_images[i].end && !s_prx_images[i].started) {
+            s_prx_images[i].started = 1;
+            atomic_fetch_add_explicit(&s_prx_started_count, 1, memory_order_release);
+        }
+    }
+}
 
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
     for (unsigned i = 0; i < s_prx_image_count; i++)
-        if (s_prx_image_bases[i] == base) return 1;
-    if (s_prx_image_count >= sizeof(s_prx_image_bases) / sizeof(s_prx_image_bases[0])) return 0;
+        if (s_prx_images[i].base == base) return 1;
+    if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) return 0;
 
     SrPrxImage img;
     char err[160] = "";
@@ -2237,7 +2261,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
-        s_prx_image_bases[s_prx_image_count++] = base;
+        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, 0};
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
@@ -6463,6 +6487,7 @@ static uint32_t h_StartModule(CpuState *s) {
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
         uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
+        mark_module_started(mod->module_start);
         if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
             MEM_W32(status_ptr, rv);
         }
@@ -13829,6 +13854,25 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
                   if ((++nc & 0x3f) == 0) fflush(nf); }
+    }
+    /* Import linking for runtime-loaded modules: a NID exported by a module whose image is
+     * resident and whose module_start has run executes that module's recompiled guest code
+     * (e.g. scePsmfPlayer* -> libpsmfplayer.prx), exactly as the kernel links the importer's
+     * stub to the export. The host handler below only serves NIDs no started module exports. */
+    {
+        uint32_t target = started_module_export(nid);
+        RecompFn gfn = target ? sr_lookup(target) : NULL;
+        if (gfn) {
+            static int s_linked_logged = 0;
+            if (s_linked_logged < 64) {
+                s_linked_logged++;
+                const char *nm = sr_nid_name(nid);
+                fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n",
+                        nm ? nm : "?", nid, target);
+            }
+            gfn(s);
+            return s->r[2];
+        }
     }
     HleEntry *e = hle_find(nid);
     if (hle_log_on()) {
