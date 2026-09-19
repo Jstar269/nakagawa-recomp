@@ -236,6 +236,7 @@
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
     "docs/WEB_UI_MIGRATION.md",
     "docs/WORKSPACE_DOCTOR.md",
+    "docs/cleanroom/PRX_LOADER_SPEC.md",
     "docs/cleanroom/SCHED_SPEC.md",
     "docs/provenance/FONT_ORIGINS.md",
     "docs/provenance/GUEST_INTERP_ATTESTATION.md",
