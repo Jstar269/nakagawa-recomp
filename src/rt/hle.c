@@ -50,6 +50,7 @@
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 #include "hle_power.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
+#include "prx_loader.h"  /* clean-room PRX image loader (G3) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2168,11 +2169,97 @@ static const char *guest_module_root(void) {
     return (module_root && module_root[0]) ? module_root : "place_game_here/EXTRACTED/decrypted";
 }
 
-/* Register one manifest-declared guest module's exports at its manifest base (the same
- * base the recompiler used, from the title manifest's modules[] list). */
+/* ---- Late-module image load (L4) ----
+ * The recompiler translates a late module's code ahead of time at its manifest base,
+ * but the module's initialised data (.data/.rodata, relocated pointer tables, strings)
+ * only exists in guest RAM if the loader puts it there. The clean-room loader
+ * (prx_loader.c) relocates the image; its only guest access is sr_prx_guest_write,
+ * which this runtime implements as a host staging buffer so nothing touches guest RAM
+ * until the module's exact range [base, end) has been reserved in the user partition. */
+static uint8_t *s_prx_stage;
+static uint32_t s_prx_stage_base, s_prx_stage_len, s_prx_stage_cap;
+static int s_prx_staging;
+
+int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
+    if (!s_prx_staging || guest_addr < s_prx_stage_base || (n && !src)) return 1;
+    uint64_t off = (uint64_t)guest_addr - s_prx_stage_base;
+    uint64_t end = off + n;
+    if (end > 0x04000000u) return 1;            /* larger than all of user RAM */
+    if (end > s_prx_stage_cap) {
+        uint64_t cap = s_prx_stage_cap ? s_prx_stage_cap : 0x10000u;
+        while (cap < end) cap *= 2u;
+        uint8_t *grown = (uint8_t *)realloc(s_prx_stage, (size_t)cap);
+        if (!grown) return 1;
+        memset(grown + s_prx_stage_cap, 0, (size_t)(cap - s_prx_stage_cap));
+        s_prx_stage = grown;
+        s_prx_stage_cap = (uint32_t)cap;
+    }
+    if (n) memcpy(s_prx_stage + off, src, n);
+    if (end > s_prx_stage_len) s_prx_stage_len = (uint32_t)end;
+    return 0;
+}
+
+/* Bases whose image is resident: LoadModuleByID repopulates every manifest module, and a
+ * second load must not overwrite a running module's live data. */
+static uint32_t s_prx_image_bases[16];
+static unsigned s_prx_image_count;
+
+static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
+    for (unsigned i = 0; i < s_prx_image_count; i++)
+        if (s_prx_image_bases[i] == base) return 1;
+    if (s_prx_image_count >= sizeof(s_prx_image_bases) / sizeof(s_prx_image_bases[0])) return 0;
+
+    SrPrxImage img;
+    char err[160] = "";
+    memset(&img, 0, sizeof(img));
+    if (s_prx_stage && s_prx_stage_cap) memset(s_prx_stage, 0, s_prx_stage_cap);
+    s_prx_stage_base = base;
+    s_prx_stage_len = 0;
+    s_prx_staging = 1;
+    int rc = sr_prx_load(host_path, base, &img, err, sizeof(err));
+    s_prx_staging = 0;
+    if (rc != 0) {
+        fprintf(stderr, "PRX image: %s at 0x%08x: load failed: %s
+", host_path, base, err);
+        return 0;
+    }
+    uint32_t size = (img.end > base && img.end - base > s_prx_stage_len) ? img.end - base
+                                                                         : s_prx_stage_len;
+    int ok = 0;
+    if (size == 0 || img.start != base) {
+        fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x
+",
+                host_path, img.start, img.end, base);
+    } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
+        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not free in the user partition; "
+                        "image not loaded
+", host_path, base, base + size);
+    } else if (!sr_guest_span_writable(base, size)) {
+        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory
+",
+                host_path, base, base + size);
+    } else {
+        memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
+        if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
+        s_prx_image_bases[s_prx_image_count++] = base;
+        fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs
+",
+                img.modname, base, base + size, img.nexp, img.nimp);
+        ok = 1;
+    }
+    sr_prx_image_free(&img);
+    return ok;
+}
+
+/* Load one manifest-declared guest module's image and register its exports at its
+ * manifest base (the same base the recompiler used, from the title manifest's modules[]
+ * list). */
 static unsigned populate_guest_module(const char *file, uint32_t base) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    char image_path[1024];
+    int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
+    if (written > 0 && (size_t)written < sizeof(image_path)) load_prx_image(image_path, base, file);
     unsigned res = register_known_module(guest_module_root(), file, base);
     if (!s_last_prx_entry) s_last_prx_entry = base;
     return res;
