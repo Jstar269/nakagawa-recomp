@@ -2219,31 +2219,26 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     int rc = sr_prx_load(host_path, base, &img, err, sizeof(err));
     s_prx_staging = 0;
     if (rc != 0) {
-        fprintf(stderr, "PRX image: %s at 0x%08x: load failed: %s
-", host_path, base, err);
+        fprintf(stderr, "PRX image: %s at 0x%08x: load failed: %s\n", host_path, base, err);
         return 0;
     }
     uint32_t size = (img.end > base && img.end - base > s_prx_stage_len) ? img.end - base
                                                                          : s_prx_stage_len;
     int ok = 0;
     if (size == 0 || img.start != base) {
-        fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x
-",
+        fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x\n",
                 host_path, img.start, img.end, base);
     } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
         fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not free in the user partition; "
-                        "image not loaded
-", host_path, base, base + size);
+                        "image not loaded\n", host_path, base, base + size);
     } else if (!sr_guest_span_writable(base, size)) {
-        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory
-",
+        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory\n",
                 host_path, base, base + size);
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
         s_prx_image_bases[s_prx_image_count++] = base;
-        fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs
-",
+        fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
     }
