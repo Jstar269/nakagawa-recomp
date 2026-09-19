@@ -104,6 +104,19 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need, uint32_t max) 
 static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
     if (n > H264_MAX_ES_BYTES - d->esLen ||
         !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
+    /* A PES packet carries a PTS only when it begins an access unit; payloads without one
+     * continue the previous picture. Keep one input sample per access unit (the decoder runs
+     * in low-latency mode and treats each sample as a whole picture) by extending the last
+     * chunk while it has not been submitted yet. */
+    if (pts < 0 && d->nCk > d->curCk) {
+        EsChunk *last = &d->ck[d->nCk - 1];
+        if (last->off + last->len == d->esLen) {
+            memcpy(d->es + d->esLen, p, n);
+            last->len += n;
+            d->esLen += n;
+            return 1;
+        }
+    }
     if (d->nCk == d->capCk) {
         if (d->nCk >= H264_MAX_ES_CHUNKS) return 0;
         uint32_t c = d->capCk ? d->capCk : 256u;
