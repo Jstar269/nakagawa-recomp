@@ -61,9 +61,9 @@ HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 # HST constants that must never appear in a generic plan or be inherited silently.
 HST_SPAN = (3158420, 3173924)  # 0x00303194, 0x00306e24
 HST_MODULES = [
-    ("libfont.prx", 840957952),
-    ("scePsmf_library.prx", 841482240),
-    ("scePsmfP_library.prx", 841975912),
+    ("libfont.prx", 166460416),
+    ("scePsmf_library.prx", 166551552),
+    ("scePsmfP_library.prx", 166493952),
 ]
 HST_DISC_ID = "UCUS98701"
 

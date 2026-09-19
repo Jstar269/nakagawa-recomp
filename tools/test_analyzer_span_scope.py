@@ -36,7 +36,7 @@ FOREIGN_SPAN_TEXT = "0x00420000,0x00420400"
 # A second, distinct synthetic span for the cases that need two values to disagree.
 RIVAL_SPAN_TEXT = "0x00400000,0x00400100"
 PRIMARY_BASE = 0x1000
-REBASED_BASE = 0x32200000
+REBASED_BASE = 0x09ebfc00
 
 
 def write_elf(path: Path, *, load_addr: int = PRIMARY_BASE, words=(0x03E00008, 0x00000000)) -> None:

@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "90ad086a7575579fe1d93f82e599b5150af0a112fd8d96142f25ed8fd46db23c"
+      "sha256": "20e5cc030ccb2af7783ae3e1939e1b5338975d2b8ef3d28c1fdcb24827d6df9d"
     },
     {
       "path": "NOTICE.md",
@@ -420,7 +420,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a0af80b9485f91dbd00034baa71b0804e60fc937235d26efe75aa710a107903f"
+      "sha256": "0c6b7d3782fb77c76fa2031beadc0c57befaa61166b16a687a94f06f13412817"
     },
     {
       "path": "assets/titles/README.md",
@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "26ca85a7dca6be62c4a02ee85eb822afbb37d98dcf979c78eed685b214535709"
+      "sha256": "362265ce52e4fae8509c63d924a8cf48131db724221aafe8b4a26e258951ee9c"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6235,7 +6235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b986ba1032661323f5b7a345e3e19e51875c044d05934f1403a31c6e7fc6cbe1"
+      "sha256": "321679a5061ce031f5a41d664a43e55c754c8bdc046f423fdeac3d1bac0650c4"
     },
     {
       "path": "src/rt/title_config.h",
@@ -6247,7 +6247,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "743bb29e12c4f37340701cdbee11ac3fef64020d077a5c5322dd0d2696eac02e"
+      "sha256": "8c35650f935c6c55d90a5c0d1a28ca70eb0cfad21e5dbdc80cecd85085633962"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -7886,7 +7886,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6d25fa46d312e1d1996ccbac30fa64bf2daef55f61277bb8b4b7d2461a39c117"
+      "sha256": "7486b10f6f0f49c48806b8c69917844b6030b3cc5d6b47c6e2e1bbe2dcee6711"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -8336,7 +8336,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "162c3e9732578cbc77f0571287d40897fff90774139a6807035956a9209fde5c"
+      "sha256": "d767b03f8e8d1149b9867ff84957f0495303e2c2549f20e94563192bb4f87c02"
     },
     {
       "path": "tools/test_guest_printf.py",
@@ -8447,7 +8447,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "27951ccfc80a59b371f687c4e347d5236a697600cdf8446d9bc60381ed9b1c7f"
+      "sha256": "2bff25c89a6c6e7d3b565e113a5da36f5a44cc6940d451a3f57693e0e4e796a4"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -9041,7 +9041,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0dfad429049c748b18b6611f65abc9cd7e08fee4b00655c1adb796600871f754"
+      "sha256": "8b61a6398691d4d2fc16bfd9da38d904cdd285a7206bf72d6a8323407376d3a5"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -9068,7 +9068,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8ebd270bab408ba9e0f6100d04d8aec4ed25fa7ed0cbc348be59a5ab5a89d83d"
+      "sha256": "40ae793c9186bf49cb5311f0d0e943369e247176ecec66e6b4381aa9bcc8d4b7"
     },
     {
       "path": "tools/test_title_manifest.py",
@@ -9077,7 +9077,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6394fcbf3b35b2548f73ded89406aa72a29d5e19feda90115f596f3ae7b752d2"
+      "sha256": "280c753eefcb9949f2d182ceffd61bf736ccbad94df92601f394c701a32ad485"
     },
     {
       "path": "tools/test_title_manifest_parity.py",
@@ -9116,7 +9116,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "c9b4a8808073f85fa2ea8e45f2bfd6c9bf15d43c6636ca930424edb839aeab46"
+      "sha256": "42322a5f46ac06c7b4a5bbfbe1bf29c35c1103f43170dde476554c57e8b4ec35"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -9281,7 +9281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4eb2117a3997c09aaeaabc8ae48125138dc9e13131da8d9202c49da579395e96"
+      "sha256": "488e2fe17d46d412def3a3c0f69fafc2f44317a9dab1a690d6cabb81cca29a2c"
     },
     {
       "path": "tools/title_manifest.py",
@@ -9293,7 +9293,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b3a51706bce67b79b5f68b1c61f99c2c415fc865dcad42f3143d6cadd436f25"
+      "sha256": "b5c93b9d828e4edbc9d991e42d7601786b0a2e5b01ded677121d7c3a535d3ef8"
     },
     {
       "path": "tools/title_runtime_config.py",
@@ -9305,7 +9305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "10912b3ed1360545b20cba862dd3b4e8ae3a7c3ca6955ecd9ca290e995c4d080"
+      "sha256": "202ed2401b0fb5f763c3a24aa9575e80a7e9c10350b594c93da9f75dfcd2282e"
     },
     {
       "path": "tools/tracediff.py",
