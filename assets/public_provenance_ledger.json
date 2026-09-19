@@ -972,7 +972,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ccc438c3611d286633ca81f87e05278bbbd6f72ce5dbe8e470a525324ffcd741"
+      "sha256": "efbf1739f93d65475fb7536301c2f1d2ad90e4812ebdbc007841d43d07f76e25"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1071,7 +1071,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "599b5dc6fd1cd3b26db37831d24fc6bd4856589ef413b954da9c007d9647211d"
+      "sha256": "5c4fe9681ebb52ca0cda1acf98b63df929088f17fc31fdd20bc1c549f02a698a"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
