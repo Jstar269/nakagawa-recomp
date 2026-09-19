@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9662ab55329ac3848472c9a24f24b3b47170fd445f9d3b7b8001804ee9c02e13"
+      "sha256": "374a543024d6bf7e3d1099e7e4230c522b0d8008914f53d007027f2d4a364f9f"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1063,6 +1063,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0ad0f69fcbe9bb523d08c0540718b6e20a5e8b93ede077e78dede7d264ce37aa"
+    },
+    {
+      "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "599b5dc6fd1cd3b26db37831d24fc6bd4856589ef413b954da9c007d9647211d"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
