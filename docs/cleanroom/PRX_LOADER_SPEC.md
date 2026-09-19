@@ -152,7 +152,7 @@ site word, and sign-extension written `sx16` [C2], [C3]:
 | 1 | 16 | low 16 bits := low 16 of (`sx16(W)` + *S*); high 16 unchanged |
 | 2 | 32 | *W* + *S* (mod 2³²) |
 | 4 | 26 | jump target field := ((region of the **site** address \| (field × 4)) + *S*) ÷ 4, masked to 26 bits; opcode bits unchanged. "Region" is the site address's top 4 bits |
-| 5 | HI16 | a run of consecutive HI16 records is followed by one **partner** record, the first record after the run whatever its kind [C3]; for each HI16 of the run, with *W* its own site word, *V* = (high16(*W*) × 65536) + `sx16`(low 16 of the partner's site word) + *S*, and the site's low 16 bits := (*V* + 0x8000) ÷ 65536 masked to 16 bits (the carry-adjusted upper half [C2]); high 16 bits unchanged |
+| 5 | HI16 | a run of consecutive HI16 records is followed by one **partner** record, the first record after the run whatever its kind [C3]; for each HI16 of the run, with *W* its own site word, *V* = (low16(*W*) × 65536) + `sx16`(low 16 of the partner's site word) + *S* (a `lui` keeps its immediate in the low 16 bits of the word [C2]), and the site's low 16 bits := (*V* + 0x8000) ÷ 65536 masked to 16 bits (the carry-adjusted upper half [C2]); high 16 bits unchanged |
 | 6 | LO16 | same as kind 1 |
 | 7 | GPREL16 | refused (the firmware has no case for it) [C3] |
 | 8 | LITERAL | no change; the firmware logs "unacceptable relocation type" and continues [C3] |
@@ -204,7 +204,7 @@ firmware's [C3]. A HI16 run that reaches the end of the table with no partner fa
 | 1, 5 | low 16 bits := low 16 of (`sx16(W)` + *S*) |
 | 2 | *W* + *S* |
 | 3 | jump target field adjusted as format A kind 4; opcode bits unchanged |
-| 4 | high 16 bits := ((high16(*W*) × 65536) + `sx16`(*A*) + *S* + 0x8000) ÷ 65536, masked to 16 bits; low 16 unchanged |
+| 4 | low 16 bits := ((low16(*W*) × 65536) + `sx16`(*A*) + *S* + 0x8000) ÷ 65536, masked to 16 bits; high 16 (opcode and registers) unchanged — same rule as format A kind 5 |
 | 6 | as kind 3, then the opcode becomes `j` (top 6 bits = 2) |
 | 7 | as kind 3, then the opcode becomes `jal` (top 6 bits = 3) |
 | other | fails |
@@ -218,10 +218,22 @@ firmware's [C3]. A HI16 run that reaches the end of the table with no partner fa
 
 ### 3.7 Exports
 
-1. The export table (§3.4) is a sequence of `SceLibraryEntryTable` records [C6]:
-   library-name pointer (0 for the system library), version, attribute, record length
-   in 32-bit words, variable count, function count, and a pointer to an array of NIDs
-   followed by the matching address array (functions first, then variables) [C6].
+1. The export table (§3.4) is a sequence of `SceLibraryEntryTable` records [C6].
+   Little-endian byte layout of the fixed 16-byte head:
+
+   | Offset | Size | Field |
+   | --- | --- | --- |
+   | 0 | 4 | library-name pointer (0 for the system library) |
+   | 4 | 2 | version (2 bytes) |
+   | 6 | 2 | attribute |
+   | 8 | 1 | record length in 32-bit words (at least 4) |
+   | 9 | 1 | variable count |
+   | 10 | 2 | function count |
+   | 12 | 4 | entry-table pointer |
+
+   The entry table is an array of NIDs followed by the matching address array
+   (functions first, then variables) [C6]. Bytes of a record beyond offset 16 are
+   ignored.
 2. Records are walked by their length field until the table end; a zero length or a
    record crossing the end fails.
 3. Every function and variable becomes an `SrPrxExport` with its relocated address.
@@ -232,9 +244,21 @@ firmware's [C3]. A HI16 run that reaches the end of the table with no partner fa
 
 ### 3.8 Import stubs
 
-1. The stub table (§3.4) is a sequence of `SceLibraryStubTable` records [C6]: library
-   name, version, attribute, length in words, variable count, function count, NID
-   array pointer, stub array pointer (and variable table pointer when present).
+1. The stub table (§3.4) is a sequence of `SceLibraryStubTable` records [C6], walked
+   by the length field like §3.7 item 2. Little-endian byte layout:
+
+   | Offset | Size | Field |
+   | --- | --- | --- |
+   | 0 | 4 | library-name pointer |
+   | 4 | 2 | version (2 bytes) |
+   | 6 | 2 | attribute |
+   | 8 | 1 | record length in 32-bit words (at least 5) |
+   | 9 | 1 | variable count |
+   | 10 | 2 | function count |
+   | 12 | 4 | NID array pointer |
+   | 16 | 4 | function-stub array pointer |
+   | 20 | 4 | variable-stub table pointer (present only when length ≥ 6; unused here) |
+
 2. Function stub *k* of a record is 8 bytes at stub array + 8·*k*; each becomes an
    `SrPrxImportStub` (library, NID, stub address) [C6].
 3. The loader does not rewrite stub instructions (linking is the caller's job, §0).
