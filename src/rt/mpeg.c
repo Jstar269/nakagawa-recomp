@@ -677,7 +677,9 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf,
     if (!ctx) return (uint32_t)-1;
     g_mpeg_avcdec++;
     ctx->videoPts += videoTimestampStep;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 1);
+    /* Like sceMpegAvcDecode, the buffer argument points at the YCbCr buffer address. */
+    uint32_t ycbcr = buf ? MEM_R32(buf) : 0u;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, ycbcr, 1);
     if (b) b->pending++;
     if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in `buf` */
     if (getenv("SR_MPEGLOG")) {
