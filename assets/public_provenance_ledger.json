@@ -3597,7 +3597,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "499bb664745e508684fdb80d49bb4ba46b9aa87576d97d08fb97e06bd367c7bf"
+      "sha256": "87fa007f12defc729602e6ea6b853b3365ba68c7792369a97be20580296b9242"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -6517,7 +6517,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81a75636ccf740930600f92e1bb3810bf7b13bdbe0bb2280699fea15ec44a939"
+      "sha256": "5f791ebbfb7d7cc2adca1fd554bdb0d3cfe59a3161613e59024c62c55544901d"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -9077,7 +9077,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2385db005a62c23e953ccaab24c2b04d1565d68a09fd74f3d65d48422c81c4c3"
+      "sha256": "40a551784e326e6dc881bd62e877bf2054d5bac84b80a84f3f246d8fa0c99720"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -9122,7 +9122,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "280c753eefcb9949f2d182ceffd61bf736ccbad94df92601f394c701a32ad485"
+      "sha256": "1854967349c881ed20c7d7522f7e1ae163193709201d20a0433bc2b198064b3f"
     },
     {
       "path": "tools/test_title_manifest_parity.py",
