@@ -136,6 +136,7 @@ typedef struct {
     int h264Init, h264Frames;
     int defaultFrameWidth, pixelMode;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
+    uint32_t auPacketsDone;   /* ring packets released by real access units */
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset) */
     struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
@@ -530,12 +531,34 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     }
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
+    uint32_t release = 1;   /* timestamp model: one packet per access unit */
+#ifdef SR_SDL3VK
+    /* With a decoder, an access unit is one real picture of the demuxed stream: hand it out only
+     * once it has been fed completely, and release exactly the ring packets it consumed. */
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+        uint64_t psConsumed = 0;
+        int64_t auPts = -1;
+        int r = sr_h264_au_take(ctx->h264, eos, &psConsumed, &auPts);
+        if (r == 0) {
+            if (eos) ctx->videoEnd = 1;
+            g_mpeg_nodata++;
+            au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
+            return SCE_MPEG_ERROR_NO_DATA;
+        }
+        if (r > 0) {
+            uint64_t done = psConsumed / MPEG_PACKET_SIZE;
+            release = done > ctx->auPacketsDone ? (uint32_t)(done - ctx->auPacketsDone) : 0u;
+            ctx->auPacketsDone += release;
+        }
+    }
+#endif
     int64_t pts = ctx->videoPts + ctx->firstTimestamp;
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts - videoTimestampStep);
     MEM_W32(auAddr + 16, (uint32_t)num);            /* esBuffer abused as stream num */
     uint32_t avail = rb_get(ring, RB_packetsAvail);
-    if (avail > 0) rb_set(ring, RB_packetsAvail, avail - 1);   /* consume one packet */
+    rb_set(ring, RB_packetsAvail, avail > release ? avail - release : 0u);
     if (attrAddr) MEM_W32(attrAddr, 1);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;

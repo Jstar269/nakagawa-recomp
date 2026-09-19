@@ -40,5 +40,9 @@ int  sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMo
  * `maxW` x 272 pixels with a row pitch of `strideBytes`. Returns 1 when a picture was written,
  * 0 when more input is needed, -1 on failure or without a decoder. */
 int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes);
+/* Hand out the next complete access unit (picture) of the demuxed stream. Returns 1 and the
+ * absolute program-stream byte count it (and everything before it) consumed, 0 when no
+ * complete picture has been fed yet, -1 without a decoder. */
+int  sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts);
 
 #endif /* SR_H264_H */

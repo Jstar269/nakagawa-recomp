@@ -59,7 +59,8 @@ static const GUID L_MF_LOW_LATENCY      = {0x9c27891a,0xed7a,0x40e1,{0x88,0xe8,0
 #define MF_E_NOTACCEPTING ((HRESULT)0xC00D36B5L)
 #endif
 
-typedef struct { uint32_t off, len; int64_t pts; } EsChunk;
+/* psStart: absolute program-stream offset of the PES packet in which the chunk begins. */
+typedef struct { uint32_t off, len; int64_t pts; uint64_t psStart; } EsChunk;
 
 typedef struct {
     int used;
@@ -69,9 +70,11 @@ typedef struct {
     int drained;
     /* MPEG-PS input accumulation (unparsed tail) */
     uint8_t *ps; uint32_t psLen, psCap, psPos;
+    uint64_t psBase;               /* program-stream bytes dropped before ps[0] */
     /* demuxed H.264 ES byte fifo + chunk table (one chunk per video PES payload) */
     uint8_t *es; uint32_t esLen, esCap;
     EsChunk *ck; uint32_t nCk, capCk, curCk;
+    uint32_t takeCk;               /* chunks handed out as access units (sceMpegGetAvcAu) */
     int ckOpen;                    /* last chunk is still receiving bytes (no AUD after it yet) */
     LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
 } Dec;
@@ -102,7 +105,7 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need, uint32_t max) 
     return 1;
 }
 
-static int ck_push(Dec *d, uint32_t off, int64_t pts) {
+static int ck_push(Dec *d, uint32_t off, int64_t pts, uint64_t psStart) {
     if (d->nCk == d->capCk) {
         if (d->nCk >= H264_MAX_ES_CHUNKS) return 0;
         uint32_t c = d->capCk ? d->capCk : 256u;
@@ -116,6 +119,7 @@ static int ck_push(Dec *d, uint32_t off, int64_t pts) {
     d->ck[d->nCk].off = off;
     d->ck[d->nCk].len = 0;
     d->ck[d->nCk].pts = pts;
+    d->ck[d->nCk].psStart = psStart;
     d->nCk++;
     return 1;
 }
@@ -125,14 +129,14 @@ static int ck_push(Dec *d, uint32_t off, int64_t pts) {
  * few PES packets, so pictures are delimited by AUD start codes; the decoder runs in
  * low-latency mode and treats each input sample as one whole picture. The last chunk stays open
  * (not submitted) until the next delimiter or end of stream. */
-static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
+static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts, uint64_t psStart) {
     if (n > H264_MAX_ES_BYTES - d->esLen ||
         !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
     uint32_t start = d->esLen;
     memcpy(d->es + d->esLen, p, n);
     d->esLen += n;
     if (!d->ckOpen) {
-        if (!ck_push(d, start, pts)) return 0;
+        if (!ck_push(d, start, pts, psStart)) return 0;
         d->ckOpen = 1;
     }
     uint32_t from = start >= 3u ? start - 3u : 0u;
@@ -143,7 +147,7 @@ static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
             continue;
         uint32_t cut = (k > last->off + 1u && d->es[k - 1] == 0) ? k - 1u : k;
         last->len = cut - last->off;
-        if (!ck_push(d, cut, -1)) return 0;
+        if (!ck_push(d, cut, -1, psStart)) return 0;
     }
     EsChunk *open = &d->ck[d->nCk - 1];
     open->len = d->esLen - open->off;
@@ -161,6 +165,7 @@ static void es_compact(Dec *d) {
         d->ck[i] = d->ck[d->curCk + i];
         d->ck[i].off -= base;
     }
+    d->takeCk = d->takeCk > d->curCk ? d->takeCk - d->curCk : 0;
     d->nCk = live; d->curCk = 0;
 }
 
@@ -204,7 +209,7 @@ static int ps_parse_one(Dec *d) {
                   ((int64_t) p[12]          << 7)  |
                   ((int64_t)(p[13] >> 1));
         }
-        if (tot > hdr && !es_append(d, p + hdr, tot - hdr, pts)) {
+        if (tot > hdr && !es_append(d, p + hdr, tot - hdr, pts, d->psBase + d->psPos)) {
             d->failed = 1;
             return 0;
         }
@@ -518,6 +523,7 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
     if (d->failed) return;
     if (d->psPos > (1u << 20)) {            /* drop the parsed prefix */
         memmove(d->ps, d->ps + d->psPos, d->psLen - d->psPos);
+        d->psBase += d->psPos;
         d->psLen -= d->psPos;
         d->psPos = 0;
     }
@@ -536,6 +542,7 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
         if (r > 0) return 1;
         if (r < 0) { d->failed = 1; return -1; }
         uint32_t ready = d->nCk - (d->ckOpen ? 1u : 0u);
+        if (ready > d->takeCk) ready = d->takeCk;
         if (d->curCk < ready) {
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
@@ -560,6 +567,22 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
 int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
     if (!dst) return -1;
     return pull_frame(id, eos, 0, 0, 0, dst, maxW, strideBytes);
+}
+
+int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
+    Dec *d = &s_dec[id];
+    if (d->failed) return -1;
+    if (eos) d->ckOpen = 0;               /* end of stream closes the last picture */
+    uint32_t closed = d->nCk - (d->ckOpen ? 1u : 0u);
+    if (d->takeCk >= closed) return 0;
+    uint32_t i = d->takeCk++;
+    /* Everything before the PES packet that starts the next picture belongs to this one or
+     * earlier; the last picture consumes everything fed. */
+    if (psConsumed)
+        *psConsumed = (i + 1u < d->nCk) ? d->ck[i + 1u].psStart : d->psBase + d->psLen;
+    if (pts) *pts = d->ck[i].pts;
+    return 1;
 }
 
 #endif /* _WIN32 */
