@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9662ab55329ac3848472c9a24f24b3b47170fd445f9d3b7b8001804ee9c02e13"
+      "sha256": "374a543024d6bf7e3d1099e7e4230c522b0d8008914f53d007027f2d4a364f9f"
     },
     {
       "path": "assets/release_manifest.json",
@@ -972,7 +972,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ccc438c3611d286633ca81f87e05278bbbd6f72ce5dbe8e470a525324ffcd741"
+      "sha256": "efbf1739f93d65475fb7536301c2f1d2ad90e4812ebdbc007841d43d07f76e25"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1063,6 +1063,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0ad0f69fcbe9bb523d08c0540718b6e20a5e8b93ede077e78dede7d264ce37aa"
+    },
+    {
+      "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "5c4fe9681ebb52ca0cda1acf98b63df929088f17fc31fdd20bc1c549f02a698a"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
