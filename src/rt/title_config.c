@@ -79,8 +79,10 @@ static int ascii_ieq(const char *a, const char *b) {
 
 int sr_title_config_guest_module(const char *guest_path, const char **name_out, uint32_t *base_out) {
     if (!guest_path) return 0;
-    for (unsigned i = 0; i < (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT; i++) {
-        const SrTitleGuestModule *m = &s_guest_modules[i];
+    /* The list ends at the placeholder (empty name); scanning to it rather than
+     * comparing against the count keeps a zero-module build free of a constant
+     * always-false loop condition (-Wtype-limits). */
+    for (const SrTitleGuestModule *m = s_guest_modules; m->name[0]; m++) {
         if (m->guest_path[0] && ascii_ieq(m->guest_path, guest_path)) {
             if (name_out) *name_out = m->name;
             if (base_out) *base_out = m->base;
@@ -90,11 +92,15 @@ int sr_title_config_guest_module(const char *guest_path, const char **name_out, 
     return 0;
 }
 
-unsigned sr_title_config_guest_module_count(void) { return (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT; }
+unsigned sr_title_config_guest_module_count(void) {
+    unsigned n = 0;
+    while (s_guest_modules[n].name[0]) n++;
+    return n;
+}
 
 int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
                                     uint32_t *base_out) {
-    if (index >= (unsigned)SR_TITLE_CONFIG_GUEST_MODULE_COUNT) return 0;
+    if (index >= sr_title_config_guest_module_count()) return 0;
     if (name_out) *name_out = s_guest_modules[index].name;
     if (guest_path_out) *guest_path_out = s_guest_modules[index].guest_path;
     if (base_out) *base_out = s_guest_modules[index].base;
