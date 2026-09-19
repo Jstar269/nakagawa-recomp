@@ -615,6 +615,148 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     }
     return 0;
 }
+/* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
+ * Project-authored boundary for the guest libpsmfplayer, which decodes each access unit into an
+ * opaque "YCbCr" buffer and later colour-converts that buffer into its display buffer. The guest
+ * only passes these buffers between firmware calls (observed in the title's own libpsmfplayer:
+ * QueryYCbCrSize -> InitYCbCr -> DecodeYCbCr -> Csc/CopyYCbCr), so the host keeps the decoded
+ * picture itself: DecodeYCbCr advances the media clock and records one pending picture against
+ * the buffer, and Csc pulls the pending pictures from the H.264 backend straight into the
+ * destination in the context's pixel mode (the last one wins, so skipped buffers cannot drift the
+ * decoder). The buffer contents are never interpreted. */
+typedef struct { uint32_t mpeg, buf; int pending; } YcbcrBuf;
+static YcbcrBuf s_ycbcr[16];
+
+static YcbcrBuf *ycbcr_slot(uint32_t mpegAddr, uint32_t buf, int create) {
+    YcbcrBuf *free_slot = NULL;
+    for (int i = 0; i < 16; i++) {
+        if (s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg == mpegAddr && buf) return &s_ycbcr[i];
+        if (!s_ycbcr[i].buf && !free_slot) free_slot = &s_ycbcr[i];
+    }
+    if (!create) return NULL;
+    if (!free_slot) free_slot = &s_ycbcr[0];   /* recycle: oldest slot */
+    free_slot->mpeg = mpegAddr; free_slot->buf = buf; free_slot->pending = 0;
+    return free_slot;
+}
+
+/* 4:2:0 planar size (Y plane plus two quarter-size chroma planes) plus a 128-byte header. */
+uint32_t mpeg_avc_query_ycbcr_size(uint32_t mpegAddr, uint32_t mode, uint32_t width,
+                                   uint32_t height, uint32_t resultAddr) {
+    (void)mode;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (!width || !height || width > 4096 || height > 4096 || (width & 15) || (height & 15))
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+    uint32_t size = (width / 2u) * (height / 2u) * 6u + 128u;
+    if (resultAddr) MEM_W32(resultAddr, size);
+    return 0;
+}
+
+uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, uint32_t height,
+                             uint32_t buf) {
+    (void)mode; (void)width; (void)height;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 1);
+    if (b) b->pending = 0;
+    return 0;
+}
+
+/* sceMpegAvcDecodeMode(mpeg, mode*): mode[1] is the output pixel format (0..3). */
+uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!modeAddr) return SCE_MPEG_ERROR_INVALID_VALUE;
+    uint32_t pm = MEM_R32(modeAddr + 4);
+    if (pm > 3) return SCE_MPEG_ERROR_INVALID_VALUE;
+    ctx->pixelMode = (int)pm;
+    return 0;
+}
+
+uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf, uint32_t initAddr) {
+    (void)auAddr;
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    g_mpeg_avcdec++;
+    ctx->videoPts += videoTimestampStep;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 1);
+    if (b) b->pending++;
+    if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in `buf` */
+    return 0;
+}
+
+uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t statusAddr) {
+    (void)buf;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (statusAddr) MEM_W32(statusAddr, 0);   /* no buffered pictures remain */
+    return 0;
+}
+
+uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    YcbcrBuf *from = ycbcr_slot(mpegAddr, src, 0);
+    YcbcrBuf *to = ycbcr_slot(mpegAddr, dst, 1);
+    if (to) to->pending = from ? from->pending : 0;
+    if (from) from->pending = 0;
+    return 0;
+}
+
+/* sceMpegAvcCsc(mpeg, ycbcr, range*, frameWidth, dest): range is {x, y, w, h}. */
+uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint32_t frameWidth,
+                      uint32_t dest) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!rangeAddr || !dest) return SCE_MPEG_ERROR_INVALID_VALUE;
+    if (frameWidth == 0 || frameWidth > 2048)
+        frameWidth = ctx->defaultFrameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u;
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf, 0);
+    int pending = b ? b->pending : 0;
+    if (b) b->pending = 0;
+    int gotFrame = 0;
+#ifdef SR_SDL3VK
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+        for (int i = 0; i < (pending > 0 ? pending : 1); i++) {
+            int r = sr_h264_frame(ctx->h264, eos, dest, (int)frameWidth, ctx->pixelMode);
+            if (r > 0) { gotFrame = r; ctx->h264Frames++; }
+        }
+    }
+#endif
+    if (gotFrame <= 0 && !ctx->h264Frames) clear_video_buffer(dest, frameWidth, ctx->pixelMode);
+    extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
+    sr_gpu_vram_dirty(dest, video_buffer_bytes(frameWidth, ctx->pixelMode));
+    if (getenv("SR_MPEGLOG")) {
+        static int n = 0;
+        if (n++ < 32 || (n & 0xFF) == 0)
+            fprintf(stderr, "MpegAvcCsc #%d buf=0x%x dest=0x%x fw=%u pending=%d dec=%d frames=%d\n",
+                    n, buf, dest, frameWidth, pending, gotFrame, ctx->h264Frames);
+    }
+    return 0;
+}
+
+/* LPCM audio streams: this model has no PCM decode; report the standard LPCM access-unit size and
+ * no data, which the guest player treats as "no PCM stream present". */
+uint32_t mpeg_query_pcm_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr) {
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (!esSizeAddr || !outSizeAddr) return SCE_MPEG_ERROR_INVALID_VALUE;
+    MEM_W32(esSizeAddr, 320u);
+    MEM_W32(outSizeAddr, 320u);
+    return 0;
+}
+
+uint32_t mpeg_get_pcm_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t attrAddr) {
+    (void)sid; (void)auAddr; (void)attrAddr;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    return SCE_MPEG_ERROR_NO_DATA;
+}
+
+/* sceMpegChangeGetAuMode(mpeg, stream, mode): 0 = decode, 1 = skip. Access units are produced
+ * the same way in both modes here; skipping only means the guest does not decode them. */
+uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode) {
+    (void)sid;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (mode > 1) return SCE_MPEG_ERROR_INVALID_VALUE;
+    return 0;
+}
+
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init) {
     (void)auAddr; (void)bufferAddr; (void)init;
     Mpeg *ctx = mpeg_find(mpegAddr);

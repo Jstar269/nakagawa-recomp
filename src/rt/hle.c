@@ -4136,6 +4136,16 @@ uint32_t mpeg_finish(void);
 uint32_t mpeg_query_mem_size(uint32_t outAddr);
 uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets);
 uint32_t mpeg_ringbuffer_query_pack_num(uint32_t mem_size);
+uint32_t mpeg_avc_query_ycbcr_size(uint32_t mpegAddr, uint32_t mode, uint32_t width, uint32_t height, uint32_t resultAddr);
+uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, uint32_t height, uint32_t buf);
+uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr);
+uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t buf, uint32_t initAddr);
+uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t statusAddr);
+uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src);
+uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint32_t frameWidth, uint32_t dest);
+uint32_t mpeg_query_pcm_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr);
+uint32_t mpeg_get_pcm_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t attrAddr);
+uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode);
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size, uint32_t cbAddr, uint32_t cbArg);
 uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr, uint32_t frameWidth, uint32_t mode, uint32_t ddrTop);
 uint32_t mpeg_delete(uint32_t mpegAddr);
@@ -4179,6 +4189,21 @@ static uint32_t h_MpegCreate(CpuState *s) {
 static uint32_t h_MpegDelete(CpuState *s) { return mpeg_delete(A0); }
 static uint32_t h_MpegRingbufferQueryMemSize(CpuState *s) { return mpeg_ringbuffer_query_mem_size(A0); }
 static uint32_t h_MpegRingbufferQueryPackNum(CpuState *s) { return mpeg_ringbuffer_query_pack_num(A0); }
+static uint32_t h_MpegAvcQueryYCbCrSize(CpuState *s) { return mpeg_avc_query_ycbcr_size(A0, A1, A2, A3, stack_arg(s, 0)); }
+static uint32_t h_MpegAvcInitYCbCr(CpuState *s) { return mpeg_avc_init_ycbcr(A0, A1, A2, A3, stack_arg(s, 0)); }
+static uint32_t h_MpegAvcDecodeMode(CpuState *s) { return mpeg_avc_decode_mode(A0, A1); }
+/* Same decode latency (and guaranteed yield) as sceMpegAvcDecode. */
+static uint32_t h_MpegAvcDecodeYCbCr(CpuState *s) {
+    uint32_t r = mpeg_avc_decode_ycbcr(A0, A1, A2, A3);
+    sched_delay_current(5400);
+    return r;
+}
+static uint32_t h_MpegAvcDecodeStopYCbCr(CpuState *s) { return mpeg_avc_decode_stop_ycbcr(A0, A1, A2); }
+static uint32_t h_MpegAvcCopyYCbCr(CpuState *s) { return mpeg_avc_copy_ycbcr(A0, A1, A2); }
+static uint32_t h_MpegAvcCsc(CpuState *s) { return mpeg_avc_csc(A0, A1, A2, A3, stack_arg(s, 0)); }
+static uint32_t h_MpegQueryPcmEsSize(CpuState *s) { return mpeg_query_pcm_es_size(A0, A1, A2); }
+static uint32_t h_MpegGetPcmAu(CpuState *s) { return mpeg_get_pcm_au(A0, A1, A2, A3); }
+static uint32_t h_MpegChangeGetAuMode(CpuState *s) { return mpeg_change_get_au_mode(A0, A1, A2); }
 static uint32_t h_MpegRingbufferConstruct(CpuState *s) { return mpeg_ringbuffer_construct(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1)); }
 static uint32_t h_MpegRingbufferAvailable(CpuState *s) { return mpeg_ringbuffer_available_size(A0); }
 static uint32_t h_MpegRingbufferPut(CpuState *s) { return mpeg_ringbuffer_put(s, A0, A1, A2); }
@@ -13688,6 +13713,16 @@ void sr_hle_init(void) {
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
+    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
+    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
+    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
+    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
+    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
+    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
+    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+    sr_hle_register(0xc02cf6b5, "sceMpegQueryPcmEsSize", h_MpegQueryPcmEsSize);
+    sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
+    sr_hle_register(0x9dcfb7ea, "sceMpegChangeGetAuMode", h_MpegChangeGetAuMode);
     sr_hle_register(0x37295ed8, "sceMpegRingbufferConstruct", h_MpegRingbufferConstruct);
     /* sceMpeg ringbuffer destruct and flush: shared with the executable harness
      * through hle_register_mpeg_shared_handlers(). */
