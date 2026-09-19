@@ -13821,7 +13821,12 @@ void sr_hle_init(void) {
      * additional host-side work, but the syscall and success result are real. */
     sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAll);
     sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_CacheInvalidateRange);
-    /* TD-27 stale-code detector: the Icache/remaining-Dcache invalidate NIDs
+    /* Range invalidates are routine data-cache maintenance around DMA (the guest
+     * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
+     * real no-op successes on this coherent memory like the writebacks above. */
+    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
+    /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
      * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
      * in, so default dispatch behavior is unchanged. When enabled they run
      * the same check-and-abort contract as the Dcache handlers above. */
@@ -13829,8 +13834,6 @@ void sr_hle_init(void) {
         sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAll);
         sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAll);
         sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRange);
-        sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
-        sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
     }
     /* GPO latch / GPI pins: shared with the executable harness through
      * hle_register_gpi_gpo_handlers(). */
