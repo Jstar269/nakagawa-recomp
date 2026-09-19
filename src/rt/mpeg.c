@@ -582,6 +582,11 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
     if (attrAddr) MEM_W32(attrAddr, 0);
+    if (getenv("SR_MPEGLOG")) {
+        static int n = 0;
+        if (n++ < 16 || (n & 0xFF) == 0)
+            fprintf(stderr, "MpegGetAtracAu #%d pts=%lld\n", n, (long long)pts);
+    }
     return 0;   /* audio AU available; the audio ring drains with the video at EOF */
 }
 
@@ -839,6 +844,11 @@ uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAd
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     ctx->audioPts += audioTimestampStep;
+    if (getenv("SR_MPEGLOG")) {
+        static int n = 0;
+        if (n++ < 16 || (n & 0xFF) == 0)
+            fprintf(stderr, "MpegAtracDecode #%d audioPts=%lld\n", n, (long long)ctx->audioPts);
+    }
     return 0;
 }
 uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t statusAddr) {
