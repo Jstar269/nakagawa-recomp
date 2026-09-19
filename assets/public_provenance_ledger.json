@@ -1071,7 +1071,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5c4fe9681ebb52ca0cda1acf98b63df929088f17fc31fdd20bc1c549f02a698a"
+      "sha256": "8a8cc7d9d5f69cc62d3cd61999bd47f43a52ed230fd8d00ea92c11887c158a5f"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
