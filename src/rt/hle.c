@@ -2152,14 +2152,6 @@ unsigned sr_hle_test_register_prx_exports(const char *host_path, uint32_t base) 
 }
 #endif
 
-/* PRX load bases. These MUST stay in sync with Makefile GAME_EXTRA_ELFS
- * (libfont.prx@0x32200000, scePsmf_library.prx@0x32280000,
- *  scePsmfP_library.prx@0x322f8868). Centralized here so the values are not
- * scattered as magic literals across the late-import path. */
-static const uint32_t PRX_LIBFONT_BASE = 0x32200000u; /* must match Makefile GAME_EXTRA_ELFS */
-static const uint32_t PRX_PSMF_BASE    = 0x32280000u; /* must match Makefile GAME_EXTRA_ELFS */
-static const uint32_t PRX_PSMFP_BASE   = 0x322f8868u; /* must match Makefile GAME_EXTRA_ELFS */
-
 static unsigned register_known_module(const char *module_root,
                                       const char *module_name,
                                       uint32_t base) {
@@ -2171,27 +2163,30 @@ static unsigned register_known_module(const char *module_root,
     return register_prx_exports(host_path, base);
 }
 
-static unsigned populate_known_module(const char *name) {
+static const char *guest_module_root(void) {
     const char *module_root = getenv("SR_MODULE_DIR");
-    if (!module_root || !module_root[0]) module_root = "place_game_here/EXTRACTED/decrypted";
+    return (module_root && module_root[0]) ? module_root : "place_game_here/EXTRACTED/decrypted";
+}
+
+/* Register one manifest-declared guest module's exports at its manifest base (the same
+ * base the recompiler used, from the title manifest's modules[] list). */
+static unsigned populate_guest_module(const char *file, uint32_t base) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
-    if (name && (strstr(name, "libfont") || strstr(name, "LIBFONT"))) {
-        unsigned res = register_known_module(module_root, "libfont.prx", PRX_LIBFONT_BASE);
-        if (!s_last_prx_entry) s_last_prx_entry = PRX_LIBFONT_BASE;
-        return res;
-    }
-    if (name && (strstr(name, "PsmfP") || strstr(name, "psmfplayer") || strstr(name, "libpsmfplayer"))) {
-        unsigned res = register_known_module(module_root, "scePsmfP_library.prx", PRX_PSMFP_BASE);
-        if (!s_last_prx_entry) s_last_prx_entry = PRX_PSMFP_BASE;
-        return res;
-    }
-    if (name && (strstr(name, "Psmf") || strstr(name, "psmf"))) {
-        unsigned res = register_known_module(module_root, "scePsmf_library.prx", PRX_PSMF_BASE);
-        if (!s_last_prx_entry) s_last_prx_entry = PRX_PSMF_BASE;
-        return res;
-    }
-    return 0;
+    unsigned res = register_known_module(guest_module_root(), file, base);
+    if (!s_last_prx_entry) s_last_prx_entry = base;
+    return res;
+}
+
+/* guest_path is the path the game passed to sceKernelLoadModule; only modules the title
+ * manifest declares (by guest_path) are statically recompiled, so anything else is 0. */
+static unsigned populate_known_module(const char *guest_path) {
+    const char *file = NULL;
+    uint32_t base = 0;
+    s_last_prx_entry = 0;
+    s_last_prx_stop = 0;
+    if (!sr_title_config_guest_module(guest_path, &file, &base)) return 0;
+    return populate_guest_module(file, base);
 }
 
 /* sceUtility */
@@ -6325,13 +6320,15 @@ static uint32_t h_LoadModule(CpuState *s) {
 }
 
 /* LoadModuleByID receives an already-open file UID, so the original path is not part of this
- * ABI call. Populate the fixed set of statically recompiled late modules idempotently; the
+ * ABI call. Populate every manifest-declared guest module idempotently; the
  * sorted registry replaces duplicate NIDs and therefore remains safe across repeated loads. */
 static uint32_t h_LoadModuleByID(CpuState *s) {
     (void)s;
-    populate_known_module("libfont");
-    populate_known_module("psmf");
-    populate_known_module("libpsmfplayer");
+    for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
+        const char *file = NULL;
+        uint32_t base = 0;
+        if (sr_title_config_guest_module_at(i, &file, NULL, &base)) populate_guest_module(file, base);
+    }
     return sr_alloc_uid();
 }
 

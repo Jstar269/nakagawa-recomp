@@ -219,6 +219,14 @@
         "required": {"type": "boolean"},
         "role": {
           "enum": ["guest-prx", "hle-capability", "optional-guest-prx"]
+        },
+        "guest_path": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^(disc0|umd0|ms0|flash0|host0):/"
+        },
+        "load_address_evidence": {
+          "enum": ["measured-hw", "measured-ppsspp", "provisional"]
         }
       }
     },

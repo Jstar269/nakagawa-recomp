@@ -1730,3 +1730,26 @@ class ExpectedDataFileCountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuestModuleList(unittest.TestCase):
+    """The runtime half of the one-source module base: same list the recompiler uses."""
+
+    def test_generic_build_has_no_guest_modules(self) -> None:
+        header = title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(None))
+        self.assertIn("#define SR_TITLE_CONFIG_GUEST_MODULE_COUNT 0", header)
+
+    def test_guest_modules_render_with_path_and_base(self) -> None:
+        config = title_runtime_config.bindings_from_manifest(None)
+        config["guest_modules"] = [{"name": "a.prx", "guest_path": "disc0:/m/a.prx", "load_address": 0x09EC7F00}]
+        header = title_runtime_config.render_header(config)
+        self.assertIn("#define SR_TITLE_CONFIG_GUEST_MODULE_COUNT 1", header)
+        self.assertIn('SR_TITLE_CFG_GUEST_MODULE("a.prx", "disc0:/m/a.prx", 0x09ec7f00u)', header)
+        other = dict(config, guest_modules=[dict(config["guest_modules"][0], load_address=0x09EC8000)])
+        self.assertNotEqual(title_runtime_config.config_digest(config), title_runtime_config.config_digest(other))
+
+    def test_unembeddable_strings_are_refused(self) -> None:
+        config = title_runtime_config.bindings_from_manifest(None)
+        config["guest_modules"] = [{"name": 'a"b.prx', "guest_path": "", "load_address": 0x09EC7F00}]
+        with self.assertRaises(title_runtime_config.TitleRuntimeConfigError):
+            title_runtime_config.render_header(config)

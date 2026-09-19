@@ -340,9 +340,9 @@ function Get-HstManifestMakeArgs {
         throw 'HST manifest protected extra executable span is incompatible'
     }
     $expectedModules = @(
-        @{ name = 'libfont.prx'; load_address = 840957952 },
-        @{ name = 'scePsmf_library.prx'; load_address = 841482240 },
-        @{ name = 'scePsmfP_library.prx'; load_address = 841975912 }
+        @{ name = 'libfont.prx'; load_address = 166460416 },
+        @{ name = 'scePsmf_library.prx'; load_address = 166551552 },
+        @{ name = 'scePsmfP_library.prx'; load_address = 166493952 }
     )
     $modules = @($Plan.required_guest_modules)
     if ($modules.Count -ne $expectedModules.Count) { throw 'HST manifest required guest modules are incomplete' }

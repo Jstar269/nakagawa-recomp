@@ -75,9 +75,9 @@ class TitleManagerPlanTests(unittest.TestCase):
         self.assertEqual(
             plan["required_guest_modules"],
             [
-                {"name": "libfont.prx", "load_address": 840957952},
-                {"name": "scePsmf_library.prx", "load_address": 841482240},
-                {"name": "scePsmfP_library.prx", "load_address": 841975912},
+                {"name": "libfont.prx", "load_address": 166460416},
+                {"name": "scePsmf_library.prx", "load_address": 166551552},
+                {"name": "scePsmfP_library.prx", "load_address": 166493952},
             ],
         )
         self.assertEqual(plan["optional_guest_modules"], [])
