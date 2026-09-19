@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "374a543024d6bf7e3d1099e7e4230c522b0d8008914f53d007027f2d4a364f9f"
+      "sha256": "049a7be553bee1a0ae49813124851f8b37f197508142077f589b72518d0e018e"
     },
     {
       "path": "assets/release_manifest.json",
@@ -6018,6 +6018,30 @@
       "sha256": "712823d87eeb3871e929dcf4f5c1adbfe63e08b08a8732b5d2ff8f47d996faa7"
     },
     {
+      "path": "src/rt/prx_loader.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "cleanroom-prx-loader-g3-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4ece90821497a13d0991e4bfe30874534178cf1af78217ffa19f2a27156a4c65"
+    },
+    {
+      "path": "src/rt/prx_loader.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "cleanroom-prx-loader-g3-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "894fe7b40e8ddf87e8572d44e7a8cefeb1cc16f8191cd0967e255af7bac87367"
+    },
+    {
       "path": "src/rt/recomp.c",
       "classification": "upstream_derived",
       "evidence": {
@@ -8778,6 +8802,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "bdd4ef7a3ac6999d8659b32ac06b2571368e19c2a87a29ddf8c65a590891107c"
+    },
+    {
+      "path": "tools/test_prx_loader_cleanroom.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "cleanroom-prx-loader-g3-20260918",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "03e7450f4edb517b5c3b1b850a236bdcae5a489ac94a553f2c207d9c07cd4b3e"
     },
     {
       "path": "tools/test_prxload_psp_header.py",
