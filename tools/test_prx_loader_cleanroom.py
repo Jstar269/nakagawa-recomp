@@ -16,7 +16,6 @@ import random
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -1192,7 +1191,7 @@ class TestImports(PrxTestBase):
         self.assertEqual(info["nimp"], 3)
         g = BASE + 0x1000
         # Recompute expected stub addresses from the builder layout.
-        data = build_import_fixture()
+        build_import_fixture()
         # stub0 area starts right after nid0 (8 bytes): find via structure.
         # Layout: modinfo(52) r0(20) r1(24) nid0(8) stub0(16) nid1(4)
         #         stub1(8) s0 s1.
@@ -1527,7 +1526,7 @@ class TestFuzz(PrxTestBase):
         n = 10000
         crashes = 0
         t0 = time.monotonic()
-        for i in range(n):
+        for _i in range(n):
             mut = bytearray(seed_blob)
             op = rng.randrange(4)
             if op == 0 and len(mut) > 0:
@@ -1563,5 +1562,3 @@ class TestFuzz(PrxTestBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-
