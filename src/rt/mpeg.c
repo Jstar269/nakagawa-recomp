@@ -137,6 +137,7 @@ typedef struct {
     int defaultFrameWidth, pixelMode;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
     uint32_t auPacketsDone;   /* ring packets released by real access units */
+    int64_t lastAuPts;        /* presentation time of the last real access unit (-1 before any) */
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset) */
     struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
@@ -313,6 +314,7 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     memset(ctx, 0, sizeof(*ctx));
     ctx->used = 1; ctx->handle = h; ctx->ringAddr = ringAddr;
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
+    ctx->lastAuPts = -1;
     ctx->h264 = -1;
     return 0;
 }
@@ -550,6 +552,23 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
             uint64_t done = psConsumed / MPEG_PACKET_SIZE;
             release = done > ctx->auPacketsDone ? (uint32_t)(done - ctx->auPacketsDone) : 0u;
             ctx->auPacketsDone += release;
+            /* The stream's own presentation time: PSMF puts a PTS on only some pictures, so the
+             * others follow the previous one by one frame. A context whose header was never
+             * analysed takes its first timestamp from the first picture, which keeps the audio
+             * clock (firstTimestamp + decoded audio) on the same time base. */
+            if (auPts >= 0) ctx->lastAuPts = auPts;
+            else if (ctx->lastAuPts >= 0) ctx->lastAuPts += videoTimestampStep;
+            else ctx->lastAuPts = ctx->firstTimestamp;
+            if (!ctx->firstTimestamp && auPts >= 0) ctx->firstTimestamp = auPts;
+            int64_t realPts = ctx->lastAuPts;
+            au_write_pts(auAddr, 0, realPts);
+            au_write_pts(auAddr, 8, realPts - videoTimestampStep);
+            MEM_W32(auAddr + 16, (uint32_t)num);
+            uint32_t av = rb_get(ring, RB_packetsAvail);
+            rb_set(ring, RB_packetsAvail, av > release ? av - release : 0u);
+            if (attrAddr) MEM_W32(attrAddr, 1);
+            if (ctx->videoEnd) return SCE_MPEG_ERROR_NO_DATA;
+            return 0;
         }
     }
 #endif
