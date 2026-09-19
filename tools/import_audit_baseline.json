@@ -565,7 +565,7 @@
   },
   "0x37431849": {
     "classification": "dedicated",
-    "handler": "h_TryLockLwMutex",
+    "handler": "h_TryLockLwMutex600",
     "name": "sceKernelTryLockLwMutex_600",
     "status": "unreviewed"
   },

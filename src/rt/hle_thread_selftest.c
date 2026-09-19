@@ -3982,6 +3982,7 @@ static void test_sema_hardware_codes(void) {
 #define NID_B1_DELETE_LWMUTEX 0x60107536u
 #define NID_B1_LOCK_LWMUTEX   0xbea46419u
 #define NID_B1_TRYLOCK_LWMUTEX 0xdc692ee3u
+#define NID_TRYLOCK_LWMUTEX_600 0x37431849u
 #define NID_B1_UNLOCK_LWMUTEX 0x15b6446bu
 
 static void test_lwmutex_hardware_codes(void) {
@@ -4007,6 +4008,10 @@ static void test_lwmutex_hardware_codes(void) {
     MEM_W32(wa + 4u, me + 0x100u);
     b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201c4u,
               "TryLock held by another thread returns 800201C4");
+    /* The 6.00+ export reports the same contention as LOCKED, which SDK-built code (the retail
+     * libpsmfplayer) tests for; the state is left untouched either way. */
+    b1_expect(b1_call(NID_TRYLOCK_LWMUTEX_600, wa, 1u, 0u, 0u), 0x800201cbu,
+              "TryLock_600 held by another thread returns 800201CB");
     b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201ccu,
               "Unlock by a non-owner returns 800201CC");
     expect(MEM_R32(wa) == 1u && MEM_R32(wa + 4u) == me + 0x100u,

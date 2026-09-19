@@ -12089,6 +12089,7 @@ int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
 #define LWMUTEX_DELETED_WORD   0xffffffffu
 #define SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND           0x800201cau
 #define SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN       0x800201c4u
+#define SCE_KERNEL_ERROR_LWMUTEX_LOCKED              0x800201cbu
 #define SCE_KERNEL_ERROR_LWMUTEX_UNLOCK_UNDERFLOW    0x800201ccu
 #define SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED 0x800201cfu
 
@@ -12362,6 +12363,15 @@ static uint32_t h_TryLockLwMutex(CpuState *s) {
     int count = (int)A1; if (count <= 0) return SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN;
     return lwmutex_acquire(wa, count, 0) == LWMUTEX_TAKEN
         ? 0u : SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN;
+}
+
+/* The 6.00+ export reports a lock it cannot take as LOCKED (0x800201CB): SDK-built code relies on
+ * it (the retail libpsmfplayer treats only 0x800201CB from sceKernelTryLockLwMutex_600 as
+ * contention and otherwise proceeds as the owner). The original export keeps the hardware-measured
+ * 0x800201C4 above. */
+static uint32_t h_TryLockLwMutex600(CpuState *s) {
+    uint32_t r = h_TryLockLwMutex(s);
+    return r == SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN ? SCE_KERNEL_ERROR_LWMUTEX_LOCKED : r;
 }
 
 static uint32_t h_UnlockLwMutex(CpuState *s) {
@@ -13261,7 +13271,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x7cff8cf3, "_sceKernelLockLwMutex", h_LockLwMutex);
     sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutex);
     sr_hle_register(0xdc692ee3, "sceKernelTryLockLwMutex", h_TryLockLwMutex);
-    sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex);
+    sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex600);
     sr_hle_register(0x71040d5c, "_sceKernelTryLockLwMutex", h_TryLockLwMutex);
     sr_hle_register(0x15b6446b, "sceKernelUnlockLwMutex", h_UnlockLwMutex);
     sr_hle_register(0xbeed3a47, "_sceKernelUnlockLwMutex", h_UnlockLwMutex);
