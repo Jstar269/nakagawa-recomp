@@ -129,6 +129,81 @@ class TestFuncdiffCmpFailClosed(unittest.TestCase):
         self.assertIn("MATCH: 2 steps identical", out)
         self.assertIn("oracle step 4", out)
 
+    # --- contiguous-step invariant: the oracle must supply the exact
+    # requested slice entry..entry+need-1 (issue #381 review follow-up) ---
+
+    def test_exact_contiguous_slice_passes(self):
+        oracle = self.path(self.steps(3))
+        mine = self.path(self.steps(3))
+        rc, out = run_tool([oracle, mine, "0"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("MATCH: 3 steps identical", out)
+
+    def test_nonzero_entry_contiguous_slice_passes(self):
+        oracle = self.path(self.steps(6))
+        mine = self.path(self.steps(6)[4:6])
+        rc, out = run_tool([oracle, mine, "4"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("MATCH: 2 steps identical", out)
+
+    def test_shifted_slice_start_fails(self):
+        # entry-step 4 requested, but the oracle's first record at or after the
+        # entry is step 5 (step 4 absent): the slice must not silently shift.
+        oracle_lines = self.steps(7)
+        del oracle_lines[4]  # steps 0,1,2,3,5,6
+        oracle = self.path(oracle_lines)
+        mine = self.path(self.steps(2))
+        rc, out = run_tool([oracle, mine, "4"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("oracle slice does not start at entry-step 4", out)
+        self.assertIn("first record at or after entry has step 5", out)
+        self.assertNotIn("MATCH", out)
+
+    def test_middle_requested_step_deleted_fails(self):
+        # Requested slice 4,5,6 but step 5 is absent: 4,6,... must fail with
+        # the expected/observed step numbers, not compare step 6 as step 5.
+        oracle_lines = self.steps(7)
+        del oracle_lines[5]  # steps 0,1,2,3,4,6
+        oracle = self.path(oracle_lines)
+        mine = self.path(self.steps(3))
+        rc, out = run_tool([oracle, mine, "4"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("oracle steps are not contiguous at 4+1 (expected step 5, observed 6)", out)
+        self.assertNotIn("MATCH", out)
+
+    def test_duplicate_requested_step_fails(self):
+        # Requested slice 4,5,6 but step 4 is duplicated: the second 4 must be
+        # rejected against the expected step 5.
+        oracle_lines = self.steps(7)
+        oracle_lines[5] = oracle_lines[4]  # steps 0,1,2,3,4,4,6
+        oracle = self.path(oracle_lines)
+        mine = self.path(self.steps(3))
+        rc, out = run_tool([oracle, mine, "4"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("oracle steps are not contiguous at 4+1 (expected step 5, observed 4)", out)
+        self.assertNotIn("MATCH", out)
+
+    def test_backwards_out_of_order_requested_step_fails(self):
+        # Requested slice 4,5,6 but the oracle emits ...4,6,5: out-of-order
+        # steps must fail rather than being accepted as coverage.
+        oracle_lines = self.steps(7)
+        oracle_lines[5], oracle_lines[6] = oracle_lines[6], oracle_lines[5]
+        oracle = self.path(oracle_lines)
+        mine = self.path(self.steps(3))
+        rc, out = run_tool([oracle, mine, "4"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("oracle steps are not contiguous at 4+1 (expected step 5, observed 6)", out)
+        self.assertNotIn("MATCH", out)
+
+    def test_extra_oracle_records_after_requested_slice_still_pass(self):
+        # The oracle may continue beyond the requested slice; only the slice
+        # itself must be exactly contiguous.
+        oracle = self.path(self.steps(6))
+        mine = self.path(self.steps(2))
+        rc, out = run_tool([oracle, mine, "0"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("MATCH: 2 steps identical", out)
+
     def test_malformed_recomp_record_fails_explicitly(self):
         oracle = self.path(self.steps(3))
         mine = self.path(self.steps(3)[:1] + ["7 pc=0x1 onlytwofields"] + self.steps(3)[2:])

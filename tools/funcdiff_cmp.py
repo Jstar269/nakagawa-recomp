@@ -57,10 +57,17 @@ def load_my_trace(path):
 
 
 def load_oracle_slice(path, entry, need):
-    """Return exactly the <need> oracle records starting at <entry-step>, or raise.
+    """Return exactly the <need> oracle records for the requested contiguous slice
+    <entry>, <entry>+1, ..., <entry>+need-1, or raise.
 
-    The oracle file may contain further steps after the requested slice; only coverage
-    from <entry-step> onward is required.
+    The oracle file may contain further steps after the requested slice; only the
+    requested slice itself is required. Records strictly before <entry> are skipped
+    (they need not start at zero), but they cannot shift the slice: the first record
+    at or after <entry> must carry exactly step number <entry>, and each subsequent
+    selected record must carry exactly <entry> + len(cur). Any gap, duplicate,
+    backwards step, or shifted start fails explicitly with expected/observed step
+    numbers so a deleted-but-parseable oracle record can never silently shrink or
+    shift the compared coverage (issue #381).
     """
     cur = []
     started = False
@@ -79,9 +86,20 @@ def load_oracle_slice(path, entry, need):
                 raise TraceFormatError(
                     f"{path}:{lineno}: malformed oracle step number {p[0]!r}: {line!r}"
                 ) from None
-            if st < entry:
-                continue
-            started = True
+            if not started:
+                if st < entry:
+                    continue
+                if st != entry:
+                    raise TraceFormatError(
+                        f"{path}:{lineno}: oracle slice does not start at entry-step {entry} "
+                        f"(first record at or after entry has step {st})"
+                    )
+                started = True
+            elif st != entry + len(cur):
+                raise TraceFormatError(
+                    f"{path}:{lineno}: oracle steps are not contiguous at {entry}+{len(cur)} "
+                    f"(expected step {entry + len(cur)}, observed {st})"
+                )
             cur.append(norm(line, lineno, path))
             if len(cur) >= need:
                 break
