@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "049a7be553bee1a0ae49813124851f8b37f197508142077f589b72518d0e018e"
+      "sha256": "d59e20344db5af23da48f468c4600e958354401119e62db9265a427ced275284"
     },
     {
       "path": "assets/release_manifest.json",
@@ -6968,7 +6968,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be517f2fa2a501d1033238f755c94e1ea92840c1209eb767b920e37c18ad4458"
+      "sha256": "e54fad389026e89478f72c2920801b7598c4d2d45349fc85e6f2a363fe19d9d1"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -8987,7 +8987,31 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "aa25e04d6f4abd0e3b0c28b97dcb96e49ebf1259254b50ab49f08a6f4fc7d1f4"
+      "sha256": "c30bd936d17df22f873ca6b36b73df2011a3868787805280fe16e100cb054915"
+    },
+    {
+      "path": "tools/test_sbom_binding.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sbom-fail-closed-375",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2d4b40b8573fda106012a83e5a240d0483c3442dcb9afb6488fa6edb5f5d13cf"
+    },
+    {
+      "path": "tools/test_sbom_fail_closed.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sbom-fail-closed-375",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "52c8d7b292e7c4ba1e10364ae8045586e9e13ccfd379df53e067e667e893e258"
     },
     {
       "path": "tools/test_sched_invariants.py",
@@ -9415,7 +9439,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd2f520198c54462b9803a263bbd7767e286b1a62c7bb61d513b7d64c9f74e2e"
+      "sha256": "dd462dfe6ac378e4309ebb5286a3e90770c51031e417beca34d1dd04989278d5"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",

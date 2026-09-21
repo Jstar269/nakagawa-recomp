@@ -327,7 +327,7 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
                     f"(expected {expected_count} record(s), found {found}); the SBOM must "
                     "carry exactly the lockfile dependency inventory"
                 )
-        for (purl, name, version), extra_count in sorted(identity_counter.items()):
+        for (purl, _name, _version), extra_count in sorted(identity_counter.items()):
             if purl not in expected_purls:
                 errors.append(
                     f"Unexpected package-manager package record in SPDX SBOM: {purl} "
