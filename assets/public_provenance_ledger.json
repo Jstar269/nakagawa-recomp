@@ -7316,7 +7316,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2a6114f3505cbe9453aaa547d606dd3322fbed353850b3d25be75451a1a3bb1e"
+      "sha256": "d9f18a84c5243a1d7e2c35732561502713342246a6c856b7c7d6704846c3074c"
     },
     {
       "path": "tools/nk_cli.py",

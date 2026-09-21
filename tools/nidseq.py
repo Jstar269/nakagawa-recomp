@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
-# Modified by Nakagawa Recomp contributors, 2026-09-21.
+# Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
 
 # Extract the sequence of HLE imports (by NID) a trace executes, mapping each import-stub jr
