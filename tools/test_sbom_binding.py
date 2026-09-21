@@ -12,7 +12,6 @@
 # exact dependency identities (ecosystem + name + version, with
 # multiplicity). Machine-local paths must never appear in release evidence.
 
-import io
 import json
 import os
 from pathlib import Path
@@ -140,22 +139,22 @@ class TestStandardsConformantLockBinding(BindingFixture):
                        "SPDXRef-Package-nakagawa-recomp"), rels)
 
     def test_generated_document_validates_against_official_spdx23_schema(self):
-        # Development-time validation against the official SPDX 2.3 JSON schema
-        # (fetched to the temp dir); skipped when either the schema file or
-        # jsonschema is unavailable. No network/runtime dependency is added.
-        schema_path = Path(os.environ.get("SPDX23_SCHEMA_PATH",
-                                          "/tmp/spdx-schema-2.3.json"))
+        # Development-time validation against the official SPDX 2.3 JSON
+        # schema; point SPDX23_SCHEMA_PATH at the schema file to enable it.
+        # Skipped when the schema path or jsonschema is unavailable, so no
+        # network or runtime dependency is added (issue #375 revision 3).
+        schema_path = os.environ.get("SPDX23_SCHEMA_PATH")
         try:
             import jsonschema  # noqa: F401
             have_jsonschema = True
         except ImportError:
             have_jsonschema = False
-        if not (have_jsonschema and schema_path.is_file()):
+        if not (have_jsonschema and schema_path and Path(schema_path).is_file()):
             self.skipTest("official SPDX 2.3 schema or jsonschema not available")
         import jsonschema
         self.write_npm_lock(LOCK_A_TEXT)
         doc = self.generate_sbom_document()
-        jsonschema.validate(doc, json.loads(schema_path.read_text(encoding="utf-8")))
+        jsonschema.validate(doc, json.loads(Path(schema_path).read_text(encoding="utf-8")))
 
     def test_no_machine_local_paths_in_generated_document(self):
         self.write_npm_lock(LOCK_A_TEXT)
