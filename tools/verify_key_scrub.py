@@ -18,11 +18,13 @@ An empty/no-ref repository is unverifiable (exit 2), not clean.
 
 Exit 0  -> every configured constant was searched in every encoding, every search
            completed successfully, and nothing matched (scrub verified / never present).
-Exit 3  -> at least one constant is still reachable (scrub incomplete / not yet run).
+Exit 3  -> at least one constant is positively reachable (scrub incomplete / not yet run).
 Exit 2  -> could not verify (missing/unusable key file, failed repository
-           preconditions, or any failed `git` invocation). When searches both failed
-           and found material, exit 2 still wins: an incomplete run is not a clean
-           verdict, and the reachable names are printed alongside the diagnostics.
+           preconditions, or any failed `git` invocation) and there is no
+           definitive positive exposure result. Verdict precedence is
+           exposure > unverifiable > clean: a confirmed reachable constant
+           exits 3 even when other searches failed, with the partial-coverage
+           diagnostics printed prominently beside the finding.
 
 Scope: the Git repository containing the current working directory; preconditions
 and searches always target that same repository. Run it BEFORE a scrub to confirm
@@ -124,12 +126,16 @@ def _as_text(value: object) -> str:
 
 
 def _git(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """Run a read-only probe `git` command; None when git is missing or fails."""
+    """Run a read-only probe `git` command; None when git is missing or fails.
+
+    Catches the same failure family as the search path so a broken probe
+    becomes a documented exit-2 precondition failure, never a traceback.
+    """
     try:
         return subprocess.run(
             ["git", *args], capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
 
 
@@ -163,13 +169,21 @@ def check_repository() -> str | None:
     return None
 
 
+def _diagnostic(text: object, redact_needles: Sequence[str]) -> str:
+    """Redact every configured encoding from `text` and bound its length."""
+    detail = _redact(_as_text(text).strip(), redact_needles)
+    if len(detail) > _MAX_STDERR_CHARS:
+        detail = detail[:_MAX_STDERR_CHARS] + "...(truncated)"
+    return detail
+
+
 def search_history(needle: str, redact_needles: Sequence[str]) -> tuple[Verdict, SearchError | None]:
     """Pickaxe-search every reachable commit for one textual encoding.
 
     Returns (FOUND, None) or (NOT_FOUND, None) only when `git log` ran and
     exited 0. Any nonzero exit, timeout, or missing `git` returns
-    (ERROR, SearchError); the caller must treat ERROR as a hard verification
-    failure, never as "clean".
+    (ERROR, SearchError); ERROR never reads as "clean" (#377), though a
+    definitive exposure still outranks it in the final verdict.
     """
     operation = "git log --all -S <needle redacted> --oneline --source"
     try:
@@ -182,12 +196,13 @@ def search_history(needle: str, redact_needles: Sequence[str]) -> tuple[Verdict,
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         # Any raise out of subprocess.run (missing git, spawn failure, ...) means
         # the search did not complete; it must never surface as "clean" (#377).
-        return Verdict.ERROR, SearchError(operation, None, f"git could not be executed: {exc}")
+        # The exception text can embed the full command including the needle,
+        # so it is redacted and bounded like any other diagnostic.
+        detail = _diagnostic(exc, redact_needles) or "(exception carried no detail)"
+        return Verdict.ERROR, SearchError(operation, None, f"git could not be executed: {detail}")
     if result.returncode != 0:
-        detail = _redact(_as_text(result.stderr).strip(), redact_needles)
-        if len(detail) > _MAX_STDERR_CHARS:
-            detail = detail[:_MAX_STDERR_CHARS] + "...(truncated)"
-        return Verdict.ERROR, SearchError(operation, result.returncode, detail or "(git produced no stderr)")
+        detail = _diagnostic(result.stderr, redact_needles) or "(git produced no stderr)"
+        return Verdict.ERROR, SearchError(operation, result.returncode, detail)
     if result.stdout.strip():
         return Verdict.FOUND, None
     return Verdict.NOT_FOUND, None
@@ -239,6 +254,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  {name}: clean")
 
+    # Verdict precedence: exposure > unverifiable > clean. A definitive
+    # positive finding must never be hidden behind a later search failure,
+    # but the partial-coverage diagnostics print prominently either way.
     if errors:
         print("\nHistory verification could not be completed; these searches failed:", file=sys.stderr)
         for name, error in errors:
@@ -248,18 +266,19 @@ def main(argv: list[str] | None = None) -> int:
         if exposed:
             print(f"{len(exposed)} constant(s) are still reachable in Git history: {', '.join(exposed)}", file=sys.stderr)
             print(
-                "History still exposes the keys, and the remaining searches did not complete; "
-                "fix the failures above and re-run. See docs/KEY_HISTORY_SCRUB.md.",
+                "History still exposes the keys and coverage was partial; fix the failures above, "
+                "re-run after scrubbing. See docs/KEY_HISTORY_SCRUB.md.",
                 file=sys.stderr,
             )
         else:
             print("No clean verdict is possible until every search completes; fix the failures above and re-run.", file=sys.stderr)
-        return 2
 
     if exposed:
         print(f"\n{len(exposed)} constant(s) still reachable in Git history: {', '.join(exposed)}")
         print("History still exposes the keys. See docs/KEY_HISTORY_SCRUB.md.")
         return 3
+    if errors:
+        return 2
     print("\nNo PSP constant is reachable in any commit. History is clean.")
     return 0
 

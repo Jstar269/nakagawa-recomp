@@ -5,8 +5,10 @@
 
 History-search tests build a throwaway temporary Git repository per test, inject
 a synthetic 16-byte value as the key file, and assert the three CLI verdict
-classes (#377): exit 0 only for completed searches with no match, exit 3 for a
-reachable constant, and exit 2 whenever a required search could not run.
+classes (#377) with precedence exposure > unverifiable > clean: exit 0 only for
+completed searches with no match, exit 3 whenever a constant is positively
+reachable (even alongside later search failures), and exit 2 when verification
+could not complete and no definitive exposure was found.
 """
 
 import contextlib
@@ -314,7 +316,8 @@ class TestCliVerdicts(unittest.TestCase):
         self.assertIn("No clean verdict is possible", err.getvalue())
         self.assertNotIn("History is clean", out.getvalue())
 
-    def test_injected_failure_after_a_match_still_exits_two(self):
+    def test_failure_after_a_match_still_exits_three(self):
+        """Exposure outranks ERROR: a confirmed finding is never hidden behind exit 2."""
         repo = _init_repo()
         _commit_secret(repo, SAMPLE.hex())
 
@@ -333,11 +336,40 @@ class TestCliVerdicts(unittest.TestCase):
             with self._capture() as (out, err):
                 with mock.patch.object(vks.subprocess, "run", side_effect=flaky_run):
                     rc = self._main_in(repo, keys)
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 3)
         self.assertIn("k: REACHABLE", out.getvalue())
         self.assertIn("could not be completed", err.getvalue())
         self.assertIn("are still reachable", err.getvalue())
         self.assertNotIn("History is clean", out.getvalue())
+
+    def test_reachable_constant_plus_unverifiable_constant_exits_three(self):
+        """One constant positively found + another entirely unverifiable -> exit 3, both facts visible."""
+        repo = _init_repo()
+        _commit_secret(repo, SAMPLE.hex())
+        other = bytes(range(16, 32))
+        other_encodings = set(vks.encodings(other))
+        real_run = vks.subprocess.run
+
+        def flaky_run(command, *args, **kwargs):
+            # Every search for `other` fails; every search for `k` succeeds.
+            if "-S" in command and any(enc in command for enc in other_encodings):
+                raise subprocess.TimeoutExpired("git", 5)
+            return real_run(command, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as d:
+            keys = _write_keys(Path(d), {"k": SAMPLE, "other": other})
+            with self._capture() as (out, err):
+                with mock.patch.object(vks.subprocess, "run", side_effect=flaky_run):
+                    rc = self._main_in(repo, keys)
+        self.assertEqual(rc, 3)
+        self.assertIn("k: REACHABLE", out.getvalue())
+        self.assertIn("other: UNVERIFIABLE", out.getvalue())
+        self.assertIn("could not be completed", err.getvalue())
+        self.assertIn("could not be verified: other", err.getvalue())
+        self.assertIn("are still reachable", err.getvalue())
+        self.assertIn("k", err.getvalue().split("are still reachable in Git history:")[1].splitlines()[0])
+        self.assertNotIn("History is clean", out.getvalue())
+        self.assertNotIn("History is clean", err.getvalue())
 
     def test_diagnostics_never_contain_key_values(self):
         repo = _init_repo()
@@ -363,8 +395,8 @@ class TestCliVerdicts(unittest.TestCase):
             self.assertNotIn(needle, combined)
 
     def test_second_constant_still_searched_after_first_error(self):
+        """An error on one constant neither stops the sweep nor leaks into its neighbours."""
         repo = _init_repo()
-        _commit_secret(repo, SAMPLE.hex())
         other = bytes(range(16, 32))
         real_run = vks.subprocess.run
         calls = {"n": 0}
@@ -384,7 +416,63 @@ class TestCliVerdicts(unittest.TestCase):
                 ):
                     rc = self._main_in(repo, keys)
         self.assertEqual(rc, 2)
-        self.assertIn("REACHABLE", out.getvalue())
+        self.assertIn("k: UNVERIFIABLE", out.getvalue())
+        self.assertIn("other: clean", out.getvalue())
+        self.assertNotIn("History is clean", out.getvalue())
+
+    def test_exception_text_is_redacted(self):
+        """An exception carrying the command line never leaks the needle."""
+        needle = SAMPLE.hex()
+        boom = subprocess.CalledProcessError(128, ["git", "log", "--all", "-S", needle])
+        self.assertIn(needle, str(boom))  # the mock genuinely carries the needle
+        with mock.patch.object(vks.subprocess, "run", side_effect=boom):
+            verdict, error = vks.search_history(needle, [needle])
+        self.assertIs(verdict, vks.Verdict.ERROR)
+        self.assertIn("git could not be executed", error.detail)
+        self.assertNotIn(needle, error.detail)
+
+    def test_exception_from_cli_is_redacted_and_exits_two(self):
+        repo = _init_repo()
+        needles = vks.encodings(SAMPLE)
+        real_run = vks.subprocess.run
+
+        def exploding_pickaxe(command, *args, **kwargs):
+            if "-S" in command:
+                raise subprocess.CalledProcessError(128, ["git", "log", "--all", "-S", SAMPLE.hex()])
+            return real_run(command, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as d:
+            keys = _write_keys(Path(d), {"k": SAMPLE})
+            with self._capture() as (out, err):
+                with mock.patch.object(vks.subprocess, "run", side_effect=exploding_pickaxe):
+                    rc = self._main_in(repo, keys)
+        self.assertEqual(rc, 2)
+        combined = out.getvalue() + err.getvalue()
+        for needle in needles:
+            self.assertNotIn(needle, combined)
+        self.assertIn("git could not be executed", combined)
+        self.assertNotIn("History is clean", combined)
+
+    def test_precondition_probe_exception_exits_two_without_traceback(self):
+        """A raised probe failure becomes the documented exit 2, not a traceback."""
+        repo = _init_repo()
+        real_run = vks.subprocess.run
+
+        def exploding_probe(command, *args, **kwargs):
+            if "rev-parse" in command:
+                raise OSError("git exploded mid-probe")
+            return real_run(command, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as d:
+            keys = _write_keys(Path(d), {"k": SAMPLE})
+            with self._capture() as (out, err):
+                with mock.patch.object(vks.subprocess, "run", side_effect=exploding_probe):
+                    rc = self._main_in(repo, keys)
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot verify history", err.getvalue())
+        combined = out.getvalue() + err.getvalue()
+        self.assertNotIn("Traceback", combined)
+        self.assertNotIn("History is clean", combined)
 
     def test_missing_key_file_exits_two(self):
         with tempfile.TemporaryDirectory() as d:

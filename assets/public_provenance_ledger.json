@@ -8555,7 +8555,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "57572bf6de2c5c6a6918095e96dde82e07c3d5274e39dab6e1741f795aa044aa"
+      "sha256": "42e0dda8aa90441ee4ec161f6d513b0bfa2befc8bf07974fae28345fa7197cea"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -9403,7 +9403,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2d12487aa41038a26dab4de31d8e183e068d2413a38a39888dcb7722c1055c4"
+      "sha256": "1135916f6e1ac6c264d3f1d820aea199a6e9fe339dc86995a23ca35bfbe568c4"
     },
     {
       "path": "tools/verify_sbom.py",
