@@ -62,12 +62,21 @@ HANDLER_STATUS = {
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.
     "h_DisplayGetFramePerSec": "complete",
-    # Documented controlled-error policy: PSMF video/audio getters return
-    # PSMF_ERR_NO_DATA until the real demux is connected (the attract movie
-    # stays black by design). No public tracker exists yet; the refusal
-    # contract is documented here.
-    "h_PsmfGetVideo": "controlled_unsupported",
-    "h_PsmfGetAudio": "controlled_unsupported",
+    # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
+    # PSMF producer and a host codec backend, and return 0 only for output a
+    # decoder actually produced: the video getter validates the caller's stride
+    # and pointer contract, warms up the documented three frames, converts the
+    # picture into the guest display buffer only after preflighting every
+    # destination row, and reports the picture's presentation time; the audio
+    # getter stages one decoded ATRAC3+ frame as 2048 stereo s16 samples. A
+    # compressed access unit is never presented as a decoded frame or PCM, and
+    # a stream that runs dry reports NO_MORE_DATA. They remain partial because
+    # the player above them is still host HLE (original guest PRX execution is
+    # the target), the picture path needs a host backend to exist at all (the
+    # null backend yields no pictures by design), and no hardware-comparison
+    # tier has been measured for either getter.
+    "h_PsmfGetVideo": "partial",
+    "h_PsmfGetAudio": "partial",
     # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
     # by this runtime. They validate the core/voice identity and return the
     # documented invalid-state error instead of fabricating success.

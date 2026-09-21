@@ -720,10 +720,10 @@
     "status": "unreviewed"
   },
   "0x46f61f8b": {
-    "classification": "controlled_unsupported",
+    "classification": "dedicated",
     "handler": "h_PsmfGetVideo",
     "name": "scePsmfPlayerGetVideoData",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x472e3825": {
     "classification": "dedicated",
@@ -1794,10 +1794,10 @@
     "status": "unreviewed"
   },
   "0xb9848a74": {
-    "classification": "controlled_unsupported",
+    "classification": "dedicated",
     "handler": "h_PsmfGetAudio",
     "name": "scePsmfPlayerGetAudioData",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xba4051d6": {
     "classification": "dedicated",

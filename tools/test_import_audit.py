@@ -350,7 +350,13 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(rc, 0)
             report = json.loads(out.read_text(encoding="ascii"))
-            self.assertEqual(report["summary"]["total"], 6)
+            # The audit reports one entry per imported (library, NID) pair, so the
+            # expected total comes from the fixture itself rather than a magic
+            # number that has to be re-guessed whenever the fixture grows.
+            self.assertEqual(
+                report["summary"]["total"],
+                sum(len(nids) for _, nids in MIXED_FIXTURE_LIBS),
+            )
             self.assertIn("PSP import-coverage audit", txt.read_text(encoding="ascii"))
             self.assertEqual(import_audit.main(["--elf", str(bad), "--out", str(out)]), 1)
             self.assertEqual(import_audit.main(["--elf", str(Path(td) / "absent.bin")]), 1)

@@ -79,11 +79,16 @@ MALFORMED_FIXTURES = (
     "sectionless_bad_paddr",
 )
 
-# What the mixed public fixture must classify to, per (lib, nid).
+# What the mixed public fixture must classify to, per (lib, nid).  The table keeps
+# one NID of each class so a classifier change that collapses two classes cannot
+# pass: the PSMF video getter moved from controlled unsupported to dedicated when
+# it started driving the media producer and the host codecs, and the SAS ATRAC3
+# voice setter replaced it as the controlled-unsupported example.
 MIXED_EXPECTED = {
     ("ThreadManForUser", 0x446D8DE6): "dedicated",           # sceKernelCreateThread
     ("ThreadManForUser", 0x349D6D6C): "dedicated",           # sceKernelCheckCallback
-    ("scePsmfPlayer", 0x46F61F8B): "controlled_unsupported",  # scePsmfPlayerGetVideoData
+    ("scePsmfPlayer", 0x46F61F8B): "dedicated",              # scePsmfPlayerGetVideoData
+    ("sceSasCore", 0x4AA9EAD6): "controlled_unsupported",    # __sceSasSetVoiceATRAC3
     ("SynthLibA", 0x00C0FFEE): "missing",
     ("SynthLibA", 0x0BADF00D): "missing",
     ("SynthLibB", 0x0BADF00D): "missing",
