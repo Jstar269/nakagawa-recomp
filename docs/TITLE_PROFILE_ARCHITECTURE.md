@@ -105,7 +105,7 @@ When an ISO is prepared for the first time, the preparation engine writes a priv
 ```json
 {
   "schema_version": 1,
-  "engine_version": "0.2.0",
+  "engine_version": "0.3.0",
   "title_id": "hst-ucus98701",
   "disc_id": "UCUS98701",
   "title_name": "Hot Shots Tennis: Get a Grip! (North America)",

@@ -847,6 +847,7 @@
     "tools/test_parse_fuzz.py",
     "tools/test_platform_ladder.py",
     "tools/test_portability_inventory.py",
+    "tools/test_prep_fail_closed.py",
     "tools/test_production_smoke.py",
     "tools/test_progress_evidence.py",
     "tools/test_progress_tracker.py",

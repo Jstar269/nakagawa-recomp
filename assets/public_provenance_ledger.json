@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "049a7be553bee1a0ae49813124851f8b37f197508142077f589b72518d0e018e"
+      "sha256": "6b45fb104eda3aa683889b5665df4fc9227a1f620f2f9b0a757f9501d9765cd6"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "706b778f635343dbe36987067ad0d6da787b8a8d2e5250c5ab0da579b48c21d1"
+      "sha256": "198ffaa1988602c067996da22052f77959d9391dbc90e45eae941a0ae4a511cf"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -7340,7 +7340,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "45adf1c2a47a9873d8292ecb4d1d193c5d7cd793326a6ad6e03c8105fb3219a7"
+      "sha256": "2ab2480d31ef6e84a530403a855508c05dedfdf0fe5e4f0f5edbc24ef97b8f2b"
     },
     {
       "path": "tools/nk_core/iso_inspect.py",
@@ -7388,7 +7388,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3e4d0f656c603cfcbe4aa89f5f5ffa79e88329ba8cc32948c775b56ffa8f9146"
+      "sha256": "5ffe1314e2ffee11f8420b4d9651cd62c58e2d276bcbe897fa3ee3f869f9d584"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -8693,7 +8693,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cb6d9cd530365d7468d66617f43b879deab1f0e10fd73b5dc0d0e14e835e13f6"
+      "sha256": "d24bd08eef5aab0907749a766ee367362e163ce125de551ce830921604923939"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -8736,6 +8736,15 @@
         "upstream_attribution": null
       },
       "sha256": "6ee7011809eb0068dbce655b348f7781d718badbcba674a6f82c0b2bcbefdef5"
+    },
+    {
+      "path": "tools/test_prep_fail_closed.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "8a7e90f2416e2f747c0569a2fbe99356f7d0e25bfa5d9f399046643d07e82646"
     },
     {
       "path": "tools/test_production_smoke.py",

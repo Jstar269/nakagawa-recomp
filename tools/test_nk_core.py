@@ -181,6 +181,23 @@ class NkCoreTests(unittest.TestCase):
         self.assertEqual(manifest["title_id"], "synthetic-allegrex-v1")
         self.assertEqual(manifest["game_name"], "synthetic")
 
+        # A manifest alone is not evidence of preparation (#374). The staged
+        # outputs the engine must verify before promotion: the ISO reference
+        # and an attributable manifest tied to this disc, profile and source.
+        disc_dir = result.prepared_root / "disc"
+        self.assertTrue(disc_dir.is_dir())
+        game_iso = disc_dir / "game.iso"
+        iso_pointer = disc_dir / "iso_path.txt"
+        self.assertTrue(game_iso.exists() or iso_pointer.is_file())
+        if iso_pointer.is_file():
+            self.assertEqual(
+                Path(iso_pointer.read_text(encoding="utf-8").strip()), iso_file
+            )
+        self.assertEqual(manifest["archive_format"], "raw")
+        self.assertEqual(manifest["iso_path"], str(iso_file))
+        self.assertEqual(manifest["iso_size"], iso_file.stat().st_size)
+        self.assertEqual(result.prepared_root.name, "TEST00001")
+
         # Verify no staging directories were left behind
         staging_dirs = list(dest_root.glob(".staging_*"))
         self.assertEqual(len(staging_dirs), 0)
