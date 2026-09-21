@@ -21,7 +21,7 @@
 #>
 
 $ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "hst_safety.ps1")
+. (Join-Path $PSScriptRoot "nk_safety.ps1")
 . (Join-Path $PSScriptRoot "hst_run_support.ps1")
 
 $script:Failures = 0
@@ -464,8 +464,19 @@ try {
     New-Item -ItemType Directory -Path $fakeTools -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $unrelated "logs") -Force | Out-Null
     $managerSrc = Join-Path $PSScriptRoot ".."
-    Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $fakeRepo -Force
-    foreach ($helper in @("hst_safety.ps1", "hst_run_support.ps1", "vulkan_sdk.ps1")) {
+    $targetMgr = if (Test-Path -LiteralPath (Join-Path $managerSrc "nk_manager.ps1")) { "nk_manager.ps1" } else { "hst_manager.ps1" }
+    Copy-Item -LiteralPath (Join-Path $managerSrc $targetMgr) -Destination $fakeRepo -Force
+    if (Test-Path -LiteralPath (Join-Path $managerSrc "hst_manager.ps1")) {
+        Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $fakeRepo -Force
+    }
+    # Phase 3 (#196): copy nk_safety.ps1 alongside hst_safety.ps1 so nk_manager.ps1's
+    # canonical safety helper lookup succeeds in the fake workspace.
+    $safetyHelpers = @("hst_run_support.ps1", "vulkan_sdk.ps1")
+    foreach ($helper in @("nk_safety.ps1", "hst_safety.ps1")) {
+        $helperPath = Join-Path $PSScriptRoot $helper
+        if (Test-Path -LiteralPath $helperPath) { $safetyHelpers += $helper }
+    }
+    foreach ($helper in $safetyHelpers) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $helper) -Destination $fakeTools -Force
     }
     foreach ($anchor in @("Makefile", "AGENTS.md")) {
@@ -492,7 +503,7 @@ try {
         $prev = Get-Location
         try {
             Set-Location -LiteralPath $unrelated
-            & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $fakeRepo "hst_manager.ps1") `
+            & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $fakeRepo $targetMgr) `
                 -Action Clean -VulkanSdk $fakeSdk | Out-Null
             $exitCode = [int]$LASTEXITCODE
             Assert-True ($exitCode -eq 0) "manager exited $exitCode"
@@ -507,10 +518,20 @@ try {
     Test-Case "manager fails closed when copied into an anchor-less tree" {
         $bare = Join-Path $cwdTestRoot "bare"
         New-Item -ItemType Directory -Path (Join-Path $bare "tools") -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $bare -Force
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "hst_safety.ps1") -Destination (Join-Path $bare "tools") -Force
+        Copy-Item -LiteralPath (Join-Path $managerSrc $targetMgr) -Destination $bare -Force
+        if (Test-Path -LiteralPath (Join-Path $managerSrc "hst_manager.ps1")) {
+            Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $bare -Force
+        }
+        # Phase 3 (#196): copy nk_safety.ps1 alongside hst_safety.ps1 so the
+        # forwarding wrapper can find its canonical target.
+        foreach ($safetyHelper in @("nk_safety.ps1", "hst_safety.ps1")) {
+            $safetyPath = Join-Path $PSScriptRoot $safetyHelper
+            if (Test-Path -LiteralPath $safetyPath) {
+                Copy-Item -LiteralPath $safetyPath -Destination (Join-Path $bare "tools") -Force
+            }
+        }
         $pwshExe = (Get-Process -Id $PID).Path
-        $out = & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bare "hst_manager.ps1") `
+        $out = & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bare $targetMgr) `
             -Action Clean 2>&1 | Out-String
         $exitCode = [int]$LASTEXITCODE
         Assert-True ($exitCode -ne 0) "anchor-less manager exited 0"

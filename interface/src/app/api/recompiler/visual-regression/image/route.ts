@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest } from "next/server";
 import { readFileSync, existsSync } from "node:fs";
 import { findRepoRoot } from "@/lib/recompiler/runner";
@@ -135,7 +136,8 @@ export async function GET(req: NextRequest) {
       if (e instanceof PpmFormatError) {
         return new Response(`Malformed PPM: ${e.message}`, { status: 400 });
       }
-      return new Response(`Failed to generate difference mask: ${String(e)}`, { status: 500 });
+      console.error("[API Error: diff-mask-failed]", e);
+      return new Response("Failed to generate difference mask", { status: 500 });
     }
   }
 
@@ -201,6 +203,7 @@ export async function GET(req: NextRequest) {
     if (e instanceof PpmFormatError) {
       return new Response(`Malformed PPM: ${e.message}`, { status: 400 });
     }
-    return new Response(`Failed to convert image: ${String(e)}`, { status: 500 });
+    console.error("[API Error: image-convert-failed]", e);
+    return new Response("Failed to convert image", { status: 500 });
   }
 }

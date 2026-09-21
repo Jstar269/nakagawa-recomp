@@ -7,7 +7,6 @@ SQLite databases only.  No live dashboard, database, or HST process is touched.
 """
 
 import io
-import json
 import os
 import sqlite3
 import sys
@@ -227,7 +226,8 @@ class TestGenerateReport(GenerateReportBase):
         # No leftover temp sibling.
         leftovers = [f for f in os.listdir(self.tmp.name) if f.startswith(".report-tmp-")]
         self.assertEqual(leftovers, [])
-        content = open(out, encoding="utf-8").read()
+        with open(out, encoding="utf-8") as f:
+            content = f.read()
         self.assertIn("## Current Status Snapshot", content)
         self.assertIn(g.SOURCE_CLASSIFICATION, content)
 
@@ -241,7 +241,8 @@ class TestGenerateReport(GenerateReportBase):
         make_db(self.db, rows)
         out = os.path.join(self.tmp.name, "r.md")
         self.assertTrue(g.generate_report(self.db, out, limit=5))
-        content = open(out, encoding="utf-8").read()
+        with open(out, encoding="utf-8") as f:
+            content = f.read()
         # The 5 most recent rows (ids 25..29) appear; older rows must not.
         self.assertIn("run_0029", content)
         self.assertIn("run_0025", content)
@@ -264,16 +265,19 @@ class TestGenerateReport(GenerateReportBase):
         ])
         out = os.path.join(self.tmp.name, "r.md")
         self.assertTrue(g.generate_report(self.db, out))
-        content = open(out, encoding="utf-8").read()
+        with open(out, encoding="utf-8") as f:
+            content = f.read()
         self.assertIn("good_one", content)
         self.assertNotIn("bad_one", content)
 
     def test_db_not_modified_by_generation(self):
         make_db(self.db, [{}])
-        before = open(self.db, "rb").read()
+        with open(self.db, "rb") as f:
+            before = f.read()
         out = os.path.join(self.tmp.name, "r.md")
         self.assertTrue(g.generate_report(self.db, out))
-        after = open(self.db, "rb").read()
+        with open(self.db, "rb") as f:
+            after = f.read()
         self.assertEqual(before, after)
 
     def test_db_path_with_special_chars_read_only(self):
@@ -284,7 +288,8 @@ class TestGenerateReport(GenerateReportBase):
         make_db(special_db, [{}])
         out = os.path.join(self.tmp.name, "r.md")
         self.assertTrue(g.generate_report(special_db, out))
-        content = open(out, encoding="utf-8").read()
+        with open(out, encoding="utf-8") as f:
+            content = f.read()
         self.assertIn("## Current Status Snapshot", content)
         # Still read-only: the DB was not rewritten by generation.
         self.assertIn("dev #1.db", os.listdir(self.tmp.name))
@@ -330,7 +335,8 @@ class TestGenerateReport(GenerateReportBase):
         make_db(self.db, [{"timestamp": "2026-01-01 10:00:00<script>alert(1)</script>"}])
         out = os.path.join(self.tmp.name, "r.html")
         self.assertTrue(g.generate_report(self.db, None, html_path=out))
-        content = open(out, encoding="utf-8").read()
+        with open(out, encoding="utf-8") as f:
+            content = f.read()
         self.assertNotIn("<script>alert(1)</script>", content)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", content)
 
@@ -338,7 +344,8 @@ class TestGenerateReport(GenerateReportBase):
         make_db(self.db, [{"timestamp": "2026-01-01 10:00:00\xe9"}])
         out = os.path.join(self.tmp.name, "r.pdf")
         self.assertTrue(g.generate_report(self.db, None, pdf_path=out))
-        content = open(out, "rb").read()
+        with open(out, "rb") as f:
+            content = f.read()
         self.assertTrue(content.startswith(b"%PDF"))
         self.assertNotIn(b"\xe9", content)
 
@@ -358,7 +365,8 @@ class TestAtomicWrite(GenerateReportBase):
         target = os.path.join(self.tmp.name, "out.txt")
         digest = g.atomic_write_text(target, "hello world")
         self.assertEqual(len(digest), 64)
-        self.assertEqual(open(target, encoding="utf-8").read(), "hello world")
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "hello world")
         leftovers = [f for f in os.listdir(self.tmp.name) if f.startswith(".report-tmp-")]
         self.assertEqual(leftovers, [])
 
@@ -372,7 +380,9 @@ class TestAtomicWrite(GenerateReportBase):
         target = os.path.join(self.tmp.name, "out.txt")
         g.atomic_write_text(target, "old")
         g.atomic_write_text(target, "new")
-        self.assertEqual(open(target, encoding="utf-8").read(), "new")
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "new")
+
 
 
 class TestMainCli(GenerateReportBase):

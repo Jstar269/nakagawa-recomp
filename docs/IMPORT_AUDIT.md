@@ -12,7 +12,7 @@ title imports, plus one honest refusal state:
 | Classification | Meaning at runtime |
 | --- | --- |
 | `missing` | No static HLE registration. Under the fiber scheduler the first call terminates the process (`_Exit(7)` in `src/rt/hle.c`). |
-| `fake_success` | Routed to a generic always-success handler (`h_ok` family) or a handler curated as `stub`. The call reports success but performs none of the API's contract — the silent-corruption case. |
+| `fake_success` | Routed to a generic always-success handler (`h_ok` family), a handler curated as `stub`, or a handler mechanically detected as doing nothing but `(void)s` / logging / `return 0` (see `tools/hle_manifest.py`). The call reports success but performs none of the API's contract — the silent-corruption case. |
 | `dedicated` | Has its own handler. Not a claim of completeness: the handler carries a status (`complete`, `partial`, `compatibility`, `unreviewed`). |
 | `controlled_unsupported` | A dedicated handler that deliberately refuses with the API's documented error (e.g. the PSMF getters returning `PSMF_ERR_NO_DATA` until issue #31 lands). |
 
@@ -104,9 +104,17 @@ describes the *API exercise*, not the correctness of this handler.
 `summary.exercised_stubs` lists NIDs an executable test enters that still
 dispatch to a generic success handler. Those are tiered `NOT_EVIDENCE`, not
 `HOST_TESTED`: entering `h_ok` proves the registry resolves, and nothing more.
-On current `main` the list is `sceKernelLockMutex` (`0xb011b11f`) and
-`sceKernelLockMutexCB` (`0x5bf4dd27`), both still on `h_ok` while the #88
-conformance matrix probes them.
+Regenerate the example from the live tree instead of quoting one here:
+
+```bash
+python tools/hle_manifest.py --evidence-chain
+```
+
+(Snapshot note: this section once named `sceKernelLockMutex`
+(`0xb011b11f`) and `sceKernelLockMutexCB` (`0x5bf4dd27`) as `h_ok` entries.
+Dedicated handlers with intr-context and wait-permission validation have
+since landed in `src/rt/hle.c`, so that example is superseded; on current
+`main` the list may be empty.)
 
 Without `--imports` the imported link records
 `"unknown: no import manifest supplied"`. It is never reported as "this NID is

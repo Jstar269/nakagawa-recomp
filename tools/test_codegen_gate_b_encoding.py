@@ -11,8 +11,6 @@ madd-family and clz/clo. This module verifies that the synthetic Gate B design
 uses explicit raw .word encodings and that the compiled ELF matches.
 """
 
-import os
-import re
 import shutil
 import subprocess
 import sys
@@ -20,9 +18,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import codegen
-
 REPO = Path(__file__).resolve().parent.parent
+if str(REPO / "tools") not in sys.path:
+    sys.path.insert(0, str(REPO / "tools"))
+
+import codegen
 GCC = shutil.which("gcc") or shutil.which("cc")
 
 
@@ -154,15 +154,15 @@ class TestGateBSourceUsesRawWords(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = REPO / "build" / "microtest_b_isa_check.c"
-        cls.src.parent.mkdir(parents=True, exist_ok=True)
+        cls._tmp = tempfile.TemporaryDirectory(prefix="nk_gate_b_src_")
+        cls.src = Path(cls._tmp.name) / "microtest_b_isa_check.c"
         gen_microtest(cls.src, 2, "allegrex")
         cls.text = cls.src.read_text(encoding="ascii")
 
     @classmethod
     def tearDownClass(cls):
-        if cls.src.exists():
-            cls.src.unlink()
+        if hasattr(cls, "_tmp") and cls._tmp is not None:
+            cls._tmp.cleanup()
 
     def _assert_no_assembler_mnemonics(self, mnemonics):
         for m in mnemonics:
@@ -206,18 +206,17 @@ class TestGateBElfEncodingAudit(unittest.TestCase):
     def setUpClass(cls):
         if not _HAS_MIPS_GCC:
             raise unittest.SkipTest("mipsel-linux-gnu-gcc not available")
-        cls.src = REPO / "build" / "microtest_b_audit.c"
-        cls.elf = REPO / "build" / "microtest_b_audit.elf"
+        cls._tmp = tempfile.TemporaryDirectory(prefix="nk_gate_b_elf_")
+        cls.src = Path(cls._tmp.name) / "microtest_b_audit.c"
+        cls.elf = Path(cls._tmp.name) / "microtest_b_audit.elf"
         gen_microtest(cls.src, 2, "allegrex")
         compile_elf(cls.src, cls.elf, march="r4000")
         cls.text_data = read_text_section(cls.elf)
 
     @classmethod
     def tearDownClass(cls):
-        if cls.src.exists():
-            cls.src.unlink()
-        if cls.elf.exists():
-            cls.elf.unlink()
+        if hasattr(cls, "_tmp") and cls._tmp is not None:
+            cls._tmp.cleanup()
 
     def _collect_words(self):
         words = []
@@ -282,12 +281,12 @@ class TestAllegrexSemantics(unittest.TestCase):
     """Semantic verification of generated Allegrex instruction C code via host GCC."""
 
     def _run_snippet(self, stmt, init_regs, opt="-O0"):
-        src = f"""
+        src = """
 #include <stdint.h>
 #include <stdio.h>
-struct CpuState {{ uint32_t r[32]; }};
-int main(void) {{
-    struct CpuState state = {{0}};
+struct CpuState { uint32_t r[32]; };
+int main(void) {
+    struct CpuState state = {0};
 """
         for reg, val in init_regs.items():
             src += f"    state.r[{reg}] = 0x{val:08x}u;\n"
@@ -304,12 +303,12 @@ int main(void) {{
             subprocess.run([str(exe_path)], check=True, capture_output=True, text=True)
 
     def _run_snippet_printf(self, stmt, init_regs, fmt_expr, opt="-O0", print_reg=10):
-        src = f"""
+        src = """
 #include <stdint.h>
 #include <stdio.h>
-struct CpuState {{ uint32_t r[32]; }};
-int main(void) {{
-    struct CpuState state = {{0}};
+struct CpuState { uint32_t r[32]; };
+int main(void) {
+    struct CpuState state = {0};
     struct CpuState *s = &state;
 """
         for reg, val in init_regs.items():

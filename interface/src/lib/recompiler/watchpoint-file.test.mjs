@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -13,7 +14,6 @@ import {
   fileMatchesWatchpoints,
   contentHash,
 } from "./watchpoint-file.mjs";
-import { validateWatchpointList } from "./watchpoint-schema.mjs";
 
 const WATCHES = [
   { start: 0x08001000, end: 0x08001100, label: "Font Engine" },

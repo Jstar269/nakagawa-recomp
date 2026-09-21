@@ -27,9 +27,10 @@
         forward-slash rendering is enforced by the Python planner.
 
       HST PROFILE / ADAPTER (Windows HST compatibility, isolated):
-        - Get-HstManifestMakeArgs pins the checked-in HST retail manifest
+        - Get-HstManifestMakeArgs pins the local HST retail manifest
           (hst-ucus98701-v1, UCUS98701, exact-disc-id, 0-base, hst profile,
           psp-header, 0x00303194-0x00306e24 span, three required modules).
+          That file is publication-excluded and never checked in.
         This is the ONLY place that names HST constants. Generic code never
         compares title_manifest_id to hst-... nor inherits HST modules/spans.
         See the function header for the exact pin set.
@@ -321,7 +322,7 @@ function Get-HstManifestMakeArgs {
     # plan's semantics, then pins the one title this manager orchestrates.
     Assert-TitlePlanDerivation $Plan | Out-Null
     if ($Plan.plan_kind -ne 'title-manager-build' -or $Plan.title_manifest_id -ne 'hst-ucus98701-v1' -or $Plan.title_kind -ne 'retail' -or $Plan.game_name -ne 'hst') {
-        throw 'the HST manager accepts only the checked-in HST retail manifest'
+        throw 'the HST manager accepts only the local HST retail manifest'
     }
     if ($Plan.game_base -ne 0 -or $Plan.game_entry -ne 0 -or $Plan.codegen_profile -ne 'hst' -or $Plan.bss_metadata_source -ne 'psp-header') {
         throw 'HST manifest protected executable semantics are incompatible'
@@ -339,9 +340,9 @@ function Get-HstManifestMakeArgs {
         throw 'HST manifest protected extra executable span is incompatible'
     }
     $expectedModules = @(
-        @{ name = 'libfont.prx'; load_address = 840957952 },
-        @{ name = 'scePsmf_library.prx'; load_address = 841482240 },
-        @{ name = 'scePsmfP_library.prx'; load_address = 841975912 }
+        @{ name = 'libfont.prx'; load_address = 166460416 },
+        @{ name = 'scePsmf_library.prx'; load_address = 166551552 },
+        @{ name = 'scePsmfP_library.prx'; load_address = 166493952 }
     )
     $modules = @($Plan.required_guest_modules)
     if ($modules.Count -ne $expectedModules.Count) { throw 'HST manifest required guest modules are incomplete' }
@@ -403,9 +404,10 @@ function Get-HstManifestMakeArgs {
 function Push-TitleAnalyzerEnvironment {
     <#
         Apply the plan's analyzer span and return the exact prior state so it can be
-        unwound. Windows cannot hold a defined-but-empty environment variable, so
-        "absent" and "empty" are the same observable state and both unwind to removal.
-        Setting to "" removes the variable (Test-Path returns False).
+        unwound. In PowerShell 7.5+ (.NET 9+), environment variables can hold an empty
+        string, while setting to $null or using Remove-Item removes them. For title
+        analyzer scoping, empty and absent span values both normalize to removal
+        (Remove-Item) so child processes see an unset variable.
 
         GENERIC: scopes only TITLE_EXTRA_SPANS. HST-specific callers that still need
         the legacy HST_EXTRA_SPANS must use Push-HstAnalyzerEnvironment, which scopes
@@ -432,11 +434,11 @@ function Pop-TitleAnalyzerEnvironment {
     param([Parameter(Mandatory = $true)][object]$State)
     $titleExisted = if ($State.PSObject.Properties.Name -contains 'TitleExisted') { $State.TitleExisted } elseif ($State.PSObject.Properties.Name -contains 'Existed') { $State.Existed } else { $false }
     $titleValue   = if ($State.PSObject.Properties.Name -contains 'TitleValue')   { $State.TitleValue }   elseif ($State.PSObject.Properties.Name -contains 'Value')   { $State.Value }   else { $null }
-    # Windows env: empty and absent are the same (setting to "" removes). Restore empty as Remove-Item.
+    # Restore non-empty value; normalize empty or absent prior state to removal via Remove-Item.
     if ($titleExisted -and -not [string]::IsNullOrEmpty($titleValue)) {
         $env:TITLE_EXTRA_SPANS = $titleValue
     } elseif ($titleExisted -and [string]::IsNullOrEmpty($titleValue)) {
-        # Previously existed but value was empty (which PowerShell stores as absent). Ensure removed.
+        # Previously existed but value was empty. Ensure removed for clean unsetting.
         Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
     } else {
         Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue

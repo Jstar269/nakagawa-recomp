@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
-import { findRepoRoot, readProgressJson } from "@/lib/recompiler/runner";
+import { findRepoRoot, readProgressJson, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 
 export const runtime = "nodejs";
@@ -11,11 +11,11 @@ export async function GET() {
     const repoRoot = findRepoRoot();
     const snap = readProgressJson(repoRoot);
     if (!snap) {
-      return NextResponse.json({ error: "progress-missing", detail: `no progress.json at repo root (${repoRoot})` }, { status: 404 });
+      return NextResponse.json({ error: "progress-missing" }, { status: 404 });
     }
     return NextResponse.json({ ...snap });
   } catch (e) {
-    return NextResponse.json({ error: "progress-read-failed", detail: String(e) }, { status: 500 });
+    return routeError("progress-read-failed", e, 500);
   }
 }
 
@@ -30,21 +30,16 @@ export async function POST(req: NextRequest) {
   }
   try {
     const repoRoot = findRepoRoot();
-    const child = spawn("python", ["tools/progress_tracker.py", action], { cwd: repoRoot });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (b: Buffer) => {
-      stdout += b.toString("utf8");
+    const pythonCmd = process.platform === "win32" ? "python" : "python3";
+    const result = await runSubprocess(pythonCmd, ["tools/progress_tracker.py", action], {
+      cwd: repoRoot,
+      timeoutMs: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+      signal: req.signal,
+      allowNonZeroExit: true,
     });
-    child.stderr?.on("data", (b: Buffer) => {
-      stderr += b.toString("utf8");
-    });
-    await new Promise<void>((res) => {
-      child.on("exit", () => res());
-      child.on("error", () => res());
-    });
-    return NextResponse.json({ action, stdout, stderr, ok: child.exitCode === 0 });
+    return NextResponse.json({ action, stdout: result.stdout, stderr: result.stderr, ok: result.exitCode === 0 });
   } catch (e) {
-    return NextResponse.json({ error: "progress-action-failed", detail: String(e) }, { status: 500 });
+    return routeError("progress-action-failed", e, 500);
   }
 }

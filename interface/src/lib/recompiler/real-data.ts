@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Maintained architecture data for dashboard panels. Source and ISSUES.md are authoritative.
 
 export interface PipelineStage { id: number; script: string; input: string; output: string; purpose: string; }
@@ -5,7 +6,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
   { id: 1, script: "prxload.py", input: "decrypted ELF", output: "*_image.bin", purpose: "Apply PSP relocations and emit the flat guest memory image." },
   { id: 2, script: "imports.py", input: "decrypted ELF", output: "*_imports.toml", purpose: "Parse PRX import stubs and map addresses to libraries/NIDs." },
   { id: 3, script: "analyze.py + codegen.py", input: "ELF + extra PRXs", output: "*_recomp.c + 8 chunks", purpose: "Discover entries and translate MIPS blocks to C. HST-specific replacements live in tools/host_stubs.py; LOOP_CAPS are retired." },
-  { id: 4, script: "Makefile / hst_manager.ps1", input: "generated C + src/rt", output: "hst.exe", purpose: "Compile generated chunks at O0, runtime at O2, then link SDL3, Vulkan, and Windows media/system libraries." },
+  { id: 4, script: "Makefile / nk_manager.ps1", input: "generated C + src/rt", output: "<game>.exe", purpose: "Compile generated chunks at O0, runtime at O2, then link SDL3, Vulkan, and Windows media/system libraries." },
 ];
 
 export interface RuntimeSubsystem { id: string; name: string; file: string; purpose: string; status: "complete" | "in-progress" | "partial"; }

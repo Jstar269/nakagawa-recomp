@@ -623,10 +623,7 @@ _HISTORICAL_MALFORMED_VFPU12_5BIT_WORDS: frozenset[int] = frozenset(
 
 def generate_malformed_corpus() -> list[int]:
     out: list[int] = []
-    # Need _encode for correct word; size codes 2=T,3=Q
-    correct = (0x3C << 26) | (5 << 23) | (0 << 16) | (0 << 8) | 0 | (0 << 7) | (1 << 15)  # vcrsp.t with vd=vs=vt=0, size 2 (T)
     # Use _encode to get correct for malformed test
-    from typing import cast
     # Create via _encode
     correct2 = _encode(0x3C, 5, 0, 0, 0, 2)
     correct3 = _encode(0x3C, 5, 0, 0, 0, 3)
@@ -697,6 +694,70 @@ def iter_synthetic_corpus_raw() -> Iterator[int]:
     yield from _iter_vfpu3()
     yield from _iter_vfpu4()
     yield from _iter_vfpu12()
+
+# ---------------------------------------------------------------------------
+# Memory / COP2-transfer families (issue G-25)
+# ---------------------------------------------------------------------------
+# These families have both an emitter (codegen.vfpu_effect) and an
+# sr_vfpu_interp oracle, so they belong in the DIFFERENTIAL corpus:
+#   op 0x32 lv.s / 0x3a sv.s: 16-bit offset (already 0xFFFC-masked by the
+#       decoder's low-bit-is-register rule), 6-bit vt (low 2 bits extend it).
+#   op 0x36 lv.q / 0x3e sv.q: aligned quad forms; the emitter handles the
+#       aligned fast path and falls back to the interpreter otherwise, so the
+#       differential harness compares the merged behavior.
+#   op 0x12 mfv/mfvc (sub 3) / mtv/mtvc (sub 7): GPR <-> v[0..127] and GPR
+#       <-> vfpuCtrl[0..15]; the interpreter oracle covers exactly imm 0..143.
+# lv.S/sv.S offsets are masked with 0xFFFC by both sides before sign
+# extension, so only multiples of 4 are generated. The fuzz harness relocates
+# every generated effective address onto its aligned scratch page; unaligned
+# left/right behavior remains outside this independent differential corpus.
+
+def _iter_vfpu_memory_cop2() -> Iterator[int]:
+    seen: set[int] = set()
+    # lv.s / sv.s: base r4-r7, 6-bit vt, offsets {0, 4, -4, 16} (post-mask).
+    for op in (0x32, 0x3A):
+        for base in (4, 5, 6, 7):
+            for vt in (0, 1, 32, 33, 63):
+                for off in (0x0000, 0x0004, 0xFFFC, 0x0010):
+                    # The two high scalar-register bits occupy the low two
+                    # instruction bits; they are not part of the 5-bit vt
+                    # field and must not spill into rs at bit 21.
+                    w = ((op << 26) | (base << 21) | ((vt & 0x1F) << 16) |
+                         ((vt >> 5) & 0x3) | (off & 0xFFFC))
+                    if w not in seen:
+                        seen.add(w)
+                        yield w
+    # lv.q / sv.q: base r4-r7, 6-bit vt (bit0 extends), 16-bit offset.
+    for op in (0x36, 0x3E):
+        for base in (4, 5, 6, 7):
+            for vt in (0, 1, 32, 63):
+                for off in (0x0000, 0x0010, 0xFFF0):
+                    # Quad forms use bit 0 as the sixth vt bit; bit 1 remains
+                    # the left/right selector for the unaligned families.
+                    w = ((op << 26) | (base << 21) | ((vt & 0x1F) << 16) |
+                         ((vt >> 5) & 0x1) | (off & 0xFFFC))
+                    if w not in seen:
+                        seen.add(w)
+                        yield w
+    # COP2 transfers: mfv/mfvc (sub 3) and mtv/mtvc (sub 7).
+    # imm 0..127 = v[imm], 128..143 = vfpuCtrl[imm-128]; rt spans r1-r6 so
+    # register identity is exercised, never r0 (writes to r0 are architecturally
+    # discarded, so the oracle refuses rt=0 rather than diverging silently).
+    for sub in (3, 7):
+        for rt in (1, 2, 3, 4, 5, 6):
+            for imm in (0, 1, 31, 32, 63, 64, 96, 127, *range(128, 144)):
+                w = (0x12 << 26) | (sub << 21) | (rt << 16) | imm
+                if w not in seen:
+                    seen.add(w)
+                    yield w
+
+
+def generate_memory_cop2_corpus() -> list[int]:
+    """Return a sorted, deduplicated list of memory/COP2 differential words."""
+    corpus = sorted(set(_iter_vfpu_memory_cop2()))
+    _check_corpus_nonempty(corpus)
+    return corpus
+
 
 # ---------------------------------------------------------------------------
 # Public API

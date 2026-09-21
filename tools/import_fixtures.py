@@ -172,7 +172,7 @@ def build_import_elf(
         stub_vaddrs.append(alloc(b"\0" * (8 * len(nids))))
 
     entries = bytearray()
-    for i, (name, nids) in enumerate(libs):
+    for i, (_name, nids) in enumerate(libs):
         name_ptr = name_vaddrs[i]
         nid_data = nid_vaddrs[i]
         first_sym = stub_vaddrs[i]
@@ -315,7 +315,7 @@ def build_interleaved_import_elf(
     first_sym = alloc(b"\0" * (8 * total))
 
     entries = bytearray()
-    for (name, first, count), name_ptr in zip(windows, name_vaddrs):
+    for (_name, first, count), name_ptr in zip(windows, name_vaddrs, strict=True):
         if count == 0:
             # Variable-only entry: 6 words (20-byte header plus one word for
             # the variable list), no NID pointer (numFuncs == 0).

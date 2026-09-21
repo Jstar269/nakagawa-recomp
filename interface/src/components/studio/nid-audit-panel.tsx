@@ -1,6 +1,7 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CheckCircle2, ShieldAlert, XCircle, Search, RefreshCw, BarChart2, Compass, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,30 +46,49 @@ export function NidAuditPanel() {
   const [selectedNid, setSelectedNid] = useState<NidInfo | null>(null);
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
 
-  const fetchAudit = async () => {
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<void> | null>(null);
+
+  const fetchAudit = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve();
     setLoading(true);
-    try {
-      const res = await fetch("/api/recompiler/debug/nid-audit");
-      const d = await res.json();
-      setData(d);
-      if (d.nids && d.nids.length > 0) {
-        setSelectedNid(d.nids[0]);
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/recompiler/debug/nid-audit", { signal });
+        const d: { summary: AuditSummary; modules: ModuleInfo[]; nids: NidInfo[] } = await res.json();
+        if (signal.aborted) return;
+        setData(d);
+        if (d.nids && d.nids.length > 0) {
+          setSelectedNid(d.nids[0]);
+        }
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) console.error(e);
+      } finally {
+        if (!signal.aborted) setLoading(false);
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
+  }, []);
 
   useEffect(() => {
-    const initial = setTimeout(fetchAudit, 0);
-    const interval = setInterval(fetchAudit, 3000);
-    return () => {
-      clearTimeout(initial);
-      clearInterval(interval);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchAudit();
+      if (!controller.signal.aborted) timer = setTimeout(poll, 3000);
     };
-  }, []);
+    timer = setTimeout(poll, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
+    };
+  }, [fetchAudit]);
 
   if (loading) {
     return (
@@ -81,7 +101,7 @@ export function NidAuditPanel() {
   if (!data) {
     return (
       <div className="p-8 text-center text-amber-500 font-mono text-xs border border-amber-500/20 rounded-xl bg-amber-500/5">
-        Failed to execute NID compliance audit. Verify build/hst/hst_imports.toml exists.
+        Failed to execute NID compliance audit. Verify a build/&lt;game&gt;/&lt;game&gt;_imports.toml exists (run the pipeline first).
       </div>
     );
   }
@@ -140,7 +160,7 @@ export function NidAuditPanel() {
           <div className="space-y-1">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Total Imports Found</span>
             <div className="text-2xl font-bold font-mono">{summary.total_imports}</div>
-            <p className="text-[10px] text-muted-foreground leading-normal">Registered in hst_imports.toml</p>
+            <p className="text-[10px] text-muted-foreground leading-normal">Registered in {"<game>"}_imports.toml</p>
           </div>
 
           <div className="space-y-1">

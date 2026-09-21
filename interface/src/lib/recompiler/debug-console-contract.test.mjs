@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseDebugConsoleRequest } from "./debug-console-contract.mjs";
@@ -34,6 +35,18 @@ test("bounds memory reads and validates their format", () => {
 });
 
 test("validates write payloads and CpuState fields", () => {
+  assert.equal(
+    parseDebugConsoleRequest({ action: "write_cpu", args: ["cop0[12]", "0x8001"] }).mutating,
+    true,
+  );
+  assert.equal(
+    parseDebugConsoleRequest({ action: "write_cpu", args: ["flow_target", "0x08804000"] }).mutating,
+    true,
+  );
+  assert.throws(
+    () => parseDebugConsoleRequest({ action: "write_cpu", args: ["status", "1"] }),
+    /supported CpuState register/,
+  );
   assert.throws(
     () => parseDebugConsoleRequest({ action: "write_mem", args: ["0x08800000", "123"] }),
     /complete bytes/,

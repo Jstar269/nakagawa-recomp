@@ -81,6 +81,30 @@ inside an interrupt handler.
    sample count (L228/L229); and `sceDisplayWaitVblank` **succeeds from inside an
    interrupt**, returning 1 (L323) where every neighbouring API returns `ILLEGAL_CONTEXT`.
 
+**The normal-context display waits are no longer `unknown`.** Both display NIDs used to
+carry a `WOULD_BLOCK` control in the normal-context row, which recorded that the probe
+declined to measure a call that would block -- not a hardware fact. Issue #70's display-wait
+work measured them directly (`PSP-DISPLAY-002`, `PSP-DISPLAY-003`, `PSP-DISPLAY-004`; probe
+cases `display-wait-late`, `display-wait-priority`, `display-vblank-window`):
+
+1. **There is no missed-edge memory.** After 0.25, 0.75, 1.25, 1.75 and 2.5 periods of
+   un-yielded CPU since the last edge, both NIDs blocked on 240/240 trials each, waited
+   exactly the remainder of the period in progress, and advanced VCOUNT by exactly 1 --
+   never 0, and never 2 even when two whole edges had passed. A late caller is not owed the
+   edges it slept through.
+2. **The two NIDs differ in exactly one cell.** Called from inside the vblank interval,
+   `sceDisplayWaitVblank` returns in 3..5 us (syscall overhead) with the value 1, while
+   `sceDisplayWaitVblankStart` waits a full 16.669..16.693 ms period and returns 0. At every
+   phase outside the interval they are indistinguishable.
+3. **The interval begins at the start edge**, not at the end of the period: `sceDisplayIsVblank`
+   was true immediately after `sceDisplayWaitVblankStart` returned on 48/48 trials and fell
+   721..734 us later, at hcount 14 of 286.
+4. **The wait does not consult the ready queue.** With an always-runnable lower-priority peer
+   present, the caller's wall time moved by 2 us over 2.006 s and its summed wait by 220 us
+   over 120 waits, with identical VCOUNT progression. Separately, the peer made progress only
+   while the caller was genuinely blocked -- exactly zero during its pure-CPU segments, across
+   all 120 iterations -- which is strict priority with no aging.
+
 **Interrupts-disabled and dispatch-disabled are genuinely different states.** They agree
 in all but two cells out of roughly 110, which is exactly why the two exceptions matter:
 
@@ -102,16 +126,16 @@ and used as a control, never compared against hardware.
 
 ## Coverage of `waits.cpp` by the Nakagawa registry
 
-`waits.cpp` names 103 `sce*` entry points. 31 are not registered anywhere in
+`waits.cpp` names 103 `sce*` entry points. 26 are not registered anywhere in
 `src/rt/hle.c`, so no hardware cell for them can be exercised at any evidence tier:
 
 `sceAudioSRCChRelease`, `sceAudioSRCChReserve`, `sceAudioSRCOutputBlocking`,
 `sceDisplayWaitVblankCB`, `sceDisplayWaitVblankStartCB`, `sceDisplayWaitVblankStartMulti`,
 `sceDisplayWaitVblankStartMultiCB`, `sceGeListDeQueue`, `sceIoGetAsyncStat`, `sceIoRemove`,
 `sceKernelAllocateVpl`, `sceKernelAllocateVplCB`, `sceKernelCreateMbx`,
-`sceKernelCreateTlspl`, `sceKernelCreateVpl`, `sceKernelDelaySysClockThread`,
+`sceKernelCreateTlspl`, `sceKernelDelaySysClockThread`,
 `sceKernelDelaySysClockThreadCB`, `sceKernelDeleteMbx`, `sceKernelDeleteTlspl`,
-`sceKernelDeleteVpl`, `sceKernelFreeTlspl`, `sceKernelGetTlsAddr`, `sceKernelReceiveMbx`,
+`sceKernelFreeTlspl`, `sceKernelGetTlsAddr`, `sceKernelReceiveMbx`,
 `sceKernelReceiveMbxCB`, `sceKernelReceiveMsgPipe`, `sceKernelReceiveMsgPipeCB`,
 `sceKernelReferTlsplStatus`, `sceKernelSendMsgPipe`,
 `sceKernelSendMsgPipeCB`, `sceKernelTerminateThread`.
@@ -222,11 +246,19 @@ still probes registry membership at run time (`sr_hle_test_is_registered`) and r
 `registry-scope` for anything it cannot reach, because calling an unregistered NID would
 `_Exit(7)`.
 
-## Current-`main` classification
+## Snapshot classification (superseded counts — live table is generated)
 
-Measured on `hle_thread_selftest.exe` built from this branch. Every value in the
-"current main" column is the pinned `base[]` entry in `src/rt/intr_conformance.h`,
-asserted on every run.
+Measured on `hle_thread_selftest.exe` built from the captured revision. Every
+value in the snapshot column below is the pinned `base[]` entry in
+`src/rt/intr_conformance.h` **as captured**, asserted on every run at that time.
+
+> **Snapshot boundary.** This table predates the dedicated Mutex handlers
+> (`h_LockMutex`/`h_LockMutexCB` in `src/rt/hle.c`): the 18 Mutex cells it
+> counts as `h_ok` deviations have since moved. The tables are preserved
+> unchanged as historical evidence — do not cite their totals as current.
+> Current counts live in `src/rt/intr_conformance.h` and are enforced by
+> `tools/test_intr_waits_matrix.py`; regenerate the table from there instead
+> of hand-editing the numbers below.
 
 * **CONFORMS** - current main already produces the hardware value.
 * **known deviation** - current main produces a different, exactly pinned value.
@@ -317,11 +349,13 @@ route hardware uses rather than by an unsatisfiable-wait accident.
 | `sceKernelSleepThreadCB` | - | intr-off | L22 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceKernelSleepThreadCB` | - | intr-ctx | L322 | 0x80020064 | not run | NOT RUN | context |
 | `sceKernelSleepThreadCB` | - | disp-off | L23 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceDisplayWaitVblank` | - | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceDisplayWaitVblank` | late (0.25-2.5 periods) | normal | PSP-DISPLAY-002 | blocks to next edge, VCOUNT +1, returns 0 | same | **CONFORMS** | n/a |
+| `sceDisplayWaitVblank` | inside vblank interval | normal | PSP-DISPLAY-002 | returns 1 in 3..5 us, no block | same | **CONFORMS** | n/a |
 | `sceDisplayWaitVblank` | - | intr-off | L26 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceDisplayWaitVblank` | - | intr-ctx | L323 | 0x00000001 | not run | NOT RUN | n/a |
 | `sceDisplayWaitVblank` | - | disp-off | L27 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
-| `sceDisplayWaitVblankStart` | - | normal | - | unknown | WOULD_BLOCK | control | n/a |
+| `sceDisplayWaitVblankStart` | late (0.25-2.5 periods) | normal | PSP-DISPLAY-002 | blocks to next edge, VCOUNT +1, returns 0 | same | **CONFORMS** | n/a |
+| `sceDisplayWaitVblankStart` | inside vblank interval | normal | PSP-DISPLAY-002 | blocks a full period, returns 0 | same | **CONFORMS** | n/a |
 | `sceDisplayWaitVblankStart` | - | intr-off | L34 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
 | `sceDisplayWaitVblankStart` | - | intr-ctx | L325 | 0x80020064 | not run | NOT RUN | context |
 | `sceDisplayWaitVblankStart` | - | disp-off | L35 | 0x800201a7 | 0x800201a7 | **CONFORMS** | context |
@@ -594,6 +628,11 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
      valid, both of which satisfy the drive mask, so they are indistinguishable until PR-E's type
      validation exists. A context check placed ahead of that validation would drive the
      invalid-type cells to a third value and register as a **regression**, not a deviation.
+   **Snapshot note (Mutex carve-out superseded).** Dedicated
+   `h_LockMutex`/`h_LockMutexCB` handlers with intr-context and wait-permission
+   validation have since landed in `src/rt/hle.c`, so the 18 LockMutex cells
+   above no longer read `0x00000000`. Their rows keep snapshot values as
+   evidence; read current conformance from `src/rt/intr_conformance.h`.
 4. **PR-D - `ILLEGAL_CONTEXT` from interrupt context (S3+S5).** Requires PR-B/PR-C so the
    handlers already have a context check to extend. After the Mutex, VolatileMem and UMD
    ownership moves it retires the 12 `spin-unbounded` NOT RUN cells plus **18** `intr-ctx`
@@ -611,10 +650,12 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
    **30 cells total.**
 6. **PR-F - controller ring reset (S2), then `sceCtrlReadBufferPositive` precedence.**
    `INVALID_SIZE` (`0x80000104`) for count 256 and `CAN_NOT_WAIT` (`0x800201a7`) for valid across 3 contexts (6 cells). Test-only prerequisite first.
-7. **PR-G - registration of the 31 unregistered `waits.cpp` APIs**, in whatever order
-   their subsystems land (Mbx, Vpl, Tlspl, MsgPipe blocking forms, `DelaySysClockThread`,
-   the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`). Each expands the matrix
-   rather than changing it.
+7. **PR-G - registration of the 26 unregistered `waits.cpp` APIs**, in whatever order
+   their subsystems land (Mbx, Tlspl, MsgPipe blocking forms,
+   `DelaySysClockThread`, the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`).
+   The full VPL set (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `AllocateVpl`, `AllocateVplCB`,
+   `FreeVpl`, `ReferVplStatus`) is now registered with wait queue integration.
+   Each expands the matrix rather than changing it.
 
 `sceGeListSync` / `sceGeDrawSync` and `sceAudioOutputBlocking` are intentionally absent
 from this ordering: their hardware cells are recorded above, but exercising them belongs

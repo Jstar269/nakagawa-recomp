@@ -26,9 +26,7 @@ import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from publication_policy import (  # noqa: E402
-    EXCLUDED,
     INCLUDED,
-    UNCLASSIFIED,
     Policy,
     PolicyError,
     Resolution,
@@ -128,7 +126,7 @@ REQUIRED_PATHS = (
     "AGENTS.md",
 )
 SOURCE_EXTENSIONS = {".c", ".h", ".py", ".sh"}
-KEY_NAME = re.compile(r"(?:vkey|seed|iv|secret|token)", re.IGNORECASE)
+KEY_NAME = re.compile(r"(?:kirk|amctrl|pgd|key|vkey|seed|iv|secret|token)", re.IGNORECASE)
 HEX_16_BYTES = re.compile(r"^[0-9a-fA-F]{32}$")
 
 WINDOWS_USER_PATH = re.compile(
@@ -147,6 +145,26 @@ TEMP_PATH = re.compile(
     r"(?:/tm" + r"p/|/var/tm" + r"p/|[a-zA-Z]:\\(?:[^\s\\/]+\\)*(?:Windows\\Te" + r"mp|AppData\\Local\\Te" + r"mp)\\)[a-zA-Z0-9_.-]+",
     re.IGNORECASE,
 )
+
+#: Technical debt management ceilings (Issue #188 Finding 11 O-11).
+#: Ceilings are non-increasing: counts must not rise without explicit budget edit and rationale.
+DEBT_BUDGETS: dict[str, int] = {
+    "eslint_off_rules": 29,
+    "ruff_select_rule_families": 4,
+    "first_party_todos": 7,
+    "powershell_silently_continue": 53,
+}
+
+POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
+    "copy_build_assets.ps1": 1,
+    "hst_manager.ps1": 25,
+    "tools/hst_run_support.ps1": 4,
+    "tools/hst_safety.ps1": 7,
+    "tools/test_manager_safety.ps1": 3,
+    "tools/test_visual_oracle.ps1": 3,
+    "tools/title_manager_plan.ps1": 9,
+    "tools/vulkan_sdk.ps1": 1,
+}
 
 ACTION_USE = re.compile(r"uses:\s*([^\s#]+)")
 FULL_SHA_ACTION = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*@[0-9a-fA-F]{40}$")
@@ -277,6 +295,71 @@ def _read_git_lfs_attributes(repo_root: Path = ROOT) -> set[str]:
     return patterns
 
 
+def _is_contained_in_root(path: Path | str, root: Path | str) -> bool:
+    """Verify that path physically resolves strictly inside root.
+
+    Uses os.path.realpath to resolve all symlinks, NTFS junctions, 8.3 short-name
+    aliases, and reparse points, then asserts canonical prefix containment.
+    """
+    try:
+        resolved_path = os.path.realpath(path)
+        resolved_root = os.path.realpath(root)
+        common = os.path.commonpath([resolved_path, resolved_root])
+        return os.path.normcase(common) == os.path.normcase(resolved_root)
+    except (ValueError, OSError):
+        return False
+
+
+def _is_host_junction(path: Path) -> bool:
+    """True for an NTFS junction, as distinct from a symlink.
+
+    A symlink's target text is tracked content -- it is literally the blob Git
+    stores and would publish -- so it is auditable. A junction is host state
+    Git never records, and its target is an absolute local path, so it must not
+    be treated as content. ``os.path.isjunction`` exists only on newer Pythons
+    and only reports true on Windows.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is None:
+        return False
+    try:
+        return bool(isjunction(path)) and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _filesystem_link_on_path(path: Path, root: Path | None = None) -> Path | None:
+    """Return the first symlink or host directory-link on *path*, if any.
+
+    ``os.walk(..., followlinks=False)`` prunes POSIX directory symlinks, but on
+    Windows an NTFS junction is not reported by ``Path.is_symlink()`` and the
+    walk otherwise descends through it.  Keep that host distinction behind one
+    seam so every audit path uses the same fail-closed link classification.  A
+    root also makes Git-reported descendants safe: Git may enumerate a regular
+    file below a junction even though the final file is not itself a link.
+    """
+    candidates = [path]
+    if root is not None:
+        root_absolute = root.absolute()
+        try:
+            relative = path.absolute().relative_to(root_absolute)
+        except ValueError as error:
+            raise RuntimeError(f"audit path escapes root: {path}") from error
+        current = root_absolute
+        candidates = [current]
+        for part in relative.parts:
+            current /= part
+            candidates.append(current)
+
+    isjunction = getattr(os.path, "isjunction", None)
+    for candidate in candidates:
+        if candidate.is_symlink() or (isjunction is not None and isjunction(candidate)):
+            return candidate
+        if root is not None and not _is_contained_in_root(candidate, root):
+            return candidate
+    return None
+
+
 def _get_git_entries(
     tracked_only: bool = False,
     repo_root: Path = ROOT,
@@ -302,7 +385,7 @@ def _get_git_entries(
 
                 full_p = repo_root / rel_path
                 working_mode = ""
-                if full_p.is_symlink():
+                if _filesystem_link_on_path(full_p, repo_root) is not None:
                     working_mode = "120000"
                 elif full_p.is_file():
                     st = full_p.stat()
@@ -338,9 +421,22 @@ def _get_git_entries(
                 full_p = repo_root / rel_path
                 mode_str = "100644"
                 kind = "file"
-                if full_p.is_symlink():
-                    mode_str = "120000"
-                    kind = "symlink"
+                link_path = _filesystem_link_on_path(full_p, repo_root)
+                if link_path is not None:
+                    link_rel = link_path.relative_to(repo_root).as_posix()
+                    if link_rel not in tracked_paths:
+                        entries.append(
+                            GitEntry(
+                                mode="120000",
+                                sha="",
+                                stage="0",
+                                path=link_rel,
+                                kind="symlink",
+                                working_mode="120000",
+                            )
+                        )
+                        tracked_paths.add(link_rel)
+                    continue
                 elif full_p.is_file():
                     if full_p.stat().st_mode & 0o111:
                         mode_str = "100755"
@@ -365,6 +461,8 @@ def _get_git_entries(
 
 def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
     """Describe a materialized candidate directory without consulting Git index."""
+    if _filesystem_link_on_path(repo_root) is not None:
+        raise RuntimeError(f"candidate root must not be a filesystem link: {repo_root}")
     entries: list[GitEntry] = []
     for directory, dirnames, filenames in os.walk(repo_root, followlinks=False):
         base = Path(directory)
@@ -372,7 +470,7 @@ def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
         dirnames[:] = [name for name in dirnames if name not in _VCS_METADATA_DIRS]
         for name in list(dirnames):
             path = base / name
-            if path.is_symlink():
+            if _filesystem_link_on_path(path, repo_root) is not None:
                 rel = path.relative_to(repo_root).as_posix()
                 entries.append(GitEntry("120000", "", "0", rel, "symlink", working_mode="120000"))
                 dirnames.remove(name)
@@ -381,7 +479,7 @@ def _get_filesystem_entries(repo_root: Path) -> list[GitEntry]:
             rel = path.relative_to(repo_root).as_posix()
             mode = "100644"
             kind = "file"
-            if path.is_symlink():
+            if _filesystem_link_on_path(path, repo_root) is not None:
                 mode = "120000"
                 kind = "symlink"
             elif path.stat().st_mode & 0o111:
@@ -453,29 +551,18 @@ def read_indexed_blob(
     """Read exact byte content of a Git index entry via git cat-file -p <sha>."""
     disk_path = repo_root / entry.path
 
-    if entry.kind == "symlink":
-        if disk_path.is_symlink():
-            try:
-                target = disk_path.readlink()
-                return str(target).encode("utf-8"), None
-            except OSError as exc:
-                return None, f"failed to read symlink target: {exc}"
-        elif entry.sha:
-            try:
-                res = subprocess.run(
-                    ["git", "cat-file", "-p", entry.sha],
-                    cwd=repo_root,
-                    capture_output=True,
-                    check=False,
-                )
-                if res.returncode == 0:
-                    return res.stdout, None
-            except Exception:
-                pass
-
     if entry.kind == "gitlink":
         return entry.sha.encode("utf-8"), None
 
+    # An index audit is bound to the indexed blob, so the recorded sha always
+    # wins. A worktree copy replaced by a symlink -- or a tracked regular file
+    # that now sits below a junction -- would otherwise substitute the link
+    # target text for the staged bytes, letting a content scan clear benign
+    # link text while the tree being published holds something else entirely.
+    # For an index entry that genuinely *is* a symlink (mode 120000) the blob
+    # content is the target text, so the same read is correct there too. The
+    # worktree link is reported separately by the audit rather than by changing
+    # which bytes are read.
     if entry.sha:
         try:
             res = subprocess.run(
@@ -491,7 +578,7 @@ def read_indexed_blob(
             return None, f"failed to execute git cat-file: {exc}"
 
     # Fallback for untracked prospective files (sha is empty)
-    if disk_path.is_file() and not disk_path.is_symlink():
+    if disk_path.is_file() and _filesystem_link_on_path(disk_path, repo_root) is None:
         try:
             return disk_path.read_bytes(), None
         except OSError as exc:
@@ -510,23 +597,16 @@ def read_indexed_blobs_batch(
 
     for entry in entries:
         disk_path = repo_root / entry.path
-        if entry.kind == "symlink":
-            if disk_path.is_symlink():
-                try:
-                    target = disk_path.readlink()
-                    result[entry.path] = (str(target).encode("utf-8"), None)
-                    continue
-                except OSError as exc:
-                    result[entry.path] = (None, f"failed to read symlink target: {exc}")
-                    continue
-        elif entry.kind == "gitlink":
+        if entry.kind == "gitlink":
             result[entry.path] = (entry.sha.encode("utf-8"), None)
             continue
 
+        # See read_indexed_blob: the indexed blob is authoritative for an index
+        # audit, whatever the worktree copy has since become.
         if entry.sha:
             shas_to_query.append((entry.path, entry.sha))
         else:
-            if disk_path.is_file() and not disk_path.is_symlink():
+            if disk_path.is_file() and _filesystem_link_on_path(disk_path, repo_root) is None:
                 try:
                     result[entry.path] = (disk_path.read_bytes(), None)
                 except OSError as exc:
@@ -608,9 +688,20 @@ def read_worktree_blobs(
         if entry.kind == "gitlink":
             result[entry.path] = (entry.sha.encode("utf-8"), None)
             continue
-        if disk_path.is_symlink():
+        link_path = _filesystem_link_on_path(disk_path, repo_root)
+        if link_path is not None:
+            # Same rule as read_candidate_file: a junction's target is an
+            # absolute host path Git never stores, so it is not this entry's
+            # content and must not become its audited bytes -- doing so records
+            # that path's length and SHA-256 into the JSON and CSV output. A
+            # real symlink's target text *is* the blob Git would publish, so it
+            # stays readable and stays analysed.
+            if _is_host_junction(link_path):
+                result[entry.path] = (
+                    None, "path lies on a host directory junction and was not followed")
+                continue
             try:
-                result[entry.path] = (str(disk_path.readlink()).encode("utf-8"), None)
+                result[entry.path] = (str(link_path.readlink()).encode("utf-8"), None)
             except OSError as exc:
                 result[entry.path] = (None, f"failed to read symlink target: {exc}")
             continue
@@ -636,11 +727,23 @@ def read_candidate_file(
     disk_path = candidate_root / entry.path
 
     if entry.kind == "symlink":
+        link_path = _filesystem_link_on_path(disk_path, candidate_root)
+        if link_path is None:
+            return None, "candidate link entry is not a filesystem link"
+        # A junction's target is an absolute host path that Git never stores,
+        # so it is not the entry's content and must not become its bytes: it
+        # would flow into hashes, content previews and finding details, and a
+        # junction into a private directory would then print that path into
+        # audit and CI logs. Refuse it generically. A real symlink's target text
+        # *is* the blob Git would publish, so it is still returned and still
+        # analysed for containment.
+        if _is_host_junction(link_path):
+            return None, "candidate link is a host directory junction and was not followed"
         try:
-            target = disk_path.readlink()
-            return str(target).encode("utf-8"), None
+            target = link_path.readlink()
         except OSError as exc:
             return None, f"failed to read candidate symlink target: {exc}"
+        return str(target).encode("utf-8"), None
 
     if disk_path.is_file():
         try:
@@ -765,27 +868,170 @@ def _assigned_literal(node: ast.AST | None) -> str | None:
     return None
 
 
-def private_key_assignment_lines(text: str) -> list[int]:
+def _is_16_byte_array_text(body: str) -> bool:
+    tokens = [t.strip() for t in body.split(",") if t.strip()]
+    if len(tokens) != 16:
+        return False
+    for t in tokens:
+        if t.startswith(("0x", "0X")):
+            try:
+                val = int(t, 16)
+                if not (0 <= val <= 255):
+                    return False
+            except ValueError:
+                return False
+        elif t.isdigit():
+            try:
+                val = int(t, 10)
+                if not (0 <= val <= 255):
+                    return False
+            except ValueError:
+                return False
+        else:
+            return False
+    return True
+
+
+def _strip_c_comments(code: str) -> str:
+    def replacer(match: re.Match[str]) -> str:
+        s = match.group(0)
+        if s.startswith("/"):
+            return "".join("\n" if c == "\n" else " " for c in s)
+        return s
+
+    pattern = re.compile(
+        r"//.*?$|/\*.*?\*/|'(?:\\.|[^\\'])*'|\"(?:\\.|[^\\\"])*\"",
+        re.DOTALL | re.MULTILINE,
+    )
+    return re.sub(pattern, replacer, code)
+
+
+def _c_key_assignment_lines(code: str) -> list[int]:
+    clean = _strip_c_comments(code)
+    lines: list[int] = []
+
+    # 1. Macro definitions: #define NAME "32hex" or #define NAME { 16 bytes }
+    define_pat = re.compile(
+        r"^[ \t]*#[ \t]*define[ \t]+([a-zA-Z0-9_]+)[ \t]+(?:(?:"
+        r'"([0-9a-fA-F]{32})"'
+        r")|\{([^}]+)\})",
+        re.MULTILINE,
+    )
+    for m in define_pat.finditer(clean):
+        name = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(name):
+            if hex_val:
+                lines.append(clean[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(clean[: m.start()].count("\n") + 1)
+
+    # 2. Variable declarations/assignments:
+    var_pat = re.compile(
+        r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*(?:(?:"
+        r'"([0-9a-fA-F]{32})"'
+        r")|\{([^}]+)\})",
+        re.MULTILINE,
+    )
+    for m in var_pat.finditer(clean):
+        name = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(name):
+            if hex_val:
+                lines.append(clean[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(clean[: m.start()].count("\n") + 1)
+
+    return sorted(set(lines))
+
+
+def _json_key_assignment_lines(text: str) -> list[int]:
+    lines: list[int] = []
+    json_pat = re.compile(
+        r'"([a-zA-Z0-9_]+)"\s*:\s*(?:(?:"([0-9a-fA-F]{32})")|\[([^\]]+)\])',
+        re.MULTILINE,
+    )
+    for m in json_pat.finditer(text):
+        key = m.group(1)
+        hex_val = m.group(2)
+        array_val = m.group(3)
+        if KEY_NAME.search(key):
+            if hex_val:
+                lines.append(text[: m.start()].count("\n") + 1)
+            elif array_val and _is_16_byte_array_text(array_val):
+                lines.append(text[: m.start()].count("\n") + 1)
+    return sorted(set(lines))
+
+
+def _py_key_assignment_lines(text: str) -> list[int]:
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return []
-    lines = []
+    lines: list[int] = []
     for node in ast.walk(tree):
         targets: list[ast.expr] = []
         value: ast.AST | None = None
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
             value = node.value
+
+        is_key_value = False
         literal = _assigned_literal(value)
-        if literal is None or HEX_16_BYTES.fullmatch(literal) is None:
+        if literal is not None and HEX_16_BYTES.fullmatch(literal) is not None:
+            is_key_value = True
+        elif isinstance(value, ast.Constant) and isinstance(value.value, bytes) and len(value.value) == 16:
+            is_key_value = True
+        elif isinstance(value, (ast.List, ast.Tuple)) and len(value.elts) == 16:
+            if all(
+                isinstance(e, ast.Constant) and isinstance(e.value, int) and 0 <= e.value <= 255
+                for e in value.elts
+            ):
+                is_key_value = True
+        elif (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in ("bytes", "bytearray")
+        ):
+            if value.args and isinstance(value.args[0], (ast.List, ast.Tuple)) and len(value.args[0].elts) == 16:
+                if all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, int) and 0 <= e.value <= 255
+                    for e in value.args[0].elts
+                ):
+                    is_key_value = True
+
+        if not is_key_value:
             continue
+
         for target in targets:
             if isinstance(target, ast.Name) and KEY_NAME.search(target.id):
                 assert isinstance(node, (ast.Assign, ast.AnnAssign))
                 lines.append(node.lineno)
                 break
     return sorted(set(lines))
+
+
+def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
+    ext = ""
+    if filename:
+        ext = PurePosixPath(filename).suffix.lower()
+    if ext in {".c", ".h"}:
+        return _c_key_assignment_lines(text)
+    if ext == ".json":
+        return _json_key_assignment_lines(text)
+    if ext == ".py":
+        return _py_key_assignment_lines(text)
+
+    # Fallback when filename is omitted: try Python parser, then C, then JSON
+    py_lines = _py_key_assignment_lines(text)
+    if py_lines:
+        return py_lines
+    c_lines = _c_key_assignment_lines(text)
+    if c_lines:
+        return c_lines
+    return _json_key_assignment_lines(text)
 
 
 # Byte-exact third-party import trees under src/. Their files are copied
@@ -852,6 +1098,168 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
     return findings
 
 
+def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None) -> list[Finding]:
+    """Audit unmanaged debt surfaces against non-increasing budgets (Issue #188 Finding 11 O-11).
+
+    Fails when any of the four measured surfaces (ESLint disabled rules, ruff select families,
+    first-party debt markers, or PowerShell SilentlyContinue) exceeds its configured ceiling.
+    """
+    findings: list[Finding] = []
+
+    # 1. ESLint disabled rules (interface/eslint.config.mjs)
+    eslint_cfg = repo_root / "interface" / "eslint.config.mjs"
+    if eslint_cfg.is_file():
+        text = _text(eslint_cfg) or ""
+        matches = re.findall(r'["\']([^"\']+)["\']\s*:\s*["\'](off|warn)["\']', text)
+        obs = len(matches)
+        ceiling = DEBT_BUDGETS["eslint_off_rules"]
+        if obs > ceiling:
+            findings.append(
+                Finding("DEBT_BUDGET", "interface/eslint.config.mjs",
+                        f"ESLint disabled rules count {obs} exceeds debt ceiling {ceiling}")
+            )
+
+    # 2. Ruff select rule families (pyproject.toml)
+    pyproject = repo_root / "pyproject.toml"
+    if pyproject.is_file():
+        text = _text(pyproject) or ""
+        m = re.search(r"select\s*=\s*\[(.*?)\]", text, re.DOTALL)
+        if m:
+            items = re.findall(r'["\']([a-zA-Z0-9_-]+)["\']', m.group(1))
+            obs = len(items)
+            ceiling = DEBT_BUDGETS["ruff_select_rule_families"]
+            if obs > ceiling:
+                findings.append(
+                    Finding("DEBT_BUDGET", "pyproject.toml",
+                            f"Ruff select rule families count {obs} exceeds debt ceiling {ceiling}")
+                )
+
+    # 3. First-party debt markers
+    marker_pat = re.compile(r"\b(?:" + r"TO" + r"DO|FIX" + r"ME|HA" + r"CK)\b")
+    excluded_prefixes = (
+        "third_party/",
+        "src/rt/atrac3p/libavcodec/",
+        "interface/node_modules/",
+        "interface/.next/",
+        "build/",
+        "fs/",
+    )
+    all_paths = paths
+    if all_paths is None:
+        try:
+            res = subprocess.run(["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True)
+            all_paths = [f.strip().replace("\\", "/") for f in res.stdout.splitlines() if f.strip()]
+        except Exception:
+            all_paths = []
+    todo_count = 0
+    for rel in all_paths:
+        if any(rel.startswith(p) for p in excluded_prefixes):
+            continue
+        full_path = repo_root / rel
+        if not full_path.is_file():
+            continue
+        text = _text(full_path)
+        if text is None:
+            continue
+        for line in text.splitlines():
+            if marker_pat.search(line):
+                todo_count += 1
+    ceiling = DEBT_BUDGETS["first_party_todos"]
+    if todo_count > ceiling:
+        findings.append(
+            Finding("DEBT_BUDGET", "tools/publish_audit.py",
+                    f"First-party debt marker count {todo_count} exceeds debt ceiling {ceiling}")
+        )
+
+    # 4. PowerShell SilentlyContinue
+    ps_pat = re.compile(r"SilentlyContinue", re.IGNORECASE)
+    ps_count = 0
+    for rel in all_paths:
+        if not rel.endswith(".ps1"):
+            continue
+        full_path = repo_root / rel
+        if not full_path.is_file():
+            continue
+        text = _text(full_path)
+        if text is None:
+            continue
+        m = ps_pat.findall(text)
+        ps_count += len(m)
+    ceiling = DEBT_BUDGETS["powershell_silently_continue"]
+    if ps_count > ceiling:
+        findings.append(
+            Finding("DEBT_BUDGET", "hst_manager.ps1",
+                    f"PowerShell SilentlyContinue count {ps_count} exceeds debt ceiling {ceiling}")
+        )
+
+    return findings
+
+
+#: Text bytes the repository governs as UTF-8 without BOM, LF, final newline.
+#: `.gitattributes` normalises on commit, so the index is clean by construction
+#: and these findings fire almost entirely in worktree audits -- which is the
+#: point. A CRLF-polluted checkout produces content hashes that disagree with the
+#: provenance ledger, and the resulting wall of PROVENANCE_CONTENT_MISMATCH says
+#: nothing about the real cause. Naming the cause turns a confusing hash failure
+#: into a one-line diagnosis.
+TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg",
+                                          ".gif", ".ico", ".pdf", ".zip", ".ttf",
+                                          ".otf", ".woff", ".woff2", ".spv", ".wav"})
+
+
+def _text_hygiene_is_text_suffix(path: str) -> bool:
+    """Return whether a path is governed text rather than an explicitly binary suffix."""
+    return PurePosixPath(path).suffix.lower() not in TEXT_HYGIENE_EXEMPT_SUFFIXES
+
+
+def check_text_hygiene(content_map: dict[str, tuple[bytes | None, str | None]]) -> list[Finding]:
+    """Flag encoding and line-ending drift in LF-governed tracked text.
+
+    Encoding is checked before the binary heuristic. UTF-16 text commonly contains
+    NUL bytes, so looking for binary content first would silently skip it. A
+    text-suffixed path whose bytes are not decodable as UTF-8 is also a finding:
+    otherwise a candidate can hide a private path (or any other invalid text) in
+    an undecodable blob while the text block treats it as binary and moves on.
+    Explicitly binary suffixes remain exempt.
+    """
+    findings: list[Finding] = []
+    for path in sorted(content_map):
+        data, read_error = content_map[path]
+        if read_error:
+            continue
+        if not data or not _text_hygiene_is_text_suffix(path):
+            continue
+        if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            findings.append(Finding(
+                "TEXT_ENCODING_UTF16", path,
+                "file is UTF-16; repository text is UTF-8 without BOM"))
+            continue
+        if data[:3] == b"\xef\xbb\xbf":
+            findings.append(Finding(
+                "TEXT_ENCODING_BOM", path,
+                "file begins with a UTF-8 BOM; repository text is UTF-8 without BOM"))
+            continue
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            findings.append(Finding(
+                "TEXT_ENCODING_UNDECODABLE", path,
+                f"text-suffixed file is not valid UTF-8: {error}"))
+            continue
+        if _is_binary_bytes(data):
+            continue
+        if b"\r\n" in data:
+            findings.append(Finding(
+                "TEXT_LINE_ENDING_CRLF", path,
+                "file contains CRLF; repository text is LF (.gitattributes eol=lf). "
+                "A writer used a host default instead of an explicit LF newline"))
+        if not data.endswith(b"\n"):
+            findings.append(Finding(
+                "TEXT_FINAL_NEWLINE", path,
+                "text file does not end with a newline"))
+    return findings
+
+
 def check_collisions(paths: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     case_map: dict[str, list[str]] = {}
@@ -879,11 +1287,11 @@ def check_collisions(paths: list[str]) -> list[Finding]:
         nfc_p = unicodedata.normalize("NFC", p).lower()
         nfc_map.setdefault(nfc_p, []).append(p)
 
-    for lower_p, matches in case_map.items():
+    for matches in case_map.values():
         if len(matches) > 1:
             findings.append(Finding("COLLISION_CASE", matches[0], f"case-insensitive collision between {matches}"))
 
-    for nfc_p, matches in nfc_map.items():
+    for matches in nfc_map.values():
         if len(matches) > 1 and matches not in case_map.values():
             findings.append(Finding("COLLISION_UNICODE", matches[0], f"Unicode normalization collision between {matches}"))
 
@@ -1449,12 +1857,33 @@ def audit_entries_with_semantics(
     committed_tree_ref: str | None = None,
     tree_repo_root: Path | None = None,
     provenance_self_consistency: bool = False,
+    extra_private_roots: list[str] | None = None,
 ) -> tuple[list[Finding], list[FileSemantics]]:
 
     content_source = _resolve_content_source(content_source, is_candidate_root)
     findings: list[Finding] = []
     semantics_list: list[FileSemantics] = []
     paths = [e.path for e in entries]
+
+    all_private_root_patterns: list[re.Pattern[str]] = []
+    raw_roots: list[str] = []
+    raw_env = os.environ.get("PUBLISH_AUDIT_PRIVATE_ROOTS", "").strip()
+    if raw_env:
+        for part in re.split(r"[;\n,]+", raw_env):
+            root = part.strip()
+            if root:
+                raw_roots.append(root)
+    if extra_private_roots:
+        for root in extra_private_roots:
+            root = root.strip()
+            if root:
+                raw_roots.append(root)
+
+    for r in raw_roots:
+        for variant in {r, r.replace("\\", "/"), r.replace("/", "\\")}:
+            all_private_root_patterns.append(
+                re.compile(re.escape(variant) + r"(?![A-Za-z0-9_.\-])", re.IGNORECASE)
+            )
 
     # ---- canonical publication policy -------------------------------------
     # The policy is loaded first and its failures are unconditional. An auditor
@@ -1508,6 +1937,12 @@ def audit_entries_with_semantics(
         content_map = read_indexed_blobs_batch(entries, repo_root)
     elif content_source == CONTENT_WORKTREE:
         content_map = read_worktree_blobs(entries, repo_root)
+    elif content_source in (CONTENT_CANDIDATE, CONTENT_COMMITTED):
+        # Candidate and committed audits read materialized filesystem bytes in
+        # the per-entry loop below. Populate the same map here so text hygiene
+        # runs against every content source, not only Git-backed modes.
+        for entry in entries:
+            content_map[entry.path] = read_candidate_file(entry, repo_root)
 
     manifest_map: dict[str, dict] = {}
     if manifest_path:
@@ -1539,6 +1974,8 @@ def audit_entries_with_semantics(
         findings.extend(manifest_findings)
         if policy is not None:
             findings.extend(_policy_manifest_findings(policy, manifest_map))
+
+    findings.extend(check_text_hygiene(content_map))
 
     lfs_patterns = _read_git_lfs_attributes(repo_root)
 
@@ -1645,8 +2082,30 @@ def audit_entries_with_semantics(
 
         path = repo_root / rel
 
-        # Check symlink
-        if entry.kind == "symlink" or entry.working_mode == "120000":
+        # An index audit now reads the indexed blob even when the worktree copy
+        # has become a link, so the divergence itself is reported here rather
+        # than silently changing which bytes were scanned.
+        if (
+            content_source == CONTENT_INDEX
+            and entry.kind != "symlink"
+            and entry.working_mode == "120000"
+        ):
+            entry_findings.append(Finding(
+                "WORKTREE_LINK", rel,
+                "tracked regular file is a filesystem link, or lies below one, in the "
+                "working tree; the audit read the indexed blob",
+            ))
+
+        # Check symlink. The target text is only in raw_bytes when the bytes
+        # being audited are a link's: an index entry whose own mode is 120000,
+        # or a worktree/candidate read of a link. For an index audit of a
+        # tracked regular file shadowed by a link, raw_bytes is now the staged
+        # file content, which must not be reinterpreted as a target.
+        link_bytes_are_target = (
+            entry.kind == "symlink"
+            or (content_source != CONTENT_INDEX and entry.working_mode == "120000")
+        )
+        if link_bytes_are_target:
             try:
                 target_str = raw_bytes.decode("utf-8") if raw_bytes else ""
                 target_pure = PurePosixPath(target_str)
@@ -1656,7 +2115,13 @@ def audit_entries_with_semantics(
                     entry_findings.append(Finding("SYMLINK_ESCAPE", rel, "symlink target contains relative escape ('..')"))
                 resolved = (path.parent / target_pure).resolve()
                 if not resolved.is_relative_to(repo_root.resolve()):
-                    entry_findings.append(Finding("SYMLINK_ESCAPE", rel, f"symlink target {resolved} escapes repository root"))
+                    # The resolved target is an absolute host path, and on
+                    # Windows a junction into a private directory resolves to
+                    # exactly the kind of path this audit exists to keep out of
+                    # published output. Both non-JSON CLIs print a finding's
+                    # detail verbatim into audit and CI logs, so state the
+                    # containment failure without echoing where it pointed.
+                    entry_findings.append(Finding("SYMLINK_ESCAPE", rel, "symlink target escapes repository root"))
             except (OSError, ValueError):
                 entry_findings.append(Finding("SYMLINK_UNREADABLE", rel, "unreadable symlink target"))
 
@@ -1716,8 +2181,8 @@ def audit_entries_with_semantics(
             if _spdx_required(rel) and "SPDX-License-Identifier:" not in "\n".join(text_str.splitlines()[:8]):
                 entry_findings.append(Finding("SPDX", rel, "missing SPDX identifier in first eight lines"))
 
-            if PurePosixPath(rel).suffix.lower() == ".py":
-                for line in private_key_assignment_lines(text_str):
+            if PurePosixPath(rel).suffix.lower() in {".c", ".h", ".py", ".json"}:
+                for line in private_key_assignment_lines(text_str, filename=rel):
                     entry_findings.append(Finding("PRIVATE_KEY", rel, f"direct 16-byte key literal at line {line}"))
 
             if (
@@ -1730,6 +2195,22 @@ def audit_entries_with_semantics(
                 or TEMP_PATH.search(text_str)
             ):
                 entry_findings.append(Finding("LOCAL_PATH", rel, "contains an absolute user-profile or local path"))
+            elif policy and policy.private_roots and rel != "assets/public_source_profile.json":
+                text_lower = text_str.lower()
+                for root_str in policy.private_roots:
+                    if root_str.lower() in text_lower:
+                        entry_findings.append(
+                            Finding("LOCAL_PATH", rel, f"contains configured private root {root_str!r}")
+                        )
+                        break
+
+            if rel != "assets/public_source_profile.json" and all_private_root_patterns:
+                for pat in all_private_root_patterns:
+                    if pat.search(text_str):
+                        entry_findings.append(
+                            Finding("LOCAL_PATH", rel, "contains configured out-of-band private root")
+                        )
+                        break
 
         findings.extend(entry_findings)
         for f in entry_findings:
@@ -1763,6 +2244,8 @@ def audit_entries_with_semantics(
     audited_paths = {e.path for e in entries}
     findings.extend(_notice_link_findings(repo_root))
     findings.extend(_action_pin_findings(repo_root, audited_paths))
+    if public_scope or exhaustive:
+        findings.extend(_debt_budget_findings(repo_root, paths))
 
     sorted_findings = sorted(findings, key=lambda item: (item.path.lower(), item.code, item.detail))
     sorted_semantics = sorted(semantics_list, key=lambda s: s.path.lower())
@@ -1786,6 +2269,7 @@ def audit_entries(
     trusted_manifest_path: Path | None = None,
     committed_tree_ref: str | None = None,
     tree_repo_root: Path | None = None,
+    extra_private_roots: list[str] | None = None,
 ) -> list[Finding]:
     findings, _ = audit_entries_with_semantics(
         entries=entries,
@@ -1803,6 +2287,7 @@ def audit_entries(
         trusted_manifest_path=trusted_manifest_path,
         committed_tree_ref=committed_tree_ref,
         tree_repo_root=tree_repo_root,
+        extra_private_roots=extra_private_roots,
     )
     return findings
 
@@ -1893,7 +2378,6 @@ def export_csv_manifest_report(
     if isinstance(output_path_or_none, Path):
         # Called with (entries, findings, output_path)
         entries = entries_or_semantics  # type: ignore
-        findings = findings_or_output  # type: ignore
         output_path = output_path_or_none
         _, semantics = audit_entries_with_semantics(
             entries,
@@ -2022,6 +2506,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Externally trusted release manifest used to prevent candidate control substitution",
     )
     parser.add_argument(
+        "--private-root",
+        action="append",
+        default=[],
+        help=(
+            "Out-of-band private root path to forbid across tracked files (O-01). "
+            "May also be specified via PUBLISH_AUDIT_PRIVATE_ROOTS."
+        ),
+    )
+    parser.add_argument(
         "--provenance-ledger",
         type=Path,
         default=None,
@@ -2098,7 +2591,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    audit_repo_root = args.repo_root.resolve() if args.repo_root else ROOT
+    audit_repo_root = args.repo_root.absolute() if args.repo_root else ROOT
     committed_audit_root: Path | None = None
     committed_tree_sha: str | None = None
     if args.committed_tree:
@@ -2109,7 +2602,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         audit_root = committed_audit_root
     else:
-        audit_root = args.candidate_root.resolve() if args.candidate_root else audit_repo_root
+        audit_root = args.candidate_root.absolute() if args.candidate_root else audit_repo_root
     manifest_path = args.manifest or (audit_root / "assets" / "release_manifest.json")
     is_exhaustive = args.candidate_tree or bool(args.manifest_out) or bool(args.csv_out) or args.public_scope
     is_cand_root = bool(args.candidate_root)
@@ -2160,6 +2653,7 @@ def main(argv: list[str] | None = None) -> int:
         trusted_manifest_path=args.trusted_manifest,
         committed_tree_ref=args.committed_tree,
         tree_repo_root=audit_repo_root,
+        extra_private_roots=args.private_root,
     )
     report = generate_manifest_report(
         entries,
@@ -2174,7 +2668,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.manifest_out:
         args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
-        args.manifest_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        args.manifest_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote audit manifest to {args.manifest_out}")
 
     if args.csv_out:

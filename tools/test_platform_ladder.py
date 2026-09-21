@@ -16,10 +16,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from typing import Callable
 import unittest
 
 
@@ -50,6 +52,76 @@ EXPECTED_PRX_SHA256 = {
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
 # between Windows (mingw32 host) and Linux (gcc-13/WSL2) toolchains.
 L0_IMAGE_SHA256 = "9d8ec91be32fc66a959561bcf6ac0e643ffed3c3d055b6e775e88aa5def0bec4"
+
+
+def _find_make() -> str | None:
+    return shutil.which("mingw32-make") or shutil.which("make")
+
+
+def _find_cc() -> str | None:
+    cc = os.environ.get("CC")
+    if cc and shutil.which(cc):
+        return cc
+    for candidate in ("gcc", "cc", "clang"):
+        found = shutil.which(candidate)
+        if found:
+            return candidate
+    return None
+
+
+def _is_toolchain_missing_error(output: str) -> str | None:
+    """Check if build failure output is due to missing toolchain dependencies."""
+    out_lower = output.lower()
+    if (
+        "no usable vulkan sdk found" in out_lower
+        or ("vulkan/" in out_lower and "no such file" in out_lower)
+        or "-lvulkan" in out_lower
+        or "cannot find -lvulkan" in out_lower
+    ):
+        return "Vulkan SDK dependency is missing or unusable"
+    if (
+        ("sdl3/" in out_lower and "no such file" in out_lower)
+        or "-lsdl3" in out_lower
+        or "cannot find -lsdl3" in out_lower
+    ):
+        return "SDL3 dependency (headers or library) is missing"
+    if "cannot find -l" in out_lower and any(
+        lib in out_lower for lib in ("vulkan", "sdl3", "mfplat", "winmm", "gdi32", "ole32")
+    ):
+        return f"missing toolchain library dependency: {output.strip().splitlines()[-1]}"
+    return None
+
+
+def _ensure_workload(
+    test: unittest.TestCase,
+    target: str,
+    check_fn: Callable[[], bool],
+) -> None:
+    if check_fn():
+        return
+
+    make = _find_make()
+    if not make:
+        test.skipTest(f"cannot build {target}: GNU Make (mingw32-make or make) is not installed")
+    cc = _find_cc()
+    if not cc:
+        test.skipTest(f"cannot build {target}: C compiler (gcc, cc, or clang) is not installed")
+
+    proc = subprocess.run(
+        [make, "--no-print-directory", target],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if not check_fn():
+        if proc.returncode != 0:
+            blob = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            missing_dep = _is_toolchain_missing_error(blob)
+            if missing_dep:
+                test.skipTest(f"cannot build {target}: {missing_dep}")
+            test.fail(f"failed to build target {target} (exit {proc.returncode}):\n{blob}")
+        test.fail(f"build of target {target} succeeded but expected artifact was not created")
 
 
 class LadderGapEncodingTests(unittest.TestCase):
@@ -103,10 +175,6 @@ class FixturePinTests(unittest.TestCase):
             with self.subTest(workload=workload):
                 with tempfile.TemporaryDirectory() as tmp:
                     out_dir = Path(tmp)
-                    before = {
-                        p.name: p.read_bytes()
-                        for p in sorted(out_dir.glob("*"))
-                    } if out_dir.exists() else {}
                     self.assertEqual(generator.generate(out_dir, workload), 0)
                     prx = (out_dir / "guest.prx").read_bytes()
                     self.assertEqual(generator.hashlib.sha256(prx).hexdigest(), expected)
@@ -230,8 +298,7 @@ class HostileEnvironmentTests(unittest.TestCase):
         workloads_dir = ROOT / "build" / "platform-ladder" / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
         image = workloads_dir / "pl_zero_image.bin"
-        if not exe.is_file():
-            self.skipTest("run mingw32-make platform-ladder-zero first")
+        _ensure_workload(self, "platform-ladder-zero", lambda: exe.is_file() and image.is_file())
         plan = generator.PLANS["ladder-zero"]
         result = subprocess.run(
             [
@@ -267,8 +334,7 @@ class MutationKillTests(unittest.TestCase):
         gate detects ANY single-word drift by flipping one expectation."""
         exe = self.workloads / "ladder-fpu" / "pl_fpu.exe"
         image = self.workloads / "ladder-fpu" / "pl_fpu_image.bin"
-        if not exe.is_file():
-            self.skipTest("run mingw32-make platform-ladder-fpu first")
+        _ensure_workload(self, "platform-ladder-fpu", lambda: exe.is_file() and image.is_file())
         results = generator.l4_results()
         drifted = results[1] ^ 0xFFFF
         addr = 0x08980000 + 0x3000 + generator.L4_RESULTS + 4
@@ -297,8 +363,7 @@ class MutationKillTests(unittest.TestCase):
         """M3/M2: unset SR_DATAROOT entirely; ladder-zero still passes."""
         exe = self.workloads / "ladder-zero" / "pl_zero.exe"
         image = self.workloads / "ladder-zero" / "pl_zero_image.bin"
-        if not exe.is_file():
-            self.skipTest("run mingw32-make platform-ladder-zero first")
+        _ensure_workload(self, "platform-ladder-zero", lambda: exe.is_file() and image.is_file())
         plan = generator.PLANS["ladder-zero"]
         env = os.environ.copy()
         env.pop("SR_DATAROOT", None)
@@ -407,7 +472,6 @@ class Title2ContractTests(unittest.TestCase):
         self.assertEqual(generator.hashlib.sha256(generator.build_prx(plan)[0]).hexdigest(), EXPECTED_PRX_SHA256[plan.name])
 
     def test_memory_cell_mutation_is_oracle(self):
-        plan = generator.PLANS["ladder-title2"]
         self.assertEqual(generator.TITLE2_MEM_CELL_INIT, 7)
         self.assertEqual(generator.TITLE2_MEM_CELL_EXPECTED, 14)
         env = dict(os.environ)
@@ -444,9 +508,12 @@ class Title2ContractTests(unittest.TestCase):
         """Replacing the unsupported stub with h_ok semantics cannot pass the gate."""
         plan = generator.PLANS["ladder-title2-negative"]
         build_dir = ROOT / "build" / "platform-ladder" / plan.name
+        _ensure_workload(
+            self,
+            "platform-ladder-title2-negative",
+            lambda: bool(sorted(build_dir.glob(f"{plan.game_name}_recomp_[0-9]*.c"))),
+        )
         chunks = sorted(build_dir.glob(f"{plan.game_name}_recomp_[0-9]*.c"))
-        if not chunks:
-            self.skipTest("run mingw32-make platform-ladder-title2-negative first")
         generated = "\n".join(path.read_text(encoding="ascii") for path in chunks)
         marker = f"sr_syscall(s, 0x{generator.TITLE2_UNSUPPORTED_NID:08x}u);"
         self.assertIn(marker, generated)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { logTelemetry } from "@/lib/recompiler/telemetry";
@@ -44,7 +46,7 @@ export async function GET() {
     const chronological = [...runs].reverse();
     return NextResponse.json({ telemetry: chronological });
   } catch (e) {
-    return NextResponse.json({ error: "db-error", detail: String(e) }, { status: 500 });
+    return routeError("db-error", e, 500);
   }
 }
 
@@ -64,6 +66,6 @@ export async function POST(req: NextRequest) {
       currentRun,
     });
   } catch (e) {
-    return NextResponse.json({ error: "telemetry-log-failed", detail: String(e) }, { status: 500 });
+    return routeError("telemetry-log-failed", e, 500);
   }
 }

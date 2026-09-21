@@ -20,6 +20,13 @@
 //
 // This is NOT a silent workaround: it does not mask or skip any instruction under
 // test. It only provides dead symbols so the host executable links headlessly.
+//
+// The TD-27 stale-block query (sr_stale_block_is_stale, src/rt/stale_code.c)
+// is deliberately NOT stubbed here: both dispatch tiers call it, and the
+// headless link carries the real detector TU exactly as production does
+// (see tools/codegen_gate.py). Gate off it costs one cached branch, so the
+// microtest path is unaffected; do not add stub definitions of the sr_stale_*
+// symbols here, they would collide with the real TU at link time.
 
 #include <stdint.h>
 #include <stddef.h>
@@ -84,7 +91,8 @@ int     sched_interrupts_enabled(void) { return 1; }
 void    sched_delay_current(uint32_t usec) { (void)usec; }
 void    sched_preempt(void) {}
 void    sched_block_on(uint32_t obj) { (void)obj; }
-void    sched_wait_vblank(void) {}
+void    sched_wait_vblank_start(void) {}
+int     sched_wait_vblank(void) { return 0; }
 int     sched_block_on_timeout(uint32_t obj, uint32_t usec) { (void)obj; (void)usec; return 0; }
 void    sched_wake(uint32_t obj) { (void)obj; }
 void    sched_thread_sleep(void) {}

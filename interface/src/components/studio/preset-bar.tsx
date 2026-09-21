@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { Zap, Sparkles, Timer, History, type LucideIcon } from "lucide-react";
 import { useStudio } from "./studio-context";

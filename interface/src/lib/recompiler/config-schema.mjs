@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // config-schema.mjs — runtime schema validation for the recompiler configuration.
 //
 // Issue #188: dashboard configuration is persisted and later cast back into

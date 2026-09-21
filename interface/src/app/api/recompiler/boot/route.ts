@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextResponse } from "next/server";
-import { findLatestRunLog, findRepoRoot, readLogPrefix } from "@/lib/recompiler/runner";
+import { findLatestRunLog, findRepoRoot, readLogPrefix, routeError } from "@/lib/recompiler/runner";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,6 @@ export async function GET() {
       scanTruncated: truncated,
     });
   } catch (error) {
-    return NextResponse.json({ error: "boot-status-failed", detail: String(error) }, { status: 500 });
+    return routeError("boot-status-failed", error, 500);
   }
 }

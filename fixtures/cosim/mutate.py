@@ -110,7 +110,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 7),
+            ("s->r[0] = 0u;", "(void)0;", 9),
         ],
     ),
     Mutant(
@@ -145,8 +145,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "alter-handback-pc",
         "alter handback PC",
         [(
-            "        if (sr_lookup(pc)) {\n            s->pc = pc;",
-            "        if (sr_lookup(pc)) {\n            s->pc = pc + 4u;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc;",
+            "        if (sr_lookup(pc) && !sr_stale_block_is_stale(pc)) {\n            s->pc = pc + 4u;",
             1,
         )],
     ),
@@ -192,10 +192,12 @@ MUTANTS: tuple[Mutant, ...] = (
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
                 "            out.append(f\"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.append(normal_line(ds, dsw, hst_profile=hst_profile))",
+                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "                                        indent=\"      \"))",
                 "            out.append(f\"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.append(normal_line(ds, dsw, hst_profile=hst_profile))\n"
+                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "                                        indent=\"      \"))\n"
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")",
                 1,
             ),

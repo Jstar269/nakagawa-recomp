@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { defaultConfig } from "@/lib/recompiler/defaults";
 import { getActiveProfile, upsertActiveProfile, ProfileStoreError } from "@/lib/recompiler/profile-store";
@@ -27,7 +29,7 @@ export async function GET() {
     if (e instanceof ProfileStoreError) {
       return NextResponse.json({ error: e.code, message: e.message, fields: e.fields }, { status: e.status });
     }
-    return NextResponse.json({ error: "failed-to-load", message: String(e) }, { status: 500 });
+    return routeError("failed-to-load", e, 500);
   }
 }
 
@@ -55,6 +57,6 @@ export async function POST(req: NextRequest) {
     if (e instanceof ProfileStoreError) {
       return NextResponse.json({ error: e.code, message: e.message, fields: e.fields }, { status: e.status });
     }
-    return NextResponse.json({ error: "failed-to-save", message: String(e) }, { status: 500 });
+    return routeError("failed-to-save", e, 500);
   }
 }

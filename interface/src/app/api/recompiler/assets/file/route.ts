@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest } from "next/server";
 import { findRepoRoot } from "@/lib/recompiler/runner";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    return new Response(`Error reading asset file: ${err}`, { status: 500 });
+    console.error("[API Error: asset-file-read-failed]", err);
+    return new Response("Error reading asset file", { status: 500 });
   }
 }

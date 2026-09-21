@@ -107,18 +107,28 @@ struct CpuState {
 		uint32_t vi[128];
 	};
 	uint32_t vfpuCtrl[16];
-	uint32_t status;
+	uint32_t cop0[32] = {};
 
 	// Branch/delay-slot bookkeeping, matching the MIPS r4k model PPSSPP uses.
 	uint32_t next_pc = 0;
 	uint32_t in_delay_slot = 0;
+	uint32_t flow_kind = 0;
+	uint32_t flow_target = 0;
 
 	CpuState() {
 		for (int i = 0; i < 32; i++) fi[i] = 0;
 		for (int i = 0; i < 128; i++) vi[i] = 0;
 		for (int i = 0; i < 16; i++) vfpuCtrl[i] = 0;
-		status = 0;
 	}
 };
+
+static_assert(offsetof(CpuState, cop0) == 852, "ref::CpuState cop0 offset drift");
+static_assert(offsetof(CpuState, next_pc) == 980, "ref::CpuState next_pc offset drift");
+static_assert(offsetof(CpuState, in_delay_slot) == 984,
+	              "ref::CpuState in_delay_slot offset drift");
+static_assert(offsetof(CpuState, flow_kind) == 988, "ref::CpuState flow_kind offset drift");
+static_assert(offsetof(CpuState, flow_target) == 992,
+	              "ref::CpuState flow_target offset drift");
+static_assert(sizeof(CpuState) == 996, "ref::CpuState size drift");
 
 }  // namespace ref

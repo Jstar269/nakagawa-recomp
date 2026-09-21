@@ -45,6 +45,10 @@
     "filesystem": {
       "$ref": "#/$defs/filesystem"
     },
+    "game_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
     "hle_profile": {
       "$ref": "#/$defs/identifier"
     },
@@ -71,6 +75,27 @@
     },
     "runtime_bindings": {
       "$ref": "#/$defs/runtimeBindings"
+    },
+    "required_runtime_bindings": {
+      "type": "array",
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "callback_terminators",
+          "dispatch_aliases",
+          "display_bringup",
+          "expected_data_file_count",
+          "fallback_entry",
+          "frame_ready_latch_addr",
+          "launcher_thread_entry",
+          "libfont_ready_flag_addr",
+          "runtime_sync",
+          "vblank_frame_counter_addr",
+          "vblank_vsync_counter_addr",
+          "worker_thread_entry"
+        ]
+      }
     },
     "notes": {
       "type": "string",
@@ -194,15 +219,25 @@
         "required": {"type": "boolean"},
         "role": {
           "enum": ["guest-prx", "hle-capability", "optional-guest-prx"]
+        },
+        "guest_path": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^(disc0|umd0|ms0|flash0|host0):/"
+        },
+        "load_address_evidence": {
+          "enum": ["measured-hw", "measured-ppsspp", "provisional"]
         }
       }
     },
     "filesystem": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["data_root", "memory_stick_root", "device_prefixes"],
-      "properties": {
+      "additionalProperties": false,      "required": ["data_root", "memory_stick_root", "device_prefixes"],
+        "properties": {
         "data_root": {"$ref": "#/$defs/relativePath"},
+        "module_dir": {"$ref": "#/$defs/relativePath"},
+        "psp_header": {"$ref": "#/$defs/relativePath"},
+        "disc_image": {"$ref": "#/$defs/relativePath"},
         "memory_stick_root": {"$ref": "#/$defs/relativePath"},
         "device_prefixes": {
           "type": "array",

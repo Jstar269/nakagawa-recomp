@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-schema.mjs — runtime validation and normalization for watchpoints
 // and debug profiles (issue #188).
 //

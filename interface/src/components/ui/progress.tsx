@@ -1,4 +1,5 @@
 "use client"
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import * as React from "react"
 import * as ProgressPrimitive from "@radix-ui/react-progress"

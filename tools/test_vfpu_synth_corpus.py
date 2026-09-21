@@ -430,7 +430,6 @@ class VcrspVqmulActualSub5Tests(unittest.TestCase):
         self.assertEqual(len(actual),6, f"actual 0x3C/sub5 must be 6 (3*2), got {len(actual)}")
         for w in actual:
             self.assertIn(_size_independent(w),(3,4), f"0x{w:08x} size T/Q")
-        from vfpu_synth_gen import _malformed_vfpu12_5bit_field
         for w in actual:
             self.assertEqual(_sub3(w),5)
     def test_no_old_5bit_field_words_in_corpus(self):
@@ -716,18 +715,19 @@ class CategoryDistinguishingTests(unittest.TestCase):
         from vfpu_synth_gen import classify_word_production
         self.assertTrue(classify_word_production(w).startswith("emitter_unsupported"))
     def test_interpreter_fallback_is_distinct(self):
-        import codegen
+        from vfpu_synth_gen import classify_word_production
         w=(0x35<<26)|0x00000000
-        try:
-            body,_,_=codegen.vfpu_effect(0x08900000,w)
-            if "sr_vfpu_interp" in body:
-                self.assertIn("sr_vfpu_interp",body)
-            else:
-                w2=(0x3E<<26)|0x00000000
-                body2,_,_=codegen.vfpu_effect(0x08900000,w2)
-                self.assertIn("sr_vfpu_interp",body2)
-        except codegen.Unsupported:
-            self.skipTest("no fallback")
+        # Behavioural, not structural: run the emitter (classify_word_production
+        # goes through codegen.vfpu_effect itself) and require the fallback.
+        # If emitter coverage for these families is ever added, the expected
+        # value changes with it and this test says so. Deleting the fallback
+        # therefore fails here instead of silently passing as a SKIP.
+        self.assertEqual(
+            classify_word_production(w), "interpreter_fallback",
+            "0x35/0x3E VFPU words must classify as interpreter_fallback; if the "
+            "emitter now covers them, retire or re-point this test deliberately "
+            "rather than letting the old guard pass vacuously",
+        )
     def test_malformed_vs_positive_are_disjoint(self):
         from vfpu_synth_gen import generate_synthetic_corpus, generate_malformed_corpus, classify_word_production
         pos=generate_synthetic_corpus()
@@ -742,6 +742,55 @@ class CategoryDistinguishingTests(unittest.TestCase):
         for w in generate_synthetic_corpus():
             body,_,_=codegen.vfpu_effect(0x08900000,w)
             self.assertNotIn("sr_vfpu_interp",body)
+
+
+class MemoryCop2CorpusTests(unittest.TestCase):
+    """Keep the native-capable G-25 families in a real differential corpus."""
+
+    def setUp(self):
+        from vfpu_synth_gen import generate_memory_cop2_corpus
+        self.corpus = generate_memory_cop2_corpus()
+
+    def test_family_counts_are_explicit_and_deduplicated(self):
+        counts = Counter(_op6(w) for w in self.corpus)
+        self.assertEqual(len(self.corpus), 544)
+        self.assertEqual(len(self.corpus), len(set(self.corpus)))
+        self.assertEqual(counts, {0x12: 288, 0x32: 80, 0x36: 48, 0x3A: 80, 0x3E: 48})
+
+    def test_each_word_has_an_emitter_or_an_explicit_quad_guard(self):
+        import codegen
+        from vfpu_fuzz_gen import generate_cases
+
+        words = {w: 0x08900000 + i * 4 for i, w in enumerate(self.corpus)}
+        quad = {w for w in self.corpus if _op6(w) in (0x36, 0x3E)}
+        cases, unsupported, self_compare = generate_cases(
+            words, allow_conditional_fallback_words=quad
+        )
+        self.assertEqual((len(cases), unsupported, self_compare), (544, 0, 0))
+        for w, _, body in cases:
+            if w in quad:
+                self.assertIn("sr_guest_span_", body)
+                self.assertIn("sr_vfpu_interp", body)
+            else:
+                self.assertNotIn("sr_vfpu_interp", body)
+            # Re-run the emitter at the test address to ensure the corpus is
+            # not merely accepted by a generator-side special case.
+            codegen.vfpu_effect(0x08900000, w)
+
+    def test_cop2_invalid_register_number_is_rejected(self):
+        import codegen
+        invalid = (0x12 << 26) | (3 << 21) | (1 << 16) | 144
+        with self.assertRaises(codegen.Unsupported):
+            codegen.vfpu_effect(0x08900000, invalid)
+
+    def test_cop2_scalar_uses_physical_scalar_mapping(self):
+        import codegen
+        from vfpu_synth_gen import _iter_vfpu_memory_cop2
+        word = next(w for w in _iter_vfpu_memory_cop2()
+                    if _op6(w) == 0x12 and (w & 0xFF) == 32 and ((w >> 21) & 0x1F) == 3)
+        body, _, _ = codegen.vfpu_effect(0x08900000, word)
+        self.assertIn("s->vi[1]", body)
+        self.assertNotIn("s->vi[32]", body)
 
 class VfpuWordsTxtAbsenceTest(unittest.TestCase):
     def test_vfpu_words_txt_is_not_committed(self):

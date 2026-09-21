@@ -48,21 +48,19 @@ def required_gate_passes(
 
     ``skipped`` is accepted only for a gate that is not applicable. A failed,
     cancelled, or otherwise incomplete applicable gate fails the aggregate, and
-    classifier or hygiene failures can never be hidden by path gating. Draft
-    PRs are fail-closed when path classification requested a substantive gate:
-    the suppressed run stays red until a ready-for-review run executes it.
+    classifier or hygiene failures can never be hidden by path gating. Callers
+    that explicitly suppress substantive gates remain fail-closed when a draft
+    requests one; the workflow normally runs those gates for drafts now.
     """
 
     if results.get("classify") != "success" or results.get("hygiene") != "success":
         return False
 
-    # A draft PR may request substantive gates by path, but the workflow
-    # deliberately suppresses those jobs until ready_for_review.  That
-    # suppression must never be interpreted as a green exact-head result: if
-    # the ready transition does not produce a new run, the draft's last check
-    # must remain visibly non-green.  ``draft=False`` is intentional for the
-    # normal main-push policy, which also skips substantive jobs after their PR
-    # gates have already run.
+    # Preserve fail-closed behavior for defensive callers that explicitly
+    # suppress substantive gates. The normal workflow no longer suppresses
+    # them merely because a pull request is a draft. ``draft=False`` is
+    # intentional for the normal main-push policy, which can skip substantive
+    # jobs after their PR gates have already run.
     draft_suppressed = draft and not allow_substantive
     if draft_suppressed and any(applicable.get(name, False) for name in _SUBSTANTIVE_GATES):
         return False
@@ -107,7 +105,7 @@ def main() -> int:
         print("All applicable CI gates passed; skipped jobs were intentionally irrelevant or policy-suppressed.")
         return 0
     print(
-        "An applicable CI gate failed, was cancelled, was suppressed for a draft, or the classifier/hygiene gate did not pass.",
+        "An applicable CI gate failed, was cancelled, was suppressed by policy, or the classifier/hygiene gate did not pass.",
         file=sys.stderr,
     )
     return 1

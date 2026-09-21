@@ -1,8 +1,7 @@
 # `tools/` — Host-side recompiler scripts
 
 These scripts require Python 3.14.x. PowerShell entrypoints require PowerShell 7.6+ (`pwsh`); they
-run on the development host and are never executed by `hst.exe` at runtime. For HST, prefer `hst_manager.ps1`; it supplies the required
-zero base/entry values and preserves the Makefile's two-phase build.
+run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build (`hst_manager.ps1` is retained as a deprecated forwarding wrapper).
 
 ## Pipeline (in order)
 
@@ -25,7 +24,7 @@ zero base/entry values and preserves the Makefile's two-phase build.
    Drives the two-phase pipeline and compile. Set `VULKAN_SDK` for direct Make invocations; the
    manager discovers and validates it automatically. Do not replace `all` with a single dependency
    line: generated chunk discovery occurs in the second Make process. For HST, use
-   `.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json` from the repository root.
+   `.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` from the repository root.
 
 ## Gates
 
@@ -57,6 +56,16 @@ zero base/entry values and preserves the Makefile's two-phase build.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
   metadata/lookup prototype (see [`docs/ISSUE196_DIRECT_XB.md`](../docs/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
+- **`extract_xb.py <xbdata-dir>`** — batch XB extractor with no third-party dependency
+  (see [`docs/SETUP.md`](../docs/SETUP.md)). The whole pipeline is repository-owned:
+  `xb_probe.py` parses and decodes each member — including the nested `DEFLATE → LZS`
+  layer — under the budget contract at the top of the module, and `extract_xb.py`
+  normalizes each member name once and writes it at that same identity, so the validated
+  path and the written path are the same on every host. Archives are staged and promoted
+  only on full success, the produced tree is re-verified for reparse points, whole-file
+  reads are size-gated, destinations and generated files are not replaced without
+  `--overwrite`, and both worker count and in-flight task count are bounded. Synthetic
+  tests live in `test_extract_xb_security.py` and `test_extract_xb_gim.py`.
 
 Run the generator regression suite without game inputs:
 

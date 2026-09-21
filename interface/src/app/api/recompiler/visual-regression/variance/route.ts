@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync, existsSync } from "node:fs";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError } from "@/lib/recompiler/runner";
 import { parseP6Ppm, PpmFormatError } from "@/lib/recompiler/ppm.mjs";
 import path from "node:path";
 import sharp from "sharp";
@@ -165,6 +166,6 @@ export async function GET(req: NextRequest) {
     if (e instanceof PpmFormatError) {
       return NextResponse.json({ error: "Malformed PPM", detail: e.message }, { status: 400 });
     }
-    return NextResponse.json({ error: "Failed to parse spatial variance data", detail: String(e) }, { status: 500 });
+    return routeError("Failed to parse spatial variance data", e, 500);
   }
 }

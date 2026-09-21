@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Pure parser for the repo-root progress.json emitted by tools/progress_tracker.py.
  *
  * Split out of runner.ts so the #181 provenance surface (run identity, evidence

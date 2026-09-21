@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ppm.test.mjs — pure tests for the shared bounded P6 PPM loader (issue #174).
 import assert from "node:assert/strict";
 import test from "node:test";

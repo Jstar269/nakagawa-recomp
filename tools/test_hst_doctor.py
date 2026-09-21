@@ -25,6 +25,18 @@ import hst_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
 
+# Phase 3 (#196): nk_doctor_checks is the canonical module. The legacy module
+# name is an alias, so patching either import path changes the canonical
+# implementation used by the checks.
+try:
+    import nk_doctor_checks as _nk_checks  # noqa: E402
+    import nk_doctor_core as _nk_core  # noqa: E402
+    _CHECKS_MODULE = _nk_checks  # canonical target for mock.patch.object
+except ImportError:
+    _nk_checks = None
+    _nk_core = None
+    _CHECKS_MODULE = hst_doctor_checks  # fallback if nk_* not yet present
+
 
 class ElfValidationTests(unittest.TestCase):
     def test_valid_mips_elf(self) -> None:
@@ -100,6 +112,105 @@ class PrivateInputTests(unittest.TestCase):
             hst_doctor.check_private_inputs(report, need_iso=False, need_assets=True)
             asset = [result for result in report.results if result.code == "INPUT_XB_DATA"][-1]
             self.assertEqual(asset.status, "FAIL")
+
+    def test_expected_disc_id_is_retired_from_doctor_core(self) -> None:
+        self.assertFalse(
+            hasattr(hst_doctor_core, "EXPECTED_DISC_ID"),
+            "EXPECTED_DISC_ID must be retired from hst_doctor_core; disc identity is manifest-owned",
+        )
+
+    def test_check_private_inputs_without_manifest_skips_disc_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "INFO")
+            self.assertIn("No title manifest with disc ID supplied", disc_results[0].summary)
+
+    def test_check_private_inputs_with_explicit_disc_id_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, expected_disc_id="UCUS98701")
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+            self.assertIn("UCUS98701", disc_results[0].summary)
+
+    def test_check_private_inputs_with_explicit_disc_id_mismatch_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, expected_disc_id="OTHER9999")
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "WARN")
+            self.assertIn("OTHER9999", disc_results[0].summary)
+
+    def test_check_private_inputs_with_title_manifest_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_file = root / "title.json"
+            manifest_file.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "id": "mygame-v1",
+                    "kind": "retail",
+                    "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"},
+                }),
+                encoding="utf-8",
+            )
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, title_manifest=manifest_file)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+
+    def test_check_private_inputs_with_title_manifest_dict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_dict = {
+                "schema_version": 1,
+                "id": "custom-v1",
+                "kind": "retail",
+                "disc": {"id": "UCUS98701"},
+            }
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor.check_private_inputs(report, need_iso=True, need_assets=False, title_manifest=manifest_dict)
+            disc_results = [r for r in report.results if r.code == "INPUT_DISC_ID"]
+            self.assertEqual(len(disc_results), 1)
+            self.assertEqual(disc_results[0].status, "PASS")
+
+    def test_doctor_cli_title_manifest_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_valid_inputs(root)
+            manifest_file = root / "title.json"
+            manifest_file.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "id": "mygame-v1",
+                    "kind": "retail",
+                    "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"},
+                }),
+                encoding="utf-8",
+            )
+            code = hst_doctor.main(["--root", str(root), "--scope", "inputs", "--title-manifest", str(manifest_file)])
+            self.assertEqual(code, 0)
+
+    def test_doctor_cli_missing_title_manifest_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "does_not_exist.json"
+            code = hst_doctor.main(["--root", str(root), "--scope", "inputs", "--title-manifest", str(missing)])
+            self.assertEqual(code, 1)
 
 
 class RepositoryContractTests(unittest.TestCase):
@@ -251,28 +362,110 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["scope"], "repo")
             self.assertEqual(payload["counts"]["FAIL"], 0)
 
+    def test_legacy_json_keeps_the_historical_tool_identifier(self) -> None:
+        report = hst_doctor.Report(Path.cwd(), "repo")
+        payload = json.loads(hst_doctor.render_json(report, False))
+        self.assertEqual(payload["tool"], "hst_doctor")
 
-class EnvironmentContractTests(unittest.TestCase):
-    def test_powerShell_accepts_current_core_line(self) -> None:
-        with mock.patch.object(
-            hst_doctor_checks,
-            "_probe_powershell",
-            return_value=(Path("pwsh"), "Core", "7.6.4", None),
-        ):
+    def test_legacy_checks_module_is_a_patchable_alias(self) -> None:
+        self.assertIs(hst_doctor_checks, _CHECKS_MODULE)
+        with mock.patch.object(hst_doctor_checks, "_probe_powershell", return_value=(None, None, None, "patched")):
             report = hst_doctor.Report(Path.cwd(), "build")
             hst_doctor_checks.check_powershell(report)
         result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
-        self.assertEqual(result.status, "PASS")
+        self.assertIn("patched", result.detail or "")
+
+    def test_canonical_manifest_does_not_probe_hst_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "schema_version": 1,
+                "id": "widget-v1",
+                "display_name": "Widget",
+                "kind": "synthetic",
+                "game_name": "widget",
+                "filesystem": {"data_root": "fixtures/widget/data"},
+                "executable": {"bss_metadata_source": "none"},
+                "modules": [],
+            }
+            context = hst_doctor_checks.title_diagnostic_context(root, manifest)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(
+                report,
+                need_iso=True,
+                need_assets=True,
+                title_manifest=manifest,
+                title_context=context,
+            )
+            failed_codes = {result.code for result in report.results if result.status == "FAIL"}
+            self.assertEqual(failed_codes, {"INPUT_EBOOT_ELF", "INPUT_XB_DATA"})
+            self.assertNotIn("INPUT_EBOOT_BIN", failed_codes)
+            self.assertNotIn("INPUT_PRX_LIBFONT_PRX", failed_codes)
+            self.assertNotIn("INPUT_ISO", failed_codes)
+            data_result = next(result for result in report.results if result.code == "INPUT_XB_DATA")
+            self.assertEqual(data_result.path, "fixtures/widget/data")
+
+
+class EnvironmentContractTests(unittest.TestCase):
+    def test_powerShell_accepts_current_core_line(self) -> None:
+        for version in ("7.6.4", "7.6.5", "7.7.0"):
+            with self.subTest(version=version), mock.patch.object(
+                _CHECKS_MODULE,
+                "_probe_powershell",
+                return_value=(Path("pwsh"), "Core", version, None),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                _CHECKS_MODULE.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "PASS")
+
+    def test_powerShell_accepts_future_major_core(self) -> None:
+        for version in ("8.0.0", "8.1.2", "9.0.0"):
+            with self.subTest(version=version), mock.patch.object(
+                _CHECKS_MODULE,
+                "_probe_powershell",
+                return_value=(Path("pwsh"), "Core", version, None),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                _CHECKS_MODULE.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "PASS")
 
     def test_powerShell_rejects_windows_powerShell_or_old_core(self) -> None:
-        for edition, version in (("Desktop", "5.1.22621"), ("Core", "7.5.3")):
+        for edition, version in (
+            ("Desktop", "5.1.22621"),
+            ("Desktop", "8.0.0"),
+            ("Core", "7.5.3"),
+            ("Core", "7.5.10"),
+            ("Core", "7.4.19"),
+            ("Core", "6.2.0"),
+        ):
             with self.subTest(edition=edition, version=version), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(Path("pwsh"), edition, version, None),
             ):
                 report = hst_doctor.Report(Path.cwd(), "build")
-                hst_doctor_checks.check_powershell(report)
+                _CHECKS_MODULE.check_powershell(report)
+                result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
+                self.assertEqual(result.status, "FAIL")
+
+    def test_powerShell_fails_on_malformed_or_unreadable_probe(self) -> None:
+        cases = (
+            (Path("pwsh"), "Core", "malformed", None),
+            (Path("pwsh"), "Core", "7", None),
+            (Path("pwsh"), "Core", "-1.6", None),
+            (None, None, None, "pwsh was not found on PATH"),
+            (Path("pwsh"), None, None, "exit 1"),
+        )
+        for executable, edition, version, error in cases:
+            with self.subTest(executable=executable, edition=edition, version=version, error=error), mock.patch.object(
+                _CHECKS_MODULE,
+                "_probe_powershell",
+                return_value=(executable, edition, version, error),
+            ):
+                report = hst_doctor.Report(Path.cwd(), "build")
+                _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "FAIL")
 
@@ -286,21 +479,26 @@ class EnvironmentContractTests(unittest.TestCase):
         powershell_path = Path("pwsh")
         for build, product_type, expected in cases:
             with self.subTest(build=build, product_type=product_type), mock.patch.object(
-                hst_doctor_checks.os, "name", "nt"
+                _CHECKS_MODULE.os, "name", "nt"
             ), mock.patch.object(
-                hst_doctor_checks.sys,
+                _CHECKS_MODULE.sys,
                 "getwindowsversion",
                 return_value=type(
-                    "WindowsVersion", (), {"build": build, "product_type": product_type}
-                )(),
+                    "WindowsVersion", (tuple,), {
+                        "build": build,
+                        "product_type": product_type,
+                        "platform_version": (10, 0, build),
+                        "service_pack_major": 0,
+                    }
+                )((10, 0, build, 2, "")),
                 create=True,
             ), mock.patch.object(
-                hst_doctor_checks,
+                _CHECKS_MODULE,
                 "_probe_powershell",
                 return_value=(powershell_path, "Core", "7.6.4", None),
             ):
                 report = hst_doctor.Report(report_root, "build")
-                hst_doctor_checks.check_platform(report)
+                _CHECKS_MODULE.check_platform(report)
                 result = next(item for item in report.results if item.code == "HOST_WINDOWS_11")
                 self.assertEqual(result.status, expected)
 
@@ -319,8 +517,8 @@ class EnvironmentContractTests(unittest.TestCase):
             os.utime(source, (newer, newer))
 
             report = hst_doctor.Report(root, "build")
-            with mock.patch.object(hst_doctor_checks, "_find_executable") as find_executable:
-                hst_doctor_checks.check_shader_provenance(report, root, None)
+            with mock.patch.object(_CHECKS_MODULE, "_find_executable") as find_executable:
+                _CHECKS_MODULE.check_shader_provenance(report, root, None)
             result = next(item for item in report.results if item.code == "GLSLC")
             self.assertEqual(result.status, "INFO")
             self.assertEqual(
@@ -342,8 +540,8 @@ class EnvironmentContractTests(unittest.TestCase):
             source.write_text(source.read_text(encoding="utf-8") + "\n// stale test\n", encoding="utf-8")
 
             report = hst_doctor.Report(root, "build")
-            with mock.patch.object(hst_doctor_checks, "_find_executable", return_value=None):
-                hst_doctor_checks.check_shader_provenance(report, root, None)
+            with mock.patch.object(_CHECKS_MODULE, "_find_executable", return_value=None):
+                _CHECKS_MODULE.check_shader_provenance(report, root, None)
             provenance = next(item for item in report.results if item.code == "SHADER_PROVENANCE")
             glslc = next(item for item in report.results if item.code == "GLSLC")
             self.assertEqual(provenance.status, "FAIL")
@@ -353,16 +551,23 @@ class EnvironmentContractTests(unittest.TestCase):
 
 class SimpleFrontEndTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.frontend = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        # Phase 3 (#196): nk.ps1 is the canonical frontend; hst.ps1 is a forwarding wrapper.
+        nk_frontend = ROOT / "nk.ps1"
+        hst_frontend = ROOT / "hst.ps1"
+        self.frontend = nk_frontend.read_text(encoding="utf-8-sig") if nk_frontend.exists() else hst_frontend.read_text(encoding="utf-8-sig")
         self.manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8-sig")
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
     def test_frontend_exposes_small_supported_surface(self) -> None:
         for script in (
+            ROOT / "nk.ps1",
             ROOT / "hst.ps1",
             ROOT / "hst_manager.ps1",
+            ROOT / "nk_manager.ps1",
             ROOT / "copy_build_assets.ps1",
             ROOT / "tools" / "hst_run_support.ps1",
+            ROOT / "tools" / "hst_safety.ps1",
+            ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
@@ -372,8 +577,16 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertNotIn("powershell -NoProfile", self.makefile)
         for action in ("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager"):
             self.assertIn(f'"{action}"', self.frontend)
+        self.assertIn('$TitleManifest', self.frontend)
         self.assertNotIn('VisualOracle', self.frontend)
         self.assertNotIn('DiffFunc', self.frontend)
+
+    def test_legacy_frontend_preserves_hst_manifest_and_name_when_available(self) -> None:
+        legacy = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn('$HstManifest = Join-Path $PSScriptRoot "assets\\titles\\hst-ucus98701.json"', legacy)
+        self.assertIn('$hstManifestSelected = $true', legacy)
+        self.assertIn('if ($hstManifestSelected -and -not $GameName) { $GameName = "hst" }', legacy)
+        self.assertIn('$forwardArgs["GameName"] = $GameName', legacy)
 
     def test_play_validates_before_and_after_build(self) -> None:
         play = self.frontend[self.frontend.index('"Play" {') : self.frontend.index('"Verify" {')]
@@ -399,6 +612,43 @@ class SimpleFrontEndTests(unittest.TestCase):
             self.assertLess(block.index('ManagerAction -ManagerAction'), block.index('DoctorScope "products"'))
         self.assertNotIn('Invoke-ManagerBuild', self.frontend)
         self.assertNotIn('.pre-hst-launcher', self.frontend)
+
+    def test_all_tracked_powershell_scripts_declare_consistent_requires_version(self) -> None:
+        expected_scripts = {
+            ROOT / "copy_build_assets.ps1",
+            ROOT / "hst.ps1",
+            ROOT / "hst_manager.ps1",
+            ROOT / "nk.ps1",
+            ROOT / "nk_manager.ps1",
+            ROOT / "tools" / "hst_run_support.ps1",
+            ROOT / "tools" / "hst_safety.ps1",
+            ROOT / "tools" / "nk_safety.ps1",
+            ROOT / "tools" / "test_manager_safety.ps1",
+            ROOT / "tools" / "test_visual_oracle.ps1",
+            ROOT / "tools" / "title_manager_plan.ps1",
+            ROOT / "tools" / "vulkan_sdk.ps1",
+        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked PowerShell policy surface")
+        try:
+            listing = subprocess.run(
+                ["git", "-C", str(ROOT), "ls-files", "-z", "--", ":(icase)*.ps1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            self.fail(f"git ls-files failed to enumerate tracked PowerShell scripts: {exc}")
+
+        discovered_scripts = {ROOT / entry for entry in listing.split("\0") if entry}
+        self.assertEqual(discovered_scripts, expected_scripts)
+        for script in discovered_scripts:
+            content = script.read_text(encoding="utf-8-sig")
+            self.assertIn(
+                "#requires -Version 7.6",
+                content,
+                f"{script.relative_to(ROOT)} does not contain expected '#requires -Version 7.6' header",
+            )
 
 
 

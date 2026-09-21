@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextResponse } from "next/server";
-import { findRepoRoot } from "@/lib/recompiler/runner";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { findRepoRoot, routeError, safeWalkDirectory } from "@/lib/recompiler/runner";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export const runtime = "nodejs";
@@ -21,22 +22,23 @@ interface InventoryMap {
   other: AssetFile[];
 }
 
-let cachedTree: unknown[] | null = null;
+interface ArchiveNode {
+  name: string;
+  path: string;
+  type: string;
+  texturesCount: number;
+  soundsCount: number;
+  sceneGraphsCount: number;
+  otherCount: number;
+  textures: AssetFile[];
+  sounds: AssetFile[];
+  sceneGraphs: AssetFile[];
+  other: AssetFile[];
+}
+
+let cachedTree: ArchiveNode[] | null = null;
 let cachedAt = 0;
 const CACHE_MS = 5 * 60 * 1000;
-
-function walkDir(dir: string, fileList: string[] = []): string[] {
-  const files = readdirSync(dir);
-  for (const file of files) {
-    const filePath = path.join(dir, file);
-    if (statSync(filePath).isDirectory()) {
-      walkDir(filePath, fileList);
-    } else if (file === "inventory_map.json") {
-      fileList.push(filePath);
-    }
-  }
-  return fileList;
-}
 
 export async function GET() {
   try {
@@ -54,8 +56,8 @@ export async function GET() {
       return cachedResponse;
     }
 
-    const inventoryFiles = walkDir(extractedDir);
-    const treeData: any[] = [];
+    const inventoryFiles = safeWalkDirectory(extractedDir, { targetFileName: "inventory_map.json" });
+    const treeData: ArchiveNode[] = [];
 
     for (const invPath of inventoryFiles) {
       const invDir = path.dirname(invPath);
@@ -78,7 +80,7 @@ export async function GET() {
           sceneGraphs: raw.scene_graphs ?? [],
           other: raw.other ?? [],
         });
-      } catch (err) {
+      } catch {
         // Skip bad json
       }
     }
@@ -93,6 +95,6 @@ export async function GET() {
     response.headers.set("X-Content-Type-Options", "nosniff");
     return response;
   } catch (e) {
-    return NextResponse.json({ error: "assets-fetch-failed", detail: String(e) }, { status: 500 });
+    return routeError("assets-fetch-failed", e, 500);
   }
 }

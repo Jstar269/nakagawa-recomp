@@ -66,12 +66,10 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/IMPORT_AUDIT.md",
     "docs/NEXT_SESSION.md",
     "docs/PHASE5_HARDWARE_EVIDENCE.md",
-    "docs/provenance/INDEPENDENCE_BACKLOG.md",
     "docs/PSP_INTR_WAITS_MATRIX.md",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
     "docs/TOOLCHAIN_BASELINE_2026-08.md",
-    "docs/OSPS_BASELINE.md",
     "docs/ISSUE196_DIRECT_XB.md",
     "docs/provenance/MODIFIED_FILE_NOTICES.md",
 }

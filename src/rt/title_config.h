@@ -106,6 +106,11 @@ typedef struct SrTitleRuntimeConfig {
 /* The build's configuration. Never NULL; a generic build reports valid == 0. */
 const SrTitleRuntimeConfig *sr_title_config(void);
 
+/* HST-profile diagnostic opt-in. Returns 1 only when the validated build profile
+ * permits the retained title-scoped diagnostics and SR_HLE_DIAGNOSTICS is present;
+ * generic and public fixture profiles always return 0. */
+int sr_title_config_diagnostics_enabled(void);
+
 /* Configured fallback entry, or 0 when the build has none. 0 is not a usable guest
  * entry here, and the manifest validator rejects a configured zero, so callers can
  * treat 0 as "unconfigured" without a second predicate. */
@@ -152,6 +157,14 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
 
 /* Single-address compat flags. Returns 1 when configured. */
 int sr_title_config_libfont_ready_flag_addr(uint32_t *out);
+/* Guest PRX module declared by the title manifest for this guest load path
+ * (case-insensitive exact match, e.g. "disc0:/PSP_GAME/USRDIR/module/psmf.prx"):
+ * its module file name and the base both the recompiler and runtime use. 0 = none. */
+int sr_title_config_guest_module(const char *guest_path, const char **name_out, uint32_t *base_out);
+unsigned sr_title_config_guest_module_count(void);
+int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
+                                    uint32_t *base_out);
+
 int sr_title_config_frame_latch_addr(uint32_t *out);
 
 /* Expected extracted-data file-count census. Returns 0 when unconfigured

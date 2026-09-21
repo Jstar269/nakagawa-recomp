@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import ctypes
 import hashlib
+import re
 
 # Define standard PE image base for Mingw-w64 (64-bit)
 DEFAULT_IMAGE_BASE = 0x140000000
@@ -60,6 +61,22 @@ SR_VRAM_BASE = 0x04000000
 SR_VRAM_SIZE = 0x00200000         # 2 MiB VRAM/eDRAM at 0x04000000
 SR_SCRATCHPAD_BASE = 0x00010000
 SR_SCRATCHPAD_SIZE = 0x00001000   # 4 KiB scratchpad
+
+# CpuState ABI v2 offsets from src/rt/recomp.h.  Keep the debugger's raw process
+# view in lockstep with the runtime rather than silently reading the old 864-byte
+# status-only tail.
+CPU_STATE_ABI_VERSION = 2
+CPU_STATE_SIZE = 996
+CRASH_DUMP_MAGIC = b"SRCD"
+CRASH_DUMP_FORMAT = 1
+CRASH_DUMP_HEADER_SIZE = 24
+ABI_SYMBOL = "sr_cpustate_abi_version"
+CPU_STATE_COP0_OFFSET = 852
+CPU_STATE_COP0_COUNT = 32
+CPU_STATE_NEXT_PC_OFFSET = 980
+CPU_STATE_DELAY_SLOT_OFFSET = 984
+CPU_STATE_FLOW_KIND_OFFSET = 988
+CPU_STATE_FLOW_TARGET_OFFSET = 992
 
 SUPPORTED_REGIONS = ("ram", "vram", "scratchpad")
 
@@ -289,6 +306,39 @@ def find_repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def build_artifact_dir(exe_path=None):
+    """Directory the attached runtime writes its diagnostic artifacts into.
+
+    The Makefile links the executable into BUILD_DIR and compiles that same
+    BUILD_DIR in as SR_BUILD_DIR, so the executable's own parent directory is
+    the artifact directory in both supported shapes:
+
+      * default relative BUILD_DIR (build/<game>) launched from the repository
+        root, where the runtime's relative fopen resolves to exactly that; and
+      * an overridden absolute BUILD_DIR, where the compiled path is absolute
+        and the working directory is irrelevant.
+
+    Use the executable's parent verbatim. Reducing it to a name and rebuilding
+    it under <repo>/build would invent a directory for any custom root, and
+    deriving it from ambient GAME_NAME or SR_BUILD_DIR would follow an unrelated
+    build when the shell inherited another one.
+
+    Known limitation: a --pid attach to a runtime that was started from some
+    other working directory *and* built with a relative BUILD_DIR writes its
+    artifacts under that working directory instead, and this helper will not
+    find them. Resolving that needs the process working directory, which is not
+    available here; the runtime would have to resolve SR_BUILD_DIR to an
+    absolute path at startup for it to be knowable.
+    """
+    if exe_path:
+        return os.path.dirname(os.path.abspath(exe_path))
+    explicit = os.environ.get("SR_BUILD_DIR")
+    if explicit:
+        return explicit if os.path.isabs(explicit) else os.path.join(find_repo_root(), explicit)
+    game = os.environ.get("GAME_NAME") or "hst"
+    return os.path.join(find_repo_root(), "build", game)
+
+
 def get_symbol_rvas(exe_path):
     """Resolve g_mem/s_cpu RVAs from the attached executable via nm.
 
@@ -333,11 +383,11 @@ def get_symbol_rvas(exe_path):
         for line in res.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 3:
-                addr_str, sym_type, name = parts[0], parts[1], parts[2]
-                if name in ("g_mem", "s_cpu"):
+                addr_str, _sym_type, name = parts[0], parts[1], parts[2]
+                if name in ("g_mem", "s_cpu", ABI_SYMBOL):
                     addr = int(addr_str, 16)
                     found[name] = addr - DEFAULT_IMAGE_BASE
-        for name in ("g_mem", "s_cpu"):
+        for name in ("g_mem", "s_cpu", ABI_SYMBOL):
             if name in found:
                 rvas[name] = found[name]
         if "g_mem" in found and "s_cpu" in found:
@@ -353,12 +403,29 @@ def get_mock_state_path():
     return os.path.join(repo_root, "build", "hst", "mock_debug_state.json")
 
 
+def _migrate_mock_state(mock):
+    """Bring a mock file written before CpuState ABI v2 up to the v2 field set.
+
+    Anything that is not a well-formed mock document raises, so the caller
+    falls back to a fresh state instead of simulating from a broken one.
+    """
+    cpu = mock["cpu"]
+    cop0 = list(cpu.get("cop0") or [])
+    if len(cop0) > CPU_STATE_COP0_COUNT:
+        raise ValueError("mock cop0 has too many entries")
+    cpu["cop0"] = cop0 + [0] * (CPU_STATE_COP0_COUNT - len(cop0))
+    cpu.setdefault("next_pc", (int(cpu.get("pc", 0)) + 4) & 0xFFFFFFFF)
+    for field in ("in_delay_slot", "flow_kind", "flow_target"):
+        cpu.setdefault(field, 0)
+    return mock
+
+
 def load_mock_state():
     path = get_mock_state_path()
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return _migrate_mock_state(json.load(f))
         except Exception:
             pass
 
@@ -375,9 +442,11 @@ def load_mock_state():
             "fpcond": 0,
             "v": [0.0] * 128,
             "vfpuCtrl": [0] * 16,
-            "status": 0,
+            "cop0": [0] * CPU_STATE_COP0_COUNT,
             "next_pc": 0x08804004,
-            "in_delay_slot": 0
+            "in_delay_slot": 0,
+            "flow_kind": 0,
+            "flow_target": 0,
         },
         "memory": {}
     }
@@ -412,6 +481,17 @@ MUTATING_ACTIONS = frozenset(("pause", "resume", "write_mem", "write_cpu"))
 
 
 class MemoryDebugger:
+    def attached_exe_path(self):
+        """Path of the executable this session is attached to, or None.
+
+        None when simulated or offline, which is exactly when the caller should
+        fall back to the environment rather than guess at a build directory.
+        """
+        info = getattr(self, "proc_info", None)
+        if not info:
+            return None
+        return info.get("exe_path") or None
+
     def __init__(self, simulate=False, mutate=False, pid=None):
         self.mutate_enabled = bool(mutate)
         self.is_simulated = bool(simulate)
@@ -588,8 +668,9 @@ class MemoryDebugger:
             kernel32.CloseHandle(h_process)
 
         status = "running"
-        status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
-        exit_file = os.path.join(find_repo_root(), "build", "hst", "exited.flag")
+        artifacts = build_artifact_dir(self.attached_exe_path())
+        status_file = os.path.join(artifacts, "paused.flag")
+        exit_file = os.path.join(artifacts, "exited.flag")
         if os.path.exists(exit_file):
             status = "exited"
         elif os.path.exists(status_file):
@@ -625,7 +706,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtSuspendProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(self.attached_exe_path()), "paused.flag")
             with open(status_file, "w") as f:
                 f.write("1")
             return {"success": True, "status": "paused", "mode": "process"}
@@ -647,7 +728,7 @@ class MemoryDebugger:
         if h_process:
             ntdll.NtResumeProcess(h_process)
             kernel32.CloseHandle(h_process)
-            status_file = os.path.join(find_repo_root(), "build", "hst", "paused.flag")
+            status_file = os.path.join(build_artifact_dir(self.attached_exe_path()), "paused.flag")
             if os.path.exists(status_file):
                 os.remove(status_file)
             return {"success": True, "status": "running", "mode": "process"}
@@ -709,6 +790,25 @@ class MemoryDebugger:
         if g_mem_val == 0:
             return None
         return g_mem_val
+
+    def _cpu_abi_check(self):
+        """Return None when the attached image reports CpuState ABI v2, else a
+        refusal reason.  Offsets past the v1 layout are only meaningful for a
+        v2 image, and image identity alone does not prove which ABI it has."""
+        if self.is_simulated:
+            return None
+        rva = self.rvas.get(ABI_SYMBOL)
+        if self.rva_provenance != "nm" or rva is None or self.base_address == 0:
+            return ("attached image does not export %s; refusing CpuState access "
+                    "(pre-v2 build or unresolved symbols)" % ABI_SYMBOL)
+        raw = self._read_process_bytes(self.base_address + rva, 4)
+        if not raw:
+            return "could not read %s from the attached process" % ABI_SYMBOL
+        version = int.from_bytes(raw, byteorder='little')
+        if version != CPU_STATE_ABI_VERSION:
+            return ("attached image reports CpuState ABI %d, this debugger "
+                    "implements ABI %d" % (version, CPU_STATE_ABI_VERSION))
+        return None
 
     def _resolve_cpu_state_addr(self):
         if self.is_simulated:
@@ -832,12 +932,15 @@ class MemoryDebugger:
             assert self.mock is not None
             return {"success": True, "cpu": self.mock["cpu"], "mode": "simulation"}
 
+        abi_error = self._cpu_abi_check()
+        if abi_error:
+            return {"success": False, "error": abi_error}
         s_cpu_val = self._resolve_cpu_state_addr()
         if not s_cpu_val:
             return {"success": False,
                     "error": "s_cpu pointer is NULL or process uninitialized"}
 
-        cpu_bytes = self._read_process_bytes(s_cpu_val, 864)
+        cpu_bytes = self._read_process_bytes(s_cpu_val, CPU_STATE_SIZE)
         if not cpu_bytes:
             return {"success": False, "error": "Failed to read CpuState structure"}
 
@@ -857,9 +960,29 @@ class MemoryDebugger:
                     for i in range(128)]
         cpu["vfpuCtrl"] = [int.from_bytes(cpu_bytes[788 + i * 4:788 + (i + 1) * 4],
                                           byteorder='little') for i in range(16)]
-        cpu["status"] = int.from_bytes(cpu_bytes[852:856], byteorder='little')
-        cpu["next_pc"] = int.from_bytes(cpu_bytes[856:860], byteorder='little')
-        cpu["in_delay_slot"] = int.from_bytes(cpu_bytes[860:864], byteorder='little')
+        cpu["cop0"] = [
+            int.from_bytes(
+                cpu_bytes[CPU_STATE_COP0_OFFSET + i * 4:CPU_STATE_COP0_OFFSET + (i + 1) * 4],
+                byteorder='little',
+            )
+            for i in range(CPU_STATE_COP0_COUNT)
+        ]
+        cpu["next_pc"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_NEXT_PC_OFFSET:CPU_STATE_NEXT_PC_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["in_delay_slot"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_DELAY_SLOT_OFFSET:CPU_STATE_DELAY_SLOT_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["flow_kind"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_FLOW_KIND_OFFSET:CPU_STATE_FLOW_KIND_OFFSET + 4],
+            byteorder='little',
+        )
+        cpu["flow_target"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_FLOW_TARGET_OFFSET:CPU_STATE_FLOW_TARGET_OFFSET + 4],
+            byteorder='little',
+        )
 
         return {"success": True, "cpu": cpu, "mode": "process"}
 
@@ -881,12 +1004,17 @@ class MemoryDebugger:
                 self.mock["cpu"]["f"][int(field[1:])] = float(val)
             elif field.startswith("v") and field[1:].isdigit():
                 self.mock["cpu"]["v"][int(field[1:])] = float(val)
+            elif field.startswith("cop0[") and field.endswith("]"):
+                self.mock["cpu"]["cop0"][int(field[5:-1])] = val
             else:
                 self.mock["cpu"][field] = val
             save_mock_state(self.mock)
             return {"success": True, "field": field,
                     "value_written": val, "mode": "simulation"}
 
+        abi_error = self._cpu_abi_check()
+        if abi_error:
+            return {"success": False, "error": abi_error}
         s_cpu_val = self._resolve_cpu_state_addr()
         if not s_cpu_val:
             return {"success": False,
@@ -907,16 +1035,16 @@ class MemoryDebugger:
                 "error": "failed to write register at host 0x%016x" % target_addr}
 
     def trace_exit(self):
-        dump_path = os.path.join(find_repo_root(), "build", "hst", "crash_dump.bin")
+        dump_path = os.path.join(build_artifact_dir(self.attached_exe_path()), "crash_dump.bin")
         if not os.path.exists(dump_path):
             return {"error": "crash_dump.bin not found. Did the game exit?"}
 
         with open(dump_path, "rb") as f:
-            cpu_bytes = f.read(864)
-            stack_bytes = f.read()
-
-        if len(cpu_bytes) < 864:
-            return {"error": "Invalid crash_dump.bin size"}
+            blob = f.read()
+        parsed, err = parse_crash_dump(blob)
+        if err:
+            return {"error": err}
+        cpu_bytes, stack_base, stack_bytes = parsed
 
         cpu = {}
         cpu["r"] = [int.from_bytes(cpu_bytes[i * 4:(i + 1) * 4], byteorder='little')
@@ -931,8 +1059,8 @@ class MemoryDebugger:
         frames.append({"pc": "0x%08x" % pc, "ra": "0x%08x" % ra,
                        "sp": "0x%08x" % sp, "note": "Current state"})
 
-        # Heuristic stack scan
-        sp_base = sp & 0xFFFF0000
+        # Heuristic stack scan over the snapshot the runtime recorded.
+        sp_base = stack_base
         offset = sp - sp_base
         if offset >= 0 and offset < len(stack_bytes):
             for i in range(offset, len(stack_bytes) - 3, 4):
@@ -949,6 +1077,30 @@ class MemoryDebugger:
                         break
 
         return {"success": True, "frames": frames}
+
+
+def parse_crash_dump(blob):
+    """Split a crash_dump.bin into (cpu_bytes, stack_base, stack_bytes).
+
+    Returns (parsed, None) or (None, error).  Dumps without the versioned
+    header (written before CpuState ABI v2) are rejected rather than decoded
+    with the wrong layout.
+    """
+    if len(blob) < CRASH_DUMP_HEADER_SIZE or blob[:4] != CRASH_DUMP_MAGIC:
+        return None, ("crash_dump.bin has no versioned header; it was written by "
+                      "a pre-ABI-v2 build and cannot be decoded")
+    fmt, abi, cpu_size, stack_base, stack_len = (
+        int.from_bytes(blob[4 + 4 * i:8 + 4 * i], byteorder='little') for i in range(5))
+    if fmt != CRASH_DUMP_FORMAT:
+        return None, "unsupported crash_dump.bin format %d" % fmt
+    if abi != CPU_STATE_ABI_VERSION or cpu_size != CPU_STATE_SIZE:
+        return None, ("crash_dump.bin was written for CpuState ABI %d (%d bytes); "
+                      "this debugger implements ABI %d (%d bytes)"
+                      % (abi, cpu_size, CPU_STATE_ABI_VERSION, CPU_STATE_SIZE))
+    body = blob[CRASH_DUMP_HEADER_SIZE:]
+    if len(body) != cpu_size + stack_len:
+        return None, "crash_dump.bin size does not match its header"
+    return (body[:cpu_size], stack_base, body[cpu_size:]), None
 
 
 def parse_uint32_arg(text):
@@ -984,12 +1136,19 @@ def _cpu_field_offset(field):
         return 268, False
     if field == "fpcond":
         return 272, False
-    if field == "status":
-        return 852, False
+    cop0_match = re.fullmatch(r"cop0\[(\d+)\]", field)
+    if cop0_match:
+        cop0_idx = int(cop0_match.group(1))
+        if 0 <= cop0_idx < CPU_STATE_COP0_COUNT:
+            return CPU_STATE_COP0_OFFSET + cop0_idx * 4, False
     if field == "next_pc":
-        return 856, False
+        return CPU_STATE_NEXT_PC_OFFSET, False
     if field == "in_delay_slot":
-        return 860, False
+        return CPU_STATE_DELAY_SLOT_OFFSET, False
+    if field == "flow_kind":
+        return CPU_STATE_FLOW_KIND_OFFSET, False
+    if field == "flow_target":
+        return CPU_STATE_FLOW_TARGET_OFFSET, False
     if field.startswith("f") and field[1:].isdigit():
         f_idx = int(field[1:])
         if 0 <= f_idx < 32:

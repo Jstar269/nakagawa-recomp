@@ -18,7 +18,6 @@ Usage:
 
 import argparse
 from dataclasses import dataclass
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -326,7 +325,7 @@ def _patch_pre_commit_for_public_scope(export_dir: Path) -> None:
         else:
             lines.append(line)
     if changed:
-        pre_commit_path.write_text("".join(lines), encoding="utf-8")
+        pre_commit_path.write_text("".join(lines), encoding="utf-8", newline="\n")
 
 
 def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = False, dry_run: bool = False) -> bool:
@@ -373,9 +372,6 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
             stdout=subprocess.PIPE,
             check=True,
         )
-        source_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip()
         # Record the tree, not just the commit. A commit id is only resolvable in
         # the repository that holds it -- the export previously pinned a commit
         # that exists solely in the private archive, which no public reader could

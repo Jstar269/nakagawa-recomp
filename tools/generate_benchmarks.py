@@ -352,14 +352,14 @@ def generate_pdf_report(runs, latencies, output_path):
 
     # Draw headers
     draw_rect(40, table_y - 18, 516, 18, fill=(0.9, 0.92, 0.9), stroke=(0.8, 0.8, 0.8))
-    for x, h in zip(col_x, headers):
+    for x, h in zip(col_x, headers, strict=True):
         draw_text(h, x + 4, table_y - 13, font="F2", size=8, color=(0.2, 0.2, 0.2))
 
     table_y -= 18
     # Render last 8 runs in table
     table_runs = runs[-8:]
     table_lats = latencies[-8:]
-    for idx, (r, lt) in enumerate(zip(table_runs, table_lats)):
+    for idx, (r, lt) in enumerate(zip(table_runs, table_lats, strict=True)):
         bg = (0.98, 0.98, 0.98) if idx % 2 == 0 else (1.0, 1.0, 1.0)
         draw_rect(40, table_y - 16, 516, 16, fill=bg, stroke=(0.88, 0.88, 0.88))
 
@@ -371,7 +371,7 @@ def generate_pdf_report(runs, latencies, output_path):
         lt_str = f"{lt:.2f} us" if lt > 0 else "N/A"
 
         vals = [r_id, ts, c_rate, b_match, vr, lt_str]
-        for x, v in zip(col_x, vals):
+        for x, v in zip(col_x, vals, strict=True):
             draw_text(v, x + 4, table_y - 12, font="F1", size=8, color=(0.3, 0.3, 0.3))
         table_y -= 16
 
@@ -422,7 +422,7 @@ def generate_pdf_report(runs, latencies, output_path):
 
     # Render two side-by-side charts
     # Chart 1: Compile Rate
-    draw_trend_chart(50, "Compile Rate (%)", compile_rates := [r["completionPct"] for r in runs[-15:]])
+    draw_trend_chart(50, "Compile Rate (%)", [r["completionPct"] for r in runs[-15:]])
     # Chart 2: Byte Match
     draw_trend_chart(320, "Byte Match (%)", [r["byteCompletionPct"] * 100.0 for r in runs[-15:]])
 
@@ -533,7 +533,7 @@ def generate_html_report(runs, latencies, output_path):
         return html.escape(str(value), quote=True)
 
     rows = []
-    for r, lt in zip(runs[-15:], latencies[-15:]):
+    for r, lt in zip(runs[-15:], latencies[-15:], strict=True):
         lat_str = f"{lt:.2f} &mu;s" if lt > 0 else "N/A"
         row_html = f"""
         <tr class="border-b border-neutral-800 hover:bg-neutral-900/40 font-mono text-xs">
@@ -949,7 +949,7 @@ def generate_report(db_path, output_path, html_path=None, pdf_path=None, limit=1
         md.append("## Historical Runs Table")
         md.append("| Run ID | Timestamp | Compile Rate | Byte Match | VR Pass Rate | Avg Latency |")
         md.append("| :--- | :--- | :---: | :---: | :---: | :---: |")
-        for r, lat in zip(runs, latencies):
+        for r, lat in zip(runs, latencies, strict=True):
             lat_str = f"{lat:.2f} μs" if lat > 0 else "N/A"
             # IDs are validated [A-Za-z0-9_-] by validate_run_row(); timestamps
             # may contain Markdown-significant characters, so they are escaped.

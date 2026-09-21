@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import React, { useState, useEffect } from "react";
 import {
@@ -79,7 +80,7 @@ export function TestLabPanel() {
       if (storedAlerts) {
         try {
           return JSON.parse(storedAlerts);
-        } catch (e) {
+        } catch {
           localStorage.removeItem("hst_watchpoint_alerts");
         }
       }
@@ -94,11 +95,11 @@ export function TestLabPanel() {
   const eventSourceRef = React.useRef<EventSource | null>(null);
 
   // Helper functions declared before useEffect to satisfy hoisting and lint rules
-  const fetchWatchpoints = React.useCallback(async () => {
+  const fetchWatchpoints = React.useCallback(async (signal: AbortSignal) => {
     try {
-      const r = await fetch("/api/recompiler/watchpoints");
+      const r = await fetch("/api/recompiler/watchpoints", { signal });
       const d = await r.json();
-      if (d.success) setWatchpoints(d.watchpoints);
+      if (!signal.aborted && d.success) setWatchpoints(d.watchpoints);
     } catch {}
   }, []);
 
@@ -116,7 +117,7 @@ export function TestLabPanel() {
         if (l.startsWith("FUZZ_PROGRESS")) {
           const match = l.match(/FUZZ_PROGRESS case=(\d+) total=(\d+) passed=(\d+) failed=(\d+) op=(0x[0-9a-fA-F]+)/);
           if (match) {
-            const [_, caseIdx, total, passed, failed, op] = match;
+            const [, caseIdx, total, passed, failed, op] = match;
             setFuzzData(prev => {
               if (prev.some(d => d.caseIdx === parseInt(caseIdx))) return prev;
               return [
@@ -150,33 +151,37 @@ export function TestLabPanel() {
     });
   }, []);
 
-  const checkFuzzerStatus = React.useCallback(async () => {
-    try {
-      const r = await fetch("/api/recompiler/tests/fuzz");
-      const d = await r.json();
-      if (d.isRunning) {
-        setFuzzRunning(true);
-        connectFuzzStream();
-      } else if (fuzzRunning) {
-        setFuzzRunning(false);
-      }
-    } catch {}
-  }, [fuzzRunning, connectFuzzStream]);
-
-  // Load watchpoints and alerts at mount
   useEffect(() => {
-    setTimeout(() => {
-      fetchWatchpoints();
-      checkFuzzerStatus();
-    }, 0);
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void fetchWatchpoints(controller.signal); }, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
+  }, [fetchWatchpoints]);
 
-    // Poll fuzzer status while running
-    let interval: ReturnType<typeof setInterval>;
-    if (fuzzRunning) {
-      interval = setInterval(checkFuzzerStatus, 1500);
-    }
-    return () => clearInterval(interval);
-  }, [fuzzRunning, fetchWatchpoints, checkFuzzerStatus]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/recompiler/tests/fuzz", { signal });
+        const d: { isRunning: boolean } = await r.json();
+        if (signal.aborted) return;
+        setFuzzRunning(d.isRunning);
+        if (d.isRunning) connectFuzzStream();
+      } catch {}
+      if (!signal.aborted && fuzzRunning) timer = setTimeout(poll, 1500);
+    };
+    timer = setTimeout(poll, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [fuzzRunning, connectFuzzStream]);
 
   // Listen to storage events to keep watchpoint hits synchronised in real time
   useEffect(() => {
@@ -185,7 +190,7 @@ export function TestLabPanel() {
       if (storedAlerts) {
         try {
           setAlerts(JSON.parse(storedAlerts));
-        } catch (e) {}
+        } catch {}
       } else {
         setAlerts([]);
       }

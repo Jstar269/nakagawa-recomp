@@ -54,9 +54,9 @@ auto-detected Vulkan SDK/loader. The separate dashboard uses npm and Next.js.
 Run checks proportional to the change:
 
 ```powershell
-.\hst_manager.ps1 -Action Test
-.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json  # runtime-only change
-.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json  # codegen/pipeline change
+.\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
+.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # runtime-only change
+.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # codegen/pipeline change
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree
 ```
@@ -86,9 +86,9 @@ The repository also provides shared pre-commit hooks:
 
 ```powershell
 python -m pip install pre-commit
-pre-commit install
-pre-commit install --hook-type pre-push
-pre-commit run --all-files
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+python -m pre_commit run --all-files
 ```
 
 The external-oracle `make verify` path requires inputs that are intentionally not in the repository.
@@ -97,59 +97,7 @@ a pass.
 
 ## Developer Certificate of Origin (DCO 1.1)
 
-To ensure clear contribution rights, all contributions to this project must be submitted under the
-**Developer Certificate of Origin (DCO 1.1)**. By submitting a pull request or patch, you certify that:
-
-```text
-Developer Certificate of Origin
-Version 1.1
-
-Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
-
-Everyone is permitted to copy and distribute verbatim copies of this
-license document, but changing it is not allowed.
-
-
-Developer's Certificate of Origin 1.1
-
-By making a contribution to this project, I certify that:
-
-(a) The contribution was created in whole or in part by me and I
-    have the right to submit it under the open source license
-    indicated in the file; or
-
-(b) The contribution is based upon previous work that, to the best
-    of my knowledge, is covered under an appropriate open source
-    license and I have the right under that license to submit that
-    work with modifications, whether created in whole or in part
-    by me, under the same open source license (unless I am
-    permitted to submit under a different license), as indicated
-    in the file; or
-
-(c) The contribution was provided directly to me by some other
-    person who certified (a), (b) or (c) and I have not modified
-    it.
-
-(d) I understand and agree that this project and the contribution
-    are public and that a record of the contribution (including all
-    personal information I submit with it, including my sign-off) is
-    maintained indefinitely and may be redistributed consistent with
-    this project or the open source license(s) involved.
-```
-
-Include a `Signed-off-by:` line in every commit message (e.g. `git commit -s`):
-
-```text
-Signed-off-by: Random J Developer <random@example.com>
-```
-
-DCO sign-off is a certification of contribution rights, not a copyright assignment.
-
-- **Commit Sign-Off**: The `Signed-off-by:` commit trailer is the canonical DCO attestation mechanism. PR template checkboxes provide documentation and review confirmation.
-- **Automated/Bot Submissions**: Automated dependency updates or bot commits must identify their generator and be reviewed/signed off by the merging maintainer.
-- **Historical Commits**: Historical commits prior to DCO adoption are retained as original author records; sign-off trailers will not be retroactively fabricated.
-- **Maintainer Standing Waiver**: maintainer and maintainer-directed AI/agent commits are covered by the standing waiver in [docs/DCO_POLICY.md §5.1](docs/DCO_POLICY.md), which persists past public launch until explicitly revoked. A missing trailer on such a commit is not a merge blocker and is not corrected by rewriting history. Agents must never add a sign-off on anyone's behalf. Outside contributors are unaffected by the waiver.
-- **Licensing Boundaries**: DCO sign-off certifies that the contributor has the authority to submit their work under the project's applicable terms. It does not settle combined-work license questions (such as PGF license review) or grant rights beyond the project's terms.
+To ensure clear contribution rights, all contributions to this project must be certified under the **Developer Certificate of Origin (DCO 1.1)** via a `Signed-off-by:` line on each commit (`git commit -s`). The complete text of DCO 1.1, author obligations, maintainer standing waiver details, bot submission rules, and sign-off correction procedures are maintained in [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md).
 
 ## Pull requests
 

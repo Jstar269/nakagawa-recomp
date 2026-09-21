@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { startFuzzManagerProcess, managerProcess } from "@/lib/recompiler/manager-process";
 import { rejectNonLocalControlRequest, rejectUnsupportedProcessHost } from "@/lib/recompiler/local-request";
@@ -55,6 +57,6 @@ export async function POST(req: NextRequest) {
       config: { trials, seed, constraint },
     });
   } catch (e) {
-    return NextResponse.json({ error: "fuzz-start-failed", detail: String(e) }, { status: 500 });
+    return routeError("fuzz-start-failed", e, 500);
   }
 }

@@ -253,6 +253,12 @@ uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets) {
     return u32_mul_checked(packets, MPEG_RING_BYTES_PER_PKT, &bytes) ? bytes : UINT32_MAX;
 }
 
+/* Inverse of mpeg_ringbuffer_query_mem_size: how many whole packets a buffer of
+ * `mem_size` bytes holds. */
+uint32_t mpeg_ringbuffer_query_pack_num(uint32_t mem_size) {
+    return mem_size / MPEG_RING_BYTES_PER_PKT;
+}
+
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size,
                                    uint32_t cbAddr, uint32_t cbArg) {
     uint32_t dataBytes, requiredBytes, dataUpper;
@@ -620,4 +626,33 @@ uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t b
     (void)frameWidth; (void)bufferAddr;
     if (statusAddr) MEM_W32(statusAddr, 0);   /* no frames left */
     (void)mpegAddr; return 0;
+}
+
+/* sceMpegFlushAllStream(mpeg): reset stream analysis, clear queued packets,
+ * and mark streams as needing reset. Public behaviour reference: PSPSDK
+ * pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */
+uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    ctx->isAnalyzed = 0;
+    for (int i = 0; i < 8; i++) {
+        if (ctx->streams[i].used) ctx->streams[i].needsReset = 1;
+    }
+    if (ctx->ringAddr && sr_guest_span_writable(ctx->ringAddr, RB_BYTES)) {
+        rb_set(ctx->ringAddr, RB_packetsRead, 0);
+        rb_set(ctx->ringAddr, RB_packetsWritePos, 0);
+        rb_set(ctx->ringAddr, RB_packetsAvail, 0);
+    }
+    return 0;
+}
+
+/* sceMpegAvcDecodeFlush(mpeg): clear queued video decoding state and reset
+ * the video timestamp to stream start. Public behaviour reference: PSPSDK
+ * pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */
+uint32_t mpeg_avc_decode_flush(uint32_t mpegAddr) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    ctx->videoPts = ctx->firstTimestamp;
+    ctx->videoEnd = 0;
+    return 0;
 }

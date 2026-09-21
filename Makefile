@@ -7,11 +7,17 @@
 # Override these on the command line for your game (see README).
 # NOTE: HST (flat-PRX image) requires GAME_BASE=0 GAME_ENTRY=0. The defaults below
 # are for a generic rebased ELF. Using the wrong base → cascading label errors at link.
-# Prefer hst_manager.ps1 (sets the correct values automatically).
+# Prefer nk_manager.ps1 (sets the correct values automatically).
 GAME_NAME  ?= mygame
 GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
 GAME_ENTRY ?= 0x08804000
+
+# Goals that only print information. When every requested goal is one of these,
+# parse-time work with side effects (profile stamps and their invalidation, build
+# directories, Python bytecode) is skipped, so `make help` never touches the tree.
+NK_INFO_ONLY_GOALS := help
+NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(MAKECMDGOALS)),,1),)
 
 
 # ---------------------------------------------------------------------------
@@ -36,15 +42,18 @@ GAME_ENTRY ?= 0x08804000
 # ---------------------------------------------------------------------------
 ifeq ($(GAME_NAME),hst)
 CODEGEN_PROFILE_ARG := --profile=hst
-GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868
+GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 \
+                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 \
+                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
 # The analyzer applies no title-specific span of its own: an extra executable span
 # outside the section table is title configuration, so the HST span is bound here
-# explicitly for direct-Make builds. hst_manager.ps1 -TitleManifest supplies the same
+# explicitly for direct-Make builds. nk_manager.ps1 -TitleManifest supplies the same
 # value from the validated manifest plan; a command-line/environment value overrides
-# this default. Keep in sync with assets/titles/hst-ucus98701.json (the source of truth).
+# this default. LEGACY_ADAPTER: this hard-coded span mirrors the retail HST manifest
+# (assets/titles/hst-ucus98701.json, the source of truth — publication-excluded, never
+# checked in) for manifest-less direct-Make builds only. Retire it with the direct-Make
+# HST default path, never by deleting the span.
 HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
 RUNTIME_OPT ?= -O2
 RECOMP_OPT  ?= -O1
@@ -59,7 +68,6 @@ else ifeq ($(origin TITLE_EXTRA_SPANS),default)
 TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
 endif
 endif
-
 # GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
 # authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
 # the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
@@ -167,7 +175,7 @@ PYTHON     ?= python
 ifeq ($(VULKAN_SDK),)
 VULKAN_SDK := $(shell $(PYTHON) -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
 endif
-# PowerShell commonly exports this with backslashes while hst_manager passes the
+# PowerShell commonly exports this with backslashes while nk_manager passes the
 # same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
 # and manager builds do not churn otherwise identical runtime profiles.
 VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
@@ -192,6 +200,16 @@ LDFLAGS ?= -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
 LIBS       ?= -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lole32 -lwinmm
 
 BUILD_DIR  ?= build/$(GAME_NAME)
+# The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
+# that produced them, not to a fixed title. Without this the runtime wrote them to a
+# literal build/hst/, so every non-HST build either scribbled into another title's
+# output directory or silently dropped the dump when that directory did not exist.
+# Deferred on purpose: a recursive $(MAKE) BUILD_DIR=... override retargets it too.
+# `override` on purpose as well: a plain += is discarded when a caller passes CFLAGS on the
+# command line, and hle.c would then fall back to a literal build/hst/ and silently restore
+# the cross-title overwrite this define exists to prevent. Failing quietly there is worse
+# than ignoring a custom flag, so this one define is not caller-overridable.
+override CFLAGS += -DSR_BUILD_DIR=\"$(BUILD_DIR)\"
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
@@ -231,6 +249,29 @@ PRODUCTION_SMOKE_PRX       := $(PRODUCTION_SMOKE_FIXTURE)/guest.prx
 PRODUCTION_SMOKE_PSP       := $(PRODUCTION_SMOKE_FIXTURE)/guest.psp
 PRODUCTION_SMOKE_MAP       := $(PRODUCTION_SMOKE_DIR)/production_smoke.map
 
+# Public, source-owned display/presentation smoke. Same two-phase `all` path as
+# the production smoke, but the guest fills the framebuffer and flips it once a
+# frame, so the gate covers sceDisplaySetFrameBuf -> vblank -> present rather
+# than a compute sentinel. This is the only public-scope title the native player
+# can launch, which is why it also carries a manifest under assets/titles.
+# The build directory and artifact stem are deliberately the TITLE ID, not a
+# prettier name: src/core/nk_launch.c resolves a launch by probing
+# build/<title_id>/<title_id>.exe and build/<title_id>/<title_id>_image.bin.
+# Naming the build anything else is why no other fixture in this tree can be
+# launched from the native player. Keep these three strings equal to the "id"
+# field of assets/titles/display-smoke.json.
+DISPLAY_SMOKE_NAME      := display-smoke-v1
+DISPLAY_SMOKE_DIR       := build/$(DISPLAY_SMOKE_NAME)
+DISPLAY_SMOKE_FIXTURE   := $(DISPLAY_SMOKE_DIR)/fixture
+DISPLAY_SMOKE_GENERATOR := fixtures/display_smoke/generate.py
+DISPLAY_SMOKE_PRX       := $(DISPLAY_SMOKE_FIXTURE)/guest.prx
+DISPLAY_SMOKE_PSP       := $(DISPLAY_SMOKE_FIXTURE)/guest.psp
+DISPLAY_SMOKE_BASE      := 0x08810000
+# The gate runs a short pattern; the launchable/demo build runs long enough to
+# watch. Both are the same guest recipe with a different frame count.
+DISPLAY_SMOKE_FRAMES      := 60
+DISPLAY_SMOKE_DEMO_FRAMES := 1800
+
 # The AOT-gap mode of the same fixture: identical guest addresses, but the
 # helper is omitted from native emission (--omit-aot) so region A reaches it
 # through the ordinary production dispatch() seam.
@@ -265,15 +306,20 @@ ASSET_COPY_ARGS :=
 else
 PGF_BACKEND_SRC := src/rt/pgf_unavailable.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
-ISO_BACKEND_SRC := src/rt/iso_unavailable.c
+ISO_BACKEND_SRC := src/rt/iso_public.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
-CFLAGS += -DSR_PUBLIC_SAFE
+# override for the same reason as SR_BUILD_DIR above, and because it is now required:
+# once any append to CFLAGS uses override, GNU make ignores later ordinary assignments to
+# it. Losing this define is the worse failure of the two -- a PUBLIC_SAFE build would stop
+# declaring itself, and the production-smoke evidence check fails on exactly that.
+override CFLAGS += -DSR_PUBLIC_SAFE
 endif
 
 include mk/build_common.mk
 
 BUILD_PROFILE_TOOL := tools/build_profile.py
+CPU_STATE_ABI_HEADER := src/rt/recomp.h
 
 # Runtime title configuration. The compiled runtime carries no title identity of its
 # own: tools/title_runtime_config.py turns a *validated* title manifest's optional
@@ -282,9 +328,11 @@ BUILD_PROFILE_TOOL := tools/build_profile.py
 # which every optional binding is disabled -- so `make runtime-objects` needs no game
 # input at all, and no default build inherits any title's addresses.
 #
-# HST binds its real values through the local, Git-ignored title manifest
-# (assets/titles/hst-ucus98701.json, supplied by hst_manager.ps1 -TitleManifest or by
-# TITLE_MANIFEST= on a direct Make command line). They are deliberately not encoded here.
+# HST binds its real values through the local title manifest
+# (assets/titles/hst-ucus98701.json, supplied by nk_manager.ps1 -TitleManifest or by
+# TITLE_MANIFEST= on a direct Make command line). That file is intentionally never
+# checked in and is publication-excluded, with a .gitignore accident guard.
+# They are deliberately not encoded here.
 TITLE_MANIFEST ?=
 TITLE_CONFIG_TOOL := tools/title_runtime_config.py
 TITLE_CONFIG_DIR ?= $(BUILD_DIR)
@@ -292,7 +340,11 @@ TITLE_CONFIG_HEADER := $(TITLE_CONFIG_DIR)/sr_title_config.h
 TITLE_CONFIG_ARG := $(if $(strip $(TITLE_MANIFEST)),--manifest $(strip $(TITLE_MANIFEST)),)
 # Identity of the effective configuration. Bound into RUNTIME_PROFILE_HASH below so a
 # changed title binding invalidates stale runtime objects instead of relinking silently.
+ifdef NK_INFO_ONLY
+TITLE_CONFIG_DIGEST := info-only
+else
 TITLE_CONFIG_DIGEST := $(shell $(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
+endif
 # An unreadable or invalid manifest prints nothing. Refusing here keeps a rejected title
 # configuration from becoming an empty profile entry that hashes like some other build.
 ifeq ($(strip $(TITLE_CONFIG_DIGEST)),)
@@ -346,7 +398,7 @@ $(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
 
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
-	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local, Git-ignored HST manifest) or build through hst_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
+	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local HST retail manifest: publication-excluded, never checked in) or build through nk_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
 endif
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
 
@@ -408,11 +460,16 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 # per-recipe mkdir is needed.
 # Use Python for fully portable directory creation across Windows cmd.exe, MSYS2,
 # PowerShell, and POSIX environments.
+ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
+              src/rt/cpu_lle.c \
+              src/rt/domain_mode.c \
               src/rt/nested_frames.c \
+              src/rt/stale_code.c \
               src/rt/guest_interp.c \
               src/rt/title_config.c \
               src/rt/vfpu_tables.c \
@@ -424,6 +481,8 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
               src/rt/hle.c \
+              src/rt/hle_power.c \
+              src/rt/prx_loader.c \
               src/rt/sched.c \
               src/rt/sr_coro.c \
               $(ISO_BACKEND_SRC) \
@@ -475,7 +534,10 @@ $(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h s
 # claim that the complete Linux runtime links or runs yet.
 PORTABLE_CORE_DIR := $(BUILD_DIR)/portable-core
 PORTABLE_CORE_SRCS := src/rt/recomp.c \
+                      src/rt/cpu_lle.c \
+                      src/rt/domain_mode.c \
                       src/rt/nested_frames.c \
+                      src/rt/stale_code.c \
                       src/rt/guest_interp.c \
                       src/rt/title_config.c \
                       src/rt/vfpu_tables.c \
@@ -494,8 +556,199 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
 PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_CORE_SRCS))
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Wall -Wextra -Werror=format
 
-.PHONY: FORCE all pipeline compile compiler-info runtime-objects sched-selftest-one portable-core-objects atrac3p-objects public-safe-verify production-smoke production-smoke-clean production-smoke-gap production-smoke-gap-clean cosim-selftest cosim-selftest-run cosim-selftest-clean cosim-mutants clean clean-fixtures tidy distclean clean-all verify selftest strbuf-selftest sched-selftest heap-selftest profiler-selftest coro-selftest hle-thread-selftest hle-thread-selftest-build hle-title-selftest hle-title-selftest-one dispatch-selftest dispatch-isolation-selftest dispatch-isolation-selftest-one asset-index-selftest fp-convert-selftest vfpu-tables-selftest watchpoints-file-selftest vfpu-interp-selftest atrac3p-selftest atrac3p-bridge-selftest atrac3p-title-accept gpu-coherence-selftest gpu-snapsync-selftest ge-replay run run_elf vfpu_fuzz vfpu_fuzz_build shaders shader-verify shader-repro-verify psp-oracle-vfpu psp-oracle-vfpu-build psp-oracle-nakagawa-smoke psp-oracle-nakagawa-smoke-build psp-oracle-nakagawa-smoke-generate gpu-capture-selftest
+# Public targets are listed once so `make help` and phony-target behaviour cannot
+# drift apart.  FORCE is intentionally separate: it is an implementation detail,
+# not an entry-point a contributor should discover by accident.
+PUBLIC_TARGETS := \
+	help \
+	check \
+	test \
+	native-core-tests \
+	readiness \
+	provenance-refresh \
+	all \
+	pipeline \
+	compile \
+	compiler-info \
+	runtime-objects \
+	portable-core-objects \
+	atrac3p-objects \
+	player \
+	public-safe-verify \
+	production-smoke \
+	production-smoke-clean \
+	production-smoke-gap \
+	display-smoke \
+	display-smoke-run \
+	display-smoke-gui \
+	display-smoke-player \
+	display-smoke-clean \
+	production-smoke-gap-clean \
+	platform-ladder \
+	platform-ladder-zero \
+	platform-ladder-reloc \
+	platform-ladder-gap \
+	platform-ladder-sched \
+	platform-ladder-fpu \
+	platform-ladder-fs \
+	platform-ladder-fs-negative \
+	platform-ladder-title2 \
+	platform-ladder-title2-negative \
+	platform-ladder-clean \
+	cosim-selftest \
+	cosim-selftest-run \
+	cosim-selftest-clean \
+	cosim-mutants \
+	clean \
+	clean-fixtures \
+	tidy \
+	distclean \
+	clean-all \
+	verify \
+	selftest \
+	strbuf-selftest \
+	sched-selftest \
+	sched-selftest-one \
+	heap-selftest \
+	profiler-selftest \
+	coro-selftest \
+	hle-thread-selftest \
+	hle-thread-selftest-build \
+	hle-title-selftest \
+	hle-title-selftest-one \
+	dispatch-selftest \
+	stale-code-selftest \
+	cpu-lle-selftest \
+	domain-mode-selftest \
+	dispatch-isolation-selftest \
+	dispatch-isolation-selftest-one \
+	asset-index-selftest \
+	fp-convert-selftest \
+	vfpu-tables-selftest \
+	watchpoints-file-selftest \
+	vfpu-interp-selftest \
+	atrac3p-selftest \
+	atrac3p-bridge-selftest \
+	atrac3p-title-accept \
+	gpu-coherence-selftest \
+	gpu-snapsync-selftest \
+	ge-replay \
+	run \
+	run_elf \
+	vfpu_fuzz \
+	vfpu_fuzz_build \
+	shaders \
+	shader-verify \
+	shader-repro-verify \
+	psp-oracle \
+	psp-oracle-nakagawa \
+	psp-oracle-vfpu \
+	psp-oracle-vfpu-build \
+	psp-oracle-nakagawa-smoke \
+	psp-oracle-nakagawa-smoke-build \
+	psp-oracle-nakagawa-smoke-generate \
+	gpu-capture-selftest
+
+INTERNAL_TARGETS := FORCE player-vulkan-check
+.PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
+
+HELP_DESCRIPTION_help := list every public Make target and its purpose
+HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
+HELP_DESCRIPTION_test := run the complete Python tooling test suite
+HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
+HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
+HELP_DESCRIPTION_provenance-refresh := refresh controls with an external ledger and stage them
+HELP_DESCRIPTION_all := generate and compile the current title runtime
+HELP_DESCRIPTION_pipeline := generate image, imports, and recomputed source artifacts
+HELP_DESCRIPTION_compile := compile and link the generated runtime
+HELP_DESCRIPTION_compiler-info := print the effective compiler and build settings
+HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
+HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
+HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
+HELP_DESCRIPTION_player := build the native player
+HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
+HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
+HELP_DESCRIPTION_production-smoke-clean := remove production smoke artifacts
+HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke test
+HELP_DESCRIPTION_display-smoke := build the display smoke fixture
+HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
+HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
+HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
+HELP_DESCRIPTION_production-smoke-gap-clean := remove AOT-gap smoke artifacts
+HELP_DESCRIPTION_platform-ladder := run the complete public platform ladder
+HELP_DESCRIPTION_platform-ladder-zero := run the zero-base platform fixture
+HELP_DESCRIPTION_platform-ladder-reloc := run the relocation platform fixture
+HELP_DESCRIPTION_platform-ladder-gap := run the interpreter-gap platform fixture
+HELP_DESCRIPTION_platform-ladder-sched := run the scheduler platform fixture
+HELP_DESCRIPTION_platform-ladder-fpu := run the FPU platform fixture
+HELP_DESCRIPTION_platform-ladder-fs := run the filesystem platform fixture
+HELP_DESCRIPTION_platform-ladder-fs-negative := run the negative filesystem fixture
+HELP_DESCRIPTION_platform-ladder-title2 := run the second-title platform fixture
+HELP_DESCRIPTION_platform-ladder-title2-negative := run the negative second-title fixture
+HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
+HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
+HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
+HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
+HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
+HELP_DESCRIPTION_clean := remove current-title build outputs
+HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
+HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
+HELP_DESCRIPTION_distclean := remove intermediates and ephemeral build logs
+HELP_DESCRIPTION_clean-all := remove all build and fixture outputs
+HELP_DESCRIPTION_verify := compare generated output against external oracle data
+HELP_DESCRIPTION_selftest := run the runtime selftest
+HELP_DESCRIPTION_strbuf-selftest := run the checked-formatting selftest
+HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
+HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
+HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
+HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
+HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
+HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
+HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
+HELP_DESCRIPTION_hle-title-selftest := run title-configured HLE selftests
+HELP_DESCRIPTION_hle-title-selftest-one := run one title-configured HLE selftest
+HELP_DESCRIPTION_dispatch-selftest := run the production dispatch selftest
+HELP_DESCRIPTION_stale-code-selftest := run the stale translated-code detector selftest
+HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter selftest
+HELP_DESCRIPTION_domain-mode-selftest := run the LLE domain-mode and import-seam selftest
+HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
+HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
+HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
+HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
+HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
+HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
+HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
+HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
+HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
+HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
+HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
+HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
+HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
+HELP_DESCRIPTION_run := build and launch the current title runtime
+HELP_DESCRIPTION_run_elf := build the reference interpreter runner
+HELP_DESCRIPTION_vfpu_fuzz := build and run the VFPU differential fuzzer
+HELP_DESCRIPTION_vfpu_fuzz_build := build the VFPU differential fuzzer only
+HELP_DESCRIPTION_shaders := regenerate embedded shader artifacts
+HELP_DESCRIPTION_shader-verify := verify embedded shader hashes
+HELP_DESCRIPTION_shader-repro-verify := recompile and compare shader bytes
+HELP_DESCRIPTION_psp-oracle := run the scalar Nakagawa PSP oracle stream
+HELP_DESCRIPTION_psp-oracle-nakagawa := run the scalar host and PSP comparison helper
+HELP_DESCRIPTION_psp-oracle-vfpu := emit the host VFPU oracle stream
+HELP_DESCRIPTION_psp-oracle-vfpu-build := build the host VFPU oracle
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke := run the generated-code PSP oracle smoke
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-build := build the generated-code PSP oracle smoke
+HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-generate := generate the PSP oracle smoke artifacts
+HELP_DESCRIPTION_gpu-capture-selftest := run the GPU capture selftest
+
 .SECONDARY:
+
+help:
+	$(info Nakagawa Recomp Make targets)
+	$(info Usage: mingw32-make [VARIABLE=value ...] TARGET)
+	$(info )
+	$(foreach target,$(PUBLIC_TARGETS),$(info   $(target) - $(HELP_DESCRIPTION_$(target))))
+	@:
 
 # Stable diagnostic surface for CI and local setup checks. This target performs no
 # compilation and makes GNU Make's selected compiler and assignment origin explicit.
@@ -510,8 +763,98 @@ compiler-info:
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
 
+# One command for the whole pre-pull-request checklist in docs/CI.md.
+#
+# The checklist has been correct and documented for a while and is still
+# routinely half-run: the usual outcome is that publish_audit is run, reported
+# as "gates green", and provenance_attest_verify -- the gate that actually
+# blocks the merge -- is never run at all. They answer different questions.
+# publish_audit compares the candidate against its own checked-in ledger, so the
+# candidate supplies both sides and an unapproved blob cannot be detected.
+# provenance_attest_verify compares it against the external private authority,
+# which is the only thing that emits BLOB_UNAPPROVED. A tree can be
+# "publication audit: OK" and "verdict: FAIL" at the same commit.
+#
+# Ordered cheapest-first so a policy or ledger mistake surfaces in seconds
+# rather than after the suite. Every step is fatal; make stops at the first one.
+#
+#   NK_TRUSTED_LEDGER=/path/to/IMPLEMENTATION_PROVENANCE.json make readiness
+#
+# NK_TRUSTED_LEDGER is the detailed development ledger from the private history
+# repository. It is deliberately required rather than defaulted: skipping the
+# attestation step when the path is absent is exactly the silent pass this
+# target exists to prevent, so an unset value is BLOCKED, not "not applicable".
+READINESS_BASE ?= $(shell git merge-base origin/main HEAD)
+READINESS_WORKDIR ?= $(CURDIR)/../.nk-readiness-verify
+
+readiness:
+ifndef NK_TRUSTED_LEDGER
+	@echo "readiness: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "  It must name the detailed development ledger"
+	@echo "  (docs/provenance/IMPLEMENTATION_PROVENANCE.json in the private"
+	@echo "  history repository). Without it the attestation gate cannot run,"
+	@echo "  and an unrun gate is BLOCKED evidence, never a pass."
+	@exit 1
+endif
+	@echo "== readiness: base $(READINESS_BASE)"
+	$(PYTHON) tools/policy_sync.py
+	$(PYTHON) tools/lint_docs.py
+	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate $(shell git rev-parse HEAD) --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	git diff --check $(READINESS_BASE)..HEAD
+	@echo "== readiness: control-file completeness"
+	$(PYTHON) tools/policy_sync.py --regen-export
+	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
+	@echo "== readiness: OK (the suite is separate and still yours to run)"
+
+# One-command wrapper for the ordering-sensitive public-control refresh. The
+# underlying tool stages the worktree because its ledger generator reads the
+# index; keep the external authority requirement explicit and fail closed when
+# it is unavailable. Set PROVENANCE_REFRESH_APPLY_POLICY=1 only when the
+# maintainer has already decided that newly seen routine paths belong on the
+# public surface.
+PROVENANCE_REFRESH_APPLY_POLICY ?= 0
+PROVENANCE_REFRESH_POLICY_ARG = $(if $(filter 1 true yes,$(PROVENANCE_REFRESH_APPLY_POLICY)),--apply-policy,)
+
+provenance-refresh:
+ifndef NK_TRUSTED_LEDGER
+	@echo "provenance-refresh: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "  Set it to the external IMPLEMENTATION_PROVENANCE.json and retry."
+	@echo "  This target stages the worktree because the ledger reads the index."
+	@exit 1
+else
+	$(PYTHON) tools/provenance_refresh.py --implementation-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
+endif
+
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
+
+# -----------------------------------------------------------------------------
+# Public Verification Entry Points (Issue #188 Finding 3 O-05)
+# -----------------------------------------------------------------------------
+test:
+	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
+
+check:
+	@echo "== [1/5] Documentation freshness lint =="
+	$(PYTHON) tools/lint_docs.py
+	@echo "== [2/5] Canonical publication policy coverage =="
+	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
+	@echo "== [3/5] Publication safety audits (index & worktree) =="
+	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	@echo "== [4/5] Native host core tests =="
+	$(MAKE) native-core-tests
+	@echo "== [5/5] Fast critical test subset =="
+	$(PYTHON) -m unittest \
+		tools/test_title_manifest.py \
+		tools/test_title_catalog.py \
+		tools/test_build_system_parity.py \
+		tools/test_sync_drift_check.py \
+		tools/test_ci_paths.py \
+		tools/test_ci_required.py
+	@echo "== All public verification checks PASSED =="
 
 # Two-phase build: `pipeline` (codegen) must finish and write the chunk .c files
 # BEFORE `compile` is parsed, because CHUNK_OBJS is derived via $(wildcard) and is
@@ -539,6 +882,41 @@ production-smoke:
 
 production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
+
+# display-smoke builds the guest and asserts the presented framebuffer word
+# headlessly. display-smoke-gui is the same image in the SDL3/Vulkan window and
+# is deliberately NOT part of any aggregate gate: it needs a display.
+display-smoke: DISPLAY_SMOKE_BUILD_FRAMES ?= $(DISPLAY_SMOKE_FRAMES)
+display-smoke:
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) generate --out-dir $(DISPLAY_SMOKE_FIXTURE) \
+		--frames $(DISPLAY_SMOKE_BUILD_FRAMES)
+	$(MAKE) all \
+		GAME_NAME=$(DISPLAY_SMOKE_NAME) \
+		GAME_ELF=$(DISPLAY_SMOKE_PRX) \
+		GAME_BASE=$(DISPLAY_SMOKE_BASE) \
+		GAME_ENTRY=$(DISPLAY_SMOKE_BASE) \
+		GAME_PSP_HEADER=$(DISPLAY_SMOKE_PSP) \
+		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		BUILD_DIR=$(DISPLAY_SMOKE_DIR) \
+		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-run: display-smoke
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-gui:
+	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
+
+# Drive the actual native-player PLAY NOW path against the launchable fixture.
+# The child opens a real window, so this is a developer/display gate rather than
+# part of the headless CI aggregate. The fixture generator records the child's
+# machine-readable window/first-frame evidence.
+display-smoke-player: player display-smoke-run
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run-player --build-dir $(DISPLAY_SMOKE_DIR)
+
+display-smoke-clean:
+	$(MAKE) BUILD_DIR=$(DISPLAY_SMOKE_DIR) clean
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production
@@ -586,8 +964,6 @@ PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
 PL_TITLE2_BASE := 0x08A40000
 PL_TITLE2_NEGATIVE_BASE := 0x08A80000
-
-.PHONY: platform-ladder platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-clean
 
 platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative
 
@@ -724,11 +1100,11 @@ platform-ladder-clean:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY))
+CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -751,12 +1127,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -780,10 +1156,10 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
-RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)")
+RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)")
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Compile the chunked generated C code.
 
@@ -809,7 +1185,9 @@ $(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE
 $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER)
 	$(CC) $(PORTABLE_CORE_CFLAGS) -I$(TITLE_CONFIG_DIR) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h
+$(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
+
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_unavailable.o: src/rt/pgf_unavailable.c src/rt/pgf_api.h
@@ -822,6 +1200,48 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
+
+ifeq ($(OS),Windows_NT)
+PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
+# must derive from the shared VULKAN_SDK resolution above (explicit override,
+# environment, then tools/vulkan_sdk.py discovery) rather than naming one
+# machine's SDK install. The player-vulkan-check order-only prerequisite below
+# fails closed with the one variable to set when discovery found nothing,
+# instead of a hardcoded fallback or a confusing compiler error.
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             := .exe
+else
+PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_EXTRA_LIBS   :=
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
+endif
+
+# A clear player-target failure when no usable SDK resolved (see the Windows
+# branch above). A no-op recipe when VULKAN_SDK is set.
+.PHONY: player-vulkan-check
+player-vulkan-check:
+	$(if $(strip $(VULKAN_SDK)),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. mingw32-make player VULKAN_SDK=C:/path/to/VulkanSDK/<version>) or install a current SDK))
+
+PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+
+$(PLAYER_EXE): | player-vulkan-check
+
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/generated/nk_title_catalog.h
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+
+player: $(PLAYER_EXE)
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
@@ -883,7 +1303,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/title_config.c src/rt/vfpu_tables.c -lm
+		$(COSIM_INTERP_SRC) src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
@@ -900,7 +1320,7 @@ cosim-selftest-clean:
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
 # before target freshness is evaluated (avoiding timestamp-resolution races).
-ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))),)
+ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 -include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP) $(TITLE_CONFIG_STAMP)
 endif
 -include $(DEP_FILES)
@@ -981,7 +1401,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/guest_interp.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -991,7 +1411,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -1077,8 +1497,8 @@ atrac3p-title-accept:
 # recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern); only
 # scheduler/driver plumbing is stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c $(LIBS)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) 		-o $(BUILD_DIR)/vfpu_interp_selftest.exe \
+		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
@@ -1125,13 +1545,13 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
-hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -1158,13 +1578,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/title_config.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/title_config.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -1189,12 +1609,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
@@ -1204,8 +1624,7 @@ psp-oracle-nakagawa-smoke-build: $(PSP_ORACLE_SMOKE_EXE)
 psp-oracle-nakagawa-smoke: psp-oracle-nakagawa-smoke-build
 	$(PYTHON) tools/psp_oracle/run_nakagawa.py --executable "$(PSP_ORACLE_SMOKE_EXE)" --output "$(PSP_ORACLE_SMOKE_OUTPUT)" -- --psp-oracle --case sum-1-to-100 --artifact "$(PSP_ORACLE_SMOKE_EXE)" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
 
-# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).
-# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
+# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
 # dispatch_table.h. Asserts that guest address 0 is a first-class key (register/look up,
 # hash collisions involving 0 in both orders, L1 caching, re-registration), that a real
 # function at address 0 executes while an unregistered lookup does not, and that occupancy
@@ -1214,6 +1633,46 @@ dispatch-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/dispatch_selftest.exe src/rt/dispatch_selftest.c
 	$(BUILD_DIR)/dispatch_selftest.exe
+
+# stale-code-selftest — host-neutral unit tests for the TD-27 opt-in stale
+# translated-code detector (src/rt/stale_code.*). No game inputs needed; links
+# only the standalone detector TU. Runs twice: gate off (an overwritten
+# invalidate must stay silent) and SR_STALE_DETECT=1 (an overwritten
+# translated block must fire loudly, pristine invalidates must stay silent).
+# Exit code 0 = all invariants hold.
+stale-code-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/stale_code_selftest.exe src/rt/stale_code_selftest.c src/rt/stale_code.c
+	$(BUILD_DIR)/stale_code_selftest.exe
+	$(PYTHON) -c "import os,subprocess,sys; e=dict(os.environ); e['SR_STALE_DETECT']='1'; p=os.path.abspath(r'$(BUILD_DIR)/stale_code_selftest.exe'); sys.exit(subprocess.run([p], env=e).returncode)"
+
+# cpu-lle-selftest — host-neutral unit tests for the LLE Phase 1 COP0,
+# exception, and eret helpers (spec 3.2/3.3) plus the interpreter lane
+# (spec 3.5). No game inputs needed; #includes recomp.c/cpu_lle.c for direct
+# access to the exact helpers the generated code calls and links the real
+# guest_interp.c, proving helper and interpreter behavior from one binary.
+# Asserts exception EPC/Cause/EXL/BD (including delay-slot faults), eret
+# return + EXL clear, user-mode traps, RI on unsupported encodings, Status /
+# Cause write masking, vector selection/validation, and the LLE gate that
+# keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
+cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
+		src/rt/cpu_lle_selftest.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
+	$(BUILD_DIR)/cpu_lle_selftest.exe
+
+# domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
+# per-domain HLE/LLE table and the sr_import_call() seam (spec section 4).
+# Same white-box shape as cpu-lle-selftest: #includes recomp.c/cpu_lle.c/
+# domain_mode.c for direct access to the exact seam the generated stubs call
+# and links the real guest_interp.c, proving the LLE guest-export lane runs
+# through the production linked-call boundary. No game inputs needed. Asserts
+# HLE-everywhere defaults, set/get/reset/lock, the library table, NID/export
+# registries (conflicts fail closed), HLE passthrough, COSIM accounting, LLE
+# hit/miss/dispatch-reject, and fallback hit/miss/reject. Exit code 0 = all.
+domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
+		src/rt/domain_mode_selftest.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
+	$(BUILD_DIR)/domain_mode_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
 # title configuration owns (dispatch aliases, callback terminators) act only where that
@@ -1245,7 +1704,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/guest_interp.c src/rt/title_config.c src/rt/vfpu_tables.c \
+		src/rt/dispatch_isolation_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
@@ -1422,3 +1881,44 @@ shader-verify:
 
 shader-repro-verify:
 	$(PYTHON) tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
+
+# -----------------------------------------------------------------------------
+# Native Product Core Tests
+# -----------------------------------------------------------------------------
+native-core-tests: cpu-lle-selftest domain-mode-selftest
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)
+	./build/test_core_catalog$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
+	./build/test_parsers_hostile$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_manifest_parser.c -o build/test_manifest_parser$(EXE_EXT)
+	./build/test_manifest_parser$(EXE_EXT) --check
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_launch_resolution.c -o build/test_launch_resolution$(EXE_EXT)
+	./build/test_launch_resolution$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/player_state.c \
+		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
+	./build/test_player_state$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c \
+		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)
+	./build/test_xb_parser$(EXE_EXT)
+ifeq ($(OS),Windows_NT)
+	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
+	./build/test_win32_process$(EXE_EXT)
+else
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
+	./build/test_posix_process$(EXE_EXT)
+endif

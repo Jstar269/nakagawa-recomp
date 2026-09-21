@@ -1,21 +1,19 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Activity,
   Plus,
   Trash2,
   Check,
   CheckCircle2,
-  XCircle,
   AlertTriangle,
   RefreshCw,
   Save,
   Sliders,
   Settings,
-  ShieldAlert,
-  SlidersHorizontal,
-  FolderLock
+  ShieldAlert
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -118,24 +116,21 @@ export function BuildHealthPanel() {
   const [watchLabel, setWatchLabel] = useState("");
 
   // Fetch telemetry runs
-  const fetchTelemetry = async () => {
-    setLoadingTelemetry(true);
+  const fetchTelemetry = useCallback(async () => {
     try {
       const res = await fetch("/api/recompiler/telemetry");
       if (res.ok) {
         const d = await res.json();
         const runs = d.telemetry || [];
         setTelemetry(runs);
-        if (runs.length > 0 && !selectedRunId) {
-          setSelectedRunId(runs[runs.length - 1].id);
+        if (runs.length > 0) {
+          setSelectedRunId((current) => current ?? runs[runs.length - 1].id);
         }
       }
     } catch (e) {
       console.error("Telemetry fetch error:", e);
-    } finally {
-      setLoadingTelemetry(false);
     }
-  };
+  }, []);
 
   // Trigger telemetry snapshot aggregation
   const handleSnapshotTelemetry = async () => {
@@ -167,7 +162,7 @@ export function BuildHealthPanel() {
   };
 
   // Fetch Debug Profiles
-  const fetchProfiles = async () => {
+  const fetchProfiles = useCallback(async () => {
     setLoadingProfiles(true);
     try {
       const res = await fetch("/api/recompiler/watchpoints/profiles");
@@ -180,7 +175,7 @@ export function BuildHealthPanel() {
     } finally {
       setLoadingProfiles(false);
     }
-  };
+  }, []);
 
   // Initialize profile form
   const handleSelectProfile = (p: DebugProfile) => {
@@ -325,7 +320,7 @@ export function BuildHealthPanel() {
   useEffect(() => {
     fetchTelemetry();
     fetchProfiles();
-  }, []);
+  }, [fetchTelemetry, fetchProfiles]);
 
   // Compute active run details
   const selectedRun = useMemo(() => {
@@ -372,8 +367,8 @@ export function BuildHealthPanel() {
               <RefreshCw className="size-3.5" />
               Refresh
             </Button>
-            <Button size="sm" className="h-8 gap-1.5 bg-primary hover:bg-primary/95 text-primary-foreground" onClick={handleSnapshotTelemetry}>
-              <Activity className="size-3.5" />
+            <Button size="sm" className="h-8 gap-1.5 bg-primary hover:bg-primary/95 text-primary-foreground" onClick={handleSnapshotTelemetry} disabled={loadingTelemetry}>
+              <Activity className={`size-3.5 ${loadingTelemetry ? "animate-pulse" : ""}`} />
               Record Telemetry Snapshot
             </Button>
           </div>

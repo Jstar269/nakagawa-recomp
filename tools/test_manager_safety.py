@@ -15,6 +15,7 @@ Two layers:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -23,14 +24,63 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 SUPPORT = ROOT / "tools" / "hst_run_support.ps1"
-SAFETY = ROOT / "tools" / "hst_safety.ps1"
+# Phase 3 (#196): nk_safety.ps1 is the canonical location; hst_safety.ps1 is a forwarding wrapper.
+SAFETY = ROOT / "tools" / "nk_safety.ps1" if (ROOT / "tools" / "nk_safety.ps1").exists() else ROOT / "tools" / "hst_safety.ps1"
 PS_TESTS = ROOT / "tools" / "test_manager_safety.ps1"
 
 
 def _powershell() -> str | None:
     return shutil.which("pwsh")
+
+
+class ManagerHelpTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = MANAGER.read_text(encoding="utf-8-sig")
+        match = re.search(r'\[ValidateSet\(([^)]+)\)\]\s*\[string\]\$Action', self.source)
+        self.assertIsNotNone(match)
+        self.actions = re.findall(r'"([^"]+)"', match.group(1))
+
+    def test_help_and_wrapper_actions_match_validateset(self) -> None:
+        for path in (MANAGER, ROOT / "hst_manager.ps1"):
+            with self.subTest(path=path.name):
+                source = path.read_text(encoding="utf-8-sig")
+                match = re.search(r'\[ValidateSet\(([^)]+)\)\]\s*\[string\]\$Action', source)
+                self.assertCountEqual(re.findall(r'"([^"]+)"', match.group(1)), self.actions)
+                help_text = source.split("<#", 1)[1].split("#>", 1)[0]
+                self.assertIn(".PARAMETER Action", help_text)
+                entries = re.findall(r"^    (\w+) - (.+)$", help_text, re.MULTILINE)
+                self.assertCountEqual([name for name, _ in entries], self.actions)
+                self.assertIn("Makefile selftest target (C++ reference-runtime selftest)", dict(entries)["Test"])
+
+    def test_setup_actions_match_validateset(self) -> None:
+        setup = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
+        entries = re.findall(r"^\| `(\w+)` \| (.+) \|$", setup, re.MULTILINE)
+        self.assertCountEqual([name for name, _ in entries], self.actions)
+        self.assertIn("C++ reference-runtime selftest", dict(entries)["Test"])
+
+    def test_no_action_output_matches_validateset(self) -> None:
+        shell = _powershell()
+        if shell is None:
+            self.skipTest("no PowerShell interpreter on PATH")
+        for script in (MANAGER, ROOT / "hst_manager.ps1"):
+            with self.subTest(script=script.name):
+                proc = subprocess.run(
+                    [shell, "-NoProfile", "-File", str(script)],
+                    cwd=ROOT, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                entries = re.findall(r"^  (\w+) - (.+)$", proc.stdout, re.MULTILINE)
+                self.assertCountEqual([name for name, _ in entries], self.actions)
+                self.assertIn("Makefile selftest target (C++ reference-runtime selftest)", dict(entries)["Test"])
+                self.assertIn("Usage: pwsh -NoProfile -File nk_manager.ps1 -Action <action>", proc.stdout)
+                self.assertIn("pwsh -NoProfile -File nk_manager.ps1 -Action BuildFast", proc.stdout)
+                self.assertIn("pwsh -NoProfile -File nk_manager.ps1 -Action Run", proc.stdout)
+                self.assertNotIn("[FATAL SCRIPT ERROR]", proc.stdout)
+        self.assertIn("$MyInvocation.MyCommand.Parameters['Action'].Attributes", self.source)
+        self.assertIn("[System.Management.Automation.ValidateSetAttribute]", self.source)
+        self.assertIn("$actionChoices.ValidValues", self.source)
 
 
 class ManagerSafetyBehaviorTests(unittest.TestCase):
@@ -64,9 +114,10 @@ class ManagerSafetyContractTests(unittest.TestCase):
 
     def test_manager_anchors_to_its_own_script_location(self) -> None:
         # The canonical root is $PSScriptRoot, never the caller's CWD.
-        self.assertIn("Assert-HstWorkspaceRoot -Root $PSScriptRoot", self.manager)
+        # Phase 3 (#196): nk_manager uses Assert-NkWorkspaceRoot and nk_safety.ps1.
+        self.assertIn("Assert-NkWorkspaceRoot -Root $PSScriptRoot", self.manager)
         self.assertIn("Set-Location -LiteralPath $script:RepoRoot", self.manager)
-        self.assertIn("hst_safety.ps1", self.manager)
+        self.assertIn("nk_safety.ps1", self.manager)
         # Managed paths derive from the canonical root.
         self.assertIn('$LogDir = Join-Path $script:RepoRoot "logs"', self.manager)
 
@@ -116,7 +167,7 @@ class ManagerSafetyContractTests(unittest.TestCase):
 
     def test_duration_rejects_negative_values(self) -> None:
         self.assertIn("[ValidateRange(0, 2000000000)]\n    [int]$Duration = 0", self.manager)
-        self.assertIn("ConvertTo-SafeTimeoutSeconds", self.manager)
+        self.assertIn("ConvertTo-SafeTimeoutSeconds", self.safety)
 
     def test_caller_location_is_restored_on_every_exit_path(self) -> None:
         self.assertIn("finally {", self.manager)
@@ -168,11 +219,68 @@ class ManagerSafetyContractTests(unittest.TestCase):
     def test_manager_prebuild_and_prerun_fail_fast(self) -> None:
         # Invoke-HstBuild validates required private inputs before invoking make
         self.assertIn('Missing required private build inputs', self.manager)
-        self.assertIn('place_game_here/EBOOT.elf', self.manager)
+        self.assertIn('executable ELF (', self.manager)
         # Run-HstEngine validates required runtime assets before spawning
-        self.assertIn('No game ISO found at place_game_here/ISO/<game>.iso', self.manager)
+        self.assertIn('no disc image found (declare filesystem.disc_image', self.manager)
         self.assertIn('Extracted asset tree was not found', self.manager)
         self.assertIn('=== NAKAGAWA RECOMP RUNTIME LAUNCH ===', self.manager)
+
+    def test_runtime_exports_the_selected_manifest_data_root(self) -> None:
+        # The native runtime rejects relative data roots. The manager must pass
+        # the selected manifest/legacy root as an absolute inherited variable,
+        # and must not retain a previous title's value when none is selected.
+        self.assertIn('$resolvedDataRoot = Resolve-Path -LiteralPath $effectiveDataRoot', self.manager)
+        self.assertIn('$env:SR_DATAROOT = $null', self.manager)
+        self.assertIn('$env:SR_DATAROOT = $resolvedDataRoot.Path', self.manager)
+
+    def test_hst_wrapper_only_declares_legacy_name_for_hst_manifest(self) -> None:
+        wrapper = (ROOT / 'hst_manager.ps1').read_text(encoding='utf-8-sig')
+        self.assertIn('$hstManifestSelected = $false', wrapper)
+        self.assertIn('$hstManifestSelected = $true', wrapper)
+        self.assertIn('if ($hstManifestSelected -and', wrapper)
+
+    def test_generic_paths_make_no_layout_assumptions(self) -> None:
+        # Issue #196 Phase 4: every place_game_here/ reference in the manager
+        # must sit inside (or within a few lines of) an explicit retail/
+        # legacy-layout guard. Unguarded generic paths make no layout assumption.
+        lines = self.manager.splitlines()
+        for index, line in enumerate(lines):
+            if 'place_game_here' not in line:
+                continue
+            context = "\n".join(lines[max(0, index - 6):index + 1])
+            guarded = ('IsRetail' in context) or ('LegacyInputLayout' in context)
+            self.assertTrue(
+                guarded,
+                f"legacy-layout reference not inside a retail/legacy guard (line {index + 1}): {line.strip()}",
+            )
+
+    def test_run_action_guards_against_killing_live_target_session(self) -> None:
+        # P-005: Run must not kill a live session. It discovers running target processes
+        # using full process identity (Get-ProcessIdentityRecord, canonical path), prints
+        # a clear message with PID and advice to use -Action Clean, and exits non-zero
+        # without launching.
+        self.assertIn("Get-WorkspaceTargetProcesses", self.manager)
+        self.assertIn("already running (PID", self.manager)
+        self.assertIn("close it or use -Action Clean", self.manager)
+
+        # Run-NkEngine must not call Stop-WorkspaceTarget before launching
+        run_engine_body = self.manager[
+            self.manager.index("function Run-NkEngine") : self.manager.index("function Run-HstEngine")
+        ]
+        self.assertNotIn("Stop-WorkspaceTarget", run_engine_body)
+        self.assertIn("Get-WorkspaceTargetProcesses", run_engine_body)
+
+        # Stop-WorkspaceTarget retains its clean-up capability using full process identity
+        stop_target_body = self.manager[
+            self.manager.index("function Stop-WorkspaceTarget") : self.manager.index("function Stop-WorkspaceHst")
+        ]
+        self.assertIn("Get-WorkspaceTargetProcesses", stop_target_body)
+
+        get_processes_body = self.manager[
+            self.manager.index("function Get-WorkspaceTargetProcesses") : self.manager.index("function Stop-WorkspaceTarget")
+        ]
+        self.assertIn("Get-ProcessIdentityRecord", get_processes_body)
+        self.assertIn("Get-CanonicalPath", get_processes_body)
 
 
 if __name__ == "__main__":

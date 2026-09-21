@@ -835,7 +835,7 @@ def load_program_image(path, base=0, psp_header=None):
 
     if psp_sizes is not None:
         declared_extra = 0
-        for spec, declared_size in zip(load_specs, psp_sizes):
+        for spec, declared_size in zip(load_specs, psp_sizes, strict=True):
             if declared_size < spec["filesz"]:
                 findings.append(ProgramImageFinding(
                     "psp-segment-size-invalid", "error", f"PT_LOAD[{spec['idx']}].memsz",
@@ -863,7 +863,7 @@ def load_program_image(path, base=0, psp_header=None):
         loads.append({**spec, "guest_start": start, "guest_end": end})
 
     by_guest = sorted(loads, key=lambda item: (item["guest_start"], item["guest_end"], item["idx"]))
-    for left, right in zip(by_guest, by_guest[1:]):
+    for left, right in zip(by_guest, by_guest[1:], strict=False):
         if right["guest_start"] < left["guest_end"]:
             findings.append(ProgramImageFinding(
                 "segment-overlap", "error", "program_headers",
@@ -873,7 +873,7 @@ def load_program_image(path, base=0, psp_header=None):
         (item for item in loads if item["filesz"]),
         key=lambda item: (item["off"], item["off"] + item["filesz"], item["idx"]),
     )
-    for left, right in zip(by_file, by_file[1:]):
+    for left, right in zip(by_file, by_file[1:], strict=False):
         if right["off"] < left["off"] + left["filesz"]:
             findings.append(ProgramImageFinding(
                 "segment-file-overlap", "error", "program_headers",
@@ -1004,7 +1004,7 @@ def load_program_image(path, base=0, psp_header=None):
             import_entries = _program_image_table(
                 data, loads, stub_start, stub_end, "module.imports", findings, effective_base, "import"
             )
-            for position, libname, version, flags, num_vars, num_funcs, table_a, table_b in export_entries:
+            for position, libname, _version, _flags, num_vars, num_funcs, table_a, table_b in export_entries:
                 function_values = _program_image_u32_table(
                     data, loads, table_a, num_funcs, f"module.exports[0x{position:08x}].functions", findings
                 )
@@ -1020,7 +1020,7 @@ def load_program_image(path, base=0, psp_header=None):
                         variable_values, effective_base, "export.variables", findings, loads, data
                     ),
                 ))
-            for position, libname, version, flags, num_vars, num_funcs, table_a, table_b in import_entries:
+            for position, libname, _version, _flags, _num_vars, num_funcs, table_a, table_b in import_entries:
                 nids = _program_image_u32_table(
                     data, loads, table_a, num_funcs, f"module.imports[0x{position:08x}].nids", findings
                 )
@@ -1135,7 +1135,7 @@ class Prx:
                 psp_header, len(loads)
             )
             declared_extra = 0
-            for segment, declared_size in zip(loads, segment_sizes):
+            for segment, declared_size in zip(loads, segment_sizes, strict=True):
                 if declared_size < segment["filesz"]:
                     raise ValueError(
                         f"{psp_header}: segment memory size 0x{declared_size:x} "
@@ -1233,7 +1233,7 @@ class Prx:
         type_bits = d[buf_offset + 3]
 
         seg_bits = 1
-        while (1 << seg_bits) <= rel_seg_idx:
+        while (1 << seg_bits) < rel_seg_idx:
             seg_bits += 1
 
         if not (1 <= flag_bits <= 8 and 1 <= type_bits <= 8) or flag_bits + type_bits + seg_bits > 16:

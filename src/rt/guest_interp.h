@@ -11,12 +11,15 @@
 typedef enum SrGuestInterpResult {
     SR_GUEST_INTERP_AOT_HANDOFF       = 1,
     SR_GUEST_INTERP_CALL_RETURN       = 2,
+    SR_GUEST_INTERP_EXCEPTION         = 3,
+    SR_GUEST_INTERP_ERET              = 4,
     SR_GUEST_INTERP_NOT_EXECUTABLE    = -1,
     SR_GUEST_INTERP_MISALIGNED_PC     = -2,
     SR_GUEST_INTERP_FETCH_BOUNDARY    = -3,
     SR_GUEST_INTERP_UNSUPPORTED       = -4,
     SR_GUEST_INTERP_MEMORY_FAULT      = -5,
     SR_GUEST_INTERP_MISALIGNED_DATA   = -6,
+    SR_GUEST_INTERP_FLOW_FATAL        = -7,
 } SrGuestInterpResult;
 
 typedef struct SrGuestInterpFault {
@@ -55,6 +58,19 @@ typedef struct SrGuestInterpCallBoundary {
  *   scalar FPU mfc1 mtc1 add.s mul.s cvt.w.s   (via the src/rt/fp_convert.h
  *              helpers the generated code also calls, so guest FCR31 selects
  *              the result in both execution lanes)
+ *   LLE CPU    mfc0 mtc0 syscall break eret (src/rt/cpu_lle.h helpers, gated
+ *              on sr_cpu_lle_enabled(); with the gate off these keep the
+ *              historical fail-closed SR_GUEST_INTERP_UNSUPPORTED so the
+ *              default lane and the cosim form census are unchanged)
+ *   LLE VFPU   lv.s sv.s lv.q sv.q lvl.q lvr.q svl.q svr.q address checks
+ *              (widths 4/16, left/right width 0 bypass; gated on
+ *              sr_cpu_lle_enabled() with the same historical UNSUPPORTED
+ *              when off; the access itself runs via sr_vfpu_interp)
+ *
+ * The LLE gate is what keeps the cosim census honest: census probes run with
+ * the default (disabled) configuration, so the newly decoded COP0/syscall
+ * shapes still read as "not decoded" there, while LLE selftests enable the
+ * gate explicitly.
  *
  * While SR_INSTRUCTION_TRACE is compiled in, execution emits the canonical
  * per-instruction trace (tools/TRACE_FORMAT.md) through the same sr_begin/sr_end

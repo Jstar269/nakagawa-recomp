@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { getProfileById, ProfileStoreError } from "@/lib/recompiler/profile-store";
 
@@ -34,6 +36,6 @@ export async function GET(
     if (e instanceof ProfileStoreError) {
       return NextResponse.json({ error: e.code, message: e.message, fields: e.fields }, { status: e.status });
     }
-    return NextResponse.json({ error: "db-error", message: String(e) }, { status: 500 });
+    return routeError("db-error", e, 500);
   }
 }

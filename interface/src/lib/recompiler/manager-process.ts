@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createWriteStream, type WriteStream } from "node:fs";
 import path from "node:path";
@@ -10,12 +11,15 @@ import {
 } from "./manager-contract";
 
 export type ProcessMessage = {
-  type: "stdout" | "stderr" | "close" | "error";
+  type: "stdout" | "stderr" | "close" | "error" | "status";
   /** Generation that produced this event; stale generations are ignored. */
   runId?: number;
   text?: string;
   code?: number;
   message?: string;
+  /** Only on "status": lifecycle phase + action, for event-driven refresh. */
+  phase?: ProcessPhase;
+  action?: ManagerAction | null;
 };
 
 type ManagerAction = DashboardManagerAction | "Fuzz";
@@ -203,7 +207,7 @@ export type ManagerProcessState = {
   logBytes: { total: number; lines: number };
   listeners: Set<(data: ProcessMessage) => void>;
   /** Terminal state of the most recently finalized run (survives stop/exit). */
-  lastTerminal: { runId: number; phase: ProcessPhase; lastExitCode: number } | null;
+  lastTerminal: { runId: number; phase: ProcessPhase; lastExitCode: number; action: ManagerAction | null } | null;
   readonly child: ChildProcess | null;
   readonly snapshotWatcher: ChildProcess | null;
   readonly action: ManagerAction | null;
@@ -249,6 +253,20 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
   }
 
   /**
+   * Broadcast the current lifecycle phase (issue O-08). Status events are
+   * generation-agnostic on purpose: idle subscribers must learn that a run
+   * finished even when the run that emitted the event is already gone.
+   */
+  function emitStatus(): void {
+    emit({
+      type: "status",
+      phase: state.phase ?? undefined,
+      action: state.active?.action ?? state.lastTerminal?.action ?? null,
+      runId: state.runId ?? undefined,
+    });
+  }
+
+  /**
    * Finalize a run.  A run may be finalized exactly once for terminal events;
    * its tombstone (phase/lastExitCode) is preserved so a late callback from a
    * superseded generation can never mutate the active run's child, watcher, or
@@ -261,7 +279,7 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
     // a delayed close from an older generation must not clobber a newer run's
     // terminal state (issue #186).
     if (run.runId >= (state.lastTerminal?.runId ?? 0)) {
-      state.lastTerminal = { runId: run.runId, phase, lastExitCode: run.lastExitCode };
+      state.lastTerminal = { runId: run.runId, phase, lastExitCode: run.lastExitCode, action: run.action };
     }
     const ownsActive = state.active?.runId === run.runId;
     if (!run.terminalEmitted) {
@@ -286,12 +304,16 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
       const oldest = state.runs.keys().next().value;
       if (oldest !== undefined) state.runs.delete(oldest);
     }
+    // Notify lifecycle subscribers AFTER the tombstone/active bookkeeping so
+    // the reported phase is already the final one (O-08).
+    emitStatus();
   }
 
   function stopActiveManagerProcess(): boolean {
     const run = state.active;
     if (!run) return false;
     run.phase = "stopping";
+    emitStatus();
     terminateTree(run.child);
     if (run.snapshotWatcher) terminateTree(run.snapshotWatcher);
     // Emit the terminal close for the stopping run NOW (with its runId) so SSE
@@ -305,7 +327,7 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
   function cleanManagerEnvironment(additions: Record<string, string> = {}): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // SR_* switches are presence-based in the runtime. Never inherit a caller's
-    // shell diagnostics into a dashboard task; hst_manager.ps1 sets the selected
+    // shell diagnostics into a dashboard task; nk_manager.ps1 sets the selected
     // profile explicitly. Fuzzer inputs are added only by the validated endpoint.
     for (const key of Object.keys(env)) {
       if (key.startsWith("SR_") || key.startsWith("FUZZ_")) delete env[key];
@@ -356,8 +378,8 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
     }
 
     const repoRoot = findRepoRoot();
-    const psScript = path.join(repoRoot, "hst_manager.ps1");
-    if (!existsSync(psScript)) throw new Error(`hst_manager.ps1 not found at ${psScript}`);
+    const psScript = path.join(repoRoot, "nk_manager.ps1");
+    if (!existsSync(psScript)) throw new Error(`nk_manager.ps1 not found at ${psScript}`);
 
     const fuzzLogPath = path.join(repoRoot, "logs", "vfpu_fuzz_latest.log");
     const fuzzWriter = action === "Fuzz" ? new FuzzLogWriter(fuzzLogPath) : null;
@@ -381,6 +403,7 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
     };
     state.runs.set(runId, run);
     state.active = run;
+    emitStatus();
 
     const handleData = (type: "stdout" | "stderr", chunk: Buffer) => {
       if (state.active?.runId !== runId) return; // stale generation
@@ -395,7 +418,10 @@ export function createManagerProcess(deps: ManagerProcessDeps): ManagerProcessAp
 
     child.on("spawn", () => {
       run.spawned = true;
-      if (state.active?.runId === runId) run.phase = "running";
+      if (state.active?.runId === runId) {
+        run.phase = "running";
+        emitStatus();
+      }
     });
 
     child.on("error", (error) => {

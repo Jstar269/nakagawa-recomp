@@ -237,7 +237,7 @@ class TestProductionSmoke(unittest.TestCase):
     def _fabricated_aot_tree(self, root: Path, relative_dir: str) -> Path:
         """Minimal build tree satisfying verify(--mode aot) with RELATIVE-spelled
         link-map entries, for the relative/absolute --build-dir contract test."""
-        build_dir = ROOT / relative_dir
+        build_dir = root / relative_dir
         build_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(shutil.rmtree, build_dir, ignore_errors=True)
         fixture = build_dir / "fixture"
@@ -285,7 +285,7 @@ class TestProductionSmoke(unittest.TestCase):
             "ge.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
-            "iso_unavailable.o", "pgd_unavailable.o", "mpeg.o", "pgf_unavailable.o",
+            "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_unavailable.o",
             "gui.o", "audio_unavailable.o", "h264_mf.o", "h264_null.o", "savedata.o",
             "osk_win.o", "driver.o", "sdl3vk.o", "ge_gpu.o",
             "atrac3p_atrac3p_api.o",
@@ -307,17 +307,19 @@ class TestProductionSmoke(unittest.TestCase):
         return build_dir
 
     def test_verify_accepts_relative_and_absolute_build_dir_spellings(self):
-        relative_dir = "build/prod-smoke-relabs-check"
-        build_dir = self._fabricated_aot_tree(ROOT, relative_dir)
-        cwd = os.getcwd()
-        try:
-            os.chdir(ROOT)
-            # Relative spelling.
-            generator.verify(Path(relative_dir), mode="aot")
-            # Semantically identical absolute spelling of the SAME directory.
-            generator.verify(build_dir.resolve(), mode="aot")
-        finally:
-            os.chdir(cwd)
+        with tempfile.TemporaryDirectory(prefix="nk_prod_smoke_") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            relative_dir = "sub_build"
+            build_dir = self._fabricated_aot_tree(temp_root, relative_dir)
+            cwd = os.getcwd()
+            try:
+                os.chdir(temp_root)
+                # Relative spelling.
+                generator.verify(Path(relative_dir), mode="aot")
+                # Semantically identical absolute spelling of the SAME directory.
+                generator.verify(build_dir.resolve(), mode="aot")
+            finally:
+                os.chdir(cwd)
 
     def test_build_and_ci_route_use_the_production_targets(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

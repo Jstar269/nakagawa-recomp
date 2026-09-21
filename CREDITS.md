@@ -13,4 +13,4 @@ The authoritative, component-by-component provenance records are [`NOTICE.md`](N
 [`public provenance ledger`](assets/public_provenance_ledger.json). Detailed historical comparison
 packets remain outside the public candidate.
 
-This credits file is a discoverability aid, not a replacement for `LICENSE`, `NOTICE.md`, per-file license notices, or the third-party license files that govern redistribution.
+This credits file is a discoverability aid, not a replacement for `LICENSE`, `NOTICE.md`, per-file license notices, or the third-party license files that govern redistribution. See the [Dedication](README.md#dedication) in `README.md` for Project Blitzen's background.

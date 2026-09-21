@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // profile-store.test.ts — DB-backed integration tests for the transactional
 // profile store (issue #188). Runs against a throwaway SQLite file; the schema
 // is pushed with `prisma db push` in the setup hook. Use `npm run test:db`.

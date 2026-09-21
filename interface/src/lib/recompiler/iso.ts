@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import type { IsoMeta, IsoTreeNode } from "./types";
 import { matchGame } from "./profiles";
 

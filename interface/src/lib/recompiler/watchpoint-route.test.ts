@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // watchpoint-route.test.ts — DB-backed tests that exercise the real watchpoint
 // API route handlers (watchpoints + watchpoints/profiles) against a throwaway
 // SQLite database and a temp derived artifact (SR_WATCHPOINTS_FILE). Run with

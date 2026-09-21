@@ -434,6 +434,85 @@ class FindingRuleTests(unittest.TestCase):
         self.assertIn(entry["handler"], meta.FLOAT_RETURN_HANDLERS)
 
 
+class MechanicalStubTests(unittest.TestCase):
+    """Zero-returning dedicated stubs are detected by body shape, not by name.
+
+    A new one-line `return 0` stub or log-then-return-0 stub must join the
+    fake-success census without anyone hand-listing its handler name; a real
+    handler that writes guest state must not be swept in by adding a log line.
+    """
+
+    SYNTH_STUB_SOURCE = """
+static uint32_t h_SynthStub(CpuState *s) { (void)s; return 0; }
+static uint32_t h_SynthLogStub(CpuState *s) {
+    char dev[64];
+    if (!guest_cstr(A0, dev, sizeof(dev)))
+        return 0x80010016u;
+    uint32_t cmd = A1;
+    if (hle_log_on())
+        fprintf(stderr, "synth: dev='%s', cmd=0x%08x\\n", dev, cmd);
+    return 0;
+}
+static uint32_t h_SynthReal(CpuState *s) {
+    if (A0) MEM_W32(A0, 1u);
+    return 0;
+}
+"""
+
+    def test_dedicated_and_logging_stubs_flagged_real_handler_not(self) -> None:
+        stubs = hle_manifest.mechanical_stub_handlers(self.SYNTH_STUB_SOURCE)
+        self.assertIn("h_SynthStub", stubs)
+        self.assertIn("h_SynthLogStub", stubs)
+        self.assertNotIn("h_SynthReal", stubs)
+
+    def test_mechanical_stubs_classify_as_fake_success(self) -> None:
+        stubs = hle_manifest.mechanical_stub_handlers(self.SYNTH_STUB_SOURCE)
+        self.assertEqual(
+            hle_manifest.classify("h_SynthStub", stubs), ("fake_success", "stub")
+        )
+        self.assertEqual(
+            hle_manifest.classify("h_SynthLogStub", stubs), ("fake_success", "stub")
+        )
+        self.assertEqual(
+            hle_manifest.classify("h_SynthReal", stubs), ("dedicated", "unreviewed")
+        )
+
+    def test_h_ok_classification_unchanged(self) -> None:
+        # h_ok stays fake_success via its curated generic handler even when the
+        # mechanical set is empty; the body pass only unions with that path.
+        self.assertEqual(hle_manifest.classify("h_ok"), ("fake_success", "stub"))
+        self.assertIn("h_ok", meta.GENERIC_SUCCESS_HANDLERS)
+
+    def test_live_census_counts_all_zero_returning_stubs(self) -> None:
+        manifest = build_manifest()
+        by_handler: dict[str, list[dict]] = {}
+        for r in manifest["registrations"]:
+            by_handler.setdefault(r["handler"], []).append(r)
+        for handler in (
+            "h_OskUpdate",
+            "h_IoDevctl",
+        ):
+            with self.subTest(handler=handler):
+                self.assertIn(handler, by_handler, f"{handler} must still be registered")
+                for r in by_handler[handler]:
+                    self.assertEqual(
+                        r["classification"], "fake_success", f"{handler} must census as a stub"
+                    )
+                    self.assertEqual(r["status"], "stub")
+        fake = sum(
+            1 for r in manifest["registrations"] if r["classification"] == "fake_success"
+        )
+        # Compare against the committed baseline rather than a literal, so converting a
+        # stub into a real handler only needs the baseline refresh the gate already demands.
+        baseline_path = Path(__file__).resolve().parent / "import_audit_baseline.json"
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        committed = sum(
+            1 for v in baseline.values()
+            if isinstance(v, dict) and v.get("classification") == "fake_success"
+        )
+        self.assertEqual(fake, committed, "live census must match the committed baseline")
+
+
 class MpegDirtyNotificationContractTests(unittest.TestCase):
     def test_mpeg_avc_decode_dirty_notification_invariants(self) -> None:
         mpeg_src = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")

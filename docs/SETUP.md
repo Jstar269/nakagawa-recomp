@@ -1,6 +1,8 @@
 # Build and development setup
 
-Nakagawa Recomp's core build is Windows-only. The dashboard is a separate optional web project.
+The supported and tested core build is Windows 11 x64; the host-neutral object
+gate is a portability probe, not Linux support (see
+[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)). The dashboard is a separate optional web project.
 
 ## Supported development baseline
 
@@ -15,7 +17,7 @@ The supported and tested core development environment is:
 The environment doctor is the executable form of this contract:
 
 ```powershell
-python tools/hst_doctor.py --scope build
+python tools/nk_doctor.py --scope build
 ```
 
 For the Vulkan SDK, discovery is explicit and fail-closed: `-VulkanSdk` wins first, then
@@ -46,7 +48,7 @@ python -m pip install .
 
 This installs the declared tooling dependencies, including `compiledb`.
 
-`glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the core build.
+`glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the Windows core build (a staged CMake target for portability work is tracked separately in [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)).
 
 ### Runtime DLLs (SDL3.dll & vulkan-1.dll)
 
@@ -136,19 +138,45 @@ Unifying generic `ms0:` I/O with the savedata storage root is still portability
 work; do not remove `fs/` until that runtime change is implemented and the
 current menu route is revalidated.
 
-To regenerate the extracted asset tree, fetch libxb locally and run the extractor:
+To regenerate the extracted asset tree, run the extractor. It has no
+third-party dependency:
+
+```powershell
+python tools/extract_xb.py place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata --output place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted -v
+```
+
+Extraction is entirely repository-owned: `tools/xb_probe.py` parses the archive
+and decodes every member — including the nested `DEFLATE → LZS` layer — under
+the budgets declared at the top of `tools/extract_xb.py`, and that same module
+normalizes each member name once and writes it itself. The name that is
+validated is the name that is written, on every host. An archive containing an
+escaping, ambiguous, or colliding member name, one that breaches a decode
+budget, or one the reader cannot parse at all is refused rather than extracted;
+each archive is built in a staging directory and promoted only after the whole
+of it succeeds. The extractor refuses to reuse a non-empty destination or
+replace an existing generated file unless `--overwrite` is passed, `--workers`
+defaults to a small cap rather than the CPU count because each worker holds a
+whole archive in memory, and the number of in-flight worker tasks is bounded
+independently of how many archives were found.
+
+[libxb](https://github.com/kiwi515/libxb) is **no longer used**. It was
+previously the extraction back end, pinned to the audited 0.2.0 source snapshot
+`ce6df78e5ca99241dd2bbbd68ca485e34003d760`. It remains a useful independent
+reference for the XB container format and may still be checked out for
+comparison work:
 
 ```powershell
 git clone https://github.com/kiwi515/libxb.git third_party/libxb
 git -C third_party/libxb checkout --detach ce6df78e5ca99241dd2bbbd68ca485e34003d760
-python tools/extract_xb.py place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata --output place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted -v
 ```
 
-The detached commit is the audited libxb 0.2.0 source snapshot. Upstream has no
-release/tag, so do not leave this optional checkout tracking `main`; record the
-commit above (and verify the 0.2.0 sdist hash in
-[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md)) when reproducing an
-extraction.
+Upstream has no release/tag, so do not leave that optional checkout tracking
+`main`; record the commit above and verify the 0.2.0 sdist hash in
+[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md). Nothing in the build,
+the runtime, or the extractor reads it. Dropping it is not a statement that
+libxb is unsafe in general — see
+[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md) for what was actually
+measured and what that does and does not establish.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
@@ -191,7 +219,7 @@ and never copy game or firmware material into Git history.
 From the repository root:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json
+.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
 This runs the complete pipeline and compilation. Generated C is split into a dynamic number of
@@ -201,7 +229,7 @@ intentionally conservative flags to avoid excessive compiler memory use.
 For runtime-only changes:
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json
+.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
 For a direct Make build:
@@ -215,7 +243,7 @@ Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a 
 using this form. HST requires both address values to be zero. The Makefile's generic defaults are
 intentionally not HST defaults.
 
-`assets/titles/hst-ucus98701.json` is the local, Git-ignored HST title manifest: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
+`assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
 The requirement is enforced incrementally, not only on a clean tree: the generated title-config
 header is keyed to a content-addressed identity of the effective configuration, so dropping
@@ -224,19 +252,36 @@ that build left behind.
 
 ## 4. Run and test
 
+Run `pwsh -NoProfile -File nk_manager.ps1` without an action for usage (exit code 0).
+The canonical manager accepts these actions; `hst_manager.ps1` forwards the same set:
+
+| Action | Description |
+| --- | --- |
+| `BuildFull` | Clean and rebuild the selected title through the full pipeline. |
+| `BuildFast` | Incrementally build the selected title without cleaning. |
+| `Run` | Launch the selected title with the chosen runtime profile. |
+| `Inspect` | Locate a generated C function using `-InspectFunc`. |
+| `Clean` | Stop tracked build processes and clear local tracking logs. |
+| `Test` | Run the Makefile `selftest` target (C++ reference-runtime selftest), not the Python suite. |
+| `Verify` | Run Python tests, native selftests, and import/publication audits. |
+| `DiffFunc` | Compare a function against a reference trace using `-DiffTarget` and `-DiffOracle`. |
+| `FindSymbol` | Search the optional symbol reference using `-FindName`. |
+| `Fuzz` | Run the Makefile `vfpu_fuzz` target. |
+| `VisualOracle` | Replay a route and archive visual regression captures. |
+
 ```powershell
-.\hst_manager.ps1 -Action Test
-.\hst_manager.ps1 -Action Run
-.\hst_manager.ps1 -Action Run -SoftwareRender
-.\hst_manager.ps1 -Action Run -NoGui -Duration 30
+.\nk_manager.ps1 -Action Test
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -SoftwareRender
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -NoGui -Duration 30
 ```
 
 For normal Vulkan runs, an explicit runtime profile can isolate the intended task:
 
 ```powershell
-.\hst_manager.ps1 -Action Run -Profile Performance # log-free visual/audio smoke test
-.\hst_manager.ps1 -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
-.\hst_manager.ps1 -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Performance # log-free smoke test (public-safe build is silent by design)
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
 ```
 
 `Performance` redirects the runtime's stdout and stderr to the null device; it is not a
@@ -279,10 +324,15 @@ baseline Ruff correctness, large files, secret detection, and the publication au
 
 ```powershell
 python -m pip install pre-commit
-pre-commit install
-pre-commit install --hook-type pre-push
-pre-commit run --all-files
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+python -m pre_commit run --all-files
 ```
+
+Invoked as `python -m pre_commit` rather than the bare `pre-commit` console script: pip
+installs that script into a user `Scripts/` directory that is frequently absent from `PATH` on
+Windows, so the bare form fails with "command not found" immediately after a successful install.
+The module form works regardless of `PATH`.
 
 These hooks install their own pinned Ruff and Betterleaks environments. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
@@ -295,7 +345,7 @@ contributor hook. These tools are not core runtime dependencies.
   headers, NID names, documented error constants, PRX structure, and PBP utilities. Keep a local
   checkout outside the repository or fetch a pinned revision in a reproducible tooling step.
 - [PSPLink USB](https://github.com/pspdev/psplinkusb) is useful only when a development-capable
-  physical PSP is available to collect clean-room behavior traces. It is not required to build
+  physical PSP is available to collect independent behavior traces. It is not required to build
   or run the recompiler.
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) can independently inspect MIPS
   control flow and shared entries when the Python analyzer is ambiguous. Export only scripts,
@@ -323,7 +373,7 @@ feature must report that honestly rather than creating a placeholder artifact; s
 
 ## Troubleshooting
 
-- **Preflight diagnostics:** run `.\hst.ps1 Doctor` (or `python tools/hst_doctor.py`) to validate your toolchain, build dependencies, and private game inputs.
+- **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` (or `python tools/nk_doctor.py --title-manifest assets/titles/hst-ucus98701.json --game-name hst`) to validate your toolchain, build dependencies, and private HST inputs. Without a title selection, the canonical doctor uses the public synthetic title.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** ensure the UCRT64 SDL3 `bin` directory is on `PATH`, or place a compatible `SDL3.dll` at the repository root so the manager copies it beside `hst.exe`.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where capability-excluded backends are stubbed, the runtime compiles with `PUBLIC_SAFE=1`. In this mode, UMD/ISO lookups return `-1` and retail disc routes fail closed.

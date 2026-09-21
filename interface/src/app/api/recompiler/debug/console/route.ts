@@ -1,7 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import path from "node:path";
 import { rejectNonLocalControlRequest } from "@/lib/recompiler/local-request";
 import {
@@ -11,8 +10,10 @@ import {
 
 export const runtime = "nodejs";
 
-const execFileAsync = promisify(execFile);
-const LIVE_CONTROL_ENABLED = process.env.HST_DASHBOARD_LIVE_CONTROL === "1";
+// NK_DASHBOARD_LIVE_CONTROL is canonical (issue #196); the legacy
+// HST_DASHBOARD_LIVE_CONTROL is honored so existing setups keep working.
+const LIVE_CONTROL_ENABLED =
+  process.env.NK_DASHBOARD_LIVE_CONTROL === "1" || process.env.HST_DASHBOARD_LIVE_CONTROL === "1";
 
 export async function POST(req: NextRequest) {
   const rejection = rejectNonLocalControlRequest(req, { mutating: true });
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: "invalid-debug-console-request",
-        detail: String(error),
+        detail: error instanceof Error ? error.message : "Invalid debug console request",
         supported: DEBUG_CONSOLE_ACTIONS,
       },
       { status: 400 },
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: "live-control-disabled",
-        detail: "Set HST_DASHBOARD_LIVE_CONTROL=1 before starting the dashboard to enable process mutations.",
+        detail: "Set NK_DASHBOARD_LIVE_CONTROL=1 before starting the dashboard to enable process mutations.",
       },
       { status: 403 },
     );
@@ -49,16 +50,15 @@ export async function POST(req: NextRequest) {
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
     // mem_debug.py is read-only by default (#180): mutating actions require the
     // explicit --mutate flag, which the dashboard only forwards when live
-    // control is enabled (already gated above by HST_DASHBOARD_LIVE_CONTROL).
+    // control is enabled (already gated above by NK_DASHBOARD_LIVE_CONTROL).
     const toolArgs = command.mutating && LIVE_CONTROL_ENABLED ? ["--mutate"] : [];
     const childArgs = [scriptPath, ...toolArgs, command.action, ...command.args];
 
-    const { stdout } = await execFileAsync(pythonCmd, childArgs, {
+    const { stdout } = await runSubprocess(pythonCmd, childArgs, {
       cwd: repoRoot,
-      encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
-      timeout: 10_000,
-      windowsHide: true,
+      timeoutMs: 10_000,
+      signal: req.signal,
     });
 
     const parsed: unknown = JSON.parse(stdout);
@@ -70,6 +70,6 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(parsed);
   } catch (e) {
-    return NextResponse.json({ error: "command-execution-failed", detail: String(e) }, { status: 500 });
+    return routeError("command-execution-failed", e, 500);
   }
 }

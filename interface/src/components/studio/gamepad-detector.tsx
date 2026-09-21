@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useEffect } from "react";
 import { Gamepad2, Usb, Crosshair, CircleCheck, CircleAlert, Radio } from "lucide-react";
@@ -29,7 +30,6 @@ export function GamepadDetector() {
     updateControllers,
     captureTarget,
     capturePadIdx,
-    startCapture,
     stopCapture,
   } = useStudio();
   const { bindings } = config.controllers;

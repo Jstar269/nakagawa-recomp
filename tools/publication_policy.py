@@ -124,6 +124,7 @@ class Policy:
         self.exclude_paths: frozenset[str] = frozenset(document["exclude_paths"])
         self.include_paths: frozenset[str] = frozenset(document["include_paths"])
         self.exclude_rationale: dict[str, str] = dict(document.get("exclude_rationale", {}))
+        self.private_roots: tuple[str, ...] = tuple(document.get("private_roots", ()))
         self.digest: str = canonical_digest(document)
 
     # -- resolution ----------------------------------------------------------
@@ -204,6 +205,11 @@ def load_policy(path: Path) -> Policy:
         value = document[key]
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise PolicyError(f"publication policy {path}: {key} must be a list of strings")
+
+    if "private_roots" in document:
+        value = document["private_roots"]
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise PolicyError(f"publication policy {path}: private_roots must be a list of strings")
 
     if document["default_disposition"] != REQUIRED_DEFAULT_DISPOSITION:
         raise PolicyError(

@@ -239,11 +239,17 @@ uint32_t sr_savedata_prepare_utility(unsigned kind) {
 
 /* memstick/PSP/SAVEDATA/<gameName><saveName> */
 static void save_dir(char *out, int cap, const char *game, const char *save) {
-    if (!path_sanitize(game) || !path_sanitize(save)) {
+    if (!path_sanitize(game) || (save && *save && !path_sanitize(save))) {
         snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
         return;
     }
-    snprintf(out, cap, "%s/PSP/SAVEDATA/%s%s", ms_root(), game, save);
+    char leaf[64];
+    int n = snprintf(leaf, sizeof(leaf), "%s%s", game, save ? save : "");
+    if (n <= 0 || (size_t)n >= sizeof(leaf) || !sr_vfs_is_safe_component(leaf, (size_t)n)) {
+        snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
+        return;
+    }
+    snprintf(out, cap, "%s/PSP/SAVEDATA/%s", ms_root(), leaf);
 }
 
 /* Root-RELATIVE form of the same location: "PSP/SAVEDATA/<gameName><saveName>".
@@ -256,8 +262,8 @@ static void save_dir(char *out, int cap, const char *game, const char *save) {
  * "NUL" is a device alias, and it is the joined name that reaches the host. */
 static int save_rel(char *out, size_t cap, const char *game, const char *save) {
     char leaf[64];
-    if (!path_sanitize(game) || !path_sanitize(save)) return 0;
-    int n = snprintf(leaf, sizeof(leaf), "%s%s", game, save);
+    if (!path_sanitize(game) || (save && *save && !path_sanitize(save))) return 0;
+    int n = snprintf(leaf, sizeof(leaf), "%s%s", game, save ? save : "");
     if (n <= 0 || (size_t)n >= sizeof(leaf)) return 0;
     if (!sr_cd_component_is_generic(leaf, (size_t)n) ||
         !sr_vfs_is_safe_component(leaf, (size_t)n)) return 0;

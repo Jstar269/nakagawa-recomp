@@ -61,6 +61,9 @@ def _build_and_run(mutated_recomp: str | None = None,
                 "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
                 "-I", str(work), "-I", str(ROOT / "src" / "rt"),
                 str(work / "dispatch_isolation_selftest.c"), str(interp_path),
+                str(ROOT / "src" / "rt" / "cpu_lle.c"),
+                str(ROOT / "src" / "rt" / "domain_mode.c"),
+                str(ROOT / "src" / "rt" / "stale_code.c"),
                 str(ROOT / "src" / "rt" / "title_config.c"),
                 str(ROOT / "src" / "rt" / "vfpu_tables.c"),
                 "-lm", "-o", str(exe),
@@ -125,8 +128,8 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
             "M1-untyped-dispatch",
             recomp_old=(
                 "SrGuestInterpResult interp_result = call_boundary\n"
-                "            ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)\n"
-                "            : sr_guest_interp_run(s, target, &fault);"
+                "        ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)\n"
+                "        : sr_guest_interp_run(s, target, &fault);"
             ),
             recomp_new="SrGuestInterpResult interp_result = sr_guest_interp_run(s, target, &fault);",
             diagnostic="CALL boundary handed the interpreted callee through the native outer return",

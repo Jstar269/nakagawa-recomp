@@ -1001,6 +1001,139 @@ static void test_configured_build_declares_both_collections(void) {
           "configuration \"%s\" declares no callback terminator", cfg->source_id);
 }
 
+/* ---- TD-27 stale dispatch redirect ------------------------------------------------
+ *
+ * Synthetic self-modifying program. STALE_EXEC owns a registered AOT body and
+ * codegen-shaped translation-time stale records naming the ORIGINAL guest
+ * words. After the guest overwrites a word and the invalidate-time check
+ * fires, production dispatch must run the NEW bytes through the interpreter;
+ * after the bytes are restored and the check runs silent again, dispatch
+ * returns to the AOT body. Gate off, every dispatch takes the AOT path
+ * (zero behaviour change); that direction is asserted here too. Disjoint
+ * from every other fixture range, probe address, and public title fixture
+ * family in this file. */
+#define STALE_EXEC       0x00650000u
+#define STALE_EXEC_END   (STALE_EXEC + 0x0cu)
+#define STALE_RESUME     (STALE_EXEC + 0x0cu)
+#define STALE_ORIG_IMM   0x1111u
+#define STALE_NEW_IMM    0x2222u
+#define STALE_AOT_VALUE  0x51a1e000u
+#define STALE_ADDIU_V0(imm) (0x24020000u | ((uint32_t)(imm) & 0xffffu))
+
+static int g_stale_aot_hits = 0;
+
+static void stale_aot_body(CpuState *s) {
+    g_stale_aot_hits++;
+    s->r[2] = STALE_AOT_VALUE;
+    s->pc = s->r[31];
+}
+
+/* Production-shaped reader: the HLE invalidate handlers read guest memory
+ * exactly this way (see h_CacheInvalidateAll in hle.c). */
+static int stale_test_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
+    (void)ctx;
+    if (!sr_guest_span_readable(addr, 4u)) {
+        return 0;
+    }
+    *word_out = MEM_R32(addr);
+    return 1;
+}
+
+static int run_stale_call(CpuState *s) {
+    memset(s, 0, sizeof *s);
+    s->pc = PROBE_PC;
+    s->r[29] = 0x00400000u;
+    s->r[31] = STALE_RESUME;
+    s->r[2] = 0xdeadbeefu;
+    return dispatch_call_try(s, STALE_EXEC, STALE_RESUME);
+}
+
+static void test_stale_hook_redirects_to_interpreter(void) {
+    const int gate = sr_stale_enabled();
+    const uint32_t orig_words[3] = {
+        STALE_ADDIU_V0(STALE_ORIG_IMM), 0x03e00008u, 0x00000000u,
+    };
+    uint32_t bad = 0u, exp = 0u, act = 0u;
+    CpuState s;
+    int rc;
+
+    sr_stale_reset();
+    sr_exec_span_reset();
+    MEM_W32(STALE_EXEC, orig_words[0]);
+    MEM_W32(STALE_EXEC + 4u, orig_words[1]);
+    MEM_W32(STALE_EXEC + 8u, orig_words[2]);
+    /* Codegen-shaped registration: entry word plus head-run block. */
+    sr_stale_register_word(STALE_EXEC, orig_words[0]);
+    sr_stale_register_block(STALE_EXEC, 3u, sr_stale_fnv1a(orig_words, 3u));
+    CHECK(sr_exec_span_register(STALE_EXEC, STALE_EXEC_END),
+          "stale executable span registration failed");
+    sr_register(STALE_EXEC, stale_aot_body);
+
+    /* Pristine: the check is silent, the query is clean, dispatch takes AOT. */
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == 0,
+          "pristine stale invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == 0,
+          "pristine stale block must not be stale");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+          s.r[2] == STALE_AOT_VALUE && s.pc == STALE_RESUME,
+          "pristine stale dispatch must take the AOT body "
+          "(rc=%d hits=%d v0=0x%08x pc=0x%08x)",
+          rc, g_stale_aot_hits, s.r[2], s.pc);
+
+    /* Overwrite one guest word, then run the cache op: gate on, the check
+     * fires and the interpreted result follows the new bytes while the
+     * stale AOT value still names the old ones. Gate off, the check stays
+     * silent and dispatch stays on the AOT path. */
+    MEM_W32(STALE_EXEC, STALE_ADDIU_V0(STALE_NEW_IMM));
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == (gate ? 1 : 0),
+          "patched stale invalidate must %s",
+          gate ? "fire" : "stay silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == (gate ? 1 : 0),
+          "patched stale query must read %s", gate ? "stale" : "clean");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    if (gate) {
+        CHECK(rc == SR_GUEST_INTERP_CALL_RETURN,
+              "stale dispatch must return through the interpreter boundary "
+              "(rc=%d)", rc);
+        CHECK(g_stale_aot_hits == 0,
+              "stale dispatch must not enter the AOT body");
+        CHECK(s.r[2] == STALE_NEW_IMM && s.pc == STALE_RESUME,
+              "stale dispatch must follow the NEW bytes "
+              "(v0=0x%08x pc=0x%08x)", s.r[2], s.pc);
+        CHECK(s.r[2] != STALE_AOT_VALUE,
+              "interpreted result must differ from stale AOT");
+    } else {
+        CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+              s.r[2] == STALE_AOT_VALUE,
+              "gate off: patched stale dispatch must stay on the AOT path "
+              "(rc=%d hits=%d v0=0x%08x)", rc, g_stale_aot_hits, s.r[2]);
+    }
+
+    /* Restore the bytes, then run the cache op again: silent, flag cleared,
+     * dispatch returns to the AOT path. */
+    MEM_W32(STALE_EXEC, orig_words[0]);
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == 0,
+          "restored stale invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == 0,
+          "restored bytes must clear the flag");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+          s.r[2] == STALE_AOT_VALUE && s.pc == STALE_RESUME,
+          "restored stale dispatch must return to the AOT value "
+          "(rc=%d hits=%d v0=0x%08x pc=0x%08x)",
+          rc, g_stale_aot_hits, s.r[2], s.pc);
+
+    sr_stale_reset();
+    sr_exec_span_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     atomic_store(&sr_timeslice, 0);
@@ -1032,6 +1165,7 @@ int main(int argc, char **argv) {
     test_foreign_aliases_do_not_redirect();
     test_configured_terminators_match_their_site_only();
     test_foreign_terminator_sites_are_generic();
+    test_stale_hook_redirects_to_interpreter();
 
     if (g_failures != 0) {
         fprintf(stderr, "dispatch-isolation-selftest: %d FAILURE(S) in configuration \"%s\"\n",

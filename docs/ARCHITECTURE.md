@@ -64,7 +64,7 @@ switched to the new adapter wholesale in this wave.
 
 **Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
 reachable from the production pipeline. Nothing in `tools/codegen.py`,
-`tools/imports.py`, the `Makefile`, or `hst_manager.ps1` imports or constructs
+`tools/imports.py`, the `Makefile`, or `nk_manager.ps1` imports or constructs
 either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
 their unit tests. That is a checkable property, not an intention, and it is the
 reason this wave makes no production-wiring claim.
@@ -106,12 +106,38 @@ The scaffold is not a claim that the complete profile-zero route is runnable yet
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 
+### Native title recognition projection
+
+`python tools/title_manifest.py --print-public-catalog` emits an immutable C99
+header from the explicitly included manifests in `assets/titles/`. The canonical
+validator owns the schema; there is no second native title registry to maintain.
+Excluded and unclassified files are not read, missing included files fail, and
+symbolic-link/junction input paths are rejected. Run generation on a quiescent
+checkout; these checks do not provide filesystem race isolation or provenance
+attestation. Capture subprocess stdout as bytes to preserve the generated LF text.
+
+The projection contains only title ID, display name, kind, canonical manifest
+SHA-256, and explicit primary/compatible disc IDs. It preserves UTF-8 strings
+through C compilation, rejects duplicate identities, and invents no disc IDs for
+synthetic or homebrew titles. Native lookups use exact identifiers. The digest
+also changes when non-projected manifest fields change; it identifies input
+content and does not authorize it.
+
+Recognition is not compatibility, preparation readiness, or permission to launch.
+The existing manifest-to-plan and runtime-configuration generators retain those
+separate responsibilities. Private overlays require their own explicit local
+binding and collision policy in a future host consumer. The current player
+prototype is not integrated by this projection. Source-owned tests generate,
+compile, and execute the header; no retail input is required.
+
 ## Directory Layout
 
 ```text
 NakagawaRecomp/
 ├── tools/              # Python offline compilation, verification, and audit tooling
 ├── src/
+│   ├── core/           # Shared native library, title, and launch services
+│   ├── player/         # Native player UI and setup staging
 │   ├── rt/             # C native runtime
 │   │   ├── gpu_sdl3vk/ # SDL3 + Vulkan backend
 │   │   └── ...
@@ -121,7 +147,9 @@ NakagawaRecomp/
 ├── build/              # Generated build output (Git-ignored)
 ├── docs/               # Maintained documentation and dated investigation records
 ├── Makefile            # Build driver
-├── hst_manager.ps1     # HST-specific build/run/inspection orchestration
+├── nk_manager.ps1      # Canonical build/run/inspection orchestration
+├── nk.ps1              # Simple build, doctor, and play entry point
+├── hst_manager.ps1     # Deprecated HST compatibility wrapper
 └── README.md           # Project entry point
 ```
 
@@ -183,12 +211,12 @@ The runtime executes generated guest functions and implements the host side of P
 | --- | --- |
 | `hle.c` | PSP syscall/NID dispatch and a large portion of kernel/user HLE behavior |
 | `hle_thread_selftest.c` | Game-input-free Windows harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
-| `audio.c` | PSP audio services through SDL3 host audio |
-| `iso.c` / `iso.h` | UMD/ISO filesystem access |
-| `pgd.c` | PGD/installed-data handling |
+| `audio_unavailable.c` | Public-tree stub linked under `PUBLIC_SAFE=1`; SDL3 audio backend `audio.c` is private-only |
+| `iso_public.c` / `iso.h` | Public-tree UMD/ISO backend linked under `PUBLIC_SAFE=1` using `nk_iso`; `iso_unavailable.c` is kept as a stub alternative; `iso.c` backend is private-only |
+| `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; installed-data backend `pgd.c` is private-only |
 | `mpeg.c` | MPEG/SAS/Atrac-related behavior derived in part from PPSSPP lineage |
 | `savedata.c` | Utility savedata mapped to host storage |
-| `pgf.c` / `pgf.h` | PGF parsing/rasterization; licensing/provenance is tracked separately as a publication blocker |
+| `pgf_unavailable.c` | Public-tree PGF stub linked under `PUBLIC_SAFE=1`; parsing/rasterization backend `pgf.c` is private-only, with provenance/distribution review separate |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
 | `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
 | `osk_win.c` | Win32 on-screen keyboard integration |
@@ -243,8 +271,12 @@ contains:
 - `fcr31`, `fpcond` — FPU control/condition state;
 - `v[128]` / `vi[128]` — physical VFPU register file;
 - `vfpuCtrl[16]` — VFPU control/prefix/condition state;
-- `status` — modeled COP0 status state;
-- `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping.
+- `cop0[32]` — modeled COP0 register bank; COP0 status is `cop0[SR_CP0_STATUS]`;
+- `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping;
+- `flow_kind`, `flow_target` — runtime transfer metadata.
+
+The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `2u`) and is
+checked in both C and C++ at compile time.
 
 There is **no separate `lr` member**. MIPS `$ra` is general register `r[31]`; similarly `$sp` is
 `r[29]` and `$gp` is `r[28]`.
@@ -366,7 +398,7 @@ inputs.
 
 HST defaults to `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`, while generic/unqualified titles remain
 conservative `-O0/-O0`. Explicit overrides (e.g. `RUNTIME_OPT=-O0 RECOMP_OPT=-O0`) remain fully
-supported on both direct Make and `hst_manager.ps1`. Generated `-O2` is not being adopted; `-O1`'s
+supported on both direct Make and `nk_manager.ps1` (and `hst_manager.ps1`). Generated `-O2` is not being adopted; `-O1`'s
 measured build cost is higher but acceptable for HST.
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
@@ -503,7 +535,7 @@ read is the RTC epoch init.
 ## Environment Variables
 
 The runtime has many diagnostic and behavior switches. This table is intentionally a selected
-architecture-level subset; `docs/DEBUGGING.md`, `hst_manager.ps1`, and the implementing source are
+architecture-level subset; `docs/DEBUGGING.md`, `nk_manager.ps1`, and the implementing source are
 the maintained references for exact behavior.
 
 | Variable | Values | Purpose |
@@ -513,6 +545,7 @@ the maintained references for exact behavior.
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
 | `SR_FBSNAP` | positive integer | Rotating PPM snapshot interval |
 | `SR_HLELOG` | present/unset | HLE dispatch diagnostics |
+| `SR_HLE_DIAGNOSTICS` | present/unset | Retained title-scoped HLE diagnostic reads; requires the validated HST code-generation profile |
 | `SR_SYSLOG` | present/unset | System-call diagnostics |
 | `SR_THLOG` | present/unset | Scheduler/thread diagnostics |
 | `SR_BLOCKLOG` | present/unset | Blocking/basic diagnostic output where consumed |

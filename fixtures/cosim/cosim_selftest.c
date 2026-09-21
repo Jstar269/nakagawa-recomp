@@ -190,7 +190,7 @@ static void trace_load(CosimTrace *trace, const char *path) {
  * separately, per lane, against its documented value.
  */
 
-#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 3)
+#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 32 + 4)
 
 typedef struct {
     char name[12];
@@ -240,9 +240,11 @@ static void vector_build(CosimVector *vector, const CpuState *s) {
     for (unsigned i = 0; i < 32u; i++) vector_pushf(vector, "f%u", i, s->fi[i]);
     for (unsigned i = 0; i < 128u; i++) vector_pushf(vector, "v%u", i, s->vi[i]);
     for (unsigned i = 0; i < 16u; i++) vector_pushf(vector, "vc%u", i, s->vfpuCtrl[i]);
-    vector_push(vector, "status", s->status);
+    for (unsigned i = 0; i < 32u; i++) vector_pushf(vector, "cop0[%u]", i, s->cop0[i]);
     vector_push(vector, "next_pc", s->next_pc);
     vector_push(vector, "delayslot", s->in_delay_slot);
+    vector_push(vector, "flow_kind", s->flow_kind);
+    vector_push(vector, "flow_target", s->flow_target);
 }
 
 /* ---- lane execution ------------------------------------------------------------- */
@@ -414,9 +416,12 @@ static void seed_state(CpuState *s, const CosimCase *test) {
      * window (which the PLT miss policy claims), so neither policy can shadow the
      * behavior under test. */
     s->pc = COSIM_ENTRY;
-    s->status = 0u;
+    for (unsigned i = 0; i < 32u; i++) s->cop0[i] = 0xc0c00000u | i;
+    s->cop0[SR_CP0_STATUS] = 0u;
     s->next_pc = 0u;
     s->in_delay_slot = 0u;
+    s->flow_kind = 0u;
+    s->flow_target = 0u;
 }
 
 static void seed_window(void) {

@@ -91,12 +91,54 @@ static void sr_cst_load(void) {
 int sr_vfpu_interp(CpuState *s, uint32_t w) {
     uint32_t op = w >> 26;
 
+    /* COP2 register transfers (issue G-25): mfv/mfvc (sub 3) and mtv/mtvc
+     * (sub 7) are the differential oracle for the op-0x12 codegen emitter.
+     * The seven-bit VFPU register number uses the same scalar physical-register
+     * mapping as codegen.vreg_indices(); 128..143 address vfpuCtrl[0..15].
+     * Reject the remaining control-register numbers before touching state. */
+    if (op == 0x12) {
+        int sub = (w >> 21) & 0x1F;
+        int rt = (w >> 16) & 0x1F;
+        int imm = w & 0xFF;
+        uint8_t vi_idx[1];
+        if (sub != 3 && sub != 7) return SR_VFPU_OTHER;
+        if (imm >= 144) return SR_VFPU_OTHER;
+        if (sub == 3) {           /* mfv / mfvc: VFPU -> GPR */
+            if (rt == 0) return SR_VFPU_COMPUTE;
+            if (imm < 128) {
+                vreg_idx(imm, 1, vi_idx);
+                s->r[rt] = s->vi[vi_idx[0]];
+            } else s->r[rt] = s->vfpuCtrl[imm - 128];
+            return SR_VFPU_COMPUTE;
+        }
+        if (sub == 7) {           /* mtv / mtvc: GPR -> VFPU */
+            uint32_t value = rt == 0 ? 0u : s->r[rt];
+            if (imm < 128) {
+                vreg_idx(imm, 1, vi_idx);
+                s->vi[vi_idx[0]] = value;
+            } else s->vfpuCtrl[imm - 128] = value;
+            return SR_VFPU_COMPUTE;
+        }
+    }
+
     /* VFPU memory operations, including the left/right quad merge instructions used
      * by ulv.q/usv.q.  Address low bits 0/1 belong to the encoding; effective offsets
      * are therefore sign-extended after masking with 0xFFFC. */
     if (op == 0x32 || op == 0x3a) {  /* lv.s / sv.s */
         int vt=((w>>16)&0x1F)|((w&3)<<5), base=(w>>21)&0x1F;
         uint32_t addr=s->r[base]+(uint32_t)(int32_t)(int16_t)(w&0xFFFCu);
+        /* MEASURED (PSP-A3-08 and PSP-A3-12): singles need 4-byte alignment.
+         * Under --lle-cpu the same width-relative check as scalar loads/stores
+         * runs before the access, so a fault leaves the destination and guest
+         * memory untouched. No single-alignment cell remains synthetic. */
+        if (sr_cpu_lle_enabled()) {
+            int is_store = (op == 0x3a);
+            unsigned code = sr_cpu_data_access_fault(s, addr, 4u, is_store);
+            if (code != 0u) {
+                (void)sr_cpu_raise_data_fault(s, code, addr, s->pc);
+                return SR_VFPU_OTHER;
+            }
+        }
         uint8_t idx[1];vreg_idx(vt,1,idx);
         if(op==0x32){s->vi[idx[0]]=MEM_R32(addr);return SR_VFPU_COMPUTE;}
         MEM_W32(addr,s->vi[idx[0]]);return SR_VFPU_STATE;
@@ -106,6 +148,20 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         uint32_t addr=s->r[base]+(uint32_t)(int32_t)(int16_t)(w&0xFFFCu);
         uint8_t idx[4];vreg_idx(vt,4,idx);
         int store=(op==0x3d || op==0x3e);
+        /* MEASURED (PSP-A3-09/10/11 plus PSP-A3-12..15): quads need 16-byte
+         * alignment with the load/store code, checked here before the span test
+         * like scalar loads/stores, so a fault leaves lanes and memory
+         * untouched. lvl/lvr/svl/svr bypass with width 0, exactly like
+         * lwl/lwr/swl/swr. PSP-A3-13 (sv.q+8 AdES), PSP-A3-14 (lv.q in a delay
+         * slot: BD 1, EPC = branch) and PSP-A3-15 (lvl.q at odd completes)
+         * confirm the guard; no VFPU alignment cell remains synthetic. */
+        if ((op == 0x36 || op == 0x3e) && sr_cpu_lle_enabled()) {
+            unsigned code = sr_cpu_data_access_fault(s, addr, 16u, store);
+            if (code != 0u) {
+                (void)sr_cpu_raise_data_fault(s, code, addr, s->pc);
+                return SR_VFPU_OTHER;
+            }
+        }
         /* Quad memory ops are all-or-nothing (issue #184): a span that is not
          * entirely guest-readable (loads) or guest-writable (stores) rejects the
          * whole op BEFORE any destination lane or guest word is committed, so a

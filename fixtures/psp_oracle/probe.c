@@ -42,20 +42,52 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT 13
 #define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
 #define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
-#define PSP_ORACLE_CASE_TRANSPORT_WRITE 16
-#define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 17
-#define PSP_ORACLE_CASE_DMAC_SURVEY 18
-#define PSP_ORACLE_CASE_CTRL_CLOCK 19
-#define PSP_ORACLE_CASE_FPU_VECTOR 20
-#define PSP_ORACLE_CASE_TEARDOWN_TEST 21
-#define PSP_ORACLE_CASE_IO_MATRIX 22
-#define PSP_ORACLE_CASE_AUDIO_QUERY 23
-#define PSP_ORACLE_CASE_CACHE_ALIAS 24
-#define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 25
-#define PSP_ORACLE_CASE_MODEL_PROFILE 26
+#define PSP_ORACLE_CASE_TRANSPORT_WRITE 44
+#define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 45
+#define PSP_ORACLE_CASE_DMAC_SURVEY 46
+#define PSP_ORACLE_CASE_CTRL_CLOCK 47
+#define PSP_ORACLE_CASE_FPU_VECTOR 48
+#define PSP_ORACLE_CASE_TEARDOWN_TEST 49
+#define PSP_ORACLE_CASE_IO_MATRIX 50
+#define PSP_ORACLE_CASE_AUDIO_QUERY 51
+#define PSP_ORACLE_CASE_CACHE_ALIAS 52
+#define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 53
+#define PSP_ORACLE_CASE_MODEL_PROFILE 54
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
+#endif
+#define PSP_ORACLE_CASE_DISPLAY_WAIT_LATE 16
+#define PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY 17
+#define PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW 18
+#define PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED 19
+#define PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA 20
+#define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 21
+#define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 22
+
+/* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
+   probe declares the exact ABI it imports via fixtures/psp_oracle/
+   mutex_imports.S (ThreadManForUser NIDs). The struct mirrors the documented
+   SceKernelMutexStatus layout; only scalar fields are treated as evidence. */
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+typedef struct SceKernelMutexInfo {
+    SceSize size;
+    char name[32];
+    SceUInt attr;
+    int initCount;
+    int currentCount;
+    SceUID lockThread;
+    int numWaitThreads;
+} SceKernelMutexInfo;
+
+SceUID sceKernelCreateMutex(const char *name, SceUInt attr, int initCount, void *options);
+int sceKernelDeleteMutex(SceUID mutexid);
+int sceKernelLockMutex(SceUID mutexid, int count, uint32_t *pTimeout);
+int sceKernelLockMutexCB(SceUID mutexid, int count, uint32_t *pTimeout);
+int sceKernelTryLockMutex(SceUID mutexid, int count);
+int sceKernelUnlockMutex(SceUID mutexid, int count);
+int sceKernelCancelMutex(SceUID mutexid, int count, int *pNumWaitThreads);
+int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
@@ -245,6 +277,15 @@ static void emit_test_extended(int emulated, const char *case_id, int pass,
                                uint32_t result, const uint32_t *out,
                                size_t out_count) {
     emit_record_extended(emulated, "PSP-KERNEL-001", case_id,
+                         pass ? "PASS" : "FAIL", result, out, out_count);
+}
+#endif
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+static void emit_mutex_test(int emulated, const char *case_id, int pass,
+                            uint32_t result, const uint32_t *out,
+                            size_t out_count) {
+    emit_record_extended(emulated, "PSP-MUTEX-001", case_id,
                          pass ? "PASS" : "FAIL", result, out, out_count);
 }
 #endif
@@ -1240,7 +1281,10 @@ static void run_dmac_invalid_tail(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW
 
 /* Long-interrupt-mask display accounting.
  *
@@ -1266,6 +1310,7 @@ static void run_dmac_invalid_tail(int emulated) {
  * iteration cap trips.  Returns the measured elapsed microseconds.  The volatile
  * sink stops the compiler from discarding the loop. */
 static volatile uint32_t s_spin_sink;
+#if PSP_ORACLE_CASE != PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW
 static uint32_t spin_us(uint32_t t0, uint32_t want, uint32_t *iters_out) {
     uint32_t i = 0;
     uint32_t now = t0;
@@ -1277,6 +1322,7 @@ static uint32_t spin_us(uint32_t t0, uint32_t want, uint32_t *iters_out) {
     if (iters_out) *iters_out = i;
     return (uint32_t)(now - t0);
 }
+#endif
 
 /* Measure the device's own vblank period without assuming 60000/1001.  Returns
  * nanoseconds per period; 0 if the display never advanced. */
@@ -1293,10 +1339,13 @@ static uint32_t calibrate_period_ns(uint32_t *vc_frames_out) {
     return (uint32_t)(((uint64_t)(uint32_t)(st1 - st0) * 1000ull) / frames);
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
 static uint32_t periods_in(uint32_t span_us, uint32_t period_ns) {
     if (!period_ns) return 0;
     return (uint32_t)(((uint64_t)span_us * 1000ull) / period_ns);
 }
+#endif
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT
@@ -2584,6 +2633,846 @@ static void run_model_profile(int emulated) {
                          model_code < 0 ? "ERROR" : "PASS",
                          (uint32_t)model_code, out,
                          sizeof(out) / sizeof(out[0]));
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
+/* D1 -- what does a LATE display wait do?
+ *
+ * Nakagawa's scheduler carries a per-thread `vbl_seen` latch: if a VBLANK was
+ * delivered since the calling thread last completed a display wait, the wait
+ * returns immediately and consumes the missed edge.  The runtime's own comment
+ * calls that "a Nakagawa pacing artifact", but nothing in this project has ever
+ * measured the normal-context blocking behaviour -- docs/PSP_INTR_WAITS_MATRIX.md
+ * records `hardware = unknown / WOULD_BLOCK control` for both NIDs.  Only the
+ * error cells (interrupts disabled, dispatch disabled) are measured.
+ *
+ * The three candidate semantics this case separates:
+ *
+ *   A  remembered/missed-edge: a late call can return immediately because an
+ *      edge elapsed since the caller last waited.
+ *   B  next-edge: the call always waits for the next appropriate boundary,
+ *      regardless of how many edges were missed.
+ *   C  the two NIDs differ -- sceDisplayWaitVblank has an in-vblank fast return
+ *      that sceDisplayWaitVblankStart does not.
+ *
+ * Method.  Phase-align to a boundary, busy-spin a controlled fraction of a
+ * period WITHOUT any voluntary yield (so no syscall can absorb the edge), then
+ * time the call under test.  Under (A) a late call costs ~0 us and advances
+ * VCOUNT by 0.  Under (B) it costs the remainder of the period and advances
+ * VCOUNT by 1.  The period is calibrated on the same device in the same run;
+ * nothing here assumes 60000/1001.
+ *
+ * The offsets deliberately straddle one and two periods so "several host
+ * periods elapsed while the caller was busy" is covered, not just a narrow
+ * late window.  Every spin is bounded by both elapsed system time and an
+ * iteration cap, so a stopped clock degrades to a finite record, never a hang. */
+
+#define DW_TRIALS 48
+
+/* Requested spin, in 1/8ths of a calibrated period, measured from the aligned
+ * boundary. 2/8 and 6/8 are ordinary sub-period lateness; 10/8 and 14/8 cross
+ * one boundary; 20/8 crosses two. */
+static const uint32_t k_dw_eighths[] = { 2u, 6u, 10u, 14u, 20u };
+#define DW_OFFSETS ((int)(sizeof(k_dw_eighths) / sizeof(k_dw_eighths[0])))
+
+/* api: 0 = sceDisplayWaitVblankStart, 1 = sceDisplayWaitVblank */
+static int dw_call(int api) {
+    return api ? sceDisplayWaitVblank() : sceDisplayWaitVblankStart();
+}
+
+static const char *dw_api_name(int api) {
+    return api ? "waitvblank" : "waitvblankstart";
+}
+
+/* One (api, offset) cell: DW_TRIALS timed late calls. */
+static void dw_run_cell(int emulated, int api, uint32_t want_us, uint32_t eighths,
+                        uint32_t period_ns) {
+    uint32_t trials = 0;
+    uint32_t w_min = 0xffffffffu, w_max = 0, w_sum = 0;
+    uint32_t vd_min = 0xffffffffu, vd_max = 0, vd_sum = 0;
+    uint32_t n_vd0 = 0, n_vd1 = 0, n_vd2plus = 0;
+    uint32_t n_immediate = 0, n_blocked = 0;
+    uint32_t span_min = 0xffffffffu, span_max = 0;
+    uint32_t n_invbl_at_call = 0;
+    uint32_t rc_last = 0, n_rc_nonzero = 0;
+
+    /* "immediate" is a generous threshold: an eighth of a real period. A
+     * next-edge return from any of these offsets costs far more than that. */
+    const uint32_t immediate_us = period_ns ? (uint32_t)(period_ns / 8000u) : 2000u;
+
+    for (uint32_t k = 0; k < DW_TRIALS; k++) {
+        sceDisplayWaitVblankStart();               /* phase-align */
+        const uint32_t st0 = sceKernelGetSystemTimeLow();
+        const uint32_t span = spin_us(st0, want_us, NULL);
+
+        const uint32_t vcA = sceDisplayGetVcount();
+        const int invbl = sceDisplayIsVblank();
+        const uint32_t tA = sceKernelGetSystemTimeLow();
+        const int rc = dw_call(api);
+        const uint32_t tB = sceKernelGetSystemTimeLow();
+        const uint32_t vcB = sceDisplayGetVcount();
+
+        const uint32_t wait_us = (uint32_t)(tB - tA);
+        const uint32_t vd = vcB - vcA;
+
+        trials++;
+        rc_last = (uint32_t)rc;
+        if (rc != 0) n_rc_nonzero++;
+        if (invbl) n_invbl_at_call++;
+        if (wait_us < w_min) w_min = wait_us;
+        if (wait_us > w_max) w_max = wait_us;
+        w_sum += wait_us;
+        if (vd < vd_min) vd_min = vd;
+        if (vd > vd_max) vd_max = vd;
+        vd_sum += vd;
+        if (vd == 0u) n_vd0++;
+        else if (vd == 1u) n_vd1++;
+        else n_vd2plus++;
+        if (wait_us <= immediate_us) n_immediate++; else n_blocked++;
+        if (span < span_min) span_min = span;
+        if (span > span_max) span_max = span;
+    }
+
+    if (w_min == 0xffffffffu) w_min = 0;
+    if (vd_min == 0xffffffffu) vd_min = 0;
+    if (span_min == 0xffffffffu) span_min = 0;
+
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "late-%s-%ueighths",
+             dw_api_name(api), (unsigned int)eighths);
+
+    const uint32_t out[] = {
+        (uint32_t)api, eighths, want_us, trials, period_ns,
+        w_min, w_max, w_sum,
+        vd_min, vd_max, vd_sum,
+        n_vd0, n_vd1, n_vd2plus,
+        n_immediate, n_blocked, immediate_us,
+        span_min, span_max,
+        n_invbl_at_call, n_rc_nonzero, rc_last,
+    };
+    emit_record_extended(emulated, "PSP-DISPLAY-002", case_id,
+                         trials == DW_TRIALS ? "PASS" : "FAIL", rc_last,
+                         out, sizeof(out) / sizeof(out[0]));
+}
+
+/* The in-vblank cell: instead of a fixed offset, spin until the display
+ * reports it is INSIDE the vblank interval, then call immediately. This is the
+ * only phase at which hypothesis (C) can show a difference between the two
+ * NIDs, so it is measured separately rather than hoped for inside the sweep. */
+static void dw_run_invblank_cell(int emulated, int api, uint32_t period_ns) {
+    uint32_t trials = 0, reached = 0;
+    uint32_t w_min = 0xffffffffu, w_max = 0, w_sum = 0;
+    uint32_t n_vd0 = 0, n_vd1 = 0, n_vd2plus = 0;
+    uint32_t n_immediate = 0, n_blocked = 0;
+    uint32_t rc_last = 0, n_rc_nonzero = 0;
+    const uint32_t immediate_us = period_ns ? (uint32_t)(period_ns / 8000u) : 2000u;
+
+    for (uint32_t k = 0; k < DW_TRIALS; k++) {
+        sceDisplayWaitVblankStart();
+        /* Bounded hunt for the in-vblank window. The cap is an iteration cap,
+         * never the expected exit; a miss is recorded rather than retried
+         * forever. */
+        int inside = 0;
+        for (uint32_t i = 0; i < 4000000u; i++) {
+            if (sceDisplayIsVblank()) { inside = 1; break; }
+            s_spin_sink = i;
+        }
+        trials++;
+        if (!inside) continue;
+        reached++;
+
+        const uint32_t vcA = sceDisplayGetVcount();
+        const uint32_t tA = sceKernelGetSystemTimeLow();
+        const int rc = dw_call(api);
+        const uint32_t tB = sceKernelGetSystemTimeLow();
+        const uint32_t vcB = sceDisplayGetVcount();
+
+        const uint32_t wait_us = (uint32_t)(tB - tA);
+        const uint32_t vd = vcB - vcA;
+        rc_last = (uint32_t)rc;
+        if (rc != 0) n_rc_nonzero++;
+        if (wait_us < w_min) w_min = wait_us;
+        if (wait_us > w_max) w_max = wait_us;
+        w_sum += wait_us;
+        if (vd == 0u) n_vd0++; else if (vd == 1u) n_vd1++; else n_vd2plus++;
+        if (wait_us <= immediate_us) n_immediate++; else n_blocked++;
+    }
+    if (w_min == 0xffffffffu) w_min = 0;
+
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "invblank-%s", dw_api_name(api));
+    const uint32_t out[] = {
+        (uint32_t)api, 0xffffffffu, 0u, trials, period_ns,
+        w_min, w_max, w_sum,
+        0u, 0u, 0u,
+        n_vd0, n_vd1, n_vd2plus,
+        n_immediate, n_blocked, immediate_us,
+        reached, 0u,
+        reached, n_rc_nonzero, rc_last,
+    };
+    emit_record_extended(emulated, "PSP-DISPLAY-002", case_id,
+                         reached ? "PASS" : "SKIP", rc_last,
+                         out, sizeof(out) / sizeof(out[0]));
+}
+
+static void run_display_wait_late(int emulated) {
+    uint32_t calib_frames = 0;
+    const uint32_t period_ns = calibrate_period_ns(&calib_frames);
+
+    /* Publish the calibration so every downstream number is interpretable
+     * without assuming a refresh rate. */
+    {
+        const uint32_t out[] = { period_ns, calib_frames, (uint32_t)DW_TRIALS,
+                                 (uint32_t)DW_OFFSETS,
+                                 (uint32_t)scePowerGetCpuClockFrequencyInt() };
+        emit_record_extended(emulated, "PSP-DISPLAY-002", "calibration",
+                             period_ns ? "PASS" : "FAIL", period_ns,
+                             out, sizeof(out) / sizeof(out[0]));
+    }
+    if (!period_ns) return;
+
+    for (int api = 0; api < 2; api++) {
+        for (int d = 0; d < DW_OFFSETS; d++) {
+            const uint32_t eighths = k_dw_eighths[d];
+            const uint32_t want_us =
+                (uint32_t)(((uint64_t)period_ns * eighths) / (8u * 1000u));
+            dw_run_cell(emulated, api, want_us, eighths, period_ns);
+        }
+        dw_run_invblank_cell(emulated, api, period_ns);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY
+/* D2 -- does an unrelated READY thread change the display wait?
+ *
+ * The rejected candidate 7a4fafc made sched_wait_vblank() consult the whole TCB
+ * table and block the caller whenever ANY other thread was TH_READY, so that a
+ * lower-priority asset loader would be scheduled. That fixed the game. It is
+ * only defensible if the hardware syscall is itself readiness-dependent, so
+ * this case measures exactly that, and separates it from the thing that is
+ * genuinely true on hardware: a thread that really blocks really does hand the
+ * CPU to a lower-priority peer.
+ *
+ * Two runs, identical high-priority work:
+ *
+ *   CONTROL     high-priority thread only.
+ *   EXPERIMENT  same thread, plus an always-runnable lower-priority thread that
+ *               never performs a blocking call.
+ *
+ * Per iteration the high thread records the low counter at three points:
+ *
+ *   c0  before the display wait
+ *   c1  after it            -> (c1-c0) is progress made while we were BLOCKED
+ *   c2  after a pure CPU spin that issues no blocking call
+ *                           -> (c2-c1) is progress made while we were RUNNABLE
+ *
+ * Strict priority predicts (c2-c1) == 0: a busy higher-priority thread starves
+ * a lower-priority one, with no aging. A readiness-dependent syscall would show
+ * up as a difference in the WAIT DURATION or total wall time between CONTROL
+ * and EXPERIMENT -- same caller, same display state, different answer purely
+ * because another thread exists. */
+
+#define DWP_ITERS      120
+#define DWP_HIGH_PRIO  0x30
+#define DWP_LOW_PRIO   0x50
+
+static volatile uint32_t g_dwp_low_counter;
+static volatile int      g_dwp_stop;
+
+/* Always runnable, never blocks: no delay, no wait, no display call. Under
+ * strict priority it is legitimate for this to make no progress at all. */
+static int dwp_low_thread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    while (!g_dwp_stop) {
+        g_dwp_low_counter++;
+    }
+    return 0;
+}
+
+static struct {
+    uint32_t iters;
+    uint32_t w_min, w_max, w_sum;
+    uint32_t blocked_delta_sum, runnable_delta_sum;
+    uint32_t n_runnable_nonzero;
+    uint32_t wall_us;
+    uint32_t vc_total;
+    uint32_t spin_want_us;
+} g_dwp;
+
+static int dwp_high_thread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    const uint32_t spin_want = g_dwp.spin_want_us;
+    uint32_t w_min = 0xffffffffu, w_max = 0, w_sum = 0;
+    uint32_t bsum = 0, rsum = 0, rnz = 0;
+
+    sceDisplayWaitVblankStart();                    /* phase-align */
+    const uint32_t vc_start = sceDisplayGetVcount();
+    const uint32_t wall0 = sceKernelGetSystemTimeLow();
+
+    for (uint32_t i = 0; i < DWP_ITERS; i++) {
+        const uint32_t c0 = g_dwp_low_counter;
+        const uint32_t tA = sceKernelGetSystemTimeLow();
+        sceDisplayWaitVblankStart();
+        const uint32_t tB = sceKernelGetSystemTimeLow();
+        const uint32_t c1 = g_dwp_low_counter;
+
+        /* Pure CPU. Issues sceKernelGetSystemTimeLow, which is a clock read, not
+         * a blocking call: it must not hand the CPU to a weaker thread. */
+        spin_us(tB, spin_want, NULL);
+        const uint32_t c2 = g_dwp_low_counter;
+
+        const uint32_t w = (uint32_t)(tB - tA);
+        if (w < w_min) w_min = w;
+        if (w > w_max) w_max = w;
+        w_sum += w;
+        bsum += (uint32_t)(c1 - c0);
+        const uint32_t rd = (uint32_t)(c2 - c1);
+        rsum += rd;
+        if (rd) rnz++;
+    }
+
+    const uint32_t wall1 = sceKernelGetSystemTimeLow();
+    const uint32_t vc_end = sceDisplayGetVcount();
+    if (w_min == 0xffffffffu) w_min = 0;
+
+    g_dwp.iters = DWP_ITERS;
+    g_dwp.w_min = w_min; g_dwp.w_max = w_max; g_dwp.w_sum = w_sum;
+    g_dwp.blocked_delta_sum = bsum;
+    g_dwp.runnable_delta_sum = rsum;
+    g_dwp.n_runnable_nonzero = rnz;
+    g_dwp.wall_us = (uint32_t)(wall1 - wall0);
+    g_dwp.vc_total = vc_end - vc_start;
+    return 0;
+}
+
+/* One run. with_low != 0 creates the always-runnable lower-priority peer. */
+static void dwp_run(int emulated, int with_low, uint32_t period_ns) {
+    memset((void *)&g_dwp, 0, sizeof(g_dwp));
+    g_dwp.spin_want_us = period_ns ? (uint32_t)(period_ns / 4000u) : 4000u;
+    g_dwp_low_counter = 0;
+    g_dwp_stop = 0;
+
+    SceUID low = -1;
+    int low_started = 0;
+    if (with_low) {
+        low = sceKernelCreateThread("dwp_low", dwp_low_thread, DWP_LOW_PRIO,
+                                    0x1000, THREAD_ATTR_USER, NULL);
+        if (low >= 0) {
+            const int low_start = sceKernelStartThread(low, 0, NULL);
+            if (low_start >= 0) low_started = 1;
+        }
+    }
+
+    uint32_t setup_ok = 0;
+    int high_started = 0;
+    SceUID high = -1;
+    /* The experiment is meaningful only with its always-runnable peer.  Do not
+     * silently turn a failed peer setup into the high-only control case. */
+    if (!with_low || low_started) {
+        high = sceKernelCreateThread("dwp_high", dwp_high_thread, DWP_HIGH_PRIO,
+                                     0x2000, THREAD_ATTR_USER, NULL);
+        if (high >= 0) {
+            const int high_start = sceKernelStartThread(high, 0, NULL);
+            if (high_start >= 0) {
+                high_started = 1;
+                setup_ok = 1u;
+                sceKernelWaitThreadEnd(high, NULL);
+                sceKernelDeleteThread(high);
+            } else {
+                sceKernelDeleteThread(high);
+                high = -1;
+            }
+        }
+    }
+
+    g_dwp_stop = 1;
+    if (low >= 0) {
+        if (!low_started) {
+            sceKernelDeleteThread(low);
+        } else {
+            /* The low thread exits on the flag; the join is bounded by a terminate
+             * fallback so a probe can never be left with a spinning thread. */
+            SceUInt join_us = 2000000u;
+            if (sceKernelWaitThreadEnd(low, &join_us) < 0) {
+                sceKernelTerminateDeleteThread(low);
+            } else {
+                sceKernelDeleteThread(low);
+            }
+        }
+    }
+
+    const uint32_t out[] = {
+        (uint32_t)with_low, setup_ok, g_dwp.iters, period_ns, g_dwp.spin_want_us,
+        g_dwp.w_min, g_dwp.w_max, g_dwp.w_sum,
+        g_dwp.wall_us, g_dwp.vc_total,
+        g_dwp_low_counter,
+        g_dwp.blocked_delta_sum,
+        g_dwp.runnable_delta_sum,
+        g_dwp.n_runnable_nonzero,
+        (uint32_t)DWP_HIGH_PRIO, (uint32_t)DWP_LOW_PRIO,
+    };
+    emit_record_extended(emulated, "PSP-DISPLAY-003",
+                         with_low ? "priority-experiment" : "priority-control",
+                         setup_ok && high_started && g_dwp.iters == DWP_ITERS ? "PASS" : "FAIL",
+                         setup_ok, out, sizeof(out) / sizeof(out[0]));
+}
+
+static void run_display_wait_priority(int emulated) {
+    uint32_t calib_frames = 0;
+    const uint32_t period_ns = calibrate_period_ns(&calib_frames);
+    {
+        const uint32_t out[] = { period_ns, calib_frames, (uint32_t)DWP_ITERS,
+                                 (uint32_t)DWP_HIGH_PRIO, (uint32_t)DWP_LOW_PRIO };
+        emit_record_extended(emulated, "PSP-DISPLAY-003", "calibration",
+                             period_ns ? "PASS" : "FAIL", period_ns,
+                             out, sizeof(out) / sizeof(out[0]));
+    }
+    if (!period_ns) return;
+    dwp_run(emulated, 0, period_ns);   /* control first */
+    dwp_run(emulated, 1, period_ns);   /* then the always-ready peer */
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW
+/* D3 -- where in the period is the vblank interval, and how long is it?
+ *
+ * D1 already proves the interval BEGINS at the vblank start edge rather than
+ * ending at it: a sceDisplayWaitVblankStart issued while sceDisplayIsVblank()
+ * was true waited a FULL period, which is only possible if the caller had just
+ * crossed a start edge. Nakagawa currently models the window at the opposite
+ * end of the period (sched_display_is_vblank() tests the LAST 1500 us before
+ * the next edge), so the placement and the width both need a measurement rather
+ * than a constant nobody sourced.
+ *
+ * Method: align to the edge, then poll sceDisplayIsVblank() and timestamp the
+ * transition to false. Also record hcount at entry and exit so the window can be
+ * expressed in the display's own units, not just microseconds. All loops carry
+ * an iteration cap so a stuck flag yields a finite record. */
+
+#define VW_TRIALS 48
+#define VW_POLL_CAP 4000000u
+
+static void run_display_vblank_window(int emulated) {
+    uint32_t calib_frames = 0;
+    const uint32_t period_ns = calibrate_period_ns(&calib_frames);
+
+    uint32_t trials = 0, clean = 0;
+    uint32_t d_min = 0xffffffffu, d_max = 0, d_sum = 0;
+    uint32_t entry_true = 0;                 /* IsVblank already true right after the edge */
+    uint32_t hc_in_min = 0xffffffffu, hc_in_max = 0;
+    uint32_t hc_out_min = 0xffffffffu, hc_out_max = 0;
+    uint32_t lat_min = 0xffffffffu, lat_max = 0;   /* edge -> first sample latency */
+
+    for (uint32_t k = 0; k < VW_TRIALS; k++) {
+        sceDisplayWaitVblankStart();
+        const uint32_t t_edge = sceKernelGetSystemTimeLow();
+        const int first = sceDisplayIsVblank();
+        const uint32_t hc_in = (uint32_t)sceDisplayGetCurrentHcount();
+        const uint32_t t_first = sceKernelGetSystemTimeLow();
+        trials++;
+        if (first) entry_true++;
+
+        /* Poll to the falling edge. */
+        uint32_t t_fall = t_first;
+        uint32_t hc_out = hc_in;
+        int fell = 0;
+        for (uint32_t i = 0; i < VW_POLL_CAP; i++) {
+            if (!sceDisplayIsVblank()) {
+                t_fall = sceKernelGetSystemTimeLow();
+                hc_out = (uint32_t)sceDisplayGetCurrentHcount();
+                fell = 1;
+                break;
+            }
+            s_spin_sink = i;
+        }
+        if (!first || !fell) continue;
+        clean++;
+
+        const uint32_t dur = (uint32_t)(t_fall - t_edge);
+        const uint32_t lat = (uint32_t)(t_first - t_edge);
+        if (dur < d_min) d_min = dur;
+        if (dur > d_max) d_max = dur;
+        d_sum += dur;
+        if (lat < lat_min) lat_min = lat;
+        if (lat > lat_max) lat_max = lat;
+        if (hc_in < hc_in_min) hc_in_min = hc_in;
+        if (hc_in > hc_in_max) hc_in_max = hc_in;
+        if (hc_out < hc_out_min) hc_out_min = hc_out;
+        if (hc_out > hc_out_max) hc_out_max = hc_out;
+    }
+
+    if (d_min == 0xffffffffu) d_min = 0;
+    if (lat_min == 0xffffffffu) lat_min = 0;
+    if (hc_in_min == 0xffffffffu) hc_in_min = 0;
+    if (hc_out_min == 0xffffffffu) hc_out_min = 0;
+
+    const uint32_t out[] = {
+        period_ns, calib_frames, trials, clean, entry_true,
+        d_min, d_max, d_sum,
+        lat_min, lat_max,
+        hc_in_min, hc_in_max, hc_out_min, hc_out_max,
+    };
+    emit_record_extended(emulated, "PSP-DISPLAY-004", "vblank-window",
+                         clean ? "PASS" : "FAIL", clean,
+                         out, sizeof(out) / sizeof(out[0]));
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+static uint32_t run_mutex_refer_unlocked_case(uint32_t *out0, uint32_t *out1,
+                                              uint32_t *out2, uint32_t *out3,
+                                              uint32_t *out4) {
+    const SceUID self = sceKernelGetThreadId();
+    SceKernelMutexInfo info1;
+    SceKernelMutexInfo info2;
+    SceKernelMutexInfo info3;
+    memset(&info1, 0, sizeof(info1));
+    memset(&info2, 0, sizeof(info2));
+    memset(&info3, 0, sizeof(info3));
+    info1.size = sizeof(info1);
+    info2.size = sizeof(info2);
+    info3.size = sizeof(info3);
+
+    const SceUID m1 = sceKernelCreateMutex("oracle-m1", 0, 0, NULL);
+    const int r1 = m1 >= 0 ? sceKernelReferMutexStatus(m1, &info1) : -1;
+
+    const SceUID m2 = sceKernelCreateMutex("oracle-m2", 0, 1, NULL);
+    const int r2 = m2 >= 0 ? sceKernelReferMutexStatus(m2, &info2) : -1;
+
+    const int unlock2 = m2 >= 0 ? sceKernelUnlockMutex(m2, 1) : -1;
+    const int r3 = m2 >= 0 ? sceKernelReferMutexStatus(m2, &info3) : -1;
+
+    if (m1 >= 0) sceKernelDeleteMutex(m1);
+    if (m2 >= 0) sceKernelDeleteMutex(m2);
+
+    *out0 = (uint32_t)(m1 >= 0) |
+            ((uint32_t)(r1 == 0) << 1) |
+            ((uint32_t)(m2 >= 0) << 2) |
+            ((uint32_t)(r2 == 0) << 3) |
+            ((uint32_t)(unlock2 == 0) << 4) |
+            ((uint32_t)(r3 == 0) << 5) |
+            ((uint32_t)(info2.lockThread == self) << 6);
+
+    *out1 = (uint32_t)info1.lockThread; /* raw lockThread when unlocked at creation */
+    *out2 = (uint32_t)info2.lockThread; /* raw lockThread when locked at creation */
+    *out3 = (uint32_t)info3.lockThread; /* raw lockThread when unlocked after unlock */
+    *out4 = (uint32_t)self;
+
+    return m1 >= 0 && r1 == 0 && m2 >= 0 && r2 == 0 && unlock2 == 0 && r3 == 0;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA
+static volatile SceUID s_timeout_mutex;
+static volatile SceUID s_timeout_sema;
+static volatile uint32_t s_timeout_out[17];
+
+static int timeout_worker_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    const uint32_t intervals[] = {1, 10, 25, 50, 100, 250, 500, 1000, 2500};
+    uint32_t ret_words[9] = {0};
+    uint32_t min_us[9];
+    uint32_t max_us[9];
+    for (int i = 0; i < 9; i++) {
+        min_us[i] = 0xffffffffu;
+        max_us[i] = 0;
+    }
+
+    for (int i = 0; i < 9; i++) {
+        uint32_t req = intervals[i];
+        for (int trial = 0; trial < 10; trial++) {
+            uint32_t to = req;
+            uint64_t t0 = sceKernelGetSystemTimeWide();
+            int res = sceKernelLockMutex(s_timeout_mutex, 1, &to);
+            uint64_t t1 = sceKernelGetSystemTimeWide();
+            (void)res;
+            uint32_t elapsed = (uint32_t)(t1 - t0);
+            if (elapsed < min_us[i]) min_us[i] = elapsed;
+            if (elapsed > max_us[i]) max_us[i] = elapsed;
+            ret_words[i] = to;
+        }
+    }
+
+    uint32_t cb_to = 250;
+    uint64_t cb_t0 = sceKernelGetSystemTimeWide();
+    int cb_res = sceKernelLockMutexCB(s_timeout_mutex, 1, &cb_to);
+    uint64_t cb_t1 = sceKernelGetSystemTimeWide();
+    (void)cb_res;
+    uint32_t cb_elapsed = (uint32_t)(cb_t1 - cb_t0);
+
+    uint32_t early_to = 100000;
+    sceKernelSignalSema(s_timeout_sema, 1);
+    uint64_t early_t0 = sceKernelGetSystemTimeWide();
+    int early_res = sceKernelLockMutex(s_timeout_mutex, 1, &early_to);
+    uint64_t early_t1 = sceKernelGetSystemTimeWide();
+    uint32_t early_elapsed = (uint32_t)(early_t1 - early_t0);
+
+    s_timeout_out[0] = 1;
+    s_timeout_out[1] = ret_words[0]; /* 1us returned toptr */
+    s_timeout_out[2] = min_us[0];
+    s_timeout_out[3] = max_us[0];
+    s_timeout_out[4] = ret_words[2]; /* 25us returned toptr */
+    s_timeout_out[5] = min_us[2];
+    s_timeout_out[6] = max_us[2];
+    s_timeout_out[7] = ret_words[5]; /* 250us returned toptr */
+    s_timeout_out[8] = min_us[5];
+    s_timeout_out[9] = max_us[5];
+    s_timeout_out[10] = ret_words[7]; /* 1000us returned toptr */
+    s_timeout_out[11] = min_us[7];
+    s_timeout_out[12] = max_us[7];
+    s_timeout_out[13] = cb_to;
+    s_timeout_out[14] = cb_elapsed;
+    s_timeout_out[15] = early_to;
+    s_timeout_out[16] = early_elapsed;
+
+    return (int)early_res;
+}
+
+static uint32_t run_mutex_timeout_quanta_case(uint32_t *out, size_t max_out) {
+    s_timeout_mutex = sceKernelCreateMutex("oracle-m-to", 0, 1, NULL);
+    s_timeout_sema = sceKernelCreateSema("oracle-s-to", 0, 0, 1, NULL);
+    if (s_timeout_mutex < 0 || s_timeout_sema < 0) {
+        if (s_timeout_mutex >= 0) sceKernelDeleteMutex(s_timeout_mutex);
+        if (s_timeout_sema >= 0) sceKernelDeleteSema(s_timeout_sema);
+        return 0;
+    }
+
+    SceUID worker = sceKernelCreateThread("oracle-w-to", timeout_worker_entry,
+                                          0x20, 0x4000, 0, NULL);
+    if (worker < 0) {
+        sceKernelDeleteMutex(s_timeout_mutex);
+        sceKernelDeleteSema(s_timeout_sema);
+        return 0;
+    }
+
+    sceKernelStartThread(worker, 0, NULL);
+    sceKernelWaitSema(s_timeout_sema, 1, NULL);
+    sceKernelDelayThread(500);
+    sceKernelUnlockMutex(s_timeout_mutex, 1);
+
+    sceKernelWaitThreadEnd(worker, NULL);
+    sceKernelDeleteThread(worker);
+    sceKernelDeleteMutex(s_timeout_mutex);
+    sceKernelDeleteSema(s_timeout_sema);
+
+    for (size_t i = 0; i < 17 && i < max_out; i++) {
+        out[i] = s_timeout_out[i];
+    }
+    return 1;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE
+static volatile SceUID s_prio_m;
+static volatile SceUID s_prio_sema_started;
+static volatile SceUID s_prio_sema_unlocked;
+static volatile uint32_t s_owner_self_prio;
+
+static int prio_owner_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    sceKernelLockMutex(s_prio_m, 1, NULL);
+    sceKernelSignalSema(s_prio_sema_started, 1);
+    sceKernelWaitSema(s_prio_sema_unlocked, 1, NULL);
+    s_owner_self_prio = (uint32_t)sceKernelGetThreadCurrentPriority();
+    sceKernelUnlockMutex(s_prio_m, 1);
+    return 0;
+}
+
+static int prio_waiter_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    sceKernelLockMutex(s_prio_m, 1, NULL);
+    sceKernelUnlockMutex(s_prio_m, 1);
+    return 0;
+}
+
+static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *out1,
+                                                    uint32_t *out2, uint32_t *out3,
+                                                    uint32_t *out4, uint32_t *out5,
+                                                    uint32_t *out6) {
+    s_prio_m = sceKernelCreateMutex("oracle-m-prio", 0x100, 0, NULL);
+    s_prio_sema_started = sceKernelCreateSema("oracle-s-start", 0, 0, 1, NULL);
+    s_prio_sema_unlocked = sceKernelCreateSema("oracle-s-unl", 0, 0, 1, NULL);
+
+    SceUID owner = sceKernelCreateThread("oracle-owner", prio_owner_entry, 0x30, 0x4000, 0, NULL);
+    SceUID waiter = sceKernelCreateThread("oracle-waiter", prio_waiter_entry, 0x20, 0x4000, 0, NULL);
+
+    sceKernelStartThread(owner, 0, NULL);
+    sceKernelWaitSema(s_prio_sema_started, 1, NULL);
+
+    SceKernelThreadInfo info_before;
+    memset(&info_before, 0, sizeof(info_before));
+    info_before.size = sizeof(info_before);
+    sceKernelReferThreadStatus(owner, &info_before);
+
+    sceKernelStartThread(waiter, 0, NULL);
+    sceKernelDelayThread(1000);
+
+    SceKernelThreadInfo info_during;
+    memset(&info_during, 0, sizeof(info_during));
+    info_during.size = sizeof(info_during);
+    sceKernelReferThreadStatus(owner, &info_during);
+
+    sceKernelSignalSema(s_prio_sema_unlocked, 1);
+    sceKernelWaitThreadEnd(owner, NULL);
+    sceKernelWaitThreadEnd(waiter, NULL);
+
+    SceKernelThreadInfo info_after;
+    memset(&info_after, 0, sizeof(info_after));
+    info_after.size = sizeof(info_after);
+    sceKernelReferThreadStatus(owner, &info_after);
+
+    sceKernelDeleteThread(owner);
+    sceKernelDeleteThread(waiter);
+    sceKernelDeleteMutex(s_prio_m);
+    sceKernelDeleteSema(s_prio_sema_started);
+    sceKernelDeleteSema(s_prio_sema_unlocked);
+
+    *out0 = 1;
+    *out1 = (uint32_t)info_before.currentPriority;
+    *out2 = (uint32_t)info_during.currentPriority;
+    *out3 = s_owner_self_prio;
+    *out4 = (uint32_t)info_after.currentPriority;
+    *out5 = (uint32_t)info_during.initPriority;
+    *out6 = 0;
+    return 1;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+/* Kernel interrupt-context query: returns 1 when executing inside an ISR,
+   0 otherwise.  Sourced from InterruptManagerForKernel (NID per PSPSDK
+   pspintrman_kernel.h); libpspinterruptmanager_kernel_660 exports the stub.
+   This is independent proof that the VBLANK sub-interrupt handler body
+   executes in interrupt context before any mutex call is made. */
+extern int sceKernelIsIntrContext(void);
+
+/* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
+   one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
+   .. mutex-interrupt-context-t19), so the parser sees 20 independent records.
+   20 trials establish reproducibility and expose any per-firing variance. */
+#define MUTEX_INTR_TRIALS 20
+
+/* Per-trial result structure written by the VBLANK sub-interrupt handler.
+   All fields are set atomically from within the ISR; main thread reads them
+   only after s_subintr_count is incremented and the mutex mutex cycle resets. */
+typedef struct {
+    uint32_t ctx_proof;   /* sceKernelIsIntrContext() return value from ISR     */
+    uint32_t r_bad_uid;   /* LockMutex(0x7fffffff, 1, NULL)  -- bad UID         */
+    uint32_t r_bad_cnt;   /* LockMutex(valid, 0, NULL)        -- bad count       */
+    uint32_t r_lock;      /* LockMutex(valid_unlocked, 1, NULL)                  */
+    uint32_t r_lock_cb;   /* LockMutexCB(valid_unlocked, 1, NULL)                */
+    uint32_t r_try;       /* TryLockMutex(valid_unlocked, 1)                     */
+    uint32_t r_unlock;    /* UnlockMutex(main_owned, 1) -- non-owner unlock      */
+} IntrTrial;
+
+static volatile int s_subintr_count;
+static volatile SceUID s_intr_m_unlocked;   /* unlocked mutex (main does NOT hold) */
+static volatile SceUID s_intr_m_main_owned; /* locked mutex owned by main thread    */
+static IntrTrial s_trials[MUTEX_INTR_TRIALS];
+
+/* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
+   Increments s_subintr_count only after writing all six cell results so the
+   main thread can use s_subintr_count as the ready sentinel.  Uses
+   sceKernelIsIntrContext() as the first call -- before any mutex operation --
+   as independent proof of ISR execution context. */
+static int oracle_subintr_handler(int subintr, void *arg) {
+    (void)subintr;
+    (void)arg;
+    int idx = s_subintr_count;
+    if (idx >= MUTEX_INTR_TRIALS) {
+        return 0;
+    }
+    IntrTrial t;
+    /* Context proof: must return 1 when inside this ISR. */
+    t.ctx_proof  = (uint32_t)sceKernelIsIntrContext();
+    /* Cell A: bad UID.  PRX must already have context-check before lookup. */
+    t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
+    /* Cell B: valid UID, bad count (0).  Context vs count ordering cell. */
+    t.r_bad_cnt  = (uint32_t)sceKernelLockMutex((SceUID)s_intr_m_unlocked, 0, NULL);
+    /* Cell C: valid UID, valid count, mutex unlocked.  Nominal lock-from-ISR. */
+    t.r_lock     = (uint32_t)sceKernelLockMutex((SceUID)s_intr_m_unlocked, 1, NULL);
+    /* Cell D: same as C but CB variant.  Context check must still fire. */
+    t.r_lock_cb  = (uint32_t)sceKernelLockMutexCB((SceUID)s_intr_m_unlocked, 1, NULL);
+    /* Cell E: TryLockMutex -- no blocking; no context gate documented. */
+    t.r_try      = (uint32_t)sceKernelTryLockMutex((SceUID)s_intr_m_unlocked, 1);
+    /* Cell F: unlock a mutex owned by the main thread -- non-owner unlock. */
+    t.r_unlock   = (uint32_t)sceKernelUnlockMutex((SceUID)s_intr_m_main_owned, 1);
+    s_trials[idx] = t;
+    /* Barrier: write count last so main only reads a complete trial. */
+    s_subintr_count = idx + 1;
+    return 0;
+}
+
+/* Emit one protocol record per completed trial.
+   case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
+   out0 = ctx_proof, out1..out6 = six cell raw return values. */
+static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
+    char case_id[48];
+    snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
+    uint32_t out[7];
+    out[0] = t->ctx_proof;
+    out[1] = t->r_bad_uid;
+    out[2] = t->r_bad_cnt;
+    out[3] = t->r_lock;
+    out[4] = t->r_lock_cb;
+    out[5] = t->r_try;
+    out[6] = t->r_unlock;
+    /* pass iff context proof confirms ISR execution (ctx_proof == 1) */
+    int pass = (t->ctx_proof == 1u);
+    emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
+}
+
+static uint32_t run_mutex_interrupt_context_case(int emulated) {
+    s_subintr_count = 0;
+    for (int i = 0; i < MUTEX_INTR_TRIALS; i++) {
+        IntrTrial z = {0, 0, 0, 0, 0, 0, 0};
+        s_trials[i] = z;
+    }
+
+    /* Create fixtures before enabling the interrupt so the handler always
+       sees valid UIDs in s_intr_m_unlocked and s_intr_m_main_owned. */
+    s_intr_m_unlocked   = sceKernelCreateMutex("oracle-intr-unl", 0, 0, NULL);
+    s_intr_m_main_owned = sceKernelCreateMutex("oracle-intr-own", 0, 1, NULL);
+    /* s_intr_m_main_owned initialCount=1: main thread is owner. ISR Cell F
+       tests unlock from non-owner (the ISR thread context, if any). */
+
+    int reg = sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, 0,
+                                              oracle_subintr_handler, NULL);
+    int ena = sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
+
+    /* Wait for all MUTEX_INTR_TRIALS to complete.  VBLANK fires at ~60 Hz so
+       20 trials need at most ~400 ms.  1000 x 1 ms is a generous timeout. */
+    for (int i = 0; i < 1000 && s_subintr_count < MUTEX_INTR_TRIALS; i++) {
+        sceKernelDelayThread(1000);
+    }
+
+    sceKernelDisableSubIntr(PSP_VBLANK_INT, 0);
+    sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, 0);
+
+    if (s_intr_m_unlocked >= 0)   sceKernelDeleteMutex((SceUID)s_intr_m_unlocked);
+    if (s_intr_m_main_owned >= 0) sceKernelDeleteMutex((SceUID)s_intr_m_main_owned);
+
+    /* Emit header record: reg/enable/count summary. */
+    {
+        uint32_t hdr[3];
+        hdr[0] = (uint32_t)(reg == 0);
+        hdr[1] = (uint32_t)(ena == 0);
+        hdr[2] = (uint32_t)s_subintr_count;
+        int pass = (reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+        emit_mutex_test(emulated, "mutex-interrupt-context", pass, pass ? 1u : 0u,
+                        hdr, 3);
+    }
+
+    /* Emit per-trial records. */
+    int n = s_subintr_count;
+    if (n > MUTEX_INTR_TRIALS) n = MUTEX_INTR_TRIALS;
+    for (int i = 0; i < n; i++) {
+        emit_intr_trial(emulated, i, (const IntrTrial *)&s_trials[i]);
+    }
+
+    return (uint32_t)(reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
 }
 #endif
 
@@ -2715,6 +3604,27 @@ int main(int argc, char *argv[]) {
     run_cache_alias(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
     run_model_profile(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
+    run_display_wait_late(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY
+    run_display_wait_priority(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW
+    run_display_vblank_window(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+    uint32_t out0 = 0, out1 = 0, out2 = 0, out3 = 0, out4 = 0;
+    const int pass = (int)run_mutex_refer_unlocked_case(&out0, &out1, &out2, &out3, &out4);
+    uint32_t out[5] = {out0, out1, out2, out3, out4};
+    emit_mutex_test(emulated, "mutex-refer-unlocked", pass, pass ? 1u : 0u, out, 5);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA
+    uint32_t out[17] = {0};
+    const int pass = (int)run_mutex_timeout_quanta_case(out, 17);
+    emit_mutex_test(emulated, "mutex-timeout-quanta", pass, pass ? 1u : 0u, out, 17);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE
+    uint32_t out[7] = {0};
+    const int pass = (int)run_mutex_priority_inheritance_case(&out[0], &out[1], &out[2], &out[3], &out[4], &out[5], &out[6]);
+    emit_mutex_test(emulated, "mutex-priority-inheritance", pass, pass ? 1u : 0u, out, 7);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+    run_mutex_interrupt_context_case(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

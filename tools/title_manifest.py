@@ -12,6 +12,7 @@ this format and must remain in ignored local state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,7 +43,8 @@ ROOT_KEYS = {
     "schema_version", "id", "display_name", "kind", "disc", "executable",
     "modules", "filesystem", "hle_profile", "feature_requirements",
     "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
-    "runtime_contract", "profile_zero", "runtime_bindings",
+    "runtime_contract", "profile_zero", "runtime_bindings", "game_name",
+    "required_runtime_bindings",
 }
 
 #: Optional title bindings the compiled runtime may consume. Every field is
@@ -76,6 +78,22 @@ RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
 #: title-qualified compatibility capability with its own validated shape.
 #: Atomic: either fully configured or absent, never half-configured.
 RUNTIME_BINDING_OBJECTS = ("display_bringup", "runtime_sync")
+
+#: Every binding family a title may DECLARE that it requires.
+#:
+#: Individual optionality is what keeps this schema generic -- a title that
+#: needs none of these is a legal title, and no family is globally mandatory.
+#: But optionality alone cannot distinguish "this title does not use display
+#: bring-up" from "this title's display bring-up was lost", and the runtime
+#: reads both as the same disabled binding. ``required_runtime_bindings`` is
+#: how a title says which of these it cannot function without, so the loss is
+#: a validation failure instead of a silent behavior change at run time.
+DECLARABLE_BINDING_FAMILIES = (
+    *RUNTIME_BINDING_FIELDS,
+    *RUNTIME_BINDING_COUNTS,
+    *RUNTIME_BINDING_COLLECTIONS,
+    *RUNTIME_BINDING_OBJECTS,
+)
 
 DISPLAY_BRINGUP_FIELDS = (
     "malloc_entry",
@@ -336,7 +354,7 @@ def validate_executable(value: Any, path: str) -> dict[str, Any]:
             fail(item_path, "end must be greater than start")
         spans.append({"start": start, "end": end})
     spans.sort(key=lambda span: (span["start"], span["end"]))
-    for left, right in zip(spans, spans[1:]):
+    for left, right in zip(spans, spans[1:], strict=False):
         if right["start"] < left["end"]:
             fail(f"{path}.extra_executable_spans", "spans must not overlap")
     return {
@@ -849,13 +867,18 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     return result
 
 
+GUEST_MODULE_RAM_LO = 0x08800000
+GUEST_MODULE_RAM_HI = 0x0C000000  # 64 MB models extend user RAM; the runtime arena ends here
+
+
 def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     names: set[str] = set()
     addresses: set[int] = set()
     for index, item in enumerate(array(value, path, 32)):
         item_path = f"{path}[{index}]"
-        item = obj(item, item_path, {"name", "load_address", "required", "role"})
+        item = obj(item, item_path, {"name", "load_address", "required", "role",
+                                     "guest_path", "load_address_evidence"})
         require(item, item_path, "name", "load_address", "required", "role")
         name = text(item["name"], f"{item_path}.name", 128)
         if not FILENAME_RE.fullmatch(name) or name.endswith("."):
@@ -877,12 +900,38 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
             fail(item_path, "optional-guest-prx cannot be marked required")
         if role == "hle-capability" and not required:
             fail(item_path, "hle-capability must be marked required")
-        result.append({"name": name, "load_address": address, "required": required, "role": role})
+        entry = {"name": name, "load_address": address, "required": required, "role": role}
+        if role in {"guest-prx", "optional-guest-prx"}:
+            # A guest module's code AND data live at load_address, so it must be real
+            # user RAM: a base outside it lets translated code run while every data
+            # write is dropped (the late-PRX bases once sat at 0x322xxxxx).
+            if not GUEST_MODULE_RAM_LO <= address < GUEST_MODULE_RAM_HI:
+                fail(f"{item_path}.load_address",
+                     f"guest module base must lie in user RAM [0x{GUEST_MODULE_RAM_LO:08x}, "
+                     f"0x{GUEST_MODULE_RAM_HI:08x})")
+        if "guest_path" in item:
+            guest_path = text(item["guest_path"], f"{item_path}.guest_path", 256)
+            if not guest_path.split(":", 1)[0] in {"disc0", "umd0", "ms0", "flash0", "host0"}                     or ":/" not in guest_path:
+                fail(f"{item_path}.guest_path", "must be an absolute PSP device path (e.g. disc0:/...)")
+            entry["guest_path"] = guest_path
+        if "load_address_evidence" in item:
+            evidence = text(item["load_address_evidence"], f"{item_path}.load_address_evidence", 32)
+            if evidence not in {"measured-hw", "measured-ppsspp", "provisional"}:
+                fail(f"{item_path}.load_address_evidence", "unsupported evidence class")
+            entry["load_address_evidence"] = evidence
+        result.append(entry)
     return result
 
 
 def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
-    value = obj(value, path, {"data_root", "memory_stick_root", "device_prefixes"})
+    # module_dir/psp_header/disc_image are optional input-location declarations
+    # (issue #196 Phase 4): a manifest DECLARES where its private inputs live so
+    # generic manager paths never assume a layout. data_root/memory_stick_root/
+    # device_prefixes remain the required runtime-filesystem contract.
+    value = obj(value, path, {
+        "data_root", "memory_stick_root", "device_prefixes",
+        "module_dir", "psp_header", "disc_image",
+    })
     require(value, path, "data_root", "memory_stick_root", "device_prefixes")
     prefixes: set[str] = set()
     for index, prefix in enumerate(array(value["device_prefixes"], f"{path}.device_prefixes", 16)):
@@ -893,11 +942,55 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
         if prefix in prefixes:
             fail(f"{path}.device_prefixes[{index}]", "duplicate device prefix")
         prefixes.add(prefix)
-    return {
+    result = {
         "data_root": portable_path(value["data_root"], f"{path}.data_root"),
         "memory_stick_root": portable_path(value["memory_stick_root"], f"{path}.memory_stick_root"),
         "device_prefixes": sorted(prefixes),
     }
+    for optional_key in ("module_dir", "psp_header", "disc_image"):
+        if optional_key in value:
+            result[optional_key] = portable_path(value[optional_key], f"{path}.{optional_key}")
+    return result
+
+
+def validate_required_runtime_bindings(value: Any, path: str) -> list[str]:
+    """Validate the families a title declares it cannot run without.
+
+    Names are checked against the schema's own family list rather than accepted
+    freely: a typo that silently declared nothing would reinstate exactly the
+    failure this block exists to prevent.
+    """
+    declared: set[str] = set()
+    for index, name in enumerate(array(value, path, len(DECLARABLE_BINDING_FAMILIES))):
+        name = identifier(name, f"{path}[{index}]")
+        if name not in DECLARABLE_BINDING_FAMILIES:
+            fail(f"{path}[{index}]",
+                 f"is not a runtime binding family (known: {', '.join(sorted(DECLARABLE_BINDING_FAMILIES))})")
+        if name in declared:
+            fail(f"{path}[{index}]", "duplicate required binding family")
+        declared.add(name)
+    return sorted(declared)
+
+
+def enforce_required_runtime_bindings(required: list[str], bindings: dict[str, Any] | None) -> None:
+    """Refuse a configuration that drops a family the title says it requires.
+
+    The per-family validators already reject a half-configured family and an
+    explicitly zero address. This closes the remaining hole: an entire family
+    -- or the whole ``runtime_bindings`` block -- simply not being there. That
+    shape validates cleanly, generates a header full of disabled bindings, and
+    changes runtime behavior with nothing to show for it.
+    """
+    if not required:
+        return
+    present = set(bindings or {})
+    missing = [name for name in required if name not in present]
+    if not missing:
+        return
+    fail("$.required_runtime_bindings",
+         "declares binding families the manifest does not configure: "
+         + ", ".join(missing)
+         + " (configure them under $.runtime_bindings, or drop the requirement)")
 
 
 def validate_manifest(value: Any) -> dict[str, Any]:
@@ -919,6 +1012,12 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         "display_name": text(value["display_name"], "$.display_name", 128),
         "kind": kind,
     }
+    if "game_name" in value:
+        # Optional explicit build-name declaration (issue #196 Phase 4). The
+        # manager accepts -GameName, this field, or a portable id derivation —
+        # never an id-prefix mint. Same portable-identifier contract the
+        # codegen planner enforces for --game-name.
+        result["game_name"] = identifier(value["game_name"], "$.game_name")
     if kind == "retail":
         if "disc" not in value:
             fail("$", "retail manifests require disc")
@@ -948,6 +1047,11 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         result["runtime_contract"] = validate_runtime_contract(value["runtime_contract"], "$.runtime_contract")
     if "runtime_bindings" in value:
         result["runtime_bindings"] = validate_runtime_bindings(value["runtime_bindings"], "$.runtime_bindings")
+    if "required_runtime_bindings" in value:
+        result["required_runtime_bindings"] = validate_required_runtime_bindings(
+            value["required_runtime_bindings"], "$.required_runtime_bindings")
+        enforce_required_runtime_bindings(result["required_runtime_bindings"],
+                                          result.get("runtime_bindings"))
     if "profile_zero" in value:
         if kind != "synthetic":
             fail("$.profile_zero", "is permitted only for synthetic manifests")
@@ -961,6 +1065,128 @@ def validate_manifest(value: Any) -> dict[str, Any]:
 
 def canonical_json(value: Any) -> str:
     return json.dumps(validate_manifest(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def render_native_title_catalog(values: list[dict[str, Any]]) -> str:
+    """Emit immutable C99 recognition data, never runtime/support authority.
+
+    The full canonical manifest digest identifies the source contract, but only
+    identity fields are projected. Synthetic/homebrew titles have no disc IDs.
+    Callers generating public output must use public_native_title_catalog().
+    """
+    titles = sorted((validate_manifest(value) for value in values), key=lambda value: value["id"])
+    identities: set[str] = set()
+    discs: set[str] = set()
+    for title in titles:
+        if title["id"] in identities:
+            fail("catalog", "duplicate title identity")
+        identities.add(title["id"])
+        disc = title.get("disc", {})
+        for disc_id in ([disc["id"]] + disc.get("compatible_revisions", []) if disc else []):
+            if disc_id in discs:
+                fail("catalog", "duplicate disc identity")
+            discs.add(disc_id)
+
+    def literal(value: str) -> str:
+        # Fixed-width octal encodes UTF-8 bytes without C escape/trigraph,
+        # source-charset or adjacent-hex-digit ambiguity.
+        return '"' + "".join(f"\\{byte:03o}" for byte in value.encode("utf-8")) + '"'
+
+    canonical = [canonical_json(title).encode("utf-8") for title in titles]
+    digest = hashlib.sha256(b"".join(canonical)).hexdigest()
+    lines = [
+        "/* SPDX-License-Identifier: GPL-3.0-or-later */",
+        "/* Copyright (C) 2026 the Nakagawa Recomp authors */",
+        "/* Generated by tools/title_manifest.py; do not edit. */",
+        "/* Recognition only: no compatibility or runtime execution authority. */",
+        "#ifndef NK_TITLE_IDENTITY_CATALOG_H",
+        "#define NK_TITLE_IDENTITY_CATALOG_H",
+        "#include <stddef.h>",
+        "#include <string.h>",
+        "#define NK_TITLE_IDENTITY_SCHEMA_VERSION 1",
+        f'#define NK_TITLE_IDENTITY_SHA256 "{digest}"',
+        "typedef struct {",
+        "    const char *id;",
+        "    const char *display_name;",
+        "    const char *kind;",
+        "    const char *manifest_sha256;",
+        "    const char *const *disc_ids;",
+        "    size_t disc_id_count;",
+        "} NkTitleIdentity;",
+    ]
+    for index, title in enumerate(titles):
+        disc = title.get("disc", {})
+        if disc:
+            ids = [disc["id"]] + disc.get("compatible_revisions", [])
+            lines.append(f"static const char *const nk_title_discs_{index}[] = {{")
+            lines.extend(f"    {literal(disc_id)}," for disc_id in ids)
+            lines.append("};")
+    lines.append(f"#define NK_TITLE_IDENTITY_COUNT {len(titles)}")
+    lines.append("static const NkTitleIdentity nk_title_identities[] = {")
+    for index, title in enumerate(titles):
+        disc = title.get("disc", {})
+        count = 1 + len(disc.get("compatible_revisions", [])) if disc else 0
+        fields = [literal(title[key]) for key in ("id", "display_name", "kind")]
+        fields += [literal(hashlib.sha256(canonical[index]).hexdigest()),
+                   f"nk_title_discs_{index}" if disc else "NULL", str(count)]
+        lines.append("    {" + ", ".join(fields) + "},")
+    if not titles:
+        # ISO C forbids zero-element arrays; the sentinel is never searched.
+        lines.append("    {NULL, NULL, NULL, NULL, NULL, 0},")
+    lines += [
+        "};",
+        "static inline const NkTitleIdentity *nk_title_identity_by_id(const char *id) {",
+        "    if (!id) return NULL;",
+        "    const size_t count = NK_TITLE_IDENTITY_COUNT;",
+        "    for (size_t i = 0; i < count; ++i)",
+        "        if (strcmp(id, nk_title_identities[i].id) == 0) return &nk_title_identities[i];",
+        "    return NULL;",
+        "}",
+        "static inline const NkTitleIdentity *nk_title_identity_by_disc(const char *id) {",
+        "    if (!id) return NULL;",
+        "    const size_t count = NK_TITLE_IDENTITY_COUNT;",
+        "    for (size_t i = 0; i < count; ++i)",
+        "        for (size_t j = 0; j < nk_title_identities[i].disc_id_count; ++j)",
+        "            if (strcmp(id, nk_title_identities[i].disc_ids[j]) == 0)",
+        "                return &nk_title_identities[i];",
+        "    return NULL;",
+        "}",
+        "#endif",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def public_native_title_catalog(root: Path) -> str:
+    """Project only explicitly included canonical title paths.
+
+    Private/unclassified files are not opened. This is public-input selection,
+    not provenance attestation; the repository publication gates still apply.
+    A quiescent checkout is required, as for the other offline generators.
+    """
+    import publication_policy
+
+    def reject_alias(path: Path) -> None:
+        for component in (path, *path.parents):
+            if component.is_symlink() or component.is_junction():
+                fail("catalog", "symbolic links and junctions are not accepted")
+
+    root = root.absolute()
+    policy_path = root / "assets" / "public_source_profile.json"
+    reject_alias(policy_path)
+    policy = publication_policy.load_policy(policy_path)
+    paths = sorted(
+        path for path in policy.include_paths
+        if Path(path).parent.as_posix() == "assets/titles"
+        and path.endswith(".json")
+        and policy.resolve(path).disposition == publication_policy.INCLUDED
+    )
+    values = []
+    for relative in paths:
+        path = root / relative
+        reject_alias(path)
+        values.append(load_manifest(path))
+    return render_native_title_catalog(values)
 
 
 def write_normalized(path: Path, value: Any) -> None:
@@ -983,11 +1209,28 @@ def write_normalized(path: Path, value: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--print-public-catalog", action="store_true",
+                        help="emit a C99 identity catalog from included public manifests")
     parser.add_argument("--normalize-out", type=Path)
     parser.add_argument("--print-normalized", action="store_true")
     parser.add_argument("--max-bytes", type=int, default=PUBLIC_MANIFEST_MAX_BYTES)
     args = parser.parse_args(argv)
+    if args.print_public_catalog:
+        import publication_policy
+
+        if args.manifest or args.normalize_out or args.print_normalized:
+            parser.error("--print-public-catalog cannot be combined with manifest options")
+        try:
+            rendered = public_native_title_catalog(Path(__file__).resolve().parent.parent)
+            sys.stdout.buffer.write(rendered.encode("ascii"))
+            return 0
+        except (TitleManifestError, OSError, ValueError, publication_policy.PolicyError) as exc:
+            # No generated output is emitted until all inputs pass validation.
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+    if args.manifest is None:
+        parser.error("a manifest is required unless --print-public-catalog is selected")
     try:
         normalized = validate_manifest(load_manifest(args.manifest, max_bytes=args.max_bytes))
         if args.normalize_out:

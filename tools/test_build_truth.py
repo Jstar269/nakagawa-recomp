@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -25,6 +26,25 @@ COMMON_MK = ROOT / "mk" / "build_common.mk"
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_profile
+import codegen
+
+
+_MTIME_MARGIN_NS = 2_000_000_000
+
+
+def _set_mtime_after(path: Path, *references: Path) -> None:
+    """Set ``path`` newer than the references without waiting for the clock."""
+    latest = path.stat().st_mtime_ns
+    if references:
+        latest = max(latest, *(reference.stat().st_mtime_ns for reference in references))
+    target = max(latest, time.time_ns()) + _MTIME_MARGIN_NS
+    os.utime(path, ns=(target, target))
+
+
+def _set_mtime_before(path: Path) -> None:
+    """Move a fixture output into the past without waiting for the clock."""
+    target = min(path.stat().st_mtime_ns, time.time_ns()) - _MTIME_MARGIN_NS
+    os.utime(path, ns=(target, target))
 
 
 class BuildTruthTests(unittest.TestCase):
@@ -105,18 +125,24 @@ class BuildTruthTests(unittest.TestCase):
         self.assert_compiled(self.run_make("-O0"), "dependent.c", "unrelated.c")
         self.assert_compiled(self.run_make("-O0"))
 
-        time.sleep(1.1)  # GNU Make on Windows may compare timestamps at one-second resolution.
         (self.root / "inner.h").write_text("#define INNER_TOKEN 2\n", encoding="ascii")
+        _set_mtime_after(self.root / "inner.h", self.root / "build" / "dependent.o")
         self.assert_compiled(self.run_make("-O0"), "dependent.c")
+        # The forced future timestamp proves the dependency edge.  Normalize
+        # the fixture to the newly produced object before the unchanged-build
+        # assertion; otherwise Make would quite correctly see the synthetic
+        # future timestamp again on the next invocation.
+        dependent_obj = self.root / "build" / "dependent.o"
+        os.utime(self.root / "inner.h", ns=(dependent_obj.stat().st_mtime_ns,) * 2)
         self.assert_compiled(self.run_make("-O0"))
 
         self.assert_compiled(self.run_make("-O2"), "dependent.c", "unrelated.c")
         self.assert_compiled(self.run_make("-O2"))
         self.assert_compiled(self.run_make("-O0"), "dependent.c", "unrelated.c")
 
-        time.sleep(1.1)
         (self.root / "inner.h").rename(self.root / "renamed.h")
         (self.root / "outer.h").write_text('#include "renamed.h"\n', encoding="ascii")
+        _set_mtime_after(self.root / "outer.h", self.root / "build" / "dependent.o")
         self.assert_compiled(self.run_make("-O0"), "dependent.c")
 
         manifest = json.loads((self.root / "build" / "profile.json").read_text())
@@ -144,6 +170,116 @@ class BuildTruthTests(unittest.TestCase):
             stamp, ".profile-*", "same", invalidate=[obj]
         )
         self.assertTrue(obj.exists())
+
+
+class CpuStateAbiTests(unittest.TestCase):
+    """The native and generated sides must agree on the versioned CpuState ABI."""
+
+    def setUp(self) -> None:
+        # An explicit CC may be a compound command (e.g. "ccache gcc"), as Make
+        # accepts; a PATH-resolved compiler is a single path and is not split.
+        configured = os.environ.get("CC")
+        if configured:
+            self.cc_command = shlex.split(configured)
+        else:
+            found = shutil.which("gcc") or shutil.which("cc")
+            self.cc_command = [found] if found else []
+        if not self.cc_command:
+            self.skipTest("a C compiler is required")
+        self.cc = " ".join(self.cc_command)
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-cpustate-abi-")
+        self.work = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _compile(self, source: Path, include_dir: Path, output: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [*self.cc_command, "-std=c11", "-I", str(include_dir), "-c", str(source),
+             "-o", str(output)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+
+    def test_cpustate_v2_layout_and_generated_header_guard(self) -> None:
+        layout_source = self.work / "layout.c"
+        layout_source.write_text(
+            textwrap.dedent(
+                """
+                #include <stddef.h>
+                #include "recomp.h"
+
+                _Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "ABI version");
+                _Static_assert(offsetof(CpuState, cop0) == 852u, "cop0 offset");
+                _Static_assert(offsetof(CpuState, next_pc) == 980u, "next_pc offset");
+                _Static_assert(offsetof(CpuState, in_delay_slot) == 984u, "delay offset");
+                _Static_assert(offsetof(CpuState, flow_kind) == 988u, "flow kind offset");
+                _Static_assert(offsetof(CpuState, flow_target) == 992u, "flow target offset");
+                _Static_assert(sizeof(CpuState) == 996u, "CpuState size");
+
+                int abi_probe(void) {
+                    CpuState state = {0};
+                    *sr_cp0_status_ptr(&state) = 0x12345678u;
+                    return state.cop0[SR_CP0_STATUS] != 0x12345678u;
+                }
+                """
+            ).lstrip(),
+            encoding="ascii",
+        )
+        layout = self._compile(layout_source, ROOT / "src" / "rt", self.work / "layout.o")
+        self.assertEqual(
+            layout.returncode,
+            0,
+            "the base runtime must compile the asserted CpuState ABI:\n"
+            + layout.stdout
+            + layout.stderr,
+        )
+
+        stale_dir = self.work / "stale"
+        stale_dir.mkdir()
+        generated_header = stale_dir / "generated_funcs.h"
+        codegen.write_funcs_header(generated_header, [0x00001000])
+        (stale_dir / "recomp.h").write_text(
+            "#include <stdint.h>\n"
+            "#define SR_CPUSTATE_ABI_VERSION 1u\n"
+            "typedef struct CpuState CpuState;\n",
+            encoding="ascii",
+        )
+        stale_source = stale_dir / "stale.c"
+        stale_source.write_text('#include "generated_funcs.h"\n', encoding="ascii")
+        stale = self._compile(stale_source, stale_dir, self.work / "stale.o")
+        self.assertNotEqual(
+            stale.returncode,
+            0,
+            "a generated header must reject a runtime with a mismatched ABI version",
+        )
+        self.assertRegex(stale.stdout + stale.stderr, r"SR_CPUSTATE_ABI_VERSION|CpuState ABI version")
+
+
+class CpuStateAbiProfileTests(unittest.TestCase):
+    """Profile hashing needs no compiler; keep it out of the compiler-gated suite."""
+
+    def test_profile_hash_tracks_recomp_header_content(self) -> None:
+        compiler = "cc-placeholder-for-profile-hash"
+        with tempfile.TemporaryDirectory(prefix="nakagawa-cpustate-profile-") as temp:
+            header = Path(temp) / "recomp.h"
+            header.write_text("#define SR_CPUSTATE_ABI_VERSION 2u\n", encoding="ascii")
+            first = build_profile.profile_hash(
+                build_profile.profile_payload(compiler, ["RECOMP_FLAGS=-O0"], files=[str(header)])
+            )
+            header.write_text("#define SR_CPUSTATE_ABI_VERSION 3u\n", encoding="ascii")
+            second = build_profile.profile_hash(
+                build_profile.profile_payload(compiler, ["RECOMP_FLAGS=-O0"], files=[str(header)])
+            )
+            self.assertNotEqual(first, second)
+
+            makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+            self.assertIn('CPU_STATE_ABI_HEADER := src/rt/recomp.h', makefile)
+            self.assertIn('--file "$(CPU_STATE_ABI_HEADER)"', makefile)
 
 
 SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
@@ -206,8 +342,19 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
     def test_every_user_of_the_backend_also_supplies_the_capture_policy(self) -> None:
         backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
         referenced = sorted(set(re.findall(r"\bsr_fbcap_\w+\s*\(", backend)))
-        if not referenced:
-            self.skipTest("sdl3vk.c no longer calls the fbcap policy; guard retired")
+        # Deliberately an assertion, not a skipTest. Skipping here would let the
+        # guard retire itself: whoever removed the last sr_fbcap_* call would see
+        # green, and the Makefile coupling this test protects would stop being
+        # checked with nothing to say so. If the coupling really is gone, that is
+        # a decision worth making explicitly -- delete this test in the same
+        # commit that removes the calls.
+        self.assertNotEqual(
+            referenced,
+            [],
+            "sdl3vk.c no longer calls the fbcap policy, so this guard now "
+            "protects nothing. Retire it deliberately (delete this test) rather "
+            "than leaving it to pass vacuously.",
+        )
 
         offenders = []
         for number, text in self.lines:
@@ -785,7 +932,7 @@ class GuestInputTransportTests(unittest.TestCase):
         """M1: restoring raw $(GAME_ELF) in the recipe must make the above test fail."""
         if sys.platform != "win32":
             self.skipTest("cmd.exe command splitting is the Windows failure mode")
-        build = self._build_dir("test_gi_m1")
+        self._build_dir("test_gi_m1")
         elf_rel = f"build/test_gi_m1/{self.SPLIT_NAME}"
         self._write_minimal_elf(ROOT / elf_rel)
 
@@ -795,7 +942,7 @@ class GuestInputTransportTests(unittest.TestCase):
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
              "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
-        blob = self._blob(proc := self._make("test_gi_m1", elf_rel, makefile=mutant))
+        blob = self._blob(self._make("test_gi_m1", elf_rel, makefile=mutant))
         self.assertTrue(
             self._injection_evidence(blob),
             "mutation did not reproduce the pre-fix command execution; this "
@@ -804,7 +951,7 @@ class GuestInputTransportTests(unittest.TestCase):
 
     def test_M1b_sibling_inputs_are_transported_too(self) -> None:
         """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
-        build = self._build_dir("test_gi_hdr")
+        self._build_dir("test_gi_hdr")
         elf_rel = "build/test_gi_hdr/plain.elf"
         self._write_minimal_elf(ROOT / elf_rel)
         hdr_rel = "build/test_gi_hdr/hdr&ver&tail.BIN"
@@ -850,8 +997,12 @@ class GuestInputTransportTests(unittest.TestCase):
                 self.assertTrue(image.is_file())
 
                 before = image.stat().st_mtime_ns
-                time.sleep(1.1)
-                os.utime(elf, None)
+                # The input stamp is rewritten by Make, so also make the
+                # existing output unambiguously old.  This avoids relying on
+                # Windows' one-second timestamp resolution for the stamp and
+                # keeps the assertion about the dependency edge deterministic.
+                _set_mtime_before(image)
+                _set_mtime_after(elf, image)
                 proc = self._make(game, elf_rel)
                 self.assertEqual(proc.returncode, 0, self._blob(proc))
                 self.assertGreater(
@@ -876,8 +1027,7 @@ class GuestInputTransportTests(unittest.TestCase):
         image = build / f"{game}_image.bin"
         before = image.stat().st_mtime_ns
 
-        time.sleep(1.1)
-        os.utime(elf, None)
+        _set_mtime_after(elf, image)
         self._make(game, elf_rel, makefile=mutant)
         self.assertEqual(
             image.stat().st_mtime_ns, before,
@@ -918,7 +1068,7 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_invalid_values_fail_closed(self) -> None:
         """Empty, whitespace-only, and directory values must not build."""
         game = "test_gi_invalid"
-        build = self._build_dir(game)
+        self._build_dir(game)
         elf_rel = f"build/{game}/plain.elf"
         self._first_build(game, elf_rel)
 
@@ -955,10 +1105,12 @@ class GuestInputTransportTests(unittest.TestCase):
         # that would mask what this test is actually pinning.
         subprocess.run(base + ["compiler-info"], cwd=ROOT, capture_output=True,
                        text=True, check=False)
-        time.sleep(1.1)
         (build / f"{game}_recomp.c").write_text("void f_00304290(void *s) { (void)s; }\n",
                                                 encoding="ascii")
         (build / f"{game}_recomp_funcs.h").write_text("", encoding="ascii")
+        generated_inputs = tuple(p for p in build.iterdir() if p.is_file())
+        _set_mtime_after(build / f"{game}_recomp.c", *generated_inputs)
+        _set_mtime_after(build / f"{game}_recomp_funcs.h", build / f"{game}_recomp.c")
 
         proc = subprocess.run(base + [f"build/{game}/{game}_recomp.c"], cwd=ROOT,
                               capture_output=True, text=True,
@@ -1187,9 +1339,19 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         """Verify that clean-fixtures, tidy, and clean-all are declared as phony targets."""
         phony_match = re.search(r"^\.PHONY:\s*(.+)$", self.makefile_text, re.MULTILINE)
         self.assertIsNotNone(phony_match, "No .PHONY declaration found in Makefile")
-        phony_targets = set(phony_match.group(1).split())
+        self.assertEqual(
+            set(phony_match.group(1).split()),
+            {"$(PUBLIC_TARGETS)", "$(INTERNAL_TARGETS)"},
+            "The .PHONY declaration must consume the single-source target catalogs",
+        )
+        catalog_match = re.search(
+            r"(?ms)^PUBLIC_TARGETS := \\\n(?P<targets>.*?)(?=^INTERNAL_TARGETS :=)",
+            self.makefile_text,
+        )
+        self.assertIsNotNone(catalog_match, "No PUBLIC_TARGETS catalog found in Makefile")
+        public_targets = set(catalog_match.group("targets").replace("\\", "").split())
         for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
-            self.assertIn(target, phony_targets, f"Target {target} missing from .PHONY")
+            self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
 
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""

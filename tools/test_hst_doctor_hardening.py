@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -30,6 +32,47 @@ def write_pe(path: Path, *, pe_offset: int = 0x80) -> None:
     struct.pack_into("<H", data, pe_offset + 4, 0x8664)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+
+
+def write_synthetic_elf(
+    path: Path,
+    segments: list[tuple[int, int, int]],
+    *,
+    machine: int = 8,
+    file_padding: int = 0,
+) -> None:
+    phoff = 52
+    phentsize = 32
+    data_offset = phoff + phentsize * len(segments)
+    header = bytearray(52)
+    header[:4] = b"\x7fELF"
+    header[4] = 1  # ELF32
+    header[5] = 1  # little-endian
+    header[6] = 1  # version 1
+    struct.pack_into("<HHI", header, 16, 2, machine, 1)
+    struct.pack_into("<III", header, 24, 0, phoff, 0)
+    struct.pack_into("<I", header, 36, 0)
+    struct.pack_into("<HHHHHH", header, 40, 52, phentsize, len(segments), 40, 0, 0)
+    phdrs = bytearray()
+    curr_offset = data_offset
+    for index, (p_type, filesz, memsz) in enumerate(segments):
+        phdrs.extend(
+            struct.pack(
+                "<8I",
+                p_type,
+                curr_offset,
+                index * 0x1000,
+                index * 0x1000,
+                filesz,
+                memsz,
+                5,
+                0x10,
+            )
+        )
+        curr_offset += filesz
+    payload = b"\0" * (curr_offset - data_offset + file_padding)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(header) + bytes(phdrs) + payload)
 
 
 class FormatHardeningTests(unittest.TestCase):
@@ -58,6 +101,40 @@ class FormatHardeningTests(unittest.TestCase):
             metadata, error = hst_doctor._validate_iso(path)
             self.assertIsNone(metadata)
             self.assertIn("expected primary", error or "")
+
+    def test_accepts_non_load_segment_with_filesz_greater_than_memsz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "non_load.elf"
+            # Segment 0: PT_LOAD (type 1) with filesz <= memsz
+            # Segment 1: processor-specific non-PT_LOAD (type 0x700000a1) with filesz > memsz
+            write_synthetic_elf(
+                path,
+                [(1, 16, 16), (0x700000A1, 32, 0)],
+            )
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(error)
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["load_segments"], 1)
+
+    def test_rejects_pt_load_segment_with_filesz_greater_than_memsz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_load.elf"
+            # Segment 0: PT_LOAD (type 1) with filesz > memsz
+            write_synthetic_elf(path, [(1, 32, 16)])
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(metadata)
+            self.assertIn("has p_memsz < p_filesz", error or "")
+
+    def test_rejects_segment_extending_beyond_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "overflow.elf"
+            write_synthetic_elf(path, [(1, 64, 64)])
+            data = path.read_bytes()
+            path.write_bytes(data[:-10])
+            metadata, error = hst_doctor_core._parse_elf(path)
+            self.assertIsNone(metadata)
+            self.assertIn("extends beyond the file", error or "")
 
 
 class InputPairHardeningTests(unittest.TestCase):
@@ -134,19 +211,29 @@ This remains subject to legal review.
 
 class ManagerExitPropagationHardeningTests(unittest.TestCase):
     def test_parameterized_manager_actions_fail_closed(self) -> None:
-        manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8-sig")
+        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+        manager = mgr_path.read_text(encoding="utf-8-sig")
         # Each failing action records a nonzero termination code and breaks out of the
         # switch; the single `exit` after the finally block applies it, so the caller
         # sees a nonzero status AND the caller's location is restored first.
-        self.assertIn('"BuildFull" { if (-not (Invoke-HstBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }', manager)
-        self.assertIn('"BuildFast" { if (-not (Invoke-HstBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }', manager)
+        self.assertTrue(
+            '"BuildFull" { if (-not (Invoke-NkBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
+            or '"BuildFull" { if (-not (Invoke-HstBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
+        )
+        self.assertTrue(
+            '"BuildFast" { if (-not (Invoke-NkBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
+            or '"BuildFast" { if (-not (Invoke-HstBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
+        )
         self.assertIn('if (-not (Invoke-Selftest)) { $script:ManagerExitCode = 1; break }', manager)
         self.assertIn('$script:LastRunResult = $null', manager)
         self.assertIn('if ($null -eq $script:LastRunResult) { $script:ManagerExitCode = 1; break }', manager)
         self.assertIn('if ($Action -and $script:ManagerExitCode -ne 0) {\n    exit $script:ManagerExitCode', manager)
 
     def test_frontend_does_not_mask_manager_failure(self) -> None:
-        frontend = (ROOT / "hst.ps1").read_text(encoding="utf-8-sig")
+        # Phase 3 (#196): nk.ps1 is canonical; hst.ps1 is a forwarding wrapper.
+        nk_path = ROOT / "nk.ps1"
+        hst_path = ROOT / "hst.ps1"
+        frontend = nk_path.read_text(encoding="utf-8-sig") if nk_path.exists() else hst_path.read_text(encoding="utf-8-sig")
         self.assertNotIn("Invoke-ManagerBuild", frontend)
         self.assertNotIn("Get-HstProductBackupPath", frontend)
         self.assertIn("$LASTEXITCODE = 0", frontend)
@@ -314,17 +401,228 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             failures = [res for res in report.results if res.status == "FAIL"]
             self.assertEqual(failures, [])
 
-    def test_case_h_lawful_private_preflight_if_available(self) -> None:
-        """Preflight validation of live private inputs if present (preflight only, not retail acceptance)."""
-        live_root = ROOT
-        eboot_elf = live_root / "place_game_here" / "EBOOT.elf"
-        if not eboot_elf.is_file():
-            self.skipTest("Lawful private EBOOT.elf not available in workspace")
-        report = hst_doctor.Report(live_root, "inputs")
-        hst_doctor_checks.check_private_inputs(report, need_iso=False, need_assets=False)
-        eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
-        self.assertIsNotNone(eboot_elf_res)
-        self.assertEqual(eboot_elf_res.status, "PASS")
+    def test_case_h_missing_lawful_inputs_fail_closed(self) -> None:
+        """The doctor must FAIL CLOSED when the lawful retail inputs are absent.
+
+        Case H used to skip whenever no live EBOOT.elf was present, which made
+        the preflight acceptance check invisible to CI: delete the check (or
+        the INPUT_EBOOT_ELF diagnosis) and this test silently passed as a
+        SKIP.  An absent input is a diagnosis -- INPUT_EBOOT_ELF FAIL with a
+        nonzero exit -- not a reason to stop checking.  Both halves below are
+        hermetic and run on every host: the fail-closed diagnosis and exit
+        contract (including end-to-end through the CLI operators invoke), and
+        the preflight PASS for a structurally valid EBOOT.elf through the same
+        code path the live-input case used to exercise.
+        """
+        # 1. An absent EBOOT.elf is a FAIL with exit status 1, never a pass-through.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "place_game_here").mkdir()
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
+            self.assertIsNotNone(
+                eboot_elf_res, "an absent EBOOT.elf must still be diagnosed")
+            self.assertEqual(eboot_elf_res.status, "FAIL")
+            self.assertEqual(report.exit_code(False), 1)
+
+            proc = subprocess.run(
+                [sys.executable, str(TOOLS / "hst_doctor.py"),
+                 "--root", str(root), "--scope", "inputs"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(
+                proc.returncode, 1,
+                "the doctor must exit nonzero with the lawful inputs absent:\n"
+                + proc.stdout + proc.stderr,
+            )
+            self.assertIn("INPUT_EBOOT_ELF", proc.stdout)
+
+        # 2. A structurally valid synthetic EBOOT.elf passes the same check the
+        #    live-input case validated, so the acceptance path stays covered.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._setup_synthetic_preflight_workspace(root)
+            report = hst_doctor.Report(root, "inputs")
+            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
+            self.assertIsNotNone(eboot_elf_res)
+            self.assertEqual(
+                eboot_elf_res.status, "PASS",
+                "a structurally valid EBOOT.elf must pass the preflight the "
+                "live-input case used to exercise")
+
+
+class AgentIdentityChecks(unittest.TestCase):
+    """A repository-local commit identity must be reported, whichever key carries it.
+
+    The check exists because automated sessions have left an identity behind in
+    this workspace, silently re-authoring later commits. Two ways of failing it
+    are easy and were both found on review: looking only at `user.*` when Git
+    also honours `author.*` and `committer.*`, and reporting only the
+    highest-precedence scope so the remediation leaves a lower one effective.
+    """
+
+    def _repo(self, tmp: str, *config: tuple[str, ...]) -> Path:
+        root = Path(tmp) / "repo"
+        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+        for args in config:
+            subprocess.run(["git", "-C", str(root), "config", *args],
+                           check=True, capture_output=True)
+        return root
+
+    def _run(self, root: Path):
+        report = hst_doctor.Report(root, "identity")
+        hst_doctor_checks.check_agent_identity(report)
+        results = [r for r in report.results if r.code == "GIT_IDENTITY"]
+        self.assertEqual(len(results), 1, "the check must report exactly once")
+        return results[0]
+
+    def test_clean_checkout_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._run(self._repo(tmp)).status, "PASS")
+
+    def test_unrelated_user_key_is_not_an_identity(self) -> None:
+        """user.signingkey is not an identity, and must not be reported as one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.signingkey", "ABCD1234"))
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_local_user_identity_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.name", "opencode"),
+                              ("user.email", "opencode@nakagawa.local"))
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("opencode@nakagawa.local", result.summary)
+
+    def test_author_and_committer_keys_are_reported(self) -> None:
+        """Git honours author.*/committer.* over user.*, so both must be inspected.
+
+        Reproduced against Git 2.43: a repository-local author.email authors
+        every commit in the checkout while user.email is unset entirely.
+        """
+        for key in ("author.name", "author.email", "committer.name", "committer.email"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                root = self._repo(tmp, (key, "bot@x.invalid"))
+                result = self._run(root)
+                self.assertEqual(result.status, "WARN")
+                self.assertIn(key, result.summary)
+
+    def test_empty_value_is_still_an_override(self) -> None:
+        """An empty [user] entry breaks commits; it must not read as unset."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.email", ""))
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("(empty)", result.summary)
+
+    def test_worktree_scope_is_not_double_reported_when_extension_is_off(self) -> None:
+        """Without extensions.worktreeConfig, --worktree *is* --local in Git.
+
+        Reading it as a separate scope reports every .git/config value twice and
+        emits a `--worktree --unset` remedy that Git refuses.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp, ("user.name", "localguy"))
+            summary = self._run(root).summary
+            self.assertNotIn("worktree:", summary)
+            self.assertNotIn("--worktree", summary)
+
+    def test_remediation_clears_every_populated_scope(self) -> None:
+        """The emitted commands must leave no identity behind, in either scope.
+
+        Clearing only the higher-precedence worktree value leaves the common
+        .git/config identity immediately effective, which is the failure this
+        asserts against: the remedy is run verbatim and the check must then pass.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(
+                tmp,
+                ("extensions.worktreeConfig", "true"),
+                ("user.name", "localguy"), ("user.email", "l@x.invalid"),
+                ("committer.name", "cbot"),
+                ("--worktree", "user.name", "wtguy"),
+                ("--worktree", "author.email", "w@x.invalid"),
+            )
+            summary = self._run(root).summary
+            self.assertIn("worktree:user.name=wtguy", summary)
+            self.assertIn("local:user.name=localguy", summary)
+            commands = re.search(r"clear it with '(.+)'\.$", summary)
+            self.assertIsNotNone(commands, "the warning must carry a remediation")
+            for command in commands.group(1).split(" && "):
+                self.assertTrue(command.startswith("git config "), command)
+                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_multi_valued_key_is_cleared_with_unset_all(self) -> None:
+        """A key holding two values needs --unset-all; --unset refuses it.
+
+        Reproduced against Git 2.43: `git config --unset user.email` on a
+        doubled key warns "has multiple values", exits 5, and leaves both in
+        place, so the emitted remedy silently did nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            for value in ("first@x.invalid", "second@x.invalid"):
+                subprocess.run(["git", "-C", str(root), "config", "--add",
+                                "user.email", value], check=True, capture_output=True)
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("(2 values)", result.summary)
+            commands = re.search(r"clear it with '(.+?)'\.", result.summary)
+            self.assertIsNotNone(commands)
+            self.assertIn("--unset-all", commands.group(1))
+            for command in commands.group(1).split(" && "):
+                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
+            self.assertEqual(self._run(root).status, "PASS")
+
+    def test_identity_from_an_include_is_reported(self) -> None:
+        """An included identity authors commits, so it must not read as clean.
+
+        Verified against Git 2.43: with `include.path` pointing at a file that
+        sets user.name/user.email, `git config --local --get user.email` reports
+        nothing while `git commit` authors as the included identity. The remedy
+        must name the include rather than emit an unset this scope cannot honour.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            include = root / ".git" / "identity.inc"
+            include.write_text(
+                "[user]\n\tname = IncludedBot\n\temail = included@x.invalid\n",
+                encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "config", "include.path",
+                            "identity.inc"], check=True, capture_output=True)
+
+            # Confirm the premise on this Git before asserting on the check.
+            effective = subprocess.run(
+                ["git", "-C", str(root), "config", "--get", "user.email"],
+                capture_output=True, text=True, check=False,
+                env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                     "GIT_CONFIG_SYSTEM": os.devnull})
+            self.assertEqual(effective.stdout.strip(), "included@x.invalid",
+                             "precondition: Git resolves the included identity")
+
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("included@x.invalid", result.summary)
+            self.assertIn("included config", result.summary)
+            # The include cannot be unset through --local, so no command may
+            # claim to clear it.
+            self.assertNotIn("--unset-all user.email", result.summary)
+
+    def test_uninspectable_config_warns_rather_than_passing(self) -> None:
+        """A failed lookup must never read as a clean checkout."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "not-a-repo"
+            root.mkdir()
+            result = self._run(root)
+            self.assertEqual(result.status, "WARN")
+            self.assertIn("cannot be ruled out", result.summary)
 
 
 if __name__ == "__main__":

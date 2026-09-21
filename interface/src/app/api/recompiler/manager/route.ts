@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { routeError } from "@/lib/recompiler/runner";
 import { NextRequest, NextResponse } from "next/server";
 import { startManagerProcess, stopActiveManagerProcess, managerProcess } from "@/lib/recompiler/manager-process";
 import { parseManagerLaunchRequest, DASHBOARD_MANAGER_ACTIONS } from "@/lib/recompiler/manager-contract";
@@ -30,15 +32,27 @@ export async function GET(req: NextRequest) {
       // that is following the current run.
       const trackedRunId = managerProcess.runId;
 
-      // If no process is running, we can close the stream immediately
+      // Issue O-08: an idle manager no longer closes the stream. Idle streams
+      // stay open and receive lifecycle "status" events, so dashboard panels
+      // can refresh on real state changes instead of polling every few
+      // seconds. The stream still closes on a terminal close/error event of
+      // the run it follows.
       if (!managerProcess.child) {
-        sendEvent("close", { code: managerProcess.lastExitCode ?? 0 });
-        controller.close();
-        return;
+        sendEvent("status", {
+          phase: managerProcess.phase ?? "exited",
+          action: null,
+          code: managerProcess.lastExitCode ?? 0,
+        });
       }
 
       // Register listener for live events
-      const listener = (event: { type: "stdout" | "stderr" | "close" | "error"; runId?: number; text?: string; code?: number; message?: string }) => {
+      const listener = (event: { type: "stdout" | "stderr" | "close" | "error" | "status"; runId?: number; text?: string; code?: number; message?: string; phase?: string; action?: string | null }) => {
+        if (event.type === "status") {
+          // Status events are lifecycle-wide; forward them regardless of the
+          // generation bound at connect time.
+          sendEvent("status", { phase: event.phase, action: event.action, code: event.code });
+          return;
+        }
         if (trackedRunId !== null && event.runId !== undefined && event.runId !== trackedRunId) {
           return; // event from a superseded generation; ignore
         }
@@ -74,7 +88,7 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/recompiler/manager
-// Non-blocking trigger to start hst_manager.ps1 with the requested action.
+// Non-blocking trigger to start nk_manager.ps1 with the requested action.
 export async function POST(req: NextRequest) {
   const rejection = rejectNonLocalControlRequest(req, { mutating: true }) ?? rejectUnsupportedProcessHost();
   if (rejection) return rejection;
@@ -84,10 +98,10 @@ export async function POST(req: NextRequest) {
   try {
     launch = parseManagerLaunchRequest(body);
   } catch (error) {
-    return NextResponse.json(
-      { error: "invalid-manager-request", detail: String(error), supported: DASHBOARD_MANAGER_ACTIONS },
-      { status: 400 },
-    );
+    return routeError("invalid-manager-request", error, 400, {
+      detail: error instanceof Error ? error.message : "Invalid manager request",
+      supported: DASHBOARD_MANAGER_ACTIONS,
+    });
   }
 
   // Prevent multiple overlapping tasks
@@ -106,7 +120,7 @@ export async function POST(req: NextRequest) {
       action: launch.action,
     });
   } catch (e) {
-    return NextResponse.json({ error: "manager-failed", detail: String(e) }, { status: 500 });
+    return routeError("manager-failed", e, 500);
   }
 }
 

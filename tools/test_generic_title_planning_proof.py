@@ -61,9 +61,9 @@ HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 # HST constants that must never appear in a generic plan or be inherited silently.
 HST_SPAN = (3158420, 3173924)  # 0x00303194, 0x00306e24
 HST_MODULES = [
-    ("libfont.prx", 840957952),
-    ("scePsmf_library.prx", 841482240),
-    ("scePsmfP_library.prx", 841975912),
+    ("libfont.prx", 166460416),
+    ("scePsmf_library.prx", 166551552),
+    ("scePsmfP_library.prx", 166493952),
 ]
 HST_DISC_ID = "UCUS98701"
 
@@ -75,7 +75,6 @@ def _load(path: pathlib.Path) -> dict:
 class GenericTitleProofFixtures(unittest.TestCase):
     def test_synthetic_title2_fixture_is_valid_and_deterministic(self) -> None:
         """Synthetic-title2 validates, canonicalizes stably, and is publication-safe."""
-        raw = SYNTHETIC2.read_text(encoding="utf-8")
         manifest = _load(SYNTHETIC2)
         normalized = title_manifest.validate_manifest(manifest)
         first = title_manifest.canonical_json(manifest)
@@ -236,7 +235,7 @@ class HstProfileIsolation(unittest.TestCase):
             self.skipTest("pwsh required for adapter isolation checks")
 
     def _run_adapter_reject(self, plan: dict, expected_fragment: str) -> None:
-        import json as _json, tempfile
+        import json as _json
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = pathlib.Path(tmp) / "plan.json"
             plan_path.write_text(_json.dumps(plan), encoding="utf-8")
@@ -259,7 +258,7 @@ class HstProfileIsolation(unittest.TestCase):
             self.assertIn(expected_fragment, proc.stdout)
 
     def test_synthetic_title2_is_rejected_by_hst_adapter(self) -> None:
-        """The HST manager accepts only the checked-in HST retail manifest, not synthetics."""
+        """The HST manager accepts only the local HST retail manifest, not synthetics."""
         manifest = _load(SYNTHETIC2)
         plan = title_codegen_plan.build_manager_plan(
             manifest,
@@ -267,7 +266,7 @@ class HstProfileIsolation(unittest.TestCase):
             game_elf=pathlib.Path("build/fixtures/synthetic2.elf"),
             build_dir=pathlib.Path("build/synthetic_title2"),
         )
-        self._run_adapter_reject(plan, "the HST manager accepts only the checked-in HST retail manifest")
+        self._run_adapter_reject(plan, "the HST manager accepts only the local HST retail manifest")
 
     def test_unknown_title_does_not_inherit_hst_constants(self) -> None:
         """A manifest with an unknown id/title_kind gets no HST modules/spans/disc."""
@@ -287,7 +286,7 @@ class HstProfileIsolation(unittest.TestCase):
         self.assertEqual(plan["required_guest_modules"], [])
         self.assertIsNone(plan["disc"])
         # Must still be rejected by HST adapter (mutant: removing isolation would accept it)
-        self._run_adapter_reject(plan, "the HST manager accepts only the checked-in HST retail manifest")
+        self._run_adapter_reject(plan, "the HST manager accepts only the local HST retail manifest")
 
     def test_tampering_title_identity_to_hst_still_fails_due_to_other_pins(self) -> None:
         """Mutant control: even if an attacker flips id to hst-ucus98701-v1, other HST pins catch it."""
@@ -351,7 +350,7 @@ class InvalidManifestsFailClosed(unittest.TestCase):
     def test_malformed_manifests_are_rejected_by_validator(self) -> None:
         base = _load(SYNTHETIC2)
         cases = [
-            ("duplicate_key", lambda m: m.update({"id": "synthetic-title2-v1", "id": "dup"}), "duplicate"),  # handled via loads
+            ("duplicate_key", lambda m: None, "duplicate"),  # handled via loads
             ("unknown_field", lambda m: m.update({"unexpected": True}), "unknown field"),
             ("bad_kind", lambda m: m.update({"kind": "arcade"}), "unsupported title kind"),
             ("retail_without_disc", lambda m: (m.update({"kind": "retail"}), m.pop("disc", None)), "require disc"),
@@ -547,7 +546,6 @@ class MakeSpanPrecedenceTests(unittest.TestCase):
 
     def test_origin_cmd_generic_overrides_env(self):
         # env generic, cmd generic overrides
-        env = {"TITLE_EXTRA_SPANS": "env-generic"}
         # Use helper with env_overrides
         # For this test, set env generic and cmd generic
         # Our helper's env_overrides already handles env, but we need to combine

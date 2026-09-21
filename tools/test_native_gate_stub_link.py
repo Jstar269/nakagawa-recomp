@@ -15,7 +15,6 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import title_runtime_config  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +29,7 @@ _SRC_TOKEN = re.compile(r"\bsrc/[\w./-]+\.(?:c|cpp)\b")
 # Hosted-CI inline builds whose source lists duplicate a canonical Makefile
 # target recipe. PR #118 shipped a runtime dependency (guest_interp.c) that the
 # Makefile target picked up but the inline CI recipe silently omitted, failing
-# hosted link gates only after Draft suppression lifted. Each mapping below is
+# hosted link gates when draft suppression was in place. Each mapping below is
 # asserted source-list-equal so a new runtime dependency cannot be added to one
 # surface and forgotten in the other.
 _CI_BUILD_TO_MAKE_TARGET = {
@@ -43,7 +42,7 @@ _CI_BUILD_TO_MAKE_TARGET = {
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestGateStubLink(unittest.TestCase):
-    def test_same_headless_runtime_link_inputs_have_no_stale_symbols(self) -> None:
+    def test_same_headless_runtime_link_inputs_include_stale_detector(self) -> None:
         assert CC is not None
         with tempfile.TemporaryDirectory(prefix="gate_stub_link_") as td:
             work = Path(td)
@@ -98,6 +97,15 @@ class TestGateStubLink(unittest.TestCase):
                 # runtime, so the real guest_interp implementation belongs in
                 # the link surface exactly as production requires.
                 str(RT / "guest_interp.c"),
+                # guest_interp.c calls the COP0/exception helpers; they link
+                # from the real TU, not from gate_stub.c dead symbols.
+                str(RT / "cpu_lle.c"),
+                str(RT / "domain_mode.c"),
+                # Both dispatch tiers call the TD-27 stale-block query; the
+                # real detector links here exactly as production requires.
+                # Gate off it is one cached branch, so the headless gate
+                # stays on the AOT path with zero guest-memory touches.
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "title_config.c"),
@@ -151,6 +159,10 @@ class TestGateStubLink(unittest.TestCase):
                 str(generated),
                 str(chunk),
                 str(RT / "recomp.c"),
+                str(RT / "guest_interp.c"),
+                str(RT / "cpu_lle.c"),
+                str(RT / "domain_mode.c"),
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(GATE_STUB),
@@ -194,6 +206,10 @@ class TestGateStubLink(unittest.TestCase):
                 str(generated),
                 str(chunk),
                 str(RT / "recomp.c"),
+                str(RT / "guest_interp.c"),
+                str(RT / "cpu_lle.c"),
+                str(RT / "domain_mode.c"),
+                str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "title_config.c"),
@@ -250,7 +266,7 @@ class TestInlineCiSelftestLinkSync(unittest.TestCase):
     These pairs duplicate the same link contract in two places. When they drift,
     the Makefile target keeps passing locally while the hosted substantive gate
     fails (or vice versa), which is exactly how PR #118 hid a missing
-    guest_interp.c behind Draft-skipped jobs.
+    guest_interp.c behind the earlier draft-suppressed jobs.
     """
 
     def test_inline_ci_selftest_source_lists_match_makefile_targets(self) -> None:

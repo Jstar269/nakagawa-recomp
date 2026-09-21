@@ -62,6 +62,9 @@ freeing every success immediately, and emits the highest provable base plus
 the first failure. Thread-free and write-free; failures are ordinary error
 codes. Its output is the redesign input for a corrected invalid-tail
 boundary — it settles no DMA semantics itself.
+`CASE=display-ge-mask`. Display-wait sessions use `CASE=display-wait-late`,
+`CASE=display-wait-priority`, or `CASE=display-vblank-window`. Plain-mutex
+sessions use one of the four `CASE=mutex-*` cases described below.
 
 The thread-delete follow-up is a bounded two-control probe for the
 second-order `sceKernelWaitThreadEnd` discrepancy: semaphore handshakes prove
@@ -85,6 +88,36 @@ matrix.
 
 All records contain only scalar arithmetic and API results; pointers and raw
 memory are never treated as stable evidence.
+
+## Display-wait cases (issue 70)
+
+Three cases answer what a PSP display wait actually does, because
+`docs/PSP_INTR_WAITS_MATRIX.md` recorded the normal-context rows for both NIDs
+as `hardware = unknown / WOULD_BLOCK control`: only the error cells had ever been
+measured. Each is bounded by both an elapsed-system-time test and an iteration
+cap, so a stopped clock yields a finite record rather than a hang, and none of
+them touches game content or firmware state.
+
+`CASE=display-wait-late` (`PSP-DISPLAY-002`) phase-aligns to an edge, busy-spins a
+controlled fraction of a calibrated period without any voluntary yield, then
+times the call under test. Offsets of 2/8, 6/8, 10/8, 14/8 and 20/8 of a period
+straddle one and two boundaries, so "several periods elapsed while the caller was
+busy" is covered rather than only a narrow late window. A separate in-vblank cell
+polls `sceDisplayIsVblank` and calls from inside the interval, which is the only
+phase at which the two NIDs can differ. The period is calibrated on the same
+device in the same run; nothing assumes 60000/1001.
+
+`CASE=display-wait-priority` (`PSP-DISPLAY-003`) runs identical high-priority work
+twice, once alone and once alongside an always-runnable lower-priority peer that
+never issues a blocking call. Per iteration the caller samples the peer's counter
+before its display wait, after it, and again after a pure-CPU spin, so progress
+made while BLOCKED is separated from progress made while merely RUNNABLE. The
+control/experiment pair is what distinguishes "a real block hands the CPU over"
+from "the syscall behaves differently because another thread exists".
+
+`CASE=display-vblank-window` (`PSP-DISPLAY-004`) aligns to an edge and times
+`sceDisplayIsVblank`'s falling transition, recording hcount at entry and exit so
+the interval is expressed in the display's own units as well as microseconds.
 
 ## Issue 23 DMA cases
 
@@ -282,10 +315,73 @@ changed before resume, and `out13`/`out14` separate a completion callback seen
 distinct facts: GE memory work and GE completion notification are not the same
 hardware domain.
 
+## Plain-mutex cases (issue #2)
+
+Four cases isolate the unresolved plain-Mutex cells left open by PR #52. The
+mutex syscalls are absent from the installed PSPSDK headers, so
+`mutex_imports.S` declares the exact ThreadManForUser import stubs and
+`probe.c` mirrors the documented `SceKernelMutexInfo` layout. Only scalar
+return values are treated as evidence.
+
+- `CASE=mutex-refer-unlocked` — creates one unlocked and one locked mutex,
+  refers both, unlocks the second, and refers again. The raw `lockThread`
+  words for all three states plus the referring thread id are recorded so the
+  unlocked-value convention (`0` vs `0xffffffff`) is decided by bits, not by
+  documentation.
+- `CASE=mutex-timeout-quanta` — a worker thread performs timed locks across
+  1, 25, 250, and 1000 us requests (10 trials each), records the remaining-
+  time word and measured min/max elapsed per interval, one `LockMutexCB`
+  sample at 250 us, and a final lock with a 100 ms timeout released early via
+  the owning unlock. This arbitrates alleged 25 us/250 us quantization against
+  the measured clock.
+- `CASE=mutex-priority-inheritance` — a low-priority owner holds an
+  attr-`0x100` mutex while a higher-priority waiter blocks. Owner priority is
+  sampled before, during, and after the wait (both via `ReferThreadStatus`
+  from main and `GetThreadCurrentPriority` from the owner itself), deciding
+  whether PSP boosts the owner.
+- `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
+  that samples 20 firings; each firing first proves interrupt context with
+  `sceKernelIsIntrContext()`, then measures `LockMutex`/`LockMutexCB`/
+  `TryLockMutex` return precedence across bad UID, bad count, valid-unlocked,
+  and non-owner unlock cells. One header record and one record per trial are
+  emitted (`mutex-interrupt-context-t00`..`t19`). This case links
+  `libpspinterruptmanager_kernel_660`.
+
+All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
+machinery ran and every scalar was captured; it makes no claim that any host
+implementation matches until the comparison protocol runs on the capture.
+
 > **Operator note.** Never send the PSPLink shell command `exit` from a capture
 > driver. `exit` terminates PSPLink on the device and returns it to the XMB,
 > which looks exactly like a probe-induced reset and is not one. Close the
 > client's stdin instead.
+
+## Exception and kernel-object probes (campaign psp-hw-20260917)
+
+These cases are standalone probes, each in its own source file. Unlike
+`probe.c`, they do not print protocol records. Each probe writes its header and
+results to a file on `host0:` (the PSPLink host share) and records the
+`PROBE_BUILD_COMMIT` value (default: the short `HEAD` hash). Build one case per
+launch and power-cycle between launches.
+
+| Case | Source | What it measures | Ends by |
+| --- | --- | --- | --- |
+| `exception-a1` | `probe_exception_a1.c` | A user-mode `break`: EPC, Cause and Status in PSPLink's exception frame. | Raising the exception. |
+| `exception-a2` | `probe_exception_a2.c` | The same `break` in the delay slot of an always-taken branch (the Cause BD bit). | Raising the exception. |
+| `exception-a3` | `probe_exception_a3.c` | A user-mode load from a kernel-segment address (AdEL and BadVAddr). | Raising the exception. |
+| `kobj-b1` | `psp_b1.c` | Wait-free callback, semaphore, event-flag, FPL, VPL, VTimer and LwMutex return codes and status layouts. | Returning from `main`. |
+| `wait-b2` | `psp_b2.c` | Contended waits with one bounded helper thread: wake, delete, cancel and LwMutex hand-off. | Returning from `main`. |
+| `kernel-b3` | `psp_b3.c` | Message pipes, mailboxes, sleep/wakeup/suspend/terminate, release-wait, alarms and delay timing. | Parking in `sceKernelSleepThread()`. |
+
+After an exception probe, read the frame with `pspsh -e "exprint"`, one
+command at a time. On the measured PSPLink setup, a probe that returned from
+`main` after creating threads (`wait-b2`) left PSPLink and exited to the XMB,
+which is why `kernel-b3` parks instead.
+
+The kernel-object probes link `threadman_user_imports.S`, one complete
+ThreadManForUser import block: PSPSDK ships heavyweight-mutex stubs only for
+the kernel library, and a second partial block would split the library's stub
+run. Add any newly used ThreadManForUser NID there.
 
 ## Build and hardware handoff
 

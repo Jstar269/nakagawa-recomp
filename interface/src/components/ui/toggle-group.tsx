@@ -1,4 +1,5 @@
 "use client"
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import * as React from "react"
 import * as ToggleGroupPrimitive from "@radix-ui/react-toggle-group"

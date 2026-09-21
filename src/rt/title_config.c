@@ -11,13 +11,15 @@
 
 #include "title_config.h"
 
+#include <stdlib.h>
+
 /* Build-local generated artifact (build/<game>/sr_title_config.h). The build always
  * generates it: with no title configuration it defines the generic all-disabled
  * configuration, so this include is unconditional and a missing artifact is a build
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 3
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 5
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -51,6 +53,59 @@ static const SrTitleCallbackTerminator s_callback_terminators[] = {
 _Static_assert(sizeof s_callback_terminators / sizeof s_callback_terminators[0]
                    == SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1u,
                "generated callback-terminator list does not match its declared count");
+
+/* Guest PRX modules and their load bases: the same manifest list the recompiler used for
+ * GAME_EXTRA_ELFS, so code and data agree on one address per module. */
+typedef struct { const char *name; const char *guest_path; uint32_t base; } SrTitleGuestModule;
+#define SR_TITLE_CFG_GUEST_MODULE(n, p, b) { (n), (p), (b) },
+static const SrTitleGuestModule s_guest_modules[] = {
+    SR_TITLE_CONFIG_GUEST_MODULE_LIST
+    { "", "", 0u }  /* placeholder: never read; the count is the authority */
+};
+#undef SR_TITLE_CFG_GUEST_MODULE
+_Static_assert(sizeof s_guest_modules / sizeof s_guest_modules[0]
+                   == SR_TITLE_CONFIG_GUEST_MODULE_COUNT + 1u,
+               "generated guest-module list does not match its declared count");
+
+static int ascii_ieq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+int sr_title_config_guest_module(const char *guest_path, const char **name_out, uint32_t *base_out) {
+    if (!guest_path) return 0;
+    /* The list ends at the placeholder (empty name); scanning to it rather than
+     * comparing against the count keeps a zero-module build free of a constant
+     * always-false loop condition (-Wtype-limits). */
+    for (const SrTitleGuestModule *m = s_guest_modules; m->name[0]; m++) {
+        if (m->guest_path[0] && ascii_ieq(m->guest_path, guest_path)) {
+            if (name_out) *name_out = m->name;
+            if (base_out) *base_out = m->base;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+unsigned sr_title_config_guest_module_count(void) {
+    unsigned n = 0;
+    while (s_guest_modules[n].name[0]) n++;
+    return n;
+}
+
+int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
+                                    uint32_t *base_out) {
+    if (index >= sr_title_config_guest_module_count()) return 0;
+    if (name_out) *name_out = s_guest_modules[index].name;
+    if (guest_path_out) *guest_path_out = s_guest_modules[index].guest_path;
+    if (base_out) *base_out = s_guest_modules[index].base;
+    return 1;
+}
 
 #define SR_TITLE_CFG_RUNTIME_SYNC_WRAPPER(m, e, l) { (m), (e), (l) },
 static const SrTitleRuntimeSyncWrapper s_runtime_sync_wrappers[] = {
@@ -92,6 +147,20 @@ static const SrTitleRuntimeConfig s_config = {
 };
 
 const SrTitleRuntimeConfig *sr_title_config(void) { return &s_config; }
+
+int sr_title_config_diagnostics_enabled(void) {
+    /* The profile bit is emitted only from the validated manifest's bounded
+     * codegen_profile field. The environment remains an explicit operator opt-in,
+     * so a generic or public fixture build cannot activate the HST-only diagnostic
+     * reads merely because a diagnostics environment leaked into its process. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = (SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE != 0) &&
+                  (s_config.valid != 0u) &&
+                  (getenv("SR_HLE_DIAGNOSTICS") != NULL);
+    }
+    return enabled;
+}
 
 uint32_t sr_title_config_fallback_entry(void) {
     return (s_config.valid & SR_TITLE_CFG_FALLBACK_ENTRY) ? s_config.fallback_entry : 0u;

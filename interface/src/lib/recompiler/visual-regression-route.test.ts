@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // visual-regression-route.test.ts — route-level tests for the shared bounded
 // P6 PPM loader (issue #174).  Exercises the real image and variance GET
 // handlers against temp repo roots containing generated PPM fixtures.  Run
 // with `npm run test:db`.
 //
-// The temp root satisfies findRepoRoot's anchor set via HST_DASHBOARD_REPO_ROOT,
+// The temp root satisfies findRepoRoot's anchor set via NK_DASHBOARD_REPO_ROOT,
 // so no real repo or game files are touched.
 
 import { test, before, after } from "node:test";
@@ -26,7 +27,7 @@ function writePpm(dir: string, name: string, w: number, h: number, payload?: Buf
 
 function makeCanonicalRoot() {
   const root = mkdtempSync(path.join(tmpdir(), "vr-route-"));
-  for (const anchor of ["hst_manager.ps1", "AGENTS.md", "Makefile"]) {
+  for (const anchor of ["nk_manager.ps1", "AGENTS.md", "Makefile"]) {
     writeFileSync(path.join(root, anchor), "# test anchor\n");
   }
   mkdirSync(path.join(root, "build", "snapshots"), { recursive: true });
@@ -38,11 +39,11 @@ before(() => {
   repoRoot = makeCanonicalRoot();
   snapDir = path.join(repoRoot, "build", "snapshots");
   goldDir = path.join(repoRoot, "build", "golden");
-  process.env.HST_DASHBOARD_REPO_ROOT = repoRoot;
+  process.env.NK_DASHBOARD_REPO_ROOT = repoRoot;
 });
 
 after(() => {
-  delete process.env.HST_DASHBOARD_REPO_ROOT;
+  delete process.env.NK_DASHBOARD_REPO_ROOT;
   rmSync(repoRoot, { recursive: true, force: true });
 });
 

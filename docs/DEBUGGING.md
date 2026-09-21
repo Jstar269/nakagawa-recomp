@@ -2,7 +2,7 @@
 
 Maintained guide to the runtime's primary debug categories, commonly used environment variables,
 and supported diagnostic workflows. It is not an exhaustive inventory of every specialized
-`SR_*` switch: the implementing source and `hst_manager.ps1` are authoritative for diagnostic
+`SR_*` switch: the implementing source and `nk_manager.ps1` are authoritative for diagnostic
 switches that are added for a focused investigation and have not yet been promoted into this guide.
 
 ## Quick Start
@@ -17,7 +17,7 @@ $env:SR_DEBUG = "0x03"
 .\build\hst\hst.exe --image build\hst\hst_image.bin 0 0 none none --gui
 ```
 
-Prefer the profiles in `hst_manager.ps1`, which clear stale diagnostics before launching. Most
+Prefer the profiles in `nk_manager.ps1`, which clear stale diagnostics before launching. Most
 legacy Boolean `SR_*` switches are presence-based: assigning the string `"0"` can still enable
 them. Disable such a switch with `Remove-Item Env:NAME -ErrorAction SilentlyContinue` (or
 `$env:NAME = $null` in `pwsh`), not `NAME=0`. Numeric settings such as
@@ -102,6 +102,7 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD` |
 
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
@@ -145,12 +146,12 @@ To turn a recorded run into a replay:
 
 ```powershell
 $env:SR_INLOG = "1"
-.\hst_manager.ps1 -Action Run -Profile Standard
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Standard
 python tools/padscript_from_log.py logs/stderr_run.log `
   --minimum-width 8 --output logs/route.pad
 $env:SR_PADSCRIPT = (Resolve-Path logs/route.pad).Path
 $env:SR_NOINPUT = "1"
-.\hst_manager.ps1 -Action Run -Profile Standard
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Standard
 ```
 
 The converter expands shorter presses because a one-vblank desktop automation
@@ -218,7 +219,7 @@ Authoring a checkpoint takes one learning run:
 
 ```powershell
 $env:SR_ROUTE_LEARN = "1"
-.\hst_manager.ps1 -Action VisualOracle -Route logs/route_legacy.pad -ExitAtVblank 9500 `
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action VisualOracle -Route logs/route_legacy.pad -ExitAtVblank 9500 `
     -SnapEvery 60 -SnapWindows "7800-9200" -SaveBase logs/oracle_savebase -OracleName learn
 ```
 
@@ -244,7 +245,7 @@ unbounded `build/snapshots` PNG, so a long route spends hundreds of megabytes of
 nobody looks at.
 
 ```powershell
-.\hst_manager.ps1 -Action VisualOracle -Route logs/route_X.pad `
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action VisualOracle -Route logs/route_X.pad `
     -ExitAtVblank 41400 -SnapEvery 60 -SnapAfter 39000 -OracleName deep_return_run1
 ```
 
@@ -279,7 +280,7 @@ because the first run's save cleared a first-time tutorial popup — the second 
 popup, took a different branch, and ended in a new match instead of at the club.
 
 ```powershell
-.\hst_manager.ps1 -Action VisualOracle ... -SaveBase logs/oracle_savebase
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action VisualOracle ... -SaveBase logs/oracle_savebase
 ```
 
 First use captures the current save as the baseline; every later run restores it, so all runs
@@ -322,7 +323,7 @@ the **same run**. The club backdrop varies with host wall-clock time, so a captu
 earlier session is not a valid reference and a difference against it proves nothing.
 
 ```powershell
-.\hst_manager.ps1 -Action VisualOracle -Route logs/route_E_deep_return_20260725.pad `
+.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action VisualOracle -Route logs/route_E_deep_return_20260725.pad `
     -ExitAtVblank 44000 -SnapEvery 60 -SnapWindows '8300-9200,35500-44000' `
     -OracleName deep_return_run1
 ```
@@ -408,6 +409,7 @@ committed.
 | `SR_CBLOG=1` | Log callback operations |
 | `SR_SYSLOG=1` | Log system calls |
 | `SR_WAKELOG=1` | Log thread wakeup events |
+| `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override font directory (relative values are rejected; unset uses the executable's sibling `font`) |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Override writable host storage; relative paths, including `.`/`..`, are resolved against the current directory |

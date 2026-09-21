@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  # Pull-request events include the draft/ready transitions so a draft gets
-  # cheap feedback and the ready-for-review transition starts substantive gates.
+  # Pull-request events include the draft/ready transitions so every new head
+  # gets fresh path-applicable validation. Draft status does not suppress
+  # substantive gates.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   # Feature-branch commits are covered by pull_request.  A normal main push
@@ -19,8 +20,8 @@ on:
 
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also
-  # intentionally shared by draft and ready events so stale draft work cannot
-  # consume a runner after the PR advances.
+  # intentionally shared by draft and ready events so stale work cannot consume
+  # a runner after the PR advances.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -141,7 +142,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.21.0"
 
       - name: Lint repository Markdown
         run: npx --yes markdownlint-cli2@0.23.1
@@ -150,6 +151,14 @@ jobs:
     name: Python tooling gates
     runs-on: ubuntu-24.04
     needs: [classify, hygiene]
+    # The suite is ~6 minutes serially. Four runners take the test files
+    # round-robin (sorted), so every file runs exactly once across the shards
+    # and shards never share a working tree. needs.python_tools.result is the
+    # aggregate of all shards, so ci_required is unchanged.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
@@ -178,8 +187,14 @@ jobs:
       # from the version pinned in .pre-commit-config.yaml, so that pin stays the
       # single source of truth. A second pip-pinned copy here would silently
       # drift -- it was pinned at 0.15.21 while the hook moved to 0.16.0.
-      - name: Run Python unit tests
-        run: python -m unittest discover -s tools -p "test_*.py" -v
+      - name: Run Python unit tests (shard ${{ matrix.shard }} of 4)
+        # Same files and sys.path as `python -m unittest discover -s tools -p "test_*.py"`.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mapfile -t mods < <(ls tools/test_*.py | sort | awk -v s="$SHARD" '(NR-1)%4==s' | xargs -n1 basename | sed 's/\.py$//')
+          echo "shard $SHARD: ${#mods[@]} test files"
+          PYTHONPATH=tools python -m unittest -v "${mods[@]}"
 
   native_tools:
     name: Native and translation gates
@@ -219,6 +234,9 @@ jobs:
 
       - name: Create build directory
         run: mkdir -p build
+
+      - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
+        run: make CC=gcc native-core-tests
 
       - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
@@ -292,13 +310,13 @@ jobs:
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -420,12 +438,38 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: interface/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify dependency install scripts are allowlisted
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep npm's platform-aware diagnostic visible, then enforce the
+          # repository-wide lockfile contract so optional packages cannot hide
+          # an unapproved script merely because this runner did not install them.
+          npm approve-scripts --allow-scripts-pending
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const allowScripts = packageJson.allowScripts ?? {};
+          const pending = Object.entries(lock.packages ?? [])
+            .filter(([location, metadata]) => location && metadata?.hasInstallScript)
+            .map(([location, metadata]) => `${location.replace(/^node_modules\//, "")}@${metadata.version}`)
+            .filter((identity) => allowScripts[identity] !== true)
+            .sort();
+          if (pending.length > 0) {
+            console.error("not yet covered by allowScripts:");
+            for (const identity of pending) console.error(`  ${identity}`);
+            process.exit(1);
+          }
+          console.log("all locked dependency install scripts are covered by allowScripts");
+          NODE
 
       - name: Audit the resolved dashboard dependency graph
         run: |
@@ -473,13 +517,22 @@ jobs:
   windows_runtime:
     name: Windows runtime compile gate
     runs-on: windows-2022
-    needs: [classify, hygiene, python_tools, native_tools]
+    # Runs alongside the Linux gates rather than after them: it is the longest job
+    # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
+    # PR's critical path. A Linux failure still fails ci_required; the Windows run
+    # is then merely redundant, which costs nothing on a public repository.
+    needs: [classify, hygiene]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
-          needs.classify.outputs.run_windows == 'true' &&
-          (needs.python_tools.result == 'success' || needs.python_tools.result == 'skipped') &&
-          (needs.native_tools.result == 'success' || needs.native_tools.result == 'skipped') }}
+          needs.classify.outputs.run_windows == 'true' }}
+    # The synthetic VFPU fuzzer build is ~5.5 of the job's ~11 minutes, so it runs
+    # as its own matrix part in parallel with the other steps. Both parts repeat the
+    # cheap setup/compile steps; needs.windows_runtime.result aggregates both.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [main, fuzz]
     timeout-minutes: 25
     steps:
       - name: Check out repository
@@ -541,6 +594,7 @@ jobs:
       # links every production runtime object with the real driver, and reaches
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
+        if: matrix.part == 'main'
         shell: msys2 {0}
         # The ordinary compile target invokes the repository's PowerShell 7.6
         # asset-copy script after linking. Keep the broader Windows PATH scoped
@@ -559,6 +613,7 @@ jobs:
       # ownership gates interpretation, and the run must hand off to registered
       # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
+        if: matrix.part == 'main'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -567,6 +622,40 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
+      - name: Run native core test suite on Windows
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc native-core-tests
+
+      - name: Build and run platform-ladder filesystem workload
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder-fs
+
+      # Presentation path on a source-owned guest: fill the PSP framebuffer, hand
+      # it to sceDisplaySetFrameBuf and wait for vblank, once per frame. The other
+      # smokes prove compute and the dispatch seam but never reach the display
+      # source, so a scheduler change that stops delivering vblanks to a guest
+      # whose only wait is a vblank wait was invisible to every hosted gate. Runs
+      # headless (--sched): the assertion is the guest-visible framebuffer word,
+      # so no display is required on the runner.
+      - name: Build and run display presentation smoke
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 display-smoke-run
+
       # AOT <-> interpreter differential over the same source-owned guest bytes.
       # One pipeline run produces both execution lanes; the comparator diffs the
       # canonical instruction trace, the ordered guest writes, the memory window
@@ -574,6 +663,7 @@ jobs:
       # Without this in CI, the only thing standing between a codegen semantic
       # regression and a title run is a developer remembering to run it.
       - name: Build and run AOT/interpreter cosimulation gate
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -584,12 +674,14 @@ jobs:
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
 
       - name: Build and run scheduler selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -601,18 +693,21 @@ jobs:
       # rather than the scheduler. Without it in CI, the isolation claim rests
       # on a gate that only ever ran on a developer's machine.
       - name: Build and run dispatch isolation selftest matrix
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       - name: Build and run strbuf checked-append formatting selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -624,12 +719,14 @@ jobs:
       # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
       # same target again. Building it in CI is what stops the third recurrence.
       - name: Build and run HLE thread selftest
+        if: matrix.part == 'main'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
 
       - name: Build and run synthetic VFPU fuzzer
+        if: matrix.part == 'fuzz'
         shell: msys2 {0}
         run: |
           python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
@@ -637,7 +734,7 @@ jobs:
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
-            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 vfpu_fuzz_build
+            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
 
   main_smoke:
     name: Main integration smoke

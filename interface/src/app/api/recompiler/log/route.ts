@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
-import { readFileSync, statSync } from "node:fs";
-import { findLatestRunLog, findRepoRoot } from "@/lib/recompiler/runner";
+import { findLatestRunLog, findRepoRoot, readLogSince, routeError } from "@/lib/recompiler/runner";
 
 export const runtime = "nodejs";
 
@@ -15,10 +15,9 @@ export async function GET(req: NextRequest) {
     let lines = tail.lastLines;
     let advanced = 0;
     if (since > 0 && tail.path && since < tail.sizeBytes) {
-      const buf = readFileSync(tail.path);
-      const slice = buf.subarray(since).toString("utf8");
-      lines = slice.split(/\r?\n/).filter(Boolean);
-      advanced = since + buf.subarray(since).length;
+      const result = readLogSince(tail.path, since);
+      lines = result.lines;
+      advanced = result.cursor;
     } else {
       advanced = tail.sizeBytes;
     }
@@ -31,6 +30,6 @@ export async function GET(req: NextRequest) {
       lines,
     });
   } catch (e) {
-    return NextResponse.json({ error: "log-read-failed", detail: String(e) }, { status: 500 });
+    return routeError("log-read-failed", e, 500);
   }
 }

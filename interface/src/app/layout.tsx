@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import type { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -5,7 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 export const metadata: Metadata = {
   title: "Nakagawa Recomp — PSP static recompiler",
   description:
-    "Local build, run, diagnostics, and boot-health dashboard for the HST PSP static recompiler.",
+    "Local build, run, diagnostics, and boot-health dashboard for the Nakagawa Recomp PSP static recompiler.",
   keywords: [
     "PSP",
     "recompiler",
@@ -67,6 +68,12 @@ export default function RootLayout({
         className="antialiased bg-background text-foreground min-h-screen"
         style={{ fontFamily: SYSTEM_SANS }}
       >
+        <a
+          href="#main-content"
+          className="sr-only fixed left-3 top-3 z-[200] rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-lg focus:not-sr-only focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          Skip to main content
+        </a>
         {children}
         <Toaster />
       </body>

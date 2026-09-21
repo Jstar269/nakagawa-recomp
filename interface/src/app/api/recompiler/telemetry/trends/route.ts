@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "node:child_process";
-import { findRepoRoot } from "@/lib/recompiler/runner";
+import { SubprocessError, findRepoRoot, routeError, runSubprocess } from "@/lib/recompiler/runner";
 import { existsSync, mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,49 +56,10 @@ export async function GET(req: NextRequest) {
       childArgs.push("--html", reportPath);
     }
 
-    const abortSignal = req.signal;
-
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(pythonCmd, childArgs, { cwd: repoRoot });
-      let settled = false;
-
-      // Drain child output so the pipe can never fill and deadlock the child.
-      child.stdout?.on("data", () => {});
-      child.stderr?.on("data", () => {});
-
-      const timeout = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          child.kill();
-          reject(new Error("generate_benchmarks.py timed out"));
-        }
-      }, CHILD_TIMEOUT_MS);
-
-      const abortHandler = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          child.kill();
-          reject(new Error("request aborted"));
-        }
-      };
-      abortSignal.addEventListener("abort", abortHandler, { once: true });
-
-      child.on("close", (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        abortSignal.removeEventListener("abort", abortHandler);
-        if (code === 0) resolve();
-        else reject(new Error(`generate_benchmarks.py exited with code ${code}`));
-      });
-      child.on("error", (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        abortSignal.removeEventListener("abort", abortHandler);
-        reject(err);
-      });
+    await runSubprocess(pythonCmd, childArgs, {
+      cwd: repoRoot,
+      timeoutMs: CHILD_TIMEOUT_MS,
+      signal: req.signal,
     });
 
     if (!existsSync(reportPath)) {
@@ -123,10 +84,10 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (e) {
-    if (e instanceof Error && e.message === "request aborted") {
+    if (e instanceof SubprocessError && e.aborted) {
       return NextResponse.json({ error: "aborted", message: "request cancelled" }, { status: 499 });
     }
-    return NextResponse.json({ error: "export-failed", detail: String(e) }, { status: 500 });
+    return routeError("export-failed", e, 500);
   } finally {
     if (tempDir) {
       try {

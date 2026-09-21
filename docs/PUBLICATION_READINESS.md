@@ -22,6 +22,18 @@ surfaces, plus the reviewed-but-not-yet-cleared sal063-derived ISO/VFS and SDL
 audio implementations. Public-safe builds link explicit unavailable boundaries;
 they reject the capability and do not fabricate success.
 
+### Public channels outside the source tree
+
+Content can also reach the public through channels that no source-tree gate
+inspects. Each is listed here with its control:
+
+| Channel | Control |
+| --- | --- |
+| Repository wiki | Editing restricted to collaborators. Pages summarize and link to the maintained docs, which stay authoritative. A wiki edit follows the same boundary rules as a tracked change: no private paths, retail-derived data, keys, or redistribution claims. Review the wiki after any boundary-rule change. |
+| Discussions, issues, and PR/review comments | Maintainer-moderated. The same boundary rules apply; private evidence is described, never attached. |
+| Releases and release assets | Every tag, release, and release-asset operation requires explicit maintainer authorization in the current turn (AGENTS.md section 3); agents never perform one on their own initiative. Tag creation is additionally locked by the `release-tags-locked` ruleset, and packages follow `PREVIEW_RELEASE.md` and its fail-closed scan. Those two are content controls, not authorization. |
+| GitHub Actions logs and job summaries | Public on this repository. Workflows must not print private paths, inputs, evidence, or trusted-authority material, and must not upload artifacts containing them; the provenance attestation job writes only its verdict summary to the step summary and never the trusted ledger. A workflow change that adds output is reviewed against these rules. |
+
 ## Required predicates
 
 Every predicate below must pass for the same exact tree and history under review. A local
@@ -50,6 +62,40 @@ or a human legal decision.
    work product or stale topology claims. Live repository visibility, rulesets,
    Actions behavior, DCO, and maintainer authorization are verified separately
    against the actual destination repository.
+
+## Refreshing after an ordinary change
+
+For the common case -- you changed tracked files and need the ledger and export
+to describe them again -- use the helper, which runs the steps in the one order
+that converges:
+
+```bash
+python tools/provenance_refresh.py \
+    --implementation-ledger <private-authority>/docs/provenance/IMPLEMENTATION_PROVENANCE.json
+```
+
+It stages the worktree before generating (the generator reads the **index**,
+never the worktree), stages the regenerated ledger before rebuilding the export
+(`PUBLIC_EXPORT.json` takes `provenance_ledger_sha256` from the **worktree**
+ledger and `included_content_sha256` from the index), and then audits both legs.
+Doing these out of order produces a stale-export or hash-mismatch finding that
+looks like a content problem, so the natural response is to re-run the same wrong
+sequence; `--export-output` in particular is **silently ignored** in full-build
+mode, because it belongs to the `refresh-reviewed` / `admit-new-reviewed`
+subcommands.
+
+The helper deliberately does not create provenance records or attest new paths:
+admission is not a hash refresh, and path authority lives in the
+maintainer-controlled external ledger. Ordinary edits to an already-authorized
+implementation path need only the regenerated public hash/export and automated
+checks. It also refuses to widen `include_paths` without `--apply-policy`,
+because putting a file on the public surface is a publication decision rather
+than a build step.
+
+Push any required new-path authority **before** pushing the branch: the hosted
+attestation fetches the authority from its GitHub repository at run time. The
+legacy per-revision blob review is not part of the normal workflow and is only
+checked when `--require-reviewed-blobs` is explicitly requested.
 
 ## Reproducible local sequence
 
@@ -83,14 +129,85 @@ externally trusted ledger byte-for-byte, so any self-authored record fails;
 * a bare audit (no flag) reports `PROVENANCE_UNVERIFIED` and fails instead of
 passing on the candidate's own bytes;
 * `--provenance-self-consistency` is the explicitly non-attesting developer
-tripwire scope (pre-commit and `hst_manager.ps1 -Action Verify`): coverage,
+tripwire scope (pre-commit and `nk_manager.ps1 -Action Verify`): coverage,
 resolution, and content hashes are enforced against the audited ledger itself,
 but no attestation claim is made or cleared.
+
+### Out-of-band private root detection
+
+The publication audit checks for local user-profile and absolute paths (`LOCAL_PATH`).
+To prevent leaking developer workspace roots without publishing the sensitive path
+in tracked code, private roots are supplied out of band via `--private-root <path>`
+or the `PUBLISH_AUDIT_PRIVATE_ROOTS` environment variable (semicolon, comma, or newline
+separated). When no out-of-band root is configured, this specific rule remains inert;
+hosted CI gates only enforce out-of-band roots if the corresponding secret or environment
+variable is supplied to the runner.
 
 The release flow above regenerates the ledger from the detailed development
 ledger and then attests the export against that regenerated copy. Candidate
 hashes prove bytes, not authorization; only a record in the trusted detailed
 ledger attests a path.
+
+## Path authority and mechanical content binding
+
+Provenance has one human authority decision and several automated integrity
+checks. The trusted detailed ledger answers whether an implementation path may
+be published and which public class it carries. The candidate ledger, Git blob
+hashes, export recomputation, policy floor, scope floor, and CI then check that
+the submitted tree is internally coherent and remains within that authority.
+
+| Control | Question | Where it lives | Failure code |
+| --- | --- | --- | --- |
+| Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
+| Content binding | does the public ledger describe the actual candidate bytes? | candidate Git objects and regenerated ledger/export | `CONTENT_MISMATCH`, `EXPORT_FIELD_MISMATCH` |
+| Scope and policy | did the candidate hide or newly expose protected content? | trusted base policy/tree and the trusted verifier | `TRUSTED_SCOPE_VIOLATION`, `POLICY_SUBSTITUTION` |
+
+An exact implementation record authorizes a path across ordinary revisions. A
+routine edit therefore needs no second private approval: it updates the public
+hash/export and goes through the automated checks above. A genuinely new
+implementation path still needs an exact external path record, and
+`admit-new-reviewed` still requires an external admission statement binding the
+exact candidate path and SHA-256 on its first entry. Wildcard records remain
+inert for new-path classification.
+
+The legacy `reviewed_blobs` array is retained as optional audit history. The
+normal verifier and admission command ignore it; callers that deliberately need
+the former per-revision policy can opt into `--require-reviewed-blobs`. This
+keeps a high-assurance escape hatch without making routine progress wait on a
+new human approval for every implementation edit.
+
+| Class | Exact record? | Fresh human approval when bytes change? |
+| --- | --- | --- |
+| `project_authored_attested`, `upstream_derived`, `generated_from_public_source` | yes | no; automated content binding and CI apply |
+| `reviewed_documentation`, `reviewed_configuration`, `public_factual_metadata`, `reviewed_other` | no, deterministic | no |
+| `synthetic_fixture` (non-executable data under `fixtures/`, synthetic tests that are pure data) | no, deterministic | no |
+| `unresolved` | cannot be published | — |
+
+Deterministic classes describe what a file *is* by its path shape, so they can
+never certify executable or security-sensitive content regardless of where it
+sits. Executable tests/tools and source/script files (`*.py`, `*.ps1`, `*.sh`,
+`*.cmd`/`*.bat`, C/C++ and other source suffixes, anything under `src/` or
+`tools/`), CI workflows and actions (`.github/workflows/*`,
+`.github/actions/*`), build and packaging fragments (Makefile, CMake,
+`meson.build`, `*.mk`), and pre-commit hook/config surfaces are admitted or
+refreshed only on implementation-grade authority with an exact record; a
+strict caller may also require a legacy blob approval -- a filename such as
+`tools/test_*.py` can no more certify an executable test as synthetic data than
+a `docs/` prefix can certify a script as documentation (`ADMISSION_CLASS_ESCAPE`).
+
+An approval must cite the exact record already covering that path and a
+classification agreeing with what authority derives; a mismatch is refused rather
+than accepted. Never create a record just to turn a check green — if no record
+covers the path, that is the finding.
+
+## Every tracked change touches the published surface
+
+Every tracked file in this repository is inside the published surface and the
+provenance ledger carries a content hash for each one, so **any** tracked change
+invalidates the ledger and `PUBLIC_EXPORT.json` until they are refreshed —
+including a documentation-only edit. That is why the publication audit runs
+ungated in the CI hygiene job on every event rather than being path-routed, and
+why a cheap docs-only classification is nonetheless safe.
 
 ## Reviewed refresh of an existing public path
 
@@ -111,11 +228,42 @@ python tools/provenance_ledger.py refresh-reviewed \
 The trusted ledger and policy must be outside the candidate checkout. When the
 trusted baseline is supplied as a worktree, it must also be outside the
 candidate checkout; the refresh outputs may not overwrite that trusted tree. A public
-ledger snapshot is the preferred input when it has already been generated from
-the detailed development ledger; the command also accepts an external detailed
-ledger with exact `records` entries. A detailed ledger may be paired with an
-external baseline public snapshot when preserving the existing public entry
-objects is required. The command never treats the candidate's
+ledger snapshot supplies the existing public entry objects; the command also
+accepts an external detailed ledger with exact `records` entries, and the two
+may be paired so a detailed ledger refreshes an existing snapshot. When pairing
+them the detailed ledger goes to `--trusted-ledger` and the public snapshot to
+`--trusted-baseline-ledger`, not the other way round; `--implementation-ledger`
+belongs to the generate flow and is not read here. `--trusted-tree` accepts a Git
+tree-ish, so pass the exact `BASE_SHA` the mission recorded. A remote-tracking
+ref such as `origin/main` is mutable: once it advances past the commit the
+candidate branched from it names a different tree, and the refresh then
+compares against unrelated newer changes. A plain exported directory is
+rejected outright because it is not a repository. Refreshing an
+**implementation** class (`project_authored_attested`, `upstream_derived`,
+`generated_from_public_source`) always requires the detailed ledger and an exact
+record for that path: a snapshot alone cannot re-attest new bytes, because
+historical snapshots still carry entries minted by removed fail-open rules and a
+wildcard-derived claim must not follow a path onto content it never described.
+Documentation, configuration, public metadata, and synthetic fixture paths may
+still refresh from a snapshot alone while their deterministic class is unchanged.
+
+Two consequences are worth stating plainly, because both look like tool faults:
+
+* A refresh aborts with `CANDIDATE_TREE_STALE` when the candidate tree changes any
+  path that was not named in `--paths`. Name every changed path. Mixing classes in
+  one refresh is supported: given the required implementation records, a single
+  invocation refreshes deterministic and implementation paths together, which
+  `tools/test_provenance_ledger.py` covers directly. Splitting a branch is a remedy
+  for the missing-record case below, not a rule about mixing.
+* An implementation path whose public entry exists but which has **no record in the
+  detailed ledger** cannot be refreshed by anyone, and fails with `TRUSTED_PATH_MISSING`.
+  Such entries exist: they were minted by the retired `tools/*` wildcard expansion and
+  the `interface/` configuration prefix, and the fail-closed rules deliberately refuse to
+  carry them onto new bytes. Editing one of those paths blocks the publication gate until
+  a genuine record is authored for it. Authoring that record is a maintainer attestation
+  about who wrote the code; an agent must stop with `PROVENANCE_UNRESOLVED` instead.
+
+The command never treats the candidate's
 `assets/public_provenance_ledger.json`, policy, manifest, or export as trusted.
 The candidate's current ledger and export may differ from the trusted baseline
 because they are the two generated outputs of this operation; those bytes are
@@ -137,6 +285,15 @@ refresh their hash only when their deterministic class remains unchanged. Only
 the `sha256` values for the listed paths are changed. The output records the
 trusted and candidate tree IDs and the exact refreshed path set without
 inventing a person, DCO trailer, or provenance attestation.
+
+That `refresh` block is audit ancestry, not an identity claim about the tree
+that carries the ledger. The candidate tree it names is the tree read *before*
+the regenerated ledger and export were written, so it can never equal the tree
+that then contains them; a snapshot is instead bound to a tree by content, since
+validation requires every non-control entry hash to equal that tree's blob.
+A generated public ledger is therefore reusable as the next trusted baseline
+once its outputs are committed, and a snapshot from any other tree still fails
+closed on the first hash that disagrees.
 
 For each changed or new path, use this disposition before invoking the command:
 
@@ -161,6 +318,218 @@ trusted manifest, and then run the non-attesting
 `reviewed_configuration` record; it remains blocked until a maintainer creates
 or confirms an exact trusted implementation record. The refresh command does
 not merge or otherwise authorize an unrelated dashboard change.
+
+## Reviewed refresh across an exact publication-policy delta
+
+`refresh-reviewed` also requires the candidate's publication policy to equal
+the trusted tree's policy, which makes a candidate that *also* carries a
+reviewed policy change unrefreshable by the plain route. That is correct for an
+unreviewed substitution, but it is not the same as an **independently blessed
+delta**: the baseline was reviewed under the old policy, and a maintainer or
+independent reviewer has separately reviewed the new policy's exact bytes and
+the exact semantic difference. Issue #156 is the first real case (removing the
+phantom `TODO.md` include entry -- the file was never tracked).
+
+To cross such a delta the executor supplies two additional external inputs:
+`--trusted-candidate-policy` (the blessed candidate policy bytes, never read
+from the candidate tree) and `--policy-delta-authority` (an external document
+binding the baseline digest, the blessed candidate digest, and the exact
+allowed semantic delta):
+
+```text
+python tools/provenance_ledger.py refresh-reviewed \
+  --trusted-ledger <external-trusted-ledger> \
+  --candidate-tree <clean-candidate-worktree-or-immutable-ref> \
+  --trusted-tree <trusted-baseline-worktree-or-immutable-ref> \
+  --trusted-policy <external-baseline-policy> \
+  --trusted-manifest <external-trusted-manifest> \
+  --trusted-candidate-policy <external-blessed-candidate-policy.json> \
+  --policy-delta-authority <external-policy-delta-authority.json> \
+  --paths <exact-existing-public-path> [<exact-path> ...]
+```
+
+```json
+{
+  "schema_version": 1,
+  "kind": "policy-delta-authority",
+  "baseline_policy_sha256": "<sha256 of the trusted baseline policy bytes>",
+  "candidate_policy_sha256": "<sha256 of the blessed candidate policy bytes>",
+  "allowed_delta": {
+    "include_added": [],
+    "include_removed": ["TODO.md"],
+    "exclude_added": [],
+    "exclude_removed": [],
+    "rule_changes": []
+  }
+}
+```
+
+Two policy contexts are kept strictly separate. The **trusted baseline** (its
+tree, its public snapshot) is validated under the **baseline** policy; the
+**candidate output** (tree boundary, refreshed paths, policy ledger entry,
+`PUBLIC_EXPORT.json`) is validated under the **blessed candidate** policy. The
+old snapshot is never re-validated under the new policy, and the new bytes are
+never judged by the old one. The semantic delta is classified element-by-element
+into `include_added`, `include_removed`, `exclude_added`, `exclude_removed`,
+and `rule_changes`, and the computed delta must equal the authority's
+`allowed_delta` exactly -- an extra include removal, an include addition, an
+exclusion change, or any rule/control change (which V1 refuses on its face,
+`POLICY_DELTA_AUTHORITY_INVALID`) fails closed. The policy's own ledger entry is
+then updated to the blessed bytes and `PUBLIC_EXPORT.json` is regenerated under
+the blessed policy; both are mechanical outputs of the trusted inputs, and the
+candidate's own policy ledger entry is never read. A blessed file that equals
+the baseline (`POLICY_DELTA_EMPTY`), an authority whose digests do not match
+the actual files, unpaired flags, candidate-controlled inputs, or a candidate
+whose policy differs from the blessed bytes all fail closed.
+
+The policy file itself is one of the generated outputs of this operation, and
+both it and the ledger/export are written as one transaction (see below); the
+committed policy is then used as the next baseline for later refreshes.
+
+## Transactional control outputs
+
+Every mutating provenance command computes and validates all generated output
+bytes first, stages each file next to its target, promotes the whole group only
+after every stage succeeds, and rolls already-promoted files back to their
+original bytes if any promotion fails. On a *detected* promotion failure the
+affected worktree therefore ends in the complete old state, never a hybrid of a
+new policy with an old ledger. This is staged replacement with rollback, not
+crash or power-loss durability: if the rollback itself fails, or the process
+dies between promotions, a hybrid can survive on disk. That residual is
+fail-closed downstream rather than trusted -- the external attestation
+re-validates the ledger/export/policy digest cross-checks, so partially written
+controls are rejected instead of being read as authority. The generated control
+set is:
+
+* `assets/public_provenance_ledger.json` and `PUBLIC_EXPORT.json` for a
+  `refresh-reviewed`;
+* those two plus `assets/public_source_profile.json` for an
+  `admit-new-reviewed` and for a `refresh-reviewed` crossing a blessed policy
+delta.
+
+A generated control is written to the literal path the publication policy
+names, or not at all. The candidate's own control files are exempt from the
+unrequested-change rule -- they are this operation's outputs -- so a candidate
+*can* commit whatever it likes at those names, including a symlink. Containment
+already refuses an output that leaves the candidate worktree; the write path
+additionally refuses a symlinked component anywhere below the candidate root
+and any target that is a symlink or not a regular file, so an in-worktree alias
+can never steer a mechanical write onto another candidate file
+(`REFRESH_OUTPUT_INVALID`, `ADMISSION_OUTPUT_INVALID`). Staging files are
+created inside the target's own directory, written through the descriptor that
+created them rather than reopened by name, and swept whether the write
+succeeds, fails, or is rolled back.
+
+Ledger ancestry stays a single current record, not a growing second history:
+an `admit-new-reviewed` overwrites any prior `admission` block with the newest
+admission, and a subsequent `refresh-reviewed` drops the `admission` block
+entirely (its `refresh` block records the operation). The admission transaction
+audit lives in the external authority document and the commit that carried it,
+not inside the canonical ledger.
+
+## Trusted admission of a genuinely new public path
+
+`refresh-reviewed` can only re-attest bytes on a path a trusted baseline
+already authorizes. A genuinely new path has no baseline authority at all, so
+admitting one needs a second, deliberately distinct command:
+`provenance_ledger.py admit-new-reviewed`. It is the initial trusted authority
+for an exact path; `refresh-reviewed` is the subsequent content refresh. The
+two commands fail closed against each other's inputs:
+
+* a path already present in the trusted tree is refused by `admit-new-reviewed`
+  with a pointer to `refresh-reviewed`;
+* a path absent from the trusted tree is refused by `refresh-reviewed` with a
+  pointer to `admit-new-reviewed`;
+* a batch mixing existing and new paths is refused outright -- separate the
+  refresh batch from the admission batch.
+
+The trust boundary is the same as refresh, plus one new external input. All of
+the following must live outside the candidate checkout: the trusted ledger
+(public snapshot and/or the detailed development ledger), the trusted policy,
+the optional trusted manifest, and an **admission authority** document the
+independent reviewer produces after reviewing the exact candidate bytes:
+
+```text
+python tools/provenance_ledger.py admit-new-reviewed \
+  --trusted-ledger <external-trusted-ledger-or-detailed-ledger> \
+  --admission-authority <external-admission-authority.json> \
+  --candidate-tree <clean-candidate-worktree> \
+  --trusted-tree <trusted-baseline-worktree-or-immutable-ref> \
+  --trusted-policy <external-trusted-policy> \
+  --trusted-manifest <external-trusted-manifest> \
+  --paths <exact-new-public-path> [<exact-path> ...]
+```
+
+The admission authority is the candidate-independent review decision. Each
+statement binds one exact repository-relative path to one exact lowercase
+SHA-256 of the bytes the reviewer approved, and names the public classification:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "admission-authority",
+  "reviewed_new_paths": [
+    {"path": "docs/research/NEW_RESEARCH_NOTE.md",
+     "sha256": "<64 lowercase hex>",
+     "classification": "reviewed_documentation",
+     "origin": "newly authored Nakagawa research documentation reviewed against public sources"}
+  ]
+}
+```
+
+Candidate bytes can never create their own authority. The command verifies all
+of the following before it writes anything: the candidate worktree is clean;
+the candidate differs from the trusted tree by exactly the admitted path set
+and nothing else; every unrequested blob is byte-identical to the trusted
+baseline; the candidate policy is semantically exactly the external trusted
+policy plus include entries for the admitted paths; each path is absent from
+the trusted tree and present (tracked) in the candidate; each authority digest
+equals the candidate blob's SHA-256; and the trusted public ledger covers the
+complete trusted public tree. The policy include, the ledger entry, and
+`PUBLIC_EXPORT.json` are then regenerated mechanically from the external
+inputs -- never accepted from the candidate -- and the ledger records the
+`admission` block (workflow, trusted/candidate trees, admitted paths, and a
+SHA-256 of the authority document) as audit ancestry.
+
+Authority classes are not one size. Deterministic public material --
+documentation, configuration, public factual metadata, and non-executable
+synthetic data fixtures -- is admitted from the independent
+exact-path/exact-bytes review alone, and the deterministic classifier derives
+the class; the entry carries no record id. Executable tests/tools, source and
+script files, CI workflows/actions, build/packaging fragments, and pre-commit
+hook/config surfaces can never use a deterministic class even when their path
+resembles one (`ADMISSION_CLASS_ESCAPE`). An implementation/source path
+additionally requires an exact `records` entry in the external trusted detailed
+ledger, plus an authority statement declaring `origin_kind`
+(`authored_from_scratch`, `derived_adapted`, or `third_party`), an origin
+statement, and a license basis. The statement's `record_id` must equal the
+exact covering detailed record's id, so the admission text cannot drift from
+the trust anchor it claims to cite. Its
+`origin`/`license` fields are descriptive reviewer metadata: they prove the
+reviewer considered origin and license, but they never authorize anything --
+the public entry's class, origin, and license claims derive from the trusted
+detailed record alone. Without the private-ledger record the command refuses
+(`TRUSTED_PATH_MISSING` or `TRUSTED_RECORD_REQUIRED`); a documentation-class authority can never admit
+implementation, and anything the trusted policy excludes is unadmittable
+through this route (`ADMISSION_PATH_EXCLUDED`).
+Wildcards, directories, prefix/extension authority, duplicate paths,
+path-traversal spellings, an authority naming different paths or different
+bytes than the candidate carries, candidate-controlled trusted inputs, and
+unrequested candidate mutations all fail closed.
+
+Because this command creates the *initial* entry, the independent reviewer
+must have reviewed the exact bytes before producing the admission authority
+document. The implementer who authored the candidate does not create the
+authority; separation of duties is a process rule enforced by the machine
+checks above. The exact path/hash admission statement is the one initial
+content decision; a duplicate `reviewed_blobs` entry is not required unless
+`--require-reviewed-blobs` is explicitly supplied.
+After admission, commit the regenerated policy/ledger/export, then the release
+process must still copy the resulting ledger to its trusted location, run
+`publish_audit.py` against that external copy and the trusted manifest, and
+run the non-attesting `--provenance-self-consistency` tripwire. Git
+Issues/Projects/Milestones remain the live authority for which paths are
+awaiting admission; this page only defines the route.
 
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted

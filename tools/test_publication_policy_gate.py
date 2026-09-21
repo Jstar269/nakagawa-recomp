@@ -155,6 +155,12 @@ def codes_for(result: subprocess.CompletedProcess, path: str) -> set[str]:
     return {code for code, found in findings_of(result) if found == path}
 
 
+def write_text_lf(path: Path, text: str) -> None:
+    """Write fixture text with repository-style LF bytes on every host."""
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
 class FixtureMixin:
     """Builds a minimal synthetic candidate tree plus a matching policy."""
 
@@ -162,7 +168,7 @@ class FixtureMixin:
         candidate = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "candidate"
         candidate.mkdir()
         for name, text in REQUIRED_FILES.items():
-            (candidate / name).write_text(text, encoding="utf-8")
+            write_text_lf(candidate / name, text)
         (candidate / "src" / "rt").mkdir(parents=True)
         (candidate / "src" / "rt" / "safe.c").write_bytes(SYNTHETIC_C.encode())
         (candidate / "tools").mkdir(exist_ok=True)
@@ -170,7 +176,8 @@ class FixtureMixin:
         # A well-formed candidate carries a release manifest that accounts for every
         # policy-excluded path. Tests that exercise reconciliation failures overwrite it.
         (candidate / "assets").mkdir(exist_ok=True)
-        (candidate / "assets" / "release_manifest.json").write_text(
+        write_text_lf(
+            candidate / "assets" / "release_manifest.json",
             json.dumps({
                 "name": "synthetic",
                 "components": [
@@ -180,8 +187,7 @@ class FixtureMixin:
                      "public_scope_included": False, "optional": True}
                     for p in INCIDENT_PATHS
                 ],
-            }, indent=2),
-            encoding="utf-8",
+            }, indent=2) + "\n",
         )
         for rel, blob in (extra_files or {}).items():
             target = candidate / rel
@@ -210,15 +216,16 @@ class FixtureMixin:
         }
         document.update(overrides)
         policy_path = candidate.parent / "synthetic_policy.json"
-        policy_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        write_text_lf(policy_path, json.dumps(document, indent=2) + "\n")
         try:
             policy_obj = load_policy(policy_path)
         except PolicyError:
             # Negative policy-integrity tests deliberately construct an invalid
             # profile; the auditor must be the component that reports it.
             return policy_path
-        (candidate / "assets" / "public_source_profile.json").write_text(
-            json.dumps(document, indent=2), encoding="utf-8"
+        write_text_lf(
+            candidate / "assets" / "public_source_profile.json",
+            json.dumps(document, indent=2) + "\n",
         )
         ledger_entries = []
         for rel in document["include_paths"]:
@@ -244,7 +251,7 @@ class FixtureMixin:
             })
         ledger = {"schema_version": 1, "entries": ledger_entries}
         ledger_path = candidate / "assets" / "public_provenance_ledger.json"
-        ledger_path.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+        write_text_lf(ledger_path, json.dumps(ledger, indent=2) + "\n")
         files = [(p.relative_to(candidate).as_posix(), p.read_bytes())
                  for p in candidate.rglob("*") if p.is_file()]
         files.append(("PUBLIC_EXPORT.json", b""))
@@ -388,6 +395,25 @@ class TestPolicyIntegrity(FixtureMixin, unittest.TestCase):
         policy.write_text(json.dumps(document), encoding="utf-8")
         with self.assertRaises(PolicyError):
             load_policy(policy)
+
+    def test_invalid_private_roots_is_refused(self):
+        candidate = self.build_candidate()
+        policy = self.build_policy(candidate)
+        document = json.loads(policy.read_text(encoding="utf-8"))
+        document["private_roots"] = "not-a-list"
+        policy.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(PolicyError):
+            load_policy(policy)
+
+        document["private_roots"] = [123]
+        policy.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(PolicyError):
+            load_policy(policy)
+
+    def test_canonical_policy_declares_private_roots(self):
+        policy = load_policy(CANONICAL_POLICY)
+        self.assertIn("C:" + "/nk", policy.private_roots)
+        self.assertIn("C:" + "\\nk", policy.private_roots)
 
     def test_missing_policy_file_fails_closed(self):
         candidate = self.build_candidate()

@@ -56,7 +56,7 @@ def _huffman_codes() -> dict[int, tuple[int, int]]:
 
     result: dict[int, tuple[int, int]] = {}
     code = 0
-    for width, count in ((8, 254), (9, 4)):
+    for width, _count in ((8, 254), (9, 4)):
         for symbol in range(256) if width == 8 else range(254, 258):
             if len(result) >= 254 and width == 8:
                 break
@@ -374,6 +374,54 @@ class XBProbeTests(unittest.TestCase):
         reader = XBArchiveReader.from_bytes(bytes(mutated))
         with self.assertRaises(XBProbeError):
             reader.read_entry("a.bin")
+
+    def test_huffman_truncated_bitstream(self) -> None:
+        # A one-symbol table is valid, but a declared output cannot be decoded
+        # without at least one complete 16-bit bitstream word.  The old reader
+        # substituted zero words and fabricated repeated symbols instead.
+        huf_table = bytes([1, 1, 65, 0])
+        payload = struct.pack("<II", 3, len(huf_table)) + huf_table
+        raw = _make_archive([("a.bin", b"AAA", XBCompression.NONE)])
+        data_start = raw.find(b"AAA")
+        mutated = bytearray(raw[:data_start] + _pad4(payload))
+        struct.pack_into("<I", mutated, 8, 3)
+        struct.pack_into("<I", mutated, 12, (1 << 28) | (data_start // 4))
+        reader = XBArchiveReader.from_bytes(bytes(mutated))
+        with self.assertRaisesRegex(XBProbeError, "Huffman bitstream is truncated"):
+            reader.read_entry("a.bin")
+
+    def test_huffman_uses_buffered_symbols_before_refill(self) -> None:
+        # A one-symbol table can decode sixteen one-bit symbols from one
+        # buffered word.  Requiring another word after the seventh symbol
+        # falsely rejected a valid stream with nine bits still buffered.
+        huf_table = bytes([1, 1, 65, 0])
+        payload = struct.pack("<II", 16, len(huf_table) + 2) + huf_table + b"\0\0"
+        raw = _make_archive([("a.bin", b"AAA", XBCompression.NONE)])
+        data_start = raw.find(b"AAA")
+        mutated = bytearray(raw[:data_start] + _pad4(payload))
+        struct.pack_into("<I", mutated, 8, 16)
+        struct.pack_into("<I", mutated, 12, (1 << 28) | (data_start // 4))
+        reader = XBArchiveReader.from_bytes(bytes(mutated))
+        self.assertEqual(reader.read_entry("a.bin"), b"A" * 16)
+
+    def test_archive_loading_uses_one_bounded_handle(self) -> None:
+        raw = _make_archive([("a.bin", b"payload", XBCompression.NONE)])
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.xb"
+            path.write_bytes(raw)
+            original_read_bytes = Path.read_bytes
+
+            def forbidden_read_bytes(self):
+                raise AssertionError("archive must not use an unbounded path read")
+
+            Path.read_bytes = forbidden_read_bytes
+            try:
+                reader = XBArchiveReader(path)
+            finally:
+                Path.read_bytes = original_read_bytes
+            self.assertEqual(reader.read_entry("a.bin"), b"payload")
 
     def test_variant_labeling(self) -> None:
         self.assertEqual(variant_from_path("data.xb").label, "base")

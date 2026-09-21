@@ -31,6 +31,11 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 /* Debug framework — included early so sr_w32() can call sr_check_mem_watch(). */
 #include "debug.h"
 #include "perf.h"
+#include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
+
+#ifndef SR_CPUSTATE_ABI_VERSION
+#define SR_CPUSTATE_ABI_VERSION 2u
+#endif
 
 typedef struct CpuState {
     uint32_t r[32];     /* r[0] reads 0; the codegen never emits a write to r[0]. */
@@ -56,10 +61,39 @@ typedef struct CpuState {
         uint32_t vi[128];
     };
     uint32_t vfpuCtrl[16];  /* VFPU control: prefixes (S/T/D), cc, etc. */
-    uint32_t status;        /* COP0 status register */
+    uint32_t cop0[32];      /* COP0 register bank; status is cop0[SR_CP0_STATUS] */
     uint32_t next_pc;       /* Branch/delay-slot bookkeeping for reference parity */
     uint32_t in_delay_slot;  /* Parity with ref::CpuState */
+    uint32_t flow_kind;      /* Runtime transfer metadata, not architectural state */
+    uint32_t flow_target;    /* Runtime transfer metadata, not architectural state */
 } CpuState;
+
+#define SR_CP0_STATUS 12u
+
+static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
+    return &s->cop0[SR_CP0_STATUS];
+}
+
+/* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
+ * here so generated code and the interpreter share one declaration site. */
+#include "cpu_lle.h"
+
+/* LLE Phase 1 (PR 3): per-domain HLE/LLE selection and the import-call seam.
+ * Included here so generated import stubs share one declaration site. The
+ * header only forward-declares struct CpuState, so include order is free. */
+#include "domain_mode.h"
+
+#ifndef __cplusplus
+_Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+_Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
+_Static_assert(offsetof(CpuState, next_pc) == 980u, "CpuState next_pc offset drift");
+_Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
+               "CpuState in_delay_slot offset drift");
+_Static_assert(offsetof(CpuState, flow_kind) == 988u, "CpuState flow_kind offset drift");
+_Static_assert(offsetof(CpuState, flow_target) == 992u,
+               "CpuState flow_target offset drift");
+_Static_assert(sizeof(CpuState) == 996u, "CpuState size drift");
+#endif
 
 /* Guest memory: a single host region. g_mem points at guest 0x08000000, and the underlying
  * allocation also extends 0x04000000 bytes *below* g_mem so the same arena covers VRAM/eDRAM
@@ -450,7 +484,10 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
 /* Returns a registered body only when the same PC has complete four-byte
  * executable ownership. Interpreter-readable bytes are required only to
  * interpret; entering the translated body does not re-read them. This static
- * first slice does not yet provide content guards. */
+ * first slice does not yet provide content guards: sr_lookup stays structural
+ * (and hot-path cheap) by design. Opt-in content checking lives separately
+ * in src/rt/stale_code.h (SR_STALE_DETECT, checked at cache-invalidate time,
+ * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
 
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
@@ -627,10 +664,16 @@ uint32_t sched_pending_interrupts(void);             /* source bits not yet serv
 void     sched_delay_current(uint32_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
-void     sched_wait_vblank(void);                   /* block current thread until the next delivered vblank */
+void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
+int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
+void     sched_wake_with_result(uint32_t obj, uint32_t result); /* sched_wake + a wait result */
+int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake result is pending, else 0 */
+int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
+int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+void     sched_set_current_wait_kind(int kind); /* latch Refer waitType before blocking */
 int      sched_is_intr_context(void);               /* 1 if running in interrupt context, 0 otherwise */
 void     sr_hle_release_thread_resources(uint32_t thread_uid); /* release HLE resources on thread teardown */
 /* Wait-object ids shared between hle.c (wait side) and sched.c (thread-dump side). */
@@ -654,7 +697,7 @@ void     sched_wake_callbacks(uint32_t thread_uid); /* wake thread waiting in CB
 void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wakeup-count) */
 void     sched_thread_sleep_cb(void);               /* sceKernelSleepThreadCB (wakeup-count) */
 uint32_t sched_thread_wakeup(uint32_t uid);         /* sceKernelWakeupThread (banks if not asleep) */
-void     sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
+uint32_t sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
 uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
@@ -789,6 +832,7 @@ extern jmp_buf g_hle_jmp;
 
 #ifdef __cplusplus
 #include "cpu.h"
+static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
 static_assert(sizeof(::CpuState) == sizeof(ref::CpuState), "CpuState structural layout drift detected!");
 #define SR_CPUSTATE_OFFSET_ASSERT(field) \
     static_assert(offsetof(::CpuState, field) == offsetof(ref::CpuState, field), \
@@ -804,9 +848,11 @@ SR_CPUSTATE_OFFSET_ASSERT(fpcond);
 SR_CPUSTATE_OFFSET_ASSERT(v);
 SR_CPUSTATE_OFFSET_ASSERT(vi);
 SR_CPUSTATE_OFFSET_ASSERT(vfpuCtrl);
-SR_CPUSTATE_OFFSET_ASSERT(status);
+SR_CPUSTATE_OFFSET_ASSERT(cop0);
 SR_CPUSTATE_OFFSET_ASSERT(next_pc);
 SR_CPUSTATE_OFFSET_ASSERT(in_delay_slot);
+SR_CPUSTATE_OFFSET_ASSERT(flow_kind);
+SR_CPUSTATE_OFFSET_ASSERT(flow_target);
 #undef SR_CPUSTATE_OFFSET_ASSERT
 #endif
 

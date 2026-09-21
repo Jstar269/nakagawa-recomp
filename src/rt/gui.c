@@ -24,6 +24,7 @@
 #include <windows.h>
 #include <SDL3/SDL_timer.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +43,29 @@ static int      s_pad_present = 0;         /* a controller is currently connecte
 static uint64_t s_last_ns;             /* fallback frame-pacing deadline */
 static uint64_t s_present_next_ns;      /* 30 Hz output cap; never delays guest execution */
 static int      s_present_cap = -1;
+
+/* Keep boot milestones observable to the parent player without depending on
+ * whether the platform process backend inherits stderr. The file is opt-in and
+ * is otherwise not opened by the runtime. */
+static void sr_gui_boot_event(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+    fflush(stderr);
+
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !*path) return;
+
+    FILE *file = fopen(path, "ab");
+    if (!file) return;
+    va_start(args, format);
+    vfprintf(file, format, args);
+    va_end(args);
+    fputc('\n', file);
+    fclose(file);
+}
 
 /* Hot Shots Tennis is a 30 FPS title on a ~59.94 Hz PSP display. The guest can call
  * sceDisplaySetFrameBuf repeatedly within one scanout interval; presenting every call
@@ -123,7 +147,7 @@ void gui_init(const char *title) {
                             fprintf(stderr, "gui_init: GPU GE init failed; software GE active\n");
                     }
                 }
-                fprintf(stderr, "BOOT_EVENT phase=window_ready backend=vulkan\n");
+                sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=vulkan");
                 return;
             }
             fprintf(stderr, "gui_init: SDL3/Vulkan init failed; falling back to GDI\n");
@@ -150,7 +174,7 @@ void gui_init(const char *title) {
     s_bmi.bmiHeader.biCompression = BI_RGB;
     s_last_ns = SDL_GetTicksNS();
     s_on = 1;
-    fprintf(stderr, "BOOT_EVENT phase=window_ready backend=gdi\n");
+    sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=gdi");
 }
 
 int gui_on(void) { return s_on; }
@@ -198,7 +222,7 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
             for (int xx = 0; xx < PSP_W; xx++)
                 if (s_px[yy * PSP_W + xx] & 0x00FFFFFF) nz++;
         fprintf(stderr, "[FIRST_FRAME] non_zero_pixels=%lu / total=%u\n", nz, PSP_W * PSP_H);
-        fprintf(stderr, "BOOT_EVENT phase=first_frame source=cpu nonzero_pixels=%lu total_pixels=%u\n",
+        sr_gui_boot_event("BOOT_EVENT phase=first_frame source=cpu nonzero_pixels=%lu total_pixels=%u",
                 nz, PSP_W * PSP_H);
         if (getenv("SR_FIRST_FRAME_DUMP")) {
             FILE *raw = fopen("vram_first.bin", "wb");
@@ -278,7 +302,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             static int s_first_gpu_frame = 1;
             if (s_first_gpu_frame) {
                 s_first_gpu_frame = 0;
-                fprintf(stderr, "BOOT_EVENT phase=first_frame source=gpu presented=1\n");
+                sr_gui_boot_event("BOOT_EVENT phase=first_frame source=gpu presented=1");
             }
             goto pace;
         }

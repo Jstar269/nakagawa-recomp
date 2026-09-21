@@ -17,7 +17,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
 SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
@@ -49,15 +49,26 @@ class HstManagerManifestTests(unittest.TestCase):
         (private / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN").write_text(
             "synthetic\n", encoding="ascii"
         )
+        # Issue #196 Phase 4: synthetic/generic manifests no longer discover the
+        # legacy retail layout. The synthetic route discovers its ELF from the
+        # generic fixtures/ candidates instead.
+        fixtures = self.root / "fixtures"
+        fixtures.mkdir(exist_ok=True)
+        (fixtures / "synthetic.elf").write_text("synthetic private binding\n", encoding="ascii")
         # The manager now anchors every managed path to its own script location and fails
         # closed when the workspace identity anchors are missing (#183), so the harness
         # stages a complete fake workspace: the manager itself, its dot-sourced helpers
         # and the repository identity files.
-        self.manager_copy = self.root / "hst_manager.ps1"
+        self.manager_copy = self.root / MANAGER.name
         shutil.copy2(MANAGER, self.manager_copy)
+        if (ROOT / "nk_manager.ps1").exists() and MANAGER.name != "nk_manager.ps1":
+            shutil.copy2(ROOT / "nk_manager.ps1", self.root / "nk_manager.ps1")
+        if (ROOT / "hst_manager.ps1").exists() and MANAGER.name != "hst_manager.ps1":
+            shutil.copy2(ROOT / "hst_manager.ps1", self.root / "hst_manager.ps1")
         tools_dir = self.root / "tools"
         tools_dir.mkdir(exist_ok=True)
         for helper in (
+            "nk_safety.ps1",
             "hst_safety.ps1",
             "hst_run_support.ps1",
             "vulkan_sdk.ps1",
@@ -66,6 +77,8 @@ class HstManagerManifestTests(unittest.TestCase):
             "title_manifest.py",
         ):
             shutil.copy2(ROOT / "tools" / helper, tools_dir / helper)
+        (self.root / "assets").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(ROOT / "assets" / "titles", self.root / "assets" / "titles", dirs_exist_ok=True)
         (self.root / "AGENTS.md").write_text("synthetic anchors\n", encoding="utf-8")
         (self.root / "src" / "rt").mkdir(parents=True)
         (self.root / "src" / "rt" / "recomp.c").write_text("synthetic\n", encoding="ascii")
@@ -116,7 +129,7 @@ class HstManagerManifestTests(unittest.TestCase):
                 GAME_ENTRY ?= 0x08804000
                 ifeq ($(GAME_NAME),hst)
                 CODEGEN_PROFILE_ARG ?= --profile=hst
-                GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000 place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000 place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868
+                GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
                 GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
                 RUNTIME_OPT ?= -O2
                 RECOMP_OPT ?= -O1

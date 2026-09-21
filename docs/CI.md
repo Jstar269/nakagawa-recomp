@@ -19,7 +19,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request | classification, hygiene/security, Markdown when Markdown changed, `CI required` | Python/native, Windows, dashboard, and other substantive jobs |
+| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and `CI required` | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, `CI required` | Python/native, Windows, dashboard |
 | Ready pull request, `interface/**` | classification, hygiene/security, dashboard, `CI required` | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, `CI required` | dashboard |
@@ -30,6 +30,15 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, `CI required` | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
+
+### Draft pull requests
+
+A draft pull request now receives the same path-applicable substantive gates as
+a ready pull request. No `Ready for review` transition or manual
+`workflow_dispatch` is needed to discover whether the exact head passes. The
+workflow still cancels superseded runs, and docs-only or other irrelevant jobs
+remain skipped by the classifier. `workflow_dispatch` remains available when a
+maintainer deliberately wants the complete matrix regardless of changed paths.
 
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
@@ -72,6 +81,157 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+## Local readiness before opening a pull request
+
+Discover the available build and verification surfaces first:
+
+```bash
+mingw32-make --no-print-directory help
+```
+
+For the public checkout's inner loop, run the public-safe composition before
+the strict authority-bound gate:
+
+```bash
+mingw32-make --no-print-directory check
+```
+
+`check` covers documentation and policy checks, both publication-audit legs,
+the native host-core tests, and a fast Python subset. It does not replace
+`make readiness`: readiness additionally verifies the exact candidate against
+the external detailed ledger and therefore remains `BLOCKED` when
+`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the
+ordering-safe wrapper for regenerating the tracked public controls; it also
+stages the worktree because the ledger generator reads the Git index.
+
+Readiness used to be assembled ad hoc and was repeatedly wrong: a locally green
+candidate failed the hosted publication audit, and the repaired candidate then
+failed the hosted *attestation* gate — a verifier that was runnable locally the
+whole time and simply never run. Run all of these, in this order, and treat any
+failure as blocking:
+
+```bash
+NK_TRUSTED_LEDGER=<external detailed ledger> make readiness
+python -m unittest discover -s tools -p "test_*.py"
+```
+
+`make readiness` runs the whole list in cheapest-first order and stops at the
+first failure. Prefer it over running the steps by hand: the checklist below was
+already documented and correct, and was still routinely half-run.
+
+### What `readiness` runs, if you need a step alone
+
+```bash
+python tools/policy_sync.py
+python tools/lint_docs.py
+python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha>     --require-immutable-revisions --trusted-ledger <external detailed ledger>     --workdir <scratch outside the repo>
+git diff --check <exact BASE sha>..HEAD
+```
+
+Pass **exact commit SHAs**, not `origin/main`. A moving ref stops naming the
+branch point as soon as it advances, and the hosted job passes the immutable
+SHAs from the pull-request event for exactly that reason.
+
+### publish_audit passing is not the attestation gate passing
+
+These two are routinely confused, and the confusion is the single most common
+reason a branch looks finished and is not:
+
+| Gate | Compares against | Can detect an unapproved path or content change |
+| --- | --- | --- |
+| `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
+| `provenance_attest_verify` | the **external private authority** | yes; normal mode checks path authority and content binding; strict mode also checks legacy blob approvals |
+
+A tree can report `publication audit: OK (784 tracked files)` and
+`verdict: FAIL (5 fatal findings)` at the same commit. "Gates green" that means
+only the first is not evidence that the branch can merge.
+
+The attestation verifier is also the one most easily forgotten. Existing
+implementation paths remain authorized across ordinary revisions; automated
+content binding and CI validate each new commit without a second private blob
+approval. A genuinely new implementation path still needs exact external path
+authority, and `--require-reviewed-blobs` remains available for high-assurance
+legacy runs. See [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for
+the authority boundaries and what each class needs.
+
+### The generated control files must be in the commit
+
+Adding a tracked file, or changing one, makes three generated files stale:
+`assets/public_source_profile.json` (classification),
+`assets/public_provenance_ledger.json` (content hashes) and `PUBLIC_EXPORT.json`
+(policy digest and included-content digest). Regenerating them in the working
+tree is not enough — they have to be **staged and committed**, or the commit
+ships a source change without the evidence for its own contents and fails with
+`POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
+`PROVENANCE_CONTENT_MISMATCH` together.
+
+`make readiness` re-runs the export generator at the end and fails if that
+changes anything, which catches precisely this.
+
+These checks have no local equivalent and are never implied by a local pass:
+CodeQL, `dependency-review`, the Betterleaks history scan, the Windows runtime
+compile gate, and the main integration smoke.
+
+## Text, encoding, and line-ending contract
+
+The repository's text bytes are **UTF-8 without BOM, LF, with a final newline**.
+`.gitattributes` (`* text=auto eol=lf`) and `.editorconfig`
+(`charset = utf-8`, `end_of_line = lf`, `insert_final_newline = true`) are the
+authority; this section says how to *produce* bytes that satisfy them.
+
+Git normalises on commit, so the index is clean by construction — a scan of all
+784 tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
+elsewhere: in working trees and in generated artifacts. A checkout polluted with
+CRLF makes every touched file's content hash disagree with the provenance
+ledger, and the resulting wall of `PROVENANCE_CONTENT_MISMATCH` names the
+symptom rather than the cause. That is why `publish_audit` now reports
+`TEXT_LINE_ENDING_CRLF`, `TEXT_ENCODING_BOM`, `TEXT_ENCODING_UTF16` and
+`TEXT_FINAL_NEWLINE` directly, skipping anything binary.
+
+**Python.** Text mode translates `
+` to the host newline unless told otherwise,
+so on Windows `write_text(s, encoding="utf-8")` silently emits CRLF and a
+different SHA-256 than the same code on Linux. Every writer that produces
+canonical, tracked, or hash-participating text must pin it:
+
+```python
+path.write_text(text, encoding="utf-8", newline="
+")   # canonical text
+path.write_bytes(canonical_bytes)                        # already-canonical bytes
+```
+
+`CanonicalWriterTests` asserts this for the canonical writers, so the rule
+cannot quietly regress.
+
+**PowerShell.** Use PowerShell 7+, which the project already requires: in
+Windows PowerShell 5.1 `-Encoding utf8` means UTF-8 **with** BOM, and in 7+ it
+means without. `Set-Content` and `Out-File` also join with the host newline. For
+anything byte-exact, bypass the text pipeline entirely:
+
+```powershell
+[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllBytes($path, $bytes)
+```
+
+**Never route exact bytes through a text pipeline.** `git show ... | Set-Content`
+and `<binary> | Out-File` re-encode and re-line-end their input. To extract exact
+repository bytes use `git archive`, `git cat-file`, or a redirect from a
+binary-safe shell. No tracked script does this today; keep it that way.
+
+**Bash and WSL** must likewise preserve LF and must not rewrite bytes
+incidentally — a heredoc that reflows content is a rewrite.
+
+**Generated evidence outside the worktree** follows the same contract whenever it
+participates in a SHA-256 manifest or a forensic byte comparison, for the obvious
+reason: a manifest that changes with the shell that produced it proves nothing.
+Historical raw or binary capture evidence is never normalised.
+
+The invariant, stated once: **the same logical generated text must produce the
+same bytes and the same SHA-256 whether it came from PowerShell, Windows Python,
+Bash, or WSL.**
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a
@@ -88,12 +248,26 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   the native and Windows compile gates.
 - **An empty or unobtainable file list forces the full matrix**, so a shallow
   clone or an unusual event payload cannot quietly narrow the run.
-- **Draft suppression never rewrites classification.** Only `allow_substantive`
-  goes false, including when an unknown path forces full applicability; the path
-  facts stay true, so the ready-for-review transition needs no reclassification.
-- **`hygiene` is ungated.** The all-files pre-commit run — which includes the
-  publication safety audit and the Betterleaks scan — executes on every event,
-  so the security and publication boundary is never path-gated.
+- **Draft status does not suppress substantive validation.** A draft and a ready
+  pull request receive the same path classification and applicable gates, so
+  progress does not depend on a status transition or manual dispatch. The
+  classifier still exports `draft` for diagnostics and keeps the main-push
+  suppression policy separate.
+- **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
+  run — which includes `publish_audit --provenance-self-consistency`,
+  `policy_sync`, and the Betterleaks scan — executes on every event, so the
+  security and publication boundary is never path-gated. This is what makes the
+  cheap paths safe: every tracked file is inside the published surface and the
+  provenance ledger hashes each one, so *any* change invalidates the generated
+  ledger and `PUBLIC_EXPORT.json` until they are refreshed. A docs-only change
+  may therefore skip the Python suite only because the audit still runs here.
+  `PublicationCoverageInvariantTests` pins both halves so this cannot regress
+  into a path-gated audit.
+- **The published surface is derived, not listed.** `_is_public_surface` asks the
+  publication policy instead of maintaining a second list that can drift; it
+  fails closed to "published" when the policy cannot be read. The `public_surface`
+  output is exported so a local readiness check can route the same decision,
+  where no ungated hygiene equivalent runs.
 
 Test modules use their logical implementation subject for classification:
 `tools/test_<subject>.py` is evaluated through the same subsystem predicates as

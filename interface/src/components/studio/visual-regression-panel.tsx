@@ -1,6 +1,7 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Eye,
   Activity,
@@ -43,16 +44,32 @@ interface RegressionReport {
   frames: FrameDiff[];
 }
 
+interface VarianceGridCell {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+interface VarianceData {
+  width: number;
+  height: number;
+  histogram: { range: string; R: number; G: number; B: number; A: number }[];
+  grid: {
+    rows: number;
+    cols: number;
+    cells: VarianceGridCell[];
+  };
+}
+
 export function VisualRegressionPanel() {
   const [report, setReport] = useState<RegressionReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedFrame, setSelectedFrame] = useState<FrameDiff | null>(null);
   const [sliderVal, setSliderVal] = useState(50);
-  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null);
 
   const [showDiffMask, setShowDiffMask] = useState(false);
-  const [varianceData, setVarianceData] = useState<any>(null);
-  const [varianceLoading, setVarianceLoading] = useState(false);
+  const [varianceData, setVarianceData] = useState<VarianceData | null>(null);
   const [activeChannels, setActiveChannels] = useState<{ R: boolean; G: boolean; B: boolean; A: boolean }>({
     R: true,
     G: true,
@@ -60,64 +77,73 @@ export function VisualRegressionPanel() {
     A: true
   });
 
-  const fetchVariance = useCallback(async (filename: string) => {
-    setVarianceLoading(true);
-    try {
-      const res = await fetch(`/api/recompiler/visual-regression/variance?file=${filename}`);
-      if (res.ok) {
-        const data = await res.json();
-        setVarianceData(data);
-      } else {
+  const controllerRef = useRef<AbortController | null>(null);
+  const pendingRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    const fetchVariance = async () => {
+      if (!selectedFrame) {
         setVarianceData(null);
+        return;
       }
-    } catch (e) {
-      console.error("Failed to load variance details", e);
-      setVarianceData(null);
-    } finally {
-      setVarianceLoading(false);
-    }
+      try {
+        const res = await fetch(`/api/recompiler/visual-regression/variance?file=${selectedFrame.filename}`, { signal });
+        const data: VarianceData | null = res.ok ? await res.json() : null;
+        if (!signal.aborted) setVarianceData(data);
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          console.error("Failed to load variance details");
+          setVarianceData(null);
+        }
+      }
+    };
+    void fetchVariance();
+    return () => controller.abort();
+  }, [selectedFrame]);
+
+  const fetchReport = useCallback(() => {
+    if (pendingRef.current) return pendingRef.current;
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted) return Promise.resolve();
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/recompiler/visual-regression/report", { signal });
+        if (res.ok) {
+          const data: RegressionReport = await res.json();
+          if (signal.aborted) return;
+          setReport(data);
+          setSelectedFrame(previous => previous
+            ? data.frames.find(f => f.filename === previous.filename) ?? previous
+            : data.frames[0] ?? null);
+        }
+      } catch (e) {
+        if (!signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+          console.error("Failed to load visual regression report");
+        }
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    })();
+    pendingRef.current = request;
+    void request.finally(() => { pendingRef.current = null; });
+    return request;
   }, []);
 
   useEffect(() => {
-    if (selectedFrame) {
-      fetchVariance(selectedFrame.filename);
-    } else {
-      setVarianceData(null);
-    }
-  }, [selectedFrame, fetchVariance]);
-
-  const fetchReport = useCallback(async () => {
-    try {
-      const res = await fetch("/api/recompiler/visual-regression/report");
-      if (res.ok) {
-        const data: RegressionReport = await res.json();
-        setReport(data);
-
-        // Auto-select first frame if none is selected
-        if (data.frames.length > 0 && !selectedFrame) {
-          setSelectedFrame(data.frames[0]);
-        } else if (data.frames.length > 0 && selectedFrame) {
-          // Update selected frame data from fresh report
-          const updated = data.frames.find(f => f.filename === selectedFrame.filename);
-          if (updated) setSelectedFrame(updated);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load visual regression report", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedFrame]);
-
-  useEffect(() => {
-    fetchReport();
-
-    // Set up polling interval to fetch report updates every 2 seconds
-    const interval = setInterval(fetchReport, 2000);
-    setRefreshInterval(interval);
-
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await fetchReport();
+      if (!controller.signal.aborted) timer = setTimeout(poll, 2000);
+    };
+    timer = setTimeout(poll, 0);
     return () => {
-      if (interval) clearInterval(interval);
+      clearTimeout(timer);
+      controller.abort();
+      controllerRef.current = null;
     };
   }, [fetchReport]);
 
@@ -281,6 +307,8 @@ export function VisualRegressionPanel() {
                   <div className="relative w-full max-w-[540px] aspect-[480/272] select-none overflow-hidden rounded-xl border-2 border-border/80 bg-black shadow-2xl">
 
                     {/* Golden Reference (Oracle) - Underneath */}
+                    {/* Local API-served comparison frames: the optimizer is not applicable here. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`/api/recompiler/visual-regression/image?type=golden&file=${selectedFrame.filename}`}
                       alt="Oracle Reference"
@@ -293,6 +321,7 @@ export function VisualRegressionPanel() {
                       className="absolute inset-0 pointer-events-none"
                       style={{ clipPath: `polygon(0 0, ${sliderVal}% 0, ${sliderVal}% 100%, 0 100%)` }}
                     >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`/api/recompiler/visual-regression/image?type=snapshot&file=${selectedFrame.filename}`}
                         alt="Recompiler Active Render"
@@ -317,6 +346,7 @@ export function VisualRegressionPanel() {
 
                     {/* Diff Highlight Mask Overlay */}
                     {showDiffMask && (
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={`/api/recompiler/visual-regression/image?type=diff&file=${selectedFrame.filename}&channels=${Object.keys(activeChannels).filter(k => activeChannels[k as keyof typeof activeChannels]).join(",")}`}
                         alt="Diff Highlight"
@@ -456,7 +486,7 @@ export function VisualRegressionPanel() {
                           </div>
                           <div className="rounded-lg border border-border/40 bg-background/20 p-3 flex flex-col justify-center items-center">
                             <div className="grid grid-cols-[repeat(30,minmax(0,1fr))] gap-[1px] w-full aspect-[480/272] bg-card/60 p-1 rounded border border-border/30">
-                              {varianceData.grid.cells.map((cell: any, idx: number) => {
+                              {varianceData.grid.cells.map((cell, idx) => {
                                 let totalDiff = 0;
                                 let activeCount = 0;
                                 if (activeChannels.R) { totalDiff += cell.r; activeCount++; }

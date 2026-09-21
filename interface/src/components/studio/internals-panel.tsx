@@ -1,7 +1,8 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useEffect, useState, useRef } from "react";
-import { Cpu, Wrench, GitBranch, Table, Terminal, Play, Pause, Trash2, FileText, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Cpu, Wrench, GitBranch, Table, Terminal, Play, Pause, Trash2, FileText, ShieldAlert } from "lucide-react";
 import { Panel, SectionHeader } from "./ui-bits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,20 +28,69 @@ interface CrashReport {
   guestRegs: Record<string, string>;
 }
 
+function detectCrashReports(allLogs: string[], onCrash: (report: CrashReport) => void) {
+  let startIndex = -1;
+  let endIndex = -1;
+  for (let i = allLogs.length - 1; i >= 0; i--) {
+    if (allLogs[i].includes("=== END CRASH REPORT ===")) {
+      endIndex = i;
+    }
+    if (allLogs[i].includes("=== PSP RECOMPILER CRASH REPORT ===")) {
+      startIndex = i;
+      break;
+    }
+  }
+
+  if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
+    const crashLines = allLogs.slice(startIndex, endIndex + 1);
+    const parsed = parseCrashReport(crashLines);
+    if (parsed) {
+      onCrash(parsed);
+    }
+  }
+}
+
+function parseCrashReport(lines: string[]): CrashReport | null {
+  let exception = "";
+  let fault = "";
+  const hostRegs: Record<string, string> = {};
+  const guestRegs: Record<string, string> = {};
+
+  for (const line of lines) {
+    if (line.includes("Exception:")) {
+      exception = line.trim();
+    } else if (line.includes("Fault:")) {
+      fault = line.trim();
+    } else if (line.includes("=") && (line.includes("RIP") || line.includes("RAX") || line.includes("RCX") || line.includes("RSI") || line.includes("RBP") || line.includes("R9") || line.includes("R11") || line.includes("R13") || line.includes("R15"))) {
+      const parts = line.trim().split(/\s+/);
+      for (const part of parts) {
+        const [k, v] = part.split("=");
+        if (k && v) hostRegs[k] = v;
+      }
+    } else if (line.includes("=") && (line.includes("PC") || line.includes("r4") || line.includes("r8") || line.includes("r12") || line.includes("r16") || line.includes("r20") || line.includes("r24") || line.includes("r28") || line.includes("hi"))) {
+      const parts = line.trim().split(/\s+/);
+      for (const part of parts) {
+        const [k, v] = part.split("=");
+        if (k && v) guestRegs[k] = v;
+      }
+    }
+  }
+
+  if (Object.keys(guestRegs).length === 0) return null;
+  return { exception, fault, hostRegs, guestRegs };
+}
+
 export function InternalsPanel() {
   const [activeTab, setActiveTab] = useState<"logs" | "registers">("logs");
 
   // Log Streamer States
   const [logs, setLogs] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(true);
-  const [cursor, setCursor] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSubsystems, setSelectedSubsystems] = useState<string[]>([]);
   const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const isPlayingRef = useRef(isPlaying);
-  isPlayingRef.current = isPlaying;
 
   const subsystems = ["MEM", "HLE", "SCHED", "GE", "INPUT", "FS", "VIDEO", "MISC"];
 
@@ -58,7 +108,7 @@ export function InternalsPanel() {
         if (nextLogs.length > 5000) {
           nextLogs.splice(0, nextLogs.length - 5000);
         }
-        detectCrashReports(nextLogs);
+        detectCrashReports(nextLogs, (report) => setCrashReport(report));
         return nextLogs;
       });
     };
@@ -73,11 +123,12 @@ export function InternalsPanel() {
       appendLogLines(data.text);
     });
 
-    es.addEventListener("error", (event: any) => {
+    es.addEventListener("error", () => {
       // EventSource reconnects automatically on failure
     });
 
-    es.addEventListener("close", (event: any) => {
+    es.addEventListener("close", (event) => {
+      if (!(event instanceof MessageEvent)) return;
       const data = JSON.parse(event.data || "{}");
       setLogs((prev) => [...prev, `[system] process finished with code ${data.code ?? 0}`]);
     });
@@ -93,58 +144,6 @@ export function InternalsPanel() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [logs]);
-
-  function detectCrashReports(allLogs: string[]) {
-    let startIndex = -1;
-    let endIndex = -1;
-    for (let i = allLogs.length - 1; i >= 0; i--) {
-      if (allLogs[i].includes("=== END CRASH REPORT ===")) {
-        endIndex = i;
-      }
-      if (allLogs[i].includes("=== PSP RECOMPILER CRASH REPORT ===")) {
-        startIndex = i;
-        break;
-      }
-    }
-
-    if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
-      const crashLines = allLogs.slice(startIndex, endIndex + 1);
-      const parsed = parseCrashReport(crashLines);
-      if (parsed) {
-        setCrashReport(parsed);
-      }
-    }
-  }
-
-  function parseCrashReport(lines: string[]): CrashReport | null {
-    let exception = "";
-    let fault = "";
-    const hostRegs: Record<string, string> = {};
-    const guestRegs: Record<string, string> = {};
-
-    for (const line of lines) {
-      if (line.includes("Exception:")) {
-        exception = line.trim();
-      } else if (line.includes("Fault:")) {
-        fault = line.trim();
-      } else if (line.includes("=") && (line.includes("RIP") || line.includes("RAX") || line.includes("RCX") || line.includes("RSI") || line.includes("RBP") || line.includes("R9") || line.includes("R11") || line.includes("R13") || line.includes("R15"))) {
-        const parts = line.trim().split(/\s+/);
-        for (const part of parts) {
-          const [k, v] = part.split("=");
-          if (k && v) hostRegs[k] = v;
-        }
-      } else if (line.includes("=") && (line.includes("PC") || line.includes("r4") || line.includes("r8") || line.includes("r12") || line.includes("r16") || line.includes("r20") || line.includes("r24") || line.includes("r28") || line.includes("hi"))) {
-        const parts = line.trim().split(/\s+/);
-        for (const part of parts) {
-          const [k, v] = part.split("=");
-          if (k && v) guestRegs[k] = v;
-        }
-      }
-    }
-
-    if (Object.keys(guestRegs).length === 0) return null;
-    return { exception, fault, hostRegs, guestRegs };
-  }
 
   const toggleSubsystem = (sub: string) => {
     setSelectedSubsystems((prev) =>
@@ -554,7 +553,7 @@ r28=00000000 r29=04000000 r30=00000000 r31=0004ccb8
       {/* Runtime subsystems */}
       <Panel
         title="Runtime subsystems"
-        description="src/rt/ — compiled into hst.exe (the native runtime)"
+        description="src/rt/ — compiled into the game executable (the native runtime)"
         icon={<Wrench className="size-4" />}
       >
         <div className="grid sm:grid-cols-2 gap-2">

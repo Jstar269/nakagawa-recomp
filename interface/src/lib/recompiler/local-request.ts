@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { NextRequest, NextResponse } from "next/server";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -57,7 +58,7 @@ export function rejectNonLocalControlRequest(
 export function rejectUnsupportedProcessHost(): NextResponse | null {
   if (process.platform === "win32") return null;
   return NextResponse.json(
-    { error: "windows-host-required", detail: "Local process control uses hst_manager.ps1 and hst.exe." },
+    { error: "windows-host-required", detail: "Local process control uses nk_manager.ps1 and the built game executable." },
     { status: 501 },
   );
 }

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -40,6 +39,16 @@ import provenance_attest_verify as verifier  # noqa: E402
 import public_export  # noqa: E402
 from publication_policy import load_policy  # noqa: E402
 
+class CanonicalJsonTests(unittest.TestCase):
+    def test_shared_canonical_bytes(self):
+        import provenance_ledger
+
+        self.assertIs(verifier._canonical_json_bytes, provenance_ledger._canonical_json_bytes)
+        document = {"z": "é", "a": [True, None]}
+        expected = '{\n  "z": "é",\n  "a": [\n    true,\n    null\n  ]\n}\n'.encode("utf-8")
+        self.assertEqual(verifier._canonical_json_bytes(document), expected)
+
+
 RESERVED_CONTEXT = verifier.TRUSTED_CONTEXT
 TRUSTED_WORKFLOW = verifier.TRUSTED_WORKFLOW
 
@@ -47,7 +56,7 @@ TRUSTED_WORKFLOW = verifier.TRUSTED_WORKFLOW
 #: deliberately mirrors the real ledger's ``tools/*`` catch-all so the tests can
 #: prove a blanket record is inert for classification while still being a valid
 #: anchor for a path it already covers.
-TRUSTED_RECORDS = {
+AUTHORITY_RECORDS = {
     "schema_version": 1,
     "records": [
         {
@@ -202,7 +211,7 @@ class GateCase(unittest.TestCase):
         self.outside.mkdir()
         self.trusted_ledger = self.outside / "IMPLEMENTATION_PROVENANCE.json"
         self.repo.before_commit = self.regenerate_export
-        self.write_trusted(TRUSTED_RECORDS)
+        self.write_trusted(AUTHORITY_RECORDS)
 
         entries = []
         for path, raw in self.FILES.items():
@@ -235,7 +244,7 @@ class GateCase(unittest.TestCase):
     def approve_blob(self, path: str, raw: bytes, *, record_id: str, classification: str,
                      document: dict | None = None) -> dict:
         """Add a trusted reviewed-blob approval for exactly these bytes."""
-        document = json.loads(json.dumps(document or TRUSTED_RECORDS))
+        document = json.loads(json.dumps(document or AUTHORITY_RECORDS))
         document.setdefault("reviewed_blobs", []).append({
             "path": path, "sha256": _sha(raw),
             "classification": classification, "record_id": record_id,
@@ -358,13 +367,15 @@ class GateCase(unittest.TestCase):
     # -- invocation ----------------------------------------------------------
 
     def run_verify(self, candidate: str, *, base: str | None = None,
-                   trusted_ledger: Path | None = None) -> dict:
+                   trusted_ledger: Path | None = None,
+                   require_exact_blob_approvals: bool = False) -> dict:
         return verifier.verify(
             repo=self.repo.root,
             candidate_rev=candidate,
             base_rev=base or self.base,
             trusted_ledger=trusted_ledger or self.trusted_ledger,
             workdir=self.outside / "work",
+            require_exact_blob_approvals=require_exact_blob_approvals,
         )
 
     def codes(self, verdict: dict, *, fatal_only: bool = True) -> set[str]:
@@ -525,7 +536,7 @@ class UnbackedAttestationTests(GateCase):
         and an approval naming the exact bytes.
         """
         raw = b"int recorded(void) { return 6; }\n"
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "recorded-path", "paths": ["src/rt/recorded.c"],
             "classification": "project-authored-independent", "upstream": None,
@@ -693,7 +704,7 @@ class AttestationInheritanceTests(GateCase):
         self.repo.branch("attack", self.base)
         raw = b"print('replaced, with my own authority')\n"
         self.repo.write(self.LEGACY, raw)
-        forged = json.loads(json.dumps(TRUSTED_RECORDS))
+        forged = json.loads(json.dumps(AUTHORITY_RECORDS))
         forged["records"].append({
             "id": "legacy-blessed", "paths": [self.LEGACY],
             "classification": "project-authored-independent", "upstream": None,
@@ -806,7 +817,7 @@ class AttestationInheritanceTests(GateCase):
         approval naming the exact new bytes.
         """
         replacement = b"print('replaced, and now attested')\n"
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "legacy-attested", "paths": [self.LEGACY],
             "classification": "project-authored-independent", "upstream": None,
@@ -829,22 +840,21 @@ class AttestationInheritanceTests(GateCase):
             [item["path"] for item in verdict["grandfathered_debt"]], ["README.md"],
         )
 
-    def test_F2_an_agreeing_path_still_needs_its_new_bytes_approved(self) -> None:
-        """An attested path is not a blank cheque for future content.
-
-        This inverts the second-pass behaviour deliberately. Records carry
-        paths, so path-level authority alone once let an agreeing path change
-        content freely; exact-blob authorization is what closes that.
-        """
+    def test_F2_an_agreeing_path_needs_no_duplicate_blob_approval(self) -> None:
+        """An exact path record authorizes ordinary future revisions."""
         replacement = b"int widget(void) { return 4242; }\n"
         head = self._edit(self.ATTESTED, replacement)
         verdict = self.run_verify(head)
-        self.assertFatal(verdict, "BLOB_UNAPPROVED")
+        self.assertPasses(verdict)
+        self.assertNotIn("BLOB_UNAPPROVED", self.codes(verdict))
         self.assertEqual(verdict["changed_unattested_paths"], [])
 
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
         self.approve_blob(self.ATTESTED, replacement, record_id="widget-independent",
                           classification="project-authored-independent")
-        self.assertPasses(self.run_verify(head))
+        self.assertPasses(self.run_verify(head, require_exact_blob_approvals=True))
 
     def test_F3_a_deterministic_path_may_change_content_freely(self) -> None:
         """Documentation with no record is classified by what it is, every run."""
@@ -882,7 +892,7 @@ class AttestationInheritanceTests(GateCase):
 
     def test_correcting_a_grandfathered_claim_to_authority_is_allowed(self) -> None:
         """Debt is paid by agreeing with authority, and that must not be refused."""
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["records"].append({
             "id": "legacy-attested", "paths": [self.LEGACY],
             "classification": "derived-translated", "upstream": "upstream-project",
@@ -908,13 +918,11 @@ class AttestationInheritanceTests(GateCase):
 
 
 class ExactBlobAuthorizationTests(GateCase):
-    """Path coverage is not content approval.
+    """Compatibility coverage for the opt-in exact-blob policy.
 
-    ``src/rt/widget.c`` is fully authority-backed: an exact record names it and
-    the public ledger's claim agrees. Under path-level authority alone its
-    content could be replaced wholesale. These cases require the trusted
-    authority to name the exact candidate blob before any new implementation
-    bytes are accepted at that path.
+    Normal verification is path-authorized and does not require these entries.
+    Passing ``require_exact_blob_approvals=True`` preserves the former
+    higher-assurance behavior for callers that deliberately need it.
     """
 
     BACKED = "src/rt/widget.c"          # exact record, claim agrees with authority
@@ -925,7 +933,7 @@ class ExactBlobAuthorizationTests(GateCase):
                 classification: str | None = None, sha256: str | None = None,
                 document: dict | None = None) -> dict:
         """Add a reviewed-blob approval to the trusted authority."""
-        document = json.loads(json.dumps(document or TRUSTED_RECORDS))
+        document = json.loads(json.dumps(document or AUTHORITY_RECORDS))
         document.setdefault("reviewed_blobs", []).append({
             "path": path,
             "sha256": sha256 or _sha(raw),
@@ -954,10 +962,10 @@ class ExactBlobAuthorizationTests(GateCase):
         self.assertPasses(self.run_verify(self.base))
 
     # -- B ------------------------------------------------------------------
-    def test_B_changed_blob_with_coherent_public_hash_and_no_approval_fails(self) -> None:
+    def test_B_strict_mode_rejects_changed_blob_without_approval(self) -> None:
         """The third-pass headline: the claim agrees, the bytes are new."""
         head = self.edit_backed(b"int widget(void) { return 777; }\n")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         # Not caught by anything else: the claim is untouched and correct.
         self.assertNotIn("CLAIM_UNBACKED", self.codes(verdict))
@@ -979,14 +987,16 @@ class ExactBlobAuthorizationTests(GateCase):
             entries.append(entry)
         self.write_ledger(entries)
         head = self.repo.commit("self-issued approval")
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- D ------------------------------------------------------------------
     def test_D_private_authority_approving_the_exact_digest_passes(self) -> None:
         raw = b"int widget(void) { return 779; }\n"
         self.approve(self.BACKED, raw)
         head = self.edit_backed(raw)
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertPasses(verdict)
         self.assertEqual(
             [item["path"] for item in verdict["blobs_approved_this_candidate"]], [self.BACKED],
@@ -997,7 +1007,9 @@ class ExactBlobAuthorizationTests(GateCase):
         """Right path, right record, digest of some other revision."""
         self.approve(self.BACKED, b"int widget(void) { return 111; }\n")
         head = self.edit_backed(b"int widget(void) { return 222; }\n")
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- F ------------------------------------------------------------------
     def test_F_approval_bound_to_another_path_fails(self) -> None:
@@ -1006,7 +1018,9 @@ class ExactBlobAuthorizationTests(GateCase):
         self.approve("src/rt/core.c", raw, record_id="core-runtime",
                      classification="derived-translated")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- G ------------------------------------------------------------------
     def test_G_exact_bytes_copied_to_a_new_path_fail(self) -> None:
@@ -1028,7 +1042,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.write_ledger(entries)
         self.write_policy(list(self.FILES) + ["src/rt/widget_copy.c"])
         head = self.repo.commit("copy approved bytes to a new path")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("TRUSTED_RECORD_UNRESOLVED", self.codes(verdict))
 
@@ -1049,7 +1063,7 @@ class ExactBlobAuthorizationTests(GateCase):
             entries.append(entry)
         self.write_ledger(entries)
         head = self.repo.commit("reclassify and replace")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("CLAIM_UNBACKED", self.codes(verdict))
 
@@ -1058,13 +1072,17 @@ class ExactBlobAuthorizationTests(GateCase):
         raw = b"int widget(void) { return 445; }\n"
         self.approve(self.BACKED, raw, classification="derived-translated")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_APPROVAL_CLASS_MISMATCH")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_APPROVAL_CLASS_MISMATCH"
+        )
 
     def test_H3_approval_citing_a_record_that_does_not_cover_the_path_fails(self) -> None:
         raw = b"int widget(void) { return 446; }\n"
         self.approve(self.BACKED, raw, record_id="core-runtime")
         head = self.edit_backed(raw)
-        self.assertFatal(self.run_verify(head), "BLOB_APPROVAL_RECORD_MISMATCH")
+        self.assertFatal(
+            self.run_verify(head, require_exact_blob_approvals=True), "BLOB_APPROVAL_RECORD_MISMATCH"
+        )
 
     # -- I ------------------------------------------------------------------
     def test_I_wildcard_record_with_changed_bytes_fails(self) -> None:
@@ -1084,7 +1102,7 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head = self.repo.commit("blanket-backed replacement")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(verdict["verdict"], "fail")
         self.assertTrue(
             {"BLOB_APPROVAL_RECORD_MISMATCH", "CONTENT_UNATTESTED"} & self.codes(verdict),
@@ -1097,7 +1115,7 @@ class ExactBlobAuthorizationTests(GateCase):
         first = b"int widget(void) { return 555; }\n"
         self.approve(self.BACKED, first)
         head = self.edit_backed(first)
-        self.assertPasses(self.run_verify(head))
+        self.assertPasses(self.run_verify(head, require_exact_blob_approvals=True))
 
         second = b"int widget(void) { return 556; }\n"
         self.repo.write(self.BACKED, second)
@@ -1107,7 +1125,9 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head2 = self.repo.commit("push a second revision")
-        self.assertFatal(self.run_verify(head2), "BLOB_UNAPPROVED")
+        self.assertFatal(
+            self.run_verify(head2, require_exact_blob_approvals=True), "BLOB_UNAPPROVED"
+        )
 
     # -- K ------------------------------------------------------------------
     def test_K_mutable_revision_selectors_are_refused_in_strict_mode(self) -> None:
@@ -1134,7 +1154,7 @@ class ExactBlobAuthorizationTests(GateCase):
         """Every public artifact agrees with every other, and it is still refused."""
         raw = b"int widget(void) { return 666; }\n"
         head = self.edit_backed(raw)
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         # Prove the internal coherence the attacker achieved.
         self.assertNotIn("CONTENT_MISMATCH", self.codes(verdict))
         self.assertNotIn("LEDGER_SCHEMA", self.codes(verdict))
@@ -1163,7 +1183,7 @@ class ExactBlobAuthorizationTests(GateCase):
         ]
         self.write_ledger(entries)
         head = self.repo.commit("claim the approved digest, ship other bytes")
-        verdict = self.run_verify(head)
+        verdict = self.run_verify(head, require_exact_blob_approvals=True)
         self.assertFatal(verdict, "BLOB_UNAPPROVED")
         self.assertIn("CONTENT_MISMATCH", self.codes(verdict))
         self.assertEqual(verdict["blobs_approved_this_candidate"], [])
@@ -1177,7 +1197,7 @@ class ExactBlobAuthorizationTests(GateCase):
         raw = b"int widget(void) { return 888; }\n"
         self.approve(self.BACKED, raw)
         head = self.edit_backed(raw)
-        blob = json.dumps(self.run_verify(head))
+        blob = json.dumps(self.run_verify(head, require_exact_blob_approvals=True))
         self.assertNotIn("PRIVATE REVIEW NOTE", blob)
         self.assertNotIn("reviewed_by", blob)
 
@@ -1186,7 +1206,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.approve(self.BACKED, raw, record_id="no-such-record")
         head = self.edit_backed(raw)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(head)
+            self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
 
     def test_a_repeated_approval_for_one_path_and_digest_is_refused(self) -> None:
@@ -1201,7 +1221,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.write_trusted(document)
         head = self.edit_backed(raw)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(head)
+            self.run_verify(head, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
 
     def test_several_digests_for_one_path_are_legitimate(self) -> None:
@@ -1210,7 +1230,9 @@ class ExactBlobAuthorizationTests(GateCase):
         newer = b"int widget(void) { return 2; }\n"
         document = self.approve(self.BACKED, older)
         self.approve(self.BACKED, newer, document=document)
-        self.assertPasses(self.run_verify(self.edit_backed(newer)))
+        self.assertPasses(
+            self.run_verify(self.edit_backed(newer), require_exact_blob_approvals=True)
+        )
 
     def test_an_unknown_record_id_covers_nothing(self) -> None:
         """Why the finding needs no separate existence check.
@@ -1226,15 +1248,21 @@ class ExactBlobAuthorizationTests(GateCase):
         self.assertTrue(verifier._record_covers("a.c", "real", exact, patterns))
 
     def test_a_wildcard_approval_path_is_refused(self) -> None:
-        document = json.loads(json.dumps(TRUSTED_RECORDS))
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
         document["reviewed_blobs"] = [{
             "path": "src/rt/*", "sha256": "0" * 64,
             "classification": self.PRIVATE_CLASS, "record_id": self.RECORD,
         }]
         self.write_trusted(document)
         with self.assertRaises(verifier.VerifyError) as caught:
-            self.run_verify(self.base)
+            self.run_verify(self.base, require_exact_blob_approvals=True)
         self.assertEqual(caught.exception.code, "TRUSTED_LEDGER_INVALID")
+
+    def test_normal_mode_ignores_legacy_blob_history(self) -> None:
+        document = json.loads(json.dumps(AUTHORITY_RECORDS))
+        document["reviewed_blobs"] = [{"path": "src/rt/*"}]
+        self.write_trusted(document)
+        self.assertPasses(self.run_verify(self.base))
 
     def test_a_deterministic_path_needs_no_blob_approval(self) -> None:
         """Only implementation-class claims are content-gated."""
@@ -1377,9 +1405,8 @@ class ClassificationFloorTests(GateCase):
     def test_moving_source_under_a_test_looking_name_does_not_exempt_it(self) -> None:
         """``tools/test_*`` is deterministic by path, so the move is a new path.
 
-        The copy needs its own record and its own blob approval; inheriting the
-        old path's treatment by renaming into a fixture-shaped name must not
-        work.
+        The copy needs its own path treatment; inheriting the old path's
+        treatment by renaming into a fixture-shaped name must not work.
         """
         self.repo.branch("attack", self.base)
         raw = self.FILES[self.BACKED]
@@ -1810,7 +1837,7 @@ class TrustBoundaryTests(GateCase):
         self.repo.branch("attack", self.base)
         raw = b"int forged(void) { return 8; }\n"
         self.repo.write("src/rt/forged.c", raw)
-        forged_authority = json.loads(json.dumps(TRUSTED_RECORDS))
+        forged_authority = json.loads(json.dumps(AUTHORITY_RECORDS))
         forged_authority["records"].append({
             "id": "forged-authority", "paths": ["src/rt/forged.c"],
             "classification": "project-authored-independent", "upstream": None,
@@ -1864,7 +1891,7 @@ class TrustBoundaryTests(GateCase):
 
     def test_trusted_ledger_inside_the_repository_is_refused(self) -> None:
         inside = self.repo.root / "trusted.json"
-        inside.write_text(json.dumps(TRUSTED_RECORDS), encoding="utf-8", newline="\n")
+        inside.write_text(json.dumps(AUTHORITY_RECORDS), encoding="utf-8", newline="\n")
         with self.assertRaises(verifier.VerifyError) as caught:
             self.run_verify(self.base, trusted_ledger=inside)
         self.assertEqual(caught.exception.code, "TRUSTED_INPUT_CANDIDATE_CONTROLLED")
@@ -2090,6 +2117,568 @@ class LiveRepositoryTests(unittest.TestCase):
         for entry in uses:
             reference = entry.split("#", 1)[0].strip().split("@", 1)[-1]
             self.assertRegex(reference, r"^[0-9a-f]{40}$", msg=f"unpinned action: {entry}")
+
+
+class EphemeralGenerationTests(unittest.TestCase):
+    """The integration-time path never trusts branch-carried controls."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.repo = Repository(root / "repo")
+        self.outside = root / "outside"
+        self.outside.mkdir()
+        self.trusted_ledger = self.outside / "IMPLEMENTATION_PROVENANCE.json"
+        self.repo.before_commit = self.regenerate_export
+        self.write_trusted(AUTHORITY_RECORDS)
+
+        entries = []
+        for path, raw in GateCase.FILES.items():
+            entries.append(self.entry(path, raw))
+            self.repo.write(path, raw)
+        workflow = self.workflow_bytes()
+        self.repo.write(TRUSTED_WORKFLOW, workflow)
+        entries.append(self.entry(
+            TRUSTED_WORKFLOW,
+            workflow,
+            classification="reviewed_configuration",
+            evidence={"source": "configuration review"},
+        ))
+        self.write_policy(list(GateCase.FILES) + [TRUSTED_WORKFLOW, verifier.LEDGER_PATH])
+        entries.extend([
+            {"path": verifier.LEDGER_PATH, "classification": "reviewed_configuration",
+             "evidence": {"source": "configuration review"}},
+            {"path": verifier.EXPORT_PATH, "classification": "reviewed_configuration",
+             "evidence": {"source": "configuration review"}},
+        ])
+        self.write_ledger(entries)
+        self.base = self.repo.commit("base")
+
+    def workflow_bytes(self) -> bytes:
+        return (
+            b"on:\n  pull_request_target:\njobs:\n  attest:\n    name: "
+            + verifier.TRUSTED_CONTEXT.encode("utf-8") + b"\n"
+        )
+
+    def write_trusted(self, document: dict) -> None:
+        self.trusted_ledger.write_text(
+            json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
+
+    def write_policy(self, include_paths: list[str]) -> None:
+        policy = dict(POLICY)
+        policy["include_paths"] = sorted(set(include_paths) | {verifier.EXPORT_PATH})
+        self.repo.write(verifier.POLICY_PATH, json.dumps(policy, indent=2) + "\n")
+
+    def write_ledger(self, entries: list[dict]) -> None:
+        document = {
+            "schema_version": 1,
+            "generated_by": "tools/provenance_ledger.py",
+            "policy_profile": POLICY["name"],
+            "classification_vocabulary": sorted(verifier.ALLOWED_CLASSES),
+            "entries": sorted(entries, key=lambda item: item["path"]),
+        }
+        self.repo.write(verifier.LEDGER_PATH, json.dumps(document, indent=2) + "\n")
+        self.regenerate_export()
+
+    def entry(self, path: str, raw: bytes, *, classification: str | None = None,
+              evidence: dict | None = None) -> dict:
+        defaults = {
+            "src/rt/core.c": ("upstream_derived", {
+                "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+                "record_id": "core-runtime", "evidence_tier": "H",
+                "upstream": "upstream-project",
+            }),
+            "src/rt/widget.c": ("project_authored_attested", {
+                "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+                "record_id": "widget-independent", "evidence_tier": "S",
+            }),
+            "tools/legacy.py": ("project_authored_attested", {
+                "source": "public provenance census",
+            }),
+        }
+        classification, evidence = defaults.get(
+            path,
+            (classification or "reviewed_configuration", evidence or {"source": "configuration review"}),
+        )
+        result = {"path": path, "classification": classification, "evidence": evidence}
+        if path not in verifier.UNHASHED_PATHS:
+            result["sha256"] = _sha(raw)
+        return result
+
+    def regenerate_export(self) -> None:
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        ledger_path = self.repo.root / verifier.LEDGER_PATH
+        if not policy_path.is_file() or not ledger_path.is_file():
+            return
+        self.repo.write(verifier.EXPORT_PATH, b"{}")
+        policy = load_policy(policy_path)
+        document = public_export.build_document(
+            policy,
+            self.repo.tracked_files(),
+            provenance_ledger=ledger_path.read_bytes(),
+        )
+        self.repo.write(verifier.EXPORT_PATH, _canonical(document))
+
+    def baseline(self, commit: str | None = None) -> Path:
+        commit = commit or self.base
+        raw = subprocess.run(
+            ["git", "show", f"{commit}:{verifier.LEDGER_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        path = self.outside / "trusted-baseline.json"
+        path.write_bytes(raw)
+        return path
+
+    def run_ephemeral(self, candidate: str, *, base: str | None = None,
+                      trusted_candidate_policy: Path | None = None,
+                      policy_delta_authority: Path | None = None,
+                      require_exact_blob_approvals: bool = False) -> dict:
+        return verifier.verify_ephemeral(
+            repo=self.repo.root,
+            candidate_rev=candidate,
+            base_rev=base or self.base,
+            trusted_ledger=self.trusted_ledger,
+            trusted_baseline=self.baseline(base),
+            output_dir=self.outside / "generated",
+            trusted_candidate_policy=trusted_candidate_policy,
+            policy_delta_authority=policy_delta_authority,
+            require_exact_blob_approvals=require_exact_blob_approvals,
+        )
+
+
+def _canonical(document: dict) -> bytes:
+    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
+    def test_controls_are_generated_outside_the_candidate_tree(self) -> None:
+        self.repo.branch("without-legacy-controls", self.base)
+        self.repo.remove(verifier.LEDGER_PATH)
+        self.repo.remove(verifier.EXPORT_PATH)
+        head = self.repo.commit("remove legacy controls")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertFalse((self.repo.root / verifier.LEDGER_PATH).exists())
+        self.assertFalse((self.repo.root / verifier.EXPORT_PATH).exists())
+        generated_ledger = json.loads(
+            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+        )
+        generated_export = json.loads(
+            (self.outside / "generated" / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(verifier.LEDGER_PATH, {e["path"] for e in generated_ledger["entries"]})
+        self.assertNotIn(verifier.EXPORT_PATH, {e["path"] for e in generated_ledger["entries"]})
+        self.assertEqual(
+            generated_export["digest_excludes"],
+            sorted(verifier.CONTROL_PATHS),
+        )
+        self.assertFalse(verdict["legacy_controls_present"]["ledger"])
+        self.assertFalse(verdict["legacy_controls_present"]["export"])
+
+    def test_stale_legacy_controls_cannot_hide_the_fresh_hash(self) -> None:
+        self.repo.branch("stale-legacy", self.base)
+        changed = b"int core(void) { return 99; }\n"
+        self.repo.write("src/rt/core.c", changed)
+        # ``before_commit`` regenerates only the legacy export; the ledger keeps
+        # its old hash, reproducing the reported PR failure without editing the
+        # maintainer-owned metadata in the real repository.
+        head = self.repo.commit("change source without legacy refresh")
+
+        verdict = self.run_ephemeral(head)
+
+        codes = {finding["code"] for finding in verdict["findings"]}
+        self.assertIn("CONTENT_MISMATCH", codes)
+        self.assertIn("LEGACY_CONTROL_MISMATCH", codes)
+        generated = json.loads(
+            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+        )
+        entry = next(item for item in generated["entries"] if item["path"] == "src/rt/core.c")
+        self.assertEqual(entry["sha256"], _sha(changed))
+
+    def test_plain_baseline_must_be_the_exact_trusted_base_blob(self) -> None:
+        wrong = self.outside / "wrong-baseline.json"
+        wrong.write_bytes(self.baseline().read_bytes() + b" ")
+        with self.assertRaises(verifier.VerifyError) as caught:
+            verifier.verify_ephemeral(
+                repo=self.repo.root,
+                candidate_rev=self.base,
+                base_rev=self.base,
+                trusted_ledger=self.trusted_ledger,
+                trusted_baseline=wrong,
+                output_dir=self.outside / "wrong-output",
+            )
+        self.assertEqual(caught.exception.code, "TRUSTED_BASELINE_BINDING")
+
+    def test_candidate_policy_change_needs_an_external_delta_authority(self) -> None:
+        self.repo.branch("policy-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
+        self.repo.write(verifier.POLICY_PATH, _canonical(policy))
+        head = self.repo.commit("candidate policy change")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertIn(
+            "POLICY_SUBSTITUTION",
+            {finding["code"] for finding in verdict["findings"]},
+        )
+
+    def test_blessed_candidate_policy_can_remove_exact_obsolete_exclusion(self) -> None:
+        self.repo.branch("authorized-exclusion-removal", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["exclude_paths"] = []
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("authorized obsolete exclusion removal")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        blessed_policy = self.outside / "blessed-exclusion-removal-policy.json"
+        blessed_policy.write_bytes(candidate_policy_raw)
+        authority = self.outside / "exclusion-removal-policy-delta-authority.json"
+        authority.write_bytes(_canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_policy_raw),
+            "allowed_delta": {
+                "include_added": [],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": ["secret.txt"],
+                "rule_changes": [],
+            },
+        }))
+
+        verdict = self.run_ephemeral(
+            head,
+            trusted_candidate_policy=blessed_policy,
+            policy_delta_authority=authority,
+        )
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["policy_delta"]["exclude_removed"], ["secret.txt"])
+        self.assertNotIn(
+            "POLICY_SUBSTITUTION",
+            {finding["code"] for finding in verdict["findings"]},
+        )
+
+    def test_blessed_candidate_policy_and_exact_delta_can_authorize_a_change(self) -> None:
+        self.repo.branch("authorized-policy-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("authorized candidate policy change")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        blessed_policy = self.outside / "blessed-candidate-policy.json"
+        blessed_policy.write_bytes(candidate_policy_raw)
+        authority = self.outside / "policy-delta-authority.json"
+        authority.write_bytes(_canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_policy_raw),
+            "allowed_delta": {
+                "include_added": ["docs/new.md"],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": [],
+                "rule_changes": [],
+            },
+        }))
+
+        verdict = self.run_ephemeral(
+            head,
+            trusted_candidate_policy=blessed_policy,
+            policy_delta_authority=authority,
+        )
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["policy_delta"]["include_added"], ["docs/new.md"])
+        self.assertIsNone(
+            next((item for item in verdict["findings"] if item["code"] == "POLICY_SUBSTITUTION"), None),
+        )
+
+    def test_external_policy_delta_inputs_cannot_share_generated_output_paths(self) -> None:
+        self.repo.branch("output-collision-policy-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("policy change for output collision test")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        authority_document = _canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_policy_raw),
+            "allowed_delta": {
+                "include_added": ["docs/new.md"],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": [],
+                "rule_changes": [],
+            },
+        })
+
+        for output_name in ("public_provenance_ledger.json", "PUBLIC_EXPORT.json"):
+            with self.subTest(output_name=output_name):
+                output_dir = self.outside / f"collision-{output_name}"
+                output_dir.mkdir()
+                blessed_policy = self.outside / f"blessed-{output_name}.json"
+                blessed_policy.write_bytes(candidate_policy_raw)
+                authority = self.outside / f"authority-{output_name}.json"
+                authority.write_bytes(authority_document)
+                if output_name == "public_provenance_ledger.json":
+                    blessed_policy = output_dir / output_name
+                    blessed_policy.write_bytes(candidate_policy_raw)
+                else:
+                    authority = output_dir / output_name
+                    authority.write_bytes(authority_document)
+
+                with self.assertRaises(verifier.VerifyError) as caught:
+                    verifier.verify_ephemeral(
+                        repo=self.repo.root,
+                        candidate_rev=head,
+                        base_rev=self.base,
+                        trusted_ledger=self.trusted_ledger,
+                        trusted_baseline=self.baseline(),
+                        output_dir=output_dir,
+                        trusted_candidate_policy=blessed_policy,
+                        policy_delta_authority=authority,
+                    )
+                self.assertEqual(caught.exception.code, "OUTPUT_TRUSTED_INPUT_COLLISION")
+                self.assertTrue(blessed_policy.is_file())
+                self.assertTrue(authority.is_file())
+
+    def test_blessed_candidate_policy_must_match_candidate_bytes(self) -> None:
+        self.repo.branch("mismatched-policy-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
+        candidate_policy_raw = _canonical(policy)
+        self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        head = self.repo.commit("mismatched candidate policy")
+
+        baseline_raw = subprocess.run(
+            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+            cwd=self.repo.root, check=True, capture_output=True,
+        ).stdout
+        blessed_policy = self.outside / "wrong-blessed-candidate-policy.json"
+        blessed_policy.write_bytes(candidate_policy_raw + b" ")
+        authority = self.outside / "wrong-policy-delta-authority.json"
+        authority.write_bytes(_canonical({
+            "schema_version": 1,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(blessed_policy.read_bytes()),
+            "allowed_delta": {
+                "include_added": ["docs/new.md"],
+                "include_removed": [],
+                "exclude_added": [],
+                "exclude_removed": [],
+                "rule_changes": [],
+            },
+        }))
+
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.run_ephemeral(
+                head,
+                trusted_candidate_policy=blessed_policy,
+                policy_delta_authority=authority,
+            )
+        self.assertEqual(caught.exception.code, "CANDIDATE_POLICY_MISMATCH")
+
+    def test_new_source_without_external_path_authority_stays_fail_closed(self) -> None:
+        self.repo.branch("new-source", self.base)
+        raw = b"int new_source(void) { return 1; }\n"
+        self.repo.write("src/rt/new_source.c", raw)
+        self.write_policy(list(GateCase.FILES) + [TRUSTED_WORKFLOW, verifier.LEDGER_PATH,
+                                                   verifier.EXPORT_PATH, "src/rt/new_source.c"])
+        forged = json.loads(
+            (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
+        )
+        forged["entries"].append({
+            "path": "src/rt/new_source.c",
+            "classification": "project_authored_attested",
+            "evidence": {
+                "source": "candidate supplied claim",
+                "record_id": "invented-record",
+            },
+            "sha256": _sha(raw),
+        })
+        self.repo.write(verifier.LEDGER_PATH, _canonical(forged))
+        head = self.repo.commit("new source without trusted admission")
+
+        verdict = self.run_ephemeral(head)
+
+        codes = {finding["code"] for finding in verdict["findings"]}
+        self.assertIn("TRUSTED_PATH_MISSING", codes)
+        self.assertIn("CLAIM_UNBACKED", codes)
+
+    def test_new_build_file_cannot_escape_through_documentation_class(self) -> None:
+        self.repo.branch("new-build-file", self.base)
+        self.repo.write("CMakeLists.txt", b"project(synthetic)\n")
+        self.write_policy(list(GateCase.FILES) + [TRUSTED_WORKFLOW, verifier.LEDGER_PATH,
+                                                   verifier.EXPORT_PATH, "CMakeLists.txt"])
+        head = self.repo.commit("new build file")
+
+        verdict = self.run_ephemeral(head)
+
+        codes = {finding["code"] for finding in verdict["findings"]}
+        self.assertIn("TRUSTED_PATH_UNQUALIFIED", codes)
+
+    def test_candidate_policy_cannot_hide_a_new_build_file(self) -> None:
+        self.repo.branch("hidden-build-file", self.base)
+        self.repo.write("CMakeLists.txt", b"project(hidden)\n")
+        head = self.repo.commit("unlisted build file")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertIn(
+            "TRUSTED_SCOPE_VIOLATION",
+            {finding["code"] for finding in verdict["findings"]},
+        )
+
+
+class RealHistoryParityTests(unittest.TestCase):
+    """Ephemeral mode must preserve the committed verifier's PR verdict."""
+
+    BASE = "24e25d9e761a700a97e21a090ac7bb19ac82bdda"
+    CANDIDATE = "70a4aec365bd5ffceda504c7c003e4b38db432c2"
+    PRIVATE_CLASS = {
+        "project_authored_attested": "project-authored-independent",
+        "upstream_derived": "derived-translated",
+        "generated_from_public_source": "derived-data",
+    }
+
+    @staticmethod
+    def _git_blob(revision: str, path: str) -> bytes:
+        return subprocess.run(
+            ["git", "show", f"{revision}:{path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    def _require_history(self) -> None:
+        for revision in (self.BASE, self.CANDIDATE):
+            present = subprocess.run(
+                ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+                cwd=ROOT,
+                capture_output=True,
+            )
+            if present.returncode != 0:
+                self.skipTest(f"real-history commit unavailable in this checkout: {revision}")
+
+    def _test_authority(self, candidate_ledger: dict, base_ledger: dict) -> dict:
+        """Build a disclosure-safe test authority for already-public claims."""
+
+        records: dict[str, dict] = {}
+        for entry in candidate_ledger["entries"]:
+            classification = entry.get("classification")
+            private_class = self.PRIVATE_CLASS.get(classification)
+            record_id = entry.get("evidence", {}).get("record_id")
+            if private_class is None or not record_id:
+                continue
+            record = records.setdefault(record_id, {
+                "id": record_id,
+                "paths": [],
+                "classification": private_class,
+                "evidence_tier": entry.get("evidence", {}).get("evidence_tier") or "S",
+                "upstream": "documented public source" if private_class != "project-authored-independent" else None,
+                "upstream_paths": [],
+                "upstream_revision": None,
+                "upstream_license": "see NOTICE.md",
+            })
+            self.assertEqual(record["classification"], private_class)
+            record["paths"].append(entry["path"])
+
+        base_entries = {entry["path"]: entry for entry in base_ledger["entries"]}
+        approvals = []
+        for entry in candidate_ledger["entries"]:
+            private_class = self.PRIVATE_CLASS.get(entry.get("classification"))
+            record_id = entry.get("evidence", {}).get("record_id")
+            digest = entry.get("sha256")
+            if private_class is None or not record_id or not digest:
+                continue
+            if base_entries.get(entry["path"], {}).get("sha256") == digest:
+                continue
+            approvals.append({
+                "path": entry["path"],
+                "sha256": digest,
+                "classification": private_class,
+                "record_id": record_id,
+            })
+
+        for record in records.values():
+            record["paths"].sort()
+        return {
+            "schema_version": 1,
+            "records": sorted(records.values(), key=lambda record: record["id"]),
+            "reviewed_blobs": sorted(approvals, key=lambda approval: approval["path"]),
+        }
+
+    def test_real_history_ordinary_pr_matches_committed_verifier_fatal_set(self) -> None:
+        self._require_history()
+        base_ledger_raw = self._git_blob(self.BASE, verifier.LEDGER_PATH)
+        candidate_ledger = json.loads(
+            self._git_blob(self.CANDIDATE, verifier.LEDGER_PATH).decode("utf-8")
+        )
+        base_ledger = json.loads(base_ledger_raw.decode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            outside = Path(temporary)
+            authority = outside / "test-authority.json"
+            baseline = outside / "trusted-baseline.json"
+            authority.write_bytes(_canonical(self._test_authority(candidate_ledger, base_ledger)))
+            baseline.write_bytes(base_ledger_raw)
+
+            committed = verifier.verify(
+                repo=ROOT,
+                candidate_rev=self.CANDIDATE,
+                base_rev=self.BASE,
+                trusted_ledger=authority,
+                workdir=outside / "committed",
+            )
+            ephemeral = verifier.verify_ephemeral(
+                repo=ROOT,
+                candidate_rev=self.CANDIDATE,
+                base_rev=self.BASE,
+                trusted_ledger=authority,
+                trusted_baseline=baseline,
+                output_dir=outside / "ephemeral",
+            )
+
+        committed_fatal = {
+            (finding["code"], finding["path"])
+            for finding in committed["findings"] if finding["fatal"]
+        }
+        ephemeral_fatal = {
+            (finding["code"], finding["path"])
+            for finding in ephemeral["findings"] if finding["fatal"]
+        }
+        self.assertEqual(committed_fatal, set(), committed["findings"])
+        self.assertEqual(ephemeral_fatal, committed_fatal, ephemeral["findings"])
 
 
 if __name__ == "__main__":

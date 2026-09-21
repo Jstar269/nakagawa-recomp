@@ -411,9 +411,24 @@ int main(void) {
 
         CHECK(save_rel(rel, sizeof(rel), "A/B", "C") == 0, "a separator must be refused");
         CHECK(save_rel(rel, sizeof(rel), "..", "X") == 0, "traversal must be refused");
-        CHECK(save_rel(rel, sizeof(rel), "ULUS00001", "") == 0, "an empty save must be refused");
+        CHECK(save_rel(rel, sizeof(rel), "ULUS00001", "") == 1, "an empty save must produce gameName directory");
+        CHECK(strcmp(rel, "PSP/SAVEDATA/ULUS00001") == 0, "save_rel produced '%s'", rel);
+        CHECK(save_rel(rel, sizeof(rel), "ULUS00001", NULL) == 1, "a NULL save must produce gameName directory");
+        CHECK(strcmp(rel, "PSP/SAVEDATA/ULUS00001") == 0, "save_rel produced '%s'", rel);
         CHECK(save_rel(rel, sizeof(rel), "", "DATA") == 0, "an empty game must be refused");
         CHECK(save_rel(rel, 8, "ULUS00001", "DATA") == 0, "a path that does not fit must be refused");
+
+        /* save_dir must also allow empty saveName and direct illegal names to INVALID */
+        char sdir[512];
+        save_dir(sdir, sizeof(sdir), "UCUS98701", "");
+        CHECK(strstr(sdir, "/INVALID") == NULL, "empty saveName must not route to INVALID in save_dir");
+        CHECK(strstr(sdir, "/PSP/SAVEDATA/UCUS98701") != NULL, "save_dir must produce valid directory path");
+
+        save_dir(sdir, sizeof(sdir), "UCUS98701", "../bad");
+        CHECK(strstr(sdir, "/INVALID") != NULL, "malicious saveName must route to INVALID in save_dir");
+
+        save_dir(sdir, sizeof(sdir), "", "DATA");
+        CHECK(strstr(sdir, "/INVALID") != NULL, "empty gameName must route to INVALID in save_dir");
     }
 
     printf(g_fail ? "sfo_selftest: %d FAILURE(S)\n" : "sfo_selftest: OK\n", g_fail);

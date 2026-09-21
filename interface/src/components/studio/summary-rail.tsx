@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Binary, CircleCheck, CircleX, RefreshCw, Wrench } from "lucide-react";
@@ -23,6 +24,7 @@ function isDoctorReportPayload(value: unknown): value is DoctorReport {
   const results = payload.results;
   if (
     payload.schema_version !== 1 ||
+    payload.tool !== "nk_doctor" &&
     payload.tool !== "hst_doctor" ||
     typeof payload.root !== "string" ||
     typeof payload.scope !== "string" ||
@@ -74,7 +76,13 @@ export function summarizeDoctorReport(report: DoctorReport | null, state: Doctor
     return { kind: "loading", label: "CHECKING…", detail: "Doctor check in progress" };
   }
   if (state !== "ready" || !report || !isDoctorReportPayload(report)) {
-    return { kind: "unavailable", label: "UNAVAILABLE", detail: "Doctor unavailable — retrying" };
+    return {
+      kind: "unavailable",
+      label: "UNAVAILABLE",
+      detail: report
+        ? "Doctor unreachable — retrying; last good report retained"
+        : "Doctor unavailable — retrying",
+    };
   }
   if (report.counts.FAIL > 0) {
     return {
@@ -97,6 +105,10 @@ export function summarizeDoctorReport(report: DoctorReport | null, state: Doctor
   };
 }
 
+export function shouldRefreshFromBackstop(readyState: number, openState: number): boolean {
+  return readyState !== openState;
+}
+
 type BootState = {
   ok?: boolean;
   status?: string;
@@ -110,7 +122,7 @@ type BinaryState = {
   exists?: boolean;
   sizeBytes?: number;
   mtime?: number;
-  hstExePath?: string;
+  exePath?: string;
 };
 
 export function SummaryRail() {
@@ -123,8 +135,11 @@ export function SummaryRail() {
 
   const refresh = useCallback(async () => {
     const requestId = ++refreshSequence.current;
-    setDoctor(null);
-    setDoctorState("loading");
+    // Polls must not clear the last good report: on a healthy workspace the
+    // badge would otherwise flash "UNAVAILABLE — retrying" while each check
+    // runs. Keep the current report (if any) visible and only show CHECKING
+    // while no valid report exists yet.
+    setDoctorState((state) => (state === "ready" ? "ready" : "loading"));
     const [bootResponse, binaryResponse, doctorResponse] = await Promise.all([
       fetch("/api/recompiler/boot", { cache: "no-store" }).catch(() => null),
       fetch("/api/recompiler/run", { cache: "no-store" }).catch(() => null),
@@ -138,6 +153,8 @@ export function SummaryRail() {
         setDoctor(data);
         setDoctorState("ready");
       } catch {
+        // A real failed attempt: surface unavailable even if a previous
+        // report exists (the report itself is retained for context).
         setDoctorState("unavailable");
       }
     } else {
@@ -149,8 +166,39 @@ export function SummaryRail() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 4000);
-    return () => window.clearInterval(timer);
+
+    // Issue O-08: the doctor dashboard refreshes on real lifecycle events from
+    // the manager SSE stream instead of polling doctor?scope=all every 4s.
+    // The manager emits "status" on every run start/spawn/stop/exit, which is
+    // exactly when build artifacts (and thus doctor results) can change. A
+    // slow 60s backstop interval bounds staleness if SSE is unavailable, and
+    // visibility changes still refresh immediately on tab return.
+    const source = new EventSource("/api/recompiler/manager");
+    const onStatus = () => {
+      void refresh();
+    };
+    source.addEventListener("status", onStatus);
+
+    const backstop = window.setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        if (shouldRefreshFromBackstop(source.readyState, EventSource.OPEN)) {
+          void refresh();
+        }
+      }
+    }, 60_000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      source.close();
+      window.clearInterval(backstop);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [refresh]);
 
   const milestones = ["image_loaded", "runtime_registered", "window_ready", "guest_start", "display_flip"];
@@ -253,7 +301,7 @@ export function SummaryRail() {
       </Panel>
 
       {/* Native Binary Status */}
-      <Panel title="Native binary" description="Actual build/hst/hst.exe" icon={<Binary className="size-4" />}>
+      <Panel title="Native binary" description="Actual build/<game>/<game>.exe" icon={<Binary className="size-4" />}>
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium">{binary.exists ? "Built" : "Missing"}</span>
           <span className="text-xs font-mono text-ball">
@@ -261,7 +309,7 @@ export function SummaryRail() {
           </span>
         </div>
         <p className="mt-2 text-[9px] font-mono text-muted-foreground break-all">
-          {binary.hstExePath ?? "Project unavailable"}
+          {binary.exePath ?? "Project unavailable"}
         </p>
         {binary.mtime ? (
           <p className="mt-1 text-[9px] text-muted-foreground">Built {new Date(binary.mtime).toLocaleString()}</p>

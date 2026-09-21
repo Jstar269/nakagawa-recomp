@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -103,7 +102,7 @@ def regenerate(gpu_dir: Path, manifest_path: Path, glslc: str) -> None:
     }
     for output, data in staged:
         output.write_bytes(data)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
 
 
 def load_manifest(path: Path) -> dict:

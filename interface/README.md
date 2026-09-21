@@ -4,10 +4,11 @@ This is an optional Next.js 16/TypeScript dashboard for inspecting and driving a
 
 ## Current scope
 
-The visible dashboard controls operate on the local workspace: builds and tests use
-`hst_manager.ps1`, runs use the required image/base/entry contract, debug views attach to
-the live `hst.exe`, and boot health is parsed from native `BOOT_EVENT` milestones. There is
-no simulated fallback and the dashboard does not manufacture a substitute game binary.
+The visible dashboard controls operate on the local workspace: builds and tests invoke
+the workspace manager (via `hst_manager.ps1` delegating to `nk_manager.ps1`), runs use the
+required image/base/entry contract, debug views attach to the live `hst.exe`, and boot health
+is parsed from native `BOOT_EVENT` milestones. There is no simulated fallback and the dashboard
+does not manufacture a substitute game binary.
 
 The source tree retains enhancement mock-ups for graphics, performance, controller,
 patch, and preset ideas. They are design references only: their configuration values are
@@ -27,7 +28,7 @@ simulation flag.
 
 ## Develop
 
-Use Node.js 24 LTS (24.18.1 or newer) and npm 11 (11.17.0 or newer):
+Use Node.js 24 LTS 24.21.0 (or a later 24.x patch) and npm 11 (11.17.0 or newer):
 
 ```powershell
 cd interface
@@ -39,7 +40,7 @@ npm run dev
 
 The app listens on `http://localhost:3000`.
 
-Profiles and debug profiles carry a `schemaVersion` column (added during dashboard-integrity work). After pulling changes that touched `prisma/schema.prisma`,
+Database schema synchronization uses `npm run db:push` exclusively as the sole supported path; Prisma migrations are not tracked or used. Profiles and debug profiles carry a `schemaVersion` column (added during dashboard-integrity work). After pulling changes that touched `prisma/schema.prisma`,
 re-run `npm run db:push` once so the local database gains the new column; rows are
 then validated on read and reported as `corrupt` / `unsupported-version` instead of
 being silently replaced with defaults.

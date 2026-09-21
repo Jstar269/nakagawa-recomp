@@ -77,9 +77,9 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(plan["commands"]["codegen"], [
             "python", "tools/codegen.py", "place_game_here/EBOOT.elf",
             "build/hst/hst_recomp.c", "--base=0x00000000", "--profile=hst",
-            "--extra-elf=place_game_here/EXTRACTED/decrypted/libfont.prx@0x32200000",
-            "--extra-elf=place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x32280000",
-            "--extra-elf=place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x322f8868",
+            "--extra-elf=place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00",
+            "--extra-elf=place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000",
+            "--extra-elf=place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00",
             "--funcs-per-chunk=2000",
         ])
         self.assertEqual(plan["commands"]["imports"], [
@@ -128,7 +128,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest = copy.deepcopy(self.synthetic)
         manifest["modules"] = [{
             "name": "required.prx",
-            "load_address": 1,
+            "load_address": 0x08C00000,
             "required": True,
             "role": "guest-prx",
         }]
@@ -140,7 +140,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest["modules"] = [
             {
                 "name": "kernel-capability",
-                "load_address": 1,
+                "load_address": 0x08C00000,
                 "required": True,
                 "role": "hle-capability",
             }
@@ -153,13 +153,13 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest["modules"] = [
             {
                 "name": "required.prx",
-                "load_address": 1,
+                "load_address": 0x08C00000,
                 "required": True,
                 "role": "guest-prx",
             },
             {
                 "name": "optional.prx",
-                "load_address": 2,
+                "load_address": 0x08C10000,
                 "required": False,
                 "role": "optional-guest-prx",
             },
@@ -184,7 +184,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest = copy.deepcopy(self.synthetic)
         manifest["modules"] = [{
             "name": "required.prx",
-            "load_address": 1,
+            "load_address": 0x08C00000,
             "required": True,
             "role": "guest-prx",
         }]
@@ -235,7 +235,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest = copy.deepcopy(self.synthetic)
         manifest["modules"] = [{
             "name": "required.prx",
-            "load_address": 1,
+            "load_address": 0x08C00000,
             "required": True,
             "role": "guest-prx",
         }]

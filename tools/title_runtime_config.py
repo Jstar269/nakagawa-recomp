@@ -30,7 +30,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 3
+GENERATED_SCHEMA_VERSION = 5
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -77,7 +77,12 @@ class TitleRuntimeConfigError(ValueError):
 def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
     """Return the normalized binding set for a manifest (or the generic empty set)."""
     if manifest is None:
-        return {"source_id": GENERIC_SOURCE_ID, "bindings": {}}
+        return {
+            "source_id": GENERIC_SOURCE_ID,
+            "codegen_profile": "none",
+            "bindings": {},
+            "guest_modules": [],
+        }
     normalized = title_manifest.validate_manifest(manifest)
     block = dict(normalized.get("runtime_bindings") or {})
     block.pop("schema_version", None)
@@ -88,7 +93,31 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
         raise TitleRuntimeConfigError(
             "runtime binding(s) have no runtime representation: " + ", ".join(unknown)
         )
-    return {"source_id": normalized["id"], "bindings": block}
+    # Second gate on the required-family contract. The validator already enforces
+    # it, so reaching this is either a hand-built manifest dict that bypassed
+    # validation or a future regression in it -- and this is the last point
+    # before a required family becomes a header full of zero macros.
+    required = normalized.get("required_runtime_bindings") or []
+    missing = [name for name in required if name not in block]
+    if missing:
+        raise TitleRuntimeConfigError(
+            "refusing to generate: title requires binding families it does not configure: "
+            + ", ".join(missing)
+        )
+    return {
+        "source_id": normalized["id"],
+        "codegen_profile": normalized.get("codegen_profile", "none"),
+        "bindings": block,
+        # Guest PRX modules are laid out at their manifest load_address by BOTH the
+        # recompiler (GAME_EXTRA_ELFS) and the runtime loader: this is the runtime half
+        # of that single source.
+        "guest_modules": [
+            {"name": m["name"], "load_address": m["load_address"],
+             "guest_path": m.get("guest_path", "")}
+            for m in normalized.get("modules", [])
+            if m["role"] in ("guest-prx", "optional-guest-prx")
+        ],
+    }
 
 
 def config_digest(config: dict[str, Any]) -> str:
@@ -100,7 +129,9 @@ def config_digest(config: dict[str, Any]) -> str:
     payload = {
         "generated_schema_version": GENERATED_SCHEMA_VERSION,
         "source_id": config["source_id"],
+        "codegen_profile": config.get("codegen_profile", "none"),
         "bindings": config["bindings"],
+        "guest_modules": config.get("guest_modules", []),
     }
     rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
@@ -143,6 +174,11 @@ def render_header(config: dict[str, Any]) -> str:
                    {COUNT_BITS[name] for name in bindings if name in COUNT_BITS})
     valid_text = " | ".join(valid) if valid else "0u"
     source_id = config["source_id"]
+    codegen_profile = config.get("codegen_profile", "none")
+    if codegen_profile not in {"none", "hst"}:
+        raise TitleRuntimeConfigError(
+            f"unsupported codegen profile: {codegen_profile!r}"
+        )
     if '"' in source_id or "\\" in source_id:
         raise TitleRuntimeConfigError("title id is not representable as a C string literal")
     lines = [
@@ -159,6 +195,7 @@ def render_header(config: dict[str, Any]) -> str:
         f'#define SR_TITLE_CONFIG_SOURCE_ID "{source_id}"',
         f'#define SR_TITLE_CONFIG_DIGEST "{config_digest(config)}"',
         f"#define SR_TITLE_CONFIG_VALID ({valid_text})",
+        f"#define SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE {1 if codegen_profile == 'hst' else 0}",
         "",
     ]
     for name in FIELD_BITS:
@@ -232,6 +269,17 @@ def render_header(config: dict[str, Any]) -> str:
         macro = "SR_TITLE_CONFIG_" + name.upper()
         value = bindings.get(name, 0)
         lines.append(f"#define {macro} {value}u")
+
+    modules: list[dict[str, Any]] = config.get('guest_modules', [])
+    lines += ['', f'#define SR_TITLE_CONFIG_GUEST_MODULE_COUNT {len(modules)}',
+              '#define SR_TITLE_CONFIG_GUEST_MODULE_LIST' + (CONT if modules else '')]
+    for index, module in enumerate(modules):
+        tail = CONT if index + 1 < len(modules) else ''
+        for field in ('name', 'guest_path'):
+            if '"' in module[field] or chr(92) in module[field]:
+                raise TitleRuntimeConfigError(f"guest module {field} cannot be embedded in C: {module[field]!r}")
+        lines.append(f'    SR_TITLE_CFG_GUEST_MODULE("{module["name"]}", "{module["guest_path"]}", '
+                     f"0x{module['load_address']:08x}u){tail}")
 
     lines += ["", "#endif /* SR_TITLE_CONFIG_GENERATED_H */", ""]
     return "\n".join(lines)

@@ -55,10 +55,11 @@ shown to be the *sole* killer of at least one mutant, so none is decorative.
    record carries `pc`, address, width and a real before/after pair.
 3. **Guest memory window** — the whole scratch + stack region compared byte for
    byte, so a write outside the log's view still fails.
-4. **Architectural state vector** — every architecturally visible 32-bit field
-   (`r0..r31`, `hi`, `lo`, `fcr31`, `fpcond`, `f0..f31`, `v0..v127`,
-   `vfpuCtrl0..15`, `status`, `next_pc`, `in_delay_slot`) as one ordered list, so
-   a report names the first differing field rather than "states differ".
+4. **State vector** — every compared 32-bit CpuState field (`r0..r31`, `hi`,
+   `lo`, `fcr31`, `fpcond`, `f0..f31`, `v0..v127`, `vfpuCtrl0..15`,
+   `cop0[0]..cop0[31]`, `next_pc`, `in_delay_slot`, `flow_kind`, and
+   `flow_target`) as one ordered list, so a report names the first differing
+   field rather than "states differ".
 
 `CpuState.pc` is deliberately **not** in the vector — see below.
 
@@ -247,7 +248,7 @@ one mutant restores the **generator** to its pre-fix computed-transfer emission 
 the exact production defect this fixture was built to find — and `jrslot`/`jrtail` must
 both diverge.
 
-Three interpreter guards are not killed by this gate, and each is layering rather than a
+Two interpreter guards are not killed by this gate, and each is layering rather than a
 hole:
 
 * deleting the `is_control_opcode()` guard inside `execute_noncontrol()` changes nothing

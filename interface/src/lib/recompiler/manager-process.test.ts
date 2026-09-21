@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // manager-process.test.ts — deterministic lifecycle tests for the
 // generation-bound manager process registry (issue #186).  No real process is
 // spawned: spawn/terminate/repo-root primitives are injected as fakes.  Run
@@ -37,9 +38,9 @@ class FakeChild extends EventEmitter {
 function makeDeps(overrides: Partial<Parameters<typeof createManagerProcess>[0]> = {}) {
   const children: FakeChild[] = [];
   const terminated: FakeChild[] = [];
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "hst-mgr-test-"));
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "nk-mgr-test-"));
   // The anchor set findRepoRoot needs.
-  writeFileSync(path.join(repoRoot, "hst_manager.ps1"), "# test\n");
+  writeFileSync(path.join(repoRoot, "nk_manager.ps1"), "# test\n");
   writeFileSync(path.join(repoRoot, "AGENTS.md"), "# test\n");
   writeFileSync(path.join(repoRoot, "Makefile"), "all:\n");
   // Directories the run may touch (fuzz mirror log, watcher script probe).
@@ -66,10 +67,6 @@ function makeDeps(overrides: Partial<Parameters<typeof createManagerProcess>[0]>
     ...overrides,
   };
   return { deps, children, terminated, repoRoot };
-}
-
-function emitStdout(child: FakeChild, text: string) {
-  child.stdout.emit("data", Buffer.from(text, "utf8"));
 }
 
 test("run A stopped, run B starts, then A emits close: B intact", async () => {
@@ -109,9 +106,13 @@ test("run A stopped, run B starts, then A emits close: B intact", async () => {
   assert.equal(mgr.state.child, runB, "B's child must survive A's stale events");
   assert.equal(mgr.state.phase, "running");
   assert.equal(mgr.state.runId, 2);
-  // The stale close/error must not emit terminal events to listeners (A's
-  // terminal event was emitted at stop time with runId=1).
-  assert.ok(!messages.some((m) => m.endsWith(":2")), `no terminal for B: ${messages}`);
+  // The stale close/error must not emit TERMINAL events for B (its close came
+  // from B's own lifecycle). Lifecycle-wide "status" broadcasts are exempt:
+  // they are deliberately generation-agnostic (O-08).
+  assert.ok(
+    !messages.some((m) => (m.startsWith("close:") || m.startsWith("error:")) && m.endsWith(":2")),
+    `no terminal for B: ${messages}`,
+  );
 
   runB.emit("close", 0);
   assert.equal(mgr.state.child, null);
@@ -185,6 +186,33 @@ test("watcher spawn failure reports against owning run without killing manager c
   rmSync(deps.findRepoRoot!(), { recursive: true, force: true });
 });
 
+test("status events broadcast every lifecycle transition (O-08)", async () => {
+  const { deps, children } = makeDeps();
+  const mgr = createManagerProcess(deps);
+
+  const statuses: { phase?: string; action?: string | null; runId?: number }[] = [];
+  mgr.state.listeners.add((m) => {
+    if (m.type === "status") statuses.push(m);
+  });
+
+  await mgr.startFuzzManagerProcess({ trials: 4, seed: "0x1", constraint: "none" });
+  const run = children[0];
+  run.emit("spawn");
+  mgr.stopActiveManagerProcess();
+
+  const phases = statuses.map((s) => s.phase);
+  assert.ok(phases.includes("starting"), `expected starting: ${phases}`);
+  assert.ok(phases.includes("running"), `expected running: ${phases}`);
+  assert.ok(phases.includes("stopping"), `expected stopping: ${phases}`);
+  assert.ok(phases.includes("exited"), `expected exited: ${phases}`);
+  // Status carries the action so subscribers know what changed.
+  assert.ok(statuses.every((s) => s.action === "Fuzz" || s.action === null), "status carries action");
+  // The final status reflects the tombstone even though the run is gone.
+  assert.equal(statuses[statuses.length - 1].phase, "exited");
+
+  rmSync(deps.findRepoRoot!(), { recursive: true, force: true });
+});
+
 test("truncateUtf8 cuts at a byte budget without lone surrogates", () => {
   // 4-byte emoji: 5 chars = 20 bytes. Cutting to 10 bytes must not split a
   // surrogate pair and must not exceed the byte budget.
@@ -227,7 +255,7 @@ test("bounded log history by bytes and lines with chunk truncation", () => {
 });
 
 test("FuzzLogWriter caps bytes and closes", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "hst-fuzz-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "nk-fuzz-"));
   const file = path.join(dir, "fuzz.log");
   const writer = new FuzzLogWriter(file, 1024);
   writer.append("a".repeat(500));
@@ -268,8 +296,8 @@ test("terminateProcessTree refuses stale PIDs without spawning taskkill", () => 
 });
 
 test("resolveCanonicalRoot requires the full anchor set", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "hst-root-"));
-  writeFileSync(path.join(root, "hst_manager.ps1"), "# x\n");
+  const root = mkdtempSync(path.join(tmpdir(), "nk-root-"));
+  writeFileSync(path.join(root, "nk_manager.ps1"), "# x\n");
   assert.equal(resolveCanonicalRoot(root), null, "single anchor is not a repo root");
   writeFileSync(path.join(root, "AGENTS.md"), "# x\n");
   assert.equal(resolveCanonicalRoot(root), null, "two anchors still insufficient");
@@ -279,7 +307,7 @@ test("resolveCanonicalRoot requires the full anchor set", () => {
 });
 
 test("tailFile reads only the tail of a large file", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "hst-tail-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "nk-tail-"));
   const file = path.join(dir, "big.log");
   const lineCount = 20_000;
   const lines: string[] = [];

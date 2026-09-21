@@ -211,6 +211,25 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
         )
         self.assertEqual(len(issues), 4)
 
+    def test_priority_experiment_requires_a_started_peer_and_high_thread(self) -> None:
+        probe = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c"
+        source = probe.read_text(encoding="utf-8")
+        start = source.index("static void dwp_run")
+        end = source.index("static void run_display_wait_priority", start)
+        body = source[start:end]
+        self.assertIn("int low_started = 0;", body)
+        self.assertRegex(
+            body,
+            r"const int low_start\s*=\s*sceKernelStartThread\(low, 0, NULL\)",
+        )
+        self.assertIn("if (!with_low || low_started)", body)
+        self.assertIn("const int high_start = sceKernelStartThread(high, 0, NULL);", body)
+        self.assertRegex(
+            body,
+            r"setup_ok\s*&&\s*high_started\s*&&\s*g_dwp\.iters\s*==\s*DWP_ITERS",
+        )
+        self.assertIn("if (!low_started)", body)
+
 
 class PspOracleRunnerTests(unittest.TestCase):
     def test_dmac_host0_capture_uses_the_runner_validation_path(self) -> None:
@@ -404,6 +423,67 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertEqual(
             set(dmac["outcome_contract"]),
             {"result", "skip", "hang", "reset", "inconclusive"},
+        )
+
+
+class PspMutexProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        self.imports = (self.root / "fixtures" / "psp_oracle" / "mutex_imports.S").read_text(
+            encoding="utf-8"
+        )
+
+    def test_mutex_cases_are_individually_buildable(self) -> None:
+        for case in (
+            "mutex-refer-unlocked",
+            "mutex-timeout-quanta",
+            "mutex-priority-inheritance",
+            "mutex-interrupt-context",
+        ):
+            self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
+
+    def test_mutex_imports_assembly_declares_all_plain_mutex_nids(self) -> None:
+        for symbol in (
+            "sceKernelCreateMutex",
+            "sceKernelDeleteMutex",
+            "sceKernelLockMutex",
+            "sceKernelLockMutexCB",
+            "sceKernelTryLockMutex",
+            "sceKernelUnlockMutex",
+            "sceKernelCancelMutex",
+            "sceKernelReferMutexStatus",
+        ):
+            self.assertIn(symbol, self.imports)
+
+    def test_probe_implements_all_four_unresolved_mutex_cases(self) -> None:
+        self.assertIn("run_mutex_refer_unlocked_case", self.probe)
+        self.assertIn("run_mutex_timeout_quanta_case", self.probe)
+        self.assertIn("run_mutex_priority_inheritance_case", self.probe)
+        self.assertIn("run_mutex_interrupt_context_case", self.probe)
+
+    def test_manifest_registers_psp_mutex_001(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        mutex = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-MUTEX-001")
+        self.assertEqual(mutex["group"], "mutex")
+        self.assertEqual(mutex["issues"], [2])
+        self.assertEqual(
+            mutex["case_ids"],
+            [
+                "mutex-refer-unlocked",
+                "mutex-timeout-quanta",
+                "mutex-priority-inheritance",
+                "mutex-interrupt-context",
+            ],
         )
 
 

@@ -9,7 +9,11 @@ They must not contain:
 - keys, decrypted output, local absolute paths, or private workspace bindings;
 - decompiler output, recovered source, oracle traces, savedata, screenshots, or route evidence.
 
-Private bindings belong in a separate Git-ignored workspace manifest. The
+Private bindings are explicit local inputs — command-line bindings
+(`--game-elf`/`--build-dir`/`--module-dir`/`--psp-header`), `TITLE_MANIFEST=`
+and `GAME_*` on a direct Make line, or `-TitleManifest` plus the
+`place_game_here/` layout for the manager — and are never written back into a
+manifest file. The
 checked-in synthetic manifests prove the schema and validator without claiming
 that the current runtime is general-purpose. HST title configuration remains
 local-only unless a later, separately reviewed publication decision changes the
@@ -51,6 +55,28 @@ builds one scheduler source against a generic configuration and against each of 
 two, so behavior bound to one fixture's addresses cannot pass as generic. Neither
 fixture reuses any address the runtime previously hardcoded.
 
+Every binding family inside that block is individually optional, and that is what
+keeps the schema generic: a title needing none of them is a valid title, and no
+family is globally mandatory. Optionality alone, though, cannot tell "this title
+does not use display bring-up" apart from "this title's display bring-up was
+lost" — the runtime reads both as the same disabled binding and silently falls
+back to generic PSP semantics. `required_runtime_bindings` is the optional
+root-level list where a title names the families it cannot function without:
+
+```json
+"required_runtime_bindings": ["display_bringup", "frame_ready_latch_addr"]
+```
+
+Declaring a family makes its loss a validation failure instead of a run-time
+behavior change. A declared family must be present and completely configured;
+the existing per-family rules continue to reject a half-configured family and an
+explicitly zero address, so all three shapes — whole family absent, family
+partially present, required address zero — are refused. Names are checked
+against the schema's own family list, so a typo cannot silently declare nothing.
+`tools/title_runtime_config.py` re-checks the same contract before it emits, so
+no build path can turn a required family into a header full of disabled macros.
+Titles that omit the key are unaffected.
+
 - `synthetic-title2.json` is a third source-owned fixture added for the
   generic-title planning proof: it uses a deliberately distinct synthetic
   address family (`0x0A4xxxxx`, never HST's `0x003xxxxx` or the other
@@ -60,15 +86,29 @@ fixture reuses any address the runtime previously hardcoded.
   adding a title-specific conditional, inheriting HST constants, or reading
   private inputs. Publication-safe and deterministic.
 
+- `display-smoke.json` is a fourth source-owned fixture, and the only one whose
+  runtime is *built* under the layout `src/core/nk_launch.c` resolves
+  (`build/<title_id>/<title_id>`), which is what makes it the one public title
+  the native player can launch. Its guest is emitted by
+  `fixtures/display_smoke/generate.py` as hand-assembled MIPS -- no PSPDEV
+  toolchain -- and it fills the PSP framebuffer and flips it through
+  `sceDisplaySetFrameBuf` once per frame, so it is also the only public fixture
+  that exercises the display/vblank/present path at all. Its address family
+  (`0x0881xxxx`) is distinct from the other synthetics and from HST.
+  Publication-safe and deterministic.
+
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
 span is manifest data, and it reaches `analyze`/`codegen` only through an explicit
-`--extra-span` argument or the `HST_EXTRA_SPANS` / `TITLE_EXTRA_SPANS` seam that the manager fills from
-the validated plan (both carry the identical rendering; `TITLE_EXTRA_SPANS` is
-the host-portable generic alias). See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
+`--extra-span` argument or the `TITLE_EXTRA_SPANS` seam that the manager fills from
+the validated plan (the host-portable generic contract). The HST manager path
+additionally synthesizes the legacy `HST_EXTRA_SPANS` alias for the same value;
+generic titles must use `TITLE_EXTRA_SPANS` only. See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
 `hst-ucus98701.json` is intentionally not checked in: it contains title-specific
-identity, module addresses, and private-route filesystem configuration. The
-opt-in `hst_manager.ps1 -TitleManifest` path may consume a local ignored manifest;
+identity, module addresses, and private-route filesystem configuration. It is
+publication-excluded via `assets/public_source_profile.json`, with an explicit
+`.gitignore` accident guard. The opt-in `nk_manager.ps1 -TitleManifest` path
+(or legacy `hst_manager.ps1` wrapper) may consume a local copy of that manifest;
 that does not make the runtime generic or prove portability/correctness for
 another title.

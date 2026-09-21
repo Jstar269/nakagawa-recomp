@@ -20,10 +20,21 @@ Start with a checked-in, versioned manifest under `assets/titles/`. It is the
 public source of title semantics: identity, disc/revision policy, executable
 base/entry, codegen profile, BSS metadata policy, required module names/load
 addresses, and public filesystem/profile requirements. Validate it before using
-it:
+it (this example is copy-pasteable from a public clone):
 
 ```powershell
 python tools/title_manifest.py assets/titles/synthetic.json
+python tools/title_codegen_plan.py assets/titles/synthetic.json --print-protected-digest
+```
+
+The retail HST manifest (`assets/titles/hst-ucus98701.json`) is intentionally
+not checked in and is publication-excluded (see
+[`assets/public_source_profile.json`](../assets/public_source_profile.json));
+a public clone has no copy. With a local copy plus private bindings, the same
+planner drives the HST lane — this second example is private-local-only, not
+runnable from a public clone:
+
+```powershell
 python tools/title_codegen_plan.py assets/titles/hst-ucus98701.json `
   --game-name=hst `
   --game-elf=place_game_here/EBOOT.elf `
@@ -37,24 +48,30 @@ The manifest is not a storage location for absolute paths, usernames, hashes,
 keys, retail bytes, routes, saves, or oracle evidence. Those are private
 workspace bindings supplied locally and remain outside Git.
 
-For the privately route-validated HST title, the opt-in manager path is:
+For the privately route-validated HST title, the opt-in manager path is
+(private-local-only: it requires a local, publication-excluded copy of the
+retail HST manifest, so it is not runnable from a public clone):
 
 ```powershell
-.\hst_manager.ps1 -Action BuildFull `
+.\nk_manager.ps1 -Action BuildFull -GameName hst `
   -TitleManifest assets/titles/hst-ucus98701.json
 ```
 
-The manager accepts only the checked-in HST manifest in this slice. Every
+The canonical manager accepts validated title manifests, including public synthetic fixtures. Every
 build-facing value comes from the validated plan — the manager keeps no second copy
 of the title contract — and it re-checks the manifest's protected digest immediately
 before running Make, so a manifest edited after planning fails closed rather than
 building half of each contract. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and
 `-FuncsPerChunk` remain operational overrides. An explicit override wins only where
-the contract permits it. Without `-TitleManifest`, the existing HST
-discovery/default path is preserved exactly.
+the contract permits it. The planner default is the single authority for the
+chunk-size default; the matching Make, manager, and codegen fallbacks must agree
+with it rather than define it. Without `-TitleManifest`, `nk_manager.ps1` selects
+`assets/titles/synthetic.json`. The deprecated `hst_manager.ps1` wrapper retains
+the legacy HST manifest and target defaults for compatibility.
 
-`assets/titles/pspdev-phase5.json` is a second, materially different source-owned
-fixture (`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
+`assets/titles/pspdev-phase5.json` is one of four materially different
+source-owned fixtures (with `synthetic.json`, `synthetic-title2.json`, and `display-smoke.json`)
+(`fixtures/pspdev_phase5`, a standard PSPDEV/PSPSDK `BUILD_PRX=1` module).
 It proves the planner is genuinely multi-title: a different load base, no guest
 modules, and a different feature surface flow through the same manifest → plan →
 codegen path.
@@ -116,12 +133,12 @@ not edit HST Makefile constants to configure a new title. Each module needs:
 mingw32-make GAME_NAME=mygame GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0x08804000 GAME_ENTRY=0x08804000
 ```
 
-The checked-in `hst_manager.ps1` is still an HST-specific orchestration layer,
-not a generic title runner. The manifest adapter is read-only and currently
-accepts only the checked-in HST manifest; it does not prove runtime portability
-or correctness for another title. Use Make directly with that title's validated
-manifest and explicit private bindings until a title-specific manager path has
-been deliberately added and verified.
+Use `nk_manager.ps1 -TitleManifest` with the title's validated manifest and
+explicit private bindings. The canonical manager supports generic title planning;
+this does not prove runtime portability or correctness for another title.
+`hst_manager.ps1` remains a deprecated HST compatibility wrapper. Direct Make
+without a manifest remains an explicit non-canonical escape hatch: it bypasses
+the planner and its protected digest, so it carries no title contract.
 
 The first build can be substantially slower than a runtime-only rebuild because codegen must translate the title's MIPS functions and compile the generated translation units.
 
@@ -202,8 +219,8 @@ inventoried as static source-shape (tier 4) and gated by `tools/test_compat_mani
 The inventory is *not* an executable proof of unsupported-interpreter fail-closed; that
 property is proven by the production interpreter floor (`src/rt/guest_interp.c`) through
 `fixtures/cosim/cosim_selftest.c` (fail-closed negative corpus, control sweep, jalr link
-shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retiring these entries
-is tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98). (This
+shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retirement work was
+tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98), now closed. (This
 previously cited #20, which is a merged pull request about `sceSasCore` routing and has
 no relation to this surface — so the surface had no tracker at all.)
 
@@ -247,6 +264,15 @@ appear in the `hle.c` census. Retired inventory lives in
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
+As of 2026-09-14, the retained diagnostic reads are inert unless the generated,
+validated title configuration declares `codegen_profile: "hst"` and the operator
+sets `SR_HLE_DIAGNOSTICS`. `sr_title_config_diagnostics_enabled()` is the only
+runtime gate for these groups; `nk_manager.ps1` clears the flag for every profile
+and sets it only for `Diagnostics`. Generic and public fixture profiles therefore
+remain inert even when a diagnostics environment leaks into their process. C-1 is
+retired as a wrong-title execution blocker; the 30-address/36-site inventory stays
+in place for auditability and future source-shape drift detection.
+
 By bucket (live `hle.c` only):
 
 - `GENERIC_PSP_SEMANTIC`: 0 (generic PSP constants are exempted only through
@@ -258,7 +284,7 @@ By bucket (live `hle.c` only):
   `0x041fffff`) is inventoried like any other absolute guest address.
 - `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (16 title-configured
   addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
-  build/profile couplings below (C-2, C-3) are this bucket.
+  build/profile couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
 - `DIAGNOSTIC_ONLY`: 30 addresses / 36 sites (read-only, env-gated).
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
@@ -286,7 +312,10 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. `disc.id` duplication (C-3) and the remaining diagnostic-only groups above.
+1. Diagnostic-only groups in `src/rt/hle.c` (C-1) — **RETIRED** as a wrong-title
+   execution blocker on 2026-09-14; the reads remain inventoried and require the
+   validated HST profile plus `SR_HLE_DIAGNOSTICS`. (The VBLANK interrupt stack
+   boundary C-6 is retired).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.
@@ -313,11 +342,15 @@ build asserts the expected 56,672-file census through the manifest.
 title configuration; see `tools/test_hle_title_isolation.py` and
 `tools/test_title_runtime_config.py`).
 
-### C-3 — Disc ID duplicated outside the manifest
+### C-3 — Disc ID duplicated outside the manifest — RETIRED
 
-`tools/hst_doctor_core.py` defines `EXPECTED_DISC_ID = "UCUS98701"` while the title
-manifest independently validates `disc.id`. Two sources of truth for the same fact.
-`PROFILE_OWNED_CONFIGURATION` — deferred (doctor must keep working with no manifest).
+`tools/hst_doctor_core.py` previously defined `EXPECTED_DISC_ID = "UCUS98701"` independently
+of `manifest.disc.id`. The second source of truth has been retired: `tools/hst_doctor.py`
+and `tools/hst_doctor_checks.py` now take disc identity from validated title configuration
+(`--title-manifest`, `TITLE_MANIFEST`, or local `assets/titles/hst-ucus98701.json`).
+When no manifest is supplied, the doctor operates in generic mode, performing ISO9660
+format validation without title-specific disc ID confirmation.
+`PROFILE_OWNED_CONFIGURATION` — retired for this surface.
 
 ### C-4 — One shared scratch stack for every nested guest call — RETIRED
 
@@ -350,17 +383,17 @@ model coherent and non-destructive; it does not claim the model is the console's
 `GENERIC_PSP_SEMANTIC` (open question on the hardware contract; the runtime-internal
 collision is fixed).
 
-### C-6 — The VBLANK interrupt stack is inside the thread-stack arena
+### C-6 — The VBLANK interrupt stack is inside the thread-stack arena — RETIRED
 
-`src/rt/sched.c`'s `deliver_vblank()` seeds `$sp = 0x09df0000` for the interrupt
-frame. That address is inside `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`, so the
-thread-stack allocator can and does hand it out — the same defect class C-4 just
-retired, on a different address. It is recorded as a separate boundary and left
-unchanged here on purpose: the interrupt frame is a nested call on the *interrupted*
-register file with different semantics from the GE/MPEG marshalling, and unifying the
-two would redefine behaviour this change deliberately preserves.
-`test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the present state
-so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — open.
+`src/rt/sched.c`'s `deliver_vblank()` previously seeded `$sp = 0x09df0000` for the interrupt
+frame, which fell inside the active thread-stack allocator range `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`.
+This has been retired: a dedicated 64 KiB region `[0x09ef0000, 0x09f00000)` (`SR_VBLANK_STACK_BASE` to
+`SR_VBLANK_STACK_TOP`) is now structurally reserved between the thread-stack arena ceiling and the
+nested host->guest frame region (`SR_NESTED_FRAME_BASE`). `SR_STACK_ARENA_CEIL` is derived from
+`SR_VBLANK_STACK_BASE`, ensuring that thread stacks allocated downwards cannot hand out, overlap, or
+collide with the VBLANK interrupt stack.
+`test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the structural and empirical
+disjointness so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — retired for this surface.
 
 ### C-5 — `f_00046d14` game-loop entry stub — retired 2026-08-29
 
@@ -383,6 +416,6 @@ expecting no HST divergence at this address.
 
 ## Reference
 
-- `AGENTS.md` — project conventions and file reference
-- `docs/ARCHITECTURE.md` — module-level breakdown of what lives where
-- `tools/README.md` — tool-specific documentation
+- [`AGENTS.md`](../AGENTS.md) — project conventions and file reference
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — module-level breakdown of what lives where
+- [`tools/README.md`](../tools/README.md) — tool-specific documentation
