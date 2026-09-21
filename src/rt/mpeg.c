@@ -596,25 +596,14 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (!ring) return (uint32_t)-1;
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
-    /* Audio access units are timed from the stream's own first audio PTS once the demuxer has
-     * seen one.  The PSMF header's first/last timestamps are not that origin: measured on this
-     * title's movies they are a small segment marker (hundreds of ticks), where the first
-     * picture's presentation time is 90000 -- so using them here reports an audio clock roughly
-     * a second away from the video access units, which carry the stream's own PES PTS.  Both
-     * streams have to be reported on the one time base the stream itself carries.
-     *
-     * Before any audio PES has been parsed sr_h264_first_audio_pts() returns -1 and this falls
-     * back to firstTimestamp.  That window is not reachable in practice: the demuxer parses the
-     * first audio PES within the first packets the game feeds, long before the first access unit
-     * is handed out. */
-    int64_t base = ctx->firstTimestamp;
-#ifdef SR_SDL3VK
-    if (ctx->h264Init && ctx->h264 >= 0) {
-        int64_t fa = sr_h264_first_audio_pts(ctx->h264);
-        if (fa >= 0) base = fa;
-    }
-#endif
-    int64_t pts = ctx->audioPts + base;
+    /* PSP/PPSSPP's libmpeg clock uses the PSMF presentation origin for ATRAC AUs.  In
+     * particular, PPSSPP's sceMpeg implementation documents audioFirstTimestamp as 90000,
+     * matching the PSMF first timestamp and the first AVC AU.  A raw private-stream PES PTS is
+     * not the player clock origin: using it here made the audio clock title-dependent and moved
+     * it ahead of the first video AU, which can make libpsmfplayer reject the video as too early.
+     * Keep the demuxer's firstAudioPts for diagnostics, but do not substitute it for the public
+     * sceMpeg AU time base. */
+    int64_t pts = ctx->audioPts + ctx->firstTimestamp;
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);

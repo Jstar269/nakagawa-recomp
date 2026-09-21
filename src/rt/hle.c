@@ -51,6 +51,8 @@
 #include "hle_power.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
 #include "prx_loader.h"  /* clean-room PRX image loader (G3) */
+#include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
+#include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2535,10 +2537,19 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
     }
     return s->r[6];
 }
-/* scePsmfPlayer structural model. The renderer/demux producer is intentionally separate: these
- * handlers validate the real guest control block, parse the PSMF header, and expose deterministic
- * lifecycle/queue state. Until a demux producer fills the queue matrix, data getters report the
- * documented NO_MORE_DATA result instead of pretending that a decoder succeeded. */
+/* scePsmfPlayer model: the guest drives the real player, the host services the media
+ * boundary underneath it.  The chain is
+ *
+ *   guest ISO path -> bounded PSMF producer (aud-delimited pictures, ATRAC frames)
+ *                  -> per-track compressed-AU queues
+ *                  -> H.264 backend / ATRAC3+ bridge
+ *                  -> guest display buffer / PCM block
+ *
+ * The getters return success only when a decoder actually produced output: a compressed
+ * access unit is never misreported as a decoded PSP frame or PCM block, a picture whose
+ * PES packet carried no timestamp is extrapolated from the codec frame step (the reference
+ * player does the same), and a missing decoder leaves the movie visibly short rather than
+ * fabricating frames. */
 #define PSMF_STATUS_NONE 0u
 #define PSMF_STATUS_INIT 1u
 #define PSMF_STATUS_STANDBY 2u
@@ -2551,17 +2562,59 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 #define PSMF_ERR_PARAM 0x80616008u
 #define PSMF_ERR_NO_DATA 0x8061600cu
 #define PSMF_ERR_ALREADY_INIT 0x80618005u
+/* Kernel-class errors the reference player returns from the video getter; they are not
+ * scePsmfPlayer codes (PPSSPP Core/HLE/ErrorCodes.h). */
+#define PSMF_ERR_INVALID_POINTER 0x80000103u
+#define PSMF_ERR_INVALID_VALUE 0x800001feu
+#define PSMF_ERR_PRIV_REQUIRED 0x80000023u
+/* Frame steps of the two PSP movie codecs (90000/29.97 and 90000*2048/44100). Used to
+ * extrapolate an access unit whose PES packet carried no presentation time. */
+#define PSMF_VIDEO_PTS_STEP 3003
+#define PSMF_AUDIO_PTS_STEP 4180
+#define PSMF_AUDIO_SAMPLES 2048
+#define PSMF_AUDIO_BYTES (PSMF_AUDIO_SAMPLES * 4)   /* stereo s16, the size GetAudioData fills */
+#define PSMF_AUDIO_MAX_CHANNELS 8
+#define PSMF_OUT_PTS_RING 8
 #define PSMF_Q_DEPTH 4
+/* scePsmfPlayerStart playMode values (PSMF_PLAYER_MODE_*). */
+#define PSMF_PLAY_MODE_PAUSE 3u
+/* Pictures the reference player always reports as "not yet" before the first frame.  Guest
+ * middleware is written against this: several titles depend on the first calls failing. */
+#define PSMF_WARMUP_FRAMES 3
 enum { PSMF_TRACK_VIDEO = 0, PSMF_TRACK_AUDIO = 1, PSMF_TRACKS = 2 };
 enum { PSMF_Q_INPUT = 0, PSMF_Q_AU = 1, PSMF_Q_DECODED = 2, PSMF_Q_STAGES = 3 };
-typedef struct { uint8_t state, flags; uint16_t reserved; uint32_t guestAddr, bytes; int64_t pts, dts; } SrPsmfQueueSlot;
+typedef struct { uint8_t state, flags; uint16_t reserved; uint32_t guestAddr, bytes; int64_t pts, dts; void *hostData; } SrPsmfQueueSlot;
 typedef struct { uint32_t head, tail, count; SrPsmfQueueSlot slot[PSMF_Q_DEPTH]; } SrPsmfQueue;
 typedef struct {
     int used; uint32_t guest, buffer, bufferSize, priority, tempBuf, tempSize;
     uint32_t fileLba, fileSize, streamOffset, streamSize, readOffset;
     uint32_t status, playerVersion, videoStreams, audioStreams, videoWidth, videoHeight;
+    /* Per-entry header fields, exactly as the PSMF stream table declares them: a video entry
+     * carries width/height in 16-pixel units at bytes 12/13, an audio entry the ATRAC3+
+     * channel count at byte 14 (what scePsmfGetAudioInfo reports as `channels`).  Start()
+     * copies the selected stream's values out; nothing here is inferred at parse time. */
+    uint8_t videoStreamDim[128][2], audioStreamChannels[128];
+    uint32_t audioChannels, audioFrequency;
     uint32_t videoCodec, videoStreamNum, audioCodec, audioStreamNum, playMode, playSpeed;
-    uint32_t pixelMode, loopStatus, warmup, breakRequested; int64_t currentPts, durationPts;
+    uint32_t pixelMode, loopStatus, warmup, breakRequested; int64_t currentPts, durationPts, presentationBase;
+    SrPsmfProducer *producer;
+    struct { uint32_t lba, size; } source;
+    /* Decoder-owned output stage.  Nothing here fabricates a frame or a PCM block: video
+     * comes from the H.264 backend writing the guest display buffer, audio from the
+     * project's ATRAC3+ bridge decoding one compressed frame per guest block. */
+    int h264;                                  /* sr_h264 instance, -1 when unavailable */
+    int h264Unavailable;                       /* decoder creation already failed once */
+    int64_t videoClock; int videoClockValid;   /* running presentation time per picture */
+    int64_t auPts[PSMF_OUT_PTS_RING];          /* one entry per submitted picture */
+    int auPtsHead, auPtsCount; uint64_t auPtsLost;
+    int64_t displayPts;                        /* last displaypts handed to the guest */
+    Atrac3pBridge *atrac; int atracChannels, atracAlign;
+    int16_t *audioPcm; int audioPcmSampleCount, audioPcmValid;
+    int64_t audioPcmPts; int audioPcmPtsValid;
+    int64_t audioClock; int audioClockValid;
+    uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
+    uint32_t audioUpmixBlocks, audioFormatRejects;
+    int videoDrained;
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
@@ -2580,37 +2633,335 @@ static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
     if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; return freeSlot; }
     return NULL;
 }
-static void psmf_flush(SrPsmfPlayer *p) { if (p) memset(p->q, 0, sizeof(p->q)); }
+static void psmf_flush(SrPsmfPlayer *p) {
+    if (!p) return;
+    for (unsigned t = 0; t < PSMF_TRACKS; t++) for (unsigned stage = 0; stage < PSMF_Q_STAGES; stage++) {
+        SrPsmfQueue *q = &p->q[t][stage];
+        for (unsigned i = 0; i < PSMF_Q_DEPTH; i++) { free(q->slot[i].hostData); q->slot[i].hostData = NULL; }
+        memset(q, 0, sizeof(*q));
+    }
+}
+static int psmf_iso_read(void *opaque, uint64_t offset, void *dst, uint32_t capacity, uint32_t *got) {
+    SrPsmfPlayer *p = (SrPsmfPlayer *)opaque;
+    if (!p || !dst || !got || offset >= p->source.size || offset > UINT32_MAX) { if (got) *got = 0; return SR_PSMF_SOURCE_EOF; }
+    uint32_t remain = p->source.size - (uint32_t)offset;
+    uint32_t want = capacity < remain ? capacity : remain;
+    int n = iso_read(p->source.lba, (uint32_t)offset, dst, want);
+    if (n < 0) { *got = 0; return SR_PSMF_SOURCE_ERROR; }
+    *got = (uint32_t)n;
+    return n ? SR_PSMF_SOURCE_DATA : SR_PSMF_SOURCE_EOF;
+}
+/* PSMF presentation times are six-byte big-endian values (the reference reader loads
+ * buf[0]..buf[5] the same way).  The five-byte form silently reports 351 instead of 90000
+ * for this title's movies, which then skews every AU timestamp the producer normalizes. */
+static int64_t psmf_be_timestamp(const uint8_t *p) {
+    return ((int64_t)p[0] << 36) | ((int64_t)p[1] << 32) | ((int64_t)p[2] << 24) |
+           ((int64_t)p[3] << 16) | ((int64_t)p[4] << 8) | (int64_t)p[5];
+}
+static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
+
+/* Move access units from the producer into the player's per-track queues.  The producer's
+ * own bounded queue is the only place work is throttled: an AU is never dropped here, a full
+ * player queue simply leaves the next access unit upstream until the decoder drains it. */
+static void psmf_produce(SrPsmfPlayer *p) {
+    if (!p || !p->producer) return;
+    sr_psmf_producer_pump(p->producer, 16);
+    for (unsigned track = 0; track < PSMF_TRACKS; track++) {
+        SrPsmfQueue *q = &p->q[track][PSMF_Q_AU];
+        while (q->count < PSMF_Q_DEPTH) {
+            SrPsmfAu au;
+            if (!sr_psmf_producer_pop(p->producer, (SrPsmfAuKind)track, &au)) break;
+            SrPsmfQueueSlot *slot = &q->slot[q->tail];
+            slot->state = 1;
+            slot->flags = (uint8_t)(au.has_pts ? 1u : 0u);   /* presentation time known? */
+            slot->bytes = au.size;
+            slot->pts = au.pts;
+            slot->dts = au.dts;
+            slot->hostData = au.data; au.data = NULL;
+            q->tail = (q->tail + 1u) % PSMF_Q_DEPTH; q->count++;
+            sr_psmf_au_release(&au);
+        }
+    }
+    if (psmf_log_on()) {
+        extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
+        SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+        static int n = 0;
+        if (n++ < 8 || (n & 0xff) == 0)
+            /* vpts/apts are the two presentation clocks the guest is handed (video: one entry
+             * per submitted picture, audio: one per decoded block).  Both are 90 kHz, so the
+             * difference between their advances over a window is exactly the A/V drift the
+             * player sees -- publishing them is what makes synchronization measurable from a
+             * run instead of guessed from it.  vpts is the last displaypts delivered. */
+            fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
+                    " video_aus=%llu audio_aus=%llu no_pts=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
+                    " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
+                    (unsigned)sr_audio_vbl(),
+                    (unsigned long long)st.bytes_read, (unsigned long long)st.packs,
+                    (unsigned long long)st.pes_packets, (unsigned long long)st.video_pes,
+                    (unsigned long long)st.audio_pes, (unsigned long long)st.video_aus,
+                    (unsigned long long)st.audio_aus, (unsigned long long)st.aus_without_pts,
+                    (unsigned long long)st.audio_resync_bytes,
+                    p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
+                    p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
+                    p->videoErrors, p->audioErrors,
+                    (long long)p->videoClock, (long long)p->audioClock,
+                    (long long)p->displayPts, p->videoClockValid, p->videoDrained);
+    }
+}
+
+/* ---- decoder integration ------------------------------------------------------------ */
+
+/* Release every decoder-owned object and reset the presentation clocks.  Called on start,
+ * stop, loop restart, and teardown so no decoded output survives a stream discontinuity. */
+static void psmf_media_reset(SrPsmfPlayer *p) {
+    if (!p) return;
+    if (p->h264 >= 0) { sr_h264_destroy(p->h264); p->h264 = -1; }
+    p->h264Unavailable = 0;
+    atrac3p_bridge_destroy(p->atrac);
+    p->atrac = NULL;
+    p->atracChannels = p->atracAlign = 0;
+    free(p->audioPcm);
+    p->audioPcm = NULL;
+    p->audioPcmSampleCount = p->audioPcmValid = 0;
+    p->audioPcmPts = 0; p->audioPcmPtsValid = 0;
+    p->videoClock = p->audioClock = 0;
+    p->videoClockValid = p->audioClockValid = 0;
+    p->auPtsHead = p->auPtsCount = 0; p->auPtsLost = 0;
+    p->displayPts = 0; p->videoDrained = 0;
+    p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
+    p->audioUpmixBlocks = p->audioFormatRejects = 0;
+}
+
+/* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
+ * a packet that did not advances it by exactly one frame, and until the first PTS arrives the
+ * picture's time stays unknown (-1) rather than invented. */
+static void psmf_video_clock_push(SrPsmfPlayer *p, int has_pts, int64_t pts) {
+    if (has_pts) { p->videoClock = pts; p->videoClockValid = 1; }
+    else if (p->videoClockValid) p->videoClock += PSMF_VIDEO_PTS_STEP;
+    int64_t value = p->videoClockValid ? p->videoClock : -1;
+    if (p->auPtsCount < PSMF_OUT_PTS_RING) {
+        p->auPts[(p->auPtsHead + p->auPtsCount) % PSMF_OUT_PTS_RING] = value;
+        p->auPtsCount++;
+    } else {
+        p->auPts[p->auPtsHead] = value;
+        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_RING;
+        p->auPtsLost++;
+    }
+}
+
+/* Feed every queued compressed video access unit into the H.264 backend. */
+static void psmf_video_pump(SrPsmfPlayer *p) {
+    if (!p) return;
+    SrPsmfQueue *q = &p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU];
+    while (q->count) {
+        SrPsmfQueueSlot *slot = &q->slot[q->head];
+        if (p->h264 < 0 && !p->h264Unavailable) {
+            p->h264 = sr_h264_create();
+            if (p->h264 < 0) {
+                p->h264Unavailable = 1;
+                if (psmf_log_on()) fprintf(stderr, "PSMF video: no H.264 backend on this build; movie advances without pictures\n");
+            }
+        }
+        if (p->h264 >= 0) {
+            if (slot->hostData && slot->bytes)
+                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes);
+            psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+        }
+        free(slot->hostData);
+        slot->hostData = NULL;
+        memset(slot, 0, sizeof(*slot));
+        q->head = (q->head + 1u) % PSMF_Q_DEPTH; q->count--;
+    }
+}
+
+/* One decoded picture straight into the guest display buffer.  1 = written, 0 = nothing
+ * ready yet, -1 = decoder failure. */
+static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
+                           int pixelMode, int64_t *pts_out) {
+    if (!p || p->h264 < 0) return 0;
+    int eos = p->producer && sr_psmf_producer_eof(p->producer);
+    int r = sr_h264_frame(p->h264, eos, displaybuf, bufw, pixelMode);
+    if (r < 0) { p->videoErrors++; return -1; }
+    if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    int64_t value = -1;
+    if (p->auPtsCount) {
+        value = p->auPts[p->auPtsHead];
+        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_RING;
+        p->auPtsCount--;
+    }
+    if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
+    p->displayPts = value;
+    *pts_out = value;
+    p->videoFramesOut++;
+    return 1;
+}
+
+/* Decode queued ATRAC access units until one guest block is staged.  Every frame comes from
+ * a real decoder success; a malformed frame, a wrong declared channel count, or a decoder
+ * error leaves the block unstaged (the getter then reports no data, never silence). */
+static int psmf_audio_fill(SrPsmfPlayer *p) {
+    if (!p) return 0;
+    if (p->audioPcmValid) return 1;
+    SrPsmfQueue *q = &p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU];
+    while (q->count && !p->audioPcmValid) {
+        SrPsmfQueueSlot *slot = &q->slot[q->head];
+        const uint8_t *frame = (const uint8_t *)slot->hostData;
+        if (frame && slot->bytes > 8u && frame[0] == 0x0fu && frame[1] == 0xd0u) {
+            uint32_t frame_size = (uint32_t)(((frame[2] & 3u) << 8) |
+                                             ((uint32_t)frame[3] * 8u)) + 0x10u;
+            if (frame_size == slot->bytes) {
+                uint32_t data = frame_size - 8u;
+                int channels = (int)p->audioChannels;
+                if (channels < 1 || channels > PSMF_AUDIO_MAX_CHANNELS) {
+                    p->audioFormatRejects++;
+                } else {
+                    if (!p->atrac || p->atracAlign != (int)data || p->atracChannels != channels) {
+                        atrac3p_bridge_destroy(p->atrac);
+                        p->atrac = NULL;
+                        if (atrac3p_bridge_create(channels, (int)data, &p->atrac) == 0) {
+                            p->atracChannels = channels; p->atracAlign = (int)data;
+                        } else {
+                            p->atrac = NULL;
+                        }
+                    }
+                    if (p->atrac && !p->audioPcm)
+                        p->audioPcm = (int16_t *)malloc((size_t)PSMF_AUDIO_MAX_CHANNELS *
+                                                        PSMF_AUDIO_SAMPLES * sizeof(int16_t));
+                    if (p->atrac && p->audioPcm) {
+                        int samples = 0;
+                        int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
+                                                       p->audioPcm, &samples);
+                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
+                            if (channels == 2) {
+                                p->audioPcmSampleCount = samples;
+                            } else if (channels == 1) {
+                                /* The PSP block is stereo; a mono stream is duplicated into both
+                                 * channels (what the reference player's resampler does).  The
+                                 * samples are still real decoded output, not filler. */
+                                for (int i = samples - 1; i >= 0; i--) {
+                                    p->audioPcm[i * 2] = p->audioPcm[i];
+                                    p->audioPcm[i * 2 + 1] = p->audioPcm[i];
+                                }
+                                p->audioPcmSampleCount = samples;
+                                p->audioUpmixBlocks++;
+                            } else {
+                                p->audioFormatRejects++;
+                                p->audioPcmSampleCount = 0;
+                            }
+                            if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
+                                if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
+                                else if (p->audioClockValid) p->audioClock += PSMF_AUDIO_PTS_STEP;
+                                p->audioPcmPtsValid = p->audioClockValid;
+                                p->audioPcmPts = p->audioClock;
+                                p->audioPcmValid = 1;
+                            }
+                        } else {
+                            p->audioErrors++;
+                        }
+                    }
+                }
+            } else {
+                p->audioFormatRejects++;      /* header size disagrees with the access unit */
+            }
+        } else {
+            p->audioFormatRejects++;
+        }
+        free(slot->hostData);
+        slot->hostData = NULL;
+        memset(slot, 0, sizeof(*slot));
+        q->head = (q->head + 1u) % PSMF_Q_DEPTH; q->count--;
+    }
+    return p->audioPcmValid;
+}
+
+/* The stream has given everything it has and nothing decoded is left pending. */
+static int psmf_reached_end(SrPsmfPlayer *p) {
+    if (!p || !p->producer || !sr_psmf_producer_eof(p->producer)) return 0;
+    if (p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count || p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count) return 0;
+    if (p->audioPcmValid) return 0;
+    /* Without a video backend the picture can never drain, so end is reported as soon as the
+     * stream is consumed -- the same policy the sceMpeg path uses with a blank video output. */
+    if (p->h264 >= 0 && !p->videoDrained) return 0;
+    return 1;
+}
 static uint32_t psmf_be16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1]; }
 static uint32_t psmf_be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+/* Copy the selected streams' declared geometry out of the header table.  The reference
+ * player resolves width/height/channels from the *chosen* stream entry, not from the first
+ * entry in the table, so a movie whose first video stream is not the one Start() asks for
+ * still reports the right size. */
+static void psmf_select_streams(SrPsmfPlayer *p, uint32_t videoNum, uint32_t audioNum) {
+    if (!p) return;
+    if (videoNum < p->videoStreams && videoNum < 128u) {
+        p->videoWidth = (uint32_t)p->videoStreamDim[videoNum][0] * 16u;
+        p->videoHeight = (uint32_t)p->videoStreamDim[videoNum][1] * 16u;
+    }
+    if (audioNum < p->audioStreams && audioNum < 128u) {
+        p->audioChannels = p->audioStreamChannels[audioNum];
+    } else {
+        p->audioChannels = 0;
+    }
+}
 static int psmf_parse_header(SrPsmfPlayer *p, const uint8_t *h, uint32_t n) {
     if (!p || !h || n < 0x82 || psmf_be32(h) != 0x50534d46u) return 0;
     uint32_t streams = psmf_be16(h + 0x80); if (streams > 128 || 0x82u + streams * 16u > n) return 0;
-    p->streamOffset=psmf_be32(h+8); p->streamSize=psmf_be32(h+12); p->videoWidth=h[0x8e]*16u; p->videoHeight=h[0x8f]*16u;
+    p->streamOffset=psmf_be32(h+8); p->streamSize=psmf_be32(h+12);
     p->videoStreams=p->audioStreams=0; p->playerVersion=0;
-    for (uint32_t i=0;i<streams;i++) { const uint8_t *s=h+0x82u+i*16u; if ((s[0]&0xe0u)==0xe0u) { p->videoStreams++; if(!psmf_be32(s+4)||!psmf_be32(s+8))p->playerVersion=1; } else if ((s[0]&0xf0u)==0xb0u || (s[0]&0xf0u)==0xf0u) p->audioStreams++; }
+    memset(p->videoStreamDim,0,sizeof(p->videoStreamDim)); memset(p->audioStreamChannels,0,sizeof(p->audioStreamChannels));
+    for (uint32_t i=0;i<streams;i++) { const uint8_t *e=h+0x82u+i*16u;
+        if ((e[0]&0xe0u)==0xe0u) {
+            if (p->videoStreams<128u) { p->videoStreamDim[p->videoStreams][0]=e[12]; p->videoStreamDim[p->videoStreams][1]=e[13]; }
+            p->videoStreams++;
+            if(!psmf_be32(e+4)||!psmf_be32(e+8))p->playerVersion=1;
+        } else if ((e[0]&0xf0u)==0xb0u || (e[0]&0xf0u)==0xf0u) {
+            if (p->audioStreams<128u) p->audioStreamChannels[p->audioStreams]=e[14];
+            p->audioStreams++;
+        } }
     if (!p->videoStreams) return 0;
+    psmf_select_streams(p, 0, 0);
     p->durationPts = psmf_be32(h + 0x5a);
+    p->presentationBase = psmf_be_timestamp(h + 0x54);
     p->currentPts = 0;
     return 1;
 }
 static uint32_t h_PsmfCreate(CpuState *s) {
     SrPsmfPlayer *p=psmf_find(A0,1); if(!p||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
-    p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
+    p->h264=-1;p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
 }
-static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;memset(p,0,sizeof(*p));MEM_W32(A0,0);sched_delay_current(20000);return 0;}
+static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);memset(p,0,sizeof(*p));p->h264=-1;MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
-static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);sched_delay_current(3100);return 0;}
+static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
-static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)stack_arg(s,0);if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams&&as>=p->audioStreams))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_flush(p);p->status=PSMF_STATUS_PLAYING;return 0;}
-static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);sched_delay_current(3000);return 0;}
+static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)stack_arg(s,0);if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams&&as>=p->audioStreams))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);sched_delay_current(3000);return 0;}
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
-static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);return 0;}
+static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
 static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return p?p->status:PSMF_ERR_STATUS;}
-static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(p->status==PSMF_STATUS_FINISHED&&p->loopStatus){p->status=PSMF_STATUS_PLAYING;p->currentPts=0;psmf_flush(p);}return 0;}
-static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
-static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;return PSMF_ERR_NO_DATA;}
+static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;}}return 0;}
+/* scePsmfPlayerGetVideoData(player, ScePsmfPlayerVideoData *d): d->frameWidth is the
+ * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
+ * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
+ * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
+ * public PSP player contract. */
+static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
+/* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
+ * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
+ * for a real decode; a frame that cannot be decoded yields NO_MORE_DATA, never silence. */
+static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_writable(A1,PSMF_AUDIO_BYTES))return PSMF_ERR_INVALID_POINTER;/* Audio is never handed out ahead of the first pictures the player calls
+     * "still warming up", and a paused player produces nothing.  A track that has genuinely run
+     * dry reports no-more-data; the reference player's trailing zero fill sits behind an
+     * unassigned duration field and is not observable behaviour, so no silence is invented. */
+    if(p->warmup<PSMF_WARMUP_FRAMES||p->playMode==PSMF_PLAY_MODE_PAUSE)return PSMF_ERR_NO_DATA;
+    psmf_produce(p);psmf_video_pump(p);
+    if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
+    const uint8_t*src=(const uint8_t*)p->audioPcm;
+    for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
+    sched_delay_current(30000);
+    return 0;}
 static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
 
 static uint32_t h_IoDevctl(CpuState *s) {
@@ -13811,8 +14162,8 @@ void sr_hle_init(void) {
     sr_hle_register(0xceb870b1, "sceMpegFreeAvcEsBuf", h_MpegFreeAvcEsBuf);
     sr_hle_register(0x167afd9e, "sceMpegInitAu", h_MpegInitAu);
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
-    /* scePsmfPlayer: lifecycle and validation are implemented here; demux producers can later
-     * advance the queue matrix without changing the ABI or the NID registration surface. */
+    /* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
+     * implemented here; decoder output remains a separate fail-closed stage. */
     sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
     sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
     sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
