@@ -10,11 +10,27 @@ the textual encodings the tree has ever used -- contiguous hex, and C/Python byt
 arrays with assorted spacing, case, and zero-padding. `git log -S <hex>` alone is
 NOT sufficient, because it never matches the `{0x12,0x46,...}` byte-array form.
 
-Exit 0  -> no constant found in any reachable commit (scrub verified / never present).
-Exit 3  -> at least one constant is still reachable (scrub incomplete / not yet run).
-Exit 2  -> could not run (missing key file, not a git repo, etc.).
+The verifier fails closed (#377): a history search that did not *complete* is never
+reported as clean. Repository preconditions (inside a Git work tree or bare
+repository, not shallow, refs with reachable history) are validated once up front,
+and every `git log` pickaxe invocation must exit 0 to count as a completed search.
+An empty/no-ref repository is unverifiable (exit 2), not clean.
 
-Run it BEFORE a scrub to confirm the exposure, and AFTER to confirm it is gone.
+Exit 0  -> every configured constant was searched in every encoding, every search
+           completed successfully, and nothing matched (scrub verified / never present).
+Exit 3  -> at least one constant is still reachable (scrub incomplete / not yet run).
+Exit 2  -> could not verify (missing/unusable key file, failed repository
+           preconditions, or any failed `git` invocation). When searches both failed
+           and found material, exit 2 still wins: an incomplete run is not a clean
+           verdict, and the reachable names are printed alongside the diagnostics.
+
+Scope: the Git repository containing the current working directory; preconditions
+and searches always target that same repository. Run it BEFORE a scrub to confirm
+the exposure, and AFTER to confirm it is gone.
+
+Diagnostics never contain constant values or search needles: `git` stderr is
+redacted against every configured encoding before display.
+
 Usage:
   python tools/verify_key_scrub.py            # uses keys/pgd_keys.txt or $SR_PGD_KEYS
   python tools/verify_key_scrub.py --keys PATH
@@ -23,9 +39,32 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
+from enum import Enum
+
+GIT_TIMEOUT_SECONDS = 300
+_MAX_STDERR_CHARS = 2000
+
+
+class Verdict(Enum):
+    """Outcome of one encoding search. ERROR is never conflated with NOT_FOUND."""
+
+    FOUND = "FOUND"            # a completed search matched this encoding
+    NOT_FOUND = "NOT_FOUND"    # a completed search did not match
+    ERROR = "ERROR"            # the search did not complete (git failed/missing/timed out)
+
+
+@dataclass(frozen=True)
+class SearchError:
+    """Why one history search could not run. `detail` is redacted and needle-free."""
+
+    operation: str  # command description; never contains the needle
+    exit_code: int | None
+    detail: str
 
 
 def key_values(path: str) -> dict[str, bytes]:
@@ -68,13 +107,90 @@ def encodings(raw: bytes) -> list[str]:
     return sorted(forms)
 
 
-def search_history(needle: str) -> bool:
-    """True if `needle` appears in the content of any reachable commit (pickaxe)."""
-    result = subprocess.run(
-        ["git", "log", "--all", "-S", needle, "--oneline", "--source"],
-        capture_output=True, text=True, check=False,
-    )
-    return result.returncode == 0 and bool(result.stdout.strip())
+def _redact(text: str, redact_needles: Sequence[str]) -> str:
+    """Remove every configured encoding (and so every key value) from `text`."""
+    for needle in redact_needles:
+        if needle:
+            text = text.replace(needle, "[redacted]")
+    return text
+
+
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def _git(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only probe `git` command; None when git is missing or fails."""
+    try:
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def check_repository() -> str | None:
+    """Validate the Git preconditions for searching this repository's history.
+
+    Scope is the repository containing the current working directory. Returns
+    None when a `git log --all` search can meaningfully cover the reachable
+    history, or a diagnostic (never containing key material) naming the failed
+    precondition. Every failure maps to exit 2 so an unrunnable search can
+    never be read as "clean".
+    """
+    inside = _git(["rev-parse", "--is-inside-work-tree"])
+    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+        bare = _git(["rev-parse", "--is-bare-repository"])
+        if bare is None or bare.returncode != 0 or bare.stdout.strip() != "true":
+            return "not inside a Git work tree or bare repository; run from the checkout (or mirror clone) to verify"
+    git_dir = _git(["rev-parse", "--git-dir"])
+    if git_dir is None or git_dir.returncode != 0:
+        return "git rev-parse --git-dir failed; there is no usable Git repository here"
+    shallow = _git(["rev-parse", "--is-shallow-repository"])
+    if shallow is None or shallow.returncode != 0:
+        return "cannot determine whether this clone is shallow (git rev-parse --is-shallow-repository failed)"
+    if shallow.stdout.strip() == "true":
+        return "shallow clone: reachable history is truncated here, so no clean verdict would be trustworthy"
+    refs = _git(["for-each-ref", "--format=%(refname)"])
+    if refs is None or refs.returncode != 0:
+        return "git for-each-ref failed; cannot enumerate refs to search"
+    if not refs.stdout.strip():
+        return "repository has no refs; there is no reachable history to verify (empty repository?)"
+    return None
+
+
+def search_history(needle: str, redact_needles: Sequence[str]) -> tuple[Verdict, SearchError | None]:
+    """Pickaxe-search every reachable commit for one textual encoding.
+
+    Returns (FOUND, None) or (NOT_FOUND, None) only when `git log` ran and
+    exited 0. Any nonzero exit, timeout, or missing `git` returns
+    (ERROR, SearchError); the caller must treat ERROR as a hard verification
+    failure, never as "clean".
+    """
+    operation = "git log --all -S <needle redacted> --oneline --source"
+    try:
+        result = subprocess.run(
+            ["git", "log", "--all", "-S", needle, "--oneline", "--source"],
+            capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return Verdict.ERROR, SearchError(operation, None, f"git command timed out after {GIT_TIMEOUT_SECONDS}s")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # Any raise out of subprocess.run (missing git, spawn failure, ...) means
+        # the search did not complete; it must never surface as "clean" (#377).
+        return Verdict.ERROR, SearchError(operation, None, f"git could not be executed: {exc}")
+    if result.returncode != 0:
+        detail = _redact(_as_text(result.stderr).strip(), redact_needles)
+        if len(detail) > _MAX_STDERR_CHARS:
+            detail = detail[:_MAX_STDERR_CHARS] + "...(truncated)"
+        return Verdict.ERROR, SearchError(operation, result.returncode, detail or "(git produced no stderr)")
+    if result.stdout.strip():
+        return Verdict.FOUND, None
+    return Verdict.NOT_FOUND, None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,13 +207,54 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no usable constants parsed from {args.keys}", file=sys.stderr)
         return 2
 
+    # Preconditions once, up front: a search that cannot run must never be
+    # conflated with a completed search that found nothing (#377).
+    repo_problem = check_repository()
+    if repo_problem is not None:
+        print(f"cannot verify history: {repo_problem}", file=sys.stderr)
+        return 2
+
+    all_needles = sorted({form for raw in values.values() for form in encodings(raw)})
+
     exposed: list[str] = []
+    unverifiable: list[str] = []
+    errors: list[tuple[str, SearchError]] = []
     for name, raw in values.items():
-        hit = next((form for form in encodings(raw) if search_history(form)), None)
-        status = "REACHABLE in history" if hit else "clean"
-        print(f"  {name}: {status}")
-        if hit:
+        found = False
+        failed = False
+        for form in encodings(raw):
+            verdict, error = search_history(form, all_needles)
+            if error is not None:
+                failed = True
+                errors.append((name, error))
+                continue
+            if verdict is Verdict.FOUND:
+                found = True
+        if found:
             exposed.append(name)
+            print(f"  {name}: REACHABLE in history")
+        elif failed:
+            unverifiable.append(name)
+            print(f"  {name}: UNVERIFIABLE (a history search did not complete; diagnostics on stderr)")
+        else:
+            print(f"  {name}: clean")
+
+    if errors:
+        print("\nHistory verification could not be completed; these searches failed:", file=sys.stderr)
+        for name, error in errors:
+            print(f"  {name}: {error.operation} -> {error.detail}", file=sys.stderr)
+        if unverifiable:
+            print(f"\n{len(unverifiable)} constant(s) could not be verified: {', '.join(unverifiable)}", file=sys.stderr)
+        if exposed:
+            print(f"{len(exposed)} constant(s) are still reachable in Git history: {', '.join(exposed)}", file=sys.stderr)
+            print(
+                "History still exposes the keys, and the remaining searches did not complete; "
+                "fix the failures above and re-run. See docs/KEY_HISTORY_SCRUB.md.",
+                file=sys.stderr,
+            )
+        else:
+            print("No clean verdict is possible until every search completes; fix the failures above and re-run.", file=sys.stderr)
+        return 2
 
     if exposed:
         print(f"\n{len(exposed)} constant(s) still reachable in Git history: {', '.join(exposed)}")
