@@ -658,8 +658,27 @@ class GimPaletteUnitTests(unittest.TestCase):
             self.assertTrue(ok, msg)
             self.assertIn("Valid T8 palette", msg)
 
+    def test_decoder_nesting_boundary_is_exact(self) -> None:
+        # decode_gim_data rejects only when depth > GIM_MAX_NESTING (32), so
+        # the validator must accept 32 container levels and reject 33: a lower
+        # limit here would reject GIMs the production decoder accepts.
+        for levels, expect_ok in ((32, True), (33, False)):
+            with self.subTest(levels=levels, expect_ok=expect_ok):
+                nested = _image_block(fmt=0)
+                for _ in range(levels):
+                    nested = _block(0x0002, nested)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "deep.gim"
+                    path.write_bytes(_gim(nested))
+                    ok, msg = va.check_gim_palette(str(path))
+                    if expect_ok:
+                        self.assertTrue(ok, f"32 levels must pass: {msg}")
+                        self.assertIn("Direct color format (0)", msg)
+                    else:
+                        self.assertFalse(ok)
+                        self.assertIn("nesting deeper than 32", msg)
+
     def test_deep_nesting_is_bounded(self) -> None:
-        # Mirrors the decoder's GIM_MAX_NESTING bound.
         nested = _image_block(fmt=0)
         for _ in range(40):
             nested = _block(0x0002, nested)

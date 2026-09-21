@@ -37,7 +37,15 @@ GIM_BLOCK_HEADER_SIZE = 16
 GIM_CONTENT_HEADER_SIZE = 36
 # Formats decode_gim_data actually decodes (bpp_map + its final else rejects).
 GIM_SUPPORTED_IMAGE_FORMATS = frozenset((0, 1, 2, 3, 4, 5))
-GIM_MAX_SCAN_DEPTH = 16
+# Mirrors tools/extract_xb.py::GIM_MAX_NESTING exactly, including its boundary:
+# the decoder rejects when depth > GIM_MAX_NESTING, so 32 container levels are
+# legal and 33 are not.  The constant is mirrored rather than imported because
+# this script must run under `python -I` (isolated mode strips the script
+# directory, so a sibling import would fail) and importing extract_xb has
+# import-time side effects (sys.path mutation).
+GIM_MAX_SCAN_DEPTH = 32
+# Mirrors tools/extract_xb.py::GIM_MAX_BLOCKS (same reasoning as above).
+GIM_MAX_BLOCKS = 1 << 20
 
 # The inventory schema written by tools/extract_xb.py process_extracted_directory.
 INVENTORY_CATEGORIES = ("textures", "sounds", "scene_graphs", "other")
@@ -103,9 +111,10 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
     has_palette = False
     fmt: int | None = None
     palette_size = 0
+    blocks_seen = 0
 
     def scan_blocks(offset: int, limit: int, depth: int = 0) -> None:
-        nonlocal has_image, has_palette, fmt, palette_size
+        nonlocal has_image, has_palette, fmt, palette_size, blocks_seen
         if depth > GIM_MAX_SCAN_DEPTH:
             raise IndexError(f"container nesting deeper than {GIM_MAX_SCAN_DEPTH} levels")
         while offset < limit:
@@ -113,6 +122,9 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
                 raise IndexError(
                     f"truncated block header: only {limit - offset} bytes remain at offset {offset:#x}"
                 )
+            blocks_seen += 1
+            if blocks_seen > GIM_MAX_BLOCKS:
+                raise IndexError(f"GIM declares more than {GIM_MAX_BLOCKS} blocks")
             block_id = _gim_u16(data, offset)
             block_size = _gim_u32(data, offset + 4)
             hdr_size = _gim_u32(data, offset + 12)
@@ -137,6 +149,11 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
                             f"image block content region is {content_limit - content} bytes, "
                             f"needs the full {GIM_CONTENT_HEADER_SIZE}-byte content header"
                         )
+                    # Dimension/pixel-budget caps (w, h, raw byte counts) are
+                    # decode-side allocation bounds in decode_gim_data and are
+                    # deliberately not mirrored here: they are not structural
+                    # validity, and this check must not reject a GIM the
+                    # decoder could structurally scan.
                     fmt = _gim_u16(data, content + 4)
                     d_off = _gim_u32(data, content + 28)
                     d_end = _gim_u32(data, content + 32)

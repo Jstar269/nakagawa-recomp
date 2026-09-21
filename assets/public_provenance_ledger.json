@@ -9170,7 +9170,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9e2d883a7af666a7b91fd8dc875bf07d8d61af95209e49ae65db6937c674cd6b"
+      "sha256": "0a077bcd4a1bb4e92adb9bf9e0e2fdb3cf4ce073c591cd7e679576a42cd81d2c"
     },
     {
       "path": "tools/test_vfpu_addressing.py",
@@ -9388,7 +9388,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f589a8c08efce95cdb2247b17a2dd08a487401d9be58b867750d11e9fcdd6944"
+      "sha256": "a58391d37f2d0deaec84236a6182be4d2d6f07e4338b02d4a33f43f6ae7fa5cc"
     },
     {
       "path": "tools/verify_gates.py",
