@@ -298,6 +298,88 @@ static uint32_t make_audio_frame(uint8_t *dst, uint32_t cap, uint8_t code1, uint
 #define FIX_PTS_STEP  3003
 static const int k_has_pts[FIX_PICTURES] = { 1, 1, 0 };
 
+/* ---- fixture self-validation ------------------------------------------------------------ */
+/* Building this fixture wrongly has twice produced a failure that looked like a demux or
+ * decoder defect: a NAL emitted without its start code, and a PES header written without the
+ * mandatory '10' marker bits.  Both are structural, so the fixture now checks its own output
+ * before any test reads it -- a malformed fixture fails here, as a fixture problem, instead of
+ * being diagnosed from the pipeline's behaviour. */
+static void mp4_picture_marks(const uint8_t *au, uint32_t n, int picture);
+
+static uint32_t pes_count(const uint8_t *s, uint32_t n) {
+    uint32_t at = 2048u;              /* the stream begins after the PSMF header */
+    uint32_t packets = 0;
+    while (at + 6u <= n) {
+        CHECK(memcmp(s + at, "\0\0\1\xba", 4u) == 0, "every packet is preceded by a pack header");
+        at += 14u;
+        if (at + 6u > n) break;
+        CHECK(s[at] == 0u && s[at + 1] == 0u && s[at + 2] == 1u, "PES start-code prefix is 00 00 01");
+        uint8_t id = s[at + 3];
+        CHECK(id == 0xbdu || (id & 0xe0u) == 0xe0u, "PES stream id is a video or private stream");
+        CHECK((s[at + 6] & 0xc0u) == 0x80u, "PES flags byte carries the mandatory '10' marker bits");
+        uint32_t opt = s[at + 8];
+        CHECK(opt == 0u || opt == 5u, "optional PES header is absent or exactly one PTS field");
+        if (opt == 5u) {
+            CHECK((s[at + 9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
+            CHECK((s[at + 9] & 1u) != 0u && (s[at + 11] & 1u) != 0u && (s[at + 13] & 1u) != 0u,
+                  "PTS field carries all three marker bits");
+        }
+        uint32_t declared = ((uint32_t)s[at + 4] << 8) | s[at + 5];
+        CHECK(declared >= 3u + opt, "declared PES length covers its own header fields");
+        uint32_t span = 6u + declared;      /* start code + id + length, then the declared body */
+        CHECK(at + span <= n, "declared PES length stays inside the container");
+        at += span;
+        packets++;
+    }
+    CHECK(at == n, "the packet walk consumes the container exactly, with no trailing bytes");
+    return packets;
+}
+
+/* Every picture's elementary bytes must be a real Annex-B access unit: a leading access-unit
+ * delimiter, and inside the stream the parameter sets before the first slice.  The scan is
+ * safe as a literal search because emit_nal() escapes emulation sequences, so a NAL never
+ * contains a byte pattern that could be mistaken for a start code. */
+static void check_es_wellformed(const uint8_t *es, uint32_t n, const uint32_t *au_off,
+                               const uint32_t *au_len) {
+    int sps = 0, pps = 0, idr = 0, aud = 0, slices_before_pps = 0;
+    for (uint32_t i = 0; i + 3u < n; i++) {
+        if (es[i] != 0u || es[i + 1] != 0u || es[i + 2] != 1u) continue;
+        uint8_t hdr = es[i + 3];
+        CHECK((hdr & 0x80u) == 0u, "every start code is followed by a NAL header, not payload");
+        switch (hdr & 0x1fu) {
+            case 9:  aud++; break;
+            case 7:  sps++; break;
+            case 8:  pps++; break;
+            case 5:  if (!pps) slices_before_pps++; idr++; break;
+            default: break;
+        }
+    }
+    CHECK(sps == 1, "the elementary stream carries exactly one SPS");
+    CHECK(pps == 1, "the elementary stream carries exactly one PPS");
+    CHECK(aud == FIX_PICTURES, "one access-unit delimiter per picture");
+    CHECK(idr == FIX_PICTURES, "one IDR slice per picture");
+    CHECK(slices_before_pps == 0, "the parameter sets precede the first slice");
+    for (int i = 0; i < FIX_PICTURES; i++) {
+        CHECK(au_len[i] > 8u, "a picture access unit is longer than its header");
+        CHECK(au_off[i] + au_len[i] <= n, "a picture access unit stays inside the stream");
+        mp4_picture_marks(es + au_off[i], au_len[i], i);
+    }
+}
+
+/* Each picture must start with its delimiter and contain an IDR slice carrying the picture's
+ * own marker, so a fixture that silently emitted the wrong picture cannot pass a test that
+ * only counts bytes. */
+static void mp4_picture_marks(const uint8_t *au, uint32_t n, int picture) {
+    CHECK(n >= 5u && au[0] == 0u && au[1] == 0u && au[2] == 1u && (au[3] & 0x1fu) == 9u,
+          "a picture access unit begins with an access-unit delimiter");
+    int idr = 0;
+    for (uint32_t i = 0; i + 4u < n; i++) {
+        if (au[i] == 0u && au[i + 1] == 0u && au[i + 2] == 1u && (au[i + 3] & 0x1fu) == 5u) idr++;
+    }
+    CHECK(idr == 1, "a picture access unit carries exactly one IDR slice");
+    (void)picture;
+}
+
 /* Assemble the whole container: a validated PSMF header, then the video elementary stream cut
  * into two PES packets per picture (so access units always straddle packet boundaries) with an
  * audio track interleaved between them. */
@@ -337,6 +419,10 @@ static uint8_t *build_psmf(uint32_t *size_out, uint32_t au_off[FIX_PICTURES],
     }
     be32_at(b.d + 12, b.at - 2048u);
     CHECK(!b.overflow, "synthetic PSMF container fits its buffer");
+    /* The fixture proves its own structure before any test reads it. */
+    CHECK(pes_count(b.d, b.at) >= (uint32_t)(FIX_PICTURES * 2 + 2),
+          "the container holds every packet the builder wrote");
+    check_es_wellformed(es, es_len, au_off, au_len);
     *size_out = b.at;
     return b.d;
 }

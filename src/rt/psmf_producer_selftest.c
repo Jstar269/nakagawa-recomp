@@ -58,8 +58,16 @@ static void add_pack(Buf *b) {
     static const uint8_t pack[14] = {0,0,1,0xba,0x44,0,4,0,4,1,0,0,1,0};
     raw(b, pack, sizeof(pack));
 }
+static void check_pes_wellformed(const uint8_t *s, uint32_t at, uint32_t payload_len,
+                                 int has_pts);
 /* One MPEG-PS PES packet; has_pts == 0 writes no optional header at all (the
- * form PSMF uses for continuation packets). */
+ * form PSMF uses for continuation packets).
+ *
+ * The flags byte keeps its mandatory '10' marker even when no optional header
+ * follows.  That is not a stylistic choice: a PSP movie's continuation packets
+ * were measured to carry '10' on every one of its 10,323 packets, including the
+ * 9,521 video packets with a zero optional-header length, so a fixture that wrote
+ * 0x00 would exercise a form the format never uses. */
 static void add_pes(Buf *b, uint8_t sid, int has_pts, int64_t pts,
                     const uint8_t *payload, uint32_t payload_len) {
     uint32_t opt = has_pts ? 5u : 0u;
@@ -67,12 +75,40 @@ static void add_pes(Buf *b, uint8_t sid, int has_pts, int64_t pts,
     uint8_t hdr[9];
     hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=sid;
     hdr[4]=(uint8_t)(len>>8); hdr[5]=(uint8_t)len;
-    hdr[6]= has_pts ? 0x80 : 0x00;
+    hdr[6]=0x80u;
     hdr[7]=0x00;
     hdr[8]=(uint8_t)opt;
+    uint32_t hdr_at = b->at;
     raw(b, hdr, 9);
     if (has_pts) { uint8_t p[5]; put_pts(p, pts, 0x21); raw(b, p, 5); }
+    /* Validated after the optional header is present, so the check reads the bytes
+     * the parser will read rather than the payload that follows them. */
+    if (!b->overflow) check_pes_wellformed(b->d + hdr_at, hdr_at, payload_len, has_pts);
     raw(b, payload, payload_len);
+}
+
+/* ---- fixture self-validation ------------------------------------------------------------
+ * The fixture checks its own packets before a test reads them.  A PES header is
+ * small enough to get wrong silently -- an earlier version of this file wrote the
+ * flags byte without its '10' marker and the failure surfaced as a demux symptom
+ * rather than as a fixture bug -- so the packet walk below asserts the start-code
+ * prefix, the stream id, the marker bits, the optional-header length and that the
+ * declared length accounts for exactly the bytes the builder wrote. */
+static void check_pes_wellformed(const uint8_t *s, uint32_t at, uint32_t payload_len,
+                                 int has_pts) {
+    CHECK(s[0] == 0u && s[1] == 0u && s[2] == 1u, "PES start-code prefix is 00 00 01");
+    CHECK(s[3] == 0xe0u || s[3] == 0xbdu, "PES stream id is video or private stream 1");
+    uint32_t declared = ((uint32_t)s[4] << 8) | s[5];
+    CHECK(declared == 3u + (has_pts ? 5u : 0u) + payload_len,
+          "declared PES length accounts for exactly the bytes written");
+    CHECK((s[6] & 0xc0u) == 0x80u, "PES flags carry the mandatory '10' marker bits");
+    CHECK(s[8] == (has_pts ? 5u : 0u), "optional-header length matches the PTS field written");
+    if (has_pts) {
+        CHECK((s[9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
+        CHECK((s[9] & 1u) != 0u && (s[11] & 1u) != 0u && (s[13] & 1u) != 0u,
+              "PTS field carries all three marker bits");
+    }
+    (void)at;
 }
 /* Private stream 1 payload: sub-stream id byte + three sub-header bytes + ES. */
 static void add_audio_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *es, uint32_t es_len) {
