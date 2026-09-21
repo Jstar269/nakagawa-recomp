@@ -24,12 +24,10 @@ DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 # outside the supported set is a hard parse error (issue #375): guessing at an
 # unknown schema silently drops dependencies and manufactures a plausible but
 # incomplete SBOM.
-SUPPORTED_NPM_LOCKFILE_VERSIONS = (1, 2, 3)
-# The v1 and v2 formats record each dependency in a separate top-level
-# "dependencies" map that npm upgrade converted into the v3 "packages" map;
-# the SBOM inventory is built from the "packages" representation, so a lock
-# that still uses the legacy representation must fail closed instead of
-# producing an empty inventory.
+# lockfileVersion 1 records its inventory in the legacy `dependencies` map only
+# and is explicitly rejected: this tool implements the `packages` representation
+# (lockfileVersion 2/3), never best-effort guesses at an unimplemented schema.
+SUPPORTED_NPM_LOCKFILE_VERSIONS = (2, 3)
 SUPPORTED_NPM_PACKAGES_FORMATS = (2, 3)
 
 
@@ -41,6 +39,85 @@ class LockfileParseError(Exception):
     conform to the repository's declared lockfile format. Callers must abort
     rather than treat the failure as "no dependencies" (issue #375).
     """
+
+
+#: Schema version of the generated dependencyLockEvidence binding.
+LOCKFILE_EVIDENCE_SCHEMA_VERSION = 1
+
+
+def compute_lock_evidence(npm_lock_path: Path, py_lock_path: Path) -> dict:
+    """Bind the generated SBOM to the exact lockfile bytes it was built from.
+
+    Returns a deterministic, JSON-serializable record of the sha256 digest and
+    size of each lockfile as read at generation time. Verification recomputes
+    the digests of the current lockfiles and requires exact equality, so a
+    stale SBOM (generated from different lock bytes) cannot pass even when the
+    dependency names it contains happen to still match (issue #375).
+    """
+    evidence: dict = {
+        "schema_version": LOCKFILE_EVIDENCE_SCHEMA_VERSION,
+    }
+    for kind, path in (("npm", npm_lock_path), ("python", py_lock_path)):
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise LockfileParseError(
+                f"cannot read {kind} lockfile {path} for evidence binding: {exc}"
+            ) from exc
+        evidence[kind] = {
+            "path": str(path),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(raw),
+        }
+    return evidence
+
+
+def verify_lock_evidence(evidence: object, npm_lock_path: Path, py_lock_path: Path) -> list[str]:
+    """Recompute current lockfile digests and require exact evidence equality."""
+    errors: list[str] = []
+    if not isinstance(evidence, dict):
+        return ["dependencyLockEvidence missing or not an object"]
+    if evidence.get("schema_version") != LOCKFILE_EVIDENCE_SCHEMA_VERSION:
+        errors.append(
+            f"unsupported dependencyLockEvidence schema_version {evidence.get('schema_version')!r}; "
+            f"supported: {LOCKFILE_EVIDENCE_SCHEMA_VERSION}"
+        )
+    for kind, path in (("npm", npm_lock_path), ("python", py_lock_path)):
+        entry = evidence.get(kind)
+        if not isinstance(entry, dict):
+            errors.append(f"dependencyLockEvidence missing {kind} lockfile entry")
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            errors.append(
+                f"cannot read current {kind} lockfile {path} for lock-evidence verification: {exc}"
+            )
+            continue
+        current_digest = hashlib.sha256(raw).hexdigest()
+        if entry.get("sha256") != current_digest:
+            errors.append(
+                f"{kind} lockfile evidence mismatch: the SBOM was generated from different "
+                f"lockfile bytes (evidence sha256 {entry.get('sha256')!r} vs current {path} "
+                f"sha256 {current_digest}); regenerate the SBOM from the current lockfiles"
+            )
+        recorded_size = entry.get("size")
+        if isinstance(recorded_size, int) and recorded_size != len(raw):
+            errors.append(
+                f"{kind} lockfile evidence size mismatch: evidence {recorded_size} byte(s) vs "
+                f"current {len(raw)} byte(s)"
+            )
+    return errors
+
+
+def expected_spdx23_dependency_ids(npm_packages: list[dict], py_packages: list[dict]) -> list[str]:
+    """Return the exact SPDX element ids the lockfile inventory must produce.
+
+    The list preserves multiplicity: a package installed at two lockfile paths
+    yields two entries (the second disambiguated by path digest), and a verifier
+    may only accept an SBOM that carries every one of them.
+    """
+    return [p["spdx_id"] for p in npm_packages] + [p["spdx_id"] for p in py_packages]
 
 
 def _read_lockfile_text(lock_path: Path, kind: str) -> str:
@@ -86,9 +163,15 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
             f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}"
         )
     if raw_version not in SUPPORTED_NPM_LOCKFILE_VERSIONS:
+        hint = ""
+        if raw_version == 1:
+            hint = (
+                " lockfileVersion 1 records its inventory in the legacy `dependencies` map, "
+                "which this tool does not implement; regenerate with a current npm version"
+            )
         raise LockfileParseError(
             f"npm lockfile {lock_path} uses unsupported lockfileVersion {raw_version}; "
-            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}"
+            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}.{hint}"
         )
 
     raw_packages = data.get("packages")
@@ -96,7 +179,7 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
         raise LockfileParseError(
             f"npm lockfile {lock_path} (lockfileVersion {raw_version}) has no `packages` map; "
             "this tool requires a lockfile that records dependencies under `packages` "
-            f"(packages-format lockfile versions {', '.join(str(v) for v in SUPPORTED_NPM_PACKAGES_FORMATS)}); "
+            f"(lockfileVersions {', '.join(str(v) for v in SUPPORTED_NPM_PACKAGES_FORMATS)}); "
             "regenerate with a current npm version"
         )
     if not isinstance(raw_packages, dict):
@@ -501,10 +584,21 @@ def main(argv: list[str] | None = None) -> int:
     spdx301_doc = generate_spdx301(manifest_data, npm_packages, py_packages)
     cyclonedx_doc = generate_cyclonedx(manifest_data, npm_packages, py_packages)
 
+    # Bind the generated SBOM to the exact lockfile bytes it was built from.
+    # Any later lockfile change makes old SBOMs fail verification.
+    try:
+        lock_evidence = compute_lock_evidence(args.npm_lock, args.py_lock)
+    except LockfileParseError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    spdx23_doc["dependencyLockEvidence"] = lock_evidence
+
     if args.spdx_out:
         args.spdx_out.parent.mkdir(parents=True, exist_ok=True)
         args.spdx_out.write_text(json.dumps(spdx23_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote SPDX 2.3 SBOM to {args.spdx_out}")
+        print(f"Bound to lockfile evidence: npm {lock_evidence['npm']['sha256'][:16]}... / "
+              f"python {lock_evidence['python']['sha256'][:16]}...")
 
     if args.spdx3_out:
         args.spdx3_out.parent.mkdir(parents=True, exist_ok=True)

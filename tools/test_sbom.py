@@ -72,6 +72,8 @@ class TestSBOMTooling(unittest.TestCase):
         npm_pkgs = generate_sbom.parse_npm_lockfile(npm_lock_path)
         py_pkgs = generate_sbom.parse_python_lockfile(py_lock_path)
         spdx = generate_sbom.generate_spdx23(manifest_data, npm_pkgs, py_pkgs)
+        # Bind the SBOM to the exact lock bytes, exactly as the generator CLI does.
+        spdx["dependencyLockEvidence"] = generate_sbom.compute_lock_evidence(npm_lock_path, py_lock_path)
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
             json.dump(spdx, tmp)

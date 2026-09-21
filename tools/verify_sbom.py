@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from collections import Counter
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -158,6 +159,16 @@ def verify_release_locks(manifest_path: Path) -> list[str]:
 
 
 def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Path, py_lock_path: Path) -> list[str]:
+    """Verify the SPDX 2.3 SBOM against the exact current lockfile inventory.
+
+    Every parsed lock dependency must appear under its exact identity
+    (purl = ecosystem + name + version), preserving multiplicity: a correct
+    name with the wrong version fails, and removing one of two duplicate
+    npm name+version installations fails. The SBOM's dependencyLockEvidence
+    (sha256 of the lockfile bytes at generation time) must exactly match the
+    current lockfile bytes, so a stale SBOM cannot pass after the lockfiles
+    change (issue #375).
+    """
     errors = []
     if not spdx_path.is_file():
         return [f"SPDX file missing: {spdx_path}"]
@@ -178,14 +189,41 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         except generate_sbom.LockfileParseError as exc:
             errors.append(str(exc))
 
+        # Exact identities with multiplicity: (purl, name, version) pairs from
+        # the SBOM's PACKAGE-MANAGER purl external refs. A bare set of names
+        # cannot distinguish versions nor prove duplicate installations.
         spdx_packages = spdx_data.get("packages", [])
-        pkg_names = {p.get("name") for p in spdx_packages if isinstance(p, dict)}
+        identity_counter: Counter = Counter(
+            (purl, p.get("name"), p.get("versionInfo"))
+            for p in spdx_packages
+            if isinstance(p, dict)
+            for purl in [
+                next(
+                    (
+                        ref.get("referenceLocator", "")
+                        for ref in (p.get("externalRefs") or [])
+                        if isinstance(ref, dict) and ref.get("referenceType") == "purl"
+                    ),
+                    None,
+                )
+            ]
+            if purl is not None
+        )
+
+        # The SBOM must be bound to the exact lockfile bytes it was generated
+        # from; recomputed current digests must match exactly.
+        errors.extend(
+            generate_sbom.verify_lock_evidence(
+                spdx_data.get("dependencyLockEvidence"), npm_lock_path, py_lock_path
+            )
+        )
 
         family_names = {
             family.get("name")
             for family in manifest_data.get("provenance_families", [])
             if isinstance(family, dict)
         }
+        pkg_names = {p.get("name") for p in spdx_packages if isinstance(p, dict)}
         for family_name in family_names:
             if family_name not in pkg_names:
                 errors.append(f"provenance family {family_name} missing from SPDX SBOM")
@@ -193,13 +231,16 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         if manifest_data.get("name") not in pkg_names:
             errors.append(f"Root package {manifest_data.get('name')} missing from SPDX SBOM")
 
-        for pkg in npm_pkgs:
-            if pkg["name"] not in pkg_names:
-                errors.append(f"NPM dependency {pkg['name']} missing from SPDX SBOM")
-
-        for pkg in py_pkgs:
-            if pkg["name"] not in pkg_names:
-                errors.append(f"Python dependency {pkg['name']} missing from SPDX SBOM")
+        expected_identities: list[tuple[str, str, str]] = [
+            (pkg["purl"], pkg["name"], pkg["version"]) for pkg in [*npm_pkgs, *py_pkgs]
+        ]
+        for (purl, name, version), expected_count in Counter(expected_identities).items():
+            found = identity_counter.get((purl, name, version), 0)
+            if found < expected_count:
+                errors.append(
+                    f"Lock dependency identity missing or under-represented in SPDX SBOM: "
+                    f"{purl} (expected {expected_count} record(s), found {found})"
+                )
 
     except Exception as exc:
         errors.append(f"Failed to verify SPDX SBOM {spdx_path}: {exc}")

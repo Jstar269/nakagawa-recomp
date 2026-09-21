@@ -129,13 +129,23 @@ class TestNpmLockfileHostileInputs(unittest.TestCase):
         assert_lockfile_parse_error(self, path, "missing or invalid lockfileVersion")
 
     def test_unsupported_legacy_dependencies_shape_fails_closed(self):
-        # v1/v2 "dependencies"-shaped lockfiles have no inventoryable `packages`
-        # map; guessing would produce an empty inventory, so it must error.
+        # v1 "dependencies"-shaped lockfiles are rejected on their declared
+        # version: the tool implements only the v2/v3 `packages` representation.
         path = write(self.tmp_path, "legacy.json", json.dumps(
             {"lockfileVersion": 1,
              "dependencies": {"react": {"version": "18.2.0"}}}))
-        err = assert_lockfile_parse_error(self, path, "has no `packages` map")
-        self.assertIn("packages-format", str(err))
+        err = assert_lockfile_parse_error(self, path, "unsupported lockfileVersion 1")
+        self.assertIn("legacy `dependencies` map", str(err))
+
+    def test_lockfile_version_1_is_explicitly_rejected_even_with_packages_map(self):
+        # The tool implements the v2/v3 `packages` representation only. A v1
+        # document is rejected on its declared version, never best-effort
+        # parsed just because it happens to carry a `packages` map.
+        path = write(self.tmp_path, "v1-with-packages.json", json.dumps(
+            {"lockfileVersion": 1,
+             "packages": {"node_modules/react": {"version": "18.2.0"}}}))
+        err = assert_lockfile_parse_error(self, path, "unsupported lockfileVersion 1")
+        self.assertIn("legacy `dependencies` map", str(err))
 
     def test_packages_map_wrong_type_fails_closed(self):
         path = write(self.tmp_path, "badshape.json", json.dumps(
@@ -463,8 +473,15 @@ class TestVerifySbomFailsClosed(unittest.TestCase):
             spdx_path.write_text(json.dumps(spdx), encoding="utf-8")
 
         errors = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
+        # The subverted SBOM (a) lacks the current lock-byte evidence and (b)
+        # is missing the exact compiledb identity; both must be reported.
         self.assertTrue(
-            any("Python dependency compiledb missing from SPDX SBOM" in e for e in errors),
+            any("dependencyLockEvidence missing or not an object" in e for e in errors),
+            str(errors),
+        )
+        self.assertTrue(
+            any("pkg:pypi/compiledb@0.10.7" in e and "missing or under-represented" in e
+                for e in errors),
             str(errors),
         )
 
