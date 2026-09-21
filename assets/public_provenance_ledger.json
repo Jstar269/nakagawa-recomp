@@ -8313,10 +8313,13 @@
     },
     {
       "path": "tools/test_funcdiff_cmp.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "evidence-comparators-fail-closed-381",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9e1635636f8eb69930c88565116025a054cbb8c6368bda064a37106889287e9d"
     },
@@ -8694,10 +8697,13 @@
     },
     {
       "path": "tools/test_nidseq.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "evidence-comparators-fail-closed-381",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6c36105b51a9d64acc5a101402fb6ee87b09096833a1ebb3922720ca1d23322a"
     },
