@@ -8987,7 +8987,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "c30bd936d17df22f873ca6b36b73df2011a3868787805280fe16e100cb054915"
+      "sha256": "e18d96ac85da0d3f70d5f5dac2a303242d5bdfe2a1937d02be51cf7e9a24e4f5"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -8999,7 +8999,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d4b40b8573fda106012a83e5a240d0483c3442dcb9afb6488fa6edb5f5d13cf"
+      "sha256": "ea8fb2f921e96100d366d863a15c0abc5d00db4b742cfe0982be756b57e2da42"
     },
     {
       "path": "tools/test_sbom_fail_closed.py",
@@ -9011,7 +9011,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "52c8d7b292e7c4ba1e10364ae8045586e9e13ccfd379df53e067e667e893e258"
+      "sha256": "2e853795b5a113102bc2854933d3ff8df9b8b810fcee43a44cc833febd64bdff"
     },
     {
       "path": "tools/test_sched_invariants.py",
@@ -9439,7 +9439,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd462dfe6ac378e4309ebb5286a3e90770c51031e417beca34d1dd04989278d5"
+      "sha256": "8cb0ce416dc62ad39f1edf56b0365d33aee8191dfaaf71981b2d37cdb82609db"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
