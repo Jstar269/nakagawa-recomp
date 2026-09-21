@@ -227,7 +227,6 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
     without rereading the files (issue #375 revision 5: no read after the
     verification decision).
     """
-    verified_digests = {"npm": None, "python": None}
     errors = []
     verified_digests: dict = {"npm": None, "python": None}
     if not spdx_path.is_file():
