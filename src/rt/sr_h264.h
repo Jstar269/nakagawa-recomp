@@ -31,14 +31,24 @@ void sr_h264_destroy(int id);
 /* Feed `len` bytes of MPEG-PS packet data (demux happens inside the backend). */
 void sr_h264_feed(int id, const uint8_t *data, uint32_t len);
 
+/* Feed one already-demuxed access unit of the H.264 annex-B elementary stream: `au` must begin
+ * with a start code, and every picture inside it must be introduced by an access-unit delimiter
+ * NAL (PSMF guarantees both). Callers that own their own MPEG-PS parsing (the scePsmfPlayer
+ * media layer) use this instead of sr_h264_feed(); the two entry points share one decoder
+ * instance so a stream must be fed through exactly one of them. Every access unit handed in is
+ * immediately eligible for decoding -- no separate au_take() bookkeeping is required. */
+void sr_h264_submit_au(int id, const uint8_t *au, uint32_t len);
+
 /* Try to produce the next decoded frame into guest video buffer at `buffer` (guest address),
  * `frameWidth` pixels stride, in the PSP pixel format `pixelMode` (0=5650,1=5551,2=4444,3=8888).
  * `eos` != 0 once the whole movie has been fed (drain the last frames). Returns 1 if a frame was
- * written, 0 if none is available yet, -1 on failure. */
+ * written, 0 if none is available yet, -1 when no frame was written (decoder failure, or a
+ * destination the picture could not be written into).  A -1 never means "a frame happened to be
+ * produced somewhere"; callers may treat it as a hard error for that call only. */
 int  sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode);
 /* Decode the next picture into host memory as RGBA8888 (byte order R, G, B, A), at most
  * `maxW` x 272 pixels with a row pitch of `strideBytes`. Returns 1 when a picture was written,
- * 0 when more input is needed, -1 on failure or without a decoder. */
+ * 0 when more input is needed, -1 on failure, on an unusable destination, or without a decoder. */
 int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes);
 /* Hand out the next complete access unit (picture) of the demuxed stream. Returns 1 and the
  * absolute program-stream byte count it (and everything before it) consumed, 0 when no

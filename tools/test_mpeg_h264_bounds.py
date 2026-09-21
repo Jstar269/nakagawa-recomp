@@ -63,14 +63,52 @@ class TestMpegH264Bounds(unittest.TestCase):
         self.assertIn("len > H264_MAX_PS_BYTES - d->psLen", H264)
         self.assertIn("c->off > d->esLen || c->len > d->esLen - c->off", H264)
 
+    def test_atrac_au_uses_the_psmf_presentation_origin(self) -> None:
+        """The public sceMpeg clock is not the raw private-PES diagnostic clock.
+
+        PPSSPP's public sceMpeg model defines audioFirstTimestamp as 90000.  The
+        raw first private-stream PTS is useful for demux diagnostics, but using it
+        as the AU origin makes A/V sync title-dependent and can make a player
+        reject the first video AU as too early.
+        """
+        atrac = MPEG[MPEG.index("uint32_t mpeg_get_atrac_au") : MPEG.index("static uint32_t video_buffer_bytes")]
+        self.assertIn("int64_t pts = ctx->audioPts + ctx->firstTimestamp;", atrac)
+        self.assertNotIn("sr_h264_first_audio_pts", atrac)
+
     def test_h264_conversion_preflights_source_and_all_destination_rows(self) -> None:
-        convert = H264[H264.index("static void convert_frame") : H264.index("/* Try to pull one decoded frame")]
+        convert = H264[H264.index("static int convert_frame") : H264.index("/* Try to pull one decoded frame")]
         self.assertIn("uint64_t srcNeed", convert)
         self.assertIn("srcNeed > srcLen", convert)
         self.assertIn("uint64_t rowAddr", convert)
         self.assertIn("sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)", convert)
         self.assertIn("uint64_t fullBytes", convert)
         self.assertNotIn("stride * h + stride * h / 2", convert)
+
+    def test_h264_conversion_reports_delivery_rather_than_production(self) -> None:
+        """A converted picture is only claimed when it was actually written.
+
+        The converter returns 1 for a delivered picture and 0 for every refusal
+        (malformed NV12 extent, unusable destination row, out-of-range geometry),
+        and the pump distinguishes "produced but not delivered" (2) from a real
+        decoder failure -- so an unwritable destination can never be reported as a
+        successful frame, and it must not poison the decoder either.
+        """
+        convert = H264[H264.index("static int convert_frame") : H264.index("/* Try to pull one decoded frame")]
+        # Every refusal class returns 0 explicitly, and the only success return is
+        # the one after the whole picture has been converted and marked dirty.
+        for refusal in (
+            "if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return 0;",
+            "if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;",
+            "if (srcNeed < yBytes || srcNeed > srcLen) return 0;",
+            "!sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;",
+        ):
+            self.assertIn(refusal, convert)
+        self.assertEqual(convert.count("return 1;"), 1)
+        pump = H264[H264.index("static int pump_out") : H264.index("static int pull_frame")]
+        self.assertIn("return delivered ? 1 : 2;", pump)
+        pull = H264[H264.index("static int pull_frame") : H264.index("int sr_h264_frame(")]
+        self.assertIn("if (r > 0) return r == 1 ? 1 : -1;", pull)
+        self.assertIn("if (r < 0) { d->failed = 1; return -1; }", pull)
 
 
 class TestMpegArithmeticFixtures(unittest.TestCase):

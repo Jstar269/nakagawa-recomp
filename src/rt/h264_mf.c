@@ -335,31 +335,34 @@ static int feed_one(Dec *d) {
 static uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 
 /* NV12 -> PSP pixel format (BT.601 limited range). buffer is the guest video buffer address,
- * frameWidth its stride in pixels; PSP movie buffers are 272 rows tall. */
-static void convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
-                          uint32_t buffer, int frameWidth, int pixelMode) {
-    if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return;
+ * frameWidth its stride in pixels; PSP movie buffers are 272 rows tall.  Returns 1 when the
+ * picture was actually written into guest memory and 0 when it was refused (invalid buffer,
+ * malformed NV12 extent, unusable geometry) -- a refused conversion is never reported as a
+ * produced frame. */
+static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
+                         uint32_t buffer, int frameWidth, int pixelMode) {
+    if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return 0;
     int stride = d->outStride > 0 ? d->outStride : d->outW;
     int w = d->outW, h = d->outH;
-    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return;
+    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
     uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
     uint64_t uvRows = ((uint64_t)(uint32_t)h + 1u) / 2u;
     uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * uvRows;
-    if (srcNeed < yBytes || srcNeed > srcLen) return;   /* malformed NV12 extent */
+    if (srcNeed < yBytes || srcNeed > srcLen) return 0;   /* malformed NV12 extent */
     if (w > frameWidth) w = frameWidth;
     if (h > 272) h = 272;
-    if (w <= 0 || h <= 0 || w > stride || ((w & 1) != 0 && w >= stride)) return;
+    if (w <= 0 || h <= 0 || w > stride || ((w & 1) != 0 && w >= stride)) return 0;
     uint64_t bpp = pixelMode == 3 ? 4u : 2u;
     uint64_t rowBytes64 = (uint64_t)(uint32_t)w * bpp;
     uint64_t pitchBytes64 = (uint64_t)(uint32_t)frameWidth * bpp;
     if (rowBytes64 == 0 || rowBytes64 > UINT32_MAX || pitchBytes64 == 0 || pitchBytes64 > UINT32_MAX)
-        return;
+        return 0;
     /* Preflight every destination row before taking a host pointer.  A single malformed row
      * must not leave an earlier row partially converted in guest VRAM. */
     for (int y = 0; y < h; y++) {
         uint64_t rowAddr = (uint64_t)buffer + (uint64_t)(uint32_t)y * pitchBytes64;
         if (rowAddr > UINT32_MAX || rowAddr + rowBytes64 > UINT64_C(0x100000000) ||
-            !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return;
+            !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;
     }
     uint8_t *dst = (uint8_t *)SR_HOST(buffer);
     const uint8_t *yp = src, *uvp = src + (size_t)yBytes;
@@ -405,20 +408,22 @@ static void convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
             sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);
         }
     }
+    return 1;
 }
 
 /* Try to pull one decoded frame. 1 = frame written to buffer, 0 = need more input, -1 = failure. */
 /* NV12 -> host RGBA8888 (BT.601 limited range), for pictures the caller stores and converts
- * later (the sceMpegAvc*YCbCr path). */
-static void convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
-                               int maxW, int strideBytes) {
-    if (!dst || !src || maxW <= 0 || strideBytes < maxW * 4) return;
+ * later (the sceMpegAvc*YCbCr path).  Returns 1 when the picture was written, 0 when the
+ * destination or the decoded extent made the conversion impossible. */
+static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
+                              int maxW, int strideBytes) {
+    if (!dst || !src || maxW <= 0 || strideBytes < maxW * 4) return 0;
     int stride = d->outStride > 0 ? d->outStride : d->outW;
     int w = d->outW, h = d->outH;
-    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return;
+    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
     uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
     uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * (((uint64_t)(uint32_t)h + 1u) / 2u);
-    if (srcNeed > srcLen) return;
+    if (srcNeed > srcLen) return 0;
     if (w > maxW) w = maxW;
     if (h > 272) h = 272;
     const uint8_t *uvp = src + (size_t)yBytes;
@@ -434,10 +439,15 @@ static void convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint
             row[x * 4 + 3] = 0xFF;
         }
     }
+    return 1;
 }
 
 static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
                     uint8_t *host, int hostW, int hostStride) {
+    /* 1 = a picture was produced AND delivered, 2 = produced but there was nowhere to write
+     * it (the caller asked for a frame it cannot receive), 0 = need more input, -1 = decoder
+     * failure.  Distinguishing 2 from 1 is what keeps "a frame was written" from becoming a
+     * fabricated success when the destination buffer or the decoded extent is unusable. */
     for (;;) {
         MFT_OUTPUT_STREAM_INFO si;
         memset(&si, 0, sizeof(si));
@@ -471,20 +481,21 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
             if (mflog()) fprintf(stderr, "h264: ProcessOutput hr=0x%08lx\n", (unsigned long)hr);
             return -1;
         }
+        int delivered = 0;
         if (buffer || host) {
             IMFMediaBuffer *cbuf = NULL;
             if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &cbuf)) && cbuf) {
                 BYTE *base = NULL; DWORD cur = 0;
                 if (SUCCEEDED(IMFMediaBuffer_Lock(cbuf, &base, NULL, &cur))) {
-                    if (host) convert_frame_host(d, base, cur, host, hostW, hostStride);
-                    else convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
+                    delivered = host ? convert_frame_host(d, base, cur, host, hostW, hostStride)
+                                     : convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
                     IMFMediaBuffer_Unlock(cbuf);
                 }
                 IMFMediaBuffer_Release(cbuf);
             }
         }
         IMFMediaBuffer_Release(mb); IMFSample_Release(smp);
-        return 1;
+        return delivered ? 1 : 2;
     }
 }
 
@@ -537,6 +548,20 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
     }
 }
 
+/* Feed one already-demuxed access unit (the scePsmfPlayer media path, which owns its own
+ * MPEG-PS parsing). The bytes join the same ES fifo the PS demux fills, pictures are still
+ * delimited by AUD NALs, and every picture that becomes complete is immediately eligible for
+ * decoding -- the caller does not have to mirror the au_take() consumption bookkeeping.
+ * psStart is only au_take()'s consumed-byte report; on this path it is a diagnostic ES
+ * offset and no caller ever reads it back. */
+void sr_h264_submit_au(int id, const uint8_t *au, uint32_t len) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !len) return;
+    Dec *d = &s_dec[id];
+    if (d->failed) return;
+    if (!es_append(d, au, len, -1, (uint64_t)d->esLen)) { d->failed = 1; return; }
+    d->takeCk = d->nCk - (d->ckOpen ? 1u : 0u);
+}
+
 /* Decode the next frame into buffer (guest video buffer address). eos != 0 once the
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
@@ -547,7 +572,11 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
         int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride);
-        if (r > 0) return 1;
+        /* A refused destination (r == 2) is reported as "no frame written" but does NOT poison
+         * the decoder: the picture was already consumed from the MFT, the stream is still
+         * valid, and a later call with a usable buffer must keep working.  Only decoder-level
+         * failures set d->failed. */
+        if (r > 0) return r == 1 ? 1 : -1;
         if (r < 0) { d->failed = 1; return -1; }
         uint32_t ready = d->nCk - (d->ckOpen ? 1u : 0u);
         if (ready > d->takeCk) ready = d->takeCk;
@@ -556,7 +585,14 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */
         } else if (eos && d->ckOpen) {
-            d->ckOpen = 0;                  /* end of stream closes the last picture */
+            /* End of stream both closes the last picture and releases it: a caller that hands
+             * over whole access units (scePsmfPlayer) has no second AU to close the final one
+             * with, so without this the last picture of every stream was never fed. Callers that
+             * release pictures one at a time through sr_h264_au_take() have already cleared
+             * ckOpen and advanced takeCk by the time they ask for a frame, so this is inert for
+             * them. */
+            d->ckOpen = 0;
+            if (d->takeCk < d->nCk) d->takeCk = d->nCk;
         } else if (eos && !d->drained) {
             d->drained = 1;
             IMFTransform_ProcessMessage(d->xf, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
