@@ -128,6 +128,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+#define PROBE_HOST0_LOG "host0:/model_profile_log.txt"
 #endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE

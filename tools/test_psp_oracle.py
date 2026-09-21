@@ -376,6 +376,7 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("PSP_ORACLE_CASE_MODEL_PROFILE", self.probe)
         self.assertIn("kuKernelGetModel()", self.probe)
         self.assertIn("sceKernelDevkitVersion()", self.probe)
+        self.assertIn('PROBE_HOST0_LOG "host0:/model_profile_log.txt"', self.probe)
         self.assertIn("-lpspkubridge", self.makefile)
 
     def test_system_manifest_exposes_the_model_profile_case(self) -> None:
