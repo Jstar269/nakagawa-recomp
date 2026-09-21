@@ -1019,11 +1019,20 @@ try {
             Get-Content "$LogDir/difffunc_err.log" -Tail 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
         }
         if (Test-Path $outTrace) {
+            # funcdiff_cmp.py fail-closed contract (issue #381):
+            #   funcdiff_cmp.py <oracle-trace> <recomp-trace> <entry-step>
+            # Exit 0 only when at least one step is compared, the oracle covers every
+            # recomp step from <entry-step> onward, and all compared steps match.
             $cmpTool = Join-Path $script:RepoRoot "tools\funcdiff_cmp.py"
             if (Test-Path $cmpTool) {
                 Write-Host "Comparing with oracle via funcdiff_cmp.py..." -ForegroundColor Cyan
-                python $cmpTool $outTrace $Oracle 2>&1 | Select-Object -First 20 |
+                python $cmpTool $Oracle $outTrace $Step 2>&1 | Select-Object -First 20 |
                     ForEach-Object { Write-Host "  $_" }
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "[PASS] funcdiff comparison matched" -ForegroundColor Green
+                } else {
+                    Write-Host "[FAIL] funcdiff comparison failed (exit $LASTEXITCODE)" -ForegroundColor Red
+                }
             }
         }
     }
