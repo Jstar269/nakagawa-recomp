@@ -6867,7 +6867,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "55fcff3c884b8037b3c51c5e71424895bdc8d9bc20d33d2eff3e6592b7b34d0a"
+      "sha256": "52d7c0e21ce7d868a5311653ef8817d118c8bf793c9d1bde41f58cfdbff1a675"
     },
     {
       "path": "tools/gate_stub.c",
@@ -8321,7 +8321,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e1635636f8eb69930c88565116025a054cbb8c6368bda064a37106889287e9d"
+      "sha256": "ff155dfb0c0057cc3a300c0c7d916b02b82d0e7cd48ae88668ce72f70887e6f0"
     },
     {
       "path": "tools/test_gate_exit_resolution.py",
