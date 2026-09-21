@@ -116,7 +116,12 @@ def snapshot_lockfile(lock_path: Path, kind: str, repo_root: Path | None = None)
 
 
 def _lock_evidence_entry(snap: LockfileSnapshot) -> dict:
-    """Evidence entry for one snapshot; identity is repo-relative or None."""
+    """Evidence summary for one snapshot; identity is repo-relative or None.
+
+    This is the internal evidence record derived from the byte snapshot (used
+    for reporting and tests); the SBOM itself carries the standards-conformant
+    `files` checksum binding built by build_lock_file_entries().
+    """
     return {
         "lockfile": snap.lockfile_identity,
         "sha256": snap.sha256,
@@ -124,16 +129,47 @@ def _lock_evidence_entry(snap: LockfileSnapshot) -> dict:
     }
 
 
-def compute_lock_evidence(npm_lock_path: Path, py_lock_path: Path,
-                          repo_root: Path | None = None) -> dict:
-    """Lockfile identity + sha256 evidence from ONE byte snapshot per lockfile."""
-    npm_snap = snapshot_lockfile(npm_lock_path, "npm", repo_root)
-    py_snap = snapshot_lockfile(py_lock_path, "Python", repo_root)
-    return {
-        "schema_version": LOCKFILE_EVIDENCE_SCHEMA_VERSION,
-        "npm": _lock_evidence_entry(npm_snap),
-        "python": _lock_evidence_entry(py_snap),
-    }
+def resolve_declared_lockfiles(manifest_data: object, manifest_path: Path) -> tuple[Path, Path, dict]:
+    """Resolve the lockfiles declared by the release manifest, fail closed.
+
+    Release evidence may only be generated from the exact lockfiles the
+    manifest declares. Missing/non-string declarations, declarations that
+    escape the repository root, and declarations pointing outside the repo
+    are all rejected. Returns (npm_lock_path, py_lock_path, lockfiles_map).
+    """
+    if not isinstance(manifest_data, dict):
+        raise LockfileParseError(
+            f"release manifest {manifest_path} must contain a JSON object"
+        )
+    lockfiles = manifest_data.get("lockfiles")
+    if not isinstance(lockfiles, dict):
+        raise LockfileParseError(
+            f"release manifest {manifest_path} has no `lockfiles` object"
+        )
+    repo_root = manifest_path.parent.parent
+    resolved: dict[str, Path] = {}
+    for ecosystem in ("npm", "python"):
+        rel_path = lockfiles.get(ecosystem)
+        if not isinstance(rel_path, str) or not rel_path:
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: {ecosystem} lockfiles entry is "
+                f"missing or not a non-empty string ({rel_path!r})"
+            )
+        declared = (repo_root / rel_path).resolve()
+        try:
+            declared.relative_to(repo_root)
+        except ValueError:
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: {ecosystem} lockfiles entry "
+                f"{rel_path!r} escapes the repository root"
+            ) from None
+        if not declared.is_file():
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: declared {ecosystem} lockfile "
+                f"{rel_path!r} is missing ({declared})"
+            )
+        resolved[ecosystem] = declared
+    return resolved["npm"], resolved["python"], lockfiles
 
 
 def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
@@ -163,37 +199,6 @@ def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
         "lock_files": lock_files,
         "lock_relationships": lock_relationships,
     }
-
-
-def verify_lock_evidence(evidence: object,
-                         lock_entries: list[tuple[str, LockfileSnapshot]]) -> list[str]:
-    """Require recorded evidence to exactly match each current byte snapshot."""
-    errors: list[str] = []
-    if not isinstance(evidence, dict):
-        return ["dependencyLockEvidence missing or not an object"]
-    if evidence.get("schema_version") != LOCKFILE_EVIDENCE_SCHEMA_VERSION:
-        errors.append(
-            f"unsupported dependencyLockEvidence schema_version {evidence.get('schema_version')!r}; "
-            f"supported: {LOCKFILE_EVIDENCE_SCHEMA_VERSION}"
-        )
-    for kind, snap in lock_entries:
-        entry = evidence.get(kind)
-        if not isinstance(entry, dict):
-            errors.append(f"dependencyLockEvidence missing {kind} lockfile entry")
-            continue
-        if entry.get("sha256") != snap.sha256:
-            errors.append(
-                f"{kind} lockfile evidence mismatch: the SBOM was generated from different "
-                f"lockfile bytes (evidence sha256 {entry.get('sha256')!r} vs current "
-                f"sha256 {snap.sha256}); regenerate the SBOM from the current lockfiles"
-            )
-        recorded_size = entry.get("size")
-        if isinstance(recorded_size, int) and recorded_size != snap.size:
-            errors.append(
-                f"{kind} lockfile evidence size mismatch: evidence {recorded_size} byte(s) vs "
-                f"current {snap.size} byte(s)"
-            )
-    return errors
 
 
 def build_lock_file_entries(npm_snap: LockfileSnapshot,
@@ -704,8 +709,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))
+    # The repository root is the parent of the manifest's assets directory;
+    # lockfile identities in release evidence derive from the manifest, not
+    # from a hardcoded path (issue #375 revision 4).
+    manifest_repo_root = args.manifest.parent.parent
     try:
-        parsed = parse_lockfiles(args.npm_lock, args.py_lock, repo_root=ROOT)
+        # Release generation may only use the exact lockfiles declared by the
+        # release manifest; the SPDX fileNames derive from those declarations,
+        # never from an arbitrary CLI path (issue #375 revision 4).
+        declared_npm_lock, declared_py_lock, _lockfiles_map = resolve_declared_lockfiles(
+            manifest_data, args.manifest
+        )
+        for supplied, declared, label in (
+            (args.npm_lock, declared_npm_lock, "npm"),
+            (args.py_lock, declared_py_lock, "Python"),
+        ):
+            if supplied.resolve() != declared:
+                raise LockfileParseError(
+                    f"{label} lockfile {supplied} is not the lockfile declared by the "
+                    f"release manifest ({declared}); release evidence may only be "
+                    "generated from the manifest-declared dependency lockfiles"
+                )
+        parsed = parse_lockfiles(declared_npm_lock, declared_py_lock,
+                                 repo_root=manifest_repo_root)
     except LockfileParseError as exc:
         # Fail closed: never emit a partial/empty-inventory SBOM because a
         # declared lockfile could not be parsed completely (issue #375).

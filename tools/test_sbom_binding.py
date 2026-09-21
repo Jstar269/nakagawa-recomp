@@ -361,6 +361,64 @@ class TestExactIdentityVerification(BindingFixture):
         errors = self.verify(spdx)
         self.assertTrue(any("expected 2 record(s), found 0" in e for e in errors), str(errors))
 
+    def test_over_represented_duplicate_installation_fails(self):
+        # A THIRD identical (purl, name, version) record must fail: exact
+        # multiplicity, not merely "at least".
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        original = next(p for p in spdx["packages"] if p.get("name") == "left-pad")
+        clone = json.loads(json.dumps(original))
+        clone["SPDXID"] = "SPDXRef-npm-left-pad-1.3.0-injected"
+        spdx["packages"].append(clone)
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("over-represented" in e and "pkg:npm/left-pad@1.3.0" in e
+                and "expected 2 record(s), found 3" in e for e in errors),
+            str(errors),
+        )
+
+    def test_unrelated_package_manager_record_fails_as_extra(self):
+        # A PACKAGE-MANAGER purl record outside the declared lockfiles is an
+        # extra and must be rejected; there is no legitimate class of non-lock
+        # PACKAGE-MANAGER record in this SBOM contract.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        spdx["packages"].append({
+            "SPDXID": "SPDXRef-npm-unrelated-1.0.0",
+            "name": "unrelated",
+            "versionInfo": "1.0.0",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/unrelated@1.0.0",
+            }],
+        })
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("Unexpected package-manager package record" in e and "pkg:npm/unrelated@1.0.0" in e
+                for e in errors),
+            str(errors),
+        )
+
+    def test_non_lock_records_are_not_treated_as_dependencies(self):
+        # The root package, provenance-family packages, and manifest components
+        # carry no PACKAGE-MANAGER purl; they must never count as (or against)
+        # lock dependency identities.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        purl_records = [p for p in spdx["packages"] if p.get("externalRefs")]
+        self.assertTrue(purl_records, "fixture sanity: dependency records exist")
+        for pkg in spdx["packages"]:
+            if pkg["SPDXID"].startswith(("SPDXRef-Package-", "SPDXRef-comp-", "SPDXRef-family-")):
+                self.assertFalse(pkg.get("externalRefs"), pkg["SPDXID"])
+        errors = self.verify(spdx)
+        self.assertEqual(errors, [], str(errors))
+
     def test_existing_repository_sbom_still_passes(self):
         # Canonical happy path: SBOM generated from the real repository
         # lockfiles with lock binding must pass exact-identity verification.
@@ -380,28 +438,147 @@ class TestExactIdentityVerification(BindingFixture):
 
 
 class TestCliBinding(unittest.TestCase):
+    def test_cli_generation_from_repository_locks_succeeds(self):
+        import subprocess
+        spdx_out = Path(tempfile.mkdtemp()) / "spdx23.json"
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "generate_sbom.py"),
+             "--spdx-out", str(spdx_out)],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(spdx_out.is_file())
+        doc = json.loads(spdx_out.read_text(encoding="utf-8"))
+        self.assertEqual(
+            sorted(f["fileName"] for f in doc["files"]),
+            [generate_sbom.NPM_LOCKFILE_IDENTITY, generate_sbom.PYTHON_LOCKFILE_IDENTITY],
+        )
+
+    def test_cli_rejects_cli_lock_outside_repo(self):
+        import subprocess
+        tmp = Path(tempfile.mkdtemp())
+        outside_lock = tmp / "package-lock.json"
+        outside_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "generate_sbom.py"),
+             "--npm-lock", str(outside_lock)],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is not the lockfile declared by the release manifest", proc.stderr)
+
+
+class TestDeclaredLockEnforcement(unittest.TestCase):
+    """Release generation must use exactly the manifest-declared lockfiles,
+    with SPDX fileNames derived from those declarations (issue #375 rev 4)."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp_path = Path(self._tmp.name)
 
-    def test_cli_generated_sbom_binds_lock_bytes_and_verifies(self):
-        npm_lock = self.tmp_path / "package-lock.json"
+    def _write_repo(self, npm_rel: str, py_rel: str) -> tuple[Path, Path, Path]:
+        """Sandbox repo: manifest at assets/, declared locks, alternate locks."""
+        npm_lock = self.tmp_path / npm_rel
+        py_lock = self.tmp_path / py_rel
+        npm_lock.parent.mkdir(parents=True, exist_ok=True)
+        py_lock.parent.mkdir(parents=True, exist_ok=True)
         npm_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
-        py_lock = self.tmp_path / "requirements-lock.txt"
         py_lock.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
-        spdx_out = self.tmp_path / "spdx23.json"
+        manifest_data = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
+        manifest_data["lockfiles"] = {"npm": npm_rel, "python": py_rel}
+        manifest_path = self.tmp_path / "assets" / "release_manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8", newline="\n")
+        return manifest_path, npm_lock, py_lock
 
-        import subprocess
-        proc = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "generate_sbom.py"),
-             "--manifest", str(RELEASE_MANIFEST),
-             "--npm-lock", str(npm_lock), "--py-lock", str(py_lock),
-             "--spdx-out", str(spdx_out)],
-            capture_output=True, text=True, cwd=ROOT,
+    def _run_main(self, manifest_path: Path, npm_lock: Path, py_lock: Path) -> int:
+        return generate_sbom.main([
+            "--manifest", str(manifest_path),
+            "--npm-lock", str(npm_lock),
+            "--py-lock", str(py_lock),
+            "--spdx-out", str(self.tmp_path / "out" / "spdx23.json"),
+        ])
+
+    def test_canonical_manifest_and_locks_succeed(self):
+        manifest_path, npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        code = self._run_main(manifest_path, npm_lock, py_lock)
+        self.assertEqual(code, 0)
+        doc = json.loads(
+            (self.tmp_path / "out" / "spdx23.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            sorted(f["fileName"] for f in doc["files"]),
+            [generate_sbom.NPM_LOCKFILE_IDENTITY, generate_sbom.PYTHON_LOCKFILE_IDENTITY],
         )
-        self.assertNotEqual(proc.returncode, 0)  # fixture locks are outside ROOT
-        self.assertIn("outside the repository root", proc.stderr)
+
+    def test_repo_contained_alternate_lock_path_is_rejected(self):
+        # The alternate lock exists inside the repo but the manifest does not
+        # declare it: generation must fail closed even though parsing would work.
+        manifest_path, _npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        alternate = self.tmp_path / "interface" / "alternate-package-lock.json"
+        alternate.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
+        code = self._run_main(manifest_path, alternate, py_lock)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.tmp_path / "out" / "spdx23.json").exists())
+
+    def test_cli_and_manifest_disagreement_is_rejected(self):
+        # Both locks exist and are inside the repo, but the CLI points at the
+        # alternate copy while the manifest declares the canonical one.
+        manifest_path, npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        alternate = self.tmp_path / "interface" / "alternate-package-lock.json"
+        alternate.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
+        code = self._run_main(manifest_path, alternate, py_lock)
+        self.assertEqual(code, 1)
+
+    def test_manifest_escaping_lock_declaration_is_rejected(self):
+        manifest_path, npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        outside = Path(tempfile.mkdtemp()) / "requirements-lock.txt"
+        outside.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_data["lockfiles"]["python"] = "../evil-requirements-lock.txt"
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8", newline="\n")
+        # The escaped target must not need to exist for the rejection, but
+        # point --py-lock at the outside file to simulate the mismatch too.
+        code = self._run_main(manifest_path, npm_lock, outside)
+        self.assertEqual(code, 1)
+
+    def test_missing_manifest_lock_declaration_is_rejected(self):
+        manifest_path, npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest_data["lockfiles"]["python"]
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8", newline="\n")
+        code = self._run_main(manifest_path, npm_lock, py_lock)
+        self.assertEqual(code, 1)
+
+    def test_non_string_manifest_lock_declaration_is_rejected(self):
+        manifest_path, npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_data["lockfiles"]["npm"] = 42
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8", newline="\n")
+        code = self._run_main(manifest_path, npm_lock, py_lock)
+        self.assertEqual(code, 1)
+
+    def test_declared_but_missing_lockfile_is_rejected(self):
+        manifest_path, _npm_lock, py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        (self.tmp_path / "interface" / "package-lock.json").unlink()
+        code = self._run_main(manifest_path, _npm_lock, py_lock)
+        self.assertEqual(code, 1)
+
+    def test_resolve_declared_lockfiles_rejects_escaping_declaration(self):
+        manifest_path, _npm_lock, _py_lock = self._write_repo(
+            "interface/package-lock.json", "tools/requirements-lock.txt")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_data["lockfiles"]["npm"] = "../outside/package-lock.json"
+        with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
+            generate_sbom.resolve_declared_lockfiles(manifest_data, manifest_path)
+        self.assertIn("escapes the repository root", str(ctx.exception))
 
 
 if __name__ == "__main__":

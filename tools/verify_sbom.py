@@ -223,13 +223,15 @@ def _lock_relationship_errors(spdx_data: dict) -> list[str]:
 def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Path, py_lock_path: Path) -> list[str]:
     """Verify the SPDX 2.3 SBOM against the exact current lockfile inventory.
 
-    Every parsed lock dependency must appear under its exact identity
-    (purl = ecosystem + name + version), preserving multiplicity: a correct
-    name with the wrong version fails, and removing one of two duplicate
-    npm name+version installations fails. The SBOM's dependencyLockEvidence
-    (sha256 of the lockfile bytes at generation time) must exactly match the
-    current lockfile bytes, so a stale SBOM cannot pass after the lockfiles
-    change (issue #375).
+    The Counter of package-manager dependency identities (purl, name,
+    versionInfo) recorded in the SBOM must exactly equal the Counter derived
+    from the parsed npm/Python lock inventories: exact identity AND exact
+    multiplicity, in both directions. A correct name with the wrong version,
+    a removed duplicate installation, and an over-represented duplicate
+    installation all fail, as does any unrelated PACKAGE-MANAGER purl record
+    that is not a lock dependency. The SBOM's `files` checksum entries for
+    the declared lockfiles must exactly match the current lockfile bytes, so
+    a stale SBOM cannot pass after the lockfiles change (issue #375).
     """
     errors = []
     if not spdx_path.is_file():
@@ -301,12 +303,36 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         expected_identities: list[tuple[str, str, str]] = [
             (pkg["purl"], pkg["name"], pkg["version"]) for pkg in [*npm_pkgs, *py_pkgs]
         ]
-        for (purl, name, version), expected_count in Counter(expected_identities).items():
+        # Exact multiplicity in BOTH directions: the SBOM's package-manager
+        # dependency identities must equal the lock-derived Counter exactly —
+        # under-representation (removed/wrong-version dependencies) and
+        # over-representation (extra duplicate records, or any unrelated
+        # PACKAGE-MANAGER purl record outside the declared lockfiles) both fail.
+        # The root package, provenance-family packages, and release-manifest
+        # components carry no PACKAGE-MANAGER purl and are never mistaken for
+        # lock dependencies; outside the declared lockfiles there is no
+        # legitimate class of non-lock PACKAGE-MANAGER record.
+        expected_counter = Counter(expected_identities)
+        expected_purls = {identity[0] for identity in expected_counter}
+        for (purl, name, version), expected_count in sorted(expected_counter.items()):
             found = identity_counter.get((purl, name, version), 0)
             if found < expected_count:
                 errors.append(
                     f"Lock dependency identity missing or under-represented in SPDX SBOM: "
                     f"{purl} (expected {expected_count} record(s), found {found})"
+                )
+            elif found > expected_count:
+                errors.append(
+                    f"Lock dependency identity over-represented in SPDX SBOM: {purl} "
+                    f"(expected {expected_count} record(s), found {found}); the SBOM must "
+                    "carry exactly the lockfile dependency inventory"
+                )
+        for (purl, name, version), extra_count in sorted(identity_counter.items()):
+            if purl not in expected_purls:
+                errors.append(
+                    f"Unexpected package-manager package record in SPDX SBOM: {purl} "
+                    f"({extra_count} record(s)); records outside the declared dependency "
+                    "lockfiles are not accepted"
                 )
 
     except Exception as exc:

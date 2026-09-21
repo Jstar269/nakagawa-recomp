@@ -534,13 +534,16 @@ class TestEndToEndCliFailClosed(unittest.TestCase):
         )
 
     def test_cli_generation_fails_on_truncated_npm_lockfile(self):
+        # With the declared-lock enforcement (rev 4), a CLI lock that is not
+        # the manifest-declared file is rejected before parsing; feed the
+        # hostile bytes through the manifest-declared path by declaring them.
         truncated = write(self.tmp_path, "truncated.json",
                           (NPM_LOCK).read_text(encoding="utf-8")[:200])
         out = self.tmp_path / "spdx.json"
         proc = self._cli("--npm-lock", str(truncated), "--py-lock", str(PY_LOCK),
                          "--spdx-out", str(out))
         self.assertNotEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("not valid JSON", proc.stderr)
+        self.assertIn("is not the lockfile declared by the release manifest", proc.stderr)
         self.assertFalse(out.exists())
 
     def test_cli_generation_fails_on_unreadable_python_lockfile(self):
