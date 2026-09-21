@@ -13039,8 +13039,8 @@ static void hle_register_cancel_release_handlers(void) {
 #ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
 #define SCE_KERNEL_ERROR_WAIT_CANCEL                0x800201A9u
 #endif
-#define SCE_KERNEL_ERROR_WAIT_DELETE                0x800201B5u
-/* WAIT_TIMEOUT, CAN_NOT_WAIT and ILLEGAL_COUNT are already defined above, next to
+/* SCE_KERNEL_ERROR_WAIT_DELETE is defined above with the semaphore oracle values.
+ * WAIT_TIMEOUT, CAN_NOT_WAIT and ILLEGAL_COUNT are already defined above, next to
  * the PSPAutotests oracle citations that establish their values. Re-defining them
  * here produced three -Wmacro-redefined warnings on every build of this file. */
 #define SCE_KERNEL_ERROR_ILLEGAL_ATTR               0x80020191u
