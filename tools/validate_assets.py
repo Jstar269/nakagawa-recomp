@@ -7,16 +7,41 @@ Automated Asset Validation & Regression Script (validate_assets.py)
 ==================================================================
 Cross-examines extracted textures, sounds, and layouts against golden references,
 validates GIM palettes, and checks SGD sound stream links.
+
+Fail-closed contract (issue #376): every inventory_map.json discovered under the
+target tree must be readable, well-formed JSON, and schema-valid, and at least
+one inventory must parse for the run to succeed. An inventory that cannot be
+fully examined is a validation failure, never a silent skip: zero successfully
+parsed inventories cannot report SUCCESS, one bad inventory among good ones
+fails the whole run, and a .gim asset with an invalid or truncated GIM header is
+reported as a corruption failure rather than a successful palette skip. GIM
+block offsets and sizes are bounds-checked before every field read, with the
+offending block kept in the diagnostic.
 """
 
-import os
-import sys
-import json
-import hashlib
-import struct
-import re
+from __future__ import annotations
+
 import argparse
-from typing import Tuple
+import hashlib
+import json
+import os
+import re
+import struct
+import sys
+
+GIM_MAGIC = b"MIG.00.1PSP"
+GIM_HEADER_SIZE = 16
+GIM_BLOCK_HEADER_SIZE = 16
+GIM_MAX_SCAN_DEPTH = 16
+
+# The inventory schema written by tools/extract_xb.py process_extracted_directory.
+INVENTORY_CATEGORIES = ("textures", "sounds", "scene_graphs", "other")
+INVENTORY_ITEM_KEYS = ("name", "path", "size_bytes")
+
+
+class InventoryError(Exception):
+    """An inventory_map.json could not be read, parsed, or fails the schema."""
+
 
 def compute_md5(fpath: str) -> str:
     """Compute MD5 hash of a file."""
@@ -29,47 +54,102 @@ def compute_md5(fpath: str) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def check_gim_palette(gim_path: str) -> Tuple[bool, str]:
-    """Parse GIM file blocks to check if indexed textures have valid non-empty palettes."""
+
+def _gim_u16(data: bytes, offset: int) -> int:
+    if offset + 2 > len(data):
+        raise IndexError(f"u16 read at {offset:#x} is past end of data ({len(data)} bytes)")
+    return struct.unpack_from("<H", data, offset)[0]
+
+
+def _gim_u32(data: bytes, offset: int) -> int:
+    if offset + 4 > len(data):
+        raise IndexError(f"u32 read at {offset:#x} is past end of data ({len(data)} bytes)")
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def check_gim_palette(gim_path: str) -> tuple[bool, str]:
+    """Parse GIM file blocks to check if indexed textures have valid non-empty palettes.
+
+    The caller only invokes this for .gim-classified assets, so a file without a
+    readable GIM header is a corruption failure, not a successful skip.
+    """
     try:
         with open(gim_path, "rb") as f:
             data = f.read()
     except Exception as e:
         return False, f"Failed to read file: {e}"
 
-    if len(data) < 16 or data[0:11] != b"MIG.00.1PSP":
-        return True, "Skipped (not a valid GIM header)"
+    if len(data) < GIM_HEADER_SIZE:
+        return False, (
+            f"Truncated GIM header: file is {len(data)} bytes, "
+            f"a GIM header needs {GIM_HEADER_SIZE}"
+        )
+    if data[0:11] != GIM_MAGIC:
+        return False, f"Invalid GIM header magic: expected MIG.00.1PSP, got {data[0:11]!r}"
 
     has_image = False
     has_palette = False
-    fmt = None
+    fmt: int | None = None
     palette_size = 0
+    blocks_seen = 0
 
-    def scan_blocks(offset: int, limit: int):
-        nonlocal has_image, has_palette, fmt, palette_size
-        while offset + 16 <= limit:
-            block_id = struct.unpack_from("<H", data, offset)[0]
-            block_size = struct.unpack_from("<I", data, offset + 4)[0]
-            hdr_size = struct.unpack_from("<I", data, offset + 12)[0]
-            if block_size == 0 or offset + block_size > limit:
-                break
+    def scan_blocks(offset: int, limit: int, depth: int = 0) -> None:
+        nonlocal has_image, has_palette, fmt, palette_size, blocks_seen
+        if depth > GIM_MAX_SCAN_DEPTH:
+            raise IndexError(f"container nesting deeper than {GIM_MAX_SCAN_DEPTH} levels")
+        while offset + GIM_BLOCK_HEADER_SIZE <= limit:
+            blocks_seen += 1
+            block_id = _gim_u16(data, offset)
+            block_size = _gim_u32(data, offset + 4)
+            hdr_size = _gim_u32(data, offset + 12)
+            if block_size == 0:
+                raise IndexError(f"zero-sized block at offset {offset:#x}")
+            if block_size < GIM_BLOCK_HEADER_SIZE:
+                raise IndexError(
+                    f"block at offset {offset:#x} declares size {block_size} below the block header size"
+                )
+            if offset + block_size > limit:
+                raise IndexError(
+                    f"block at offset {offset:#x} ({block_size} bytes) extends past end of data"
+                )
+            if hdr_size < GIM_BLOCK_HEADER_SIZE or hdr_size > block_size:
+                raise IndexError(
+                    f"block at offset {offset:#x} declares invalid header size {hdr_size}"
+                )
             content = offset + hdr_size
-            if block_id == 0x0004:
-                fmt = struct.unpack_from("<H", data, content + 4)[0]
-                has_image = True
-            elif block_id == 0x0005:
-                has_palette = True
-                p_off = struct.unpack_from("<I", data, content + 28)[0]
-                p_end = struct.unpack_from("<I", data, content + 32)[0]
-                palette_size = p_end - p_off
-            elif block_id in (0x0002, 0x0003):
-                scan_blocks(content, offset + block_size)
+            if content > limit:
+                raise IndexError(f"block at offset {offset:#x} has content past end of data")
+            try:
+                if block_id == 0x0004:
+                    fmt = _gim_u16(data, content + 4)
+                    has_image = True
+                elif block_id == 0x0005:
+                    has_palette = True
+                    p_off = _gim_u32(data, content + 28)
+                    p_end = _gim_u32(data, content + 32)
+                    block_end = offset + block_size
+                    if p_off > p_end:
+                        raise IndexError(f"palette offsets inverted (start {p_off} > end {p_end})")
+                    if p_end > block_end:
+                        raise IndexError(
+                            f"palette end {p_end} extends past its block end {block_end}"
+                        )
+                    palette_size = p_end - p_off
+                elif block_id in (0x0002, 0x0003):
+                    scan_blocks(content, offset + block_size, depth + 1)
+            except IndexError as e:
+                raise IndexError(f"{e} (in 0x{block_id:04x} block at offset {offset:#x})") from None
             offset += block_size
 
     try:
-        scan_blocks(16, len(data))
-    except Exception as e:
+        scan_blocks(GIM_HEADER_SIZE, len(data))
+    except IndexError as e:
         return False, f"Corrupted GIM block structure: {e}"
+
+    if blocks_seen == 0:
+        return False, (
+            "Truncated GIM body: no complete block header after the file header"
+        )
 
     if fmt in (4, 5):  # T4 or T8 indexed formats
         if not has_palette:
@@ -79,6 +159,7 @@ def check_gim_palette(gim_path: str) -> Tuple[bool, str]:
         return True, f"Valid T{4 if fmt == 4 else 8} palette ({palette_size} bytes)"
 
     return True, f"Direct color format ({fmt})"
+
 
 def _normalize_asset_path(p: str) -> str:
     """Normalize a path for cross-folder comparison: lowercase, forward-slashed,
@@ -90,7 +171,7 @@ def _normalize_asset_path(p: str) -> str:
     return norm.lstrip("/")
 
 
-def check_sgd_stream_links(sgd_path: str, local_files_lower: set, local_full_lower: set) -> Tuple[bool, str]:
+def check_sgd_stream_links(sgd_path: str, local_files_lower: set, local_full_lower: set) -> tuple[bool, str]:
     """Scan SGD binary file for references to stream files (.sgb, .vag, .at3, .wav) and verify they exist.
 
     Matching prefers the FULL normalized relative path (so two files with the same
@@ -134,6 +215,90 @@ def check_sgd_stream_links(sgd_path: str, local_files_lower: set, local_full_low
     if ambiguous:
         return True, f"OK (verified {len(checked_links)} stream references; ambiguous basename matches: {', '.join(ambiguous)})"
     return True, f"OK (verified {len(checked_links)} stream references)"
+
+
+def _load_inventory(inv_path: str) -> dict:
+    """Read and JSON-parse one inventory_map.json, failing closed."""
+    try:
+        with open(inv_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        raise InventoryError(f"unreadable ({e})") from None
+    except UnicodeDecodeError as e:
+        raise InventoryError(f"not valid UTF-8 text ({e})") from None
+    try:
+        inv = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise InventoryError(f"malformed JSON ({e})") from None
+    if not isinstance(inv, dict):
+        raise InventoryError(f"top-level JSON value must be an object, got {type(inv).__name__}")
+    return inv
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _path_is_contained(rel_path: str) -> bool:
+    """True for a relative, non-escaping asset path (no drive, root, or `..`)."""
+    if rel_path[:1] in ("/", "\\") or re.match(r"^[A-Za-z]:", rel_path):
+        return False
+    return ".." not in rel_path.replace("\\", "/").split("/")
+
+
+def validate_inventory_shape(inv: dict) -> list[str]:
+    """Return the schema violations of one parsed inventory (empty list = valid).
+
+    The schema is the one `tools/extract_xb.py process_extracted_directory`
+    writes: the four category keys, each a list of objects carrying a string
+    `name`, a relative string `path`, and a non-negative integer `size_bytes`.
+    The optional `rejected` list (added by the extractor security work) is only
+    loosely shape-checked so inventories from older extractions still validate.
+    """
+    problems: list[str] = []
+    for cat in INVENTORY_CATEGORIES:
+        if cat not in inv:
+            problems.append(f"missing required category '{cat}'")
+            continue
+        items = inv[cat]
+        if not isinstance(items, list):
+            problems.append(f"category '{cat}' must be a list, got {type(items).__name__}")
+            continue
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                problems.append(f"{cat}[{idx}]: item must be an object, got {type(item).__name__}")
+                continue
+            for key in INVENTORY_ITEM_KEYS:
+                if key not in item:
+                    problems.append(f"{cat}[{idx}]: missing required key '{key}'")
+            name = item.get("name")
+            if "name" in item and (not isinstance(name, str) or not name):
+                problems.append(f"{cat}[{idx}]: 'name' must be a non-empty string")
+            path = item.get("path")
+            if "path" in item and (not isinstance(path, str) or not path):
+                problems.append(f"{cat}[{idx}]: 'path' must be a non-empty string")
+            elif isinstance(path, str) and not _path_is_contained(path):
+                problems.append(f"{cat}[{idx}]: 'path' {path!r} escapes the inventory directory")
+            size = item.get("size_bytes")
+            if "size_bytes" in item and not (_is_int(size) and size >= 0):
+                problems.append(f"{cat}[{idx}]: 'size_bytes' must be a non-negative integer")
+
+    rejected = inv.get("rejected")
+    if rejected is not None:
+        if not isinstance(rejected, list):
+            problems.append("category 'rejected' must be a list when present")
+        else:
+            for idx, item in enumerate(rejected):
+                if not isinstance(item, dict) or not isinstance(item.get("reason"), str):
+                    problems.append(f"rejected[{idx}]: must be an object with a string 'reason'")
+    return problems
+
+
+def _display_path(path: str, extracted_dir: str) -> str:
+    """Show a discovered path relative to the target tree when it lives inside it."""
+    rel = os.path.relpath(path, extracted_dir).replace(os.sep, "/")
+    return path if rel.startswith("..") else rel
+
 
 def main():
     parser = argparse.ArgumentParser(description="HST Asset Regression and Verification Suite")
@@ -197,34 +362,47 @@ def main():
     palette_failures = []
     stream_failures = []
     missing_from_golden = []
+    inventory_failures = []
+    inventories_discovered = len(inventories)
+    inventories_parsed = 0
     total_checked = 0
 
     for inv_path in inventories:
         inv_dir = os.path.dirname(inv_path)
         rel_inv_dir = os.path.relpath(inv_dir, extracted_dir)
         try:
-            with open(inv_path, "r", encoding="utf-8") as f:
-                inv = json.load(f)
-        except Exception as e:
+            inv = _load_inventory(inv_path)
+        except InventoryError as e:
             print(f"Error reading index {inv_path}: {e}")
+            inventory_failures.append((inv_path, str(e)))
             continue
 
-        # Items are categorized in: textures, sounds, scene_graphs, other
-        categories = ["textures", "sounds", "scene_graphs", "other"]
-        for cat in categories:
-            items = inv.get(cat, [])
-            for item in items:
-                rel_path = item.get("path")
-                if not rel_path:
-                    continue
+        shape_problems = validate_inventory_shape(inv)
+        if shape_problems:
+            summary = "; ".join(shape_problems[:5])
+            if len(shape_problems) > 5:
+                summary += f" (and {len(shape_problems) - 5} more)"
+            print(f"Error reading index {inv_path}: schema violations: {summary}")
+            inventory_failures.append((inv_path, f"schema violations: {summary}"))
+            continue
 
+        inventories_parsed += 1
+
+        # Items are categorized in: textures, sounds, scene_graphs, other
+        for cat in INVENTORY_CATEGORIES:
+            for item in inv[cat]:
+                rel_path = item["path"]
                 full_path = os.path.join(inv_dir, rel_path)
                 if not os.path.isfile(full_path):
                     mismatches.append((rel_path, "File missing on disk"))
                     continue
 
-                # Compute current hash
-                h = compute_md5(full_path)
+                try:
+                    h = compute_md5(full_path)
+                except OSError as e:
+                    mismatches.append((rel_path, f"Unreadable asset: {e}"))
+                    continue
+
                 # Store in bootstrap database
                 db_key = os.path.join(rel_inv_dir, rel_path).replace("\\", "/")
                 new_ref_hashes[db_key] = h
@@ -254,13 +432,22 @@ def main():
 
     # Summary and execution outcomes
     print("\n--- Asset Validation Summary ---")
-    print(f"Total files analyzed: {total_checked}")
-    print(f"Hash mismatches:      {len(mismatches)}")
-    print(f"Palette failures:     {len(palette_failures)}")
-    print(f"Sound link failures:  {len(stream_failures)}")
-    print(f"Missing from golden:  {len(missing_from_golden)}")
+    print(f"Inventories discovered: {inventories_discovered}")
+    print(f"Inventories parsed:     {inventories_parsed}")
+    print(f"Inventories failed:     {len(inventory_failures)}")
+    print(f"Total files analyzed:   {total_checked}")
+    print(f"Hash mismatches:        {len(mismatches)}")
+    print(f"Palette failures:       {len(palette_failures)}")
+    print(f"Sound link failures:    {len(stream_failures)}")
+    print(f"Missing from golden:    {len(missing_from_golden)}")
 
-    if args.bootstrap:
+    if args.bootstrap and inventory_failures:
+        print(
+            "\n[!] Refusing to bootstrap a golden reference manifest: "
+            "the target tree was not completely examined "
+            f"({len(inventory_failures)} of {inventories_discovered} inventories failed)."
+        )
+    elif args.bootstrap:
         try:
             with open(ref_path, "w", encoding="utf-8") as f:
                 json.dump(new_ref_hashes, f, indent=4)
@@ -271,6 +458,14 @@ def main():
 
     # Report detailed failures
     success = True
+    if inventory_failures:
+        success = False
+        print("\n[!] Inventory Index Failures (unreadable, malformed, or schema-invalid):")
+        for path, err in inventory_failures[:15]:
+            print(f"  - {_display_path(path, extracted_dir)}: {err}")
+        if len(inventory_failures) > 15:
+            print(f"  ...and {len(inventory_failures) - 15} more.")
+
     if mismatches:
         success = False
         print("\n[!] Hash Corruptions / Mismatches:")
@@ -305,12 +500,17 @@ def main():
             success = False
             print("    (--strict set: treating missing-from-golden as failure)")
 
+    if inventories_discovered and not inventories_parsed:
+        success = False
+        print("\n[!] No inventory could be parsed; the target tree was not fully examined.")
+
     if success:
         print("\n[+] Verification SUCCESS: All asset validations passed successfully.")
         sys.exit(0)
     else:
         print("\n[!] Verification FAILED: Diagnostics reported regressions.")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
