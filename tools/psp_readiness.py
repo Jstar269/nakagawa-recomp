@@ -118,7 +118,14 @@ def _psplink_wsl_device() -> tuple[bool, str]:
     the PSPLink PID, never the mass-storage PID.
     """
 
-    wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    # Tests and supported callers may model Windows while running on a
+    # non-Windows host.  Python 3.14's shutil.which consults _winapi for that
+    # modeled platform, which is absent outside Windows; a detector failure is
+    # equivalent to an unavailable WSL fallback, not a readiness error.
+    try:
+        wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    except (AttributeError, OSError):
+        return False, ""
     if not wsl:
         return False, ""
     code, output = _run(
