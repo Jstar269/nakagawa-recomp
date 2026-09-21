@@ -211,14 +211,13 @@ static Probe probe(uint32_t target, uint32_t pc, uint32_t ra) {
 /* dispatch() reports a completed callback walk as v0 = 1, pc = ra. Nothing else does. */
 static int terminated(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
 
-/* The generic outcome for a target no binding claims. Target 0 is consumed by the
- * NULL_CALL policy hook (v0 = 0, pc = ra); anything else is rejected without fabricated
- * register/PC progress. dispatch() turns that negative result into process termination. */
+/* The generic outcome for a target no binding claims: reject it without fabricated
+ * register/PC progress. This includes null, data-looking, historical resource-handle,
+ * unresolved-PLT and module-table values. dispatch() turns that negative result into
+ * process termination. */
 static int generic_outcome(Probe p, uint32_t target) {
+    (void)target;
     if (p.body_ran) return 0;
-    if (target == 0u)
-        return p.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF &&
-               p.v0 == 0u && p.pc == p.ra;
     return p.dispatch_result < 0 && p.v0 == 0xdeadbeefu && p.pc == p.pc_before;
 }
 
@@ -821,11 +820,11 @@ static void test_retired_bindings_are_inert(void) {
               "(v0=0x%08x pc=0x%08x)", retired_alias_from, p.v0, p.pc);
     }
 
-    /* The retired null-callback terminator: target 0 at ra = 0x0003e06c. */
+    /* Null is a data pointer, never a generic success return. */
     if (!sr_title_config_is_callback_terminator(0u, PROBE_PC, 0x0003e06cu)) {
         Probe p = probe(0u, PROBE_PC, 0x0003e06cu);
-        CHECK(!terminated(p), "retired null terminator (ra=0x0003e06c) still reports "
-              "completion in configuration \"%s\"", sr_title_config()->source_id);
+        CHECK(!terminated(p), "unconfigured null target (ra=0x0003e06c) reports completion "
+              "in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, 0u), "target 0 at the retired site is not ordinary "
               "null-call policy (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
     }
@@ -837,6 +836,25 @@ static void test_retired_bindings_are_inert(void) {
               "reports completion in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, UINT32_MAX), "target -1 at the retired site is not an "
               "ordinary dispatch miss (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
+    }
+}
+
+/* Historical HST-era target shapes are hostile inputs, not dispatch contracts.  This
+ * source-owned matrix is deliberately kept outside the title configuration so a broad
+ * pattern reintroduced into recomp.c fails immediately. */
+static void test_historical_target_shapes_fail_closed(void) {
+    static const uint32_t targets[] = {
+        0x33000010u, 0x44000010u, 0x55000010u, 0x88000010u,
+        0x5b0ca3f8u, 0x27dfcb14u, 0x656a6f72u, 0x32305f34u,
+        0x002cf338u, 0x0b000100u, 0x0000100cu, 0xdeadbeefu,
+        0u,
+    };
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; ++i) {
+        Probe p = probe(targets[i], PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, targets[i]),
+              "historical/data-looking target 0x%08x was swallowed or advanced "
+              "instead of failing closed (result=%d v0=0x%08x pc=0x%08x)",
+              targets[i], p.dispatch_result, p.v0, p.pc);
     }
 }
 
@@ -1161,6 +1179,7 @@ int main(int argc, char **argv) {
     test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
     test_retired_bindings_are_inert();
+    test_historical_target_shapes_fail_closed();
     test_configured_aliases_redirect();
     test_foreign_aliases_do_not_redirect();
     test_configured_terminators_match_their_site_only();

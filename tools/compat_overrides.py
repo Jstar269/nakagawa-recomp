@@ -291,50 +291,17 @@ HST_SIMPLE_STUBS = [
 
 # --- src/rt/recomp.c: g_exact_hooks[] / g_range_hooks[] DispatchHook tables -
 DISPATCH_HOOKS = [
-    dict(address=0x00304290, category="temporary_compatibility_patch", name="INIT_LANG",
-         reason="runs the real language-init function, then force-writes the JP-locale flag "
-                "at 0x30fbfd that the CSV loader needs for asset-path selection",
-         test="none"),
     dict(address=0x000104b0, category="diagnostic", name="ALLOC_REQ",
          reason="SR_ALLOC_TRACE-gated log of malloc requests; always falls through unchanged",
          test="none"),
     dict(address=0x000104e0, category="diagnostic", name="FREE_REQ",
          reason="SR_ALLOC_TRACE-gated log of free requests; always falls through unchanged",
          test="none"),
-    dict(address=0x0001b6c4, category="temporary_compatibility_patch", name="HINSERT",
-         reason="guards a linear-probe hash insert against an infinite wrap when the table's "
-                "capacity is 0, returning early instead of letting the real routine spin",
-         test="none"),
     dict(address=0x0001b584, category="diagnostic", name="HFILL",
          reason="traces hash_fill entry, then always delegates to the real function",
          test="none"),
-    dict(address=0x656a6f72, category="temporary_compatibility_patch", name="NULL_CALL_A",
-         reason="dispatch to a garbage/ASCII-looking target (corrupted vtable slot or "
-                "misread data) is logged and turned into a harmless return instead of a crash",
-         test="none"),
-    dict(address=0x00000000, category="temporary_compatibility_patch", name="NULL_CALL_B",
-         reason="dispatch to a literal null function pointer is logged and turned into a "
-                "harmless return instead of a crash",
-         test="none"),
-    dict(address=0x32305f34, category="temporary_compatibility_patch", name="SCEDMAC",
-         reason="a known bad target (an sceDmac string literal misread as a function pointer) "
-                "is treated as a no-op",
-         test="none"),
     dict(address=0x00018130, category="diagnostic", name="FMT_TRACE",
          reason="traces the format-parser integer handler, then always delegates to the real function",
-         test="none"),
-    dict(address=0x0000ef40, category="temporary_compatibility_patch", name="MODTABLE_WALK",
-         reason="replaces the module-registration table walker with a one-shot success return; "
-                "defensive fallback for a walk that would otherwise loop indefinitely against "
-                "an unseeded reent table",
-         test="none"),
-    dict(address=0x002cf338, category="temporary_compatibility_patch", name="_REENT_DATA",
-         reason="the newlib _reent struct's address (a DATA address, never a real code target) "
-                "is dispatched as a function pointer by the module-table walker; caught and "
-                "returned success instead of accumulating hundreds of miss messages",
-         test="none"),
-    dict(address=0x0B000100, category="temporary_compatibility_patch", name="MOD_STUB",
-         reason="returns success for an unregistered PRX module function pointer",
          test="none"),
     dict(address=0x00000ec0, category="diagnostic", name="THUNK_A",
          reason="logs thunk dispatches through the function-pointer slot at 0x2CED08; always "
@@ -342,11 +309,6 @@ DISPATCH_HOOKS = [
          test="none"),
     dict(address=0x00000ee4, category="diagnostic", name="THUNK_B",
          reason="see 0xec0 (THUNK_A) -- same trace hook, second thunk slot",
-         test="none"),
-    dict(address=0x0000100c, category="hle_boundary", name="PLT_TRAMP",
-         reason="an unresolved PLT trampoline slot (no HLE handler registered for that "
-                "import); returns an honest r2=0 failure to the caller rather than looping "
-                "self-referentially forever",
          test="none"),
     dict(address=0x00102e1c, category="diagnostic", name="PLT_WALK_1",
          reason="registered with a no-op handler (always falls through); its only effect is "
@@ -356,15 +318,7 @@ DISPATCH_HOOKS = [
          reason="see 0x102e1c (PLT_WALK_1)",
          test="none"),
 ]
-DISPATCH_RANGE_HOOKS = [
-    dict(address=None, category="temporary_compatibility_patch", name="RESOURCE_HANDLE",
-         reason="a broad pattern match (top byte 0x33/0x44/0x55/0x88, or two specific magic "
-                "values) that treats any dispatch target shaped like a packed ECS/resource "
-                "handle as a harmless no-op instead of a crash. The single riskiest entry in "
-                "this manifest: it is a pattern, not a specific address, so it can silently "
-                "swallow a genuine bug anywhere those bit patterns occur as a target.",
-         test="none"),
-]
+DISPATCH_RANGE_HOOKS = []  # Issue #362: no generic target-pattern swallowing.
 
 # --- src/rt/sched.c and src/rt/recomp.c: behavior-altering scheduler hooks --
 # Documented manually (not mechanically cross-checked by test_compat_manifest.py --

@@ -652,11 +652,12 @@ class CompatManifestCoverageTests(unittest.TestCase):
 
     def test_dispatch_range_hooks_are_documented_by_name(self):
         found_names: set[str] = {name for _addr, name in extract_dispatch_hook_table("g_range_hooks")}
-        self.assertGreater(len(found_names), 0, "g_range_hooks[] parsed as empty -- regex likely broken")
+        # Empty is intentional for issue #362: no generic range predicate may swallow
+        # historical target-shaped values. Equality remains the parser/census guard.
         documented_names: set[str] = {str(o["name"]) for o in compat_overrides.DISPATCH_RANGE_HOOKS if "name" in o}
-        self.assertEqual(found_names - documented_names, set(),
-                          f"src/rt/recomp.c g_range_hooks[] entries not in "
-                          f"tools/compat_overrides.py DISPATCH_RANGE_HOOKS: {found_names - documented_names}")
+        self.assertEqual(found_names, documented_names,
+                          f"src/rt/recomp.c g_range_hooks[] and tools/compat_overrides.py "
+                          f"DISPATCH_RANGE_HOOKS disagree: {found_names ^ documented_names}")
 
     def test_manifest_has_no_stale_codegen_entries(self):
         """An entry that claims to come from codegen.py but no longer matches any real

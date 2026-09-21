@@ -1346,21 +1346,6 @@ static int hook_log_free_req(CpuState *s, uint32_t target) {
     return 1;  /* fall through */
 }
 
-static int hook_hash_insert_guard(CpuState *s, uint32_t target) {
-    /* f_0001b6c4: hash insert (linear probe). a0=hash_struct [+0]=arr [+4]=cap.
-     * If cap==0 the probe wraps forever; guard: skip insert and return 0. */
-    uint32_t htable = s->r[4];
-    uint32_t cap = htable ? MEM_R32(htable + 4) : 0;
-    static int hd = 0;
-    if (hd < 8)
-        fprintf(stderr, "HINSERT[%d]: htable=0x%08x cap=%u arr=0x%08x entry=0x%08x\n",
-                hd++, htable, cap, htable ? MEM_R32(htable) : 0, s->r[5]);
-    if (cap == 0) { s->r[2] = 0; s->pc = s->r[31]; return 0; }
-    RecompFn fhi = sr_lookup(target);
-    if (fhi) fhi(s);
-    return 0;
-}
-
 static int hook_hash_fill_trace(CpuState *s, uint32_t target) {
     /* f_0001b584: hash_fill — outer loop calling f_0001b6c4 per entry. Trace entry. */
     static int hfd = 0;
@@ -1470,83 +1455,9 @@ static int hook_null_call(CpuState *s, uint32_t target) {
     s->r[2] = 0; s->pc = s->r[31]; return 0;
 }
 
-static int hook_resource_handle(CpuState *s, uint32_t target) {
-    /* Catch and gracefully ignore execution of unallocated ECS/Resource handles.
-     * Top 8 bits = Type ID, lower 24 bits = index; 0xFF... = unallocated sentinel. */
-    if ((target & 0xff000000u) == 0x33000000u || (target & 0xff000000u) == 0x44000000u ||
-        (target & 0xff000000u) == 0x55000000u || (target & 0xff000000u) == 0x88000000u ||
-        target == 0x5b0ca3f8u || target == 0x27dfcb14u) {
-        static int rh_warn = 0;
-        if (rh_warn < 10) {
-            fprintf(stderr, "RESOURCE_HANDLE: ignoring dispatch to raw handle 0x%08x from pc=0x%08x ra=0x%08x uid=0x%x\n",
-                    target, s->pc, s->r[31], sched_current_uid());
-            rh_warn++;
-        }
-        s->r[2] = 0;
-        s->pc = s->r[31];
-        return 0;
-    }
-    return 1;
-}
-
-static int hook_sceDmac_string(CpuState *s, uint32_t target) {
-    (void)target;
-    fprintf(stderr, "dispatch: intercepted known bad target 0x32305f34 (sceDmac string pointer), treating as nop\n");
-    s->r[2] = 0;
-    s->pc = s->r[31];
-    return 0;
-}
-
-/* Hook for the module-registration table walk dispatch misses.
- * f_0000ef40 (module_table_walk) walks _reent + 0x148 (0x002cf480) and
- * dispatches through function pointers stored at offset 0x80 and 0x1c in
- * each table entry. Those pointers contain 0x002cf338 (the _reent struct
- * itself, a DATA address never used as a code target). The recompiled
- * walker calls dispatch(s, 0x002cf338) once per loop iteration per slot,
- * accumulating 926 miss messages and (worse) a same-target spin count
- * that triggers the spin guard.
- *
- * 0x002cf338 is the documented newlib data-as-fn-pointer sentinel: no
- * legitimate recompiled path dispatches there as a code address. We match
- * any dispatch to that target and return r2=0, consumed.
- *
- * Additionally, the hook short-circuits the inner module_table_walk
- * (f_0000ef40) itself when the dispatch table lookup reaches it from
- * outside. That replaces the original f_0000ef40 (which would otherwise
- * loop indefinitely) with a one-shot version that calls f_00011600 for
- * side effects and emits a success marker.
- *
- * NOTE: f_0000ef40 in this recomp is invoked via direct JAL inside the
- * compiled body, so it does NOT go through the dispatch table. The walk
- * the compiled f_0000ef40 emits is short-circuited by the 0x002cf338
- * target hook above; the f_0000ef40 hook below is a defensive fallback.
- */
-static int hook_modtable_walk(CpuState *s, uint32_t target) {
-    (void)target;
-    /* Target 0x002cf338 is the newlib _reent struct, a data address. No
-     * legitimate code path should dispatch to it. Return 0 to the caller. */
-    static int walk_count = 0;
-    if (walk_count < 4) {
-        fprintf(stderr, "MODTABLE_WALK: skipped data-as-fn-pointer dispatch to 0x002cf338 "
-                "from pc=0x%08x ra=0x%08x uid=0x%x\n",
-                s->pc, s->r[31], sched_current_uid());
-    }
-    walk_count++;
-    if ((walk_count & 3) == 0) {
-        sr_yield(s);  /* yield periodically during modtable walk to keep vblanks alive */
-    }
-    s->r[2] = 1;
-    s->pc = s->r[31];
-    return 0;
-}
-
-static int hook_mod_stub(CpuState *s, uint32_t target) {
-    (void)target;
-    s->r[2] = 1;  /* return success for module function pointer */
-    s->pc = s->r[31];
-    return 0;  /* consumed */
-}
-
+/* Module-table/data-pointer misses deliberately use the ordinary miss path.  The
+ * former _REENT_DATA/MODTABLE_WALK success hook was an HST-era compatibility swallow;
+ * it is intentionally absent so data cannot become a successful call target. */
 /* The libfont fake-vtable dispatch path (0x0B0002xx trampolines + the 0x5fc4cb66 "garbage"
  * hook) was removed in F2: F1 proved it never fires (0 hits) — the sceFont library layer is now
  * HLE'd natively in src/rt/hle.c (real FontLibrary/Font structs from the game's allocator), so
@@ -1660,67 +1571,23 @@ static int hook_thunk_call_trace(CpuState *s, uint32_t target) {
  * slot) and return via the caller's RA so the render path proceeds. Logged
  * once via RENDERFMT_SKIP so the skip is visible in SR_DEBUG output. */
 
-/* 0x0000100c — PLT/jump-table trampoline. The PSP dynamic linker fills a
- * per-dispatch table with function pointers; the recompiler materialises each
- * PLT entry as a small stub that begins with a jump to 0x0100c. In the SR
- * runtime, sr_lookup(0x0100c) hits sr_register's table and lands here.
- *
- * When no HLE equivalent is registered for a particular slot, the slot value
- * stays 0x0100c (self-referential) and the worker enters an infinite
- * `dispatch -> f_0000100c -> dispatch -> f_0000100c` spin. This is the
- * `pc=0x0000100c` stall observed after the walker bypass.
- *
- * Fix: log the miss and return 0 to the PLT caller. The callers that use
- * these PLT slots generally test the return value or proceed conditionally,
- * so returning 0 is harmless and unblocks the init sequence. */
-static int hook_plt_unimpl(CpuState *s, uint32_t target) {
-    (void)target;
-    static int s_warned = 0;
-    if (!s_warned) {
-        fprintf(stderr, "PLT_SKIP: trampoline 0x0000100c invoked"
-                " (target=0x%08x r25=0x%08x uid=%x)\n",
-                s->r[25] & 0x3FFFFFFFu, s->r[25], sched_current_uid());
-        fflush(stderr);
-        s_warned = 1;
-    }
-    s->r[2] = 0u;
-    return 0; /* consumed */
-}
-
+/* 0x0000100c — unresolved PLT targets are deliberately not a success hook.
+ * The miss path below records the target and sends it through the ordinary
+ * interpreter/fail-closed disposition. A missing import is a linkage error,
+ * not a generic no-op. */
 static int hook_plt_walk(CpuState *s, uint32_t target) {
     (void)s;
     (void)target;
     return 1; /* fall through — walker loop continues to next entry */
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((weak)) void f_00304290(CpuState *s) { (void)s; }
-#endif
-
-static int hook_init_lang(CpuState *s, uint32_t target) {
-    (void)target;
-    extern void f_00304290(CpuState *s);
-    f_00304290(s);
-    MEM_W8(0x0030fbfdu, 1u);  /* force JP flag: CSV loader requires it for asset path selection */
-    return 0; /* handled completely; callers must not call f_00304290 again */
-}
-
 static const DispatchHook g_exact_hooks[] = {
-    { 0x00304290u, 0xFFFFFFFFu, "INIT_LANG",        hook_init_lang },
     { 0x000104b0u, 0xFFFFFFFFu, "ALLOC_REQ",        hook_log_alloc_req },
     { 0x000104e0u, 0xFFFFFFFFu, "FREE_REQ",         hook_log_free_req },
-    { 0x0001b6c4u, 0xFFFFFFFFu, "HINSERT",          hook_hash_insert_guard },
     { 0x0001b584u, 0xFFFFFFFFu, "HFILL",            hook_hash_fill_trace },
-    { 0x656a6f72u, 0xFFFFFFFFu, "NULL_CALL_A",      hook_null_call },
-    { 0x00000000u, 0xFFFFFFFFu, "NULL_CALL_B",      hook_null_call },
-    { 0x32305f34u, 0xFFFFFFFFu, "SCEDMAC",          hook_sceDmac_string },
     { 0x00018130u, 0xFFFFFFFFu, "FMT_TRACE",        hook_fmt_trace },
-    { 0x0000ef40u, 0xFFFFFFFFu, "MODTABLE_WALK",    hook_modtable_walk },
-    { 0x002cf338u, 0xFFFFFFFFu, "_REENT_DATA",      hook_modtable_walk },
-    { 0x0B000100u, 0xFFFFFFFFu, "MOD_STUB",          hook_mod_stub },
 { 0x00000ec0u, 0xFFFFFFFFu, "THUNK_A", hook_thunk_call_trace },
 { 0x00000ee4u, 0xFFFFFFFFu, "THUNK_B", hook_thunk_call_trace },
-{ 0x0000100cu, 0xFFFFFFFFu, "PLT_TRAMP", hook_plt_unimpl },
 { 0x00102e1cu, 0xFFFFFFFFu, "PLT_WALK_1", hook_plt_walk },
 { 0x001030b0u, 0xFFFFFFFFu, "PLT_WALK_2", hook_plt_walk },
 { 0, 0, NULL, NULL } /* sentinel */
@@ -1730,8 +1597,7 @@ static const DispatchHook g_exact_hooks[] = {
 /* Range hooks manage their own address predicates internally; key/mask are
  * documentation-only. The dispatch loop calls every entry unconditionally. */
 static const DispatchHook g_range_hooks[] = {
-    { 0, 0, "RESOURCE_HANDLE",   hook_resource_handle },
-    { 0, 0, NULL, NULL }  /* sentinel */
+    { 0, 0, NULL, NULL }  /* sentinel: no generic target-pattern swallowing */
 };
 
 #define MISS_HASH_SIZE 128

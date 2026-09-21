@@ -91,18 +91,27 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertRegex(DISPATCH_H_CODE, r"pair\s*!=\s*0u")         # empty test is bias-based
         self.assertNotRegex(DISPATCH_H_CODE, r"addr\s*!=\s*0")       # the old L1 guard is gone
 
-    def test_null_call_policy_is_a_runtime_hook_not_a_table_rule(self):
-        # STRUCTURAL TRIPWIRE, not a behavioral oracle. The current-HST null-call policy is
-        # the NULL_CALL_B exact hook in dispatch() (before lookup); the table itself stays
-        # policy-free. dispatch() must call the plain sr_lookup(target), never a table-level
-        # "resolve computed" rule -- encoding "computed 0 => NULL" into the generic table
-        # would be an invalid general invariant (#45: an address-taken offset-0 pointer is
-        # indistinguishable from NULL without image identity).
-        self.assertIn("NULL_CALL_B", RECOMP_C)
-        self.assertRegex(RECOMP_C, r"0x00000000u,\s*0xFFFFFFFFu,\s*\"NULL_CALL_B\"")
-        self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
+    def test_unconfigured_target_patterns_are_not_dispatch_hooks(self):
+        # Issue #362: historical HST target shapes must reach ordinary lookup/interpreter
+        # disposition. A generic build may not swallow null, data-looking, resource-handle,
+        # unresolved-PLT or module-table values as successful returns.
+        recomp_code = _strip_comments(RECOMP_C)
+        exact = re.search(r"static const DispatchHook g_exact_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
+        ranges = re.search(r"static const DispatchHook g_range_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
+        self.assertIsNotNone(exact)
+        self.assertIsNotNone(ranges)
+        hook_tables = (exact.group(1) if exact else "") + (ranges.group(1) if ranges else "")
+        for name in ("NULL_CALL_A", "NULL_CALL_B", "RESOURCE_HANDLE", "SCEDMAC",
+                     "MODTABLE_WALK", "_REENT_DATA", "MOD_STUB", "PLT_TRAMP"):
+            self.assertNotIn(name, hook_tables)
         self.assertNotIn("sr_dtab_resolve_computed", DISPATCH_H)
         self.assertNotIn("sr_dtab_resolve_computed", RECOMP_C)
+        self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
+
+    def test_hostile_target_matrix_is_source_owned(self):
+        isolation = (ROOT / "src" / "rt" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
+        self.assertIn("0x33000010u", isolation)
+        self.assertIn("test_historical_target_shapes_fail_closed", isolation)
 
 
 if __name__ == "__main__":

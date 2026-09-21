@@ -5155,7 +5155,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c3d61515428c3744599276f530f763fcd1fda2ddd4037720928a03b095cbcaf"
+      "sha256": "aacb1b4ba93894d487c18e002e51253de8391e2203d358cfaec64089c788e0a4"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -5179,7 +5179,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eafeb95c4fedf1d9ada9448a6da39d80a4d395314115c36e85936b7e8e6ff199"
+      "sha256": "44fc328cf2aed900c88f6106bf6bebceb44fa80de0c941ed5957bd285670b3dc"
     },
     {
       "path": "src/rt/domain_mode.c",
@@ -6059,7 +6059,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "485f8fc6dd93db2bab2bba72300b05f40f1bdc5791c33e2af6396cd05b497a6c"
+      "sha256": "7553412fd87d9715d5c77b9b75a7eadffe4e012437be50be5c0900fa5b415d24"
     },
     {
       "path": "src/rt/recomp.h",
@@ -6778,7 +6778,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ffa79338678a57a53d9cff4294d1c1523043a3d379c19b50e4065fe6437deee"
+      "sha256": "be9ff6998412886143772afa87ccbc397c5f1622b3beb343d4cfdcb1da784f65"
     },
     {
       "path": "tools/decompme_export.py",
@@ -8114,7 +8114,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b64a297679ce7c64c39fd86e66569f89c90631c77f47f4cf932091d7c5997712"
+      "sha256": "b0d35547f50c2bb778552ecfd3fdebeb813680e54194e594b1605f443a3b9ac9"
     },
     {
       "path": "tools/test_cosim_fixture.py",
@@ -8189,7 +8189,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "532f30ef6d290eb4735c2fc502a8392c2844a2722aad78f40066c9b9476cda31"
+      "sha256": "7cc44ce3f307ec3c6fe05410f11da99da0b4ce38284a0cf3597844d1146ec4a9"
     },
     {
       "path": "tools/test_dispatch_call_boundary.py",
