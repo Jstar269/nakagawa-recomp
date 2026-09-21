@@ -4,13 +4,13 @@
   "generated_evidence": "Generated from the canonical publication policy and exact source bytes. Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded from its own included-content digest to avoid a self-reference.",
   "profile": "public-safe-v1",
   "policy_version": "2.0.0",
-  "policy_sha256": "a466c4e9c12913e129f8de0dc576a0a287d745044dd453dafc0cb1912400d12c",
+  "policy_sha256": "b3e751450447609e14e292854783e97db7db7a9c908d86747cdc0c1cf594d65d",
   "audit_tool_version": "0.4.0",
-  "tracked_file_count": 795,
-  "included_file_count": 795,
-  "exported_file_count": 795,
+  "tracked_file_count": 797,
+  "included_file_count": 797,
+  "exported_file_count": 797,
   "excluded_file_count": 0,
-  "included_content_sha256": "86d98d06cd51808df454de3dbfd2eea325fe811aed3f1332dc64b25856243b7e",
+  "included_content_sha256": "01929add4f8b575ac14b3170577c39f65b5262d4efc2b8f09d48e5a179ea29fe",
   "digest_excludes": [
     "PUBLIC_EXPORT.json"
   ],
