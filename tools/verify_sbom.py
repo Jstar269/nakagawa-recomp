@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -26,6 +27,18 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "shadcn-ui",
     "vfpu",
 })
+
+
+def _sha256_of_file(path: Path) -> str:
+    """Return the sha256 hex digest of a file's bytes, or an error marker."""
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 16), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError as exc:
+        return f"<unreadable: {exc}>"
 
 
 def verify_provenance_families(manifest_data: dict) -> list[str]:
@@ -76,10 +89,24 @@ def verify_dashboard_toolchain_compatibility(pkg_json_path: Path) -> list[str]:
 
 
 def verify_release_locks(manifest_path: Path) -> list[str]:
+    """Parse and validate the declared dependency lockfiles, not just their existence.
+
+    The declared lockfile paths are taken from the release manifest itself and
+    each lockfile is fully parsed with the fail-closed parsers; a malformed,
+    unsupported, truncated, or unreadable lockfile is a verification error
+    (issue #375). A lockfile that parses to an intentionally empty inventory
+    is valid and passes.
+    """
+    # Reset the module-level validation state first so an early return can
+    # never leave a previous call's paths behind (issue #375 hygiene).
+    verify_release_locks.last_validated_npm_lock = None
+    verify_release_locks.last_validated_py_lock = None
     errors = []
     if not manifest_path.is_file():
         return [f"Release manifest file missing: {manifest_path}"]
 
+    npm_lock_path: Path | None = None
+    py_lock_path: Path | None = None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(data))
@@ -88,16 +115,45 @@ def verify_release_locks(manifest_path: Path) -> list[str]:
         if not status:
             errors.append("release_locks missing status field")
         lockfiles = data.get("lockfiles", {})
-        if not lockfiles.get("npm") or not (manifest_path.parent.parent / lockfiles["npm"]).is_file():
-            errors.append(f"npm lockfile missing or unreadable: {lockfiles.get('npm')}")
-        if not lockfiles.get("python") or not (manifest_path.parent.parent / lockfiles["python"]).is_file():
-            errors.append(f"python lockfile missing or unreadable: {lockfiles.get('python')}")
+        # Declared lockfile paths are repo-root relative; the canonical
+        # manifest lives at <root>/assets/release_manifest.json, so the repo
+        # root is the parent of the manifest's assets directory.
+        repo_root = manifest_path.parent.parent
 
-        pkg_json_path = manifest_path.parent.parent / "interface" / "package.json"
+        for ecosystem in ("npm", "python"):
+            rel_path = lockfiles.get(ecosystem)
+            if not rel_path or not isinstance(rel_path, str):
+                errors.append(f"{ecosystem} lockfile path missing from release manifest lockfiles")
+                continue
+            declared_path = repo_root / rel_path
+            if not declared_path.is_file():
+                errors.append(f"{ecosystem} lockfile missing or unreadable: {rel_path}")
+                continue
+            # Parse it now: existence alone proves nothing about the dependency
+            # inventory (issue #375).
+            try:
+                if ecosystem == "npm":
+                    parse_packages = generate_sbom.parse_npm_lockfile(declared_path)
+                    npm_lock_path = declared_path
+                else:
+                    parse_packages = generate_sbom.parse_python_lockfile(declared_path)
+                    py_lock_path = declared_path
+            except generate_sbom.LockfileParseError as exc:
+                errors.append(str(exc))
+            else:
+                print(
+                    f"Parsed {ecosystem} lockfile {rel_path}: {len(parse_packages)} package record(s)"
+                )
+
+        pkg_json_path = repo_root / "interface" / "package.json"
         errors.extend(verify_dashboard_toolchain_compatibility(pkg_json_path))
     except Exception as exc:
         errors.append(f"Failed to parse release manifest {manifest_path}: {exc}")
 
+    # Expose the successfully validated lockfile paths for callers that need to
+    # verify an SBOM against exactly these files.
+    verify_release_locks.last_validated_npm_lock = npm_lock_path
+    verify_release_locks.last_validated_py_lock = py_lock_path
     return errors
 
 
@@ -106,13 +162,21 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
     if not spdx_path.is_file():
         return [f"SPDX file missing: {spdx_path}"]
 
+    npm_pkgs: list[dict] = []
+    py_pkgs: list[dict] = []
     try:
         spdx_data = json.loads(spdx_path.read_text(encoding="utf-8"))
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(manifest_data))
 
-        npm_pkgs = generate_sbom.parse_npm_lockfile(npm_lock_path)
-        py_pkgs = generate_sbom.parse_python_lockfile(py_lock_path)
+        try:
+            npm_pkgs = generate_sbom.parse_npm_lockfile(npm_lock_path)
+        except generate_sbom.LockfileParseError as exc:
+            errors.append(str(exc))
+        try:
+            py_pkgs = generate_sbom.parse_python_lockfile(py_lock_path)
+        except generate_sbom.LockfileParseError as exc:
+            errors.append(str(exc))
 
         spdx_packages = spdx_data.get("packages", [])
         pkg_names = {p.get("name") for p in spdx_packages if isinstance(p, dict)}
@@ -153,15 +217,46 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     errors = verify_release_locks(args.manifest)
+    # Bind the verified SBOM to the exact lockfile bytes: when the lockfiles
+    # declared by the manifest were just parsed successfully, require the SBOM
+    # to have been generated from precisely those files (sha256 evidence), so a
+    # stale SBOM from different lockfile content cannot pass (issue #375).
     if args.spdx:
+        if (
+            verify_release_locks.last_validated_npm_lock is not None
+            and verify_release_locks.last_validated_npm_lock.resolve() != args.npm_lock.resolve()
+        ):
+            errors.append(
+                f"npm lockfile passed via --npm-lock ({args.npm_lock}) is not the lockfile declared "
+                f"by the manifest ({verify_release_locks.last_validated_npm_lock})"
+            )
+        if (
+            verify_release_locks.last_validated_py_lock is not None
+            and verify_release_locks.last_validated_py_lock.resolve() != args.py_lock.resolve()
+        ):
+            errors.append(
+                f"Python lockfile passed via --py-lock ({args.py_lock}) is not the lockfile declared "
+                f"by the manifest ({verify_release_locks.last_validated_py_lock})"
+            )
         errors.extend(verify_sbom_matches(args.spdx, args.manifest, args.npm_lock, args.py_lock))
 
     if errors:
+        seen = set()
         for err in errors:
+            if err in seen:
+                continue
+            seen.add(err)
             print(f"SBOM Verification FAIL: {err}", file=sys.stderr)
         return 1
 
-    print("SBOM Verification: OK (All release dependency locks and SBOM elements verified)")
+    if args.spdx:
+        print(
+            "SBOM Verification: OK (All release dependency locks and SBOM elements verified)\n"
+            f"  npm lockfile sha256: {_sha256_of_file(args.npm_lock)}\n"
+            f"  python lockfile sha256: {_sha256_of_file(args.py_lock)}"
+        )
+    else:
+        print("SBOM Verification: OK (All release dependency locks verified)")
     return 0
 
 

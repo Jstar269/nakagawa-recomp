@@ -20,11 +20,90 @@ DATA_LICENSE = "CC0-1.0"
 DOCUMENT_NAME = "nakagawa-recomp-sbom"
 DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 
+# npm package-lock.json schema this tool knows how to inventory. Anything
+# outside the supported set is a hard parse error (issue #375): guessing at an
+# unknown schema silently drops dependencies and manufactures a plausible but
+# incomplete SBOM.
+SUPPORTED_NPM_LOCKFILE_VERSIONS = (1, 2, 3)
+# The v1 and v2 formats record each dependency in a separate top-level
+# "dependencies" map that npm upgrade converted into the v3 "packages" map;
+# the SBOM inventory is built from the "packages" representation, so a lock
+# that still uses the legacy representation must fail closed instead of
+# producing an empty inventory.
+SUPPORTED_NPM_PACKAGES_FORMATS = (2, 3)
+
+
+class LockfileParseError(Exception):
+    """A declared dependency lockfile could not be parsed completely.
+
+    Raised on unreadable files, malformed JSON, unsupported schema/version,
+    missing or invalid required records, and requirement lines that do not
+    conform to the repository's declared lockfile format. Callers must abort
+    rather than treat the failure as "no dependencies" (issue #375).
+    """
+
+
+def _read_lockfile_text(lock_path: Path, kind: str) -> str:
+    """Read a lockfile as UTF-8 text, failing closed on any access problem."""
+    try:
+        if not lock_path.is_file():
+            raise LockfileParseError(f"{kind} lockfile is not an existing regular file: {lock_path}")
+        return lock_path.read_text(encoding="utf-8")
+    except LockfileParseError:
+        raise
+    except UnicodeDecodeError as exc:
+        raise LockfileParseError(
+            f"{kind} lockfile is not valid UTF-8: {lock_path}: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise LockfileParseError(f"cannot read {kind} lockfile {lock_path}: {exc}") from exc
+
 
 def parse_npm_lockfile(lock_path: Path) -> list[dict]:
-    packages: list[dict] = []
-    if not lock_path.is_file():
-        return packages
+    """Parse an npm package-lock.json into an inventory of package records.
+
+    Fails closed (raises LockfileParseError) on unreadable input, malformed
+    JSON, an unsupported lockfile shape/version, or any package record that is
+    missing required metadata. A lockfile whose `packages` map is genuinely
+    empty is valid and yields an empty inventory.
+    """
+    text = _read_lockfile_text(lock_path, "npm")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} is not valid JSON (line {exc.lineno}, column {exc.colno}): {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} must contain a JSON object, got {type(data).__name__}"
+        )
+
+    raw_version = data.get("lockfileVersion")
+    if not isinstance(raw_version, int) or isinstance(raw_version, bool):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} has missing or invalid lockfileVersion {raw_version!r}; "
+            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}"
+        )
+    if raw_version not in SUPPORTED_NPM_LOCKFILE_VERSIONS:
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} uses unsupported lockfileVersion {raw_version}; "
+            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}"
+        )
+
+    raw_packages = data.get("packages")
+    if raw_packages is None:
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} (lockfileVersion {raw_version}) has no `packages` map; "
+            "this tool requires a lockfile that records dependencies under `packages` "
+            f"(packages-format lockfile versions {', '.join(str(v) for v in SUPPORTED_NPM_PACKAGES_FORMATS)}); "
+            "regenerate with a current npm version"
+        )
+    if not isinstance(raw_packages, dict):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} has a non-object `packages` member "
+            f"({type(raw_packages).__name__})"
+        )
 
     # A package can be installed at multiple lockfile paths (e.g. a nested
     # node_modules copy with the same name+version). SPDX element IDs must be
@@ -39,62 +118,102 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
         suffix = hashlib.sha256(pkg_path.encode("utf-8")).hexdigest()[:10]
         return f"{base}-{suffix}"
 
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        raw_packages = data.get("packages", {})
-        if isinstance(raw_packages, dict):
-            for pkg_path, meta in sorted(raw_packages.items()):
-                if not pkg_path or not isinstance(meta, dict):
-                    continue
-                name = meta.get("name") or pkg_path.split("node_modules/")[-1]
-                version = meta.get("version", "0.0.0")
-                license_exp = meta.get("license", "NOASSERTION")
-                integrity = meta.get("integrity", "")
-                resolved = meta.get("resolved", "")
-                spdx_id = unique_spdx_id(
-                    f"SPDXRef-npm-{name.replace('/', '-')}-{version}", pkg_path
-                )
-                packages.append({
-                    "name": name,
-                    "version": version,
-                    "spdx_id": spdx_id,
-                    "license": license_exp,
-                    "integrity": integrity,
-                    "resolved": resolved,
-                    "purl": f"pkg:npm/{name}@{version}",
-                    "ecosystem": "npm",
-                })
-    except Exception:
-        pass
+    packages: list[dict] = []
+    for pkg_path, meta in sorted(raw_packages.items()):
+        if not isinstance(pkg_path, str):
+            raise LockfileParseError(
+                f"npm lockfile {lock_path} has an invalid `packages` key {pkg_path!r}; "
+                "keys must be install-path strings"
+            )
+        if not pkg_path:
+            # The root entry ("" in npm's packages map) is the project itself,
+            # which generate_spdx23 already emits from the release manifest; it
+            # is not a lockfile dependency and needs no name/version.
+            continue
+        if not isinstance(meta, dict):
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} must be an object, "
+                f"got {type(meta).__name__}"
+            )
+        name = meta.get("name")
+        if name is None:
+            name = pkg_path.split("node_modules/")[-1]
+        if not isinstance(name, str) or not name:
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} has invalid name {name!r}"
+            )
+        version = meta.get("version")
+        if not isinstance(version, str) or not version:
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} ({name}) is missing "
+                "required version metadata"
+            )
+        license_exp = meta.get("license", "NOASSERTION")
+        integrity = meta.get("integrity", "")
+        resolved = meta.get("resolved", "")
+        spdx_id = unique_spdx_id(
+            f"SPDXRef-npm-{name.replace('/', '-')}-{version}", pkg_path
+        )
+        packages.append({
+            "name": name,
+            "version": version,
+            "spdx_id": spdx_id,
+            "license": license_exp,
+            "integrity": integrity,
+            "resolved": resolved,
+            "purl": f"pkg:npm/{name}@{version}",
+            "ecosystem": "npm",
+        })
 
     return packages
 
 
 def parse_python_lockfile(lock_path: Path) -> list[dict]:
-    packages: list[dict] = []
-    if not lock_path.is_file():
-        return packages
+    """Parse the pinned Python requirements lockfile into package records.
 
-    try:
-        text = lock_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            match = re.match(r"^([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)(?:\s+--hash=sha256:([0-9a-fA-F]{64}))?", line)
-            if match:
-                name, version, sha256_hash = match.groups()
-                packages.append({
-                    "name": name,
-                    "version": version,
-                    "spdx_id": f"SPDXRef-pip-{name}-{version}",
-                    "license": "NOASSERTION",
-                    "sha256": sha256_hash or "",
-                    "purl": f"pkg:pypi/{name}@{version}",
-                    "ecosystem": "pypi",
-                })
-    except Exception:
-        pass
+    The repository's declared format is one `name==version` pin per nonblank,
+    non-comment line, with an optional single `--hash=sha256:<64 hex>` digest.
+    Every other nonblank/non-comment line is a parse error (issue #375): the
+    previous best-effort loop silently skipped requirement lines it could not
+    parse, dropping them from the release inventory. A file whose only
+    non-comment content is blank or comments is a valid empty lockfile and
+    yields an empty inventory.
+    """
+    text = _read_lockfile_text(lock_path, "Python")
+
+    packages: list[dict] = []
+    seen_pypi: set[tuple[str, str]] = set()
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(
+            r"^([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)"
+            r"(?:\s+--hash=sha256:([0-9a-fA-F]{64}))?$",
+            line,
+        )
+        if not match:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: requirement does not match the "
+                "declared pinned format 'name==version[ --hash=sha256:<64 hex>]': "
+                f"{line!r}"
+            )
+        name, version, sha256_hash = match.groups()
+        if (name, version) in seen_pypi:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: duplicate requirement pin "
+                f"{name}=={version}"
+            )
+        seen_pypi.add((name, version))
+        packages.append({
+            "name": name,
+            "version": version,
+            "spdx_id": f"SPDXRef-pip-{name}-{version}",
+            "license": "NOASSERTION",
+            "sha256": sha256_hash or "",
+            "purl": f"pkg:pypi/{name}@{version}",
+            "ecosystem": "pypi",
+        })
 
     return packages
 
@@ -369,8 +488,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))
-    npm_packages = parse_npm_lockfile(args.npm_lock)
-    py_packages = parse_python_lockfile(args.py_lock)
+    try:
+        npm_packages = parse_npm_lockfile(args.npm_lock)
+        py_packages = parse_python_lockfile(args.py_lock)
+    except LockfileParseError as exc:
+        # Fail closed: never emit a partial/empty-inventory SBOM because a
+        # declared lockfile could not be parsed completely (issue #375).
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     spdx23_doc = generate_spdx23(manifest_data, npm_packages, py_packages)
     spdx301_doc = generate_spdx301(manifest_data, npm_packages, py_packages)
