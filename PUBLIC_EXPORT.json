@@ -6,11 +6,11 @@
   "policy_version": "2.0.0",
   "policy_sha256": "f8d9af390172bd7273d2bb7f01c577e58d07b800f910a47ac6f7ad96413c8a41",
   "audit_tool_version": "0.4.0",
-  "tracked_file_count": 821,
-  "included_file_count": 821,
-  "exported_file_count": 821,
+  "tracked_file_count": 818,
+  "included_file_count": 818,
+  "exported_file_count": 818,
   "excluded_file_count": 0,
-  "included_content_sha256": "f8e80abea3668c992636606dbd36b9750ca6431cbe4f3f71e06304943a326daa",
+  "included_content_sha256": "118b6f259715e851e02521f503ead132fecc2c15784f68fcb2ebc2efa060b55d",
   "digest_excludes": [
     "PUBLIC_EXPORT.json"
   ],
@@ -71,6 +71,6 @@
     "font/*.pgf"
   ],
   "excluded_present_paths": [],
-  "provenance_ledger_sha256": "b7c636f9c3e1054d31af5c4ddb40b3e77eea4930f91837e9d01cfa587e162b08",
+  "provenance_ledger_sha256": "9c60314192be9c05057755ef896e5a0bc3a18b37797660ceec113c6ef158d227",
   "manifest_sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
 }

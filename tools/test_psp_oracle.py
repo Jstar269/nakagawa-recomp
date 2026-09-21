@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -330,6 +331,60 @@ class PspOracleRunnerTests(unittest.TestCase):
         launcher = Path(__file__).resolve().parent / "psp_oracle" / "run_nakagawa.py"
         self.assertTrue(launcher.is_file())
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
+
+
+class PspOracleBuildRouteTests(unittest.TestCase):
+    """Keep the merged CASE/Makefile/import contract structurally explicit."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+
+    def test_supported_case_names_map_to_unique_case_ids(self) -> None:
+        routes = re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        )
+        self.assertEqual(len(routes), 54)
+        names = [name for name, _ in routes]
+        ids = [int(case_id) for _, case_id in routes]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(set(ids), set(range(1, 55)))
+        self.assertNotIn("psp_b1_imports.S", self.makefile)
+        self.assertNotIn("psp_b2_imports.S", self.makefile)
+        self.assertNotIn("psp_b3_imports.S", self.makefile)
+
+    def test_kernel_object_routes_use_shared_threadman_import_block(self) -> None:
+        for case, source, macro in (("kobj-b1", "psp_b1.c", "B1"), ("wait-b2", "psp_b2.c", "B2"), ("kernel-b3", "psp_b3.c", "B3")):
+            start = self.makefile.rfind(f"else ifeq ($(CASE),{case})")
+            self.assertGreaterEqual(start, 0)
+            end = self.makefile.find("else ifeq", start + 1)
+            if end < 0:
+                end = self.makefile.find("endif", start + 1)
+            body = self.makefile[start:end]
+            self.assertIn(f"TARGET = $(BUILD_DIR)/{source[:-2]}", body)
+            self.assertIn(f"OBJS = $(BUILD_DIR)/{source[:-2]}.o $(BUILD_DIR)/threadman_user_imports.o", body)
+            self.assertIn(f"CFLAGS += -D{macro}_BUILD_COMMIT=", body)
+        shared = (self.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        for symbol in (
+            "sceKernelCreateCallback", "sceKernelCreateEventFlag", "sceKernelCreateFpl",
+            "sceKernelCreateMsgPipe", "sceKernelCreateMbx", "sceKernelWaitEventFlag",
+            "sceKernelTerminateDeleteThread", "sceKernelGetThreadExitStatus",
+        ):
+            self.assertIn(symbol, shared)
+
+    def test_b_kernel_object_recipes_are_unique_and_import_sources_are_reachable(self) -> None:
+        for stem in ("psp_b1", "psp_b2", "psp_b3"):
+            self.assertEqual(len(re.findall(rf"^\$\(BUILD_DIR\)/{stem}\.o:", self.makefile, re.MULTILINE)), 1)
+            self.assertEqual(len(re.findall(rf"^\$\(BUILD_DIR\)/{stem}_imports\.o:", self.makefile, re.MULTILINE)), 0)
+            self.assertFalse((self.fixture / f"{stem}_imports.S").exists())
+        self.assertEqual(len(re.findall(r"^\$\(BUILD_DIR\)/threadman_user_imports\.o:", self.makefile, re.MULTILINE)), 1)
+        self.assertIn("threadman_user_imports.S", self.makefile)
 
 
 class PspDmacProbeTests(unittest.TestCase):

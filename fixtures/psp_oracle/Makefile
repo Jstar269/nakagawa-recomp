@@ -280,28 +280,10 @@ $(BUILD_DIR)/probe_exception_a3.o: probe_exception_a3.c
 $(BUILD_DIR)/psp_b3.o: psp_b3.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/psp_b3_imports.o: psp_b3_imports.S
-	$(CC) $(ASFLAGS) -c $< -o $@
-
 $(BUILD_DIR)/psp_b2.o: psp_b2.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/psp_b2_imports.o: psp_b2_imports.S
-	$(CC) $(ASFLAGS) -c $< -o $@
-
 $(BUILD_DIR)/psp_b1.o: psp_b1.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/psp_b1_imports.o: psp_b1_imports.S
-	$(CC) $(ASFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/psp_b1.o: psp_b1.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/psp_b2.o: psp_b2.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/psp_b3.o: psp_b3.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files
