@@ -138,8 +138,9 @@ invalidates both spans before inspection. A PASS record requires every trial to
 return zero, copy the complete requested prefix, leave sentinels and the full
 source/guard unchanged, and emit all 16 matrix records. These fully in-VRAM
 spans are the control for separating transfer size from allocator-boundary
-truncation. The newly added boundary cells are NOT_MEASURED until a current
-hardware capture is accepted; the probe itself does not promote results to
+truncation. A current local PSP-3000/6.61 capture passed all 16 records, but
+it remains local diagnostic evidence until the trusted provenance/publication
+record is refreshed; the probe itself does not promote results to public
 hardware evidence.
 
 The existing runner can retain and validate the host0 stream after launching the
