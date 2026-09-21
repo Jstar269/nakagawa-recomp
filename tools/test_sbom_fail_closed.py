@@ -194,7 +194,7 @@ class TestNpmLockfileHostileInputs(unittest.TestCase):
 
     def test_unreadable_file_oserror_fails_closed(self):
         path = write(self.tmp_path, "locked.json", json.dumps(VALID_NPM_LOCK))
-        with unittest.mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "denied")):
+        with unittest.mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "denied")):
             with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
                 generate_sbom.parse_npm_lockfile(path)
         self.assertIn("cannot read npm lockfile", str(ctx.exception))
@@ -275,7 +275,7 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
         assert_lockfile_parse_error(self, missing, "not an existing regular file")
 
         path = write(self.tmp_path, "locked.txt", VALID_PY_LOCK)
-        with unittest.mock.patch.object(Path, "read_text", side_effect=OSError("I/O error")):
+        with unittest.mock.patch.object(Path, "read_bytes", side_effect=OSError("I/O error")):
             with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
                 generate_sbom.parse_python_lockfile(path)
         self.assertIn("cannot read Python lockfile", str(ctx.exception))
@@ -352,9 +352,9 @@ class TestGenerationAbortsOnParseFailure(unittest.TestCase):
         self.assertFalse(any(exists.values()))
 
     def test_valid_locks_generate_all_outputs(self):
-        good_json = write(self.tmp_path, "good.json", json.dumps(VALID_NPM_LOCK))
-        good_txt = write(self.tmp_path, "good.txt", VALID_PY_LOCK)
-        code, exists = self._run_main(good_json, good_txt)
+        # Happy path uses the repository's real locks: generation requires the
+        # canonical repo-relative lockfile identities for release evidence.
+        code, exists = self._run_main(NPM_LOCK, PY_LOCK)
         self.assertEqual(code, 0)
         self.assertTrue(all(exists.values()))
 
@@ -473,10 +473,16 @@ class TestVerifySbomFailsClosed(unittest.TestCase):
             spdx_path.write_text(json.dumps(spdx), encoding="utf-8")
 
         errors = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
-        # The subverted SBOM (a) lacks the current lock-byte evidence and (b)
-        # is missing the exact compiledb identity; both must be reported.
+        # The subverted SBOM (a) lacks the standards-conformant lock binding
+        # (`files` entries), (b) lacks the DEPENDENCY_MANIFEST_OF lock
+        # relationships, and (c) is missing the exact compiledb identity; all
+        # must be reported.
         self.assertTrue(
-            any("dependencyLockEvidence missing or not an object" in e for e in errors),
+            any("no `files` entries" in e for e in errors),
+            str(errors),
+        )
+        self.assertTrue(
+            any("missing DEPENDENCY_MANIFEST_OF relationship" in e for e in errors),
             str(errors),
         )
         self.assertTrue(

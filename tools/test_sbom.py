@@ -69,11 +69,17 @@ class TestSBOMTooling(unittest.TestCase):
         self.assertEqual(errors, [], f"Release locks verification failed: {errors}")
 
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        npm_pkgs = generate_sbom.parse_npm_lockfile(npm_lock_path)
-        py_pkgs = generate_sbom.parse_python_lockfile(py_lock_path)
-        spdx = generate_sbom.generate_spdx23(manifest_data, npm_pkgs, py_pkgs)
-        # Bind the SBOM to the exact lock bytes, exactly as the generator CLI does.
-        spdx["dependencyLockEvidence"] = generate_sbom.compute_lock_evidence(npm_lock_path, py_lock_path)
+        # Build from one snapshot per lockfile with standards-conformant lock
+        # evidence, exactly as the generator CLI does.
+        parsed = generate_sbom.parse_lockfiles(npm_lock_path, py_lock_path,
+                                               repo_root=generate_sbom.ROOT)
+        npm_pkgs = parsed["npm_packages"]
+        py_pkgs = parsed["py_packages"]
+        spdx = generate_sbom.generate_spdx23(
+            manifest_data, npm_pkgs, py_pkgs,
+            lock_files=parsed["lock_files"],
+            lock_relationships=parsed["lock_relationships"],
+        )
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
             json.dump(spdx, tmp)

@@ -158,6 +158,68 @@ def verify_release_locks(manifest_path: Path) -> list[str]:
     return errors
 
 
+def _lock_file_entry_errors(spdx_data: dict,
+                            expected: list[tuple[str, str, str]]) -> list[str]:
+    """Require standards-conformant lockfile `files` records in the SBOM.
+
+    For each declared lockfile the SBOM must contain a `files` entry with the
+    stable repo-relative fileName and a SHA256 checksum exactly equal to the
+    current snapshot's digest (issue #375).
+    """
+    errors: list[str] = []
+    files = spdx_data.get("files")
+    if not isinstance(files, list):
+        return ["SPDX SBOM has no `files` entries; lockfile binding evidence missing"]
+    by_filename = {
+        entry.get("fileName"): entry
+        for entry in files
+        if isinstance(entry, dict)
+    }
+    for lockfile_identity, spdx_id, current_sha256 in expected:
+        entry = by_filename.get(lockfile_identity)
+        if not isinstance(entry, dict):
+            errors.append(
+                f"SPDX SBOM files entry missing for declared dependency lockfile "
+                f"{lockfile_identity} (expected {spdx_id})"
+            )
+            continue
+        if entry.get("SPDXID") != spdx_id:
+            errors.append(
+                f"SPDX SBOM files entry for {lockfile_identity} has SPDXID "
+                f"{entry.get('SPDXID')!r}, expected {spdx_id!r}"
+            )
+        checksums = entry.get("checksums")
+        sha_values = [
+            c.get("checksumValue")
+            for c in (checksums or [])
+            if isinstance(c, dict) and c.get("algorithm") == "SHA256"
+        ]
+        if current_sha256 not in sha_values:
+            errors.append(
+                f"lockfile binding evidence mismatch for {lockfile_identity}: the SBOM was "
+                f"generated from different lockfile bytes (SHA256 {sha_values or 'none'} vs "
+                f"current {current_sha256}); regenerate the SBOM from the current lockfiles"
+            )
+    return errors
+
+
+def _lock_relationship_errors(spdx_data: dict) -> list[str]:
+    """Require each lockfile files entry to be a DEPENDENCY_MANIFEST_OF the root package."""
+    errors: list[str] = []
+    lock_ids = {"SPDXRef-File-npm-package-lock", "SPDXRef-File-python-requirements-lock"}
+    required = {(lid, "SPDXRef-Package-nakagawa-recomp") for lid in lock_ids}
+    for rel in spdx_data.get("relationships", []):
+        if not isinstance(rel, dict):
+            continue
+        if rel.get("relationshipType") == "DEPENDENCY_MANIFEST_OF":
+            required.discard((rel.get("spdxElementId"), rel.get("relatedSpdxElement")))
+    for spdx_element_id, related in sorted(required):
+        errors.append(
+            f"SPDX SBOM missing DEPENDENCY_MANIFEST_OF relationship: {spdx_element_id} -> {related}"
+        )
+    return errors
+
+
 def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Path, py_lock_path: Path) -> list[str]:
     """Verify the SPDX 2.3 SBOM against the exact current lockfile inventory.
 
@@ -180,14 +242,27 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(manifest_data))
 
+        # One stable snapshot per lockfile: the dependency inventory, the
+        # identity checks, and the checksum comparison below all refer to the
+        # same captured bytes (issue #375 revision 3).
+        npm_snap = generate_sbom.snapshot_lockfile(npm_lock_path, "npm")
+        py_snap = generate_sbom.snapshot_lockfile(py_lock_path, "Python")
         try:
-            npm_pkgs = generate_sbom.parse_npm_lockfile(npm_lock_path)
+            npm_pkgs = generate_sbom._parse_npm_lock_text(npm_snap, npm_lock_path)
         except generate_sbom.LockfileParseError as exc:
             errors.append(str(exc))
         try:
-            py_pkgs = generate_sbom.parse_python_lockfile(py_lock_path)
+            py_pkgs = generate_sbom._parse_python_lock_text(py_snap, py_lock_path)
         except generate_sbom.LockfileParseError as exc:
             errors.append(str(exc))
+
+        # Standards-conformant lock binding: schema-defined files entries with
+        # the exact repo-relative identity and SHA256 of the current snapshots.
+        errors.extend(_lock_file_entry_errors(spdx_data, [
+            (generate_sbom.NPM_LOCKFILE_IDENTITY, "SPDXRef-File-npm-package-lock", npm_snap.sha256),
+            (generate_sbom.PYTHON_LOCKFILE_IDENTITY, "SPDXRef-File-python-requirements-lock", py_snap.sha256),
+        ]))
+        errors.extend(_lock_relationship_errors(spdx_data))
 
         # Exact identities with multiplicity: (purl, name, version) pairs from
         # the SBOM's PACKAGE-MANAGER purl external refs. A bare set of names
@@ -208,14 +283,6 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
                 )
             ]
             if purl is not None
-        )
-
-        # The SBOM must be bound to the exact lockfile bytes it was generated
-        # from; recomputed current digests must match exactly.
-        errors.extend(
-            generate_sbom.verify_lock_evidence(
-                spdx_data.get("dependencyLockEvidence"), npm_lock_path, py_lock_path
-            )
         )
 
         family_names = {
