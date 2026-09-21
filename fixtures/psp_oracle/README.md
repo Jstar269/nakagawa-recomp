@@ -62,7 +62,7 @@ freeing every success immediately, and emits the highest provable base plus
 the first failure. Thread-free and write-free; failures are ordinary error
 codes. Its output is the redesign input for a corrected invalid-tail
 boundary — it settles no DMA semantics itself.
-`CASE=display-ge-mask`. Display-wait sessions use `CASE=display-wait-late`,
+Display-wait sessions use `CASE=display-wait-late`,
 `CASE=display-wait-priority`, or `CASE=display-vblank-window`. Plain-mutex
 sessions use one of the four `CASE=mutex-*` cases described below.
 

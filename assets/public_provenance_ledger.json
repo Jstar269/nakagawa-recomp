@@ -1311,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "c27fffef9a9bca1b78c7d31b6d9400c72f6e8cfa25b1dbcfa5d4a274adb05839"
+      "sha256": "e447376773f886e532a889893d4c5d950819d82562a07cce5402b645e4cfd670"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
