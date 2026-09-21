@@ -32,6 +32,11 @@ import sys
 GIM_MAGIC = b"MIG.00.1PSP"
 GIM_HEADER_SIZE = 16
 GIM_BLOCK_HEADER_SIZE = 16
+# Full block-local content header for 0x0004/0x0005 blocks, mirroring
+# tools/extract_xb.py::decode_gim_data's `content_limit - content < 36` check.
+GIM_CONTENT_HEADER_SIZE = 36
+# Formats decode_gim_data actually decodes (bpp_map + its final else rejects).
+GIM_SUPPORTED_IMAGE_FORMATS = frozenset((0, 1, 2, 3, 4, 5))
 GIM_MAX_SCAN_DEPTH = 16
 
 # The inventory schema written by tools/extract_xb.py process_extracted_directory.
@@ -70,6 +75,13 @@ def _gim_u32(data: bytes, offset: int) -> int:
 def check_gim_palette(gim_path: str) -> tuple[bool, str]:
     """Parse GIM file blocks to check if indexed textures have valid non-empty palettes.
 
+    Parse GIM file blocks to check if indexed textures have valid non-empty
+    palettes, using the same bounds contract as the repository decoder
+    (tools/extract_xb.py::decode_gim_data): block sizes are validated before
+    advancing, payload offsets are block-content-relative and must land inside
+    their own block's content region, image/palette content headers must be
+    complete, and an unsupported or missing image block is a failure.
+
     The caller only invokes this for .gim-classified assets, so a file without a
     readable GIM header is a corruption failure, not a successful skip.
     """
@@ -91,24 +103,24 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
     has_palette = False
     fmt: int | None = None
     palette_size = 0
-    blocks_seen = 0
 
     def scan_blocks(offset: int, limit: int, depth: int = 0) -> None:
-        nonlocal has_image, has_palette, fmt, palette_size, blocks_seen
+        nonlocal has_image, has_palette, fmt, palette_size
         if depth > GIM_MAX_SCAN_DEPTH:
             raise IndexError(f"container nesting deeper than {GIM_MAX_SCAN_DEPTH} levels")
-        while offset + GIM_BLOCK_HEADER_SIZE <= limit:
-            blocks_seen += 1
+        while offset < limit:
+            if limit - offset < GIM_BLOCK_HEADER_SIZE:
+                raise IndexError(
+                    f"truncated block header: only {limit - offset} bytes remain at offset {offset:#x}"
+                )
             block_id = _gim_u16(data, offset)
             block_size = _gim_u32(data, offset + 4)
             hdr_size = _gim_u32(data, offset + 12)
-            if block_size == 0:
-                raise IndexError(f"zero-sized block at offset {offset:#x}")
             if block_size < GIM_BLOCK_HEADER_SIZE:
                 raise IndexError(
                     f"block at offset {offset:#x} declares size {block_size} below the block header size"
                 )
-            if offset + block_size > limit:
+            if offset > limit or block_size > limit - offset:
                 raise IndexError(
                     f"block at offset {offset:#x} ({block_size} bytes) extends past end of data"
                 )
@@ -117,38 +129,61 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
                     f"block at offset {offset:#x} declares invalid header size {hdr_size}"
                 )
             content = offset + hdr_size
-            if content > limit:
-                raise IndexError(f"block at offset {offset:#x} has content past end of data")
+            content_limit = offset + block_size
             try:
                 if block_id == 0x0004:
+                    if content_limit - content < GIM_CONTENT_HEADER_SIZE:
+                        raise IndexError(
+                            f"image block content region is {content_limit - content} bytes, "
+                            f"needs the full {GIM_CONTENT_HEADER_SIZE}-byte content header"
+                        )
                     fmt = _gim_u16(data, content + 4)
+                    d_off = _gim_u32(data, content + 28)
+                    d_end = _gim_u32(data, content + 32)
+                    if d_end < d_off:
+                        raise IndexError(f"image data offsets inverted (start {d_off} > end {d_end})")
+                    if d_end > content_limit - content:
+                        raise IndexError(
+                            f"image data end {d_end} extends past its block's content region"
+                            f" ({content_limit - content} bytes)"
+                        )
                     has_image = True
                 elif block_id == 0x0005:
+                    if content_limit - content < GIM_CONTENT_HEADER_SIZE:
+                        raise IndexError(
+                            f"palette block content region is {content_limit - content} bytes, "
+                            f"needs the full {GIM_CONTENT_HEADER_SIZE}-byte content header"
+                        )
                     has_palette = True
                     p_off = _gim_u32(data, content + 28)
                     p_end = _gim_u32(data, content + 32)
-                    block_end = offset + block_size
-                    if p_off > p_end:
+                    if p_end < p_off:
                         raise IndexError(f"palette offsets inverted (start {p_off} > end {p_end})")
-                    if p_end > block_end:
+                    if p_end > content_limit - content:
                         raise IndexError(
-                            f"palette end {p_end} extends past its block end {block_end}"
+                            f"palette end {p_end} extends past its block's content region"
+                            f" ({content_limit - content} bytes)"
                         )
                     palette_size = p_end - p_off
                 elif block_id in (0x0002, 0x0003):
-                    scan_blocks(content, offset + block_size, depth + 1)
+                    scan_blocks(content, content_limit, depth + 1)
             except IndexError as e:
                 raise IndexError(f"{e} (in 0x{block_id:04x} block at offset {offset:#x})") from None
-            offset += block_size
+            offset = content_limit
 
     try:
         scan_blocks(GIM_HEADER_SIZE, len(data))
     except IndexError as e:
         return False, f"Corrupted GIM block structure: {e}"
 
-    if blocks_seen == 0:
+    if not has_image:
         return False, (
-            "Truncated GIM body: no complete block header after the file header"
+            "No image block (0x0004) found: palette/container-only GIM is not a valid texture"
+        )
+    if fmt not in GIM_SUPPORTED_IMAGE_FORMATS:
+        return False, (
+            f"Unsupported GIM image format {fmt} (supported: "
+            f"{', '.join(str(f) for f in sorted(GIM_SUPPORTED_IMAGE_FORMATS))})"
         )
 
     if fmt in (4, 5):  # T4 or T8 indexed formats

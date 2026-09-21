@@ -582,13 +582,17 @@ class GimPaletteUnitTests(unittest.TestCase):
                     )
                     self.assertNotIn("Traceback", msg)
 
-    def test_palette_bounds_are_checked_against_their_block(self) -> None:
+    def test_palette_bounds_are_block_content_relative(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             past_end = Path(tmp) / "past.gim"
-            past_end.write_bytes(_gim(_image_block(fmt=5), _palette_block(start=36, end=0x1000)))
+            # p_end=50 is numerically below the palette block's absolute end
+            # (file offset 16 + 56 = 72), which is exactly the coordinate
+            # confusion the old absolute-bound check allowed; it must be read
+            # relative to the block content region (40 bytes).
+            past_end.write_bytes(_gim(_image_block(fmt=5), _palette_block(start=36, end=50)))
             ok, msg = va.check_gim_palette(str(past_end))
             self.assertFalse(ok)
-            self.assertIn("extends past its block end", msg)
+            self.assertIn("extends past its block's content region", msg)
 
             inverted = Path(tmp) / "inverted.gim"
             inverted.write_bytes(_gim(_image_block(fmt=5), _palette_block(start=40, end=36)))
@@ -596,7 +600,43 @@ class GimPaletteUnitTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("inverted", msg)
 
-    def test_indexed_formats_still_require_a_palette(self) -> None:
+    def test_gim_without_an_image_block_is_rejected(self) -> None:
+        cases = {
+            "palette only": _gim(_palette_block()),
+            "container with palette only": _gim(_block(0x0002, _palette_block())),
+            "unknown block only": _gim(_block(0x00FF, b"\0" * 40)),
+            "no blocks at all": b"MIG.00.1PSP" + b"\0" * 5,
+        }
+        for label, blob in cases.items():
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "noimage.gim"
+                    path.write_bytes(blob)
+                    ok, msg = va.check_gim_palette(str(path))
+                    self.assertFalse(ok, f"{label} must fail")
+                    self.assertIn("No image block (0x0004) found", msg)
+
+    def test_unsupported_image_format_is_rejected(self) -> None:
+        # decode_gim_data only decodes formats 0-5; anything else must not pass
+        # as a successful direct-color check.
+        for fmt in (6, 7, 255):
+            with self.subTest(fmt=fmt):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "fmt.gim"
+                    path.write_bytes(_gim(_image_block(fmt=fmt)))
+                    ok, msg = va.check_gim_palette(str(path))
+                    self.assertFalse(ok)
+                    self.assertIn(f"Unsupported GIM image format {fmt}", msg)
+
+    def test_clean_direct_color_controls_pass(self) -> None:
+        for fmt in (0, 1, 2, 3):
+            with self.subTest(fmt=fmt):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "direct.gim"
+                    path.write_bytes(_gim(_image_block(fmt=fmt)))
+                    ok, msg = va.check_gim_palette(str(path))
+                    self.assertTrue(ok, msg)
+                    self.assertIn(f"Direct color format ({fmt})", msg)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "nopal.gim"
             path.write_bytes(_gim(_image_block(fmt=4)))
@@ -619,8 +659,9 @@ class GimPaletteUnitTests(unittest.TestCase):
             self.assertIn("Valid T8 palette", msg)
 
     def test_deep_nesting_is_bounded(self) -> None:
+        # Mirrors the decoder's GIM_MAX_NESTING bound.
         nested = _image_block(fmt=0)
-        for _ in range(20):
+        for _ in range(40):
             nested = _block(0x0002, nested)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "deep.gim"
@@ -628,6 +669,32 @@ class GimPaletteUnitTests(unittest.TestCase):
             ok, msg = va.check_gim_palette(str(path))
             self.assertFalse(ok)
             self.assertIn("nesting deeper", msg)
+
+    def test_undersized_content_header_cannot_read_into_the_next_block(self) -> None:
+        # The declared block size bounds the content region, not the bytes that
+        # happen to follow in the file: a 48-byte image block with a 16-byte
+        # header leaves a 32-byte content region, and the format field must not
+        # be served from the following bytes.
+        for block_id, label in ((0x0004, "image"), (0x0005, "palette")):
+            with self.subTest(block=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "undersized.gim"
+                    path.write_bytes(_gim(_block(block_id, b"\0" * 8, size=48), b"\0" * 40))
+                    ok, msg = va.check_gim_palette(str(path))
+                    self.assertFalse(ok, f"undersized {label} content header must fail")
+                    self.assertIn("content region is 32 bytes", msg)
+
+    def test_truncated_trailing_block_bytes_are_rejected(self) -> None:
+        # 1-15 trailing bytes after an otherwise valid GIM are a truncated
+        # block header, not ignorable padding.
+        for n in range(1, 16):
+            with self.subTest(trailing_bytes=n):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "trailing.gim"
+                    path.write_bytes(VALID_T8_GIM + b"\xff" * n)
+                    ok, msg = va.check_gim_palette(str(path))
+                    self.assertFalse(ok, f"{n} trailing byte(s) must fail")
+                    self.assertIn("truncated block header", msg)
 
 
 class ExitCodeContractTests(ValidatorCliBase):

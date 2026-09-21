@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "049a7be553bee1a0ae49813124851f8b37f197508142077f589b72518d0e018e"
+      "sha256": "984a511489574ce7005627267692e07523de27ccaae0fdcdd0e1a3c27da53171"
     },
     {
       "path": "assets/release_manifest.json",
@@ -9164,6 +9164,15 @@
       "sha256": "42322a5f46ac06c7b4a5bbfbe1bf29c35c1103f43170dde476554c57e8b4ec35"
     },
     {
+      "path": "tools/test_validate_assets.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "9e2d883a7af666a7b91fd8dc875bf07d8d61af95209e49ae65db6937c674cd6b"
+    },
+    {
       "path": "tools/test_vfpu_addressing.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9379,7 +9388,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6eccc3274b79bc1f570cb8106933e886c10527bae8d425445e136d82ffe84957"
+      "sha256": "f589a8c08efce95cdb2247b17a2dd08a487401d9be58b867750d11e9fcdd6944"
     },
     {
       "path": "tools/verify_gates.py",

@@ -892,6 +892,7 @@
     "tools/test_title_protected_digest.py",
     "tools/test_title_pspdev_phase5.py",
     "tools/test_title_runtime_config.py",
+    "tools/test_validate_assets.py",
     "tools/test_vfpu_addressing.py",
     "tools/test_vfpu_interp_guards.py",
     "tools/test_vfpu_nan_payload.py",
