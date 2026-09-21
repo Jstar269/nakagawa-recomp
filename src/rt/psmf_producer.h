@@ -58,6 +58,11 @@ typedef struct {
      * those from the codec frame step.  Also the bytes dropped while resynchronizing
      * the audio frame stream, and the elementary bytes still held incomplete. */
     uint64_t aus_without_pts;
+    /* Media PES packets whose PTS_DTS_flags declared a decode time.  This is the count that
+     * separates "the stream carries no DTS" from "the parser dropped it": both look
+     * identical in every other counter, and only one of them is real.  It is counted per
+     * packet, so it can be checked against a census of the stream itself. */
+    uint64_t pes_with_dts;
     uint64_t audio_resync_bytes;
     uint64_t fail_offset;      /* source offset of the first unparseable element */
     uint32_t video_depth;

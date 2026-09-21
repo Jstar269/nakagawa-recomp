@@ -58,33 +58,74 @@ static void add_pack(Buf *b) {
     static const uint8_t pack[14] = {0,0,1,0xba,0x44,0,4,0,4,1,0,0,1,0};
     raw(b, pack, sizeof(pack));
 }
-static void check_pes_wellformed(const uint8_t *s, uint32_t at, uint32_t payload_len,
-                                 int has_pts);
-/* One MPEG-PS PES packet; has_pts == 0 writes no optional header at all (the
- * form PSMF uses for continuation packets).
+/* PTS_DTS_flags, as the packet's second flags byte carries them. */
+#define PES_TS_NONE     0
+#define PES_TS_RESERVED 1
+#define PES_TS_PTS      2
+#define PES_TS_BOTH     3
+
+static void check_pes_wellformed(const uint8_t *s, uint32_t at, int pts_dts, uint32_t hdr_len,
+                                 int64_t pts, int64_t dts, uint32_t payload_len);
+static int64_t read_pts(const uint8_t *p);
+
+/* One MPEG-PS PES packet written field by field.
  *
- * The flags byte keeps its mandatory '10' marker even when no optional header
- * follows.  That is not a stylistic choice: a PSP movie's continuation packets
- * were measured to carry '10' on every one of its 10,323 packets, including the
- * 9,521 video packets with a zero optional-header length, so a fixture that wrote
- * 0x00 would exercise a form the format never uses. */
-static void add_pes(Buf *b, uint8_t sid, int has_pts, int64_t pts,
-                    const uint8_t *payload, uint32_t payload_len) {
-    uint32_t opt = has_pts ? 5u : 0u;
-    uint32_t len = 3u + opt + payload_len;
+ * The two flags bytes are independent inputs on purpose.  The first carries the
+ * mandatory '10' MPEG-2 marker, measured to be set on all 10,323 media packets of a
+ * PSP movie -- including the 9,521 video packets whose optional-header length is zero
+ * -- so a fixture that wrote 0x00 there would exercise a form the format never uses.
+ * The second carries PTS_DTS_flags, which is the packet's only statement about which
+ * timestamps follow.  Folding both facts into one byte, as an earlier version of this
+ * fixture did, teaches the parser a layout no stream uses and hides the mistake behind
+ * green tests.
+ *
+ * `hdr_len` is the optional-header length the packet declares; the remainder after the
+ * timestamp fields is 0xFF stuffing, the standard's filler.  The retail movie pads the
+ * same lengths with a PES extension instead, which is equivalent here: the payload
+ * offset comes from the declared length, never from the flags. */
+static void add_pes_ex(Buf *b, uint8_t sid, int pts_dts, uint32_t hdr_len,
+                       int64_t pts, int64_t dts, int marker_valid,
+                       const uint8_t *payload, uint32_t payload_len) {
+    uint32_t len = 3u + hdr_len + payload_len;
     uint8_t hdr[9];
     hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=sid;
     hdr[4]=(uint8_t)(len>>8); hdr[5]=(uint8_t)len;
-    hdr[6]=0x80u;
-    hdr[7]=0x00;
-    hdr[8]=(uint8_t)opt;
+    hdr[6]=(uint8_t)(marker_valid ? 0x80u : 0x00u);
+    hdr[7]=(uint8_t)((unsigned)pts_dts << 6);
+    hdr[8]=(uint8_t)hdr_len;
     uint32_t hdr_at = b->at;
     raw(b, hdr, 9);
-    if (has_pts) { uint8_t p[5]; put_pts(p, pts, 0x21); raw(b, p, 5); }
-    /* Validated after the optional header is present, so the check reads the bytes
-     * the parser will read rather than the payload that follows them. */
-    if (!b->overflow) check_pes_wellformed(b->d + hdr_at, hdr_at, payload_len, has_pts);
+    uint32_t need = 0;
+    if (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH) need += 5u;
+    if (pts_dts == PES_TS_BOTH) need += 5u;
+    uint32_t written = 0;
+    if (need && hdr_len < need) {
+        /* Deliberately contradictory: the flags promise a timestamp the declared header
+         * cannot hold.  Nothing is written for it, so the packet is malformed in exactly
+         * the way the flags claim -- a packet that also carried stray field bytes would
+         * fail later for an unrelated reason and make this case prove nothing. */
+        need = 0;
+    } else {
+        if (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH) {
+            uint8_t p[5]; put_pts(p, pts, 0x21); raw(b, p, 5); written += 5u;
+        }
+        if (pts_dts == PES_TS_BOTH) {
+            uint8_t p[5]; put_pts(p, dts, 0x31); raw(b, p, 5); written += 5u;
+        }
+    }
+    if (hdr_len > written) bytes(b, 0xffu, hdr_len - written);
+    /* Validated after the optional header is present, so the check reads the bytes the
+     * parser will read rather than the payload that follows them.  A packet this fixture
+     * malformed on purpose is exempt: the check asserts the well-formed form. */
+    if (!b->overflow && marker_valid && hdr_len >= written)
+        check_pes_wellformed(b->d + hdr_at, hdr_at, pts_dts, hdr_len, pts, dts, payload_len);
     raw(b, payload, payload_len);
+}
+/* One PES packet carrying a PTS, or none at all. */
+static void add_pes(Buf *b, uint8_t sid, int has_pts, int64_t pts,
+                    const uint8_t *payload, uint32_t payload_len) {
+    if (has_pts) add_pes_ex(b, sid, PES_TS_PTS, 5u, pts, 0, 1, payload, payload_len);
+    else         add_pes_ex(b, sid, PES_TS_NONE, 0u, 0, 0, 1, payload, payload_len);
 }
 
 /* ---- fixture self-validation ------------------------------------------------------------
@@ -94,21 +135,48 @@ static void add_pes(Buf *b, uint8_t sid, int has_pts, int64_t pts,
  * rather than as a fixture bug -- so the packet walk below asserts the start-code
  * prefix, the stream id, the marker bits, the optional-header length and that the
  * declared length accounts for exactly the bytes the builder wrote. */
-static void check_pes_wellformed(const uint8_t *s, uint32_t at, uint32_t payload_len,
-                                 int has_pts) {
+static void check_pes_wellformed(const uint8_t *s, uint32_t at, int pts_dts, uint32_t hdr_len,
+                                 int64_t pts, int64_t dts, uint32_t payload_len) {
     CHECK(s[0] == 0u && s[1] == 0u && s[2] == 1u, "PES start-code prefix is 00 00 01");
     CHECK(s[3] == 0xe0u || s[3] == 0xbdu, "PES stream id is video or private stream 1");
     uint32_t declared = ((uint32_t)s[4] << 8) | s[5];
-    CHECK(declared == 3u + (has_pts ? 5u : 0u) + payload_len,
+    CHECK(declared == 3u + hdr_len + payload_len,
           "declared PES length accounts for exactly the bytes written");
-    CHECK((s[6] & 0xc0u) == 0x80u, "PES flags carry the mandatory '10' marker bits");
-    CHECK(s[8] == (has_pts ? 5u : 0u), "optional-header length matches the PTS field written");
+    /* The two flags bytes are asserted independently.  The first is the mandatory MPEG-2
+     * marker, the second is the packet's own statement about its timestamps; a fixture
+     * that wrote only one of the two cannot pass both assertions. */
+    CHECK((s[6] & 0xc0u) == 0x80u, "first flags byte carries the mandatory '10' marker bits");
+    CHECK(((s[7] >> 6) & 0x3u) == (uint32_t)pts_dts,
+          "second flags byte states the PTS/DTS combination the builder wrote");
+    CHECK(s[8] == hdr_len, "the declared optional-header length is what the builder wrote");
+    /* A timestamp field is present when the flags promise one and the declared header can
+     * hold it; a packet where the two disagree is the malformed form a test drives on
+     * purpose, and no field assertion applies to it. */
+    uint32_t need = (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH ? 5u : 0u) +
+                    (pts_dts == PES_TS_BOTH ? 5u : 0u);
+    int fields_present = need > 0u && hdr_len >= need;
+    int has_pts = fields_present && (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH);
+    int has_dts = fields_present && pts_dts == PES_TS_BOTH;
     if (has_pts) {
         CHECK((s[9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
         CHECK((s[9] & 1u) != 0u && (s[11] & 1u) != 0u && (s[13] & 1u) != 0u,
               "PTS field carries all three marker bits");
+        CHECK(read_pts(s + 9) == pts, "the PTS field encodes the value the builder declared");
+    }
+    if (has_dts) {
+        CHECK((s[14] & 0xf0u) == 0x30u, "DTS field carries the '0011' prefix");
+        CHECK((s[14] & 1u) != 0u && (s[16] & 1u) != 0u && (s[18] & 1u) != 0u,
+              "DTS field carries all three marker bits");
+        CHECK(read_pts(s + 14) == dts, "the DTS field encodes the value the builder declared");
     }
     (void)at;
+}
+/* Decode a timestamp field back out of the bytes the builder wrote, so the fixture checks
+ * the value it declared and not only the shape of the field. */
+static int64_t read_pts(const uint8_t *p) {
+    return ((int64_t)((p[0] >> 1) & 7u) << 30) | ((int64_t)p[1] << 22) |
+           ((int64_t)((p[2] >> 1) & 0x7fu) << 15) | ((int64_t)p[3] << 7) |
+           ((int64_t)((p[4] >> 1) & 0x7fu));
 }
 /* Private stream 1 payload: sub-stream id byte + three sub-header bytes + ES. */
 static void add_audio_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *es, uint32_t es_len) {
@@ -389,12 +457,112 @@ static void test_rejects_bad_containers(void) {
     free(bytes);
 }
 
+/* One picture in one PES packet, with a caller-chosen timestamp shape. */
+static uint8_t *ts_fixture(uint32_t *size_out, int pts_dts, uint32_t hdr_len,
+                           int marker_valid, int64_t pts, int64_t dts) {
+    Buf b;
+    b.cap = 4096;
+    b.d = (uint8_t *)calloc(1, b.cap);
+    b.at = 2048;
+    b.overflow = 0;
+    if (!b.d) return NULL;
+    b.d[0]='P'; b.d[1]='S'; b.d[2]='M'; b.d[3]='F';
+    be32(b.d + 8, 2048);
+    add_pack(&b);
+    uint8_t es[4 + sizeof(k_picture1_body)];
+    memcpy(es, k_aud, 4);
+    memcpy(es + 4, k_picture1_body, sizeof(k_picture1_body));
+    add_pes_ex(&b, 0xe0, pts_dts, hdr_len, pts, dts, marker_valid, es, sizeof(es));
+    be32(b.d + 12, b.at - 2048);
+    *size_out = b.at;
+    CHECK(!b.overflow, "timestamp fixture fits its buffer");
+    return b.d;
+}
+
+/* Byte 6 is the marker byte and byte 7 is PTS_DTS_flags.  Every combination the
+ * format defines is exercised here, and the malformed ones fail closed.
+ *
+ * This is the coverage whose absence let a parser read the flags out of the marker
+ * byte and still pass the rest of the suite: doing so reports a time on the 9,521
+ * timestamp-less packets of the retail movie, cannot report the DTS of the 173 that
+ * have one, and would read payload as a time on any packet whose flags declare none
+ * while its optional header is non-empty. */
+static void test_timestamp_flags(void) {
+    struct TsCase {
+        int pts_dts; uint32_t hdr_len; int marker_valid;
+        int64_t pts, dts;
+        int want_pts, want_dts, want_fail;
+        const char *text;
+    } cases[] = {
+        { PES_TS_NONE, 0u, 1, 0, 0, 0, 0, 0,
+          "PTS_DTS_flags 00: a packet with no timestamps reports none" },
+        { PES_TS_PTS, 5u, 1, 90000, 0, 1, 0, 0,
+          "PTS_DTS_flags 10: a PTS-only packet keeps its time" },
+        { PES_TS_BOTH, 10u, 1, 99009, 96006, 1, 1, 0,
+          "PTS_DTS_flags 11: a PTS+DTS packet keeps both times" },
+        { PES_TS_PTS, 8u, 1, 93003, 0, 1, 0, 0,
+          "a PTS followed by header filler keeps its time and its payload offset" },
+        { PES_TS_BOTH, 13u, 1, 96006, 93003, 1, 1, 0,
+          "a PTS+DTS pair followed by header filler keeps both times" },
+        { PES_TS_RESERVED, 0u, 1, 0, 0, 0, 0, 1,
+          "PTS_DTS_flags 01 is reserved and fails closed" },
+        { PES_TS_PTS, 0u, 1, 90000, 0, 0, 0, 1,
+          "a PTS claimed with no optional header fails closed" },
+        { PES_TS_NONE, 0u, 0, 0, 0, 0, 0, 1,
+          "a packet without the mandatory '10' marker fails closed" },
+    };
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        uint32_t size = 0;
+        uint8_t *bytes = ts_fixture(&size, cases[c].pts_dts, cases[c].hdr_len,
+                                    cases[c].marker_valid, cases[c].pts, cases[c].dts);
+        if (!bytes) { CHECK(0, "timestamp fixture allocated"); continue; }
+        MemSource mem = {bytes, size, 5, 0};       /* fragmented reads: nothing whole */
+        SrPsmfSource source = {mem_read, &mem, size};
+        SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+        CHECK(p != NULL, "timestamp fixture opens");
+        if (p) {
+            for (int i = 0; i < 64 && !sr_psmf_producer_eof(p); i++) sr_psmf_producer_pump(p, 1);
+            SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
+            SrPsmfAu au;
+            int got = 0;
+            memset(&au, 0, sizeof(au));
+            if (cases[c].want_fail) {
+                CHECK(st.failed && st.parser_failures > 0, cases[c].text);
+                CHECK(!sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au),
+                      "a rejected packet yields no access unit");
+            } else {
+                CHECK(!st.failed, cases[c].text);
+                got = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+                CHECK(got, cases[c].text);
+                if (got) {
+                    CHECK(au.has_pts == (uint8_t)cases[c].want_pts,
+                          "PTS presence follows the flags byte, not the marker byte");
+                    CHECK(au.has_dts == (uint8_t)cases[c].want_dts,
+                          "DTS presence follows the flags byte, not the marker byte");
+                    if (cases[c].want_pts)
+                        CHECK(au.raw_pts == cases[c].pts, "the access unit carries the packet's PTS");
+                    if (cases[c].want_dts)
+                        CHECK(au.raw_dts == cases[c].dts, "the access unit carries the packet's DTS");
+                    CHECK(st.pes_with_dts == (uint64_t)cases[c].want_dts,
+                          "the decode-time counter reports what the flags declared, not what the marker byte implies");
+                    CHECK(au.size == 4u + 3u && au.data && au.data[4] == 0x11,
+                          "the picture payload begins after the declared optional header");
+                }
+            }
+            if (got) sr_psmf_au_release(&au);
+            sr_psmf_producer_close(p);
+        }
+        free(bytes);
+    }
+}
+
 int main(void) {
     test_access_unit_formation();
     test_backpressure_keeps_order();
     test_lifecycle_and_source_failure();
     test_malformed();
     test_rejects_bad_containers();
+    test_timestamp_flags();
     printf("psmf_producer_selftest: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

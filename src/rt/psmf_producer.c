@@ -341,6 +341,7 @@ static int emit_au(SrPsmfProducer *p, SrPsmfAuKind kind, uint32_t len) {
     } else {
         p->stats.aus_without_pts++;
     }
+
     if (kind == SR_PSMF_AU_VIDEO) p->stats.video_aus++;
     else p->stats.audio_aus++;
     track_consume(t, len);
@@ -448,11 +449,16 @@ static int parse_one(SrPsmfProducer *p) {
         SrPsmfAuKind kind = is_video ? SR_PSMF_AU_VIDEO : SR_PSMF_AU_AUDIO;
         if (left < 9 || !read_exact(p, p->cursor + 4, h + 4, 5)) return -1;
         uint32_t len = be16(h + 4);
-        /* h[4..5] PES length, h[6] flags1 (PTS_DTS_flags live here), h[7] flags2,
-         * h[8] header_data_length.  Reading the PTS flags out of the wrong byte
-         * silently drops every presentation time on any stream whose second flag
-         * byte differs, so the bit positions matter. */
-        uint8_t flags = h[6], hdr_len = h[8];
+        /* h[4..5] PES length, h[6] flags1 (its top two bits are the mandatory '10'
+         * MPEG-2 marker), h[7] flags2 (PTS_DTS_flags are its top two bits),
+         * h[8] header_data_length.  The marker byte is not a timestamp byte: it is
+         * set on every packet of the format, so reading the flags out of it reports a
+         * presentation time on packets that carry none and loses the DTS of every
+         * packet that has one.  Each byte is asserted where it belongs. */
+        uint8_t flags1 = h[6], flags2 = h[7], hdr_len = h[8];
+        if ((flags1 & 0xc0u) != 0x80u) return -1;   /* not MPEG-2 PES: fail closed */
+        unsigned pts_dts = (unsigned)((flags2 >> 6) & 0x3u);
+        if (pts_dts == 1u) return -1;               /* '01' is reserved */
         uint64_t total;
         if (len < 3u || (uint32_t)3u + hdr_len > len ||
             !add_u64(6u, len, &total) || total > left) return -1;
@@ -464,23 +470,26 @@ static int parse_one(SrPsmfProducer *p) {
         if (payload_len && !read_exact(p, payload_off, payload, payload_len)) {
             free(payload); return -1;
         }
-        int has_pts = (flags & 0x80u) != 0;
-        int has_dts = (flags & 0x40u) != 0;
-        /* A PES packet with no optional header carries no presentation time; the
-         * flag bits are then unused and must not be honoured, or a continuation
-         * packet would be rejected as contradictory. */
-        if (hdr_len == 0u) has_pts = has_dts = 0;
-        else if (has_pts && hdr_len < 5u) { free(payload); return -1; }
+        /* PTS_DTS_flags is the packet's own statement about which timestamps follow,
+         * and a packet that declares none is left with none: the consumer extrapolates
+         * from the codec frame step rather than being handed an invented time.  A packet
+         * whose flags promise a field its declared header cannot hold is contradictory,
+         * so it fails closed instead of reading payload bytes as a time. */
+        int has_pts = pts_dts == 2u || pts_dts == 3u;
+        int has_dts = pts_dts == 3u;
+        if (hdr_len == 0u && pts_dts != 0u) { free(payload); return -1; }
+        if (has_pts && hdr_len < 5u) { free(payload); return -1; }
+        if (has_dts && hdr_len < 10u) { free(payload); return -1; }
         int64_t pts = 0, dts = 0;
         uint32_t optional = p->cursor + 9u;
         if (has_pts && !read_exact(p, optional, h + 9, 5)) { free(payload); return -1; }
         if (has_pts && !parse_pts(h + 9, &pts)) { free(payload); return -1; }
-        if (has_dts && hdr_len < 10u) { free(payload); return -1; }
         if (has_dts && !read_exact(p, optional + 5u, h + 14, 5)) { free(payload); return -1; }
         if (has_dts && !parse_pts(h + 14, &dts)) { free(payload); return -1; }
         p->cursor += total;
         p->stats.pes_packets++;
         if (is_video) p->stats.video_pes++; else p->stats.audio_pes++;
+        if (has_dts) p->stats.pes_with_dts++;
 
         uint32_t skip = 0;
         if (!is_video) {

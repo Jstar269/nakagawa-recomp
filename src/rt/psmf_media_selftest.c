@@ -251,7 +251,9 @@ static void put_pts(uint8_t *p, int64_t v) {
 }
 /* One MPEG-PS packet: pack header, then a PES packet with a single video payload slice.
  * The '10' marker in the first flags byte is mandatory even on a packet that carries no
- * presentation time, and the optional-header length is what says whether one follows. */
+ * presentation time; the second flags byte states which timestamps follow, and the
+ * optional-header length is what bounds them.  All three are written from `has_pts` here,
+ * so a packet that claims a time is one whose declared header actually holds it. */
 static void add_video_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *payload, uint32_t len) {
     static const uint8_t pack[14] = { 0,0,1,0xba, 0x44,0,4,0,4,1,0,0,1,0 };
     uint32_t opt = has_pts ? 5u : 0u;
@@ -260,7 +262,7 @@ static void add_video_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *paylo
     put(b, pack, sizeof(pack));
     hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=0xe0;
     hdr[4]=(uint8_t)(total >> 8); hdr[5]=(uint8_t)total;
-    hdr[6]=0x80u; hdr[7]=0; hdr[8]=(uint8_t)opt;
+    hdr[6]=0x80u; hdr[7]=(uint8_t)(has_pts ? 0x80u : 0x00u); hdr[8]=(uint8_t)opt;
     put(b, hdr, sizeof(hdr));
     if (has_pts) { uint8_t p[5]; put_pts(p, pts); put(b, p, sizeof(p)); }
     put(b, payload, len);
@@ -316,9 +318,12 @@ static uint32_t pes_count(const uint8_t *s, uint32_t n) {
         CHECK(s[at] == 0u && s[at + 1] == 0u && s[at + 2] == 1u, "PES start-code prefix is 00 00 01");
         uint8_t id = s[at + 3];
         CHECK(id == 0xbdu || (id & 0xe0u) == 0xe0u, "PES stream id is a video or private stream");
-        CHECK((s[at + 6] & 0xc0u) == 0x80u, "PES flags byte carries the mandatory '10' marker bits");
+        CHECK((s[at + 6] & 0xc0u) == 0x80u, "PES marker byte carries the mandatory '10' bits");
+        uint32_t ts_flags = ((uint32_t)s[at + 7] >> 6) & 0x3u;
         uint32_t opt = s[at + 8];
         CHECK(opt == 0u || opt == 5u, "optional PES header is absent or exactly one PTS field");
+        CHECK(ts_flags == (opt ? 2u : 0u),
+              "PTS/DTS flags state exactly the timestamp fields the declared header holds");
         if (opt == 5u) {
             CHECK((s[at + 9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
             CHECK((s[at + 9] & 1u) != 0u && (s[at + 11] & 1u) != 0u && (s[at + 13] & 1u) != 0u,

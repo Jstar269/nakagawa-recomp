@@ -2693,7 +2693,7 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * player sees -- publishing them is what makes synchronization measurable from a
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
-                    " video_aus=%llu audio_aus=%llu no_pts=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -2701,6 +2701,7 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.pes_packets, (unsigned long long)st.video_pes,
                     (unsigned long long)st.audio_pes, (unsigned long long)st.video_aus,
                     (unsigned long long)st.audio_aus, (unsigned long long)st.aus_without_pts,
+                    (unsigned long long)st.pes_with_dts,
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
