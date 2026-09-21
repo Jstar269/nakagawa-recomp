@@ -149,6 +149,28 @@ Executing guest PSMF middleware does not require software-emulating an H.264 vid
    - Nakagawa's runtime intercepts raw compressed NAL packets at the `sceMpeg` boundary and dispatches them to host hardware decoders (Vulkan Video, DXVA2/Media Foundation, or ffmpeg/libavcodec).
    - Audio packets (ATRAC3plus) are decoded via host audio libraries and fed back into guest ring buffers.
 
+#### Implemented Boundary Today (public source)
+
+The downward boundary exists in the current source, one layer below the player, and is exercised
+end to end by source-owned tests:
+
+- `src/rt/psmf_producer.c` reads a PSMF/MPEG-PS stream through a bounded byte source (ISO sector
+  read, loose VFS entry, or in-memory fixture), forms PSP-shaped access units (aud-delimited
+  pictures, ATRAC3plus frame records with the private-stream-1 sub-header), and hands them to
+  per-track compressed-access-unit queues with backpressure, bounded parsing, and fail-closed
+  malformed-input handling.
+- The `scePsmfPlayer*` handlers remain host HLE for now: they own the guest control block and the
+  output contract, and drive that producer plus the host codecs (Media Foundation H.264 for
+  pictures, the project's ATRAC3plus decoder import for audio). A getter returns success only for
+  output a decoder actually produced; a compressed access unit is never presented as a decoded
+  frame or PCM block, and a track that runs dry reports `NO_MORE_DATA` rather than silence.
+- Evidence tiers: the access-unit, timestamp and queue contract is covered by
+  `src/rt/psmf_producer_selftest.c` against fixtures built byte-for-byte by that file (tier S), and
+  the decoder seam by `src/rt/psmf_media_selftest.c`, which constructs a baseline-profile H.264
+  stream whose every macroblock is `I_PCM` and checks the decoded picture deterministically. The
+  host-HLE player itself has no hardware-comparison measurement, so both getters carry the
+  `partial` status in `tools/hle_registry_meta.py` rather than `complete`.
+
 ---
 
 ### 3.5 Filesystem and Asset Storage: Guest Transparency

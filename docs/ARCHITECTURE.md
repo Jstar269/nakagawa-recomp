@@ -515,7 +515,10 @@ Clock ownership:
   constant, and that single UTC/local-conversion criterion stays blocked on the missing owner.
   The explicit-offset `sceRtcGetCurrentClock` path is complete and independent of it.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
-  domains and are not wall time.
+  domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
+  PSMF producer (`psmf_producer.c`): a normalized access unit carries the stream's own presentation
+  time, and a picture whose PES packet carried none is extrapolated by one codec frame step from the
+  last known time instead of being invented before the first timestamp arrives.
 
 Host behavior: in paced mode (default) `s_vtime_us` tracks SDL's monotonic clock at scheduler
 boundaries — a host stall or sleep advances guest time by the stall, and slow frames are caught up by
