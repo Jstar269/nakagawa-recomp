@@ -134,6 +134,7 @@ extern unsigned long sr_hle_test_data_build_attempts(void);
 extern unsigned long sr_hle_test_data_builds_after_guest(void);
 extern int sr_hle_test_data_state(void);
 extern size_t sr_hle_test_data_entry_count(void);
+extern int sr_hle_test_data_key_seen(const char *key_prefix);
 extern void sr_hle_test_data_reset(int pace_ms);
 
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
@@ -2819,9 +2820,11 @@ static uint32_t prewarm_open_common(CpuState *cpu) {
     memset(cpu, 0, sizeof *cpu);
     cpu->r[4] = path_addr;
     /* disc0:/<rel> exercises the same device-strip + binary-search shape the
-     * extracted-data route serves in production. (The combined PSP_GAME/ +
-     * USRDIR/ double-strip has a pre-existing leading-slash quirk documented
-     * since PR #108; it is unchanged here and out of scope.) */
+     * extracted-data route serves in production. The combined PSP_GAME/ + USRDIR/
+     * double-strip used to carry a leading-slash quirk (PR #108); the off-by-one
+     * behind it is fixed and the double-strip form is covered by
+     * test_disc_route_serves_archive_and_loose_content_in_one_namespace below, so
+     * the bare form is kept here only to pin the single-strip case. */
     const char *path = "disc0:/data/menu/text/common.to";
     for (unsigned i = 0;; i++) {
         MEM_W8(path_addr + i, (uint8_t)path[i]);
@@ -2935,6 +2938,130 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
            "guest time never enumerates on behalf of an unprepared route");
     expect(sr_hle_test_data_builds_after_guest() == 0,
            "and never records a post-guest build attempt");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+}
+
+/* 2b. The disc route serves the whole namespace the guest addresses, not one
+ *     physical tree: the archive-derived keys and the loose content beside the
+ *     root land in the same key space, and the declared census keeps describing
+ *     the configured root alone.
+ *
+ *     Fixture: <cwd>/build/disc_route_<pid>/USRDIR/xbdata_extracted/menu\a.xb0.d\data\menu\archived.to
+ *              <cwd>/build/disc_route_<pid>/USRDIR/data/sound/bgm/bgm_title.sgb
+ *     SR_DATAROOT is the xbdata_extracted tree, so BOTH keys must resolve through
+ *     one prepared index, and the archive tree must not appear under a second key. */
+static char s_disc_route_root[MAX_PATH];
+
+static int disc_route_make_fixture(void) {
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    CreateDirectoryA("build", NULL);
+    snprintf(s_disc_route_root, sizeof s_disc_route_root,
+             "%s\\build\\disc_route_%lu", cwd, (unsigned long)GetCurrentProcessId());
+
+    /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
+     * fixture cannot depend on an earlier test having left a parent behind. */
+    static const char *const dirs[] = {
+        "", "\\USRDIR",
+        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\xbdata_extracted\\menu",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu",
+        "\\USRDIR\\data",
+        "\\USRDIR\\data\\sound",
+        "\\USRDIR\\data\\sound\\bgm"
+    };
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", s_disc_route_root, dirs[i]);
+        if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
+    }
+    static const struct { const char *rel; const char *body; } files[] = {
+        { "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
+        { "\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb", "loose" }
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char file[MAX_PATH];
+        snprintf(file, sizeof file, "%s%s", s_disc_route_root, files[i].rel);
+        FILE *f = fopen(file, "wb");
+        if (!f) return 0;
+        fputs(files[i].body, f);
+        fclose(f);
+    }
+    return 1;
+}
+
+static uint32_t disc_route_open(CpuState *cpu, const char *path) {
+    static const uint32_t path_addr = 0x09104000u;
+    memset(cpu, 0, sizeof *cpu);
+    cpu->r[4] = path_addr;
+    for (unsigned i = 0;; i++) {
+        MEM_W8(path_addr + i, (uint8_t)path[i]);
+        if (!path[i]) break;
+    }
+    return sr_hle_test_io_open(cpu);
+}
+
+static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(void) {
+    CpuState cpu;
+    sr_hle_init();
+    expect(disc_route_make_fixture(), "the disc-route fixture was created");
+
+    char dataroot[MAX_PATH];
+    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\xbdata_extracted", s_disc_route_root);
+    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    sr_hle_test_data_reset(0);
+
+    int state = sr_host_data_prepare();
+    expect(state == SR_DATA_TEST_STATE_READY,
+           "a prepared root with loose content beside it still reaches READY");
+
+    /* Both physical trees are in one key space... */
+    const char *archived = "disc0:/PSP_GAME/USRDIR/data/menu/archived.to";
+    uint32_t archived_fd = disc_route_open(&cpu, archived);
+    expect(archived_fd >= 3u && archived_fd < 64u,
+           "an archive-derived asset still resolves through the disc path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = archived_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the archive-derived descriptor closes");
+
+    const char *loose = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb";
+    uint32_t loose_fd = disc_route_open(&cpu, loose);
+    expect(loose_fd >= 3u && loose_fd < 64u,
+           "a loose asset beside the root resolves through the same disc path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = loose_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the loose descriptor closes");
+
+    /* The device-qualified disc form the engine actually issues must normalize to
+     * the same relative key as the bare form.  Both strips consume their trailing
+     * separator; when they did not, every `disc0:/PSP_GAME/USRDIR/<rel>` lookup
+     * produced `/usrdir/<rel>` and missed, which is what starved this title's
+     * equivalent guest filesystem paths otherwise miss the prepared namespace. */
+    static const char *const equivalent_forms[] = {
+        "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb",
+        "disc0:/data/sound/bgm/bgm_title.sgb",
+        "data/sound/bgm/bgm_title.sgb",
+        "disc0:\\PSP_GAME\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb"
+    };
+    for (size_t i = 0; i < sizeof(equivalent_forms) / sizeof(equivalent_forms[0]); i++) {
+        uint32_t fd = disc_route_open(&cpu, equivalent_forms[i]);
+        expect(fd >= 3u && fd < 64u,
+               "every form of a disc path normalizes to one key (double strip included)");
+        if (fd >= 3u && fd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = fd;
+            expect(sr_hle_test_io_close(&cpu) == 0u, "each form's descriptor closes");
+        }
+    }
+
+    /* ...and the configured root is not enumerated a second time under a key it
+     * never had, which is what the skip exists to prevent. */
+    expect(!sr_hle_test_data_key_seen("xbdata_extracted/"),
+           "the configured root is skipped by the loose walk, not re-indexed");
 
     prewarm_env_restore();
     sr_hle_test_data_reset(0);
@@ -13077,6 +13204,7 @@ int main(int argc, char **argv) {
     test_vcount_credits_one_deferred_period_on_resume();
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
+    test_disc_route_serves_archive_and_loose_content_in_one_namespace();
     test_unprepared_route_lookup_fails_closed_without_building();
     test_slow_enumeration_completes_before_guest_start();
     test_unapplicable_route_disables_without_scanning();

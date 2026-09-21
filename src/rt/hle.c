@@ -3812,6 +3812,26 @@ static int sr_wide_parent_alloc(const wchar_t *path, wchar_t **out) {
     return 1;
 }
 
+/* Final path component of `path`, allocating. Mirrors the separator handling in
+ * sr_wide_parent_alloc so the two agree on what a path's parent and name are. */
+static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
+    if (!path || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(path);
+    while (n > 0 && (path[n - 1] == L'\\' || path[n - 1] == L'/')) n--;
+    size_t end = n;
+    while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/') n--;
+    if (end == 0 || end <= n) return 0;
+    size_t len = end - n;
+    if (len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *base = (wchar_t *)malloc((len + 1u) * sizeof(*base));
+    if (!base) return 0;
+    memcpy(base, path + n, len * sizeof(*base));
+    base[len] = L'\0';
+    *out = base;
+    return 1;
+}
+
 static int sr_wide_module_font_root(wchar_t **out) {
     if (!out) return 0;
     *out = NULL;
@@ -7166,8 +7186,14 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
 
 /* Iterative depth-first walk of `root`, recording every regular file's relative
  * path and absolute host path.  An explicit heap stack keeps a crafted 32k
- * extended path from consuming the host thread's call stack. */
-static int data_walk(const wchar_t *root, const char *relprefix, SrAssetIndex *index) {
+ * extended path from consuming the host thread's call stack.
+ *
+ * `skip_top_name` (optional) names one directory directly under `root` that the
+ * walk does not descend into, by case-insensitive comparison.  It exists for the
+ * route that adds a second root beside the first: that root is a parent of the
+ * first, so the first root's own subtree would otherwise be enumerated twice. */
+static int data_walk(const wchar_t *root, const char *relprefix,
+                     const wchar_t *skip_top_name, SrAssetIndex *index) {
     if (!root || !relprefix || !index) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
@@ -7232,7 +7258,11 @@ static int data_walk(const wchar_t *root, const char *relprefix, SrAssetIndex *i
                     fprintf(stderr, "host_data: path conversion/join failed during enumeration\n");
                     ok = 0;
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    if (skip_top_name && current.rel[0] == '\0' &&
+                        _wcsicmp(fd.cFileName, skip_top_name) == 0) {
+                        /* Already enumerated from its own root; do not pay for it
+                         * twice. On this title that subtree is 56,672 entries. */
+                    } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                         fprintf(stderr, "host_data: refusing reparse-point directory\n");
                         ok = 0;
                     } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
@@ -7334,13 +7364,24 @@ static int data_root_validate(const wchar_t *root, int configured) {
  * supplies each regular file's checked size, while the walk's read-open probe
  * catches ACL/deletion races before the table is published.  The real open
  * remains fail-closed in h_IoOpen when the guest requests a file. */
-static int data_validate_index(const SrAssetIndex *index) {
+/* `primary_count` is the number of files the CONFIGURED root alone yielded, taken
+ * before any additional root was folded in.  The declared census describes that
+ * root -- the extracted-archive tree the operator prepared and counted -- so the
+ * check keeps its exact fail-closed meaning: a truncated or wrong-title archive
+ * tree still mismatches and still refuses the index, no matter what sits beside
+ * it.  Comparing `index->count` instead would have made the declared number
+ * depend on the route's root list, which is not what it declares. */
+static int data_validate_index(const SrAssetIndex *index, size_t primary_count) {
     if (!index || index->count == 0) return 0;
 {
         uint32_t expected = sr_title_config_expected_data_file_count();
-        if (expected != 0 && index->count != (size_t)expected) {
+        if (primary_count == 0 || primary_count > index->count) {
+            fprintf(stderr, "host_data: primary-root census unavailable; refusing index\n");
+            return 0;
+        }
+        if (expected != 0 && primary_count != (size_t)expected) {
             fprintf(stderr, "host_data: expected %u files but enumerated %zu; refusing index\n",
-                    (unsigned)expected, index->count);
+                    (unsigned)expected, primary_count);
             return 0;
         }
     }
@@ -7351,6 +7392,61 @@ static int data_validate_index(const SrAssetIndex *index) {
         }
     }
     return 1;
+}
+
+/* Fold the loose content tree beside the configured root into the same namespace.
+ *
+ * The guest addresses one disc namespace, rooted at USRDIR: it asks for
+ * `disc0:/PSP_GAME/USRDIR/<rel>` and `host0:<rel>`, and the canonical prepared
+ * layout splits that namespace across two physical trees -- the
+ * extracted-archive root (`<...>/USRDIR/xbdata_extracted`, i.e. SR_DATAROOT) and
+ * the loose content beside it (`<...>/USRDIR/data`, `movie_us/`, `module/`,
+ * `bundle_data/`, `umd.ufl`).  Keys are relative to whichever root produced
+ * them, so both trees land in one key space no matter which root served the file.
+ *
+ * A loose asset can legitimately be outside the configured extracted tree, so
+ * the index must include that adjacent content rather than treating a miss as a
+ * decoder or player failure.  The synthetic regression below proves the two
+ * sources resolve through one namespace without requiring retail bytes.
+ *
+ * Deliberately narrow: applying a second walk to the parent unconditionally would
+ * be unbounded (`SR_DATAROOT=C:\extracted` would enumerate `C:\`).  So it applies
+ * only when the configured root really is the canonical prepared layout -- an
+ * extracted-archive directory named `xbdata_extracted`/`xbdata` whose parent is a
+ * `USRDIR`.  Any other root keeps the single-root behaviour untouched.
+ *
+ * Returns 1 when the route is not applicable or the walk completed, and only 0
+ * when the walk applied and failed, because a partially enumerated extra root
+ * must refuse the index rather than publish it. */
+static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
+    wchar_t *parent = NULL;
+    wchar_t *primary_name = NULL;
+    wchar_t *parent_name = NULL;
+    int applied = 0;
+    int ok = 1;
+    if (sr_wide_parent_alloc(primary_root, &parent) &&
+        sr_wide_basename_alloc(primary_root, &primary_name) &&
+        sr_wide_basename_alloc(parent, &parent_name) &&
+        (_wcsicmp(primary_name, L"xbdata_extracted") == 0 ||
+         _wcsicmp(primary_name, L"xbdata") == 0) &&
+        _wcsicmp(parent_name, L"USRDIR") == 0) {
+        DWORD attributes = GetFileAttributesW(parent);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+            !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            applied = 1;
+            fprintf(stderr, "host_data: also indexing the loose content beside the "
+                            "extracted-archive root\n");
+            ok = data_walk(parent, "", primary_name, index);
+        }
+    }
+    if (applied && !ok) {
+        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
+    }
+    free(parent);
+    free(primary_name);
+    free(parent_name);
+    return ok;
 }
 
 /* Build the extracted-data index ONCE, before guest execution starts.
@@ -7409,10 +7505,18 @@ int sr_host_data_prepare(void) {
     }
     free(configured_root);
     if (root_ok && !data_root_validate(root_wide, configured_present)) root_ok = 0;
-    if (!root_ok ||
-        !data_walk(root_wide, "", &temporary) ||
+    size_t primary_count = 0;
+    int walk_ok = root_ok && data_walk(root_wide, "", NULL, &temporary);
+    if (walk_ok) {
+        /* Take the configured root's own census BEFORE the route addition, so the
+         * title's declared expected_data_file_count keeps describing exactly the
+         * tree it was written for (see data_validate_index). */
+        primary_count = temporary.count;
+        walk_ok = data_loose_content_walk(root_wide, &temporary);
+    }
+    if (!walk_ok ||
         !sr_asset_index_finalize(&temporary) ||
-        !data_validate_index(&temporary)) {
+        !data_validate_index(&temporary, primary_count)) {
         fprintf(stderr, "host_data: index initialization failed; refusing partial index\n");
         free(root_wide);
         sr_asset_index_destroy(&temporary);
@@ -7428,6 +7532,11 @@ int sr_host_data_prepare(void) {
     }
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
+    if (s_data_index.count != primary_count) {
+        fprintf(stderr, "host_data: configured root contributed %zu of them; %zu came from "
+                        "the loose content beside it\n",
+                primary_count, s_data_index.count - primary_count);
+    }
     return SR_DATA_STATE_READY;
 }
 
@@ -7450,6 +7559,21 @@ int sr_hle_test_data_state(void) {
     return atomic_load_explicit(&s_data_state, memory_order_acquire);
 }
 size_t sr_hle_test_data_entry_count(void) { return s_data_index.count; }
+
+/* Test-build-only: does any published entry's key begin with `key_prefix`?  Lets a
+ * test prove that a route addition did NOT re-index a root it was told to skip
+ * (a count alone cannot tell a skipped root from a de-duplicated one). */
+int sr_hle_test_data_key_seen(const char *key_prefix) {
+    if (!key_prefix ||
+        atomic_load_explicit(&s_data_state, memory_order_acquire) != SR_DATA_STATE_READY) {
+        return 0;
+    }
+    size_t prefix_len = strlen(key_prefix);
+    for (size_t i = 0; i < s_data_index.count; i++) {
+        if (strncmp(s_data_index.entries[i].key, key_prefix, prefix_len) == 0) return 1;
+    }
+    return 0;
+}
 
 void sr_hle_test_data_reset(int pace_ms) {
     sr_asset_index_destroy(&s_data_index);
@@ -7474,7 +7598,15 @@ static char *data_normalize_guest_key(const char *guest_path, int *wanted_varian
      * the game may request the same file by its full "PSP_GAME/USRDIR/..." path. Strip
      * those leading segments so the binary search matches regardless of which form the
      * guest passes. */
-    if (_strnicmp(p, "PSP_GAME/", 8) == 0 || _strnicmp(p, "PSP_GAME\\", 8) == 0) p += 8;
+    /* Each test must strip the separator along with the name, which means the
+     * count has to include it: "PSP_GAME/" is nine characters, "USRDIR/" is seven.
+     * The PSP_GAME test compared and advanced eight -- the name without its
+     * separator -- so `p` became "/USRDIR/<rel>", the USRDIR test could no longer
+     * match, and the key came out as "/usrdir/<rel>".  Every
+     * `disc0:/PSP_GAME/USRDIR/<rel>` lookup therefore missed the index and fell
+     * through to the ISO route. This was an implementation off-by-one, not a
+     * property of the PSP path grammar. */
+    if (_strnicmp(p, "PSP_GAME/", 9) == 0 || _strnicmp(p, "PSP_GAME\\", 9) == 0) p += 9;
     if (_strnicmp(p, "USRDIR/", 7) == 0 || _strnicmp(p, "USRDIR\\", 7) == 0) p += 7;
     /* Localized roots are selected by the game itself.  For this build the table is
      * data_00_USE, data_02_FRE, data_03_SPA, ... and the matching archives are .xb0,
