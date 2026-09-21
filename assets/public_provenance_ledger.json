@@ -402,7 +402,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "049a7be553bee1a0ae49813124851f8b37f197508142077f589b72518d0e018e"
+      "sha256": "5fcabcb06b9bbb02595f210e872f4f72d9e313b2a6905f65979bafacb51b20f3"
     },
     {
       "path": "assets/release_manifest.json",
@@ -3444,7 +3444,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da4baf55c79de7a29f967b77a1cd18f95ba3d38c844179e0015856b7a37e7ef1"
+      "sha256": "1d919e8634c36a6cc4b8b4f75281a526b162c11f5153b1e1b00096a8397daec7"
     },
     {
       "path": "pyproject.toml",
@@ -6586,7 +6586,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6848734bb5f832e03d585a949ad45ae93998ccd60dede2c5dfbd962b8c64df81"
+      "sha256": "8fdf5a41c8bd635cf28d2e4e88129cad3091ccc443076faea80e2a1a467f369e"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6867,7 +6867,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "882d4fa521423f80fd3010f68d0cd73a1ae03006e3e716285226e99c0817747d"
+      "sha256": "55fcff3c884b8037b3c51c5e71424895bdc8d9bc20d33d2eff3e6592b7b34d0a"
     },
     {
       "path": "tools/gate_stub.c",
@@ -7316,7 +7316,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2f3ac421f7ea40c22d07bf5d2d1ef21d9843838dd144347972e4e90e0d84ef47"
+      "sha256": "2a6114f3505cbe9453aaa547d606dd3322fbed353850b3d25be75451a1a3bb1e"
     },
     {
       "path": "tools/nk_cli.py",
@@ -8312,6 +8312,15 @@
       "sha256": "b0f2d208206d2ec068f6bab790f8eb4a6c4256f764f959d17e197d166f98be93"
     },
     {
+      "path": "tools/test_funcdiff_cmp.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "9e1635636f8eb69930c88565116025a054cbb8c6368bda064a37106889287e9d"
+    },
+    {
       "path": "tools/test_gate_exit_resolution.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -8682,6 +8691,15 @@
         "upstream_attribution": null
       },
       "sha256": "900ac1a7eeabc3c11882c7adb841721806bbc69510f9e6ba9b9b81efdae20685"
+    },
+    {
+      "path": "tools/test_nidseq.py",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "6c36105b51a9d64acc5a101402fb6ee87b09096833a1ebb3922720ca1d23322a"
     },
     {
       "path": "tools/test_nk_core.py",
