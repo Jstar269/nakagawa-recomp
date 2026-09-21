@@ -9,11 +9,11 @@ import pathlib
 import sys
 
 try:
-    from .parser import parse_threading_output, analyze_runs, human_table
+    from .parser import analyze_runs, human_table
 except ImportError:
     # Direct invocation
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-    from psp_threading_oracle.parser import parse_threading_output, analyze_runs, human_table
+    from psp_threading_oracle.parser import analyze_runs, human_table
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Analyze PSP threading oracle captures")
@@ -31,9 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     table = human_table(analysis)
     # Annotate provenance per input (unverified by default; never self-promotes to HARDWARE)
     try:
-        from .parser import evidence_label, parse_threading_output, UNVERIFIED_CAPTURE
+        from .parser import evidence_label, parse_threading_output
     except ImportError:
-        from psp_threading_oracle.parser import evidence_label, parse_threading_output, UNVERIFIED_CAPTURE  # type: ignore
+        from psp_threading_oracle.parser import evidence_label, parse_threading_output  # type: ignore
     for idx, text in enumerate(texts):
         try:
             parsed = parse_threading_output(text)

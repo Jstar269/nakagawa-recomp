@@ -5,11 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-import re
-import sys
-from typing import Any
-
 from .protocol import parse_output, ProtocolError, TestResult
 
 EXPECTED_TEST_ID = "PSP-FPU-001"

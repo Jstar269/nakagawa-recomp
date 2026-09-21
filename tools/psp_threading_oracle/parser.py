@@ -47,7 +47,7 @@ from typing import Any
 
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from psp_oracle.protocol import parse_output, ProtocolError, SCHEMA, _HEX_RE  # noqa: E402
+from psp_oracle.protocol import parse_output, ProtocolError, _HEX_RE  # noqa: E402
 
 CAMPAIGN_VERSION = "psp-threading-v1"
 EXPECTED_TEST_ID = "PSP-THREAD-001"
@@ -256,8 +256,8 @@ def parse_threading_output(text: str, *, require_metadata: bool = True) -> Any:
                 att_val = int(attempt, 16)
                 if att_val > 255:
                     raise ProtocolError(f"test {r.case_id!r} attempt out of sane range {attempt!r}")
-            except ValueError:
-                raise ProtocolError(f"test {r.case_id!r} field attempt must be hex")
+            except ValueError as exc:
+                raise ProtocolError(f"test {r.case_id!r} field attempt must be hex") from exc
             # Validate per-case required_out_fields
             if r.case_id not in required_map:
                 raise ProtocolError(f"test {r.case_id!r} is not defined in matrix.json (unexpected case)")
@@ -293,8 +293,8 @@ def parse_threading_output(text: str, *, require_metadata: bool = True) -> Any:
                 if k in {"probe_len", "stack_bytes", "window_bytes", "arg_bytes"}:
                     try:
                         n = int(v, 16)
-                    except ValueError:
-                        raise ProtocolError(f"test {r.case_id!r} field {k} must be hex")
+                    except ValueError as exc:
+                        raise ProtocolError(f"test {r.case_id!r} field {k} must be hex") from exc
                     if n > STACK_PROBE_MAX_BYTES:
                         raise ProtocolError(f"test {r.case_id!r} field {k} oversized {n} > {STACK_PROBE_MAX_BYTES}")
                 # For cases that involve stack probe, bound any out that might encode length
@@ -364,7 +364,6 @@ def analyze_runs(texts: list[str], evidence_contexts: list[Any] | None = None) -
                 raise ProtocolError(f"duplicate run/case/attempt triple {triple!r}")
             seen_triples.add(triple)
             # Validate case belongs to expected launch group if known
-            expected_launch = required_map.get(r.case_id, {}).get("launch")
             # If matrix defines launch, we could also validate that the run's set of cases matches launch group
             # For now ensure case is in required set (already checked), but extra validation: if run contains mix of launches, that's allowed for CASE=all multi-launch builds; but for single-launch builds we expect all cases in run belong to same launch group? We will not strictly enforce launch mixing, but we record it.
             per_case[r.case_id].append({
@@ -402,11 +401,11 @@ def analyze_runs(texts: list[str], evidence_contexts: list[Any] | None = None) -
     if evidence_contexts is not None:
         if len(evidence_contexts) != len(texts):
             raise ProtocolError("evidence_contexts length must match texts")
-        for text, ctx, parsed in zip(texts, evidence_contexts, runs):
+        for text, ctx, parsed in zip(texts, evidence_contexts, runs, strict=True):
             label = evidence_label(parsed, evidence_context=ctx, raw_text=text)
             evidence_labels.append(label)
     else:
-        for text, parsed in zip(texts, runs):
+        for text, parsed in zip(texts, runs, strict=True):
             label = evidence_label(parsed, evidence_context=None, raw_text=text)
             evidence_labels.append(label)
 

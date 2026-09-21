@@ -27,7 +27,6 @@ from psp_threading_oracle.parser import (
     UNVERIFIED_CAPTURE,
     SYNTHETIC_TEST_ONLY,
     HARDWARE_MEASURED,
-    STACK_PROBE_MAX_BYTES,
 )
 from psp_oracle.protocol import ProtocolError
 
@@ -87,14 +86,6 @@ class MatrixFidelityTests(unittest.TestCase):
         self.assertIn("CT-C06", case_ids, "C06 must be present in full campaign")
         # Verify C05/C06 are NOT counted in gating unique_cases
         # They have FULL_ONLY classification, not gating
-        c05_in_gating = any(c["case_id"] == "CT-C05"
-                           and c.get("launch") == "L2"
-                           and c.get("expected_classification") != "FULL_ONLY"
-                           for c in MATRIX["cases"])
-        c06_in_gating = any(c["case_id"] == "CT-C06"
-                           and c.get("launch") == "L2"
-                           and c.get("expected_classification") != "FULL_ONLY"
-                           for c in MATRIX["cases"])
         # In the corrected design, C05/C06 should not be in the gating launch
         # We check they are marked FULL_ONLY or have launch info indicating not gating
         # The test passes if the gating count is exactly 28
@@ -169,8 +160,7 @@ class ParserStrictTests(unittest.TestCase):
             parse_threading_output(text)
 
     def test_canary_must_be_valid(self) -> None:
-        text = synth_meta() + "\n" + synth_record("CT-A01", extra="out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x00000000").replace("canary=0xA5A5A5A5", "canary=0xDEADBEEF") + "\n"
-        # need to build full campaign to avoid missing cases? Instead test single case with full valid campaign but bad canary on one
+        # Build a complete campaign and corrupt one canary.
         full = valid_campaign_text()
         bad = full.replace("canary=0xA5A5A5A5", "canary=0xDEADBEEF", 1)
         with self.assertRaises(ProtocolError):

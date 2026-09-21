@@ -63,7 +63,7 @@ Deterministic synchronization via `sceKernelWaitThreadEnd` (not `sceKernelDelayT
 
 ## Assembly (Stage 10)
 
-`thread_shim.S` is minimal earliest-entry trampoline: `sp` captured before frame, `a0-a3 t0-t3 gp sp ra hi/lo` stored before C prologue modifies them, explicit `%hi/%lo` via `lui/ori` for relocation safety (PSPSDK convention), no pseudo-instructions before capture except documented `$at` usage, ` $t8/$t9` unavoidable temporaries (`t0/t1` overwritten only after storage). C side has `_Static_assert` for all `ThreadEntrySnapshot` offsets. No claim of `PIC_SAFE`/`ABI_PROVEN`/`COMPILES` without `PSPDEV_BUILD` inspection of assembler output, relocations, symbol transfer, snapshot offsets.
+`thread_shim.S` is minimal earliest-entry trampoline: `sp` captured before frame, `a0-a3 t0-t3 gp sp ra hi/lo` stored before C prologue modifies them, explicit `%hi/%lo` via `lui/ori` for relocation safety (PSPSDK convention), no pseudo-instructions before capture except documented `$at` usage, `$t8/$t9` unavoidable temporaries (`t0/t1` overwritten only after storage). C side has `_Static_assert` for all `ThreadEntrySnapshot` offsets. No claim of `PIC_SAFE`/`ABI_PROVEN`/`COMPILES` without `PSPDEV_BUILD` inspection of assembler output, relocations, symbol transfer, snapshot offsets.
 
 ## Option UID cases (Stage 11)
 
