@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -17,10 +18,14 @@ from psp_oracle.protocol import (
     decode_psp_model_code,
     parse_output,
     provenance_issues,
+    validate_dmac_size_matrix,
+    DMAC_SIZE_MATRIX_SIZES,
+    DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
     _record_summary,
     _split_command,
+    _validate_host0_capture,
     annotate_terminal_outcome,
 )
 
@@ -38,6 +43,23 @@ def stream(source: str, result: str = "0x1") -> str:
     return META.format(
         source=source, model="synthetic", firmware="test", binary="0" * 64, commit="0" * 40
     ) + ("NAKAGAWA_PSP_TEST schema=1 test_id=SMOKE case_id=one status=PASS result=" + result + "\n")
+
+
+def dmac_matrix_stream() -> str:
+    lines = [META.format(
+        source="psp", model="PSP-3000", firmware="6.61-ARK",
+        binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+    )]
+    for api, api_name in enumerate(("memcpy", "try")):
+        for size in DMAC_SIZE_MATRIX_SIZES:
+            lines.append(
+                "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+                f"case_id=size-matrix-{api_name}-0x{size:08x} status=PASS "
+                f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
+                f"out3=0x1 out4=0x10 out5=0x{api:x} "
+                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0\n"
+            )
+    return "".join(lines)
 
 
 def measured_stream(source: str, result: str = "0x1") -> str:
@@ -83,6 +105,20 @@ class PspOracleProtocolTests(unittest.TestCase):
     def test_malformed_hex_is_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_output(stream("psp", "not-hex"))
+
+
+class PspDmacProtocolTests(unittest.TestCase):
+    def test_size_matrix_validator_requires_all_sizes_and_trials(self) -> None:
+        parsed = validate_dmac_size_matrix(dmac_matrix_stream())
+        self.assertEqual(len(parsed.results), 16)
+
+    def test_size_matrix_validator_rejects_missing_boundary_case(self) -> None:
+        text = dmac_matrix_stream().replace(
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+            "case_id=size-matrix-try-0x0000c001", "# removed", 1
+        )
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix(text)
 
 
 class PspOracleAcceptanceGateTests(unittest.TestCase):
@@ -177,6 +213,20 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
 
 
 class PspOracleRunnerTests(unittest.TestCase):
+    def test_dmac_host0_capture_uses_the_runner_validation_path(self) -> None:
+        args = SimpleNamespace(
+            validate_dmac_size_matrix=True,
+            binary=None,
+            source_commit=None,
+            model=None,
+            firmware=None,
+            model_code=None,
+        )
+        report = _validate_host0_capture(dmac_matrix_stream(), args)
+        self.assertEqual(report["classification"], "PASS")
+        self.assertEqual(report["test_record_count"], 16)
+        self.assertTrue(report["acceptance_eligible"])
+
     def test_capture_records_distinguish_result_skip_and_no_record(self) -> None:
         self.assertEqual(_record_summary("transport only\n"), ("NO_RECORD", 0))
         self.assertEqual(_record_summary(stream("psp")), ("RESULT_RECORDS", 1))
@@ -310,11 +360,17 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
         self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
 
-    def test_size_matrix_keeps_spans_inside_vram(self) -> None:
+    def test_size_matrix_covers_boundaries_repeats_and_cache_guards(self) -> None:
         self.assertIn("DMAC_SIZE_BYTES 0x00100000u", self.probe)
-        self.assertIn("dmac_size_requests", self.probe)
+        self.assertIn("DMAC_SIZE_TRIALS 3u", self.probe)
+        for size in ("0x0000bfffu", "0x0000c000u", "0x0000c001u", "0x0000d000u",
+                     "0x0000f000u", "0x0000ffffu", "0x00010000u", "0x00100000u"):
+            self.assertIn(size, self.probe)
+        self.assertIn("sceKernelDcacheWritebackRange", self.probe)
+        self.assertIn("sceKernelDcacheInvalidateRange", self.probe)
+        self.assertIn("dmac_size_source_mutations", self.probe)
+        self.assertIn('PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"', self.probe)
         self.assertIn('"size-matrix-%s-0x%08x"', self.probe)
-        self.assertIn("prefix == requested", self.probe)
 
     def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
         self.assertIn("PSP_ORACLE_CASE_MODEL_PROFILE", self.probe)
@@ -340,7 +396,8 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
-        self.assertEqual(len(dmac["case_ids"]), 17)
+        self.assertEqual(len(dmac["case_ids"]), 23)
+        self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
         self.assertIn("missing record is never PASS", dmac["reset"])
         self.assertEqual(

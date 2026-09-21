@@ -20,11 +20,28 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Callable
 
 try:
-    from .protocol import compare_texts, decode_psp_model_code, dump_json
+    from .protocol import (
+        ProtocolError,
+        compare_texts,
+        decode_psp_model_code,
+        dump_json,
+        parse_output,
+        provenance_issues,
+        validate_dmac_size_matrix,
+    )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from protocol import compare_texts, decode_psp_model_code, dump_json
+    from protocol import (  # type: ignore
+        ProtocolError,
+        compare_texts,
+        decode_psp_model_code,
+        dump_json,
+        parse_output,
+        provenance_issues,
+        validate_dmac_size_matrix,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,6 +132,59 @@ def _record_summary(text: str) -> tuple[str, int]:
     return "RESULT_RECORDS", len(statuses)
 
 
+def _wait_for_host0_output(
+    path: Path,
+    timeout: float,
+    *,
+    not_before_ns: int | None = None,
+    ready: Callable[[str], bool],
+) -> str:
+    """Read a probe-owned host0 file after its complete stream is available."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            stat = path.stat()
+            if (
+                path.is_file()
+                and stat.st_size > 0
+                and (not_before_ns is None or stat.st_mtime_ns >= not_before_ns)
+            ):
+                first = path.read_bytes()
+                time.sleep(0.05)
+                second = path.read_bytes()
+                if first == second:
+                    stable = first.decode("utf-8", errors="replace")
+                    if ready(stable):
+                        return stable
+        except OSError:
+            pass
+        time.sleep(0.1)
+    raise TimeoutError(f"host0 output did not become complete: {path.name}")
+
+
+def _host0_capture_complete(text: str, args: argparse.Namespace) -> bool:
+    try:
+        return len(parse_output(_canonicalize_psp(text, args)).results) == 16
+    except (ProtocolError, OSError, ValueError):
+        return False
+
+
+def _validate_host0_capture(text: str, args: argparse.Namespace) -> dict[str, object]:
+    """Validate the complete DMAC host0 stream without promoting placeholders."""
+
+    parsed = validate_dmac_size_matrix(_canonicalize_psp(text, args))
+    metadata = parsed.metadata_dict()
+    blockers = list(provenance_issues(metadata))
+    return {
+        "classification": "PASS" if all(result.status == "PASS" for result in parsed.results) else "FAIL",
+        "test_record_count": len(parsed.results),
+        "metadata": metadata,
+        "acceptance_eligible": not blockers,
+        "acceptance_blockers": blockers,
+    }
+
+
 def annotate_terminal_outcome(
     report: dict[str, object], capture: bytes, outcome: str
 ) -> dict[str, object]:
@@ -184,6 +254,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--psp-output", type=Path)
     parser.add_argument("--nakagawa-output", type=Path)
+    parser.add_argument(
+        "--host0-output",
+        type=Path,
+        help="local host0-mapped DMAC matrix file to retain and validate after launch",
+    )
+    parser.add_argument(
+        "--validate-dmac-size-matrix",
+        action="store_true",
+        help="validate --host0-output as the complete PSP-DMAC-001 size matrix",
+    )
     parser.add_argument("--binary", type=Path, help="source-owned PRX used to replace fixture metadata")
     parser.add_argument("--source-commit", help="exact source commit recorded in the result metadata")
     parser.add_argument("--model", help="human-recorded PSP model identifier")
@@ -234,10 +314,13 @@ def main(argv: list[str] | None = None) -> int:
         missing = ", ".join("--" + flag.replace("_", "-") for flag in missing_flags)
         parser.error(f"provenance metadata is all-or-nothing; missing {missing}")
 
+    if bool(args.host0_output) != args.validate_dmac_size_matrix:
+        parser.error("--host0-output and --validate-dmac-size-matrix must be supplied together")
+
     if bool(args.annotate_report) != bool(args.observed_terminal_outcome):
         parser.error("--annotate-report and --observed-terminal-outcome must be supplied together")
     if args.annotate_report:
-        if args.command or args.psp_output or args.nakagawa_output or args.dry_run:
+        if args.command or args.psp_output or args.nakagawa_output or args.host0_output or args.dry_run:
             parser.error("terminal annotation cannot launch or compare another capture")
         report = json.loads(args.annotate_report.read_text(encoding="utf-8"))
         stdout_file = report.get("stdout_file")
@@ -279,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     command = _split_command(args.command)
     if not command:
         parser.error("--command must contain an executable")
+    capture_started_ns = time.time_ns()
     returncode, stdout, stderr, process_status = _run_command(command, args.timeout)
     DEFAULT_RESULTS.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
@@ -295,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     record_classification, record_count = _record_summary(stdout)
     report["record_classification"] = record_classification
     report["test_record_count"] = record_count
+    capture_ok = True
     if args.psp_output and args.nakagawa_output:
         report["comparison"] = compare_texts(
             _canonicalize_psp(args.psp_output.read_text(encoding="utf-8"), args),
@@ -305,13 +390,43 @@ def main(argv: list[str] | None = None) -> int:
             "classification": "INCONCLUSIVE",
             "error": "both --psp-output and --nakagawa-output are required",
         }
+        capture_ok = False
+    if args.host0_output:
+        try:
+            host0_text = _wait_for_host0_output(
+                args.host0_output,
+                args.timeout,
+                not_before_ns=capture_started_ns,
+                ready=lambda text: _host0_capture_complete(text, args),
+            )
+            host0_capture = DEFAULT_RESULTS / f"psplink-{timestamp}.host0.txt"
+            host0_capture.write_text(host0_text, encoding="utf-8")
+            report["host0_file"] = str(host0_capture.relative_to(ROOT)).replace("\\", "/")
+            try:
+                report["host0_validation"] = _validate_host0_capture(host0_text, args)
+            except (ProtocolError, OSError, ValueError) as exc:
+                report["host0_validation"] = {
+                    "classification": "INCONCLUSIVE",
+                    "acceptance_eligible": False,
+                    "acceptance_blockers": [str(exc)],
+                }
+                capture_ok = False
+            if report["host0_validation"]["classification"] != "PASS":
+                capture_ok = False
+        except (TimeoutError, OSError) as exc:
+            report["host0_validation"] = {
+                "classification": "INCONCLUSIVE",
+                "acceptance_eligible": False,
+                "acceptance_blockers": [str(exc)],
+            }
+            capture_ok = False
     rendered = dump_json(report)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(rendered, encoding="utf-8")
     else:
         sys.stdout.write(rendered)
-    return 0 if process_status == "PROCESS_EXITED" and returncode == 0 else 2
+    return 0 if process_status == "PROCESS_EXITED" and returncode == 0 and capture_ok else 2
 
 
 if __name__ == "__main__":

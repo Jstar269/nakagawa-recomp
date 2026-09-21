@@ -126,6 +126,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/audio_query_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
 #define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+#define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
 #endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
@@ -723,11 +725,18 @@ static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
    above 0xC000 cannot be mistaken for boundary truncation. */
 #define DMAC_SIZE_BYTES 0x00100000u
 #define DMAC_SIZE_SENTINEL 0xa5u
+#define DMAC_SIZE_TRIALS 3u
 #define DMAC_SIZE_DST ((uint8_t *)0x04000000u)
 #define DMAC_SIZE_SRC ((uint8_t *)0x04100000u)
 static const uint32_t dmac_size_requests[] = {
-    0x0000c000u, 0x0000c001u, 0x00010000u, 0x00020000u, 0x00100000u,
+    0x0000bfffu, 0x0000c000u, 0x0000c001u, 0x0000d000u,
+    0x0000f000u, 0x0000ffffu, 0x00010000u, 0x00100000u,
 };
+
+static void dmac_size_cache_sync(void *address, uint32_t size) {
+    sceKernelDcacheWritebackRange(address, size);
+    sceKernelDcacheInvalidateRange(address, size);
+}
 
 static uint32_t dmac_size_prefix(uint32_t requested) {
     uint32_t offset = 0;
@@ -746,11 +755,19 @@ static uint32_t dmac_size_non_sentinel(uint32_t offset, uint32_t requested) {
     return count;
 }
 
+static uint32_t dmac_size_source_mutations(void) {
+    uint32_t count = 0;
+    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
+        if (DMAC_SIZE_SRC[offset] != dmac_pattern(offset)) ++count;
+    }
+    return count;
+}
+
 static void run_dmac_size_matrix(int emulated) {
     for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
         DMAC_SIZE_SRC[offset] = dmac_pattern(offset);
     }
-    sceKernelDcacheWritebackInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
+    dmac_size_cache_sync(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
 
     const uint32_t api_count = 2u;
     const uint32_t request_count =
@@ -758,21 +775,35 @@ static void run_dmac_size_matrix(int emulated) {
     for (uint32_t api = 0; api < api_count; ++api) {
         for (uint32_t i = 0; i < request_count; ++i) {
             const uint32_t requested = dmac_size_requests[i];
-            memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, requested);
-            sceKernelDcacheWritebackInvalidateRange(DMAC_SIZE_DST, requested);
-            const uint64_t start_us = sceKernelGetSystemTimeWide();
-            const uint32_t result = (uint32_t)dmac_call(
-                api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
-            const uint64_t end_us = sceKernelGetSystemTimeWide();
-            sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, requested);
+            uint32_t failed_trials = 0;
+            uint32_t max_prefix = 0;
+            uint32_t max_stray = 0;
+            uint32_t max_source_mutations = 0;
+            uint32_t max_elapsed_us = 0;
+            uint32_t last_result = 0;
+            for (uint32_t trial = 0; trial < DMAC_SIZE_TRIALS; ++trial) {
+                memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, requested);
+                dmac_size_cache_sync(DMAC_SIZE_DST, requested);
+                const uint64_t start_us = sceKernelGetSystemTimeWide();
+                last_result = (uint32_t)dmac_call(
+                    api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
+                const uint64_t end_us = sceKernelGetSystemTimeWide();
+                sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, requested);
+                sceKernelDcacheInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
 
-            const uint32_t prefix = dmac_size_prefix(requested);
-            const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
-            uint32_t source_match = 1u;
-            for (uint32_t offset = 0; offset < requested; ++offset) {
-                if (DMAC_SIZE_SRC[offset] != dmac_pattern(offset)) {
-                    source_match = 0u;
-                    break;
+                const uint32_t prefix = dmac_size_prefix(requested);
+                const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
+                const uint32_t source_mutations = dmac_size_source_mutations();
+                const uint32_t elapsed_us = dmac_elapsed_us(start_us, end_us);
+                if (prefix > max_prefix) max_prefix = prefix;
+                if (stray > max_stray) max_stray = stray;
+                if (source_mutations > max_source_mutations) {
+                    max_source_mutations = source_mutations;
+                }
+                if (elapsed_us > max_elapsed_us) max_elapsed_us = elapsed_us;
+                if (last_result != 0u || prefix != requested || stray != 0u ||
+                    source_mutations != 0u) {
+                    ++failed_trials;
                 }
             }
             char case_id[64];
@@ -781,17 +812,18 @@ static void run_dmac_size_matrix(int emulated) {
                      (unsigned int)requested);
             const uint32_t out[] = {
                 requested,
-                prefix,
-                stray,
-                source_match,
-                dmac_elapsed_us(start_us, end_us),
+                max_prefix,
+                max_stray,
+                max_source_mutations == 0u ? 1u : 0u,
+                max_elapsed_us,
                 api,
+                DMAC_SIZE_TRIALS,
+                failed_trials,
+                max_source_mutations,
             };
-            const int pass = result == 0u && prefix == requested &&
-                             stray == 0u && source_match != 0u;
             emit_record_extended(emulated, "PSP-DMAC-001", case_id,
-                                 pass ? "PASS" : "FAIL", result,
-                                 out, sizeof(out) / sizeof(out[0]));
+                                 failed_trials == 0u ? "PASS" : "FAIL",
+                                 last_result, out, sizeof(out) / sizeof(out[0]));
         }
     }
 }

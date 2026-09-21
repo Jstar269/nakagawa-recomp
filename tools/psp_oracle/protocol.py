@@ -31,6 +31,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ALL_ZERO_RE = re.compile(r"^0+$")
 UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a", "na", "tbd"})
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
+DMAC_SIZE_MATRIX_SIZES = (0xBFFF, 0xC000, 0xC001, 0xD000, 0xF000, 0xFFFF, 0x10000, 0x100000)
+DMAC_SIZE_MATRIX_TRIALS = 3
 
 # PSPSDK's ``enum PspModel`` is an ordinal generation value, not a retail
 # model number.  In particular, ordinal 3 means generation 04g, which belongs
@@ -470,6 +472,61 @@ def compare_texts(psp_text: str, nakagawa_text: str) -> dict[str, Any]:
             "error": str(exc),
         }
     return compare_outputs(psp, nakagawa)
+
+
+def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIALS) -> ParsedOutput:
+    """Validate the complete scalar contract emitted by ``dma-size-matrix``.
+
+    This checks record identity, coverage, repeated-trial accounting, and the
+    full-span/sentinel invariants without interpreting a hardware result as
+    measured unless its surrounding provenance is independently accepted.
+    """
+
+    parsed = parse_output(text)
+    expected = {
+        ("memcpy" if api == 0 else "try", size): (api, size)
+        for api in (0, 1)
+        for size in DMAC_SIZE_MATRIX_SIZES
+    }
+    observed: set[tuple[str, int]] = set()
+    for record in parsed.results:
+        if record.test_id != "PSP-DMAC-001" or not record.case_id.startswith("size-matrix-"):
+            raise ProtocolError("DMAC size matrix contains a non-matrix record")
+        match = re.fullmatch(r"size-matrix-(memcpy|try)-0x([0-9a-f]{8})", record.case_id)
+        if not match:
+            raise ProtocolError(f"invalid DMAC matrix case_id {record.case_id!r}")
+        api_name, raw_size = match.groups()
+        key = api_name, int(raw_size, 16)
+        if key not in expected or key in observed:
+            raise ProtocolError(f"unexpected or duplicate DMAC matrix case {record.case_id!r}")
+        observed.add(key)
+        values = dict(record.values)
+        required = {f"out{i}" for i in range(9)}
+        if not required <= values.keys():
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r} is missing scalar fields")
+        numbers = {key: int(value, 0) for key, value in values.items() if key.startswith("out")}
+        api, size = expected[key]
+        checks = {
+            "requested size": (numbers["out0"], size),
+            "copied prefix": (numbers["out1"], size),
+            "sentinel mutation": (numbers["out2"], 0),
+            "source integrity": (numbers["out3"], 1),
+            "API": (numbers["out5"], api),
+            "trial count": (numbers["out6"], trials),
+            "failed trials": (numbers["out7"], 0),
+            "source-guard mutation": (numbers["out8"], 0),
+        }
+        if record.status != "PASS":
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r} is {record.status}")
+        for label, (actual, wanted) in checks.items():
+            if actual != wanted:
+                raise ProtocolError(
+                    f"DMAC matrix case {record.case_id!r}: {label} {actual:#x} != {wanted:#x}"
+                )
+    if observed != set(expected):
+        missing = sorted(set(expected) - observed)
+        raise ProtocolError(f"DMAC size matrix is incomplete; missing {missing}")
+    return parsed
 
 
 def dump_json(value: Any) -> str:

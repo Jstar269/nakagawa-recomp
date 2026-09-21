@@ -125,13 +125,37 @@ setup error) and these scalar outputs:
 | `out22` | First-caller thread priority |
 | `out23` | Last first-caller return |
 
-The sequential `dma-size-matrix` records use `result` for the DMAC return and
-these outputs: `out0` requested bytes, `out1` contiguous copied prefix,
-`out2` non-sentinel bytes after that prefix, `out3` source-integrity flag,
-`out4` elapsed microseconds, and `out5` API (`0` blocking, `1` try). A PASS
-record requires the complete requested prefix, unchanged source, and zero
-post-prefix mutation. Its fully in-VRAM spans are the control for separating
-transfer size from allocator-boundary truncation.
+The sequential `dma-size-matrix` records cover `0xBFFF`, `0xC000`,
+`0xC001`, `0xD000`, `0xF000`, `0xFFFF`, `0x10000`, and `0x100000` (1 MiB)
+for both APIs. Each case is repeated three times. The record uses `result`
+for the last DMAC return and these outputs: `out0` requested bytes, `out1`
+maximum contiguous copied prefix, `out2` maximum non-sentinel bytes after that
+prefix, `out3` full-source integrity flag, `out4` maximum elapsed microseconds,
+`out5` API (`0` blocking, `1` try), `out6` trial count, `out7` failed-trial
+count, and `out8` maximum mutation count in the adjacent source guard. Before
+each call the probe writes back and invalidates both spans; after the call it
+invalidates both spans before inspection. A PASS record requires every trial to
+return zero, copy the complete requested prefix, leave sentinels and the full
+source/guard unchanged, and emit all 16 matrix records. These fully in-VRAM
+spans are the control for separating transfer size from allocator-boundary
+truncation. The newly added boundary cells are NOT_MEASURED until a current
+hardware capture is accepted; the probe itself does not promote results to
+hardware evidence.
+
+The existing runner can retain and validate the host0 stream after launching the
+PRX. Supply the local path that `usbhostfs_pc` exposes as `host0:`:
+
+```powershell
+python tools/psp_oracle/run_psplink.py `
+  --command '<explicit pspsh ldstart command>' `
+  --host0-output dmac_size_matrix_log.txt `
+  --validate-dmac-size-matrix `
+  --out oracle/hardware-results/dmac-size-matrix.report.json
+```
+
+The runner waits for the complete 16-record stream rather than accepting the
+metadata-only prefix, retains a result copy under the ignored hardware-results
+area, and reports placeholder provenance as `acceptance_eligible: false`.
 
 The invalid-tail cases isolate one API and invalid endpoint per launch:
 
