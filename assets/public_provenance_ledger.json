@@ -9165,10 +9165,13 @@
     },
     {
       "path": "tools/test_validate_assets.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "validate-assets-fail-closed-376",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0a077bcd4a1bb4e92adb9bf9e0e2fdb3cf4ce073c591cd7e679576a42cd81d2c"
     },
